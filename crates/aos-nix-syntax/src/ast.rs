@@ -99,6 +99,27 @@ impl SymbolTable {
         self.text.is_empty()
     }
 
+    /// Estimates the table's resident heap bytes for memory attribution.
+    ///
+    /// Sums the interned byte strings (stored twice — once in `text`, once as
+    /// `by_text` keys), the `Vec`/`BTreeMap` structural overhead, and the lazy
+    /// rank view. The per-`BTreeMap`-entry constant is an estimate (node packing
+    /// is not observable), so the result is an attribution aid, not an exact
+    /// allocator figure. Used by the memory-campaign eval-stats attribution
+    /// (RFC-0007 doc 15 §5.4 scoreboard).
+    pub fn resident_bytes(&self) -> usize {
+        const BTREE_ENTRY_OVERHEAD: usize = 32;
+        let vec_of_bytes = std::mem::size_of::<Vec<u8>>();
+        let text_bytes = self.text.iter().map(Vec::capacity).sum::<usize>()
+            + self.text.capacity() * vec_of_bytes;
+        let key_bytes = self.by_text.keys().map(Vec::capacity).sum::<usize>()
+            + self.by_text.len()
+                * (vec_of_bytes + std::mem::size_of::<Symbol>() + BTREE_ENTRY_OVERHEAD);
+        let rank_bytes = self.lexicographic_ranks.borrow().rank_by_symbol.capacity()
+            * std::mem::size_of::<u32>();
+        text_bytes + key_bytes + rank_bytes
+    }
+
     /// Interns a byte string and returns its dense symbol id.
     ///
     /// # Errors

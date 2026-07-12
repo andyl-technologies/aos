@@ -13405,6 +13405,10 @@ pub struct EvalStats {
     pub(crate) hashcons_attempts: u64,
     pub(crate) hashcons_hits: u64,
     pub(crate) symbols_interned: u64,
+    /// Estimated resident heap bytes of the live symbol table (interned strings
+    /// stored twice, plus `Vec`/`BTreeMap` overhead and the rank view). A memory
+    /// campaign L0 attribution gauge, not an exact allocator figure.
+    pub(crate) symbol_table_resident_bytes: u64,
     pub(crate) imports_evaluated: u64,
     /// Nanoseconds spent in `parse_bytes_with_symbols` across imports, accumulated
     /// only under `AOS_NIX_EVAL_STATS`. Part of the RFC-0007 Tier-1a front-end
@@ -13796,6 +13800,7 @@ impl EvalStats {
             hashcons_attempts,
             hashcons_hits,
             symbols_interned,
+            symbol_table_resident_bytes,
             imports_evaluated,
             front_end_parse_nanos,
             front_end_resolve_nanos,
@@ -13928,6 +13933,9 @@ impl EvalStats {
         self.hashcons_attempts = self.hashcons_attempts.saturating_add(hashcons_attempts);
         self.hashcons_hits = self.hashcons_hits.saturating_add(hashcons_hits);
         self.symbols_interned = self.symbols_interned.saturating_add(symbols_interned);
+        self.symbol_table_resident_bytes = self
+            .symbol_table_resident_bytes
+            .saturating_add(symbol_table_resident_bytes);
         self.imports_evaluated = self.imports_evaluated.saturating_add(imports_evaluated);
         self.front_end_parse_nanos = self
             .front_end_parse_nanos
@@ -14104,6 +14112,14 @@ impl EvalStats {
     /// count C++ Nix reports under `symbols`.
     pub const fn symbols_interned(&self) -> u64 {
         self.symbols_interned
+    }
+
+    /// Returns the estimated resident heap bytes of the live symbol table.
+    ///
+    /// A memory-campaign L0 attribution gauge (interned strings stored twice +
+    /// `Vec`/`BTreeMap` overhead + rank view); not an exact allocator figure.
+    pub const fn symbol_table_resident_bytes(&self) -> u64 {
+        self.symbol_table_resident_bytes
     }
 
     /// Returns the number of imported files that were evaluated.

@@ -82,6 +82,7 @@ impl TreeWalk {
             hashcons_attempts: alloc_counters.hashcons_attempts(),
             hashcons_hits: alloc_counters.hashcons_hits(),
             symbols_interned: self.symbols.len() as u64,
+            symbol_table_resident_bytes: self.symbols.resident_bytes() as u64,
             imports_evaluated: self.stats.imports_evaluated,
             front_end_parse_nanos: self.stats.front_end_parse_nanos,
             front_end_resolve_nanos: self.stats.front_end_resolve_nanos,
@@ -234,6 +235,7 @@ impl TreeWalk {
             permanent_heap_reserved_bytes = stats.permanent_heap_reserved_bytes(),
             permanent_heap_mapped_bytes = stats.permanent_heap_mapped_bytes(),
             permanent_heap_used_bytes = stats.permanent_heap_used_bytes(),
+            symbol_table_resident_bytes = stats.symbol_table_resident_bytes(),
             heap_tier_b_admission_worker_records = stats.heap_tier_b_admission_worker_records(),
             heap_tier_b_admission_permanent_shared_records = stats
                 .heap_tier_b_admission_permanent_shared_records(),

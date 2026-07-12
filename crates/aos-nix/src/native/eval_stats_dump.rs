@@ -23,6 +23,7 @@
 //!  "heap_used_bytes":0,"permanent_heap_chunks":0,
 //!  "permanent_heap_reserved_bytes":0,"permanent_heap_mapped_bytes":0,
 //!  "permanent_heap_used_bytes":0,
+//!  "symbol_table_resident_bytes":0,
 //!  "inline_cache_hits":0,"inline_cache_misses":0,
 //!  "thunks_shed":0,"gc_sweeps":0,"gc_records_swept":0,
 //!  "gc_sweeps_skipped_nonquiescent":0,
@@ -108,6 +109,7 @@ impl NixNative {
 \"permanent_heap_reserved_bytes\":{},\
 \"permanent_heap_mapped_bytes\":{},\
 \"permanent_heap_used_bytes\":{},\
+\"symbol_table_resident_bytes\":{},\
 \"inline_cache_hits\":{},\
 \"inline_cache_misses\":{},\
 \"thunks_shed\":{},\
@@ -204,6 +206,7 @@ impl NixNative {
             stats.permanent_heap_reserved_bytes(),
             stats.permanent_heap_mapped_bytes(),
             stats.permanent_heap_used_bytes(),
+            stats.symbol_table_resident_bytes(),
             stats.inline_cache_hits(),
             stats.inline_cache_misses(),
             stats.thunks_shed(),
