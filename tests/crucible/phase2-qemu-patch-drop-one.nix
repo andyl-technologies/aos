@@ -87,10 +87,17 @@
         if builtins.hasAttr patch symbolDiscriminators
         then symbolDiscriminators.${patch}
         else [];
+      # 0007 (block-rtc-read) forces the sim RTC to the virtual clock; it is only
+      # observable when the guest reads a host-backed RTC, so its variant probe
+      # runs with -rtc clock=host.
+      rtcClock =
+        if patch == "0007-crucible-block-rtc-read.patch"
+        then "host"
+        else "vm";
     in {
       inherit index patch symbols;
       drv = import ./_drop-one.nix {
-        inherit pkgs lib qemuPackage index;
+        inherit pkgs lib qemuPackage index rtcClock;
         expectAbsentSymbols = symbols;
         attrPath = "${attrPath}.p${toString index}";
       };
@@ -134,6 +141,7 @@ in
             $3 != "drop-one-build-required" &&
             $3 != "drop-one-symbol" &&
             $3 != "drop-one-semantic" &&
+            $3 != "drop-one-composition" &&
             $3 != "structural-fallback" { print }
           ' "$out/methods.tsv")
           if [ -n "$bad" ]; then
@@ -150,6 +158,7 @@ in
           n_build=$(count drop-one-build-required)
           n_symbol=$(count drop-one-symbol)
           n_semantic=$(count drop-one-semantic)
+          n_composition=$(count drop-one-composition)
           n_fallback=$(count structural-fallback)
 
           cat > "$out/result" <<RESULT
@@ -163,6 +172,7 @@ in
           drop_one_build_required_count=$n_build
           drop_one_symbol_count=$n_symbol
           drop_one_semantic_count=$n_semantic
+          drop_one_composition_count=$n_composition
           structural_fallback_count=$n_fallback
           methods_manifest=methods.tsv
           RESULT

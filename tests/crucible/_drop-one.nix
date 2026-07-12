@@ -26,15 +26,26 @@
   index,
   attrPath,
   expectAbsentSymbols ? [],
+  # RTC clock mode for the behavioral sim-divergence probe (see _sim-diverge.nix).
+  rtcClock ? "vm",
   buildDrv ?
     import ./_drop-one-build.nix {
       inherit pkgs lib qemuPackage index;
       attrPath = "${attrPath}.build";
     },
+  # Behavioral (sim-gated, no exported ABI symbol) patches are discriminated by
+  # a live variant-divergence sim probe. Only consumed when the build succeeds
+  # and no symbol discriminator is supplied.
+  simDiverge ?
+    import ./_sim-diverge.nix {
+      inherit pkgs lib index qemuPackage buildDrv rtcClock;
+      attrPath = "${attrPath}.simDiverge";
+    },
 }: let
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
   droppedPatch = builtins.elemAt series.patchFiles (index - 1);
   symbolsMaterial = builtins.concatStringsSep " " expectAbsentSymbols;
+  hasSymbols = expectAbsentSymbols != [];
 in
   pkgs.mkDerivation {
     pname = "crucible-drop-one-${toString index}";
@@ -54,6 +65,12 @@ in
     EXPECT_ABSENT_SYMBOLS = symbolsMaterial;
     BUILD_DRV = "${buildDrv}";
     FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
+    # Only behavioral (no-symbol) patches consult the sim-divergence probe; for
+    # symbol patches this stays empty so the probe is never built.
+    SIM_DIVERGE =
+      if hasSymbols
+      then ""
+      else "${simDiverge}";
 
     phases = [
       {
@@ -125,25 +142,63 @@ in
                 } > "$out/attribution.env"
                 emit
               else
-                # Sim-gated behavioral patch (no exported ABI symbol). Its effect
-                # is observable only under -accel sim; the patched and unpatched
-                # binaries are byte-behaviorally identical under tcg (the inertness
-                # guarantee). The runtime "effect vanishes without N" evidence is
-                # the patch's OWN full-series micro-test stock negative control
-                # (effect present on patched qemu, absent on unpatched -- absent
-                # exactly when N's code is absent), which the patch-microtests
-                # aggregate that consumes this gate runs. This gate proves the LIVE
-                # assembly facts: N drops clean and full-minus-N builds, so N is
-                # individually removable and self-contained, not masked.
-                {
-                  echo "attribution_method=drop-one-semantic"
-                  echo "drop_conflicts=false"
-                  echo "full_minus_n_build_succeeds=true"
-                  echo "effect_is_sim_gated=true"
-                  echo "tcg_behavior_identical_by_inertness_guarantee=true"
-                  echo "runtime_effect_proven_by_patch_full_series_microtest_stock_negative_control=true"
-                  echo "drop_one_proves_clean_removable_and_self_contained=true"
-                } > "$out/attribution.env"
+                # Sim-gated behavioral patch (no exported ABI symbol). Boot the
+                # full-minus-N variant under the diskless sim workload and read
+                # the live divergence classification.
+                cp "$SIM_DIVERGE/result" "$out/sim-diverge.result"
+                cp "$SIM_DIVERGE/variant-fingerprints" "$out/variant-fingerprints" 2>/dev/null || true
+                cls=$(gawk -F= '/^sim_discriminator_classification=/ { print $2 }' "$SIM_DIVERGE/result")
+                rtd=$(gawk -F= '/^runs_to_diverge=/ { print $2 }' "$SIM_DIVERGE/result")
+                case "$cls" in
+                  diverges)
+                    # N suppresses a nondeterminism that reappears without it:
+                    # variant runs diverge while full is deterministic. Present in
+                    # full, absent in the variant, at runtime (kills sibling-patch
+                    # masking).
+                    {
+                      echo "attribution_method=drop-one-semantic"
+                      echo "drop_conflicts=false"
+                      echo "full_minus_n_build_succeeds=true"
+                      echo "effect_is_sim_gated=true"
+                      echo "semantic_form=variant-run-twice-diverges"
+                      echo "variant_nondeterministic_full_deterministic=true"
+                      echo "runs_to_diverge=$rtd"
+                      echo "runtime_effect_proven_against_variant=true"
+                    } > "$out/attribution.env"
+                    ;;
+                  differs)
+                    # N's fixed-behavior effect is guest-observable: variant is
+                    # deterministic but its fingerprint differs from full.
+                    {
+                      echo "attribution_method=drop-one-semantic"
+                      echo "drop_conflicts=false"
+                      echo "full_minus_n_build_succeeds=true"
+                      echo "effect_is_sim_gated=true"
+                      echo "semantic_form=variant-differs-from-full"
+                      echo "runtime_effect_proven_against_variant=true"
+                    } > "$out/attribution.env"
+                    ;;
+                  none)
+                    # The diskless generic workload does not reach N's effect
+                    # (non-discriminating). Fall back to composition: LIVE
+                    # drop-clean + build (this gate) + the patch's own full-series
+                    # micro-test stock negative control (run by the aggregate).
+                    # Flagged as a latent runtime gap (its microtest needs a
+                    # runtime upgrade -- tracked separately).
+                    {
+                      echo "attribution_method=drop-one-composition"
+                      echo "drop_conflicts=false"
+                      echo "full_minus_n_build_succeeds=true"
+                      echo "effect_is_sim_gated=true"
+                      echo "sim_diverge_workload_non_discriminating=true"
+                      echo "runtime_effect_evidence=drop-clean-plus-build-plus-microtest-stock-negative-control"
+                      echo "latent_gap_microtest_needs_runtime_upgrade=true"
+                    } > "$out/attribution.env"
+                    ;;
+                  *)
+                    fail "unexpected sim-diverge classification: $cls"
+                    ;;
+                esac
                 emit
               fi
               ;;
