@@ -681,3 +681,38 @@ faster than C++, the flagship number. The one open item is the ~1s first-eval
 cold-populate tax (13-14x), whose driver §13 now identifies as the persist
 per-record file storm; fixes 1-3 close it. For one-shot evals, cache-off (75 ms)
 still wins until that tax is paid down.
+
+## 15. Increment A LANDED + re-strace (persist per-op ensure hoisted)
+
+Removed the 16 redundant per-op `ensure_*_file` (create_dir_all + create-open)
+calls from the ratchet-cache index/pack writers (node_metadata, blob_index,
+artifact_index, node_trace_log, blob_pack appender), keeping the once-per-open
+ensure. Committed 8d77e2dd8. Re-strace on the builder (same method, cache-on
+cold zlib), before (§13) vs after:
+
+```text
+syscall   before    after     reduction
+mkdir     15,211     4,290     -72%
+statx     42,774    20,931     -51%
+openat    27,675    16,754     -39%
+close     27,501    16,580     -40%
+flock      8,539     7,524     -12%
+futex(s)    0.66      0.27     -59%   (thread coordination — fell with the storm)
+```
+
+Total in-syscall time ~0.9s -> ~0.32s (-64%). Post-fix cache-on cold is
+wall 0.41s / sys 0.09s (incl. the ~0.18s C++ oracle in the nix-diff). Gates:
+ratchet-cache 112 + oracle 3081 + aos-nix 345 tests green; byte-parity
+zlib+openssl serial/JIT cache-on/off (8/8); durable warm still root-cutoff hits.
+(Also fixed two latent §3.2-bundle test regressions the aos-nix `--lib` suite
+surfaced: native hydration tests read the pre-v12 `meta.toml`.)
+
+**Remaining, for Increment B / next:** ~16.7k openat + ~16.6k close are the
+per-op append/read RE-OPENS (hold the fd open on each writer -> kills these);
+~20.9k statx is dominated by the per-node `metadata.index` `.metadata().len()`
+read (cache the index length/handle, or the index content, in memory); ~4.3k
+residual mkdir (a create_dir_all still on some path — root_record_io or an
+atomic-write temp parent — to hunt). And **futex is still 73% of the traced
+time (0.27s)** — once B lands, if it still dominates the cache-on cold delta,
+that is the next attribution target (parallel-pool parking / a persist lock),
+to be MEASURED not guessed.
