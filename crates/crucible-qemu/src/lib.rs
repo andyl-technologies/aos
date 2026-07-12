@@ -49,6 +49,8 @@ mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
 mod live_coverage_gate;
+#[cfg(target_os = "linux")]
+mod live_plugin_gate;
 #[cfg(unix)]
 mod mapped_quantum;
 mod node;
@@ -117,6 +119,11 @@ pub use launch::{
 pub use live_coverage_gate::{
     LoadedQemuCoverageGateConfig, LoadedQemuCoverageGateError, LoadedQemuCoverageGateReport,
     run_loaded_qemu_coverage_gate,
+};
+#[cfg(target_os = "linux")]
+pub use live_plugin_gate::{
+    LivePluginInstallGateConfig, LivePluginInstallGateError, LivePluginInstallReport,
+    run_live_plugin_install_gate,
 };
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
