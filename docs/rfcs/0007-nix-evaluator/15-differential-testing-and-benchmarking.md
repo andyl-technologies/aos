@@ -623,11 +623,20 @@ to the host-load spikes that skew the mean on a contended machine.
    mem_ratio(temp) = median(native_summary.memory.rss_after_bytes_max)[temp]
                      / median(summary.child_peak_rss_bytes_max)[temp]
    ```
-   **Goal: mem_ratio ≤ 0.50** cold and warm (C++ wide ≈ 77 MiB ⇒ target
-   ≤38 MiB; today's native ~140-190 MiB ≈ 1.8-2.5x). Also report the raw MiB and
+   **Goal: mem_ratio ≤ 0.50** cold and warm. Also report the raw MiB and
    the native arena peak (`arena_peak_live_mapped_bytes_max`) so a regression is
    attributable to arena vs non-arena traffic. Measure on **Linux** so the
    `MIMALLOC_PURGE_DELAY` reclaim (a no-op under darwin `MADV_FREE`) is reflected.
+
+   **Achieved (2026-07-12, builder-hil1-87eb5b00, HEAD 223fd30f, byte-parity
+   green).** With mimalloc's default deferred purge the native process retains
+   ~136-139 MiB (0.70-0.72x of the C++ `nix-instantiate` child, which peaks at
+   ~184 MiB here — not the ~77 MiB earlier placeholder; the denominator is the
+   builder's measured child peak). Setting `MIMALLOC_PURGE_DELAY=0` (now the
+   Linux default in the `aos` wrapper) returns those pages at once:
+   **cold 37.7 MiB = 0.205x, warm 34.8 MiB = 0.189x** — both under the ≤0.50
+   goal and under the ≤38 MiB wide-eval target, for ~5% native wall cost
+   (0.346 -> 0.362 s cold; against being ~30x faster than C++ on this eval).
 
 **Scoreboard line every landing pastes into its report/commit body:**
 ```text

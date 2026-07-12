@@ -93,6 +93,11 @@ in
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
       export PATH="@PATH@"
+      # mimalloc returns freed pages to the OS at once on Linux (its default
+      # deferred purge retains ~100 MiB on a wide eval — 0.70x -> 0.19x of C++
+      # nix-instantiate RSS, ~5% wall cost). Bash's $OSTYPE keeps this to Linux
+      # (MADV_DONTNEED); macOS purge is MADV_FREE, which does not lower RSS.
+      case "$OSTYPE" in linux*) export MIMALLOC_PURGE_DELAY=0 ;; esac
       exec "@SELF@" "$@"
       WRAPPER
             sed -i \
