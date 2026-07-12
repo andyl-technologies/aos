@@ -616,3 +616,68 @@ tax is unchanged and its true driver is unidentified pending a syscall trace.
 **Value-path write-behind (§3.2 original) stays deferred-until-measured-need**
 (the census shows cold doesn't touch it; warm-materializing runs are the only
 candidate beneficiary) — do not rebuild it on momentum.
+
+## 13. Driver IDENTIFIED by strace: the PERSIST cache per-record file storm
+
+The syscall trace §12 called for (run on Linux builder-hil1-87eb5b00, stock
+toolchain, `strace -f -c`, cache-on cold zlib minus cache-off control so the
+identical oracle cancels) ends the guessing. The cold sys is the **persist
+cache**, not the parse cache, doing a per-record file-op storm.
+
+**Syscall count delta (cache-on cold − cache-off):**
+
+```text
+statx   1,228 -> 42,774   (+41.5k)
+read    1,946 -> 36,077   (+34k)
+openat  1,093 -> 27,675   (+26.6k)
+close     920 -> 27,501   (+26.6k)
+mkdir      ~0 -> 15,211   (+15k, 14,969 = 99% EEXIST)
+write     860 ->  9,378   (+8.5k)
+flock      ~0 ->  8,539   (+8.5k)
+```
+
+Wall is futex-dominated (0.66 s, thread coordination). **Path attribution
+(`strace -y`), all in `persist/`, per record:** mkdir `persist/nodes` x7896,
+`.locks` x2743, `values` x2083, `files` x1999 (all EEXIST); statx
+`persist/nodes` x7895 + `persist/nodes/metadata.index` x7722. The parse cache is
+now only 471 mkdir + 235 `bundle.bin` stats — §3.2's bundle DID cut it ~5x; it
+was simply never the dominant cache.
+
+Root cause: the persist cache re-ensures its subdir tree (`create_dir_all
+persist/{nodes,values,files,.locks}`) and re-stats `persist/nodes` +
+`metadata.index` ONCE PER RECORD (~7900 node records for zlib). Two stacked
+redundancies. **Fix plan (brought to lead before building):**
+1. Hoist the persist subdir ensure to cache-OPEN time — kills ~15k redundant
+   EEXIST mkdir, zero behavior change.
+2. Memoize the per-record dir + index stat — kills ~15k statx.
+3. Buffered per-pack appender (open+flock once, batch, flush at run boundary) —
+   the REAL §3.2 write-behind, now correctly aimed at the persist PACK path
+   (which is append-based), not the parse cache.
+
+**Lesson: the darwin `time -l` sys/user split cannot attribute; only the Linux
+syscall trace resolved it, after three wrong indirect inferences.** Raw
+histograms: `~/rfc0007-gate/candb_{on,off}_f.txt` on the builder.
+
+## 14. Decision artifact: cache-enabled vs cache-less (native, post-bundle)
+
+The number that gates the default-cache-root product decision (§8). Native-only
+`nix-bench`, `--eval-system x86_64-linux`, median of 3, fresh cache per cycle:
+
+```text
+              cache-LESS      cache-ENABLED       ratio
+zlib    cold    75.7 ms          995.7 ms       13.2x SLOWER
+        warm    76.5 ms           24.0 ms       0.31x (3.2x FASTER)
+openssl cold    75.0 ms         1045.6 ms       13.9x SLOWER
+        warm    74.3 ms           23.6 ms       0.32x (3.1x FASTER)
+```
+
+vs C++ Nix (~185 ms cold): cache-enabled warm 24 ms ~= 7.7x faster; cache-less
+cold 75 ms ~= 2.5x faster. (Cache-less warm ~= cold because there is no durable
+cache to reuse.)
+
+**Standing recommendation (adopted):** default cache root = **YES for
+repeat-eval workflows** — warm 24 ms is ~3x faster than cache-less and ~8x
+faster than C++, the flagship number. The one open item is the ~1s first-eval
+cold-populate tax (13-14x), whose driver §13 now identifies as the persist
+per-record file storm; fixes 1-3 close it. For one-shot evals, cache-off (75 ms)
+still wins until that tax is paid down.
