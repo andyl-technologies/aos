@@ -1639,6 +1639,7 @@ mod memo;
 mod parallel_demand;
 mod parallel_import;
 mod parallel_shape;
+mod speculation;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;

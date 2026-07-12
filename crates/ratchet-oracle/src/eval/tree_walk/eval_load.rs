@@ -222,9 +222,38 @@ impl TreeWalk {
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
-        let ir = self.parse_lower_import_isolated(argument, path, source, global_scope)?;
+        // Adopt a speculatively parsed IR if the pool's producer already parsed
+        // this file (RFC-0007 S2/S3): a hit skips parse/resolve/lower. The stored
+        // IR is isolated and already annotated, so it feeds `remap` exactly like a
+        // fresh parse. Empty (and thus a no-op miss) unless the speculation
+        // producer is running, so serial and speculation-off evals are unchanged.
+        let ir = match self.take_speculative_import_parse(path, source, global_scope) {
+            Some(ir) => ir,
+            None => self.parse_lower_import_isolated(argument, path, source, global_scope)?,
+        };
         let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
+    }
+    /// Adopts a speculatively parsed IR for an import, if the pool's speculation
+    /// store holds one keyed by this file's realpath and content hash.
+    ///
+    /// Returns `None` when not under a parallel pool, for a scoped import, or when
+    /// nothing was speculated for this file (the common case), leaving the caller
+    /// to parse. Scoped imports (`scopedImport`) are never adopted: the producer
+    /// only ever lowers the ordinary global-scope form, so a scoped import must
+    /// parse itself to get the dynamic-builtin-scope lowering.
+    fn take_speculative_import_parse(
+        &self,
+        path: &[u8],
+        source: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Option<Ir> {
+        if global_scope.is_scoped() {
+            return None;
+        }
+        let shared = self.shared.as_ref()?;
+        let key = ParseFileKey::for_source(Path::new(OsStr::from_bytes(path)), source);
+        shared.speculation.get(&key)
     }
     /// Parses, resolves, lowers, and annotates `source` into an *isolated* symbol
     /// table, returning the fresh IR.

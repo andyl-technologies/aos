@@ -68,7 +68,7 @@
 //! everyone else replays the published result.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 use crate::syntax::AstError;
@@ -407,6 +407,51 @@ pub(crate) struct DemandCounters {
     claim_waits: AtomicU64,
 }
 
+/// Shared store of speculatively parsed module IRs (RFC-0007 S2/S3, design B).
+///
+/// The pool-only speculation producer parses files reachable along static
+/// path-literal edges into this map, keyed by [`ParseFileKey`] (realpath plus
+/// content hash). A demanding worker consults it before parsing an import: a hit
+/// skips parse/resolve/lower and adopts the stored IR through the usual remap.
+///
+/// Only *successful* parses are stored. Speculative parse failures are dropped —
+/// never stored, never persisted — so the demand path stays the sole source of
+/// import parse errors (the C-19 error-quarantine invariant, satisfied here by
+/// never recording a failure). Content-hash keying makes a file edited between
+/// speculation and demand a harmless miss.
+#[derive(Debug, Default)]
+pub(crate) struct SpeculativeParseStore {
+    entries: Mutex<BTreeMap<ParseFileKey, Ir>>,
+    /// Demand-side adoptions of a stored speculative parse (diagnostics only).
+    hits: AtomicUsize,
+}
+
+impl SpeculativeParseStore {
+    /// Records a successful speculative parse; first write wins.
+    pub(super) fn insert(&self, key: ParseFileKey, ir: Ir) {
+        recover(self.entries.lock()).entry(key).or_insert(ir);
+    }
+
+    /// Returns a clone of the speculative IR stored for `key`, counting a hit.
+    pub(super) fn get(&self, key: &ParseFileKey) -> Option<Ir> {
+        let ir = recover(self.entries.lock()).get(key).cloned();
+        if ir.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        ir
+    }
+
+    /// Returns the number of stored speculative parses (diagnostics and tests).
+    pub(super) fn len(&self) -> usize {
+        recover(self.entries.lock()).len()
+    }
+
+    /// Returns the number of demand-side adoptions of a speculative parse.
+    pub(super) fn hits(&self) -> usize {
+        self.hits.load(Ordering::Relaxed)
+    }
+}
+
 /// Cross-worker shared state for one parallel evaluation.
 #[derive(Debug)]
 pub(crate) struct SharedEvalContext {
@@ -429,6 +474,8 @@ pub(crate) struct SharedEvalContext {
     pub(super) shapes: Option<parallel_shape::SharedShapeLog>,
     /// The shared import-result log (L2-P4).
     pub(super) imports: parallel_import::SharedImportLog,
+    /// The shared store of speculatively parsed module IRs (RFC-0007 S2/S3).
+    pub(super) speculation: SpeculativeParseStore,
     /// The in-process shared content-memo tier (MEMO-1 L1).
     ///
     /// `Some` exactly when the L1 tier is active for this evaluation. This is
@@ -478,6 +525,10 @@ struct ParallelWorkerOutcome {
 pub(crate) struct ParallelDemandPool {
     shared: Arc<SharedEvalContext>,
     handles: Vec<std::thread::JoinHandle<ParallelWorkerOutcome>>,
+    /// The pool-only speculative parse-ahead producer (RFC-0007 S2/S3), present
+    /// only when `AOS_NIX_SPECULATE` enabled it. Its shutdown flag is set and the
+    /// thread joined in [`Self::finish`].
+    speculation: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
 impl ParallelDemandPool {
@@ -524,6 +575,7 @@ impl ParallelDemandPool {
             text_store: SharedTextStoreLog::default(),
             shapes,
             imports: parallel_import::SharedImportLog::default(),
+            speculation: SpeculativeParseStore::default(),
             memo: main.options.memo_l1_active().then(|| {
                 Arc::new(super::memo::SharedMemoTable::new(
                     main.options.memo_options().l1_bytes,
@@ -621,8 +673,48 @@ impl ParallelDemandPool {
         if handles.is_empty() {
             return None;
         }
+        // Pool-only speculative parse-ahead producer (RFC-0007 S2/S3, design B):
+        // a single thread parsing files along static path-literal edges into the
+        // shared store ahead of demand. Reached only here, so never at K == 1;
+        // present only when `AOS_NIX_SPECULATE` enabled it.
+        let root_base = main
+            .modules
+            .first()
+            .and_then(|module| module.path_literal_base.clone())
+            .or_else(|| {
+                root_source.as_ref().and_then(|source| {
+                    Path::new(OsStr::from_bytes(&source.name))
+                        .parent()
+                        .map(|parent| parent.as_os_str().as_bytes().to_vec())
+                })
+            })
+            .unwrap_or_default();
+        let speculation = super::speculation::SpeculationBudget::from_env().and_then(|budget| {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let producer_shared = Arc::clone(&shared);
+            let producer_shutdown = Arc::clone(&shutdown);
+            let producer_ir = root_ir.clone();
+            std::thread::Builder::new()
+                .name("aos-nix-speculate".to_string())
+                .stack_size(HELPER_STACK_SIZE)
+                .spawn(move || {
+                    super::speculation::run_speculation_producer(
+                        producer_ir,
+                        root_base,
+                        producer_shared,
+                        budget,
+                        producer_shutdown,
+                    );
+                })
+                .ok()
+                .map(|handle| (handle, shutdown))
+        });
         main.shared = Some(shared.clone());
-        Some(Self { shared, handles })
+        Some(Self {
+            shared,
+            handles,
+            speculation,
+        })
     }
 
     /// Shuts the queue down, joins every helper, and merges their statistics
@@ -639,6 +731,13 @@ impl ParallelDemandPool {
     /// Resumes the panic of any helper worker that panicked.
     pub(crate) fn finish(self, main: &mut TreeWalk) {
         self.shared.queue.shutdown();
+        // Signal and join the speculation producer before draining helpers, so a
+        // still-parsing producer stops promptly rather than speculating past the
+        // evaluation it was serving.
+        if let Some((handle, shutdown)) = self.speculation {
+            shutdown.store(true, Ordering::Relaxed);
+            let _ = handle.join();
+        }
         let mut panic: Option<Box<dyn std::any::Any + Send>> = None;
         for handle in self.handles {
             match handle.join() {
@@ -663,6 +762,8 @@ impl ParallelDemandPool {
         let claim_wait_nanos = self.shared.counters.claim_wait_nanos.load(Ordering::Relaxed);
         let claim_waits = self.shared.counters.claim_waits.load(Ordering::Relaxed);
         let queue_peak = self.shared.queue.peak.load(Ordering::Relaxed);
+        let speculated = self.shared.speculation.len();
+        let speculation_hits = self.shared.speculation.hits();
         // Helper occupancy: fraction of aggregate helper loop wall spent
         // executing tasks (task time still includes claim-wait blocking; the
         // claim-wait counters bound that share when stats are enabled).
@@ -681,6 +782,8 @@ impl ParallelDemandPool {
             loop_nanos,
             helper_busy_permille,
             queue_peak,
+            speculated,
+            speculation_hits,
             "parallel demand pool drained"
         );
         if main.options.eval_stats_dump() {
@@ -697,7 +800,9 @@ impl ParallelDemandPool {
 \"helper_busy_permille\":{helper_busy_permille},\
 \"claim_wait_nanos\":{claim_wait_nanos},\
 \"claim_waits\":{claim_waits},\
-\"queue_peak\":{queue_peak}\
+\"queue_peak\":{queue_peak},\
+\"speculated\":{speculated},\
+\"speculation_hits\":{speculation_hits}\
 }}}}"
             );
         }
