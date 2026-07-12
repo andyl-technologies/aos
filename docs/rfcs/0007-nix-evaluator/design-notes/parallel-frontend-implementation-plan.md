@@ -944,3 +944,60 @@ Semantics stay byte-identical throughout: speculation is side-effect-free by
 construction (§7) — no impure-input recording, no module publication, no value, no
 error unless genuinely demanded. The only real side effect is the candidate file
 read, gated by the same access policy the demand path enforces (§7).
+
+## Appendix C — As-built (S0–S3 landed) and measured outcome
+
+What actually shipped, how it deviates from Appendix A/B, and the numbers that
+decided the defaults. All parity-gated on byte-identical `.drv` (oracle vs native)
+across zlib/openssl/openjdk.
+
+### C.1 S0 — instrumentation (commit c3a02187d)
+
+Landed as Appendix A. Confirmed **parse/lower ≈ 24.6% of cold (zlib) / 22.4%
+(openjdk)** and the prelude-force share (task #13). No deviations.
+
+### C.2 S1 — reusable isolated-parse helper (commit 4ad0e8845, FALLBACK)
+
+Appendix B.1 proposed decoupling the *serial* parse through isolated-parse+remap.
+Implemented and measured: the full decouple is byte-safe (9/9 parity across
+K=1/JIT/K=4) but regresses cold **+2.3% (zlib) / +6.8% (openjdk)** from the extra
+remap re-intern, for **zero K=1 benefit** (speculation is pool-inert). So the
+**fallback shipped**: the serial `mem::take` fast path is unchanged; only the
+pooled path was refactored to call the extracted `parse_lower_import_isolated`
+helper — the reusable front-end unit S2 needs. Net serial cost: none.
+
+### C.3 S2/S3 — speculative parse-ahead (commit f7e1f8800, DESIGN B, default-off)
+
+**Design B chosen** (lead ruling): a single dedicated producer thread, spawned
+**only when the demand pool exists (`K >= 2`), never at `K == 1`**, rather than
+worker-loop-integrated "idle-only" speculation (design A). Rationale: A's real
+seam is `DemandQueue::pop_or_park` (`parallel_demand.rs`) + `parallel_worker_loop`,
+**not** the park-preflight in `parallel.rs` that Appendix B.2 named — that is the
+*safe precursor* scheduler, not the production pool (anchor corrected during S2
+recon). Integrating A means changing the hot condvar parking path; B avoids all of
+that at the cost of not being strictly idle-only, and the `K==1`-never guard keeps
+it from ever racing the sole evaluating thread. **Design A remains the future
+refinement** if measurement ever justifies the hot-path risk.
+
+As-built: `SpeculativeParseStore` (`(realpath, content-hash) -> isolated IR`) on
+`SharedEvalContext`; the producer BFS-walks static `IrKind::Path` edges into it,
+bounded by `AOS_NIX_SPECULATE_DEPTH` (2) / `_MAX_FILES` (4096). The error
+quarantine (S3) is satisfied the simplest sound way: **failures are dropped, never
+stored** — the demand path reproduces any error, so no error-reproduction
+machinery exists. Scoped imports never adopt a speculative IR (the producer only
+lowers the global-scope form). Gated by `AOS_NIX_SPECULATE` (default off).
+
+**Measured (K=4, `AOS_NIX_SPECULATE=parse`, byte-parity green):** only **~5 hits /
+234–286 imports** (72 files speculated), and a cold delta **within noise** (zlib
+−0.5%, openjdk +1.7%). **Root cause is the corpus, exactly as §2 warned:** the AOS
+package graph is `builtins.readDir` + `callPackage (dir + "/${name}")` driven
+(computed edges), so static path-literal speculation only reaches the hand-wired
+edges from the root — mostly *not* on any given package's real import path. The
+`readDir`-prefetch stage (§3e / §6 S6) is the mechanism that would move this
+number; it stays deferred.
+
+**Decision: default-off, landed as recorded infrastructure.** The parity-safe
+store + consult + producer are in place behind the flag; the honest yield on this
+corpus does not justify default-on, and the numbers point at S6 (readDir prefetch)
+as the real lever, not more static-edge aggressiveness. S1's helper is the durable
+win of this program (it made the pooled front-end a clean, reusable unit).
