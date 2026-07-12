@@ -521,22 +521,33 @@ fn fresh_isolated_candidate(
     verbose: u8,
     base_config: &NixEvalConfig,
     spec: &BenchmarkSpec,
-) -> Result<(Box<dyn NixEval>, TempDir)> {
-    let cache_dir = tempfile::Builder::new()
-        .prefix("aos-nix-bench-cold-")
-        .tempdir()
-        .with_context(|| format!("creating cold cache dir for {}", spec.name))?;
+) -> Result<(Box<dyn NixEval>, Option<TempDir>)> {
     let mut config = base_config.clone();
-    config
-        .set_native_cache_root(cache_dir.path())
-        .with_context(|| format!("configuring cold cache root for {}", spec.name))?;
-    // The cold run populates every durable cache in this fresh dir; the warm run
-    // is then the real-world repeat instantiate, answered from that populated
-    // cache -- including the root-cutoff record the cold run wrote. Root-cutoff
-    // stays at the base config's setting (production-on) rather than being
-    // forced off: the warm leg is meant to measure the product's actual warm
-    // path, and a silent cutoff miss surfacing as a warm regression is the
-    // intended signal. The cold leg carries the eval-performance number.
+    // Match the base (production) config's cache posture exactly, so cold
+    // measures what a real first eval pays -- no more, no less. A fresh
+    // evaluator instance is already cold: its in-memory caches are empty. We
+    // must NOT add a durable cache the base config lacks, because setting a
+    // cache root activates persist-cache / eval-cache write-through and
+    // root-cutoff (see `tree_walk_options_from_config` in aos-core), whose
+    // per-force durable writes a stock cache-less cold eval never pays -- that
+    // write amplification, not eval cost, is what an added temp cache would
+    // measure. When the base config DOES use a durable cache (AOS_NIX_CACHE
+    // set), redirect it to a fresh temp dir so this cycle starts with an empty
+    // cache rather than reading the shared populated one: the cold run then pays
+    // the genuine first-eval write cost, and the warm run reuses the cache it
+    // just wrote (including the root-cutoff record).
+    let cache_dir = if base_config.native_cache_root().is_some() {
+        let dir = tempfile::Builder::new()
+            .prefix("aos-nix-bench-cold-")
+            .tempdir()
+            .with_context(|| format!("creating cold cache dir for {}", spec.name))?;
+        config
+            .set_native_cache_root(dir.path())
+            .with_context(|| format!("configuring cold cache root for {}", spec.name))?;
+        Some(dir)
+    } else {
+        None
+    };
     let candidate = select_native_diff_candidate_with_config(verbose, config)
         .with_context(|| format!("building cold evaluator for {}", spec.name))?;
     Ok((candidate, cache_dir))
