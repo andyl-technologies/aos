@@ -83,6 +83,7 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
+        set +e
         CC="$TMPDIR/ccwrap/gcc" CXX="$TMPDIR/ccwrap/g++" \
         CFLAGS="-O2" \
         CXXFLAGS="-O2" \
@@ -94,6 +95,13 @@ in
           --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline --disable-sim \
           --with-sysroot=/ \
           --program-transform-name=
+        configure_status=$?
+        set -e
+        if [ "$configure_status" -ne 0 ]; then
+          echo "binutils 2.25 configure failed; full config.log follows" >&2
+          cat config.log >&2
+          exit "$configure_status"
+        fi
 
         make -j"$NIX_BUILD_CORES" AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${prev.texinfo}/bin/makeinfo"
         make install AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO="${prev.texinfo}/bin/makeinfo"
