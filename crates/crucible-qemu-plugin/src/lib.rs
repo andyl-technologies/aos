@@ -58,6 +58,7 @@ pub mod boot_barrier;
 pub mod coverage;
 pub mod deadline;
 pub mod device_io;
+pub mod fingerprint_sampler;
 pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
@@ -232,6 +233,12 @@ pub use time_control::{
     QemuRequestTimeControlFn, QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance,
     QueuedIdleAdvanceError, SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
+};
+pub use fingerprint_sampler::{
+    FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA, FINGERPRINT_FAILURE_RAM,
+    FingerprintSamplerError, PluginFingerprintDigester, QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
+    QemuDigestFn, assemble_fingerprint_sample,
 };
 pub use vcpu_introspection::{
     MAX_VCPU_REGISTER_FILE_BYTES, PLUGIN_REGISTER_DIGEST_BYTES, PluginNvcpuFingerprintInputs,
