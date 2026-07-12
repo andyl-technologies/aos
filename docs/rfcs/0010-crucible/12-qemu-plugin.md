@@ -991,19 +991,36 @@ component that makes that purity true *inside* the QEMU process.
   are identical. Coverage-off installs no TB callback. Both the busy-boundary
   shared-shutdown path and control-channel `Quit` path drain admitted callbacks
   and exit cleanly.
-- [ ] **T-PLUG-16** Implement the handshake and slot cross-check
+- [x] **T-PLUG-16** Implement the handshake and slot cross-check
   (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
   agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.
-- [ ] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
+  Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which boots real
+  qemu-crucible with only the Rust control plugin loaded and observes the plugin
+  negotiate `Hello`/`HelloAck` at the exact control-protocol and ABI versions,
+  accept VM slot 0 bounded by the launch node count, and become schedulable.
+- [x] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
   `mmap` and validate the region header/ABI, arm the wake fd, and reply
   `SetupAck`; refuse to participate on non-zero status. — satisfies [PLUG-40],
   [PLUG-41]; spec §12.9.2.
-- [ ] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
+  Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which observes the
+  plugin receive the two `SCM_RIGHTS` descriptors, map and validate the shared-
+  memory region header, arm the wake fd, and reply `SetupAck` with the ready
+  status so the host can schedule the node.
+- [x] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
   publish before the first instruction, using the wake fd/futex (never a
   wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
-- [ ] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
+  Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which loads no
+  observation plugin, so the Rust plugin is the sole `sim_shmem` dispatch time
+  authority: the guest advances from cold boot to exactly the first host-
+  published scheduler ceiling, which is only possible if the plugin blocked on
+  the boot barrier through the wake fd before the first instruction.
+- [x] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
   mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
   leaks. — satisfies [PLUG-43]; spec §12.9.4.
+  Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which sends control
+  `Quit` after the run, observes the plugin publish teardown `Done` and stop
+  touching shared memory, and reaps the QEMU child with a natural zero exit and no
+  leaked process.
 - [x] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
   access (acquire loads / release stores matching the ABI) despite the
   single-threaded plugin side, and document that relaxed is only used for

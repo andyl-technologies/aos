@@ -260,8 +260,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
       {
-        label = "T-PROTO-6 checklist remains open until the live plugin is integrated";
-        needle = "- [ ] **T-PROTO-6**";
+        label = "T-PROTO-6 completed by the live plugin install gate";
+        needle = "- [x] **T-PROTO-6**";
+      }
+      {
+        label = "T-PROTO-6 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
