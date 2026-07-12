@@ -73,6 +73,8 @@ pub struct LivePluginInstallGateConfig {
     kernel: PathBuf,
     root_image: PathBuf,
     run_directory: PathBuf,
+    initrd: Option<PathBuf>,
+    kernel_cmdline: Option<String>,
     horizon_icount: u64,
     completion_timeout: Duration,
 }
@@ -93,9 +95,29 @@ impl LivePluginInstallGateConfig {
             kernel: kernel.into(),
             root_image: root_image.into(),
             run_directory: run_directory.into(),
+            initrd: None,
+            kernel_cmdline: None,
             horizon_icount: DEFAULT_HORIZON_ICOUNT,
             completion_timeout: DEFAULT_COMPLETION_TIMEOUT,
         }
+    }
+
+    /// Returns this configuration with a content-addressed initrd.
+    ///
+    /// A Linux guest that boots to a userspace init and idles (`sti; hlt`
+    /// waiting on the virtual timer) exercises the plugin's idle-loop,
+    /// deadline-introspection, and idle-jump paths, unlike a spin-only guest.
+    #[must_use]
+    pub fn with_initrd(mut self, initrd: impl Into<PathBuf>) -> Self {
+        self.initrd = Some(initrd.into());
+        self
+    }
+
+    /// Returns this configuration with an explicit guest kernel command line.
+    #[must_use]
+    pub fn with_kernel_cmdline(mut self, kernel_cmdline: impl Into<String>) -> Self {
+        self.kernel_cmdline = Some(kernel_cmdline.into());
+        self
     }
 
     /// Returns this configuration with a different exact icount boundary.
@@ -302,8 +324,11 @@ pub fn run_live_plugin_install_gate(
         }
     })?;
 
-    let profile = LaunchProfileCandidate::default()
-        .with_memory_mib(GATE_MEMORY_MIB)
+    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
+    if let Some(cmdline) = &config.kernel_cmdline {
+        candidate = candidate.with_kernel_cmdline(cmdline.clone());
+    }
+    let profile = candidate
         .try_into_deterministic()
         .map_err(|source| LivePluginInstallGateError::LaunchProfile { source })?;
     profile
@@ -500,11 +525,15 @@ fn wait_for_natural_child_exit(
 }
 
 fn vm_launch_config(config: &LivePluginInstallGateConfig) -> QemuVmLaunchConfig {
-    QemuVmLaunchConfig::new(
+    let vm = QemuVmLaunchConfig::new(
         GATE_NODE,
         launch_artifact("kernel", &config.kernel),
         launch_artifact("root-image", &config.root_image),
-    )
+    );
+    match &config.initrd {
+        Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
+        None => vm,
+    }
 }
 
 fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
