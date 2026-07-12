@@ -472,6 +472,16 @@ the gcc bootstrap source (task #19: mirror drift vs. the pin; native
 store-short-circuits correctly against the warm system store). Baseline 4-attr
 serial is byte-green in this config (zlib/openssl/stdenv.bash/stdenv.coreutils).
 
+**Gate rules for every remaining sub-increment (lead conditions 2 + 3).** Each
+sub-increment builds **both** carriers (`--features native-eval` and
+`--features native-eval,candidate_c_value`) and gates **both**: the **default**
+carrier (including `AOS_NIX_JIT=1`) must stay **100% green** on the full 4-attr
+byte-parity battery, and the **variant** runs its tree-walk battery (**serial +
+K=4 + `AOS_NIX_GC=sweep`**; JIT off under the variant until S4b). State the
+variant battery scope and the 4-attr cold+warm median RSS scoreboard line in
+every commit body (add wide-eval RSS once runnable). **A half-flipped carrier
+must never land — stop at the last green sub-increment** if you wall.
+
 **Landed:**
 - **S0** (commit `813fc859b`) — `AOS_NIX_CANDIDATE_C_SHADOW` scalar-store shadow
   in `active_values.rs`, default-off; proves the boxed-scalar encode/decode +
