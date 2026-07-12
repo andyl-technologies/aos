@@ -56,6 +56,7 @@ pub mod config;
 pub mod drain;
 pub mod evict;
 pub mod gc;
+pub mod memo;
 pub mod narinfo;
 pub mod pack;
 pub mod routes;

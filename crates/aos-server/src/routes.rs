@@ -118,6 +118,8 @@ pub struct AppState {
     pub drain: Arc<DrainState>,
     /// Signer used to add a fresh `Sig:` line to served narinfo.
     pub signer: NarInfoSigner,
+    /// L3 network memo-tier bundle store (RFC-0007 doc 29 §5.5).
+    pub memo: Arc<crate::memo::MemoStore>,
 }
 
 /// Builds the axum router with both REST and ConnectRPC endpoints.
@@ -147,7 +149,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/{view}/build-closure", post(build_closure_handler))
         .route("/{view}/upload-pack", post(upload_pack_handler))
         .route("/{view}/gc", post(gc_handler))
-        .route("/oauth2/token", post(auth::oauth2_token_handler));
+        .route("/oauth2/token", post(auth::oauth2_token_handler))
+        .route(
+            "/v1/root/{key}",
+            get(crate::memo::root_record_get).put(crate::memo::root_record_put),
+        )
+        .route(
+            "/v1/compiled-body/{key}",
+            get(crate::memo::compiled_body_get).put(crate::memo::compiled_body_put),
+        );
 
     for path in connect_paths {
         router = router.route_service(&path, connect_service.clone());

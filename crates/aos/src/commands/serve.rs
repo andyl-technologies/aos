@@ -116,6 +116,10 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         build_mgr,
         drain: Arc::clone(&drain_state),
         signer,
+        memo: Arc::new(aos_server::memo::MemoStore::new(
+            aos_server::aos_root().join("memo"),
+            cfg.memo.writable,
+        )),
     });
 
     let app = routes::router(Arc::clone(&state));

@@ -96,6 +96,32 @@ pub struct ServerConfig {
     /// `[tls]` section.
     #[serde(default)]
     pub tls: TlsConfig,
+
+    /// `[memo]` section — the L3 network memo tier (RFC-0007 doc 29 §5.5).
+    #[serde(default)]
+    pub memo: MemoConfig,
+}
+
+/// L3 network memo-tier settings.
+///
+/// The memo endpoint (`/v1/root/{key}`, `/v1/compiled-body/{key}`) is a
+/// content-addressed validation catalog, never an authority: it serves opaque
+/// self-validating bundle bytes that the fetching evaluator re-hashes and
+/// slice-revalidates before use. Reads are always open; writes are gated so a
+/// public read mirror never accepts unsolicited records.
+///
+/// ```toml
+/// [memo]
+/// writable = true   # a trusted CI/builder publisher; default false (read-only)
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemoConfig {
+    /// Whether `PUT` publishes are accepted (trusted publishers only).
+    ///
+    /// Defaults to `false`: a server is a read-only mirror unless it is an
+    /// explicitly configured trusted publisher.
+    #[serde(default)]
+    pub writable: bool,
 }
 
 /// Build-related settings — controls `nix-store --realise` behaviour.
@@ -274,6 +300,7 @@ impl Default for ServerConfig {
             oauth2: OAuth2Config::default(),
             bootstrap: BootstrapConfig::default(),
             tls: TlsConfig::default(),
+            memo: MemoConfig::default(),
         }
     }
 }
