@@ -83,6 +83,13 @@ impl TreeWalk {
             hashcons_hits: alloc_counters.hashcons_hits(),
             symbols_interned: self.symbols.len() as u64,
             imports_evaluated: self.stats.imports_evaluated,
+            front_end_parse_nanos: self.stats.front_end_parse_nanos,
+            front_end_resolve_nanos: self.stats.front_end_resolve_nanos,
+            front_end_lower_nanos: self.stats.front_end_lower_nanos,
+            front_end_annotate_nanos: self.stats.front_end_annotate_nanos,
+            prelude_thunks_forced: self.stats.prelude_thunks_forced,
+            prelude_force_nanos: self.stats.prelude_force_nanos,
+            all_force_nanos: self.stats.all_force_nanos,
             tier1_promoted: self.stats.tier1_promoted,
             tier1_dispatched: self.stats.tier1_dispatched,
             tier1_deopted: self.stats.tier1_deopted,
@@ -887,6 +894,81 @@ impl TreeWalk {
     /// Records that one imported file was evaluated on an import-cache miss.
     pub(super) fn increment_imports_evaluated(&mut self) {
         self.stats.imports_evaluated = self.stats.imports_evaluated.saturating_add(1);
+    }
+
+    /// Adds elapsed `parse_bytes_with_symbols` time to the front-end parse timer.
+    pub(super) fn add_front_end_parse_nanos(&mut self, start: std::time::Instant) {
+        self.stats.front_end_parse_nanos = self
+            .stats
+            .front_end_parse_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Adds elapsed scope-resolution time to the front-end resolve timer.
+    pub(super) fn add_front_end_resolve_nanos(&mut self, start: std::time::Instant) {
+        self.stats.front_end_resolve_nanos = self
+            .stats
+            .front_end_resolve_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Adds elapsed IR-lowering time to the front-end lower timer.
+    pub(super) fn add_front_end_lower_nanos(&mut self, start: std::time::Instant) {
+        self.stats.front_end_lower_nanos = self
+            .stats
+            .front_end_lower_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Adds elapsed import-IR annotation time to the front-end annotate timer.
+    pub(super) fn add_front_end_annotate_nanos(&mut self, start: std::time::Instant) {
+        self.stats.front_end_annotate_nanos = self
+            .stats
+            .front_end_annotate_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Returns whether a module's source file is prelude (`lib`/`stdenv`) code,
+    /// reading the flag classified once at [`TreeWalkModule::new`].
+    fn module_is_prelude(&self, module: EvalModuleId) -> bool {
+        self.modules
+            .get(module.index())
+            .is_some_and(|module| module.is_prelude)
+    }
+
+    /// Begins per-force prelude accounting (a `None` no-op unless
+    /// `AOS_NIX_EVAL_STATS`). When enabled it classifies the thunk's
+    /// [code module](EvalThunk::code_module) (builtins count as non-prelude),
+    /// counts a prelude force, and returns the start instant plus that
+    /// classification for [`Self::end_force_accounting`].
+    pub(super) fn begin_force_accounting(
+        &mut self,
+        thunk: &EvalThunk,
+    ) -> Option<(bool, std::time::Instant)> {
+        if !self.options.eval_stats_dump() {
+            return None;
+        }
+        let is_prelude = thunk
+            .code_module()
+            .is_some_and(|module| self.module_is_prelude(module));
+        if is_prelude {
+            self.stats.prelude_thunks_forced = self.stats.prelude_thunks_forced.saturating_add(1);
+        }
+        Some((is_prelude, std::time::Instant::now()))
+    }
+
+    /// Closes the inclusive body timer opened by [`Self::begin_force_accounting`],
+    /// adding the span to `all_force_nanos` (and `prelude_force_nanos` when
+    /// prelude). Inclusive of nested forces, so only the ratio is meaningful.
+    pub(super) fn end_force_accounting(&mut self, timing: Option<(bool, std::time::Instant)>) {
+        let Some((is_prelude, start)) = timing else {
+            return;
+        };
+        let nanos = start.elapsed().as_nanos() as u64;
+        self.stats.all_force_nanos = self.stats.all_force_nanos.saturating_add(nanos);
+        if is_prelude {
+            self.stats.prelude_force_nanos = self.stats.prelude_force_nanos.saturating_add(nanos);
+        }
     }
 
     pub(super) fn increment_derivation_aterm_path_reuses(&mut self) {

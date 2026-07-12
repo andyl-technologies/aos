@@ -13406,6 +13406,30 @@ pub struct EvalStats {
     pub(crate) hashcons_hits: u64,
     pub(crate) symbols_interned: u64,
     pub(crate) imports_evaluated: u64,
+    /// Nanoseconds spent in `parse_bytes_with_symbols` across imports, accumulated
+    /// only under `AOS_NIX_EVAL_STATS`. Part of the RFC-0007 Tier-1a front-end
+    /// share measurement (parse/lower is ~25% of cold eval).
+    pub(crate) front_end_parse_nanos: u64,
+    /// Nanoseconds spent in scope resolution across imports (`AOS_NIX_EVAL_STATS`).
+    pub(crate) front_end_resolve_nanos: u64,
+    /// Nanoseconds spent lowering resolved ASTs to IR across imports
+    /// (`AOS_NIX_EVAL_STATS`).
+    pub(crate) front_end_lower_nanos: u64,
+    /// Nanoseconds spent in import IR analysis/annotation across imports
+    /// (`AOS_NIX_EVAL_STATS`).
+    pub(crate) front_end_annotate_nanos: u64,
+    /// Forces whose thunk evaluates prelude (`lib`/`stdenv`) code, accumulated only
+    /// under `AOS_NIX_EVAL_STATS`. The ratio to `thunks_forced` is the primary
+    /// prelude-force-share signal gating heap-image snapshots (RFC-0007 task #6).
+    pub(crate) prelude_thunks_forced: u64,
+    /// Inclusive nanoseconds spent evaluating thunk bodies whose code is prelude
+    /// (`AOS_NIX_EVAL_STATS`). A proxy only: nested forces are double-counted, so
+    /// trust the ratio to `all_force_nanos` (bracketed identically), not the
+    /// absolute value.
+    pub(crate) prelude_force_nanos: u64,
+    /// Inclusive nanoseconds spent evaluating all thunk bodies
+    /// (`AOS_NIX_EVAL_STATS`); the denominator for the `prelude_force_nanos` ratio.
+    pub(crate) all_force_nanos: u64,
     pub(crate) tier1_promoted: u64,
     pub(crate) tier1_dispatched: u64,
     pub(crate) tier1_deopted: u64,
@@ -13773,6 +13797,13 @@ impl EvalStats {
             hashcons_hits,
             symbols_interned,
             imports_evaluated,
+            front_end_parse_nanos,
+            front_end_resolve_nanos,
+            front_end_lower_nanos,
+            front_end_annotate_nanos,
+            prelude_thunks_forced,
+            prelude_force_nanos,
+            all_force_nanos,
             tier1_promoted,
             tier1_dispatched,
             tier1_deopted,
@@ -13898,6 +13929,23 @@ impl EvalStats {
         self.hashcons_hits = self.hashcons_hits.saturating_add(hashcons_hits);
         self.symbols_interned = self.symbols_interned.saturating_add(symbols_interned);
         self.imports_evaluated = self.imports_evaluated.saturating_add(imports_evaluated);
+        self.front_end_parse_nanos = self
+            .front_end_parse_nanos
+            .saturating_add(front_end_parse_nanos);
+        self.front_end_resolve_nanos = self
+            .front_end_resolve_nanos
+            .saturating_add(front_end_resolve_nanos);
+        self.front_end_lower_nanos = self
+            .front_end_lower_nanos
+            .saturating_add(front_end_lower_nanos);
+        self.front_end_annotate_nanos = self
+            .front_end_annotate_nanos
+            .saturating_add(front_end_annotate_nanos);
+        self.prelude_thunks_forced = self
+            .prelude_thunks_forced
+            .saturating_add(prelude_thunks_forced);
+        self.prelude_force_nanos = self.prelude_force_nanos.saturating_add(prelude_force_nanos);
+        self.all_force_nanos = self.all_force_nanos.saturating_add(all_force_nanos);
         self.tier1_promoted = self.tier1_promoted.saturating_add(tier1_promoted);
         self.tier1_dispatched = self.tier1_dispatched.saturating_add(tier1_dispatched);
         self.tier1_deopted = self.tier1_deopted.saturating_add(tier1_deopted);
@@ -14065,6 +14113,45 @@ impl EvalStats {
     /// number of `import` expressions demonstrates the import cache working.
     pub const fn imports_evaluated(&self) -> u64 {
         self.imports_evaluated
+    }
+
+    /// Returns nanoseconds spent parsing imported sources (`AOS_NIX_EVAL_STATS`).
+    pub const fn front_end_parse_nanos(&self) -> u64 {
+        self.front_end_parse_nanos
+    }
+
+    /// Returns nanoseconds spent resolving import scopes (`AOS_NIX_EVAL_STATS`).
+    pub const fn front_end_resolve_nanos(&self) -> u64 {
+        self.front_end_resolve_nanos
+    }
+
+    /// Returns nanoseconds spent lowering imports to IR (`AOS_NIX_EVAL_STATS`).
+    pub const fn front_end_lower_nanos(&self) -> u64 {
+        self.front_end_lower_nanos
+    }
+
+    /// Returns nanoseconds spent annotating import IR (`AOS_NIX_EVAL_STATS`).
+    pub const fn front_end_annotate_nanos(&self) -> u64 {
+        self.front_end_annotate_nanos
+    }
+
+    /// Returns the number of forces whose thunk evaluated prelude (`lib`/`stdenv`)
+    /// code (`AOS_NIX_EVAL_STATS`); ratio to [`Self::thunks_forced`] is the
+    /// prelude-force-share signal.
+    pub const fn prelude_thunks_forced(&self) -> u64 {
+        self.prelude_thunks_forced
+    }
+
+    /// Returns inclusive nanoseconds spent in prelude thunk bodies
+    /// (`AOS_NIX_EVAL_STATS`); trust only its ratio to [`Self::all_force_nanos`].
+    pub const fn prelude_force_nanos(&self) -> u64 {
+        self.prelude_force_nanos
+    }
+
+    /// Returns inclusive nanoseconds spent in all thunk bodies
+    /// (`AOS_NIX_EVAL_STATS`); the denominator for the prelude-force wall ratio.
+    pub const fn all_force_nanos(&self) -> u64 {
+        self.all_force_nanos
     }
 
     /// Returns the number of thunks promoted to tier-1 native code during force.

@@ -689,6 +689,13 @@ struct TreeWalkModule {
     force_cache_options: ForceCacheOptionsIdentity,
     source: Option<ModuleSource>,
     dead_binding_eliminations: TreeWalkDeadBindingEliminations,
+    /// Whether this module's source file is prelude scaffolding (`lib`/`stdenv`),
+    /// classified once at construction from [`ModuleSource::name`]. Read per force
+    /// (under `AOS_NIX_EVAL_STATS`) to attribute the prelude-force-share counters
+    /// without re-scanning the path. Computed from the `source` passed to
+    /// [`Self::new`]; the source-less root module keeps `false`, which is correct
+    /// (the evaluation entry point is package-specific, never prelude).
+    is_prelude: bool,
 }
 
 impl TreeWalkModule {
@@ -699,14 +706,36 @@ impl TreeWalkModule {
         source: Option<ModuleSource>,
     ) -> Self {
         let dead_binding_eliminations = TreeWalkDeadBindingEliminations::from_ir(&ir);
+        let is_prelude = module_source_is_prelude(source.as_ref());
         Self {
             ir,
             path_literal_base,
             force_cache_options,
             source,
             dead_binding_eliminations,
+            is_prelude,
         }
     }
+}
+
+/// Returns whether a module source path is prelude scaffolding.
+///
+/// Prelude is the `lib` and `stdenv` graph shared identically across every
+/// package (the subject of the heap-snapshot payoff, RFC-0007 task #6): a source
+/// path is prelude when it contains a `lib` or `stdenv` path component. Used only
+/// to seed [`TreeWalkModule::is_prelude`] at module construction.
+fn module_source_is_prelude(source: Option<&ModuleSource>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    Path::new(OsStr::from_bytes(&source.name))
+        .components()
+        .any(|component| {
+            matches!(
+                component,
+                Component::Normal(part) if part == OsStr::new("lib") || part == OsStr::new("stdenv")
+            )
+        })
 }
 
 #[derive(Clone, Debug)]

@@ -14,7 +14,11 @@
 //!  "single_entry_thunks_forced":0,"thunks_forced":21880,
 //!  "attrsets_built":6042,"attrs_entries_total":38110,"values_allocated":24901,
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
-//!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
+//!  "symbols_interned":4021,"imports_evaluated":37,
+//!  "front_end_parse_nanos":0,"front_end_resolve_nanos":0,
+//!  "front_end_lower_nanos":0,"front_end_annotate_nanos":0,
+//!  "prelude_thunks_forced":0,"prelude_force_nanos":0,"all_force_nanos":0,
+//!  "root_cutoffs":0,
 //!  "heap_chunks":0,"heap_reserved_bytes":0,"heap_mapped_bytes":0,
 //!  "heap_used_bytes":0,"permanent_heap_chunks":0,
 //!  "permanent_heap_reserved_bytes":0,"permanent_heap_mapped_bytes":0,
@@ -88,6 +92,13 @@ impl NixNative {
 \"hashcons_hits\":{},\
 \"symbols_interned\":{},\
 \"imports_evaluated\":{},\
+\"front_end_parse_nanos\":{},\
+\"front_end_resolve_nanos\":{},\
+\"front_end_lower_nanos\":{},\
+\"front_end_annotate_nanos\":{},\
+\"prelude_thunks_forced\":{},\
+\"prelude_force_nanos\":{},\
+\"all_force_nanos\":{},\
 \"root_cutoffs\":{},\
 \"heap_chunks\":{},\
 \"heap_reserved_bytes\":{},\
@@ -177,6 +188,13 @@ impl NixNative {
             stats.hashcons_hits(),
             stats.symbols_interned(),
             stats.imports_evaluated(),
+            stats.front_end_parse_nanos(),
+            stats.front_end_resolve_nanos(),
+            stats.front_end_lower_nanos(),
+            stats.front_end_annotate_nanos(),
+            stats.prelude_thunks_forced(),
+            stats.prelude_force_nanos(),
+            stats.all_force_nanos(),
             stats.root_cutoffs(),
             stats.heap_chunks(),
             stats.heap_reserved_bytes(),

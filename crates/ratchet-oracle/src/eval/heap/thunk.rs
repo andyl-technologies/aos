@@ -222,6 +222,24 @@ impl EvalThunk {
         }
     }
 
+    /// Returns the source module whose lowered code this thunk evaluates.
+    ///
+    /// Unlike [`Self::body_ref`], this resolves the executing module for every
+    /// source-backed kind: `Apply`/`Apply2` run the applied function's module,
+    /// and `Select` runs the selecting expression's module. Builtin-attribute
+    /// and released thunks have no source module and return `None`. This is the
+    /// provenance used to attribute a force to prelude (`lib`/`stdenv`) versus
+    /// package code for the `AOS_NIX_EVAL_STATS` prelude-force-share counters.
+    pub const fn code_module(&self) -> Option<EvalModuleId> {
+        match &self.kind {
+            EvalThunkKind::Node { body, .. } => Some(body.module()),
+            EvalThunkKind::Apply { function, .. }
+            | EvalThunkKind::Apply2 { function, .. } => Some(function.module()),
+            EvalThunkKind::Select { select, .. } => Some(select.module()),
+            EvalThunkKind::BuiltinAttr { .. } | EvalThunkKind::Released => None,
+        }
+    }
+
     /// Returns the lexical environment captured when this thunk was allocated, if any.
     pub const fn env(&self) -> Option<&EvalEnv> {
         match &self.kind {

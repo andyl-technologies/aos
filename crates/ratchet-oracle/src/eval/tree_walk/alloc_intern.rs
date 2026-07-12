@@ -1970,6 +1970,21 @@ impl TreeWalk {
         span: Span,
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        // Prelude-force-share accounting (RFC-0007 task #13): a no-op unless
+        // `AOS_NIX_EVAL_STATS` is set, in which case it counts and inclusively
+        // times prelude (`lib`/`stdenv`) body evaluations against all bodies.
+        let force_accounting = self.begin_force_accounting(thunk);
+        let result = self.eval_thunk_body_inner(id, span, thunk);
+        self.end_force_accounting(force_accounting);
+        result
+    }
+
+    fn eval_thunk_body_inner(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: &EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
         match thunk.kind() {
             EvalThunkKind::Node {
                 body,

@@ -128,6 +128,7 @@ impl TreeWalk {
         // eval. Import parse/scope/lower errors are non-catchable, so aborting
         // with an emptied `self.symbols` is sound: eval unwinds to the top.
         let live_symbols = std::mem::take(&mut self.symbols);
+        let parse_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let parsed = parse_bytes_with_symbols(source, live_symbols).map_err(|error| {
             let span = error.span();
             TreeWalkError::new(
@@ -140,6 +141,10 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = parse_timer {
+            self.add_front_end_parse_nanos(timer);
+        }
+        let resolve_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let resolved = if global_scope.is_scoped() {
             ScopeResolver::with_options(ResolverOptions::with_unresolved_globals()).resolve(parsed)
         } else {
@@ -157,6 +162,10 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = resolve_timer {
+            self.add_front_end_resolve_nanos(timer);
+        }
+        let lower_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let mut ir = if global_scope.is_scoped() {
             nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
@@ -174,11 +183,18 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = lower_timer {
+            self.add_front_end_lower_nanos(timer);
+        }
         // Fresh imports need capture plans plus the demand/escape facts used
         // across module boundaries. Durable-cache refreshes additionally own
         // full per-node cardinality and escape analysis. Failures remain
         // conservative.
+        let annotate_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let _ = annotate_import_ir(&mut ir);
+        if let Some(timer) = annotate_timer {
+            self.add_front_end_annotate_nanos(timer);
+        }
         // Adopt the freshly lowered symbol table as the live table without a
         // clone; the module keeps the emptied husk and reads `self.symbols`.
         self.symbols = std::mem::take(&mut ir.symbols);
@@ -207,6 +223,7 @@ impl TreeWalk {
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        let parse_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let parsed = parse_bytes_with_symbols(source, SymbolTable::new()).map_err(|error| {
             let span = error.span();
             TreeWalkError::new(
@@ -219,6 +236,10 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = parse_timer {
+            self.add_front_end_parse_nanos(timer);
+        }
+        let resolve_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let resolved = if global_scope.is_scoped() {
             ScopeResolver::with_options(ResolverOptions::with_unresolved_globals()).resolve(parsed)
         } else {
@@ -236,6 +257,10 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = resolve_timer {
+            self.add_front_end_resolve_nanos(timer);
+        }
+        let lower_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let mut ir = if global_scope.is_scoped() {
             nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
@@ -253,7 +278,14 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        if let Some(timer) = lower_timer {
+            self.add_front_end_lower_nanos(timer);
+        }
+        let annotate_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let _ = annotate_import_ir(&mut ir);
+        if let Some(timer) = annotate_timer {
+            self.add_front_end_annotate_nanos(timer);
+        }
         let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
