@@ -74,8 +74,11 @@ in
         # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
         ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
+        # glibc exposes FNM_CASEFOLD only with GNU feature visibility. The
+        # legacy findutils configure probe does not add it even though pred.c
+        # uses the constant for -iname and -ipath.
         CC="${gcc}/bin/gcc" \
-        CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
+        CFLAGS="-D_GNU_SOURCE -I${glibc}/include -I${linuxHeaders}/include" \
         LDFLAGS="-static -L${glibc}/lib" \
         LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
         CONFIG_SHELL="${bash}/bin/bash" \
