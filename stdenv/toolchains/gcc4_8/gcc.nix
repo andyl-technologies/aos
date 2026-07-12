@@ -235,9 +235,10 @@ in
       ''CFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CXXFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CFLAGS_FOR_BUILD="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
-      # GCC 4.4.7 miscompiles the GCC 4.8 build generators at -O2; the freshly
-      # linked build/gengtype then segfaults while producing gtype.state. The
-      # native-build patch above routes this value into BUILD_CXXFLAGS while
+      # The freshly linked build/gengtype segfaults while producing gtype.state
+      # with both optimized and unoptimized objects. Keep it unoptimized so its
+      # debug trace is not distorted while the bootstrap fault is diagnosed.
+      # The native-build patch above routes this value into BUILD_CXXFLAGS while
       # leaving CXXFLAGS in charge of the host compiler itself.
       ''CXXFLAGS_FOR_BUILD="-O0 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CPPFLAGS="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
@@ -268,6 +269,9 @@ in
       printf '\nall-target-libiberty:\n\t@true\ninstall-target-libiberty:\n\t@true\nconfigure-target-libiberty:\n\t@true\n' >> Makefile
     '';
     makeFlags = [
+      # Preserve the last parser/state operation in Span's bounded failure log
+      # when gengtype crashes; -D is GCC's built-in gengtype debug trace.
+      ''GENGTYPE_FLAGS="-D -v -v"''
       ''NATIVE_SYSTEM_HEADER_DIR="${prev.glibc}/include"''
       ''CFLAGS_FOR_TARGET="-O2 -isystem ${prev.glibc}/include -B${prev.glibc}/lib"''
       ''CXXFLAGS_FOR_TARGET="-O2 -isystem ${prev.glibc}/include -B${prev.glibc}/lib -D__NO_MATH_INLINES"''
