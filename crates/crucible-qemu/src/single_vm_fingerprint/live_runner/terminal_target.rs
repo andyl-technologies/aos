@@ -1,11 +1,11 @@
-//! Production execution of one-sample terminal horizon observations.
+//! Fresh-process terminal observations at arbitrary nonzero instruction targets.
 //!
-//! [`LiveTerminalHorizonExecutor`] is deliberately narrower than a general
-//! fingerprint runner. It admits only configurations whose cadence equals the
-//! nonzero run horizon, so strict trace import yields exactly one authoritative
-//! horizon sample. The dedicated terminal trace contract proves that QEMU
-//! paused before exporting raw RAM and sealed VMState. This module does not
-//! provide exact refinement or divergence dumps.
+//! [`LiveTerminalTargetExecutor`] uses [`SingleVmFingerprintProbeRequest`] only
+//! as typed scenario, run-ordinal, and target input. Its output is one exact
+//! current-state terminal observation from a fresh process. It is not a
+//! [`crate::SingleVmFingerprintProbe`], does not implement
+//! [`crate::SingleVmFingerprintProbeRunner`], and is not a cumulative prefix
+//! from the scenario's periodic fingerprint stream.
 
 use std::fs::File;
 use std::io::{self, BufReader};
@@ -14,8 +14,9 @@ use thiserror::Error;
 
 use crate::single_vm_fingerprint::{
     QemuTerminalHorizonTraceImport, QemuTraceFingerprintDefinition,
-    QemuTraceFingerprintImportError, QemuTraceProcessArgvContract, SingleVmFingerprintRunRequest,
-    SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    QemuTraceFingerprintImportError, QemuTraceProcessArgvContract, SingleVmFingerprintProbeRequest,
+    SingleVmFingerprintRunOrdinal, SingleVmFingerprintSample, SingleVmFingerprintScenario,
+    SingleVmFingerprintStream,
 };
 
 use super::terminal_common::{
@@ -31,32 +32,128 @@ use super::{
     LiveRunnerQmpPoller, LiveRunnerSleeper, RawUnixArgvIdentity, spawn_live_observation_process,
 };
 
-/// Auditable result of one completed terminal horizon observation.
+/// One exact current-state terminal observation from a fresh QEMU process.
 ///
-/// Every retained identity and lifecycle observation belongs to the same
-/// process whose strictly imported trace produced [`Self::stream`].
+/// The request type supplies a scenario, ordinal, and target, but this value is
+/// intentionally not a [`crate::SingleVmFingerprintProbe`]. The retained sample was
+/// imported as a single isolated terminal state. Its fingerprint begins from
+/// the definition's initial value and therefore must not be interpreted as the
+/// cumulative prefix produced by periodic samples through the same target.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTerminalHorizonReport {
-    stream: SingleVmFingerprintStream,
+pub struct LiveTerminalTargetObservation {
+    ordinal: SingleVmFingerprintRunOrdinal,
+    node: String,
+    target_icount: u64,
+    definition_digest: [u8; 32],
+    run_inputs_digest: [u8; 32],
+    sample: SingleVmFingerprintSample,
+}
+
+impl LiveTerminalTargetObservation {
+    fn from_stream(
+        request: &SingleVmFingerprintProbeRequest,
+        definition_digest: [u8; 32],
+        run_inputs_digest: [u8; 32],
+        stream: SingleVmFingerprintStream,
+    ) -> Result<Self, LiveTerminalTargetExecutorError> {
+        let target_icount = request.target_icount();
+        if !is_one_sample_at(&stream, target_icount) {
+            return Err(LiveTerminalTargetExecutorError::InvalidTerminalObservation);
+        }
+        let mut samples = stream.samples.into_iter();
+        let sample = samples
+            .next()
+            .ok_or(LiveTerminalTargetExecutorError::InvalidTerminalObservation)?;
+        if samples.next().is_some() {
+            return Err(LiveTerminalTargetExecutorError::InvalidTerminalObservation);
+        }
+        Ok(Self {
+            ordinal: request.ordinal(),
+            node: request.scenario().id().to_owned(),
+            target_icount,
+            definition_digest,
+            run_inputs_digest,
+            sample,
+        })
+    }
+
+    /// Returns which fixed-run ordinal was executed in the fresh process.
+    #[must_use]
+    pub const fn ordinal(&self) -> SingleVmFingerprintRunOrdinal {
+        self.ordinal
+    }
+
+    /// Returns the fixed scenario node observed by the process.
+    #[must_use]
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// Returns the exact nonzero aggregate instruction target.
+    #[must_use]
+    pub const fn target_icount(&self) -> u64 {
+        self.target_icount
+    }
+
+    /// Returns the independently derived observation-definition digest.
+    #[must_use]
+    pub const fn definition_digest(&self) -> &[u8; 32] {
+        &self.definition_digest
+    }
+
+    /// Returns the digest of the fixed image, command line, seed, and launch tuple.
+    #[must_use]
+    pub const fn run_inputs_digest(&self) -> &[u8; 32] {
+        &self.run_inputs_digest
+    }
+
+    /// Returns the imported one-sample exact terminal state.
+    ///
+    /// The sample's rolling fingerprint starts from the definition's initial
+    /// value. It is a fingerprint of this isolated terminal observation, not a
+    /// cumulative prefix of earlier periodic samples.
+    #[must_use]
+    pub const fn sample(&self) -> &SingleVmFingerprintSample {
+        &self.sample
+    }
+
+    /// Returns the isolated one-sample state fingerprint.
+    ///
+    /// This digest must not be compared as though it were a cumulative
+    /// [`crate::SingleVmFingerprintProbe`] prefix.
+    #[must_use]
+    pub fn state_fingerprint(&self) -> &[u8] {
+        &self.sample.rolling_fingerprint
+    }
+}
+
+/// Auditable result of one completed arbitrary terminal-target observation.
+///
+/// All retained identities, QMP evidence, and shutdown evidence belong to the
+/// same process that produced [`Self::observation`]. The observation is a
+/// one-sample current state, not a cumulative fingerprint prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveTerminalTargetReport {
+    observation: LiveTerminalTargetObservation,
     prepared: LivePreparedLaunch,
     qmp_observation: LiveRunnerQmpObservation,
     shutdown: LiveObservationShutdown,
 }
 
-impl LiveTerminalHorizonReport {
-    /// Returns the imported one-sample terminal horizon stream.
+impl LiveTerminalTargetReport {
+    /// Returns the isolated exact current-state terminal observation.
     #[must_use]
-    pub const fn stream(&self) -> &SingleVmFingerprintStream {
-        &self.stream
+    pub const fn observation(&self) -> &LiveTerminalTargetObservation {
+        &self.observation
     }
 
-    /// Consumes the report and returns its imported stream.
+    /// Consumes the report and returns its isolated terminal observation.
     #[must_use]
-    pub fn into_stream(self) -> SingleVmFingerprintStream {
-        self.stream
+    pub fn into_observation(self) -> LiveTerminalTargetObservation {
+        self.observation
     }
 
-    /// Returns the fresh attempt number bound into every retained identity.
+    /// Returns the fresh attempt number bound into all retained identities.
     #[must_use]
     pub const fn attempt(&self) -> u32 {
         self.prepared.artifacts().attempt()
@@ -105,9 +202,9 @@ impl LiveTerminalHorizonReport {
     }
 }
 
-/// Fresh-process executor for one-sample terminal horizon observations.
+/// Fresh-process executor for isolated nonzero terminal-target observations.
 #[derive(Debug)]
-pub struct LiveTerminalHorizonExecutor<C, S> {
+pub struct LiveTerminalTargetExecutor<C, S> {
     config: LiveRunnerConfig,
     artifact_root: LiveRunnerArtifactRoot,
     poller: LiveRunnerQmpPoller<C, S>,
@@ -118,22 +215,22 @@ pub struct LiveTerminalHorizonExecutor<C, S> {
     next_attempt: u64,
 }
 
-impl<C, S> LiveTerminalHorizonExecutor<C, S>
+impl<C, S> LiveTerminalTargetExecutor<C, S>
 where
     C: LiveRunnerQmpConnector,
     S: LiveRunnerSleeper,
 {
-    /// Builds an executor whose sole sample is the terminal horizon boundary.
+    /// Builds an arbitrary terminal-target executor from verified contracts.
     ///
-    /// The cadence must equal the horizon. The independently executed
-    /// definition preflight and complete scenario are rebound to `config`
-    /// before any attempt can be allocated.
+    /// Unlike [`super::LiveTerminalHorizonExecutor`], this executor does not
+    /// require the definition cadence to equal the scenario horizon. The
+    /// cadence remains fixed in launch identity while each request selects one
+    /// fresh nonzero terminal target.
     ///
     /// # Errors
     ///
-    /// Returns [`LiveTerminalHorizonExecutorError`] when cadence precedes the
-    /// horizon, shutdown bounds are invalid, or preflight/scenario evidence
-    /// differs from the verified live configuration.
+    /// Returns [`LiveTerminalTargetExecutorError`] when shutdown bounds are
+    /// invalid or preflight/scenario evidence differs from `config`.
     pub fn new(
         config: LiveRunnerConfig,
         artifact_root: LiveRunnerArtifactRoot,
@@ -141,13 +238,7 @@ where
         shutdown_policy: LiveObservationShutdownPolicy,
         preflight: LiveDefinitionPreflightEvidence,
         scenario: SingleVmFingerprintScenario,
-    ) -> Result<Self, LiveTerminalHorizonExecutorError> {
-        if config.cadence_icount() != config.horizon_icount() {
-            return Err(LiveTerminalHorizonExecutorError::CadenceBeforeHorizon {
-                cadence: config.cadence_icount(),
-                horizon: config.horizon_icount(),
-            });
-        }
+    ) -> Result<Self, LiveTerminalTargetExecutorError> {
         let shutdown_policy = shutdown_policy.validate()?;
         validate_live_preflight(&config, &preflight, scenario.id())?;
         let definition_digest = QemuTraceFingerprintDefinition::new(
@@ -174,49 +265,53 @@ where
         self.definition_digest
     }
 
-    /// Executes one fresh terminal horizon observation.
+    /// Executes one fresh isolated terminal observation at the requested target.
+    ///
+    /// [`SingleVmFingerprintProbeRequest`] is used only for typed scenario,
+    /// ordinal, and target input. The returned value is not a
+    /// [`crate::SingleVmFingerprintProbe`] and not a cumulative prefix fingerprint.
     ///
     /// # Errors
     ///
-    /// Returns [`LiveTerminalHorizonExecutorError`] when request validation,
-    /// fresh allocation, process supervision, typed QMP admission, natural
-    /// shutdown, trace import, or the one-sample postcondition fails.
-    pub fn run(
+    /// Returns [`LiveTerminalTargetExecutorError`] when request validation,
+    /// allocation, process supervision, typed QMP admission, publication,
+    /// natural shutdown, strict import, or the one-sample postcondition fails.
+    pub fn observe(
         &mut self,
-        request: &SingleVmFingerprintRunRequest,
-    ) -> Result<SingleVmFingerprintStream, LiveTerminalHorizonExecutorError> {
-        self.run_report(request)
-            .map(LiveTerminalHorizonReport::into_stream)
+        request: &SingleVmFingerprintProbeRequest,
+    ) -> Result<LiveTerminalTargetObservation, LiveTerminalTargetExecutorError> {
+        self.observe_report(request)
+            .map(LiveTerminalTargetReport::into_observation)
     }
 
-    /// Executes one fresh observation and retains its completed attempt evidence.
+    /// Executes one fresh target and retains the completed process evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`LiveTerminalHorizonExecutorError`] under the same fail-closed
-    /// conditions as [`Self::run`].
-    pub fn run_report(
+    /// Returns [`LiveTerminalTargetExecutorError`] under the same fail-closed
+    /// conditions as [`Self::observe`].
+    pub fn observe_report(
         &mut self,
-        request: &SingleVmFingerprintRunRequest,
-    ) -> Result<LiveTerminalHorizonReport, LiveTerminalHorizonExecutorError> {
+        request: &SingleVmFingerprintProbeRequest,
+    ) -> Result<LiveTerminalTargetReport, LiveTerminalTargetExecutorError> {
         let node = self.scenario.id().to_owned();
         let definition_digest = self.definition_digest;
-        let horizon = self.config.horizon_icount();
-        let observation = self.preflight.imported().observation().clone();
-        self.run_report_with_boundary(request, move |prepared, poller, shutdown_policy| {
+        let target_icount = request.target_icount();
+        let preflight = self.preflight.imported().observation().clone();
+        self.observe_report_with_boundary(request, move |prepared, poller, shutdown_policy| {
             let retained = prepared.clone();
             let attempt = spawn_live_observation_process(prepared)?.observe(poller)?;
             let qmp_observation = attempt.observation().clone();
             let importer = QemuTerminalHorizonTraceImport::new(
                 node,
                 definition_digest,
-                horizon,
-                observation,
+                target_icount,
+                preflight,
                 retained.process_argv_contract(),
             )?;
             wait_for_terminal_publication(poller, attempt.artifacts().trace(), &importer)?;
             let shutdown = attempt.shutdown(shutdown_policy)?;
-            Ok(CompletedTerminalAttempt {
+            Ok(CompletedTerminalTargetAttempt {
                 prepared: retained,
                 qmp_observation,
                 shutdown,
@@ -224,28 +319,31 @@ where
         })
     }
 
-    fn run_report_with_boundary<F>(
+    fn observe_report_with_boundary<F>(
         &mut self,
-        request: &SingleVmFingerprintRunRequest,
+        request: &SingleVmFingerprintProbeRequest,
         boundary: F,
-    ) -> Result<LiveTerminalHorizonReport, LiveTerminalHorizonExecutorError>
+    ) -> Result<LiveTerminalTargetReport, LiveTerminalTargetExecutorError>
     where
         F: FnOnce(
             LivePreparedLaunch,
             &mut LiveRunnerQmpPoller<C, S>,
             LiveObservationShutdownPolicy,
-        ) -> Result<CompletedTerminalAttempt, LiveTerminalHorizonExecutorError>,
+        )
+            -> Result<CompletedTerminalTargetAttempt, LiveTerminalTargetExecutorError>,
     {
         self.validate_request(request)?;
         let artifacts = self.allocate_attempt()?;
+        let target_icount = request.target_icount();
         let prepared = LivePreparedLaunch::new(
             &self.config,
-            LiveRunnerLaunchKind::Observation,
+            LiveRunnerLaunchKind::TerminalTarget { target_icount },
             &artifacts,
             LivePreparationRequest {
                 node: self.scenario.id().to_owned(),
-                mode: LiveObservationMode::ObservationHorizon {
+                mode: LiveObservationMode::ExactTarget {
                     cadence_icount: self.config.cadence_icount(),
+                    target_icount,
                     ordinal: request.ordinal(),
                 },
                 definition_digest: Some(self.definition_digest),
@@ -271,32 +369,35 @@ where
         match completed.shutdown {
             LiveObservationShutdown::NaturalExit { success: true } => {}
             LiveObservationShutdown::NaturalExit { success: false } => {
-                return Err(LiveTerminalHorizonExecutorError::UnsuccessfulExit);
+                return Err(LiveTerminalTargetExecutorError::UnsuccessfulExit);
             }
             LiveObservationShutdown::ForcedByOwnerDrop => {
-                return Err(LiveTerminalHorizonExecutorError::ForcedTeardown);
+                return Err(LiveTerminalTargetExecutorError::ForcedTeardown);
             }
         }
 
         let trace = File::open(completed.prepared.artifacts().trace()).map_err(|source| {
-            LiveTerminalHorizonExecutorError::TraceIo {
-                operation: "open terminal horizon trace",
+            LiveTerminalTargetExecutorError::TraceIo {
+                operation: "open terminal target trace",
                 source,
             }
         })?;
         let importer = QemuTerminalHorizonTraceImport::new(
             self.scenario.id(),
             self.definition_digest,
-            self.config.horizon_icount(),
+            target_icount,
             self.preflight.imported().observation().clone(),
             completed.prepared.process_argv_contract(),
         )?;
         let stream = importer.import(BufReader::new(trace))?;
-        if !is_one_sample_at(&stream, self.config.horizon_icount()) {
-            return Err(LiveTerminalHorizonExecutorError::InvalidTerminalStream);
-        }
-        Ok(LiveTerminalHorizonReport {
+        let observation = LiveTerminalTargetObservation::from_stream(
+            request,
+            self.definition_digest,
+            self.config.fixed_run_digest(),
             stream,
+        )?;
+        Ok(LiveTerminalTargetReport {
+            observation,
             prepared: completed.prepared,
             qmp_observation: completed.qmp_observation,
             shutdown: completed.shutdown,
@@ -305,25 +406,33 @@ where
 
     fn validate_request(
         &self,
-        request: &SingleVmFingerprintRunRequest,
-    ) -> Result<(), LiveTerminalHorizonExecutorError> {
+        request: &SingleVmFingerprintProbeRequest,
+    ) -> Result<(), LiveTerminalTargetExecutorError> {
+        let target = request.target_icount();
+        if target == 0 {
+            return Err(LiveTerminalTargetExecutorError::GenesisTarget);
+        }
+        if target > self.config.horizon_icount() {
+            return Err(LiveTerminalTargetExecutorError::TargetBeyondHorizon {
+                target,
+                horizon: self.config.horizon_icount(),
+            });
+        }
         if request.scenario() != &self.scenario {
-            return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+            return Err(LiveTerminalTargetExecutorError::RequestMismatch {
                 field: "fixed scenario",
             });
         }
         Ok(())
     }
 
-    fn allocate_attempt(
-        &mut self,
-    ) -> Result<LiveRunnerArtifacts, LiveTerminalHorizonExecutorError> {
+    fn allocate_attempt(&mut self) -> Result<LiveRunnerArtifacts, LiveTerminalTargetExecutorError> {
         let attempt = u32::try_from(self.next_attempt)
-            .map_err(|_| LiveTerminalHorizonExecutorError::AttemptSequenceExhausted)?;
+            .map_err(|_| LiveTerminalTargetExecutorError::AttemptSequenceExhausted)?;
         self.next_attempt += 1;
         self.artifact_root
             .create_attempt(attempt)
-            .map_err(LiveTerminalHorizonExecutorError::Artifacts)
+            .map_err(LiveTerminalTargetExecutorError::Artifacts)
     }
 }
 
@@ -331,7 +440,7 @@ fn wait_for_terminal_publication<C, S>(
     poller: &mut LiveRunnerQmpPoller<C, S>,
     trace: &std::path::Path,
     importer: &QemuTerminalHorizonTraceImport,
-) -> Result<(), LiveTerminalHorizonExecutorError>
+) -> Result<(), LiveTerminalTargetExecutorError>
 where
     C: LiveRunnerQmpConnector,
     S: LiveRunnerSleeper,
@@ -340,20 +449,20 @@ where
         .poll_publication(|| inspect_terminal_publication(trace, importer))
         .map_err(|error| match error {
             TerminalPublicationInspectionError::Io(source) => {
-                LiveTerminalHorizonExecutorError::TraceIo {
-                    operation: "read terminal horizon publication",
+                LiveTerminalTargetExecutorError::TraceIo {
+                    operation: "read terminal target publication",
                     source,
                 }
             }
             TerminalPublicationInspectionError::Trace(source) => {
-                LiveTerminalHorizonExecutorError::Trace(source)
+                LiveTerminalTargetExecutorError::Trace(source)
             }
         })?;
-    published.ok_or(LiveTerminalHorizonExecutorError::PublicationExhausted)
+    published.ok_or(LiveTerminalTargetExecutorError::PublicationExhausted)
 }
 
 #[derive(Debug)]
-struct CompletedTerminalAttempt {
+struct CompletedTerminalTargetAttempt {
     prepared: LivePreparedLaunch,
     qmp_observation: LiveRunnerQmpObservation,
     shutdown: LiveObservationShutdown,
@@ -363,10 +472,10 @@ fn validate_live_preflight(
     config: &LiveRunnerConfig,
     evidence: &LiveDefinitionPreflightEvidence,
     expected_node: &str,
-) -> Result<(), LiveTerminalHorizonExecutorError> {
+) -> Result<(), LiveTerminalTargetExecutorError> {
     let prepared = evidence.prepared_launch();
     if prepared.kind() != LiveRunnerLaunchKind::DefinitionPreflight {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "launch kind",
         });
     }
@@ -380,12 +489,12 @@ fn validate_live_preflight(
         || fields.horizon_icount != config.horizon_icount()
         || fields.actual_argv_digest != prepared.argv_identity().digest()
     {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "definition-preflight control identity",
         });
     }
     if prepared_invocation_drift(prepared).is_some() {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "definition-preflight process invocation",
         });
     }
@@ -394,12 +503,12 @@ fn validate_live_preflight(
         || qmp.run_state.status != crate::QmpRunStateKind::Prelaunch
         || qmp.cpu_indexes != expected_cpu_ids(config)
     {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "typed QMP prelaunch evidence",
         });
     }
     if evidence.shutdown() != (LiveObservationShutdown::NaturalExit { success: true }) {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "natural successful exit",
         });
     }
@@ -412,7 +521,7 @@ fn validate_live_preflight(
         || observation.identity().trace_plugin_build_digest()
             != lower_hex(&config.trace_plugin_build_digest())
     {
-        return Err(LiveTerminalHorizonExecutorError::PreflightMismatch {
+        return Err(LiveTerminalTargetExecutorError::PreflightMismatch {
             field: "imported definition trace",
         });
     }
@@ -423,34 +532,34 @@ fn validate_scenario(
     config: &LiveRunnerConfig,
     scenario: &SingleVmFingerprintScenario,
     definition_digest: [u8; 32],
-) -> Result<(), LiveTerminalHorizonExecutorError> {
+) -> Result<(), LiveTerminalTargetExecutorError> {
     if scenario.run_horizon_icount() != config.horizon_icount() {
-        return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+        return Err(LiveTerminalTargetExecutorError::RequestMismatch {
             field: "run horizon",
         });
     }
     if scenario.fingerprint_definition_digest() != definition_digest {
-        return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+        return Err(LiveTerminalTargetExecutorError::RequestMismatch {
             field: "fingerprint definition digest",
         });
     }
     let run_inputs = config.verified_run_inputs().to_run_inputs().map_err(|_| {
-        LiveTerminalHorizonExecutorError::InvalidContract {
+        LiveTerminalTargetExecutorError::InvalidContract {
             reason: "verified live run inputs could not be re-derived",
         }
     })?;
     if scenario.run_inputs() != &run_inputs {
-        return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+        return Err(LiveTerminalTargetExecutorError::RequestMismatch {
             field: "run inputs",
         });
     }
     if scenario.expected_vcpu_count() != usize::from(config.vcpus()) {
-        return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+        return Err(LiveTerminalTargetExecutorError::RequestMismatch {
             field: "vCPU count",
         });
     }
     if scenario.expected_rr_switch_quantum() != config.rr_switch_quantum() {
-        return Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+        return Err(LiveTerminalTargetExecutorError::RequestMismatch {
             field: "RR switch quantum",
         });
     }
@@ -461,17 +570,19 @@ fn validate_prepared(
     prepared: &LivePreparedLaunch,
     config: &LiveRunnerConfig,
     node: &str,
-    request: &SingleVmFingerprintRunRequest,
+    request: &SingleVmFingerprintProbeRequest,
     definition_digest: [u8; 32],
-) -> Result<(), LiveTerminalHorizonExecutorError> {
-    if prepared.kind() != LiveRunnerLaunchKind::Observation {
-        return Err(LiveTerminalHorizonExecutorError::PreparedIdentityDrift {
+) -> Result<(), LiveTerminalTargetExecutorError> {
+    let target_icount = request.target_icount();
+    if prepared.kind() != (LiveRunnerLaunchKind::TerminalTarget { target_icount }) {
+        return Err(LiveTerminalTargetExecutorError::PreparedIdentityDrift {
             field: "launch kind",
         });
     }
     let fields = prepared.control().fields();
-    let expected_mode = LiveObservationMode::ObservationHorizon {
+    let expected_mode = LiveObservationMode::ExactTarget {
         cadence_icount: config.cadence_icount(),
+        target_icount,
         ordinal: request.ordinal(),
     };
     if fields.mode != expected_mode
@@ -483,12 +594,12 @@ fn validate_prepared(
         || fields.horizon_icount != config.horizon_icount()
         || fields.actual_argv_digest != prepared.argv_identity().digest()
     {
-        return Err(LiveTerminalHorizonExecutorError::PreparedIdentityDrift {
+        return Err(LiveTerminalTargetExecutorError::PreparedIdentityDrift {
             field: "observation control",
         });
     }
     if let Some(field) = prepared_invocation_drift(prepared) {
-        return Err(LiveTerminalHorizonExecutorError::PreparedIdentityDrift { field });
+        return Err(LiveTerminalTargetExecutorError::PreparedIdentityDrift { field });
     }
     Ok(())
 }
@@ -496,75 +607,76 @@ fn validate_prepared(
 fn validate_terminal_qmp(
     config: &LiveRunnerConfig,
     observation: &LiveRunnerQmpObservation,
-) -> Result<(), LiveTerminalHorizonExecutorError> {
+) -> Result<(), LiveTerminalTargetExecutorError> {
     if let Some(field) = terminal_qmp_drift(config, observation) {
-        return Err(LiveTerminalHorizonExecutorError::PreparedIdentityDrift { field });
+        return Err(LiveTerminalTargetExecutorError::PreparedIdentityDrift { field });
     }
     Ok(())
 }
 
-/// Failure while validating or executing a terminal horizon observation.
+/// Failure while validating or executing an arbitrary terminal target.
 #[derive(Debug, Error)]
-pub enum LiveTerminalHorizonExecutorError {
+pub enum LiveTerminalTargetExecutorError {
     /// Executor construction received an invalid fixed contract.
-    #[error("invalid live terminal horizon executor contract: {reason}")]
+    #[error("invalid live terminal-target executor contract: {reason}")]
     InvalidContract {
         /// Rejected contract detail.
         reason: &'static str,
     },
-    /// Periodic cadence would require observations before the terminal horizon.
-    #[error(
-        "live terminal horizon executor requires cadence equal to horizon; got cadence {cadence}, horizon {horizon}"
-    )]
-    CadenceBeforeHorizon {
-        /// Rejected cadence.
-        cadence: u64,
-        /// Configured horizon.
-        horizon: u64,
-    },
     /// Preflight evidence did not describe the configured launch.
-    #[error("live terminal horizon preflight mismatched {field}")]
+    #[error("live terminal-target preflight mismatched {field}")]
     PreflightMismatch {
         /// Mismatching evidence field.
         field: &'static str,
     },
+    /// Target zero belongs to the instruction-free genesis executor.
+    #[error("live terminal-target executor rejects target zero; use the genesis executor")]
+    GenesisTarget,
+    /// The requested target exceeded the fixed scenario horizon.
+    #[error("live terminal target {target} exceeds configured horizon {horizon}")]
+    TargetBeyondHorizon {
+        /// Rejected target.
+        target: u64,
+        /// Inclusive configured maximum.
+        horizon: u64,
+    },
     /// Scenario or request material differed from the executor contract.
-    #[error("live terminal horizon request mismatched {field}")]
+    #[error("live terminal-target request mismatched {field}")]
     RequestMismatch {
         /// Mismatching request field.
         field: &'static str,
     },
     /// Prepared identity material changed across the process boundary.
-    #[error("live terminal horizon prepared launch drifted in {field}")]
+    #[error("live terminal-target prepared launch drifted in {field}")]
     PreparedIdentityDrift {
         /// Identity boundary that drifted.
         field: &'static str,
     },
-    /// Strict import returned something other than one terminal sample.
-    #[error("live terminal horizon trace did not contain exactly one horizon sample")]
-    InvalidTerminalStream,
+    /// Strict import returned something other than one exact target sample.
+    #[error("live terminal-target trace did not contain exactly one target sample")]
+    InvalidTerminalObservation,
     /// The bounded post-pause publication barrier expired.
-    #[error("live terminal horizon state publication did not complete before the bounded deadline")]
+    #[error("live terminal-target state publication did not complete before the bounded deadline")]
     PublicationExhausted,
     /// No fresh attempt number remains representable.
-    #[error("live terminal horizon attempt sequence exhausted u32")]
+    #[error("live terminal-target attempt sequence exhausted u32")]
     AttemptSequenceExhausted,
     /// QEMU returned a nonzero status after typed quit.
-    #[error("live terminal horizon QEMU exited unsuccessfully after typed quit")]
+    #[error("live terminal-target QEMU exited unsuccessfully after typed quit")]
     UnsuccessfulExit,
     /// QEMU did not exit naturally within the bounded shutdown policy.
-    #[error("live terminal horizon QEMU required owner-forced teardown")]
+    #[error("live terminal-target QEMU required owner-forced teardown")]
     ForcedTeardown,
     /// Fresh artifact allocation failed.
-    #[error("live terminal horizon artifact allocation failed: {0}")]
+    #[error("live terminal-target artifact allocation failed: {0}")]
     Artifacts(#[from] LiveRunnerArtifactsError),
     /// Launch preparation failed.
-    #[error("live terminal horizon launch preparation failed: {0}")]
+    #[error("live terminal-target launch preparation failed: {0}")]
     Preparation(#[from] LivePreparationError),
     /// Process spawning, QMP observation, or shutdown failed.
-    #[error("live terminal horizon process boundary failed: {0}")]
+    #[error("live terminal-target process boundary failed: {0}")]
     Process(#[from] LiveObservationProcessError),
-    /// Terminal trace opening failed.
+    /// Terminal trace opening or publication failed.
     #[error("{operation} failed: {source}")]
     TraceIo {
         /// File operation being attempted.
@@ -573,7 +685,7 @@ pub enum LiveTerminalHorizonExecutorError {
         source: io::Error,
     },
     /// Definition or terminal trace content failed strict import.
-    #[error("live terminal horizon trace import failed: {0}")]
+    #[error("live terminal-target trace import failed: {0}")]
     Trace(#[from] QemuTraceFingerprintImportError),
 }
 
@@ -592,8 +704,8 @@ mod tests {
         DiskImageMode, GuestBackingStateMode, IcountShiftSetting, LaunchProfileCandidate,
         LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerQmpPollError,
         LiveRunnerQmpPollPolicy, LiveRunnerQmpSession, QEMU_TRACE_FINGERPRINT_SCHEMA,
-        QmpCpuTopology, QmpRunState, QmpRunStateKind, SingleVmFingerprintRunOrdinal,
-        SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+        QmpCpuTopology, QmpRunState, QmpRunStateKind, SingleVmHostProfile,
+        SingleVmNvcpuFingerprintContract,
     };
 
     #[derive(Debug)]
@@ -651,7 +763,7 @@ mod tests {
         fn sleep(&mut self, _duration: Duration) {}
     }
 
-    fn config(cadence: u64, horizon: u64) -> Result<LiveRunnerConfig, Box<dyn Error>> {
+    fn config() -> Result<LiveRunnerConfig, Box<dyn Error>> {
         let profile = LaunchProfileCandidate::default()
             .with_memory_mib(128)
             .with_smp_vcpus(2)
@@ -673,8 +785,8 @@ mod tests {
             },
             profile,
             LiveRunnerLaunchFields {
-                cadence_icount: cadence,
-                horizon_icount: horizon,
+                cadence_icount: 10,
+                horizon_icount: 100,
             },
         )?)
     }
@@ -683,7 +795,7 @@ mod tests {
         static SEQUENCE: AtomicU64 = AtomicU64::new(1);
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "crucible-terminal-horizon-{label}-{}-{sequence}",
+            "crucible-terminal-target-{label}-{}-{sequence}",
             std::process::id()
         ));
         if path.exists() {
@@ -692,10 +804,10 @@ mod tests {
         Ok((LiveRunnerArtifactRoot::new(&path)?, path))
     }
 
-    fn prepared_preflight(
+    fn preflight_evidence(
         config: &LiveRunnerConfig,
         label: &str,
-    ) -> Result<(PathBuf, LivePreparedLaunch), Box<dyn Error>> {
+    ) -> Result<LiveDefinitionPreflightEvidence, Box<dyn Error>> {
         let (root, root_path) = artifact_root(label)?;
         let artifacts = root.create_attempt(1)?;
         let prepared = LivePreparedLaunch::new(
@@ -708,18 +820,9 @@ mod tests {
                 definition_digest: None,
             },
         )?;
-        Ok((root_path, prepared))
-    }
-
-    fn preflight_evidence(
-        config: &LiveRunnerConfig,
-        label: &str,
-    ) -> Result<LiveDefinitionPreflightEvidence, Box<dyn Error>> {
-        let (root_path, prepared) = prepared_preflight(config, label)?;
-        let record = definition_record(config, prepared.process_argv_contract());
         std::fs::write(
             prepared.artifacts().preflight_trace(),
-            serde_json::to_vec(&record)?,
+            serde_json::to_vec(&definition_record(config, prepared.process_argv_contract()))?,
         )?;
         let evidence = LiveDefinitionPreflightEvidence::import_completed_for_test(
             config,
@@ -794,11 +897,12 @@ mod tests {
         config: &LiveRunnerConfig,
         definition_digest: [u8; 32],
         node: &str,
+        horizon: u64,
     ) -> Result<SingleVmFingerprintScenario, Box<dyn Error>> {
         Ok(SingleVmFingerprintScenario::new_with_nvcpu_contract(
             node,
             definition_digest,
-            config.horizon_icount(),
+            horizon,
             SingleVmNvcpuFingerprintContract::new(
                 usize::from(config.vcpus()),
                 config.rr_switch_quantum(),
@@ -830,16 +934,21 @@ mod tests {
         config: LiveRunnerConfig,
         root: LiveRunnerArtifactRoot,
         quit_observed: Arc<AtomicBool>,
-    ) -> Result<LiveTerminalHorizonExecutor<FakeConnector, NoSleep>, Box<dyn Error>> {
+    ) -> Result<LiveTerminalTargetExecutor<FakeConnector, NoSleep>, Box<dyn Error>> {
         let preflight = preflight_evidence(&config, "executor-preflight")?;
         let definition_digest = QemuTraceFingerprintDefinition::new(
             config.cadence_icount(),
             preflight.imported().observation(),
         )?
         .definition_digest();
-        let expected_scenario = scenario(&config, definition_digest, "node-a")?;
+        let expected_scenario = scenario(
+            &config,
+            definition_digest,
+            "node-a",
+            config.horizon_icount(),
+        )?;
         let poller = poller(&config, quit_observed)?;
-        Ok(LiveTerminalHorizonExecutor::new(
+        Ok(LiveTerminalTargetExecutor::new(
             config,
             root,
             poller,
@@ -854,12 +963,12 @@ mod tests {
 
     fn terminal_trace(
         config: &LiveRunnerConfig,
+        target: u64,
         process_argv: QemuTraceProcessArgvContract,
     ) -> Vec<Value> {
-        let horizon = config.horizon_icount();
         let vcpus = usize::from(config.vcpus());
-        let base = horizon / vcpus as u64;
-        let remainder = horizon % vcpus as u64;
+        let base = target / vcpus as u64;
+        let remainder = target % vcpus as u64;
         let register_retired = (0..vcpus)
             .map(|vcpu| base + u64::from((vcpu as u64) < remainder))
             .collect::<Vec<_>>();
@@ -880,12 +989,12 @@ mod tests {
         let mut sample = common.clone();
         sample["kind"] = json!("terminal_horizon");
         sample["terminal_state_schema"] = json!("crucible.qemu.terminal-horizon.v1");
-        sample["retired"] = json!(horizon);
-        sample["observed_icount"] = json!(horizon);
+        sample["retired"] = json!(target);
+        sample["observed_icount"] = json!(target);
         sample["vcpu"] = json!(0);
         sample["final"] = json!(false);
         sample["tracked_vcpus"] = json!(vcpus);
-        sample["stop_at"] = json!(horizon);
+        sample["stop_at"] = json!(target);
         sample["stop_requested"] = json!(true);
         sample["trigger"] = json!("event");
         sample["event_boundary"] = json!("horizon-advance");
@@ -899,7 +1008,7 @@ mod tests {
         sample["rr_switch_quantum"] = json!(config.rr_switch_quantum());
         sample["rr_cursor_valid"] = json!(true);
         sample["rr_cursor_source"] = json!("terminal_paused_boundary");
-        sample["stream_hash"] = json!(format!("{horizon:016x}"));
+        sample["stream_hash"] = json!(format!("{target:016x}"));
         sample["register_digests"] = json!(
             (0..vcpus)
                 .map(|vcpu| format!("{:02x}", vcpu + 0x21).repeat(32))
@@ -921,10 +1030,10 @@ mod tests {
         sample["vmstate_digest"] = json!("62".repeat(32));
         sample["vmstate_bytes"] = json!(4096);
         sample["vmstate_status"] = json!(0);
-        sample["memory_event_hash"] = json!(format!("{:016x}", horizon + 4));
-        sample["device_event_hash"] = json!(format!("{:016x}", horizon + 5));
-        sample["memory_events"] = json!(horizon);
-        sample["io_events"] = json!(horizon / 2);
+        sample["memory_event_hash"] = json!(format!("{:016x}", target + 4));
+        sample["device_event_hash"] = json!(format!("{:016x}", target + 5));
+        sample["memory_events"] = json!(target);
+        sample["io_events"] = json!(target / 2);
         sample["memory_events_enabled"] = json!(true);
         sample["sample_register_failures"] = json!(0);
         sample["register_read_failures"] = json!(0);
@@ -933,10 +1042,10 @@ mod tests {
         let mut terminal = common;
         terminal["kind"] = json!("terminal_final");
         terminal["terminal_state_schema"] = json!("crucible.qemu.terminal-horizon.v1");
-        terminal["retired"] = json!(horizon);
-        terminal["observed_icount"] = json!(horizon);
+        terminal["retired"] = json!(target);
+        terminal["observed_icount"] = json!(target);
         terminal["final"] = json!(true);
-        terminal["stop_at"] = json!(horizon);
+        terminal["stop_at"] = json!(target);
         terminal["stop_requested"] = json!(true);
         terminal["terminal_pause_requested"] = json!(true);
         terminal["terminal_pause_status"] = json!(0);
@@ -944,23 +1053,6 @@ mod tests {
         terminal["terminal_state_emitted"] = json!(true);
         terminal["terminal_state_complete"] = json!(true);
         vec![sample, terminal]
-    }
-
-    fn write_terminal_trace(
-        config: &LiveRunnerConfig,
-        prepared: &LivePreparedLaunch,
-    ) -> Result<(), LiveTerminalHorizonExecutorError> {
-        let encoded = terminal_trace(config, prepared.process_argv_contract())
-            .into_iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(prepared.artifacts().trace(), format!("{encoded}\n")).map_err(|source| {
-            LiveTerminalHorizonExecutorError::TraceIo {
-                operation: "write fake terminal trace",
-                source,
-            }
-        })
     }
 
     fn encoded_trace(values: &[Value]) -> String {
@@ -973,39 +1065,31 @@ mod tests {
         encoded
     }
 
-    fn prepared_importer(
+    fn write_terminal_trace(
         config: &LiveRunnerConfig,
-        executor: &mut LiveTerminalHorizonExecutor<FakeConnector, NoSleep>,
-    ) -> Result<(LivePreparedLaunch, QemuTerminalHorizonTraceImport), Box<dyn Error>> {
-        let artifacts = executor.allocate_attempt()?;
-        let prepared = LivePreparedLaunch::new(
-            config,
-            LiveRunnerLaunchKind::Observation,
-            &artifacts,
-            LivePreparationRequest {
-                node: "node-a".to_owned(),
-                mode: LiveObservationMode::ObservationHorizon {
-                    cadence_icount: config.cadence_icount(),
-                    ordinal: SingleVmFingerprintRunOrdinal::First,
-                },
-                definition_digest: Some(executor.definition_digest()),
-            },
-        )?;
-        let importer = QemuTerminalHorizonTraceImport::new(
-            "node-a",
-            executor.definition_digest(),
-            config.horizon_icount(),
-            executor.preflight.imported().observation().clone(),
-            prepared.process_argv_contract(),
-        )?;
-        Ok((prepared, importer))
+        target: u64,
+        prepared: &LivePreparedLaunch,
+    ) -> Result<(), LiveTerminalTargetExecutorError> {
+        std::fs::write(
+            prepared.artifacts().trace(),
+            encoded_trace(&terminal_trace(
+                config,
+                target,
+                prepared.process_argv_contract(),
+            )),
+        )
+        .map_err(|source| LiveTerminalTargetExecutorError::TraceIo {
+            operation: "write fake terminal target trace",
+            source,
+        })
     }
 
     fn completed(
         config: &LiveRunnerConfig,
+        target: u64,
         prepared: LivePreparedLaunch,
         poller: &mut LiveRunnerQmpPoller<FakeConnector, NoSleep>,
-    ) -> Result<CompletedTerminalAttempt, LiveTerminalHorizonExecutorError> {
+    ) -> Result<CompletedTerminalTargetAttempt, LiveTerminalTargetExecutorError> {
         let retained = prepared.clone();
         let mut connection = poller
             .observe_stopped(
@@ -1018,8 +1102,8 @@ mod tests {
             .session
             .quit()
             .map_err(LiveObservationProcessError::Qmp)?;
-        write_terminal_trace(config, &prepared)?;
-        Ok(CompletedTerminalAttempt {
+        write_terminal_trace(config, target, &prepared)?;
+        Ok(CompletedTerminalTargetAttempt {
             prepared: retained,
             qmp_observation: connection.observation,
             shutdown: LiveObservationShutdown::NaturalExit { success: true },
@@ -1027,34 +1111,50 @@ mod tests {
     }
 
     #[test]
-    fn fresh_ordinals_import_exactly_one_terminal_sample() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
+    fn fresh_first_middle_and_horizon_targets_are_identity_distinct() -> Result<(), Box<dyn Error>>
+    {
+        let config = config()?;
         let (root, root_path) = artifact_root("success")?;
         let quit_observed = Arc::new(AtomicBool::new(false));
         let mut executor = executor(config.clone(), root, Arc::clone(&quit_observed))?;
-        let expected_scenario = scenario(&config, executor.definition_digest(), "node-a")?;
-
-        for (attempt, ordinal) in [
-            (1, SingleVmFingerprintRunOrdinal::First),
-            (2, SingleVmFingerprintRunOrdinal::Second),
+        let fixed = scenario(
+            &config,
+            executor.definition_digest(),
+            "node-a",
+            config.horizon_icount(),
+        )?;
+        let mut controls = Vec::new();
+        let mut invocations = Vec::new();
+        let mut argv = Vec::new();
+        for (attempt, target, ordinal) in [
+            (1, 1, SingleVmFingerprintRunOrdinal::First),
+            (2, 50, SingleVmFingerprintRunOrdinal::Second),
+            (3, 100, SingleVmFingerprintRunOrdinal::First),
         ] {
             quit_observed.store(false, Ordering::SeqCst);
-            let request = SingleVmFingerprintRunRequest::new(expected_scenario.clone(), ordinal);
-            let report = executor.run_report_with_boundary(&request, |prepared, poller, _| {
-                completed(&config, prepared, poller)
-            })?;
+            let request = SingleVmFingerprintProbeRequest::new(fixed.clone(), ordinal, target)?;
+            let report = executor
+                .observe_report_with_boundary(&request, |prepared, poller, _| {
+                    completed(&config, target, prepared, poller)
+                })?;
             assert_eq!(report.attempt(), attempt);
-            assert_eq!(report.stream().samples.len(), 1);
-            assert_eq!(report.stream().samples[0].icount, config.horizon_icount());
-            assert_eq!(report.stream().final_icount, config.horizon_icount());
-            assert_eq!(report.control().fields().mode.ordinal(), Some(ordinal));
+            assert_eq!(report.observation().target_icount(), target);
+            assert_eq!(report.observation().ordinal(), ordinal);
+            assert_eq!(report.observation().sample().icount, target);
+            assert_eq!(report.observation().sample().seq, 0);
             assert_eq!(
-                report.invocation().argv_digest(),
-                report.argv_identity().digest()
+                report.prepared_launch().kind(),
+                LiveRunnerLaunchKind::TerminalTarget {
+                    target_icount: target
+                }
             );
             assert_eq!(
-                report.process_argv_contract().digest(),
-                report.argv_identity().digest()
+                report.control().fields().mode,
+                LiveObservationMode::ExactTarget {
+                    cadence_icount: config.cadence_icount(),
+                    target_icount: target,
+                    ordinal,
+                }
             );
             assert_eq!(
                 report.qmp_observation().run_state,
@@ -1068,57 +1168,71 @@ mod tests {
                 LiveObservationShutdown::NaturalExit { success: true }
             );
             assert!(quit_observed.load(Ordering::SeqCst));
+            controls.push(report.control().digest());
+            invocations.push(report.invocation().digest());
+            argv.push(report.argv_identity().digest());
         }
-        assert!(root_path.join("attempt-00000001").is_dir());
-        assert!(root_path.join("attempt-00000002").is_dir());
+        assert!(controls.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(invocations.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(argv.windows(2).all(|pair| pair[0] != pair[1]));
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
 
     #[test]
-    fn cadence_before_horizon_is_rejected_before_any_attempt() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 1_000)?;
-        let preflight = preflight_evidence(&config, "cadence-preflight")?;
-        let definition_digest = QemuTraceFingerprintDefinition::new(
-            config.cadence_icount(),
-            preflight.imported().observation(),
-        )?
-        .definition_digest();
-        let expected_scenario = scenario(&config, definition_digest, "node-a")?;
-        let (root, root_path) = artifact_root("cadence-rejected")?;
-        let result = LiveTerminalHorizonExecutor::new(
-            config.clone(),
-            root,
-            poller(&config, Arc::new(AtomicBool::new(false)))?,
-            LiveObservationShutdownPolicy::default(),
-            preflight,
-            expected_scenario,
-        );
+    fn zero_overshoot_and_scenario_drift_do_not_allocate_attempts() -> Result<(), Box<dyn Error>> {
+        let config = config()?;
+        let (root, root_path) = artifact_root("request-rejections")?;
+        let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
+        let fixed = scenario(
+            &config,
+            executor.definition_digest(),
+            "node-a",
+            config.horizon_icount(),
+        )?;
+        let zero = SingleVmFingerprintProbeRequest::new(
+            fixed.clone(),
+            SingleVmFingerprintRunOrdinal::First,
+            0,
+        )?;
         assert!(matches!(
-            result,
-            Err(LiveTerminalHorizonExecutorError::CadenceBeforeHorizon {
-                cadence: 100,
-                horizon: 1_000
+            executor.observe_report_with_boundary(&zero, |_, _, _| unreachable!()),
+            Err(LiveTerminalTargetExecutorError::GenesisTarget)
+        ));
+
+        let larger = scenario(
+            &config,
+            executor.definition_digest(),
+            "node-a",
+            config.horizon_icount() + 1,
+        )?;
+        let overshoot = SingleVmFingerprintProbeRequest::new(
+            larger,
+            SingleVmFingerprintRunOrdinal::First,
+            config.horizon_icount() + 1,
+        )?;
+        assert!(matches!(
+            executor.observe_report_with_boundary(&overshoot, |_, _, _| unreachable!()),
+            Err(LiveTerminalTargetExecutorError::TargetBeyondHorizon {
+                target: 101,
+                horizon: 100
             })
         ));
-        assert!(!root_path.join("attempt-00000001").exists());
-        if root_path.exists() {
-            std::fs::remove_dir_all(root_path)?;
-        }
-        Ok(())
-    }
 
-    #[test]
-    fn request_drift_is_rejected_before_attempt_allocation() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("request-drift")?;
-        let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
-        let drifted = scenario(&config, executor.definition_digest(), "node-b")?;
-        let request =
-            SingleVmFingerprintRunRequest::new(drifted, SingleVmFingerprintRunOrdinal::First);
+        let drifted = scenario(
+            &config,
+            executor.definition_digest(),
+            "node-b",
+            config.horizon_icount(),
+        )?;
+        let drift = SingleVmFingerprintProbeRequest::new(
+            drifted,
+            SingleVmFingerprintRunOrdinal::First,
+            50,
+        )?;
         assert!(matches!(
-            executor.run_report_with_boundary(&request, |_, _, _| unreachable!()),
-            Err(LiveTerminalHorizonExecutorError::RequestMismatch {
+            executor.observe_report_with_boundary(&drift, |_, _, _| unreachable!()),
+            Err(LiveTerminalTargetExecutorError::RequestMismatch {
                 field: "fixed scenario"
             })
         ));
@@ -1130,17 +1244,20 @@ mod tests {
     }
 
     #[test]
-    fn qmp_and_shutdown_evidence_fail_closed() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("boundary-failures")?;
+    fn qmp_shutdown_and_publication_fail_closed() -> Result<(), Box<dyn Error>> {
+        let config = config()?;
+        let (root, root_path) = artifact_root("boundary")?;
         let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
-        let expected_scenario = scenario(&config, executor.definition_digest(), "node-a")?;
-        let request = SingleVmFingerprintRunRequest::new(
-            expected_scenario,
-            SingleVmFingerprintRunOrdinal::First,
-        );
-        let wrong_state = executor.run_report_with_boundary(&request, |prepared, _, _| {
-            Ok(CompletedTerminalAttempt {
+        let fixed = scenario(
+            &config,
+            executor.definition_digest(),
+            "node-a",
+            config.horizon_icount(),
+        )?;
+        let request =
+            SingleVmFingerprintProbeRequest::new(fixed, SingleVmFingerprintRunOrdinal::First, 50)?;
+        let wrong_qmp = executor.observe_report_with_boundary(&request, |prepared, _, _| {
+            Ok(CompletedTerminalTargetAttempt {
                 prepared,
                 qmp_observation: LiveRunnerQmpObservation {
                     run_state: QmpRunState {
@@ -1153,14 +1270,13 @@ mod tests {
             })
         });
         assert!(matches!(
-            wrong_state,
-            Err(LiveTerminalHorizonExecutorError::PreparedIdentityDrift {
+            wrong_qmp,
+            Err(LiveTerminalTargetExecutorError::PreparedIdentityDrift {
                 field: "typed QMP non-running paused state"
             })
         ));
-
-        let forced = executor.run_report_with_boundary(&request, |prepared, _, _| {
-            Ok(CompletedTerminalAttempt {
+        let forced = executor.observe_report_with_boundary(&request, |prepared, _, _| {
+            Ok(CompletedTerminalTargetAttempt {
                 prepared,
                 qmp_observation: LiveRunnerQmpObservation {
                     run_state: QmpRunState {
@@ -1174,23 +1290,83 @@ mod tests {
         });
         assert!(matches!(
             forced,
-            Err(LiveTerminalHorizonExecutorError::ForcedTeardown)
+            Err(LiveTerminalTargetExecutorError::ForcedTeardown)
         ));
-        assert!(root_path.join("attempt-00000001").is_dir());
-        assert!(root_path.join("attempt-00000002").is_dir());
+        let unsuccessful = executor.observe_report_with_boundary(&request, |prepared, _, _| {
+            Ok(CompletedTerminalTargetAttempt {
+                prepared,
+                qmp_observation: LiveRunnerQmpObservation {
+                    run_state: QmpRunState {
+                        running: false,
+                        status: QmpRunStateKind::Paused,
+                    },
+                    cpu_indexes: expected_cpu_ids(&config),
+                },
+                shutdown: LiveObservationShutdown::NaturalExit { success: false },
+            })
+        });
+        assert!(matches!(
+            unsuccessful,
+            Err(LiveTerminalTargetExecutorError::UnsuccessfulExit)
+        ));
+
+        let artifacts = executor.allocate_attempt()?;
+        let prepared = LivePreparedLaunch::new(
+            &config,
+            LiveRunnerLaunchKind::TerminalTarget { target_icount: 50 },
+            &artifacts,
+            LivePreparationRequest {
+                node: "node-a".to_owned(),
+                mode: LiveObservationMode::ExactTarget {
+                    cadence_icount: config.cadence_icount(),
+                    target_icount: 50,
+                    ordinal: SingleVmFingerprintRunOrdinal::First,
+                },
+                definition_digest: Some(executor.definition_digest()),
+            },
+        )?;
+        let importer = QemuTerminalHorizonTraceImport::new(
+            "node-a",
+            executor.definition_digest(),
+            50,
+            executor.preflight.imported().observation().clone(),
+            prepared.process_argv_contract(),
+        )?;
+        std::fs::write(prepared.artifacts().trace(), [])?;
+        assert!(matches!(
+            wait_for_terminal_publication(
+                &mut executor.poller,
+                prepared.artifacts().trace(),
+                &importer
+            ),
+            Err(LiveTerminalTargetExecutorError::PublicationExhausted)
+        ));
+        std::fs::write(
+            prepared.artifacts().trace(),
+            encoded_trace(&terminal_trace(
+                &config,
+                50,
+                prepared.process_argv_contract(),
+            )),
+        )?;
+        wait_for_terminal_publication(
+            &mut executor.poller,
+            prepared.artifacts().trace(),
+            &importer,
+        )?;
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
 
     #[test]
     fn attempt_collision_and_u32_exhaustion_fail_closed() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("attempt-bounds")?;
+        let config = config()?;
+        let (root, root_path) = artifact_root("attempts")?;
         let mut executor = executor(config, root.clone(), Arc::new(AtomicBool::new(false)))?;
         root.create_attempt(1)?;
         assert!(matches!(
             executor.allocate_attempt(),
-            Err(LiveTerminalHorizonExecutorError::Artifacts(
+            Err(LiveTerminalTargetExecutorError::Artifacts(
                 LiveRunnerArtifactsError::AttemptAlreadyExists { .. }
             ))
         ));
@@ -1198,127 +1374,8 @@ mod tests {
         assert_eq!(executor.allocate_attempt()?.attempt(), u32::MAX);
         assert!(matches!(
             executor.allocate_attempt(),
-            Err(LiveTerminalHorizonExecutorError::AttemptSequenceExhausted)
+            Err(LiveTerminalTargetExecutorError::AttemptSequenceExhausted)
         ));
-        std::fs::remove_dir_all(root_path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn publication_requires_complete_final_and_rejects_duplicates() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("publication")?;
-        let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
-        let (prepared, importer) = prepared_importer(&config, &mut executor)?;
-        let values = terminal_trace(&config, prepared.process_argv_contract());
-
-        std::fs::write(prepared.artifacts().trace(), [])?;
-        assert!(matches!(
-            wait_for_terminal_publication(
-                &mut executor.poller,
-                prepared.artifacts().trace(),
-                &importer,
-            ),
-            Err(LiveTerminalHorizonExecutorError::PublicationExhausted)
-        ));
-        let state_only = encoded_trace(&values[..1]);
-        assert!(
-            importer
-                .published_terminal_stream(state_only.as_bytes())?
-                .is_none()
-        );
-        let partial_final = format!("{}{{\"kind\":\"terminal_final\"", state_only);
-        assert!(
-            importer
-                .published_terminal_stream(partial_final.as_bytes())?
-                .is_none()
-        );
-        assert!(
-            importer
-                .published_terminal_stream(encoded_trace(&values).as_bytes())?
-                .is_some()
-        );
-
-        let duplicate = vec![values[0].clone(), values[0].clone(), values[1].clone()];
-        assert!(
-            importer
-                .published_terminal_stream(encoded_trace(&duplicate).as_bytes())
-                .is_err()
-        );
-        std::fs::remove_dir_all(root_path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn strict_terminal_import_rejects_partial_status_and_legacy_records()
-    -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("strict-import")?;
-        let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
-        let (prepared, importer) = prepared_importer(&config, &mut executor)?;
-        let values = terminal_trace(&config, prepared.process_argv_contract());
-
-        let complete = encoded_trace(&values);
-        assert!(importer.import(complete.as_bytes()).is_ok());
-        assert!(
-            importer
-                .import(complete.trim_end_matches('\n').as_bytes())
-                .is_err()
-        );
-
-        let mut failed = values.clone();
-        failed[0]["trajectory_digest_failures"] = json!(1);
-        assert!(importer.import(encoded_trace(&failed).as_bytes()).is_err());
-
-        let mut cached_cursor = values.clone();
-        cached_cursor[0]["rr_cursor_source"] = json!("terminal_last_executed_instruction");
-        assert!(
-            importer
-                .import(encoded_trace(&cached_cursor).as_bytes())
-                .is_ok()
-        );
-
-        let mut wrong_cursor = values.clone();
-        wrong_cursor[0]["rr_cursor_source"] = json!("guessed_after_pause");
-        assert!(
-            importer
-                .import(encoded_trace(&wrong_cursor).as_bytes())
-                .is_err()
-        );
-
-        let mut legacy = values.clone();
-        legacy[0]["kind"] = json!("sample");
-        assert!(importer.import(encoded_trace(&legacy).as_bytes()).is_err());
-
-        let duplicate_field = complete.replacen('{', "{\"kind\":\"terminal_horizon\",", 1);
-        assert!(importer.import(duplicate_field.as_bytes()).is_err());
-
-        let mut unexpected = values;
-        unexpected[0]["unreviewed_extension"] = json!(true);
-        assert!(
-            importer
-                .import(encoded_trace(&unexpected).as_bytes())
-                .is_err()
-        );
-        std::fs::remove_dir_all(root_path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn raw_ram_region_map_drift_changes_canonical_stream() -> Result<(), Box<dyn Error>> {
-        let config = config(100, 100)?;
-        let (root, root_path) = artifact_root("ram-map")?;
-        let mut executor = executor(config.clone(), root, Arc::new(AtomicBool::new(false)))?;
-        let (prepared, importer) = prepared_importer(&config, &mut executor)?;
-        let first = terminal_trace(&config, prepared.process_argv_contract());
-        let mut second = first.clone();
-        second[0]["raw_ram_region_map_digest"] = json!("64".repeat(32));
-        let first_stream = importer.import(encoded_trace(&first).as_bytes())?;
-        let second_stream = importer.import(encoded_trace(&second).as_bytes())?;
-        assert_ne!(
-            first_stream.final_fingerprint,
-            second_stream.final_fingerprint
-        );
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }

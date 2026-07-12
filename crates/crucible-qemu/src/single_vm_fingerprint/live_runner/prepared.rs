@@ -166,6 +166,20 @@ fn validate_request(
             LiveRunnerLaunchKind::Observation,
             LiveObservationMode::ObservationHorizon { cadence_icount, .. },
         ) if cadence_icount == config.cadence_icount() => Ok(()),
+        (
+            LiveRunnerLaunchKind::TerminalTarget { target_icount },
+            LiveObservationMode::ExactTarget {
+                cadence_icount,
+                target_icount: mode_target_icount,
+                ..
+            },
+        ) if cadence_icount == config.cadence_icount()
+            && target_icount == mode_target_icount
+            && target_icount != 0
+            && target_icount <= config.horizon_icount() =>
+        {
+            Ok(())
+        }
         _ => Err(LivePreparationError::ModeMismatch {
             kind,
             mode: request.mode,
@@ -364,6 +378,108 @@ mod tests {
             ),
             Err(LivePreparationError::ModeMismatch { .. })
         ));
+        std::fs::remove_dir_all(root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_target_is_typed_and_bound_into_every_process_identity() -> Result<(), Box<dyn Error>>
+    {
+        let config = config()?;
+        let root = artifact_root("prepared-terminal-target")?;
+        let artifacts = root.create_attempt(3)?;
+        let prepare = |target_icount| {
+            LivePreparedLaunch::new(
+                &config,
+                LiveRunnerLaunchKind::TerminalTarget { target_icount },
+                &artifacts,
+                LivePreparationRequest {
+                    node: "node-a".to_owned(),
+                    mode: LiveObservationMode::ExactTarget {
+                        cadence_icount: config.cadence_icount(),
+                        target_icount,
+                        ordinal: SingleVmFingerprintRunOrdinal::First,
+                    },
+                    definition_digest: Some([9; 32]),
+                },
+            )
+        };
+        let first = prepare(37_777)?;
+        let second = prepare(37_778)?;
+
+        assert_eq!(
+            first.kind(),
+            LiveRunnerLaunchKind::TerminalTarget {
+                target_icount: 37_777
+            }
+        );
+        assert_eq!(
+            first.kind().expected_stopped_state(),
+            crate::QmpRunStateKind::Paused
+        );
+        let argv = first
+            .spec()
+            .argv()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(!argv.iter().any(|argument| argument == "-S"));
+        assert!(argv.iter().any(|argument| {
+            argument.contains("cadence=100000,stop_at=37777")
+                && argument.contains("terminal_horizon=on")
+                && !argument.contains("definition_only=on")
+        }));
+        assert_ne!(
+            first.argv_identity().digest(),
+            second.argv_identity().digest()
+        );
+        assert_ne!(first.control().digest(), second.control().digest());
+        assert_ne!(first.invocation().digest(), second.invocation().digest());
+        assert_eq!(
+            first.control().fields().mode.explicit_target_icount(),
+            Some(37_777)
+        );
+        std::fs::remove_dir_all(root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_target_rejects_zero_drift_and_out_of_horizon_requests() -> Result<(), Box<dyn Error>>
+    {
+        let config = config()?;
+        let root = artifact_root("prepared-terminal-target-invalid")?;
+        let artifacts = root.create_attempt(4)?;
+        let cases = [
+            (0, 0, config.cadence_icount()),
+            (37_777, 37_778, config.cadence_icount()),
+            (37_777, 37_777, config.cadence_icount() + 1),
+            (
+                config.horizon_icount() + 1,
+                config.horizon_icount() + 1,
+                config.cadence_icount(),
+            ),
+        ];
+        for (kind_target, mode_target, cadence_icount) in cases {
+            assert!(matches!(
+                LivePreparedLaunch::new(
+                    &config,
+                    LiveRunnerLaunchKind::TerminalTarget {
+                        target_icount: kind_target,
+                    },
+                    &artifacts,
+                    LivePreparationRequest {
+                        node: "node-a".to_owned(),
+                        mode: LiveObservationMode::ExactTarget {
+                            cadence_icount,
+                            target_icount: mode_target,
+                            ordinal: SingleVmFingerprintRunOrdinal::Second,
+                        },
+                        definition_digest: Some([9; 32]),
+                    },
+                ),
+                Err(LivePreparationError::ModeMismatch { .. })
+            ));
+        }
         std::fs::remove_dir_all(root.path())?;
         Ok(())
     }

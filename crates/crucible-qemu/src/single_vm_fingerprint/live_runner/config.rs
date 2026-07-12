@@ -29,13 +29,18 @@ pub enum LiveRunnerLaunchKind {
     Genesis,
     /// Captures one fixed-cadence run through the configured horizon.
     Observation,
+    /// Captures exactly one terminal state at a nonzero instruction-count target.
+    TerminalTarget {
+        /// Exact aggregate retired-instruction target at which QEMU must pause.
+        target_icount: u64,
+    },
 }
 
 impl LiveRunnerLaunchKind {
     pub(super) const fn expected_stopped_state(self) -> crate::QmpRunStateKind {
         match self {
             Self::DefinitionPreflight | Self::Genesis => crate::QmpRunStateKind::Prelaunch,
-            Self::Observation => crate::QmpRunStateKind::Paused,
+            Self::Observation | Self::TerminalTarget { .. } => crate::QmpRunStateKind::Paused,
         }
     }
 }
@@ -241,21 +246,30 @@ impl LiveRunnerConfig {
     ///
     /// Returns [`LiveRunnerConfigError`] when an artifact path is not stable
     /// UTF-8, a canonical option is unexpectedly absent, the completed argv
-    /// exposes block storage despite the diskless profile, or the crate's
-    /// pre-spawn determinism validator rejects it.
+    /// exposes block storage despite the diskless profile, a terminal target is
+    /// outside `1..=horizon`, or the crate's pre-spawn determinism validator
+    /// rejects it.
     pub fn launch_spec(
         &self,
         kind: LiveRunnerLaunchKind,
         artifacts: &LiveRunnerArtifacts,
     ) -> Result<LiveRunnerLaunchSpec, LiveRunnerConfigError> {
+        if let LiveRunnerLaunchKind::TerminalTarget { target_icount } = kind
+            && !(1..=self.horizon_icount).contains(&target_icount)
+        {
+            return Err(LiveRunnerConfigError::InvalidTerminalTarget {
+                target: target_icount,
+                horizon: self.horizon_icount,
+            });
+        }
         let qmp = path_file_name_text("qmp_socket", artifacts.qmp_socket())?;
         let trace = path_text(
             "trace",
             match kind {
                 LiveRunnerLaunchKind::DefinitionPreflight => artifacts.preflight_trace(),
-                LiveRunnerLaunchKind::Genesis | LiveRunnerLaunchKind::Observation => {
-                    artifacts.trace()
-                }
+                LiveRunnerLaunchKind::Genesis
+                | LiveRunnerLaunchKind::Observation
+                | LiveRunnerLaunchKind::TerminalTarget { .. } => artifacts.trace(),
             },
         )?;
 
@@ -307,6 +321,11 @@ impl LiveRunnerConfig {
                 "out={trace},cadence={},stop_at={},extended=on,mem_events=on,rr_switch_events=on,terminal_horizon=on,vcpus={}",
                 self.cadence_icount,
                 self.horizon_icount,
+                self.vcpus()
+            ),
+            LiveRunnerLaunchKind::TerminalTarget { target_icount } => format!(
+                "out={trace},cadence={},stop_at={target_icount},extended=on,mem_events=on,rr_switch_events=on,terminal_horizon=on,vcpus={}",
+                self.cadence_icount,
                 self.vcpus()
             ),
         };
@@ -444,6 +463,14 @@ pub enum LiveRunnerConfigError {
     /// Horizon precedes first cadence sample.
     #[error("horizon icount must be at least the cadence icount")]
     HorizonBeforeCadence,
+    /// A terminal target was zero or exceeded the configured run horizon.
+    #[error("terminal target {target} must be in 1..={horizon}")]
+    InvalidTerminalTarget {
+        /// Rejected terminal target.
+        target: u64,
+        /// Inclusive configured run horizon.
+        horizon: u64,
+    },
     /// Canonical profile unexpectedly omitted or duplicated an option.
     #[error("canonical deterministic launch option {option} was not unique")]
     CanonicalOptionNotUnique {
@@ -883,6 +910,66 @@ mod tests {
             "launch_digest={}",
             lower_hex(&config.verified_run_inputs().launch_definition_digest())
         )));
+        std::fs::remove_dir_all(root_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_target_uses_definition_cadence_and_exact_stop() -> Result<(), Box<dyn Error>> {
+        let root_path = std::env::temp_dir().join(format!(
+            "crucible-live-target-config-{}",
+            std::process::id()
+        ));
+        if root_path.exists() {
+            std::fs::remove_dir_all(&root_path)?;
+        }
+        let artifacts = LiveRunnerArtifactRoot::new(&root_path)?.create_attempt(3)?;
+        let config = config()?;
+        let kind = LiveRunnerLaunchKind::TerminalTarget {
+            target_icount: 37_777,
+        };
+        let spec = config.launch_spec(kind, &artifacts)?;
+        assert!(
+            !spec
+                .argv()
+                .iter()
+                .any(|argument| argument == OsStr::new("-S"))
+        );
+        assert_eq!(
+            kind.expected_stopped_state(),
+            crate::QmpRunStateKind::Paused
+        );
+        let plugin = spec
+            .argv()
+            .windows(2)
+            .find(|pair| pair[0] == OsStr::new("-plugin"))
+            .map(|pair| pair[1].to_string_lossy().into_owned())
+            .ok_or("missing plugin argument")?;
+        assert!(plugin.contains("cadence=100000,stop_at=37777"));
+        assert!(
+            plugin.contains(
+                "extended=on,mem_events=on,rr_switch_events=on,terminal_horizon=on,vcpus=4"
+            )
+        );
+        assert!(!plugin.contains("definition_only=on"));
+
+        let other = config.launch_spec(
+            LiveRunnerLaunchKind::TerminalTarget {
+                target_icount: 37_778,
+            },
+            &artifacts,
+        )?;
+        assert_ne!(spec.argv(), other.argv());
+        for target_icount in [0, config.horizon_icount() + 1] {
+            assert!(matches!(
+                config.launch_spec(
+                    LiveRunnerLaunchKind::TerminalTarget { target_icount },
+                    &artifacts,
+                ),
+                Err(LiveRunnerConfigError::InvalidTerminalTarget { target, horizon })
+                    if target == target_icount && horizon == config.horizon_icount()
+            ));
+        }
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }

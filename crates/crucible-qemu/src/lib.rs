@@ -191,9 +191,10 @@ pub use single_vm_fingerprint::{
     LiveRunnerLaunchKind, LiveRunnerLaunchSpec, LiveRunnerQmpConnector, LiveRunnerQmpObservation,
     LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession,
     LiveRunnerSleeper, LiveTerminalHorizonExecutor, LiveTerminalHorizonExecutorError,
-    LiveTerminalHorizonReport, RawUnixArgvIdentity, ThreadLiveRunnerSleeper,
-    TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests, VerifiedLiveRunInputs,
-    VerifiedLiveRunInputsError, spawn_live_observation_process,
+    LiveTerminalHorizonReport, LiveTerminalTargetExecutor, LiveTerminalTargetExecutorError,
+    LiveTerminalTargetObservation, LiveTerminalTargetReport, RawUnixArgvIdentity,
+    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
+    VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use single_vm_fingerprint::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTerminalHorizonTraceImport, QemuTraceDefinitionPreflight,
