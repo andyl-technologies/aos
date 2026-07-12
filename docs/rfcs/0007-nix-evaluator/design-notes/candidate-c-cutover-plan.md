@@ -355,37 +355,64 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
 - **S3 — JIT one-word stack-map + relocation rework (the load-bearing item).**
   Build a one-word slot geometry in `lower/stack_maps.rs` (single `stack_store`,
   8-byte slot, `32 + index*8` stride) and the matching finalized SP-offset join
-  (`cranelift.rs:3119-3150`), selected by `JitValueAbi::CandidateC`, alongside
-  the existing two-word geometry. Gate: **GC-stress + sweep-zero** + the reworked
-  geometry test + the relocation writeback tests (risk 3). Also flip
-  `emit_value_return` to the one-word path under the Candidate-C layout.
-- **S4 — The carrier flip.** Change `Value` to the 8-byte representation (via the
-  `candidate_c_value` cargo-feature variant, §2 option 1, or in place), re-point
-  the `value.rs` accessor surface (`payload_bits`/`*_identity_bits` → the 32-bit
-  halves), collapse `AtomicValueCell` to one `AtomicU64` (`env.rs:474-554`),
-  switch `active_values.rs` + the bridge to native Candidate-C, select the
-  one-word layout from `runtime_abi_value_layout()`, and remove the
-  `ForcedThunkUnsupported` lossy path (risk 5, atomic with the flip). Gate: the
-  **entire** parity battery in all four modes + the full differential corpus +
-  all pinned-ABI test updates in lock-step (§3) + the memory-column A/B showing
-  the value-mass reduction. This is the big-bang commit, minimized by S0-S3.
-- **S5 — Container narrowing (follow-on).** Narrow list spines and post-shape
-  attr slots to 4-byte where they hold only heap references (doc 30 §3.5), the
-  additional memory win. Separately gated; not required to declare S4 done.
+  (`cranelift.rs:3119-3150`) **as a SECOND geometry selected by
+  `JitValueAbi::CandidateC`, NOT an edit of the two-word path** (lead ruling §7.2):
+  both geometries live simultaneously until S4b proves the one-word one. Gate:
+  **GC-stress + sweep-zero** + the reworked geometry test + the relocation
+  writeback tests (risk 3). Also add the one-word `emit_value_return` path under
+  the Candidate-C layout beside the two-word one.
+- **S4 — The carrier flip, JIT OFF** (lead ruling §7.2). Change `Value` to the
+  8-byte representation via the `candidate_c_value` compile-time variant (§2
+  option 1, lead ruling §7.1 — not in place), re-point the `value.rs` accessor
+  surface (`payload_bits`/`*_identity_bits` → the 32-bit halves), collapse
+  `AtomicValueCell` to one `AtomicU64` (`env.rs:474-554`), switch
+  `active_values.rs` + the bridge to native Candidate-C, select the one-word
+  layout from `runtime_abi_value_layout()`, and remove the `ForcedThunkUnsupported`
+  lossy path (risk 5, atomic with the flip). **The variant runs with the JIT
+  disabled** (tree-walk Candidate-C only). Gate: the parity battery **serial +
+  K=4 + sweep** byte-green on the variant + the full differential corpus + all
+  pinned-ABI test updates in lock-step (§3) + the memory-column A/B showing the
+  value-mass reduction. This is the big-bang commit, minimized by S0-S3.
+- **S4b — Re-enable JIT Candidate-C.** Only after S3's one-word stack-map
+  geometry is GC-stress + sweep-zero proven, wire the active JIT dispatch to the
+  Candidate-C layout under the variant and add `AOS_NIX_JIT=1` to the S4 gate.
+  This decouples the two hardest risks (carrier flip vs. stack-map rework).
+- **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
+  spines and post-shape attr slots to 4-byte where they hold only heap references
+  (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
+  benchmark matrix, **promote `candidate_c_value` to default and delete the
+  Active carrier** (the kill-date criterion, lead ruling §7.1) — the workspace
+  does not carry two carriers indefinitely. Separately gated; not required to
+  declare S4 done.
 
-## 6. Open questions and doc-vs-code divergences (for the lead)
+## 6. Decisions, and doc-vs-code divergences
 
-- **Q1 — Variant flip vs. in-place flip (§2).** Recommend the `candidate_c_value`
-  compile-time **variant** for S4 (P8 build-and-select, bisectable, keeps a
-  fallback), accepting the dual-build cost. Confirm this vs. an in-place flip
-  (simpler diff, no A/B). Either way the flip is big-bang; the question is
-  whether we keep a parallel Active build during bring-up.
-- **Q2 — Does S4 need the JIT active *at all* during bring-up?** JIT is disabled
-  under `AOS_NIX_PARALLEL` (worker-affine), and the S3 stack-map rework is the
-  riskiest piece. Option: land S4's carrier flip with JIT **off** (tree-walk
-  Candidate-C only, parity-green serial + K=4), then re-enable JIT Candidate-C as
-  S4b once S3's one-word stack maps are stress-proven. Recommend yes — it
-  decouples the two hardest risks (carrier flip, stack-map rework).
+### 6.1 Decisions (2026-07-12, team lead)
+
+Binding rulings on the §5/§2 questions; these govern the S0-S5 implementation.
+
+1. **Q1 — Compile-time VARIANT approved.** `candidate_c_value` is a compile-time
+   variant (P8 build-and-select), not an in-place flip: bisectable, keeps the
+   Active fallback, and lets the parity battery run both carriers side-by-side.
+   **Constraint:** while the variant exists, the landing gate for every S-stage
+   runs the battery on **both** carriers (the variant must never rot silently),
+   and the variant carries a **kill-date criterion** — once it wins the full
+   benchmark matrix, it is promoted to default and the Active carrier is deleted
+   (S5). The workspace does not carry two carriers indefinitely.
+2. **Q2 — JIT OFF for the flip; S3 is a second geometry.** S4 flips the carrier
+   with the JIT disabled (tree-walk Candidate-C, serial + K=4 parity); S4b
+   re-enables JIT only after S3's one-word stack-map geometry is GC-stress +
+   sweep-zero proven. **S3 reworks the just-landed two-word stack-map code
+   (`lower/stack_maps.rs`, `cranelift.rs:3119-3150`) as a SECOND geometry
+   selected by `JitValueAbi`, NOT an edit of the two-word path** — both
+   geometries live until S4b proves the one-word one. This decouples the two
+   hardest risks (carrier flip vs. stack-map rework).
+3. **D2 accepted — the variant feature IS the missing switch.** Doc 30's
+   "selecting the one-word active ABI" language gets a pointer fix in the batched
+   doc pass; the `candidate_c_value` variant is that selection mechanism.
+
+### 6.2 Doc-vs-code divergences
+
 - **D1 — The recent stack-map/relocation landing assumed two-word.**
   `lower/stack_maps.rs` and `cranelift.rs:3119-3150` are recently-landed code
   (the FV-0 "compiled-root prerequisite" / relocation work) built explicitly on
@@ -412,10 +439,21 @@ else.** Serialization is already neutral, scalar construction is funneled, and
 the JIT/FFI return path is width-parameterized — so S0-S3 land the boxing, the
 bridge, the dual-width FFI import helpers, and (the hardest new work) the
 one-word JIT stack-map/relocation geometry under the unchanged 16-byte carrier,
-each parity-gated. S4 then flips the `Value` type in one reviewable commit —
-minimized to the accessor contract, `AtomicValueCell`, the layout selector, and
-the forced-bit bridge removal — behind the full parity battery in all four modes.
-The single item most worth the lead's attention is that S3 reworks the recently
--landed two-word stack-map/relocation roots (`lower/stack_maps.rs`,
-`cranelift.rs:3119-3150`): that code assumed the two-word representation and the
-cutover cannot avoid rebuilding it.
+each parity-gated. S4 then flips the `Value` type in one reviewable commit under
+the `candidate_c_value` compile-time variant (lead ruling §6.1) with the **JIT
+off** — minimized to the accessor contract, `AtomicValueCell`, the layout
+selector, and the forced-bit bridge removal — gated serial + K=4 + sweep;
+S4b re-enables JIT Candidate-C once S3's one-word stack maps are stress-proven,
+and S5 promotes the winning variant to default and deletes the Active carrier.
+The single item most worth attention is that S3 reworks the recently-landed
+two-word stack-map/relocation roots (`lower/stack_maps.rs`,
+`cranelift.rs:3119-3150`) as a second `JitValueAbi`-selected geometry: that code
+assumed the two-word representation and the cutover cannot avoid rebuilding it.
+
+---
+
+**Handoff (2026-07-12).** Phase 1 (this design note, with the lead's rulings
+recorded in §6.1) is complete. Phase 2 — the S0-S5 implementation — HANDS OFF:
+this session pauses at the implementation boundary, and the cutover will be
+resumed by the next engineer (Codex) starting from S0 (§5). No source was
+changed; the build lane was never used.
