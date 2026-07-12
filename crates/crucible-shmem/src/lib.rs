@@ -134,6 +134,8 @@ const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 
 #[path = "shmem/delivery_errors.rs"]
 mod delivery_errors;
+#[path = "shmem/fingerprint_sample.rs"]
+mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
 mod frame_node;
 #[path = "shmem/region.rs"]
@@ -142,6 +144,7 @@ mod region;
 mod ring_coverage;
 
 pub use delivery_errors::*;
+pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
 pub use ring_coverage::*;
