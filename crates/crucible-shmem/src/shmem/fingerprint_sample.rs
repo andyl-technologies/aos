@@ -36,8 +36,11 @@ pub const FINGERPRINT_DIGEST_BYTES: usize = 32;
 pub const FINGERPRINT_DIGEST_WORDS: usize = FINGERPRINT_DIGEST_BYTES / 8;
 /// Maximum number of vCPUs one fingerprint sample slot can carry.
 ///
-/// The single-VM fingerprint scenarios pin two vCPUs and the N-vCPU expansion
-/// pins four; eight leaves deterministic headroom without inflating the slot.
+/// The single-VM fingerprint scenario pins two vCPUs and the N-vCPU (M3)
+/// expansion runs `-smp 4`; eight leaves deterministic headroom without
+/// inflating the slot. This is the slot's shared tracked-vCPU bound: M3's
+/// per-vCPU fingerprint wiring lands on top of this same slot, so the constant
+/// mirrors the C trace plugin's tracked-vCPU limit rather than a per-gate value.
 pub const FINGERPRINT_SAMPLE_MAX_VCPUS: usize = 8;
 /// Number of payload words describing one tracked vCPU.
 const FINGERPRINT_SAMPLE_VCPU_WORDS: usize = FINGERPRINT_DIGEST_WORDS + 2;
@@ -158,6 +161,14 @@ impl FingerprintSample {
 }
 
 /// Fixed per-node slot carrying the latest published fingerprint sample.
+///
+/// Read correctness rests on a **quiescent read**: the host reads the slot only
+/// after `finish_quantum`, when the plugin has parked at the boundary and is not
+/// writing, so the observed sample is always the one published for that exact
+/// icount. The generation seqlock ([`Self::publish`]/[`Self::snapshot`] gen
+/// fencing) is defense-in-depth against a torn read, not the primary guarantee —
+/// downstream per-vCPU work (M3) must preserve the quiescent-read invariant and
+/// not treat the seqlock as a license to read while the plugin is running.
 #[derive(Debug)]
 #[repr(C, align(128))]
 pub struct FingerprintSampleSlot {
