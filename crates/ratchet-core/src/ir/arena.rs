@@ -67,4 +67,77 @@ impl IrArena {
         self.children.extend_from_slice(children);
         Ok(IrChildSlice::new(start, len))
     }
+
+    /// Replaces the node at `id` in place, preserving its source span.
+    ///
+    /// This is the arena-stable rewrite primitive for simplifier passes that fold
+    /// a node to an equivalent value without changing the arena's shape: the node
+    /// keeps its [`IrId`] and [`Span`], so IR-id- and span-keyed caches (the eval
+    /// demand memo and the JIT compiled-body def-site key) stay coherent, while
+    /// its kind, effect class, and payload are replaced. Child-pool and
+    /// side-table entries the previous payload referenced are left in place; a
+    /// fold that abandons them simply leaves them unreachable from `root`.
+    ///
+    /// Returns `false` (making no change) if `id` is out of range.
+    ///
+    /// This is `pub(super)`: only the `ir` module — where the simplifier driver
+    /// and passes live — may mutate a lowered node, per RFC-0007 doc 30 §8 D4.
+    // Arena-stable rewrite primitive for simplifier passes; the first caller is
+    // the constant-folding pass (staged increment 4), until which it is unused.
+    #[allow(dead_code)]
+    #[must_use]
+    pub(super) fn set_node(
+        &mut self,
+        id: IrId,
+        kind: IrKind,
+        effect: EffectClass,
+        data: IrData,
+    ) -> bool {
+        match self.nodes.get_mut(id.index()) {
+            Some(node) => {
+                let span = node.span;
+                *node = IrNode::new(kind, span, effect, data);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_node_arena() -> (IrArena, IrId) {
+        let mut arena = IrArena::new();
+        let id = arena
+            .push_node(
+                IrKind::Int,
+                Span::new(4, 9),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )
+            .expect("node pushes");
+        (arena, id)
+    }
+
+    #[test]
+    fn set_node_replaces_payload_and_preserves_span_and_id() {
+        let (mut arena, id) = one_node_arena();
+        assert!(arena.set_node(id, IrKind::Bool, EffectClass::pure(), IrData::Bool(true)));
+
+        let node = arena.node(id).expect("node still present at the same id");
+        assert_eq!(node.kind, IrKind::Bool);
+        assert_eq!(node.data, IrData::Bool(true));
+        assert_eq!(node.span, Span::new(4, 9), "span is preserved across the rewrite");
+        assert_eq!(arena.nodes().len(), 1, "no node is added or removed");
+    }
+
+    #[test]
+    fn set_node_out_of_range_makes_no_change() {
+        let (mut arena, _id) = one_node_arena();
+        let before = arena.nodes().to_vec();
+        assert!(!arena.set_node(IrId::new(7), IrKind::Null, EffectClass::pure(), IrData::None));
+        assert_eq!(arena.nodes(), before.as_slice(), "an out-of-range id is a no-op");
+    }
 }
