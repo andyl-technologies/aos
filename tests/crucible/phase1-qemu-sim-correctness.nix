@@ -195,6 +195,14 @@
         label = "still-idle completion rearm";
         needle = "rr_crucible_sim_maybe_rearm_idle_callback";
       }
+      {
+        # A parked-pending vCPU drains queued run_on_cpu work before re-parking,
+        # so a main-thread run_on_cpu (e.g. a machine-reset device callback)
+        # cannot deadlock against the main-loop-dispatched advance completion.
+        # The behavioral guard is the live idle-jump gate; this pins the drain.
+        label = "parked-pending vCPU drains queued work";
+        needle = "cpu_work_list_empty(first_cpu)";
+      }
     ]
     else [
       {

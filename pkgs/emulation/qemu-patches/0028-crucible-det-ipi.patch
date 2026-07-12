@@ -17,7 +17,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
      cpu_count = rr_cpu_count();
      *cpu_budget = icount_percpu_budget(cpu_count);
  
-@@ -538,12 +540,16 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -552,12 +554,16 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
