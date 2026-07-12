@@ -40,11 +40,23 @@ fn run() -> Result<(), String> {
     let kernel = required_arg(&mut args, &program)?;
     let root_image = required_arg(&mut args, &program)?;
     let run_directory = required_arg(&mut args, &program)?;
+    let initrd = args.next();
+    let kernel_cmdline = args.next();
     if args.next().is_some() {
         return Err(usage(&program));
     }
 
-    let config = LivePluginInstallGateConfig::new(qemu, plugin, kernel, root_image, run_directory);
+    let mut config =
+        LivePluginInstallGateConfig::new(qemu, plugin, kernel, root_image, run_directory);
+    if let Some(initrd) = initrd {
+        config = config.with_initrd(initrd);
+    }
+    if let Some(kernel_cmdline) = kernel_cmdline {
+        let kernel_cmdline = kernel_cmdline
+            .into_string()
+            .map_err(|_| String::from("kernel command line is not valid UTF-8"))?;
+        config = config.with_kernel_cmdline(kernel_cmdline);
+    }
     let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
@@ -100,7 +112,9 @@ fn required_arg(
 
 #[cfg(target_os = "linux")]
 fn usage(program: &str) -> String {
-    format!("usage: {program} QEMU PLUGIN KERNEL ROOT_IMAGE RUN_DIRECTORY")
+    format!(
+        "usage: {program} QEMU PLUGIN KERNEL ROOT_IMAGE RUN_DIRECTORY [INITRD [KERNEL_CMDLINE]]"
+    )
 }
 
 #[cfg(not(target_os = "linux"))]
