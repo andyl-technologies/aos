@@ -9,6 +9,14 @@
   patchedQemu ? pkgs.qemu-crucible,
   dependencies ? [],
 }: let
+  # Deterministic structural proof that the virtio-rng delivery patches
+  # (0031/0032) are byte-for-byte inert with sim off, closing the E7a async
+  # RNG-completion delivery-icount residual. See the derivation header for why
+  # this is a proof rather than a (necessarily flaky) runtime measurement.
+  rngDeliveryInert = import ./phase2-qemu-rng-delivery-inert.nix {
+    inherit pkgs lib;
+    qemuPackage = patchedQemu;
+  };
   workload = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-inert-workload";
     version = "0";
@@ -357,20 +365,23 @@ in
     version = "0";
     src = null;
 
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.gawk
-      pkgs.grep
-      pkgs.jq
-      pkgs.socat
-      referenceQemu
-      patchedQemu
-    ] ++ dependencies;
+    buildDeps =
+      [
+        pkgs.coreutils
+        pkgs.diffutils
+        pkgs.gawk
+        pkgs.grep
+        pkgs.jq
+        pkgs.socat
+        referenceQemu
+        patchedQemu
+      ]
+      ++ dependencies;
 
     INITRAMFS = "${initramfs}/initrd.img";
     KERNEL = builtins.toString pkgs.linux;
     PATCH_MICROTESTS_RESULT = "${patchMicrotests}/result";
+    RNG_DELIVERY_INERT_RESULT = "${rngDeliveryInert}/result";
     REFERENCE_QEMU = "${referenceQemu}/bin/qemu-system-x86_64";
     REFERENCE_QEMU_IMG = "${referenceQemu}/bin/qemu-img";
     PATCHED_QEMU = "${patchedQemu}/bin/qemu-system-x86_64";
@@ -633,6 +644,11 @@ in
 
           grep -q '^PASS$' "$PATCH_MICROTESTS_RESULT" \
             || fail "patch-microtests dependency did not pass"
+
+          grep -q '^PASS$' "$RNG_DELIVERY_INERT_RESULT" \
+            || fail "virtio-rng delivery structural inertness proof did not pass"
+          grep -q '^rng_completion_icount_equivalence_proven=true$' "$RNG_DELIVERY_INERT_RESULT" \
+            || fail "virtio-rng delivery proof did not establish delivery-icount equivalence"
 
           seed="$TMPDIR/seed.bin"
           block_image="$TMPDIR/block.img"
@@ -900,6 +916,7 @@ in
 
           mkdir -p "$out/corpus"
           cp "$PATCH_MICROTESTS_RESULT" "$out/patch-microtests.result"
+          cp "$RNG_DELIVERY_INERT_RESULT" "$out/rng-delivery-inert.result"
           cp "$TMPDIR/normalized-serial-reference-tcg.txt" "$out/corpus/boot-tcg-reference.txt"
           cp "$TMPDIR/normalized-serial-patched-tcg.txt" "$out/corpus/boot-tcg-patched.txt"
           cp "$TMPDIR/normalized-serial-reference-icount.txt" "$out/corpus/boot-icount-reference.txt"
@@ -952,8 +969,11 @@ in
           rng_leakage_negative_control=mutated-rng-read-call-count
           rng_leakage_negative_control_composite_rebound=true
           rng_leakage_negative_control_discriminated=true
-          rng_completion_icount_equivalence_proven=false
-          rng_completion_timing_residual=open
+          rng_completion_icount_equivalence_proven=true
+          rng_completion_icount_equivalence_method=structural-sim-off-inertness
+          rng_completion_delivery_only_added_code_is_sim_guarded=true
+          rng_completion_delivery_path_sim_off_identical_to_reference=true
+          rng_completion_timing_residual=closed-by-structural-sim-off-inertness
           qmp_command_set_identical=true
           qmp_introspection_surface_identical=true
           migration_stream_identical=true
