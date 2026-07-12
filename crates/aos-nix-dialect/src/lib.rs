@@ -56,6 +56,19 @@ pub const NIX_EFFECT_TRACE: EffectClass = EffectClass::new(8, false);
 /// A conservative fallback for effectful Nix builtins without a refined member.
 pub const NIX_EFFECT_GENERIC: EffectClass = EffectClass::new(9, false);
 
+/// Builtins whose value depends on eval-time CLI/system/impure state.
+///
+/// This is the non-speculable member for the "CLI/system-sensitive" builtins —
+/// `currentSystem`, `currentTime`, `nixVersion`, `langVersion`, `nixPath`, and
+/// `storeDir` (see [`nix_builtin_is_cli_sensitive`]). Their result is
+/// deterministic *within* a single evaluation but varies across runs with the
+/// `--eval-system` flag, the wall clock, or the store/path configuration, so a
+/// simplifier pass must never fold or propagate their value into the cached IR
+/// (RFC-0007 doc 25 §5; doc 30 §8 decision D5). Marking them non-speculable keeps
+/// `is_speculable()`-gated rewrites from baking a `--eval-system`-dependent value
+/// into a `.drv`.
+pub const NIX_EFFECT_CLI_SENSITIVE: EffectClass = EffectClass::new(10, false);
+
 /// Nix dialect operation for the `derivationStrict` `.drv` boundary.
 pub const NIX_OP_DERIVATION_STRICT: IrDialectOp = IrDialectOp::new(1);
 
@@ -134,6 +147,30 @@ pub fn nix_builtin_effect_of(name: Option<&[u8]>, effect: BuiltinEffect) -> Effe
         ) => NIX_EFFECT_FILE_IO,
         _ => NIX_EFFECT_GENERIC,
     }
+}
+
+/// Returns whether `name` is a CLI/system/impure-sensitive Nix builtin.
+///
+/// These builtins — `currentSystem`, `currentTime`, `nixVersion`, `langVersion`,
+/// `nixPath`, and `storeDir` — read eval-time CLI, system, clock, or store
+/// configuration. They are ordinarily reached as *values*
+/// (`builtins.currentSystem`), which lower to a pure `BuiltinAttr` node, so the
+/// effect-class stamp alone does not flag them. The simplifier consults this
+/// predicate to refuse folding or propagating their value into the cached IR,
+/// which would bake a `--eval-system`-dependent (or otherwise per-run) result
+/// into a `.drv` (RFC-0007 doc 25 §5; doc 30 §8 decision D5). Their non-speculable
+/// effect member, for the paths that carry one, is [`NIX_EFFECT_CLI_SENSITIVE`].
+#[must_use]
+pub fn nix_builtin_is_cli_sensitive(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"currentSystem"
+            | b"currentTime"
+            | b"nixVersion"
+            | b"langVersion"
+            | b"nixPath"
+            | b"storeDir"
+    )
 }
 
 /// Returns the Nix dialect operation for a direct-lowered builtin, when the
@@ -257,6 +294,47 @@ mod tests {
             NIX_EFFECT_IMPORT.effect_key(),
             NIX_EFFECT_READ_FILE.effect_key()
         );
+    }
+
+    #[test]
+    fn cli_sensitive_builtins_are_non_speculable_and_classified() {
+        assert!(
+            !NIX_EFFECT_CLI_SENSITIVE.is_speculable(),
+            "CLI/system-sensitive builtins must never be speculated"
+        );
+        assert_ne!(
+            NIX_EFFECT_CLI_SENSITIVE.effect_key(),
+            NIX_EFFECT_PURE.effect_key()
+        );
+        for name in [
+            b"currentSystem".as_slice(),
+            b"currentTime",
+            b"nixVersion",
+            b"langVersion",
+            b"nixPath",
+            b"storeDir",
+        ] {
+            assert!(
+                nix_builtin_is_cli_sensitive(name),
+                "{} must be classified CLI/system-sensitive",
+                String::from_utf8_lossy(name)
+            );
+        }
+        // Genuinely pure/total builtins stay foldable.
+        for name in [
+            b"add".as_slice(),
+            b"sub",
+            b"length",
+            b"stringLength",
+            b"typeOf",
+            b"toString",
+        ] {
+            assert!(
+                !nix_builtin_is_cli_sensitive(name),
+                "{} is pure and must remain speculable",
+                String::from_utf8_lossy(name)
+            );
+        }
     }
 
     #[test]
