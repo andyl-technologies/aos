@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeadlineIntrospection",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-6"],
+  taskIds ? ["T-PLUG-6"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,6 +14,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
@@ -72,8 +73,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-6 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-6**";
+        label = "T-PLUG-6 completed by the live plugin quantum gate";
+        needle = "- [x] **T-PLUG-6**";
+      }
+      {
+        label = "T-PLUG-6 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
       {
         label = "required plugin export wording";
@@ -146,6 +151,8 @@
         label = "state stores resolved deadline reader";
         needle = "exact_deadline_reader: Some(exact_deadline_reader)";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "install path missing symbol test";
         needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";

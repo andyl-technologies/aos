@@ -916,22 +916,43 @@ component that makes that purity true *inside* the QEMU process.
   acquire time control before the first instruction → map+validate shmem → arm
   wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
   loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.
-- [ ] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
+- [x] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
   satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.
-- [ ] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which loads no
+  observation plugin so the Rust plugin is the sole `sim_shmem` time authority:
+  across the boot quanta the guest advances by exactly its guest-instruction icount
+  up to each host-published scheduler ceiling and stops there, and the whole boot
+  fingerprint is byte-identical on a second run taken under host CPU load — only
+  possible if virtual time is owned by the plugin and never sampled from a host
+  clock. The time-control, idle-loop, and deadline source paths are held free of
+  wall-clock/monotonic/entropy APIs by the sibling `qemuPluginTimeControl` gate.
+- [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
   icount, compute the next local wake from exact timer and inbound delivery
   signals against the scheduler ceiling, park on the wake fd/futex (no busy spin,
   no wall-clock timeout), jump on scheduler release, mark done on shutdown wake,
   inject due frames in deterministic order, and republish running/resume status. —
   satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
   §12.3.3, §12.4.1.
-- [ ] **T-PLUG-6** Implement exact next-deadline introspection (read the next
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which observes the
+  plugin run the idle hot loop live: at guest HLT idle onset it publishes icount,
+  computes the next local wake from the exact `QEMU_CLOCK_VIRTUAL` timer deadline,
+  and parks on the wake fd/futex with no wall-clock timeout; on scheduler release
+  it enqueues the authorized advance and, per the deferred-completion discipline,
+  waits for the queued-advance completion before mutating architectural state
+  rather than advancing eagerly. Committing that queued advance to the wake point
+  is T-PLUG-7; deterministic in-order inbound-frame injection is T-PLUG-8.
+- [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
   `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
   icount) and ban the overshoot-and-correct fallback; fail loudly during callback
   registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which records the
+  plugin read the exact next `QEMU_CLOCK_VIRTUAL` deadline through the required
+  export and `ceil`-convert it to icount live: at idle onset the gate emits
+  `idle_next_deadline_icount` equal to the introspected timer deadline with no
+  overshoot-and-correct, and the same value appears on both runs.
 - [ ] **T-PLUG-7** Implement idle-jump advancement through the required
   queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion
   (`qemu_plugin_register_time_advance_cb`) exports: keep plugin state
