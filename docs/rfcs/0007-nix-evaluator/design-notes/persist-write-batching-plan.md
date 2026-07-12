@@ -716,3 +716,24 @@ atomic-write temp parent — to hunt). And **futex is still 73% of the traced
 time (0.27s)** — once B lands, if it still dominates the cache-on cold delta,
 that is the next attribution target (parallel-pool parking / a persist lock),
 to be MEASURED not guessed.
+
+### 15.1 Advisory-posture check (Increment A robustness)
+
+Dropping the per-op ensure changes one edge: today a cache dir externally
+deleted mid-run silently self-heals (the per-op `create_dir_all` recreates it);
+after A, a subsequent append opens the now-missing file and errors. Verified the
+advisory contract absorbs this — an append error degrades to a lost cache write,
+never an eval error:
+
+- Value/blob materialization: `match persist_cache.materialize_*(...) { Err(e) =>
+  { tracing::warn!(...); None } }` (`force_persistence.rs:275-282`); the method
+  returns `Option` and its own doc states the operation is advisory (":294").
+- Metadata-index append: `record_node_metadata_unlocked -> append_entry` returns
+  `Result`, but the only caller is `flush_buffered_node_demands`
+  (`run_scope.rs:112`), which every caller wraps in `if let Err(e) { warn }`
+  (`cache.rs:103` and `advance_persist_eval_cache_run_boundary`).
+
+So no append error reaches the eval `Result` — same log-and-continue contract the
+loss-matrix tested on the network tier. Increment A therefore preserves the
+advisory posture; the removed per-op ensure was pure redundancy, not a
+self-heal the eval relied on.
