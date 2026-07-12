@@ -600,12 +600,16 @@ warm cache entry and a timing change — the C-19 invariant.
 
 ## Appendix A — S0 parse/lower timer diff-plan (mechanical when the lane opens)
 
-The first implementation increment. Adds four monotonic front-end timers to the
-existing eval-stats surface so the "~25% of cold" claim is self-measuring, and no
-later stage claims a `%` win without timer evidence. **Timing is taken only when
-`AOS_NIX_EVAL_STATS` is enabled**, so the default hot path pays nothing and the
-K=1/speculate-off parity+performance gate is untouched. Timing-only: no value,
-error, or `.drv` changes.
+The first implementation increment. It lands the instrumentation for **two**
+gates in one pass, so S0 is a single transcription job: (i) the "~25% of cold"
+parse/lower claim this note depends on (§A.1), and (ii) the **prelude-force-share**
+metric that gates task #6 heap-image snapshots (§A.3, added per the snapshot-design
+ruling). All of it is behind `AOS_NIX_EVAL_STATS`, so the default hot path pays
+nothing and the K=1/speculate-off parity+performance gate is untouched.
+Instrumentation-only: no value, error, or `.drv` changes.
+
+§A.1 adds four monotonic front-end timers to the existing eval-stats surface so no
+later stage claims a `%` win without timer evidence.
 
 ### A.1 Files and exact edits
 
@@ -683,4 +687,77 @@ error, or `.drv` changes.
 - File-size gate (`tests/source_file_size.rs`): `outcome.rs` is already the
   largest oracle file (14,420 lines) — four field lines do not cross a cap, but
   re-run the gate since it is pre-existing-red on some files (task #9).
+
+### A.3 Prelude-force-share metric (task #6 heap-snapshot gate)
+
+Task #6 (heap-image snapshots, doc 31 §1) pre-forces the prelude scaffolding — the
+`lib/` + `stdenv/` graph that is identical across every package — once into a heap
+image, so its payoff is bounded by **the fraction of cold-eval work spent forcing
+prelude thunks** rather than package-specific thunks. S0 must emit that number.
+The mechanic the ruling suggests is sound: **module provenance is known at force
+time**, so each force can be attributed to prelude vs package by the owning
+module's source path.
+
+**Provenance is available and cheap.** A forced thunk's owning module is
+`self.current_module` at the force-accounting site
+(`alloc_intern.rs:1904,1917-1918`, the `EvalNodeRef::new(self.current_module, id)`
+subject and the `increment_thunks_forced()` call). The module's file path is
+`TreeWalkModule.source: Option<ModuleSource>` → `ModuleSource.name`
+(`tree_walk.rs:690,777-780`), which is the import realpath. "Prelude" is a path
+classification: the realpath lies under the repo `lib/` or `stdenv/` tree (final
+prefix set is a config detail — the AOS `lib` graph plus `stdenv/`). To keep the
+per-force cost to a single branch, **classify once at module construction**: add
+`is_prelude: bool` to `TreeWalkModule`, computed in `TreeWalkModule::new`
+(`tree_walk.rs:695`) / `push_module` by testing `source.name` against the prelude
+prefixes. Per force then costs one bool read, not a string scan.
+
+**Two counters, one optional wall bucket.** Add to `EvalStats` (`outcome.rs`,
+beside the front-end fields), wired through `merge_from` (`:13720`) identically:
+
+```text
+pub(crate) prelude_thunks_forced: u64,     // forces whose owning module is prelude
+pub(crate) prelude_force_nanos: u64,       // OPTIONAL wall bucket (see caveat)
+```
+
+`thunks_forced` already exists, so the **count ratio**
+`prelude_thunks_forced / thunks_forced` is the cheap, distortion-free primary
+signal — increment `prelude_thunks_forced` next to the existing
+`increment_thunks_forced()` (`alloc_intern.rs:1918`) under
+`if module_is_prelude(self.current_module)`, gated by `eval_stats_dump()`.
+
+**Wall caveat — read before trusting `prelude_force_nanos`.** A count ratio is not
+a wall ratio if prelude thunks are on average cheaper or costlier than package
+thunks, and the snapshot payoff is a *wall* saving. Two honest options for the
+wall figure, in preference order:
+
+1. **One-off sampling profile with module attribution** (most accurate, no per-force
+   overhead): attribute on-CPU force time by the owning module's path prefix. Use
+   this figure for the actual task-#6 go/no-go.
+2. **`prelude_force_nanos` bracket bucket** (always-available proxy): time the
+   `eval_thunk_body` span (`alloc_intern.rs:1927-1938`) and add to the prelude
+   bucket when the owning module is prelude. This double-counts nested forces
+   (an outer prelude force's span includes inner forces) and adds per-force
+   `Instant` overhead, so its **absolute** nanos are inflated and its **ratio**
+   against a same-method total-force bucket is the only trustworthy read. Ship it
+   only if the sampling profile is unavailable, and label it a proxy.
+
+The count ratio (option-0, always on under the stats flag) is what belongs in the
+dump; the wall figure is a measurement, not a shipped counter. Emit
+`prelude_thunks_forced` (and, if built, `prelude_force_nanos`) in the same
+`eval_stats_dump.rs` JSON block and `text` example as the front-end fields.
+
+**One mechanical check at implementation time.** Confirm `self.current_module` at
+`alloc_intern.rs:1917` is the *forced thunk's def-site* module, not the caller's —
+the force-cache subject keys on `(self.current_module, id)` (`:1904`), which is
+only correct if `current_module` is already the thunk's owning module at that
+point, so it almost certainly is; but if a captured-module swap happens inside
+`eval_thunk_body` instead, read the thunk's captured module ref for classification.
+This is the one-line check that decides the attribution site.
+
+**Gate accounting note for task #6.** The prelude-force *share* is the *ceiling* on
+snapshot payoff, not the payoff: the snapshot also pays to load/map the image, and
+a warm-parse-cache run already amortizes prelude *parsing* (§1b). So task #6 should
+compare `prelude_thunks_forced` share against the snapshot's load cost, using the
+front-end timers (§A.1) to separate prelude *parse* savings (already available via
+the parse cache) from prelude *force* savings (the snapshot's unique contribution).
 
