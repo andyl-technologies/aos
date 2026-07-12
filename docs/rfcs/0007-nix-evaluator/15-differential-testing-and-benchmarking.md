@@ -668,7 +668,9 @@ is the first-eval **cold** cache-populate tax (312 ms ≈ 4.9x cache-less, down
 from the ~13x-class before the persist-storm campaign — see
 `design-notes/persist-write-batching-plan.md` §16.1), which the remaining
 measure-gated increments (write-behind, statx-kill, pack-index hold-fd) drive
-toward the ≤1.2x gate.
+toward the ≤1.2x gate. **The full decision package** — trajectory, memory,
+recommendation (default-on for repeat-eval workflows; cache-off one-shot until
+§3.2(b) lands) — lives in `design-notes/persist-write-batching-plan.md` §17.
 
 **Scoreboard line every landing pastes into its report/commit body:**
 ```text

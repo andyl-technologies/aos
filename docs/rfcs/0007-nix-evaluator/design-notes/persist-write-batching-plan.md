@@ -819,3 +819,41 @@ duration, not an independent cost; shrinking the write-through shrinks it.
 **Lesson: `strace -c` %time sums blocked time across threads, so a parked-idle
 futex reads as huge — attribute with `-k` stacks (or off-CPU perf) before
 believing it.** Don't chase a futex `%time` as a lever without the stacks.
+
+## 17. Default-cache-root decision package
+
+The persist-write campaign's deliverable for the product question "should `aos`
+default to a durable cache root (`AOS_NIX_CACHE`)?" All numbers are Linux builder
+measurements (builder-hil1-87eb5b00), native `nix-bench`, byte-parity green.
+
+**Cold cache-populate trajectory (cache-enabled cold vs cache-less cold, zlib):**
+
+```text
+  before campaign   ~13x slower   (995 ms vs 76 ms, darwin baseline)
+  after A + B1       ~4.9x slower  (312 ms vs 63.9 ms, Linux)
+  after §3.2(b)      TBD           (persist-exec; write-through is the last big cold cost)
+```
+
+**Warm repeat-instantiate (the flagship):** `AOS_NIX_CACHE` warm = **6.6 ms** —
+~10x faster than cache-less cold (63.9 ms) and **~28x faster than C++
+`nix-instantiate` (~185 ms)**. Answered from the durable root-cutoff record
+without re-deriving the closure.
+
+**Memory (doc 15 §5.4):** with `MIMALLOC_PURGE_DELAY=0` (Linux default in the
+wrapper) wide-eval RSS is 37.7 MiB cold = **0.205x** / 34.8 MiB warm = **0.189x**
+of the C++ child, and the 17-attr leaf/toolchain median is **~30.4 MiB = 0.44x**
+— both under the ≤0.50 goal. So a default cache root does not regress the memory
+posture.
+
+**Recommendation: default the cache root ON for repeat-eval / interactive
+workflows** (CI package-set evals, `nix repl`-style loops, dev iteration) — warm
+6.6 ms is a decisive, measured win there. The one open cost is the **first-eval
+cold-populate tax (~4.9x cache-less, ~1 s absolute)**; for pure one-shot evals,
+cache-off (63.9 ms) still wins until that tax is paid down. §3.2(b) write-behind
+(handed to persist-exec, seam in task #25) is scoped as the closer that attacks
+the remaining synchronous write-through — the last big cold cost between ~4.9x
+and the ≤1.2x gate. **Ship default-on now for the repeat-eval workflows; keep
+cache-off the one-shot default until §3.2(b) lands and the cold ratio is
+re-measured.**
+
+Cross-referenced from doc 15 §5.4 (canonical scoreboard) and task #25.
