@@ -44,6 +44,11 @@ in
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
         sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 
+        # vm86 is versioned, so glibc only generates its object rule for a
+        # shared build. The static bootstrap must not retain the stale routine.
+        sed -i '/^sysdep_routines/s/ vm86//' \
+          "$SRC/sysdeps/unix/sysv/linux/i386/Makefile"
+
         # Out-of-tree build required by glibc
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
