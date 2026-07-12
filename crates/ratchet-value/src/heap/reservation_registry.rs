@@ -65,6 +65,9 @@ struct Slot {
     /// The reservation's mapped base address, valid only while `domain` names a
     /// live reservation.
     base: AtomicUsize,
+    /// The reservation's mapped byte length, so an address can be matched to the
+    /// reservation whose `[base, base + capacity)` range contains it.
+    capacity: AtomicUsize,
 }
 
 impl Slot {
@@ -72,6 +75,7 @@ impl Slot {
     const EMPTY: Self = Self {
         domain: AtomicU32::new(0),
         base: AtomicUsize::new(0),
+        capacity: AtomicUsize::new(0),
     };
 }
 
@@ -102,7 +106,12 @@ impl ReservationBaseRegistry {
     /// Returns [`ReservationRegistryError::TableFull`] when every slot is
     /// occupied, which only happens with more concurrently-live reservations
     /// than [`REGISTRATION_SLOTS`].
-    fn register(&self, domain: ArenaDomainId, base: usize) -> Result<usize, ReservationRegistryError> {
+    fn register(
+        &self,
+        domain: ArenaDomainId,
+        base: usize,
+        capacity: usize,
+    ) -> Result<usize, ReservationRegistryError> {
         let domain = domain.raw();
         for (index, slot) in self.slots.iter().enumerate() {
             // Claim an empty slot with the transient RESERVING sentinel so a
@@ -115,7 +124,8 @@ impl ReservationBaseRegistry {
                 .is_ok()
             {
                 slot.base.store(base, Ordering::Relaxed);
-                // Publishing the real domain releases the base store above.
+                slot.capacity.store(capacity, Ordering::Relaxed);
+                // Publishing the real domain releases the base/capacity stores above.
                 slot.domain.store(domain, Ordering::Release);
                 self.high_water.fetch_max(index + 1, Ordering::AcqRel);
                 return Ok(index);
@@ -154,6 +164,25 @@ impl ReservationBaseRegistry {
         }
         None
     }
+
+    /// Returns the domain and base of the live reservation whose mapped range
+    /// contains `address`, if any.
+    fn reservation_containing(&self, address: usize) -> Option<(ArenaDomainId, usize)> {
+        let scanned = self.high_water.load(Ordering::Acquire);
+        for slot in self.slots.iter().take(scanned) {
+            let raw = slot.domain.load(Ordering::Acquire);
+            let Some(domain) = ArenaDomainId::from_raw(raw) else {
+                // Empty (`0`) or in-flight (`RESERVING`) slots never match.
+                continue;
+            };
+            let base = slot.base.load(Ordering::Acquire);
+            let capacity = slot.capacity.load(Ordering::Acquire);
+            if address >= base && address - base < capacity {
+                return Some((domain, base));
+            }
+        }
+        None
+    }
 }
 
 /// The process-global reservation base table.
@@ -171,8 +200,11 @@ static RESERVATION_BASE_REGISTRY: ReservationBaseRegistry = ReservationBaseRegis
 pub fn register_reservation_base(
     domain: ArenaDomainId,
     base: usize,
+    capacity: usize,
 ) -> Result<(), ReservationRegistryError> {
-    RESERVATION_BASE_REGISTRY.register(domain, base).map(|_| ())
+    RESERVATION_BASE_REGISTRY
+        .register(domain, base, capacity)
+        .map(|_| ())
 }
 
 /// Withdraws `domain`'s reservation base entry.
@@ -193,6 +225,18 @@ pub fn unregister_reservation_base(domain: ArenaDomainId) {
 #[must_use]
 pub fn reservation_base(domain: ArenaDomainId) -> Option<usize> {
     RESERVATION_BASE_REGISTRY.base_for(domain)
+}
+
+/// Returns the domain and base of the live reservation containing `address`.
+///
+/// This is the context-free construction path: a caller holding a raw heap
+/// pointer but no heap handle recovers the reservation identity to build a
+/// compressed `(domain, index)` word as `(domain, address - base)`. Arena hot
+/// paths that already hold their own base skip this scan. Returns `None` when no
+/// live reservation's mapped range contains `address`.
+#[must_use]
+pub fn reservation_containing_address(address: usize) -> Option<(ArenaDomainId, usize)> {
+    RESERVATION_BASE_REGISTRY.reservation_containing(address)
 }
 
 /// A failed reservation base registration.
@@ -216,13 +260,15 @@ mod tests {
     // tests register real monotonic domain ids concurrently, so fixed test
     // domains would collide with them on the shared static.
 
+    const CAP: usize = 0x1_0000;
+
     #[test]
     fn registered_base_resolves_and_unregister_clears_it() {
         let registry = ReservationBaseRegistry::new();
         let d = domain(0x0011_00);
         assert_eq!(registry.base_for(d), None);
 
-        registry.register(d, 0xdead_0000).expect("registers");
+        registry.register(d, 0xdead_0000, CAP).expect("registers");
         assert_eq!(registry.base_for(d), Some(0xdead_0000));
 
         registry.unregister(d);
@@ -234,8 +280,8 @@ mod tests {
         let registry = ReservationBaseRegistry::new();
         let a = domain(0x0022_01);
         let b = domain(0x0022_02);
-        registry.register(a, 0x1000).expect("registers a");
-        registry.register(b, 0x2000).expect("registers b");
+        registry.register(a, 0x1000, CAP).expect("registers a");
+        registry.register(b, 0x2000, CAP).expect("registers b");
 
         assert_eq!(registry.base_for(a), Some(0x1000));
         assert_eq!(registry.base_for(b), Some(0x2000));
@@ -256,7 +302,7 @@ mod tests {
         registry.unregister(d);
         assert_eq!(registry.base_for(d), None);
 
-        registry.register(d, 0x4000).expect("registers");
+        registry.register(d, 0x4000, CAP).expect("registers");
         registry.unregister(d);
         registry.unregister(d);
         assert_eq!(registry.base_for(d), None);
@@ -270,7 +316,7 @@ mod tests {
         for raw in 1..(REGISTRATION_SLOTS as u32 * 4) {
             let d = domain(raw);
             registry
-                .register(d, raw as usize * 0x100)
+                .register(d, raw as usize * 0x100, CAP)
                 .expect("registration reuses freed slots");
             assert_eq!(registry.base_for(d), Some(raw as usize * 0x100));
             registry.unregister(d);
@@ -281,12 +327,37 @@ mod tests {
     fn a_full_table_reports_table_full() {
         let registry = ReservationBaseRegistry::new();
         for raw in 1..=(REGISTRATION_SLOTS as u32) {
-            registry.register(domain(raw), raw as usize).expect("fills the table");
+            registry
+                .register(domain(raw), raw as usize, CAP)
+                .expect("fills the table");
         }
         assert_eq!(
-            registry.register(domain(REGISTRATION_SLOTS as u32 + 1), 0),
+            registry.register(domain(REGISTRATION_SLOTS as u32 + 1), 0, CAP),
             Err(ReservationRegistryError::TableFull),
         );
+    }
+
+    #[test]
+    fn reverse_lookup_matches_the_containing_reservation() {
+        let registry = ReservationBaseRegistry::new();
+        let a = domain(0x0044_01);
+        let b = domain(0x0044_02);
+        registry.register(a, 0x1_0000, 0x1000).expect("registers a");
+        registry.register(b, 0x2_0000, 0x1000).expect("registers b");
+
+        // Base, interior, and last-byte addresses resolve to their reservation.
+        assert_eq!(registry.reservation_containing(0x1_0000), Some((a, 0x1_0000)));
+        assert_eq!(registry.reservation_containing(0x1_0800), Some((a, 0x1_0000)));
+        assert_eq!(registry.reservation_containing(0x1_0fff), Some((a, 0x1_0000)));
+        assert_eq!(registry.reservation_containing(0x2_0001), Some((b, 0x2_0000)));
+
+        // One past the end of a's range and an address in no reservation miss.
+        assert_eq!(registry.reservation_containing(0x1_1000), None);
+        assert_eq!(registry.reservation_containing(0x9_0000), None);
+
+        registry.unregister(a);
+        assert_eq!(registry.reservation_containing(0x1_0800), None);
+        assert_eq!(registry.reservation_containing(0x2_0001), Some((b, 0x2_0000)));
     }
 
     #[test]
@@ -294,9 +365,14 @@ mod tests {
         // A single high-range domain the monotonic allocator will not reach
         // during the test run, so it does not collide on the shared static.
         let d = domain(super::super::CANDIDATE_C_ARENA_DOMAIN_MAX);
-        register_reservation_base(d, 0x5000).expect("registers on the global table");
+        register_reservation_base(d, 0x5000, 0x1000).expect("registers on the global table");
         assert_eq!(reservation_base(d), Some(0x5000));
+        assert_eq!(
+            reservation_containing_address(0x5500),
+            Some((d, 0x5000))
+        );
         unregister_reservation_base(d);
         assert_eq!(reservation_base(d), None);
+        assert_eq!(reservation_containing_address(0x5500), None);
     }
 }

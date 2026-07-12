@@ -225,7 +225,7 @@ impl ReservedArena {
         // handle (see `reservation_registry`). This happens before the
         // reservation escapes and is withdrawn in `Drop` before the mapping is
         // released, so a published entry always names live memory.
-        if let Err(error) = register_reservation_base(domain_id, base.as_ptr() as usize) {
+        if let Err(error) = register_reservation_base(domain_id, base.as_ptr() as usize, capacity) {
             // SAFETY: `mapped`/`capacity` denote the mapping created above and no
             // reference into it exists yet, so releasing it here is sound.
             let _ = unsafe { libc::munmap(mapped, capacity) };

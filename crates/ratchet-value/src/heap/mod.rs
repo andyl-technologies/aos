@@ -73,7 +73,7 @@ pub use reservation::{
 };
 pub use reservation_registry::{
     ReservationRegistryError, register_reservation_base, reservation_base,
-    unregister_reservation_base,
+    reservation_containing_address, unregister_reservation_base,
 };
 pub use resident::{
     PeakResidentMemoryScope, ProcessResidentMemoryError, ProcessResidentMemorySample,
