@@ -193,6 +193,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-sim-observer ......... post-exec boundary observe F    DET-29, PLUG-35
   crucible-safe-fingerprint-boundary exact BQL-held capture  F    DET-29, PLUG-35
   crucible-process-argv-attestation raw launch argv SHA-256  F    DET-31, QEMU-34
+  crucible-raw-state-export ..... GPA RAM + terminal VMstate  F    DET-29, PLUG-47
   crucible-preemption-inject .... commanded vCPU switch/IRQ  D    PATCH-47, DET-1, PLUG-50
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
@@ -729,6 +730,22 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   trace importer reject missing or mismatched attestation evidence.
 - **Inertness:** [PATCH-3](c) — capture is read-only and the additive export has
   no guest-visible effect unless an observation plugin queries it.
+- **Risk:** F.
+
+### crucible-raw-state-export — GPA-sorted guest-RAM + terminal VMState snapshot
+
+- **Enforces:** [DET-29], [PLUG-47]; lets an observation plugin capture the exact
+  guest-visible machine state — physical RAM plus non-RAM device VMState — for the
+  final fingerprint without a guest-side agent.
+- **Mechanism:** exposes GPA-sorted enumeration and exact copy of guest-RAM
+  regions, plus a terminal one-shot serialized non-RAM VMState snapshot
+  (begin/size/copy/free) captured while the machine is paused at a requested
+  boundary. The system-emulation plugin API exports only read-only accessors.
+- **Micro-test:** require the GPA-sorted RAM region export, the exact RAM copy,
+  and the terminal VMState snapshot lifecycle exports, with a stock negative
+  control proving the exports are absent on unpatched QEMU.
+- **Inertness:** [PATCH-3](c) — the exports are read-only and additive, with no
+  guest-visible effect unless an observation plugin queries them.
 - **Risk:** F.
 
 ### crucible-preemption-inject — commanded vCPU switch / interrupt delivery
