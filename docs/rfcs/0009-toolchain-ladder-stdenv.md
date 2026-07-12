@@ -368,6 +368,9 @@ stdenv` plus the existing eval/VM checks.
   versioned i386 `vm86` routine from that static build, because glibc only
   generates its object rule when shared libraries are enabled; retaining the
   routine leaves `misc/stamp.o` with an impossible `vm86.o` prerequisite.
+  Likewise, only add the ELF shared-object test modules to `extra-objs` when
+  shared libraries are enabled; otherwise `make all` tries to compile
+  `tst-dlmopen1mod` without the shared build's generated `gnu/lib-names.h`.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
