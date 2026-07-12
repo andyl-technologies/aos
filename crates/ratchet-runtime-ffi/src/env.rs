@@ -95,6 +95,10 @@ pub unsafe extern "C" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {
 /// `env` must be the opaque pointer produced from a pinned live runtime context
 /// carrying the dispatched [`EvalEnv`]. The evaluator and environment must
 /// outlive the call, and `slot` must be in bounds.
+// The Candidate-B one-word env helper depends on the Candidate-B `Value` bridge,
+// which is absent under the `candidate_c_value` carrier; it is unregistered and
+// unreachable there (JIT off), so it is compiled out entirely.
+#[cfg(not(feature = "candidate_c_value"))]
 pub unsafe extern "C" fn aos_candidate_b_env_get(env: *mut c_void, slot: u32) -> u64 {
     // SAFETY: The JIT call boundary supplies the same pinned runtime context
     // required by `aos_env_get`; this candidate wrapper only changes the return
@@ -114,6 +118,7 @@ pub unsafe extern "C" fn aos_candidate_b_env_get(env: *mut c_void, slot: u32) ->
 }
 
 /// Returns the process-local address of Candidate B's environment-read wrapper.
+#[cfg(not(feature = "candidate_c_value"))]
 pub fn aos_candidate_b_env_get_native_wrapper_address() -> *mut c_void {
     aos_candidate_b_env_get as RuntimeCandidateBEnvGetNativeFn as *mut c_void
 }

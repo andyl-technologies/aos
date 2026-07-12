@@ -700,7 +700,7 @@ pub fn eval_number_raw_bytes_with_options(
     let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
     let span = evaluator.node(ir.root)?.span;
-    let bytes = TreeWalk::raw_number_bytes(ir.root, span, value)?;
+    let bytes = evaluator.raw_number_bytes(ir.root, span, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();

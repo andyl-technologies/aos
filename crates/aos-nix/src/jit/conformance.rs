@@ -563,7 +563,13 @@ fn literal_oracle_value_for_ir_root(arena: &IrArena, root: IrId) -> Result<Value
 fn literal_oracle_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        // Dead under the Candidate-C variant (JIT off; floats box through the heap).
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Float, IrData::Float(_)) => Err(JitLowerError::UnsupportedIrBody {
+            kind: IrKind::Float,
+        }),
         (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
         (IrKind::Null, IrData::None) => Ok(Value::null()),
         (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
@@ -576,7 +582,12 @@ fn literal_oracle_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
 fn literal_oracle_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Float, IrData::Float(_)) => Err(JitLowerError::UnsupportedIrRoot {
+            kind: IrKind::Float,
+        }),
         (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
         (IrKind::Null, IrData::None) => Ok(Value::null()),
         (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {

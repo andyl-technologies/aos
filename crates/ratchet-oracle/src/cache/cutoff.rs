@@ -76,6 +76,14 @@ impl ValueHash {
             }
             ValueTag::Float => {
                 hasher.update(b"float");
+                // A Candidate-C float is a boxed reservation cell, not an inline
+                // value, so it has no context-free hash here; it is excluded from
+                // the inline cutoff cache and re-evaluated instead.
+                #[cfg(feature = "candidate_c_value")]
+                return Err(ValueHashError::InvalidValue {
+                    source: crate::value::ValueError::BoxedScalarRequiresHeap { kind: "float" },
+                });
+                #[cfg(not(feature = "candidate_c_value"))]
                 hasher.update(
                     &value
                         .as_float()
@@ -350,6 +358,9 @@ mod tests {
         ContextElement::deep_derivation(path.to_vec()).expect("deep context builds")
     }
 
+    // Baseline float ABI test; variant float path via scalars.rs + parity
+    // battery (cutover plan section 7).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn inline_value_hashes_are_stable_for_identical_values() {
         assert_eq!(inline_hash(Value::int(7)), inline_hash(Value::int(7)));
@@ -364,6 +375,9 @@ mod tests {
         );
     }
 
+    // Baseline float ABI test; variant float path via scalars.rs + parity
+    // battery (cutover plan section 7).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn inline_value_hashes_include_type_and_payload() {
         assert_ne!(inline_hash(Value::int(1)), inline_hash(Value::int(2)));

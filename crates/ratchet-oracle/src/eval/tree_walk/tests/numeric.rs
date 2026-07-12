@@ -247,6 +247,10 @@ fn unary_not_rejects_non_bool_operands() {
     assert_eq!(error.span(), operand_span);
 }
 
+// Baseline float ABI test (direct `as_float`); the variant boxes floats, so its
+// float path is covered by scalars.rs boxing round-trips + the parity battery.
+// See cutover plan section 7.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn numeric_unary_negation_handles_ints_and_floats() {
     assert_eq!(eval("-1").as_int(), Ok(-1));
@@ -295,6 +299,7 @@ fn numeric_unary_negation_rejects_non_numbers() {
     assert_eq!(error.span(), operand_span);
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn numeric_arithmetic_handles_ints_and_float_promotion() {
     assert_eq!(eval("1 + 2").as_int(), Ok(3));
@@ -318,6 +323,7 @@ fn integer_division_truncates_toward_zero() {
     assert_eq!(eval("(-7) / 2").as_int(), Ok(-3));
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn float_or_mixed_division_returns_float() {
     assert_eq!(eval("7 / 2.0").as_float(), Ok(3.5));

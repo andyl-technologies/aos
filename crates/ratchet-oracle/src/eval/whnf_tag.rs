@@ -117,6 +117,10 @@ mod tests {
         NonNull::<HeapObject>::dangling()
     }
 
+    // Baseline test builds float values via `Value::float`; the variant boxes
+    // floats (needs a heap). Its WHNF classification is exercised by the parity
+    // battery (cutover plan section 7).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn whnf_tags_return_by_inspection_without_heap_lookup() {
         let heap = EvalHeap::new();

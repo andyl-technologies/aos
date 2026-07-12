@@ -18,9 +18,17 @@ use std::ptr::NonNull;
 
 use thiserror::Error;
 
+#[cfg(feature = "candidate_c_value")]
+mod candidate_c_carrier;
 pub mod compressed;
 pub mod nanbox;
 pub mod tag;
+
+/// The active runtime value carrier when the `candidate_c_value` variant is
+/// selected: the 8-byte compressed word from [`candidate_c_carrier`], replacing
+/// the baseline 16-byte tagged pair below.
+#[cfg(feature = "candidate_c_value")]
+pub use candidate_c_carrier::Value;
 
 use tag::{HEAP_POINTER_ALIGNMENT as HEAP_POINTER_ALIGN, POINTER_TAG_MASK as HEAP_POINTER_MASK};
 
@@ -111,6 +119,7 @@ impl ValueTag {
 }
 
 /// A Nix runtime value represented as a 16-byte tagged word pair.
+#[cfg(not(feature = "candidate_c_value"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Value {
@@ -118,6 +127,7 @@ pub struct Value {
     payload: u64,
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 impl Value {
     /// Creates an inline integer value.
     pub const fn int(value: i64) -> Self {
@@ -588,6 +598,7 @@ impl Value {
     }
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 impl fmt::Debug for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -641,8 +652,29 @@ pub enum ValueError {
         /// The invalid raw payload.
         payload: u64,
     },
+    /// A Candidate-C heap word named an address outside every live reservation.
+    ///
+    /// Only reachable on the `candidate_c_value` carrier, where a heap pointer is
+    /// resolved through the process-wide reservation base registry.
+    #[error("address 0x{address:x} is not inside a live registered reservation")]
+    UnregisteredReservation {
+        /// The rejected native address (or, for decode, the arena index).
+        address: usize,
+    },
+    /// A boxed Candidate-C scalar was decoded without a heap handle.
+    ///
+    /// Only reachable on the `candidate_c_value` carrier: a boxed `i64`/`f64`
+    /// lives in a reservation cell, so it must be read back through the
+    /// evaluator heap seam (`EvalHeap::decode_int_value` / `decode_float_value`)
+    /// rather than a context-free accessor.
+    #[error("boxed {kind} scalar requires the evaluator heap to decode")]
+    BoxedScalarRequiresHeap {
+        /// The scalar kind that needs a heap handle (`"int"` or `"float"`).
+        kind: &'static str,
+    },
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 const _: () = {
     assert!(mem::size_of::<usize>() == 8);
     assert!(mem::size_of::<ValueTag>() == 8);
@@ -651,7 +683,7 @@ const _: () = {
     assert!(mem::align_of::<HeapObject>() == HEAP_POINTER_ALIGN);
 };
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use super::*;
 

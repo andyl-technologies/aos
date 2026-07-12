@@ -2,6 +2,9 @@
 
 use super::*;
 
+// Baseline float/scalar ABI test; variant float path via scalars.rs + parity
+// battery (cutover plan section 7).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn cached_expression_payloads_round_trip_through_persistent_encoding() {
     let payloads = vec![

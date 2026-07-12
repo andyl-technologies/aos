@@ -55,7 +55,14 @@ impl TreeWalk {
         let value = self.force_value(value_id, value_span, value)?;
         match value.tag() {
             ValueTag::Int => {
-                let value = (value.payload_bits() as i64).to_string().into_bytes();
+                let value = self
+                    .heap
+                    .decode_int_value(value)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    })?
+                    .to_string()
+                    .into_bytes();
                 Self::write_xml_empty_element(
                     id,
                     span,
@@ -66,7 +73,10 @@ impl TreeWalk {
                 )
             }
             ValueTag::Float => {
-                let value = Self::xml_float_bytes(f64::from_bits(value.payload_bits()));
+                let scalar = self.heap.decode_float_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                })?;
+                let value = Self::xml_float_bytes(scalar);
                 Self::write_xml_empty_element(
                     id,
                     span,
@@ -709,13 +719,22 @@ impl TreeWalk {
     }
 
     pub(super) fn raw_number_bytes(
+        &self,
         id: IrId,
         span: Span,
         value: Value,
     ) -> Result<Vec<u8>, TreeWalkError> {
         match value.tag() {
-            ValueTag::Int => Ok(Self::raw_int_bytes(value.payload_bits() as i64)),
-            ValueTag::Float => Ok(Self::raw_float_bytes(f64::from_bits(value.payload_bits()))),
+            ValueTag::Int => Ok(Self::raw_int_bytes(
+                self.heap.decode_int_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?,
+            )),
+            ValueTag::Float => Ok(Self::raw_float_bytes(
+                self.heap.decode_float_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?,
+            )),
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id,

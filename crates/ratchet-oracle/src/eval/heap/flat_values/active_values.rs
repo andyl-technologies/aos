@@ -73,10 +73,25 @@ impl EvalHeap {
     /// scalar in the reservation.
     #[inline(always)]
     pub fn alloc_int_value(&mut self, value: i64) -> Result<Value, EvalHeapError> {
-        if candidate_c_scalar_shadow_enabled() {
-            self.shadow_exercise_candidate_c_int(value);
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            if candidate_c_scalar_shadow_enabled() {
+                self.shadow_exercise_candidate_c_int(value);
+            }
+            Ok(Value::int(value))
         }
-        Ok(Value::int(value))
+        // On the Candidate-C carrier this seam IS the boxing funnel: inline `i32`
+        // stays immediate and wider integers box into the reservation scalar
+        // store, returning the compressed word as a `Value`.
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let word = self.candidate_c_encode_int(value).map_err(|error| {
+                EvalHeapError::CandidateCScalar {
+                    message: error.to_string(),
+                }
+            })?;
+            Ok(Value::from_word(word))
+        }
     }
 
     /// Constructs a float in the active runtime representation.
@@ -87,10 +102,24 @@ impl EvalHeap {
     /// because Candidate C stores the exact float bits in a typed arena cell.
     #[inline(always)]
     pub fn alloc_float_value(&mut self, value: f64) -> Result<Value, EvalHeapError> {
-        if candidate_c_scalar_shadow_enabled() {
-            self.shadow_exercise_candidate_c_float(value);
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            if candidate_c_scalar_shadow_enabled() {
+                self.shadow_exercise_candidate_c_float(value);
+            }
+            Ok(Value::float(value))
         }
-        Ok(Value::float(value))
+        // Every float boxes into the reservation scalar store on the Candidate-C
+        // carrier (a 64-bit float does not fit the 32-bit inline payload).
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let word = self.candidate_c_encode_float(value).map_err(|error| {
+                EvalHeapError::CandidateCScalar {
+                    message: error.to_string(),
+                }
+            })?;
+            Ok(Value::from_word(word))
+        }
     }
 
     /// Boxes `value` through the Candidate-C integer store and verifies the
@@ -142,7 +171,20 @@ impl EvalHeap {
     /// boxed scalar word.
     #[inline(always)]
     pub fn decode_int_value(&self, value: Value) -> Result<i64, EvalHeapError> {
-        value.as_int().map_err(EvalHeapError::from)
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            value.as_int().map_err(EvalHeapError::from)
+        }
+        // The scalar store decodes both the inline `i32` and the boxed-`i64`
+        // words, so the whole int seam funnels through it.
+        #[cfg(feature = "candidate_c_value")]
+        {
+            self.candidate_c_decode_int(value.word()).map_err(|error| {
+                EvalHeapError::CandidateCScalar {
+                    message: error.to_string(),
+                }
+            })
+        }
     }
 
     /// Decodes a float from the active runtime representation.
@@ -154,7 +196,18 @@ impl EvalHeap {
     /// boxed scalar word.
     #[inline(always)]
     pub fn decode_float_value(&self, value: Value) -> Result<f64, EvalHeapError> {
-        value.as_float().map_err(EvalHeapError::from)
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            value.as_float().map_err(EvalHeapError::from)
+        }
+        #[cfg(feature = "candidate_c_value")]
+        {
+            self.candidate_c_decode_float(value.word()).map_err(|error| {
+                EvalHeapError::CandidateCScalar {
+                    message: error.to_string(),
+                }
+            })
+        }
     }
 }
 

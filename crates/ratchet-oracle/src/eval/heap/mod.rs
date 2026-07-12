@@ -723,6 +723,16 @@ pub enum EvalHeapError {
     /// A runtime value failed a checked heap-value operation.
     #[error("heap value operation failed: {0}")]
     Value(#[from] ValueError),
+    /// A Candidate-C boxed-scalar store operation failed (variant carrier only).
+    ///
+    /// Carries the store error's rendered message so this enum keeps its
+    /// `Clone`/`Eq` derives (the scalar error type is `Debug + Error` only).
+    #[cfg(feature = "candidate_c_value")]
+    #[error("candidate-c scalar store error: {message}")]
+    CandidateCScalar {
+        /// The rendered scalar-store error.
+        message: String,
+    },
     /// An attrset operation failed while rewriting a checked heap field.
     #[error("heap attrset operation failed: {0}")]
     Attr(#[from] AttrError),

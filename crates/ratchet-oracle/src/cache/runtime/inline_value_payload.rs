@@ -59,11 +59,19 @@ impl InlineValuePayload {
                 .as_int()
                 .map(Self::Int)
                 .map_err(|source| ValueHashError::InvalidValue { source }),
+            #[cfg(not(feature = "candidate_c_value"))]
             crate::value::ValueTag::Float => value
                 .as_float()
                 .map(f64::to_bits)
                 .map(Self::Float)
                 .map_err(|source| ValueHashError::InvalidValue { source }),
+            // On the Candidate-C carrier a float is a boxed reservation cell, so
+            // it has no context-free immediate form: it is not an inline payload
+            // and the cache falls through to a full re-evaluation for it.
+            #[cfg(feature = "candidate_c_value")]
+            crate::value::ValueTag::Float => Err(ValueHashError::UnsupportedTag {
+                tag: crate::value::ValueTag::Float,
+            }),
             crate::value::ValueTag::Bool => value
                 .as_bool()
                 .map(Self::Bool)
@@ -80,8 +88,18 @@ impl InlineValuePayload {
 
     pub(super) fn immediate_value(&self) -> Option<Value> {
         match self {
+            #[cfg(not(feature = "candidate_c_value"))]
             Self::Int(value) => Some(Value::int(*value)),
+            #[cfg(not(feature = "candidate_c_value"))]
             Self::Float(bits) => Some(Value::float(f64::from_bits(*bits))),
+            // The Candidate-C carrier can reconstruct only the inline `i32` half
+            // context-free; a wide integer or any float is a boxed reservation
+            // cell that needs the evaluator heap, so it is not an immediate here
+            // (the caller re-evaluates instead of rehydrating from the cache).
+            #[cfg(feature = "candidate_c_value")]
+            Self::Int(value) => i32::try_from(*value).ok().map(|_| Value::int(*value)),
+            #[cfg(feature = "candidate_c_value")]
+            Self::Float(_) => None,
             Self::Bool(value) => Some(Value::bool(*value)),
             Self::Null => Some(Value::null()),
             Self::ContextFreeString(_)

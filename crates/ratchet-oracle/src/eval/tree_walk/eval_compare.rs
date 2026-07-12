@@ -317,8 +317,16 @@ impl TreeWalk {
         if shared_heap_identity
             && left.tag() == ValueTag::Float
             && right.tag() == ValueTag::Float
-            && f64::from_bits(left.payload_bits()).is_nan()
-            && f64::from_bits(right.payload_bits()).is_nan()
+            && self
+                .heap
+                .decode_float_value(left)
+                .map(f64::is_nan)
+                .unwrap_or(false)
+            && self
+                .heap
+                .decode_float_value(right)
+                .map(f64::is_nan)
+                .unwrap_or(false)
         {
             return Ok(true);
         }
@@ -539,14 +547,19 @@ impl TreeWalk {
                 span,
             ));
         }
-        match value.payload_bits() {
-            0 => Ok(false),
-            1 => Ok(true),
-            payload => Err(TreeWalkError::new(
-                TreeWalkErrorKind::InvalidBoolPayload { id, payload },
+        // Decode through the checked accessor rather than reading raw payload
+        // bits: on the Candidate-C carrier the raw word is not the 0/1 boolean
+        // payload (the tag occupies the high half), so a raw compare would reject
+        // every boolean. `as_bool` is self-contained on both carriers.
+        value.as_bool().map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidBoolPayload {
+                    id,
+                    payload: value.payload_bits(),
+                },
                 span,
-            )),
-        }
+            )
+        })
     }
 
     pub(super) fn expect_number(

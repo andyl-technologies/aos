@@ -11,6 +11,7 @@ pub(super) enum NativeThunkReturn {
     /// The active two-word value ABI.
     Active(Value),
     /// The Candidate-B tagged one-word ABI.
+    #[cfg(not(feature = "candidate_c_value"))]
     CandidateB(TaggedValueWord),
     /// The Candidate-C compressed one-word ABI.
     CandidateC(CompressedValueWord),
@@ -21,10 +22,12 @@ impl NativeThunkReturn {
     pub(super) fn into_active(
         self,
         heap: &EvalHeap,
+        #[cfg_attr(feature = "candidate_c_value", allow(unused_variables))]
         body: &JitModuleContextFinalizedBody,
     ) -> Result<Value, JitCraneliftNativeCallError> {
         match self {
             Self::Active(value) => Ok(value),
+            #[cfg(not(feature = "candidate_c_value"))]
             Self::CandidateB(word) => {
                 candidate_b_value(heap, body.finalized_function().symbol_name(), word)
             }
@@ -33,6 +36,7 @@ impl NativeThunkReturn {
     }
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 fn candidate_b_value(
     heap: &EvalHeap,
     symbol_name: &str,
@@ -49,6 +53,7 @@ fn candidate_b_value(
         .map_err(|_| JitCraneliftNativeCallError::UnsupportedCandidateBReturnKind { kind })
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 fn candidate_c_value(
     heap: &EvalHeap,
     word: CompressedValueWord,
@@ -56,6 +61,18 @@ fn candidate_c_value(
     let kind = word.kind();
     heap.candidate_c_decode_value(word)
         .map_err(|_| JitCraneliftNativeCallError::UnsupportedCandidateCReturnKind { kind })
+}
+
+/// On the Candidate-C carrier the active runtime value already *is* the
+/// compressed word, so the native return adapter is the identity — no heap
+/// bridge decode is needed. (The tier-1 JIT is off by construction under this
+/// variant, so this path is currently unreachable, but it stays correct.)
+#[cfg(feature = "candidate_c_value")]
+fn candidate_c_value(
+    _heap: &EvalHeap,
+    word: CompressedValueWord,
+) -> Result<Value, JitCraneliftNativeCallError> {
+    Ok(Value::from_word(word))
 }
 
 #[cfg(test)]

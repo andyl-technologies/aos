@@ -203,6 +203,16 @@ pub fn run_context_finalized_native_thunk_call(
 
     let scope = RuntimeTrapScope::new();
     let native_return = match body.artifact().value_abi() {
+        // The Candidate-B one-word return ABI is gone under the `candidate_c_value`
+        // carrier (its heap bridge decode does not exist there), and the tier-1
+        // JIT is off by construction, so this arm is unreachable; keep the match
+        // exhaustive with a value-ABI mismatch rather than the Candidate-B path.
+        #[cfg(feature = "candidate_c_value")]
+        JitValueAbi::CandidateB => Err(JitCraneliftNativeCallError::UnsupportedArtifactValueAbi {
+            expected: JitValueAbi::CandidateC,
+            actual: JitValueAbi::CandidateB,
+        }),
+        #[cfg(not(feature = "candidate_c_value"))]
         JitValueAbi::CandidateB => {
             // SAFETY: `rt` comes from the pinned context over `eval`; the current
             // Candidate-B literal body ignores raw inputs, and the caller keeps the

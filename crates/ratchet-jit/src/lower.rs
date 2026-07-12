@@ -1449,7 +1449,15 @@ fn constant_value_for_root(arena: &IrArena, root: IrId) -> Result<Value, JitLowe
 fn constant_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        // The Candidate-C carrier has no context-free float constructor (floats
+        // box through the evaluator heap); the tier-1 JIT is unreachable by
+        // construction under that variant, so this arm is dead there.
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Float, IrData::Float(_)) => Err(JitLowerError::UnsupportedIrBody {
+            kind: IrKind::Float,
+        }),
         (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
         (IrKind::Null, IrData::None) => Ok(Value::null()),
         (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
@@ -1462,7 +1470,13 @@ fn constant_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
 fn constant_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        // Dead under the Candidate-C variant (JIT off; no float constructor).
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Float, IrData::Float(_)) => Err(JitLowerError::UnsupportedIrRoot {
+            kind: IrKind::Float,
+        }),
         (IrKind::Bool, IrData::Bool(value)) => Ok(Value::bool(value)),
         (IrKind::Null, IrData::None) => Ok(Value::null()),
         (kind @ (IrKind::Int | IrKind::Float | IrKind::Bool | IrKind::Null), data) => {
