@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeNoRealtimeWarp",
-  taskIds ? [],
-  openTaskIds ? ["T-TIME-5"],
+  taskIds ? ["T-TIME-5"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -146,8 +146,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-5 remains open";
-        needle = "- [ ] **T-TIME-5**";
+        label = "T-TIME-5 completed by the live plugin quantum gate";
+        needle = "- [x] **T-TIME-5**";
+      }
+      {
+        label = "T-TIME-5 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

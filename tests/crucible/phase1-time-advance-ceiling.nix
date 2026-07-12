@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? [],
-  openTaskIds ? ["T-TIME-7"],
+  taskIds ? ["T-TIME-7"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,7 +12,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
   handoffTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
@@ -52,7 +52,7 @@
     requirements;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "node slot ABI";
         needle = "pub struct NodeSlot";
@@ -162,7 +162,7 @@
         needle = "pub fn icount_to_virtual_ns";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "public raw advance ceiling field";
         needle = "pub max_advance_icount: AtomicU64";
@@ -226,8 +226,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-7 remains open";
-        needle = "- [ ] **T-TIME-7**";
+        label = "T-TIME-7 completed by the live plugin quantum gate";
+        needle = "- [x] **T-TIME-7**";
+      }
+      {
+        label = "T-TIME-7 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

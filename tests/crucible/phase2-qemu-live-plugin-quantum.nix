@@ -2,15 +2,21 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLivePluginQuantum",
-  # T-PLUG-7 and T-TIME-5/7 (idle-jump advancement) stay OPEN: the gate proves
-  # ceiling ownership, idle park, and deadline introspection live, but the QEMU-
-  # side queued-time-advance completion defect blocks the idle-jump itself.
-  #
-  # This gate's deadline-introspection evidence equally satisfies T-TIME-6 (the
-  # virtual-time-layer twin of T-PLUG-6); its flip is deferred pending the
-  # phase1-clock-deadline / phase1-layer0-determinism open-set reconciliation.
-  taskIds ? ["T-PLUG-4" "T-PLUG-5" "T-PLUG-6"],
-  openTaskIds ? ["T-PLUG-7" "T-TIME-5" "T-TIME-7"],
+  # With the QEMU-side queued-time-advance completion fixed (patch 0010
+  # icount_advance_virtual_time_to_ns + the patch 0025 reset-vs-advance drain +
+  # the plugin max-advance raw-vs-logical ceiling fix, all landed), the plugin
+  # drives the full idle hot loop live: it owns the clock, parks idle, introspects
+  # the exact deadline, and JUMPS to it through the authorized advance; the guest
+  # then wakes at the deadline and re-idles below the published ceiling, never
+  # self-extending past it. So this gate proves T-PLUG-4/5/6/7 and T-TIME-5/7 end
+  # to end. T-TIME-6 (the deadline-introspection twin of T-PLUG-6) is closed via
+  # phase1-clock-deadline.
+  taskIds ? ["T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-PLUG-7" "T-TIME-5" "T-TIME-7"],
+  openTaskIds ? [],
+  # Drive the authorized idle-jump advancement (not just observe idle onset). The
+  # example reads this via `.with_prove_idle_jump`; on it asserts the guest jumps
+  # from idle onset past the timer deadline and the O(1) idle-advance rate.
+  proveIdleJump ? "1",
   # Scheduler tuning for the idle Linux guest, which boots to a fully idle kernel
   # in the low tens of millions of icount.
   ceilingStep ? "4000000",
@@ -61,6 +67,7 @@ in
     CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP = minIdleSpeedup;
     CRUCIBLE_QUANTUM_TIMEOUT_SECS = quantumTimeoutSecs;
     CRUCIBLE_QUANTUM_SECOND_RUN_LOAD = secondRunLoad;
+    CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP = proveIdleJump;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
@@ -138,16 +145,25 @@ in
           grep -Eq '^boot_quantum_count=[1-9][0-9]*$' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Fxq 'host_load_applied=true' "$report"
-          # T-PLUG-5/6: the guest parked idle with a computed next virtual-timer
-          # deadline (a timer-deadline idle, not an I/O-wait idle).
+          # T-PLUG-5/6 + T-TIME-6: the guest parked idle with a computed next
+          # virtual-timer deadline (a timer-deadline idle, not an I/O-wait idle).
           grep -Eq '^idle_onset_icount=[1-9][0-9]*$' "$report"
           grep -Eq '^idle_next_deadline_icount=[1-9][0-9]*$' "$report"
           grep -Fxq 'idle_kind=timer-deadline' "$report"
-          # T-PLUG-7 is descoped: the idle-jump is NOT asserted while the QEMU-side
-          # queued-time-advance completion defect is open. The gate records this
-          # honestly so it cannot be misread as full idle-jump coverage.
-          grep -Fxq 'idle_jump_proven=false' "$report"
-          grep -Fxq 'idle_jump_defect=T-PLUG-7-live-idle-jump-advance-completion' "$report"
+          # T-PLUG-7 + T-TIME-5/7: the plugin advanced virtual time through the
+          # authorized idle jump to the exact timer deadline; the guest woke and
+          # re-idled below the published ceiling, never self-extending past it. The
+          # idle span is a real O(1) jump (idle_icount_span icount in
+          # idle_wall_micros of wall time), byte-identical on the second,
+          # host-loaded run.
+          grep -Fxq 'idle_jump_proven=true' "$report"
+          ! grep -q '^idle_jump_defect=' "$report"
+          grep -Eq '^idle_icount_span=[1-9][0-9]*$' "$report"
+          grep -Eq '^idle_wall_micros=[0-9]+$' "$report"
+          grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"
+          onset=$(sed -n 's/^idle_onset_icount=//p' "$report")
+          terminal=$(sed -n 's/^terminal_icount=//p' "$report")
+          test "$terminal" -gt "$onset"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
@@ -155,8 +171,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=boot-ceiling-ownership,idle-park,timer-deadline-introspection,run-twice-determinism\n'
-            printf 'descoped=idle-jump-advancement-blocked-on-qemu-queued-time-advance-completion\n'
+            printf 'proven=boot-ceiling-ownership,idle-park,timer-deadline-introspection,authorized-idle-jump-advancement,run-twice-determinism\n'
           } >> "$out/result"
         '';
       }
