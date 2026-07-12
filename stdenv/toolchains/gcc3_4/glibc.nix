@@ -57,6 +57,7 @@ in
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="${this.linuxHeaders}/include" \
+          --disable-shared \
           --disable-profile \
           --disable-nscd \
           --enable-add-ons=nptl \
