@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginSynchronousIdleAdvance",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-7"],
+  taskIds ? ["T-PLUG-7"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,9 +14,11 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginRuntime = import ./_qemu-plugin-runtime-source.nix {inherit lib;};
   pluginLiveCallbacks = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  pluginLiveCallbacksTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -98,8 +100,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-7 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-7**";
+        label = "T-PLUG-7 completed by the live plugin quantum gate";
+        needle = "- [x] **T-PLUG-7**";
+      }
+      {
+        label = "T-PLUG-7 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
       {
         label = "queued advance wording";
@@ -353,6 +359,8 @@
         label = "state stores queued advance handle";
         needle = "queued_idle_advance: Some(queued_idle_advance)";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "install missing queued advance test";
         needle = "abi_install_requires_queued_idle_advance_symbol";
@@ -397,6 +405,8 @@
         label = "live callback registers all-idle and resume boundaries";
         needle = "Some(crucible_qemu_plugin_live_vcpu_idle_cb)";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
       {
         label = "missing completion registration test";
         needle = "missing_time_advance_completion";

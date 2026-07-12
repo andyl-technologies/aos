@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
-  openTaskIds ? ["T-TIME-5" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
+  openTaskIds ? ["T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};

@@ -926,8 +926,13 @@ component that makes that purity true *inside* the QEMU process.
   up to each host-published scheduler ceiling and stops there, and the whole boot
   fingerprint is byte-identical on a second run taken under host CPU load — only
   possible if virtual time is owned by the plugin and never sampled from a host
-  clock. The time-control, idle-loop, and deadline source paths are held free of
-  wall-clock/monotonic/entropy APIs by the sibling `qemuPluginTimeControl` gate.
+  clock. When the guest idles, the plugin advances virtual time by the authorized
+  idle jump to the exact next timer deadline and the guest wakes and runs on: the
+  gate records a `terminal_icount` far past the idle-onset icount (15,825,232 →
+  55,836,152), confirming the plugin — not the host — drove the idle advance. The
+  time-control, idle-loop, and deadline source
+  paths are held free of wall-clock/monotonic/entropy APIs by the sibling
+  `qemuPluginTimeControl` gate.
 - [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
   icount, compute the next local wake from exact timer and inbound delivery
   signals against the scheduler ceiling, park on the wake fd/futex (no busy spin,
@@ -941,8 +946,9 @@ component that makes that purity true *inside* the QEMU process.
   and parks on the wake fd/futex with no wall-clock timeout; on scheduler release
   it enqueues the authorized advance and, per the deferred-completion discipline,
   waits for the queued-advance completion before mutating architectural state
-  rather than advancing eagerly. Committing that queued advance to the wake point
-  is T-PLUG-7; deterministic in-order inbound-frame injection is T-PLUG-8.
+  rather than advancing eagerly — and with that completion now landing (T-PLUG-7)
+  it commits the jump, moving the idle guest to the exact deadline and republishing
+  running. Deterministic in-order inbound-frame injection is T-PLUG-8.
 - [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
   `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
   icount) and ban the overshoot-and-correct fallback; fail loudly during callback
@@ -953,13 +959,25 @@ component that makes that purity true *inside* the QEMU process.
   export and `ceil`-convert it to icount live: at idle onset the gate emits
   `idle_next_deadline_icount` equal to the introspected timer deadline with no
   overshoot-and-correct, and the same value appears on both runs.
-- [ ] **T-PLUG-7** Implement idle-jump advancement through the required
+- [x] **T-PLUG-7** Implement idle-jump advancement through the required
   queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion
   (`qemu_plugin_register_time_advance_cb`) exports: keep plugin state
   unchanged while pending, order timer bottom halves before completion, then
   validate the exact target before clock/ring/RX commit so the wake-point
   architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
+  `prove_idle_jump` on: at idle onset (15,825,232) the plugin advances virtual
+  time by the authorized idle jump to the exact `QEMU_CLOCK_VIRTUAL` timer
+  deadline (55,645,960); the guest wakes at the deadline, runs on, and re-idles at
+  55,836,152 — below the published scheduler ceiling (59,645,960), never
+  self-extending past it — a ~40M-icount O(1) advance in ~23 ms. The terminal
+  architectural state is byte-identical on a second run taken under host CPU load,
+  proving the queued advance commits the same wake-point state regardless of host
+  timing. The advance rides QEMU patch 0010's `icount_advance_virtual_time_to_ns`
+  primitive (replacing the qtest-only helper that spun under icount) with the
+  reset-vs-advance completion drain in patch 0025, plus the plugin max-advance
+  budget computed as `ceiling - logical_offset`.
 - [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed

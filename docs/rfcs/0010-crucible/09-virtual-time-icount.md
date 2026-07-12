@@ -655,11 +655,19 @@ instruction-primary.
   scheduling axis; default perfect clock byte-identical to no-skew; fixed-point
   arithmetic with documented rounding, no `f64` on the path. — satisfies
   [TIME-16], [TIME-17], [TIME-18], [TIME-19]; spec §9.6.
-- [ ] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
+- [x] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
   virtual time from a fixed epoch; suppress idle warp when the plugin holds time
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which loads no
+  observation plugin and drives an idle Linux guest end to end: the plugin
+  acquires time control before the first instruction (proven by the boot barrier
+  advancing from cold boot to the exact first host ceiling), and when the guest
+  idles it advances virtual time by the icount budget derived from the virtual
+  clock — QEMU's native realtime idle warp stays suppressed — jumping to the exact
+  next deadline rather than to a host-wall-clock estimate. The forbidden-host-time
+  scan on the time path is held by `checks.crucible.phase1.timeNoRealtimeWarp`.
 - [x] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
   next `QEMU_CLOCK_VIRTUAL` timer deadline) and feed it as the node's exact local
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
@@ -673,11 +681,19 @@ instruction-primary.
   and the value is identical on both runs. Advancing the node to that deadline is
   T-TIME-7 / T-PLUG-7. The fail-loud-on-missing-capability and QEMU-export
   microtest halves are held by `checks.crucible.phase1.clockDeadline`.
-- [ ] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
+- [x] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
   horizon → ceiling icount ([TIME-4]), publish ceiling and reached-icount in the
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
+  `prove_idle_jump` on: the plugin converts the introspected deadline horizon to a
+  ceiling icount, publishes ceiling/reached-icount in the shmem region, and hands
+  the idle vCPU off through the wake futex; the idle guest advances to the exact
+  deadline (55,645,960), wakes, and re-idles at 55,836,152 — below the published
+  ceiling (59,645,960), never self-extending past it, because the max-advance
+  budget is computed as `ceiling - logical_offset`. The terminal icount is
+  byte-identical on the second, host-loaded run.
 - [ ] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
