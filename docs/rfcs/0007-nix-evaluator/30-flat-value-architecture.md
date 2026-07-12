@@ -1858,6 +1858,15 @@ value word (Candidates B and C) remains open and separately gated:**
       parallel typed boxed-scalar populations, arena-domain identity, and the
       inactive checked `Value` conversion bridge are landed; selecting the
       one-word active ABI and narrowing containers remain.**
+      *Cutover in progress (see [design note](design-notes/candidate-c-cutover-plan.md),
+      staged S0-S5). **S0 landed**: `AOS_NIX_CANDIDATE_C_SHADOW` (default-off)
+      exercises the boxed-scalar store on every integer/float construction
+      through `eval/heap/flat_values/active_values.rs` and round-trip-verifies
+      it, proving the encode/decode + reservation-membership + hash-cons path
+      at eval scale ahead of the carrier flip. Active 16-byte carrier
+      unchanged; native/oracle byte-parity green with the shadow both off and
+      on over a scalar-exercising derivation, plus the full `ratchet-oracle`
+      suite.*
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **The checked word
       codec, one-word ABI metadata, literal lowerer, native dispatch, runtime

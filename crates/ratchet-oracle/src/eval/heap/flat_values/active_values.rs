@@ -5,10 +5,40 @@
 //! evaluation therefore crosses this seam instead of depending directly on
 //! context-free [`Value`] scalar accessors. The implementation remains a
 //! zero-allocation baseline until the active ABI selects the compressed word.
+//!
+//! # Candidate-C scalar shadow (FV-4 stage S0)
+//!
+//! Setting `AOS_NIX_CANDIDATE_C_SHADOW=1` turns this seam into a *shadow
+//! exerciser* for the inactive Candidate-C boxed-scalar store: every integer
+//! and float constructed through it is additionally boxed into the reservation
+//! and read back, proving the encode/decode + reservation-membership +
+//! hash-cons path survives a real evaluation corpus ahead of the value-ABI
+//! carrier flip. The active 16-byte carrier is unchanged — the seam still
+//! returns the inline [`Value`] — so the shadow is observationally identical
+//! and the flag can be enabled under the byte-parity battery. The flag is off
+//! by default (a single cached bool read; no allocation on the hot path).
+//! Round-trip failures are a `debug_assert` (caught by `cargo test`) and, in
+//! release, a one-line `stderr` diagnostic; they never fail the evaluation.
 
+use std::sync::OnceLock;
+
+use crate::value::compressed::CandidateCScalarError;
 use crate::{cache::runtime::CachedScalarValue, value::Value};
 
 use super::super::{EvalHeap, EvalHeapError};
+
+/// Returns whether the Candidate-C scalar shadow (stage S0) is enabled.
+///
+/// Reads `AOS_NIX_CANDIDATE_C_SHADOW` once and caches the result. `1` or
+/// `true` (case-insensitive) enable the shadow; anything else leaves it off.
+fn candidate_c_scalar_shadow_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AOS_NIX_CANDIDATE_C_SHADOW")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
 
 impl EvalHeap {
     /// Rehydrates one canonical cached scalar in this evaluator's runtime domain.
@@ -43,6 +73,9 @@ impl EvalHeap {
     /// scalar in the reservation.
     #[inline(always)]
     pub fn alloc_int_value(&mut self, value: i64) -> Result<Value, EvalHeapError> {
+        if candidate_c_scalar_shadow_enabled() {
+            self.shadow_exercise_candidate_c_int(value);
+        }
         Ok(Value::int(value))
     }
 
@@ -54,7 +87,50 @@ impl EvalHeap {
     /// because Candidate C stores the exact float bits in a typed arena cell.
     #[inline(always)]
     pub fn alloc_float_value(&mut self, value: f64) -> Result<Value, EvalHeapError> {
+        if candidate_c_scalar_shadow_enabled() {
+            self.shadow_exercise_candidate_c_float(value);
+        }
         Ok(Value::float(value))
+    }
+
+    /// Boxes `value` through the Candidate-C integer store and verifies the
+    /// round-trip (stage S0 shadow; never fails the evaluation).
+    ///
+    /// A heap without a Candidate-C reservation (explicit chunk geometry or an
+    /// unsupported platform mapping) legitimately has nothing to exercise and
+    /// is skipped. Any other anomaly is a `debug_assert` and a release `stderr`
+    /// diagnostic.
+    #[cold]
+    fn shadow_exercise_candidate_c_int(&mut self, value: i64) {
+        let word = match self.candidate_c_encode_int(value) {
+            Ok(word) => word,
+            Err(CandidateCScalarError::ReservationUnavailable) => return,
+            Err(error) => return candidate_c_shadow_anomaly("int", "encode", &error),
+        };
+        match self.candidate_c_decode_int(word) {
+            Ok(decoded) if decoded == value => {}
+            Ok(_) => candidate_c_shadow_mismatch("int"),
+            Err(error) => candidate_c_shadow_anomaly("int", "decode", &error),
+        }
+    }
+
+    /// Boxes `value` through the Candidate-C float store and verifies the exact
+    /// bit round-trip (stage S0 shadow; never fails the evaluation).
+    ///
+    /// Skips heaps without a Candidate-C reservation; any other anomaly is a
+    /// `debug_assert` and a release `stderr` diagnostic.
+    #[cold]
+    fn shadow_exercise_candidate_c_float(&mut self, value: f64) {
+        let word = match self.candidate_c_encode_float(value) {
+            Ok(word) => word,
+            Err(CandidateCScalarError::ReservationUnavailable) => return,
+            Err(error) => return candidate_c_shadow_anomaly("float", "encode", &error),
+        };
+        match self.candidate_c_decode_float(word) {
+            Ok(decoded) if decoded.to_bits() == value.to_bits() => {}
+            Ok(_) => candidate_c_shadow_mismatch("float"),
+            Err(error) => candidate_c_shadow_anomaly("float", "decode", &error),
+        }
     }
 
     /// Decodes an integer from the active runtime representation.
@@ -79,6 +155,31 @@ impl EvalHeap {
     #[inline(always)]
     pub fn decode_float_value(&self, value: Value) -> Result<f64, EvalHeapError> {
         value.as_float().map_err(EvalHeapError::from)
+    }
+}
+
+/// Reports a Candidate-C scalar shadow encode/decode failure.
+///
+/// Fails a `debug_assert` (caught by `cargo test`) and, in release, prints one
+/// `stderr` line so an `AOS_NIX_CANDIDATE_C_SHADOW=1` corpus run surfaces the
+/// anomaly without changing evaluation output.
+#[cold]
+fn candidate_c_shadow_anomaly(kind: &str, phase: &str, error: &CandidateCScalarError) {
+    debug_assert!(
+        false,
+        "AOS_NIX_CANDIDATE_C_SHADOW: {kind} {phase} failed: {error}"
+    );
+    if !cfg!(debug_assertions) {
+        eprintln!("AOS_NIX_CANDIDATE_C_SHADOW: {kind} {phase} failed: {error}");
+    }
+}
+
+/// Reports a Candidate-C scalar shadow round-trip that decoded a wrong value.
+#[cold]
+fn candidate_c_shadow_mismatch(kind: &str) {
+    debug_assert!(false, "AOS_NIX_CANDIDATE_C_SHADOW: {kind} round-trip mismatch");
+    if !cfg!(debug_assertions) {
+        eprintln!("AOS_NIX_CANDIDATE_C_SHADOW: {kind} round-trip mismatch");
     }
 }
 
@@ -149,5 +250,41 @@ mod tests {
         );
         assert_eq!(boolean.as_bool(), Ok(true));
         assert_eq!(null.as_null(), Ok(()));
+    }
+
+    #[test]
+    fn candidate_c_scalar_shadow_roundtrips_and_preserves_active_output() {
+        let mut heap = EvalHeap::new();
+        // Spans inline `i32`, wide `i64`, signed zero, a NaN payload, and a
+        // subnormal. The shadow's internal `debug_assert` fires on any
+        // round-trip failure, so a clean return in this debug test is the
+        // assertion; the active seam must still yield the inline value.
+        for value in [0_i64, 1, -1, i64::from(i32::MAX) + 1, i64::MIN, i64::MAX] {
+            heap.shadow_exercise_candidate_c_int(value);
+            let active = heap.alloc_int_value(value).expect("active int constructs");
+            assert_eq!(heap.decode_int_value(active), Ok(value));
+        }
+        for bits in [
+            0x0000_0000_0000_0000_u64,
+            0x8000_0000_0000_0000,
+            0xfff8_0000_0000_0042,
+            0x0000_0000_0000_0001,
+        ] {
+            let value = f64::from_bits(bits);
+            heap.shadow_exercise_candidate_c_float(value);
+            let active = heap.alloc_float_value(value).expect("active float constructs");
+            assert_eq!(heap.decode_float_value(active).map(f64::to_bits), Ok(bits));
+        }
+    }
+
+    #[test]
+    fn candidate_c_scalar_shadow_skips_reservationless_heaps() {
+        // A chunked-geometry heap has no Candidate-C reservation; the shadow
+        // must skip it silently rather than trip its failure diagnostics.
+        let mut heap = EvalHeap::with_initial_chunk_bytes(4096).expect("chunked heap builds");
+        heap.shadow_exercise_candidate_c_int(i64::MAX);
+        heap.shadow_exercise_candidate_c_float(-0.0);
+        let active = heap.alloc_int_value(7).expect("active int constructs");
+        assert_eq!(heap.decode_int_value(active), Ok(7));
     }
 }
