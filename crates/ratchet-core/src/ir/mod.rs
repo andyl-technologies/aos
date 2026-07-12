@@ -19,6 +19,7 @@ use crate::syntax::{
 };
 
 mod annotate;
+mod case_of_known;
 mod const_fold;
 mod facts;
 mod render;
@@ -28,6 +29,7 @@ pub use annotate::{
     IR_ANALYSIS_VERSION, IrAnalysisError, IrAnalysisReport, IrDependencyFootprint,
     IrFrameCaptureFootprint, annotate_import_ir, annotate_ir,
 };
+pub use case_of_known::CaseOfKnown;
 pub use const_fold::ConstFold;
 pub use render::render_ir;
 pub use simplify::{

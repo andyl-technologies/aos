@@ -39,7 +39,7 @@
 
 use thiserror::Error;
 
-use super::{ConstFold, Ir, IrError};
+use super::{CaseOfKnown, ConstFold, Ir, IrError};
 
 /// The version of the registered simplifier pass set.
 ///
@@ -148,10 +148,11 @@ pub trait SimplifyPass {
 /// Passes are registered here as they land, each behind the off-by-default
 /// `AOS_NIX_SIMPLIFY` gate and its own byte-parity check; [`PASS_SET_VERSION`] is
 /// bumped when a pass is promoted to run by default. [`ConstFold`] (doc 26 §2.2)
-/// is the first registered pass; it is sound (observationally invisible), so the
-/// registered set preserves every observable result even though it is no longer
-/// the identity on IR that contains foldable literals.
-pub const REGISTERED_PASSES: &[&dyn SimplifyPass] = &[&ConstFold];
+/// and [`CaseOfKnown`] (doc 26 §2.2, §2.3) are the registered passes; both are
+/// sound (observationally invisible), so the registered set preserves every
+/// observable result even though it is no longer the identity on IR that
+/// contains foldable literals or statically-known conditionals.
+pub const REGISTERED_PASSES: &[&dyn SimplifyPass] = &[&ConstFold, &CaseOfKnown];
 
 /// Runs the registered simplifier passes over `ir` to a per-phase fixpoint.
 ///
