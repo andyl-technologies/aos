@@ -394,6 +394,12 @@ pub struct RegionLayout {
     pub coverage_ring_data_off: u64,
     /// Byte stride between coverage entries.
     pub coverage_entry_stride: u64,
+    /// Number of per-node fingerprint sample slots, one per logical VM.
+    pub fingerprint_sample_count: u32,
+    /// Byte offset from region base to the first fingerprint sample slot.
+    pub fingerprint_sample_off: u64,
+    /// Byte stride between fingerprint sample slots.
+    pub fingerprint_sample_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -463,10 +469,24 @@ impl RegionLayout {
         let coverage_entry_count = u64::from(coverage_ring_count)
             .checked_mul(u64::from(coverage_queue_capacity))
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let region_size = coverage_ring_data_off
+        let coverage_data_end = coverage_ring_data_off
             .checked_add(
                 coverage_entry_count
                     .checked_mul(coverage_entry_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // Additive ABI v3 section: one fingerprint sample slot per logical VM,
+        // appended after the coverage data with the slot's own alignment.
+        let fingerprint_sample_count = config.vm_node_count;
+        let fingerprint_sample_stride = usize_to_u64(FINGERPRINT_SAMPLE_SLOT_SIZE)?;
+        let fingerprint_sample_off =
+            checked_align_up(coverage_data_end, usize_to_u64(FINGERPRINT_SAMPLE_SLOT_ALIGN)?)?;
+        let region_size = fingerprint_sample_off
+            .checked_add(
+                u64::from(fingerprint_sample_count)
+                    .checked_mul(fingerprint_sample_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -485,6 +505,9 @@ impl RegionLayout {
             coverage_ring_hdr_off,
             coverage_ring_data_off,
             coverage_entry_stride,
+            fingerprint_sample_count,
+            fingerprint_sample_off,
+            fingerprint_sample_stride,
             region_size,
             icount_shift: config.icount_shift,
         })

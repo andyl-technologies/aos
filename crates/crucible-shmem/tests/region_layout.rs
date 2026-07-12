@@ -7,7 +7,8 @@ use crucible_shmem::{
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
     COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY,
-    FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
+    FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE,
     FRAME_ENTRY_SRC_NODE_OFFSET, KIND_9P, KIND_BLK, KIND_NET, LAYOUT_TARGET_SUPPORTED,
     LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
@@ -133,9 +134,22 @@ fn region_layout_computes_offsets_and_directed_rings() {
             + u64::from(layout.coverage_ring_count) * RING_HEADER_SIZE as u64
     );
     assert_eq!(layout.coverage_entry_stride, COVERAGE_ENTRY_SIZE as u64);
+    let coverage_data_end =
+        layout.coverage_ring_data_off + layout.coverage_entry_count() * COVERAGE_ENTRY_SIZE as u64;
+    assert_eq!(layout.fingerprint_sample_count, layout.vm_node_count);
+    assert_eq!(
+        layout.fingerprint_sample_stride,
+        FINGERPRINT_SAMPLE_SLOT_SIZE as u64
+    );
+    assert_eq!(
+        layout.fingerprint_sample_off,
+        coverage_data_end.div_ceil(FINGERPRINT_SAMPLE_SLOT_ALIGN as u64)
+            * FINGERPRINT_SAMPLE_SLOT_ALIGN as u64
+    );
     assert_eq!(
         layout.region_size,
-        layout.coverage_ring_data_off + layout.coverage_entry_count() * COVERAGE_ENTRY_SIZE as u64
+        layout.fingerprint_sample_off
+            + u64::from(layout.fingerprint_sample_count) * layout.fingerprint_sample_stride
     );
     assert_eq!(
         layout.frame_entry_count(),

@@ -98,7 +98,11 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 /// Eight-byte ASCII magic identifying a Crucible shared-memory region.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
-pub const ABI_VERSION: u32 = 2;
+///
+/// Version 3 appends the additive per-node [`FingerprintSampleSlot`] section
+/// after the coverage-ring data; the region header, node slots, frame rings,
+/// and coverage rings keep their version-2 offsets.
+pub const ABI_VERSION: u32 = 3;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

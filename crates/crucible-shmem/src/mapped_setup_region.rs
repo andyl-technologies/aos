@@ -7,10 +7,11 @@ use std::ptr::NonNull;
 use thiserror::Error;
 
 use super::{
-    COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing, FRAME_ENTRY_ALIGN,
-    FRAME_ENTRY_SIZE, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot, REGION_HEADER_ALIGN,
-    REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader, RegionLayout,
-    RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
+    COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
+    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FingerprintSampleSlot,
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_SIZE, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
+    REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
+    RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
     directed_rings, layout_from_setup_region_header, validate_setup_region_header,
 };
 
@@ -264,6 +265,37 @@ impl MappedSetupRegion {
             header,
             entries,
         })
+    }
+
+    /// Borrows one VM's dedicated plugin-to-host fingerprint sample slot.
+    ///
+    /// The VM slot is also the fingerprint-slot index. The interior atomic
+    /// fields support the plugin's boundary publication and the host's post-
+    /// `finish_quantum` read without a mutable mapping borrow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` does not name a logical VM, or the computed
+    /// fingerprint segment is out of bounds or misaligned.
+    pub fn fingerprint_sample(
+        &self,
+        vm_slot: u32,
+    ) -> Result<&FingerprintSampleSlot, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.fingerprint_sample_count {
+            return Err(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fingerprint sample",
+                index: vm_slot,
+            });
+        }
+        let offset = mapped_fingerprint_sample_offset(layout, self.len, vm_slot)?;
+        let base = self.ptr.as_ptr();
+        // SAFETY: `mapped_fingerprint_sample_offset` validated the slot index,
+        // byte range, and ABI alignment against this live owned mapping.
+        Ok(unsafe { &*base.add(offset).cast::<FingerprintSampleSlot>() })
     }
 }
 
@@ -666,6 +698,21 @@ fn mapped_coverage_ring_entries_offset(
         layout.coverage_ring_data_off,
         byte_len,
         COVERAGE_ENTRY_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_fingerprint_sample_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "fingerprint sample",
+        vm_slot,
+        layout.fingerprint_sample_off,
+        FINGERPRINT_SAMPLE_SLOT_SIZE,
+        FINGERPRINT_SAMPLE_SLOT_ALIGN,
         region_len,
     )
 }
