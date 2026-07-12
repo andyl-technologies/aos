@@ -5,7 +5,11 @@
   # T-PLUG-7 and T-TIME-5/7 (idle-jump advancement) stay OPEN: the gate proves
   # ceiling ownership, idle park, and deadline introspection live, but the QEMU-
   # side queued-time-advance completion defect blocks the idle-jump itself.
-  taskIds ? ["T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-TIME-6"],
+  #
+  # This gate's deadline-introspection evidence equally satisfies T-TIME-6 (the
+  # virtual-time-layer twin of T-PLUG-6); its flip is deferred pending the
+  # phase1-clock-deadline / phase1-layer0-determinism open-set reconciliation.
+  taskIds ? ["T-PLUG-4" "T-PLUG-5" "T-PLUG-6"],
   openTaskIds ? ["T-PLUG-7" "T-TIME-5" "T-TIME-7"],
   # Scheduler tuning for the idle Linux guest, which boots to a fully idle kernel
   # in the low tens of millions of icount.

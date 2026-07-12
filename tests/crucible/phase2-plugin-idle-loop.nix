@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginIdleLoop",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-5"],
+  taskIds ? ["T-PLUG-5"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,7 +16,8 @@
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -73,8 +74,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-5 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-5**";
+        label = "T-PLUG-5 completed by the live plugin quantum gate";
+        needle = "- [x] **T-PLUG-5**";
+      }
+      {
+        label = "T-PLUG-5 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
       {
         label = "idle callback hot loop text";
@@ -193,8 +198,8 @@
         needle = "idle_loop_wait_uses_futex_release_without_wall_clock_timeout";
       }
       {
-        label = "authorized release test";
-        needle = "idle_loop_release_advances_injects_due_frames_and_republishes_running";
+        label = "authorized release waits for queued-advance completion test";
+        needle = "idle_loop_release_waits_for_qemu_completion_before_mutating_state";
       }
       {
         label = "shutdown wake test";
@@ -221,7 +226,7 @@
         needle = "pub enum ExactDeadlineReport";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "idle publish returns futex wait";
         needle = "pub fn publish_idle";
@@ -235,16 +240,18 @@
         needle = "pub fn futex_wait_nonprivate";
       }
       {
+        label = "node done status publisher";
+        needle = "pub fn mark_done";
+      }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/region.rs" shmemRegion [
+      {
         label = "region control action";
         needle = "pub fn control_action";
       }
       {
         label = "shutdown request wake-all";
         needle = "pub fn request_shutdown";
-      }
-      {
-        label = "node done status publisher";
-        needle = "pub fn mark_done";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

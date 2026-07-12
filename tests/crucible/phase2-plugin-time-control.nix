@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginTimeControl",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-4"],
+  taskIds ? ["T-PLUG-4"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -115,8 +115,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-4 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-4**";
+        label = "T-PLUG-4 completed by the live plugin quantum gate";
+        needle = "- [x] **T-PLUG-4**";
+      }
+      {
+        label = "T-PLUG-4 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
       {
         label = "plugin clock ownership";
