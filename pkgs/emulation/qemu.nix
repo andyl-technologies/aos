@@ -376,7 +376,8 @@ in
           inherit pkgs lib;
           qemuPackage = self;
           attrPath = "checks.integration.qemu-crucible-patch-microtests";
-          taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          taskIds = ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
         };
       in {
         patch-microtests = patchMicrotests;
