@@ -88,6 +88,12 @@ in
         make
         make install
 
+        # findutils is a bootstrap PATH dependency for every later GCC tier.
+        # Do not publish a partial output: a missing find otherwise surfaces
+        # much later as misleading GCC_NO_EXECUTABLES link-test failures.
+        test -x "$out/bin/find" || { echo "FATAL: find not installed"; exit 1; }
+        test -x "$out/bin/xargs" || { echo "FATAL: xargs not installed"; exit 1; }
+
         echo "GNU findutils 4.1 built successfully"
       ''
     ];

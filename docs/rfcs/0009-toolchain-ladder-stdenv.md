@@ -336,6 +336,12 @@ stdenv` plus the existing eval/VM checks.
   without shortening this frontier. Do not defer ABI validation to the
   downstream GCC build because it hides the actual glibc failure and admits an
   unusable libc store path.
+- **Bootstrap POSIX outputs.** Treat the exported stage5 tools as compiler
+  inputs, not best-effort conveniences. In particular, stage5 findutils must
+  verify executable `bin/find` and `bin/xargs` before publishing its output;
+  every later GCC tier puts that output on `PATH`, and admitting a partial
+  object turns the missing utility into misleading `GCC_NO_EXECUTABLES`
+  failures deep inside fixincludes and target-library configure scripts.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
