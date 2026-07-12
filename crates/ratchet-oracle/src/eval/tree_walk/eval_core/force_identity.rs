@@ -713,8 +713,8 @@ impl TreeWalk {
         &self,
         payload: &CachedExpressionValue,
     ) -> Option<ValueHash> {
-        if let Some(value) = payload.immediate_value() {
-            return ValueHash::from_inline_value(value).ok();
+        if payload.scalar_value().is_some() {
+            return payload.value_hash().ok();
         }
 
         let mut hasher = blake3::Hasher::new();

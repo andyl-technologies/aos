@@ -44,6 +44,7 @@ use derivation_payload::{DerivationAtermPathRecord, StaticDerivationOutputPathRe
 pub use eval_cache::EvalCache;
 pub use eval_cache_runtime::EvalCacheRuntime;
 pub use expression_value::{CachedAttrEntryWithPosition, CachedExpressionValue};
+pub(crate) use expression_value::CachedScalarValue;
 use inline_value_payload::{
     AttrPayloadEntry, InlineValuePayload, PayloadCursor, PositionedAttrPayloadEntry,
     append_payload_bytes, append_payload_u128, ensure_unique_attr_payload_names,

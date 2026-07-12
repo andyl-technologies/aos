@@ -11763,6 +11763,27 @@ it ships).**
       back to the active ABI for boxed scalars. Heap-header decoding, boxed
       Candidate-B scalars, helper/tier-2/container conversion, the B-vs-C
       benchmark selection, and the default evaluator cutover remain open.
+- [x] Current representation-neutral cached-scalar boundary precursor:
+      force-cache payloads retain canonical `i64`, exact `f64` bits, boolean,
+      or null data instead of persisting an active runtime word. Production
+      capture decodes integers and floats through the owning `EvalHeap`, replay
+      allocates them through the receiving heap, and force identity reuses the
+      canonical payload hash. This prevents a future Candidate-B/C cutover from
+      replaying an arena-qualified scalar word in another runtime domain while
+      preserving the compatibility-only immediate cache API. Focused tests pin
+      both directions, full-width integers, and NaN payload bits. The landing
+      gate passed 380 value, 355 core, 271 JIT plus both integrations, 3,054
+      active oracle tests (34 ignored), runtime-FFI and cache suites, aos-nix
+      340, and language 38. It was byte-green across all 16 package legs,
+      compute x9, wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation,
+      and 648 strict-JSON expressions in all four modes. After discarding an
+      asymmetrically filesystem-cold timing set, three balanced preconditioned
+      release pairs against exact parent `a6d863f4a` moved native wide medians
+      76.42 -> 73.43 ms cold (-3.9%) and 72.14 -> 67.36 ms warm (-6.6%);
+      retained-RSS medians moved about +0.8% in both temperatures. The
+      three-sample changed-tree matrix matched all nine scenario outputs; its
+      synthetic aos/C++ ratios were 2.072-3.339 first-run and 2.266-3.301
+      settled, so no changed-tree throughput win is claimed.
 - [x] Current `value/nanbox.rs` precursor: `ratchet-value` exposes the safe
       NaN-box layout contract for the measured value-size variant. It reserves a
       negative quiet-NaN prefix, three tag bits, and a 48-bit payload; normalizes

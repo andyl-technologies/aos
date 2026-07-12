@@ -55,8 +55,7 @@ impl TreeWalk {
             return None;
         }
         let module = self.modules.get(body.module().index())?;
-        let slots =
-            Self::captured_free_variable_slots(&module.ir, body.id(), env.frame_count())?;
+        let slots = Self::captured_free_variable_slots(&module.ir, body.id(), env.frame_count())?;
         if !slots.is_empty() {
             return None;
         }
@@ -99,9 +98,9 @@ impl TreeWalk {
                 let IrData::Bool(value) = node.data else {
                     return None;
                 };
-                CachedExpressionValue::immediate(Value::bool(value)).ok()
+                Some(CachedExpressionValue::bool(value))
             }
-            IrKind::Null => CachedExpressionValue::immediate(Value::null()).ok(),
+            IrKind::Null => Some(CachedExpressionValue::null()),
             IrKind::Str | IrKind::Uri => {
                 let IrData::Symbol(symbol) = node.data else {
                     return None;
@@ -470,10 +469,16 @@ impl TreeWalk {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
         }
-        if let Ok(value) = CachedExpressionValue::immediate(value) {
-            return Some(value);
-        }
         let payload = match value.tag() {
+            ValueTag::Int => CachedExpressionValue::int(self.heap.decode_int_value(value).ok()?),
+            ValueTag::Float => {
+                CachedExpressionValue::float(self.heap.decode_float_value(value).ok()?)
+            }
+            ValueTag::Bool => CachedExpressionValue::bool(value.as_bool().ok()?),
+            ValueTag::Null => {
+                value.as_null().ok()?;
+                CachedExpressionValue::null()
+            }
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
                 let bytes = try_clone_bytes(string.bytes()).ok()?;
@@ -611,9 +616,11 @@ impl TreeWalk {
                 seen_thunks.remove(&thunk_key);
                 return result;
             }
-            _ => return None,
+            ValueTag::Lambda | ValueTag::Primop | ValueTag::External => return None,
         };
-        self.cache_heap_value_hash(value, &payload);
+        if value.tag().is_heap() {
+            self.cache_heap_value_hash(value, &payload);
+        }
         Some(payload)
     }
 
@@ -647,6 +654,49 @@ impl TreeWalk {
                 target: "aos_nix::cache",
                 error = %error,
                 "tree-walk evaluator heap value-hash caching failed"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::runtime::CachedScalarValue;
+    use crate::compile::resolve as resolve_ast;
+    use crate::syntax::parse_str;
+
+    fn lower(source: &str) -> Ir {
+        nix_lower(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("source lowers")
+    }
+
+    #[test]
+    fn scalar_payload_capture_decodes_through_the_owning_heap() {
+        let ir = lower("null");
+        let mut evaluator = TreeWalk::new(&ir);
+        let float_bits = 0xfff8_0000_0000_0042;
+        let integer = evaluator
+            .heap
+            .alloc_int_value(i64::MAX)
+            .expect("integer allocates");
+        let float = evaluator
+            .heap
+            .alloc_float_value(f64::from_bits(float_bits))
+            .expect("float allocates");
+
+        let cases = [
+            (integer, CachedScalarValue::Int(i64::MAX)),
+            (float, CachedScalarValue::FloatBits(float_bits)),
+            (Value::bool(true), CachedScalarValue::Bool(true)),
+            (Value::null(), CachedScalarValue::Null),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                evaluator
+                    .force_cache_payload_for_value(value)
+                    .and_then(|payload| payload.scalar_value()),
+                Some(expected)
             );
         }
     }

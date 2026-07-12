@@ -134,8 +134,8 @@ impl TreeWalk {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
         }
-        if let Some(value) = payload.immediate_value() {
-            return Some(value);
+        if let Some(value) = payload.scalar_value() {
+            return self.heap.alloc_cached_scalar_value(value).ok();
         }
         if let Some(bytes) = payload.context_free_string_bytes() {
             let bytes = try_clone_bytes(bytes).ok()?;
@@ -211,5 +211,47 @@ impl TreeWalk {
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
         self.alloc_replayed_payload_path(replay_allocation_node, NixString::from_bytes(bytes))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::resolve as resolve_ast;
+    use crate::syntax::parse_str;
+
+    fn lower(source: &str) -> Ir {
+        nix_lower(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("source lowers")
+    }
+
+    #[test]
+    fn scalar_payload_replay_rehydrates_through_the_receiving_heap() {
+        let ir = lower("null");
+        let mut evaluator = TreeWalk::new(&ir);
+        let float_bits = 0xfff8_0000_0000_0042;
+
+        let integer = evaluator
+            .value_for_cached_expression_payload_for_test(CachedExpressionValue::int(i64::MIN))
+            .expect("cached integer replays");
+        let float = evaluator
+            .value_for_cached_expression_payload_for_test(CachedExpressionValue::float(
+                f64::from_bits(float_bits),
+            ))
+            .expect("cached float replays");
+        let boolean = evaluator
+            .value_for_cached_expression_payload_for_test(CachedExpressionValue::bool(true))
+            .expect("cached boolean replays");
+        let null = evaluator
+            .value_for_cached_expression_payload_for_test(CachedExpressionValue::null())
+            .expect("cached null replays");
+
+        assert_eq!(evaluator.heap().decode_int_value(integer), Ok(i64::MIN));
+        assert_eq!(
+            evaluator.heap().decode_float_value(float).map(f64::to_bits),
+            Ok(float_bits)
+        );
+        assert_eq!(boolean.as_bool(), Ok(true));
+        assert_eq!(null.as_null(), Ok(()));
     }
 }

@@ -21,14 +21,24 @@ const EMPTY_ATTRS_VALUE_HASH: ValueHash = ValueHash::from_cached_expression_payl
 
 /// A memoized force-cache payload that can be replayed by an evaluator.
 ///
-/// Immediate values can be returned directly because they carry their payload
-/// in the [`Value`] word. Heap-backed values must instead store canonical data
-/// and be rehydrated by the evaluator that consumes the hit.
+/// Scalars and heap-backed values both store canonical, runtime-independent
+/// data. Evaluator replay rehydrates that data through the receiving heap so a
+/// cached payload never persists an arena-qualified Candidate-B or Candidate-C
+/// word.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedExpressionValue {
     pub(super) payload: InlineValuePayload,
     pub(super) attr_position_source_hash: Option<AttrPositionSourceHash>,
     value_hash: ValueHash,
+}
+
+/// One canonical scalar carried by a cached expression payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CachedScalarValue {
+    Int(i64),
+    FloatBits(u64),
+    Bool(bool),
+    Null,
 }
 
 /// One cached attrset entry with an optional source position.
@@ -51,6 +61,16 @@ impl CachedExpressionValue {
     /// payloads, until the receiving evaluator rehydrates its active value.
     pub fn float(value: f64) -> Self {
         Self::from_payload(InlineValuePayload::Float(value.to_bits()))
+    }
+
+    /// Creates a cached boolean without constructing an active value.
+    pub fn bool(value: bool) -> Self {
+        Self::from_payload(InlineValuePayload::Bool(value))
+    }
+
+    /// Creates a cached null without constructing an active value.
+    pub fn null() -> Self {
+        Self::from_payload(InlineValuePayload::Null)
     }
 
     /// Creates a cached immediate scalar value.
@@ -396,9 +416,35 @@ impl CachedExpressionValue {
         ))
     }
 
-    /// Returns the immediate scalar value, if this payload is immediate.
+    /// Returns the active context-free scalar value, if this payload is scalar.
+    ///
+    /// Evaluator replay must use `scalar_value` and rehydrate through
+    /// its heap. This compatibility accessor remains for cache-only callers
+    /// that still consume the active two-word representation.
     pub fn immediate_value(&self) -> Option<Value> {
         self.payload.immediate_value()
+    }
+
+    /// Returns the canonical cached scalar without constructing a runtime value.
+    pub(crate) fn scalar_value(&self) -> Option<CachedScalarValue> {
+        match &self.payload {
+            InlineValuePayload::Int(value) => Some(CachedScalarValue::Int(*value)),
+            InlineValuePayload::Float(bits) => Some(CachedScalarValue::FloatBits(*bits)),
+            InlineValuePayload::Bool(value) => Some(CachedScalarValue::Bool(*value)),
+            InlineValuePayload::Null => Some(CachedScalarValue::Null),
+            InlineValuePayload::ContextFreeString(_)
+            | InlineValuePayload::ContextString { .. }
+            | InlineValuePayload::Path(_)
+            | InlineValuePayload::ContextPath { .. }
+            | InlineValuePayload::EmptyList
+            | InlineValuePayload::List(_)
+            | InlineValuePayload::EmptyAttrs
+            | InlineValuePayload::Attrs(_)
+            | InlineValuePayload::SourceOrderedAttrs(_)
+            | InlineValuePayload::PositionedAttrs(_)
+            | InlineValuePayload::SourceOrderedPositionedAttrs(_)
+            | InlineValuePayload::AttrRepr { .. } => None,
+        }
     }
 
     /// Returns the cached context-free string bytes, if this payload is a string.
@@ -716,22 +762,29 @@ impl CachedExpressionValue {
 
 #[cfg(test)]
 mod scalar_constructor_tests {
-    use super::CachedExpressionValue;
+    use super::{CachedExpressionValue, CachedScalarValue};
 
     #[test]
     fn canonical_scalar_constructors_preserve_full_width_payloads() {
         let integer = CachedExpressionValue::int(i64::MIN);
-        let integer_value = integer
-            .immediate_value()
-            .expect("integer payload rehydrates");
-        assert_eq!(integer_value.as_int().expect("integer value"), i64::MIN);
+        assert_eq!(
+            integer.scalar_value(),
+            Some(CachedScalarValue::Int(i64::MIN))
+        );
 
         let float_bits = 0xfff8_0000_0000_0042;
         let float = CachedExpressionValue::float(f64::from_bits(float_bits));
-        let float_value = float.immediate_value().expect("float payload rehydrates");
         assert_eq!(
-            float_value.as_float().expect("float value").to_bits(),
-            float_bits
+            float.scalar_value(),
+            Some(CachedScalarValue::FloatBits(float_bits))
+        );
+        assert_eq!(
+            CachedExpressionValue::bool(true).scalar_value(),
+            Some(CachedScalarValue::Bool(true))
+        );
+        assert_eq!(
+            CachedExpressionValue::null().scalar_value(),
+            Some(CachedScalarValue::Null)
         );
     }
 }

@@ -1748,6 +1748,27 @@ value word (Candidates B and C) remains open and separately gated:**
       The migration reduced direct raw representation reads from 40 to 29 and
       is covered by scalar-boundary, cache-bit-pattern, and executable identity
       audit tests.
+- [x] **Representation-neutral cached-scalar prerequisite:** cache payloads now
+      carry canonical `i64`, exact `f64` bits, boolean, or null data rather than
+      an active `Value` word. Production payload capture decodes through the
+      owning heap; replay allocates through the receiving heap; identity uses
+      the payload's already-canonical hash. A boxed Candidate-B scalar or
+      domain-qualified Candidate-C index therefore cannot leak through a cache
+      record into a different evaluator domain. The active ABI remains 16 bytes
+      and compatibility-only cache APIs still expose active immediates, so this
+      closes a cutover prerequisite rather than selecting B or C. Full gates
+      passed 380 value, 355 core, 271 JIT plus both integrations, 3,054 active
+      oracle tests (34 ignored), the runtime-FFI and cache suites, aos-nix 340,
+      language 38,
+      all 16 package legs, compute x9, wide serial/K=4/JIT/sweep-zero,
+      zlib/wide cache validation, and 648 strict-JSON expressions in four
+      modes. Three balanced preconditioned release pairs against exact parent
+      `a6d863f4a` moved wide medians 76.42 -> 73.43 ms cold (-3.9%) and
+      72.14 -> 67.36 ms warm (-6.6%); retained RSS moved about +0.8%. The
+      changed-tree suite matched all nine outputs and retained the expected
+      locality counters (16,550 initial forces/88 settled cutoffs for scattered
+      leaf changes versus 150/96 unchanged), while its aos/C++ ratios remained
+      slower at 2.072-3.339 first-run and 2.266-3.301 settled.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,

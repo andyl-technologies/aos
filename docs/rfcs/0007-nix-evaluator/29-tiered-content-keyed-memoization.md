@@ -1175,6 +1175,12 @@ design above with the code as ground truth:
       four-package matrix and wide witness; the focused cold A/B and census
       record a negative economics result, so active tables remain default-off
       and the accepted product is counters-only.
+- [x] Runtime-representation-neutral scalar payloads: durable and in-memory
+      expression payloads retain canonical integer/float-bit/boolean/null data;
+      evaluator capture decodes through the owning heap and replay rehydrates
+      through the receiving heap. Cache identity consumes the canonical payload
+      hash, so neither Candidate-B pointer words nor Candidate-C arena indices
+      need to cross evaluator domains when the active ABI changes.
 - [ ] MEMO-2 final acceptance: primary/secondary-loss/poisoned-L3 matrix,
       root-cutoff latency non-regression, repeat-heavy package/CI hit-mass
       demonstration, and the required cross-machine L3 replay.
