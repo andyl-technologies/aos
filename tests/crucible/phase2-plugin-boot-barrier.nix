@@ -16,7 +16,9 @@
   pluginBootBarrier = builtins.readFile ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmem =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -80,8 +82,12 @@
       forbiddenBootBarrierApis)
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-18 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-18**";
+        label = "T-PLUG-18 completed by the live plugin install gate";
+        needle = "- [x] **T-PLUG-18**";
+      }
+      {
+        label = "T-PLUG-18 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
       }
       {
         label = "boot barrier wording";

@@ -52,8 +52,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-16 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-16**";
+        label = "T-PLUG-16 completed by the live plugin install gate";
+        needle = "- [x] **T-PLUG-16**";
+      }
+      {
+        label = "T-PLUG-16 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
       }
       {
         label = "handshake wording";

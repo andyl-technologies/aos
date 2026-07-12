@@ -457,10 +457,15 @@ The control channel is determinism-neutral by construction.
   wake fd, and replies `SetupAck(status)`; host refuses to schedule a node whose
   `SetupAck` is non-zero. — satisfies [PROTO-12], [PROTO-13], [PROTO-19]; spec
   §3.7, §3.8, §5.2.
-- [ ] **T-PROTO-6** Wire the lifecycle: connect → Hello/HelloAck → Setup/SetupAck
+- [x] **T-PROTO-6** Wire the lifecycle: connect → Hello/HelloAck → Setup/SetupAck
   → run-via-shmem (control channel silent) → Quit; assert no control frame is
   exchanged during the run. — satisfies [PROTO-1], [PROTO-2], [PROTO-4],
   [PROTO-18]; spec §2, §5.1.
+  Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which drives the
+  full lifecycle live against real qemu-crucible — connect, `Hello`/`HelloAck`,
+  `Setup`/`SetupAck`, run via shared memory, then `Quit` — and proves the control
+  channel stays silent during the run with a non-blocking `MSG_PEEK` that must
+  find no unsolicited frame before teardown.
 - [x] **T-PROTO-7** Implement the graceful-shutdown escalation Quit → QMP quit →
   SIGTERM → SIGKILL → reap with bounded per-rung waits, and prove no QEMU child
   is leaked under an unresponsive guest/plugin. — satisfies [PROTO-14],

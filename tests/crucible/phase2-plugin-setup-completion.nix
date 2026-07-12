@@ -21,7 +21,8 @@
   # mapped_setup_region.rs; scan both so the needles survive file moves.
   shmem =
     builtins.readFile ../../crates/crucible-shmem/src/lib.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -62,8 +63,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-17 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-17**";
+        label = "T-PLUG-17 completed by the live plugin install gate";
+        needle = "- [x] **T-PLUG-17**";
+      }
+      {
+        label = "T-PLUG-17 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
       }
       {
         label = "descriptor setup wording";
