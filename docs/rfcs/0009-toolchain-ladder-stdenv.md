@@ -351,7 +351,10 @@ stdenv` plus the existing eval/VM checks.
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
   defaults genuinely don't apply to a cross-built libc or an
-  in-tree-GMP compiler.
+  in-tree-GMP compiler. GCC 3.4's target-library link flags must carry
+  `-B<previous-glibc>/lib` as well as `-L`: `-L` locates `libc.a`, while the
+  in-tree `xgcc` resolves `crt1.o`, `crti.o`, and `crtn.o` through compiler
+  prefixes before the new compiler has an installed start-file directory.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
