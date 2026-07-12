@@ -14,6 +14,7 @@ static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
 mod artifact_bundle; mod chunk_e;
 mod artifact_validation;
+mod simplify_identity;
 
 fn temp_root() -> PathBuf {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);

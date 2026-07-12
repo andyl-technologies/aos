@@ -36,8 +36,9 @@ use crate::compile::{
     IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
     IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError, IrFacts, IrId, IrInlineCacheSiteId,
     IrKind, IrNode, IrShape, IrShapeId, IrWithChain, LambdaAttrKeys, LambdaAttrValueSummary,
-    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, ResolvedAst, ScopeError, ScopeTables,
-    SharedChainReason, Strictness, Upvalue, WithChain, annotate_ir, resolve,
+    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, PASS_SET_VERSION, ResolvedAst, ScopeError,
+    ScopeTables, SharedChainReason, SimplifyError, Strictness, Upvalue, WithChain, annotate_ir,
+    resolve, simplify_ir,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
@@ -144,9 +145,60 @@ fn lowered_ir_artifact_fingerprint(ir_bytes: &[u8], symbol_bytes: &[u8]) -> Lowe
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOWERED_IR_FINGERPRINT_DOMAIN);
     hasher.update(&PARSE_CACHE_SCHEMA_VERSION.to_le_bytes());
+    // Fold the simplifier pass-set version into the fingerprint domain so that
+    // enabling or changing the pass set is a clean cold miss for the fact
+    // sidecar, the JIT compiled-body cache, and the source-less eval memo key
+    // (RFC-0007 doc 30 §8 decision D2). Version 0 (the empty stage-1 pass set)
+    // is intentionally *not* folded, so the pre-simplifier fingerprint is
+    // preserved byte-for-byte and no cache is invalidated by the skeleton.
+    if PASS_SET_VERSION != 0 {
+        hasher.update(b"aos-nix-simplify-pass-set");
+        hasher.update(&PASS_SET_VERSION.to_le_bytes());
+    }
     update_fingerprint_chunk(&mut hasher, &ir_bytes);
     update_fingerprint_chunk(&mut hasher, &symbol_bytes);
     LoweredIrFingerprint::from_durable_hash(DurableBlake3Hash::from_hasher(hasher))
+}
+
+/// Returns whether the IR-to-IR simplifier is enabled for the parse pipeline.
+///
+/// The simplifier runs in the lowering-to-persistence seam only when the
+/// `AOS_NIX_SIMPLIFY` environment variable is set to a truthy value (`1`,
+/// `true`, `yes`, or `on`, case-insensitive). It is off by default. The value is
+/// read once and cached for the process.
+///
+/// While the registered pass set is empty (the stage-1 skeleton) the simplifier
+/// is the identity, so this flag does not change any observable output; it exists
+/// to gate real passes safely as they land.
+fn simplify_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AOS_NIX_SIMPLIFY").is_ok_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    })
+}
+
+/// Runs the registered simplifier passes over a freshly lowered IR in place,
+/// when the simplifier is enabled.
+///
+/// This is the single lowering-to-persistence seam hook: every parse-cache site
+/// that produces an [`Ir`] from `nix_lower` runs it through here before the IR is
+/// encoded, fingerprinted, persisted, or returned, so all downstream consumers
+/// observe the same (simplified) IR (RFC-0007 doc 30 §8 decision D1/A).
+///
+/// # Errors
+///
+/// Returns [`ParseCacheError::Simplify`] if a registered pass fails to rewrite
+/// the IR. With the empty stage-1 pass set this cannot fail.
+pub(super) fn simplify_lowered_ir(ir: &mut Ir) -> Result<(), ParseCacheError> {
+    if simplify_enabled() {
+        simplify_ir(ir).map_err(|source| ParseCacheError::Simplify { source })?;
+    }
+    Ok(())
 }
 
 fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {
@@ -407,8 +459,9 @@ impl ParseCache {
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
         let resolved = resolve(parsed).map_err(|source| ParseCacheError::Scope { source })?;
         let cached_resolved = file_local_resolved(&resolved)?;
-        let ir = nix_lower(cached_resolved.clone())
+        let mut ir = nix_lower(cached_resolved.clone())
             .map_err(|source| ParseCacheError::LowerIr { source })?;
+        simplify_lowered_ir(&mut ir)?;
         let meta = ParseCacheMeta::new(self.schema_version, source_hint, 0, 0);
         let stored = entry.write_resolved(&resolved, &meta).is_ok();
         Ok(CachedParse {

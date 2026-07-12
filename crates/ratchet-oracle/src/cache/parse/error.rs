@@ -23,6 +23,12 @@ pub enum ParseCacheError {
         /// The IR lowering failure.
         source: IrError,
     },
+    /// A lowered IR artifact could not be simplified.
+    #[error("failed to simplify lowered IR for parse cache")]
+    Simplify {
+        /// The simplifier failure.
+        source: SimplifyError,
+    },
     /// A source path could not be canonicalized for file memoization.
     #[error("failed to canonicalize source path {path:?}")]
     CanonicalizeSource {

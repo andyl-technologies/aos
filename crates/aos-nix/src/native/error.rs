@@ -64,6 +64,7 @@ pub(super) fn parse_cache_frontend_error(
         | ParseCacheError::InvalidFactSidecarUpdate { .. }
         | ParseCacheError::DecodeArtifactBundle { .. }
         | ParseCacheError::DecodeMeta { .. }
+        | ParseCacheError::Simplify { .. }
         | ParseCacheError::EncodeArtifact(_) => None,
     }
 }
