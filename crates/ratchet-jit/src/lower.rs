@@ -53,7 +53,7 @@ pub use alloc_cons::{
     lower_singleton_list_ir_thunk_body_artifact,
 };
 pub use candidate_b::{
-    JitCandidateBConstantError, lower_candidate_b_constant_ir_thunk_body_artifact,
+    JitCandidateBConstantError, lower_candidate_b_constant_ir_thunk_body_artifact, lower_candidate_b_env_get_ir_thunk_body_artifact,
 };
 pub use candidate_c::{
     JitCandidateCConstantError, lower_candidate_c_constant_ir_thunk_body_artifact,

@@ -1804,6 +1804,23 @@ value word (Candidates B and C) remains open and separately gated:**
       and retained 88 settled cutoffs, versus 150/96 for unchanged. Its loaded
       host aos/C++ ratios were 1.497-3.713 first-run and 2.881-4.086 settled, so
       no changed-tree throughput win is claimed.
+- [x] **Candidate-B native return and first helper boundary prerequisite:**
+      shared-context native returns now rehydrate Candidate-B and Candidate-C
+      words through the receiving `EvalHeap`, rather than accepting only
+      context-free immediates. This admits owned boxed integers, exact floats,
+      and typed flat heap objects while retaining explicit foreign-heap and
+      wrong-domain rejection. The first Candidate-B environment wrapper reads
+      the active captured value and encodes it through the same mutable heap
+      boundary; its focused test proves a full-width integer is boxed and then
+      decoded by the receiving heap. A verified CLIF artifact separately pins
+      the one-word `aos_env_get` call/result signature. The shared module
+      declaration table still owns the active two-word signature for that
+      symbol and deliberately rejects finalization of the one-word artifact;
+      ABI-specific helper-symbol coexistence, production tier-1 selection,
+      forcing/apply helpers, and tier 2 therefore remain open. The new unsafe
+      wrapper and direct test call are isolated in a dedicated executable
+      safety-manifest module with exact token counts and `SAFETY`/`# Safety`
+      checks. **Gate evidence is recorded below after the full landing battery.**
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
@@ -1815,9 +1832,12 @@ value word (Candidates B and C) remains open and separately gated:**
       contract, same seams, built for the head-to-head. **The checked word
       codec, one-word ABI metadata, literal lowerer, native dispatch, runtime
       scalar adapter, tier-1 selector, context-owned heap/header bridge, and
-      boxed wide-integer/exact-float populations are landed. Helper/tier-2
-      conversion, container narrowing, active ABI selection, and the full
-      head-to-head remain.**
+      boxed wide-integer/exact-float populations are landed. Heap-owned native
+      return adapters, the first reviewed environment wrapper, and a verified
+      pre-module one-word env-read artifact are also landed. Shared-module
+      helper-symbol coexistence, the remaining helper/tier-2 conversion,
+      container narrowing, active ABI selection, and the full head-to-head
+      remain.**
 - [ ] The B-vs-C selection: full benchmark matrix (packages + compute +
       wide + memory columns) per the P8 build-and-select mandate;
       closes doc 22's P8 pointer-tagging row and feeds `M-4`/`Q-E`.

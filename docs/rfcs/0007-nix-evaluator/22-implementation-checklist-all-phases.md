@@ -11810,6 +11810,19 @@ it ships).**
       throughout and preserved the 16,550/88 scattered-change versus 150/96
       unchanged force/cutoff signal; no throughput claim is made for the
       inactive bridge.
+- [x] Current Candidate-B native-boundary precursor: native Candidate-B/C
+      returns now decode through the receiving `EvalHeap`, so owned boxed
+      scalars and flat heap objects cross the reviewed native-return adapter
+      while foreign domains still fail. Candidate B's first helper wrapper
+      converts an active environment-slot value through the mutable evaluator
+      boundary; a focused full-width-integer test pins its boxed-cell ownership.
+      A separate verified CLIF artifact carries a one-word `aos_env_get`
+      signature, but the shared module correctly rejects it while that symbol's
+      declaration remains the active two-word ABI. ABI-specific helper-symbol
+      coexistence, production selection, the remaining helpers/tier 2,
+      container narrowing, and the B-vs-C matrix remain open. The wrapper's
+      unsafe surface is isolated in the executable runtime-FFI safety manifest.
+      *Full landing-gate evidence is recorded in doc 30 §12.*
 - [x] Current `value/nanbox.rs` precursor: `ratchet-value` exposes the safe
       NaN-box layout contract for the measured value-size variant. It reserves a
       negative quiet-NaN prefix, three tag bits, and a 48-bit payload; normalizes
@@ -12219,8 +12232,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       evaluator now owns scalar construction/decoding through `EvalHeap`.
       Three wide samples showed only a noise-sized B edge (1.4% cold, 0.9%
       warm). Candidate B now also has context-owned heap/header decoding and
-      boxed scalar populations. Helpers, tier 2, container narrowing, the full
-      matrix, and active-ABI selection remain, so FV-4 is intentionally
+      boxed scalar populations, receiving-heap native return adapters, and the
+      first reviewed environment helper boundary. Shared-module helper-symbol
+      coexistence, the remaining helpers, tier 2, container narrowing, the
+      full matrix, and active-ABI selection remain, so FV-4 is intentionally
       unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent

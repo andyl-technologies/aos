@@ -48,9 +48,9 @@ pub enum JitCraneliftNativeCallError {
         /// The underlying tagged-value layout error.
         source: TaggedValueWordError,
     },
-    /// A Candidate-B adapter received a context-owned word it cannot decode.
+    /// The receiving evaluator could not decode a Candidate-B return word.
     UnsupportedCandidateBReturnKind {
-        /// The tagged kind requiring evaluator-owned decoding state.
+        /// The tagged kind that failed context-owned decoding.
         kind: TaggedValueKind,
     },
     /// The native call returned valid-tag bits that violate the runtime value payload layout.
@@ -71,9 +71,9 @@ pub enum JitCraneliftNativeCallError {
         /// The underlying compressed-value layout error.
         source: CompressedValueError,
     },
-    /// A Candidate-C adapter received a context-owned word it cannot decode.
+    /// The receiving evaluator could not decode a Candidate-C return word.
     UnsupportedCandidateCReturnKind {
-        /// The compressed kind requiring evaluator-owned decoding state.
+        /// The compressed kind that failed context-owned decoding.
         kind: CompressedValueKind,
     },
 }
@@ -101,7 +101,7 @@ impl fmt::Display for JitCraneliftNativeCallError {
             ),
             Self::UnsupportedCandidateBReturnKind { kind } => write!(
                 formatter,
-                "Candidate-B return kind {kind:?} requires evaluator-owned decoding state"
+                "Candidate-B return kind {kind:?} is not owned by the receiving evaluator"
             ),
             Self::InvalidReturnValue {
                 symbol_name,
@@ -121,7 +121,7 @@ impl fmt::Display for JitCraneliftNativeCallError {
             ),
             Self::UnsupportedCandidateCReturnKind { kind } => write!(
                 formatter,
-                "Candidate-C return kind {kind:?} requires evaluator-owned decoding state"
+                "Candidate-C return kind {kind:?} is not owned by the receiving evaluator"
             ),
         }
     }

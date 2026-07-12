@@ -84,14 +84,11 @@ pub const fn runtime_ffi_unsafe_discipline() -> RuntimeFfiUnsafeDiscipline {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
+    use std::{fs, path::{Path, PathBuf}};
 
     use super::*;
 
-    mod stack_map;
+    mod candidate_b_env; mod stack_map;
 
     const UNSAFE_TOKEN: &str = concat!("uns", "afe");
     const EXTERN_TOKEN: &str = concat!("ext", "ern");
@@ -111,8 +108,7 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {"
     );
-    const ENV_GET_DECODER_CALL_LINE: &str =
-        concat!("uns", "afe { // aos_env_get runtime-environment decode");
+    const ENV_GET_DECODER_CALL_LINE: &str = concat!("uns", "afe { // aos_env_get runtime-environment decode");
     const DIRECT_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_env_get(env_ptr, 1) };");
     const BINDING_TEST_CALL_LINE: &str = concat!(
@@ -553,9 +549,9 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };"
     );
-    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!("let context_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };");
-    const CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE: &str = concat!("let candidate_b_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) };");
-    const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!("let candidate_c_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) };");
+    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) }");
+    const CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) }");
+    const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) }");
     const CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE: &str = concat!(
         "let lambda_dispatched = ",
         "uns",
@@ -743,6 +739,7 @@ mod tests {
         if source_path != source_root.join("env.rs") {
             return false;
         }
+        if candidate_b_env::is_allowed_token(line, token) { return true; }
 
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
@@ -1429,6 +1426,7 @@ mod unchecked_cfg;
             1,
             "aos_env_get wrapper call to the decoder must stay singly reviewed"
         );
+        candidate_b_env::assert_reviewed_counts(&env);
         assert_eq!(
             trimmed_line_occurrences(&env, UPVAL_GET_DECODER_CALL_LINE),
             1,
@@ -1986,6 +1984,7 @@ mod unchecked_cfg;
             ENV_GET_DECODER_CALL_LINE,
             "aos_env_get decoder call must keep a SAFETY comment",
         );
+        candidate_b_env::assert_reviewed_safety_comments(&lines);
         assert_has_safety_comment_before(
             &lines,
             UPVAL_GET_DECODER_CALL_LINE,
@@ -2359,6 +2358,7 @@ mod unchecked_cfg;
             ENV_GET_FN_LINE,
             "public native wrapper must document # Safety",
         );
+        candidate_b_env::assert_public_unsafe_docs(&lines);
         assert_has_safety_doc_before(
             &alloc_lines,
             ALLOC_CODE_ENV_FN_TYPE_LINE,

@@ -2,9 +2,9 @@
 
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
-    ir::{Function, InstBuilder, types},
+    ir::{ExtFuncData, ExternalName, Function, InstBuilder, types},
 };
-use ratchet_core::{IrArena, IrId, runtime_thunk_call_signature};
+use ratchet_core::{IrArena, IrId, runtime_helper_call_signature, runtime_thunk_call_signature};
 use ratchet_value::value::{
     Value, ValueTag,
     tag::{TaggedValueWord, TaggedValueWordError},
@@ -12,8 +12,9 @@ use ratchet_value::value::{
 use thiserror::Error;
 
 use super::{
-    JitLowerError, append_entry_block_params, clif_name_for_ir_root, constant_value_for_root,
-    verify_clif_function,
+    AOS_ENV_GET_SYMBOL, JitLowerError, append_entry_block_params,
+    clif_external_name_for_aos_env_get, clif_name_for_ir_root, constant_value_for_root,
+    env_slot_for_root, verify_clif_function,
 };
 use crate::{
     abi::clif_signature_for_candidate_b_runtime_call,
@@ -68,6 +69,71 @@ pub fn lower_candidate_b_constant_ir_thunk_body_artifact(
     let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
     let encoded = cursor.ins().iconst(types::I64, word.raw_bits() as i64);
     cursor.ins().return_(&[encoded]);
+    verify_clif_function(&function)?;
+
+    Ok(JitClifArtifact::new_with_value_abi(
+        JitTier::Tier1Baseline,
+        JitClifArtifactKind::ThunkBody,
+        JitClifArtifactSource::IrRoot(root),
+        JitValueAbi::CandidateB,
+        function,
+    ))
+}
+
+/// Lowers a local-slot read through Candidate B's one-word helper ABI.
+///
+/// The artifact imports the stable `aos_env_get` symbol with Candidate B's
+/// one-word value result. It intentionally remains a pre-module artifact: the
+/// shared module declaration table still pins that symbol to the active
+/// two-word wrapper and rejects this signature until ABI-specific helper-symbol
+/// coexistence lands.
+///
+/// # Errors
+///
+/// Returns the ordinary local-slot shape errors, a missing frozen helper
+/// signature, a Candidate-B signature conversion error, an unexpected helper
+/// result arity, or a CLIF verification error.
+pub fn lower_candidate_b_env_get_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let slot = env_slot_for_root(arena, root)?;
+    let signature = clif_signature_for_candidate_b_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(clif_name_for_ir_root(root), signature);
+    let entry_block = append_entry_block_params(&mut function);
+    let helper_signature = runtime_helper_call_signature(AOS_ENV_GET_SYMBOL).ok_or(
+        JitLowerError::MissingRuntimeHelperSignature {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+        },
+    )?;
+    let helper_signature = clif_signature_for_candidate_b_runtime_call(helper_signature)?;
+    let signature_ref = function.import_signature(helper_signature);
+    let user_name = function.declare_imported_user_function(clif_external_name_for_aos_env_get());
+    let env_get = function.import_function(ExtFuncData {
+        name: ExternalName::user(user_name),
+        signature: signature_ref,
+        colocated: false,
+    });
+
+    let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
+    let env = cursor
+        .func
+        .dfg
+        .block_params(entry_block)
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+    let call = cursor.ins().call(env_get, &[env, slot]);
+    let results = cursor.func.dfg.inst_results(call).to_vec();
+    if results.len() != 1 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 1,
+            actual: results.len(),
+        });
+    }
+    cursor.ins().return_(&results);
     verify_clif_function(&function)?;
 
     Ok(JitClifArtifact::new_with_value_abi(
@@ -157,6 +223,37 @@ mod tests {
                 JitCandidateBConstantError::RequiresBoxing { tag: actual } if actual == tag
             ));
         }
+    }
+
+    #[test]
+    fn env_get_import_and_return_use_one_word() {
+        let arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot: 3 },
+            )],
+            Vec::new(),
+        );
+        let artifact = lower_candidate_b_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
+            .expect("Candidate-B env read lowers");
+        let function = artifact.function();
+        let import = function
+            .dfg
+            .ext_funcs
+            .values()
+            .next()
+            .expect("env helper is imported");
+
+        assert_eq!(artifact.value_abi(), JitValueAbi::CandidateB);
+        assert_eq!(function.signature.returns.len(), 1);
+        assert_eq!(function.signature.returns[0].value_type, types::I64);
+        assert_eq!(function.dfg.signatures[import.signature].returns.len(), 1);
+        assert_eq!(
+            function.dfg.signatures[import.signature].returns[0].value_type,
+            types::I64
+        );
     }
 
     fn literal_arena(kind: IrKind, data: IrData) -> IrArena {

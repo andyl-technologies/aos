@@ -36,7 +36,7 @@ use crate::context::RuntimeJitContext;
 use crate::trap::{RuntimeTrap, RuntimeTrapScope};
 
 mod value_abi;
-use value_abi::{candidate_b_inline_value, candidate_c_inline_value};
+use value_abi::NativeThunkReturn;
 
 /// The value and optional trap observed from one native thunk execution.
 ///
@@ -202,40 +202,38 @@ pub fn run_context_finalized_native_thunk_call(
     let env = rt;
 
     let scope = RuntimeTrapScope::new();
-    let context_dispatched = match body.artifact().value_abi() {
+    let native_return = match body.artifact().value_abi() {
         JitValueAbi::CandidateB => {
             // SAFETY: `rt` comes from the pinned context over `eval`; the current
             // Candidate-B literal body ignores raw inputs, and the caller keeps the
             // shared module context that finalized `body` alive across the call.
-            let candidate_b_dispatched = unsafe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) };
-            candidate_b_dispatched.and_then(|word| candidate_b_inline_value(body, word))
+            unsafe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) }
+                .map(NativeThunkReturn::CandidateB)
         }
         JitValueAbi::CandidateC => {
             // SAFETY: `rt` comes from the pinned context over `eval`; the current
             // Candidate-C literal body ignores raw inputs, and the caller keeps the
             // shared module context that finalized `body` alive across the call.
-            let candidate_c_dispatched = unsafe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) };
-            candidate_c_dispatched.and_then(candidate_c_inline_value)
+            unsafe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) }
+                .map(NativeThunkReturn::CandidateC)
         }
         JitValueAbi::Active => {
             // SAFETY: `rt` comes from the pinned context over `eval` and `env` from
             // the live frame; the caller keeps the shared module context alive, so
             // its frozen-ABI wrappers and finalized code stay live for the call.
-            let context_dispatched = unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };
-            context_dispatched
+            unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) }
+                .map(NativeThunkReturn::Active)
         }
     };
-    match context_dispatched {
-        Ok(value) => {
-            let trap = scope.take_trap();
-            drop(scope);
-            drop(context);
-            Ok(NativeThunkCallOutcome { value, trap })
-        }
-        Err(error) => {
-            drop(scope);
-            Err(error)
-        }
+    let trap = scope.take_trap();
+    drop(scope);
+    drop(context);
+    match native_return {
+        Ok(native_return) => Ok(NativeThunkCallOutcome {
+            value: native_return.into_active(eval.heap(), body)?,
+            trap,
+        }),
+        Err(error) => Err(error),
     }
 }
 

@@ -144,6 +144,7 @@ pub use lower::{
     lower_apply_local_slots_ir_root_thunk_body_artifact, lower_apply_local_slots_ir_thunk_body,
     lower_apply_local_slots_ir_thunk_body_artifact,
     lower_candidate_b_constant_ir_thunk_body_artifact,
+    lower_candidate_b_env_get_ir_thunk_body_artifact,
     lower_candidate_c_constant_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
     lower_constant_ir_root_thunk_body_artifact, lower_constant_ir_thunk_body,
     lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,

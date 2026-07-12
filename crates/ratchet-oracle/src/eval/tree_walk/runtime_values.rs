@@ -5,8 +5,27 @@
 //! boundary while the active 16-byte representation remains allocation-free.
 
 use super::*;
+use crate::value::tag::{CandidateBValueError, TaggedValueWord};
 
 impl TreeWalk {
+    /// Converts one active runtime value into Candidate B's heap-owned word.
+    ///
+    /// This is the mutable evaluator boundary used by one-word native helpers:
+    /// wide integers and floats may allocate or reuse typed scalar cells in the
+    /// receiving evaluator heap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Candidate-B codec, scalar-allocation, or heap-membership error
+    /// when the active value cannot be represented in this evaluator's domain.
+    #[inline(always)]
+    pub fn candidate_b_runtime_value_word(
+        &mut self,
+        value: Value,
+    ) -> Result<TaggedValueWord, CandidateBValueError> {
+        self.heap.candidate_b_encode_value(value)
+    }
+
     /// Constructs one integer through the active heap-owned value boundary.
     #[inline(always)]
     pub(super) fn runtime_int_value(
