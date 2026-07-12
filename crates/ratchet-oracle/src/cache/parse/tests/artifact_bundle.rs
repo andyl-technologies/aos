@@ -75,7 +75,7 @@ fn artifact_bundle_hydrates_entry_files() {
         .expect("artifact bundle hydrates");
 
     assert!(hydrated.is_complete());
-    assert!(hydrated.facts_path().is_file());
+    assert!(bundle.facts_bytes().is_some());
     assert_eq!(
         hydrated
             .read_artifact_bundle()
@@ -174,14 +174,26 @@ fn artifact_bundle_hydration_removes_stale_fact_sidecar_for_factless_bundles() {
         )
         .expect("initial artifact writes");
 
-    assert!(hydrated.facts_path().is_file());
+    assert!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("initial bundle reads")
+            .facts_bytes()
+            .is_some()
+    );
 
     hydrated
         .write_artifact_bundle(&factless_bundle)
         .expect("factless artifact bundle hydrates");
 
     assert!(hydrated.is_complete());
-    assert!(!hydrated.facts_path().exists());
+    assert!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads")
+            .facts_bytes()
+            .is_none()
+    );
     let (ir, _) = hydrated.read_ir().expect("hydrated IR reads");
     assert!(
         ir.facts

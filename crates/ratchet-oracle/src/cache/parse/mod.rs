@@ -48,7 +48,7 @@ use crate::syntax::{
 use aos_nix_dialect::nix_lower;
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 11;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 12;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const LOWERED_IR_FINGERPRINT_DOMAIN: &[u8] = b"aos-nix-lowered-ir-fingerprint-v1";
@@ -429,8 +429,7 @@ impl ParseCache {
         if !entry.is_complete() {
             return Ok(None);
         }
-        let resolved = entry.read_resolved()?;
-        let (ir, facts_current) = entry.read_ir()?;
+        let (resolved, ir, facts_current) = entry.read_resolved_and_ir()?;
         Ok(Some(CachedParse {
             key,
             entry,

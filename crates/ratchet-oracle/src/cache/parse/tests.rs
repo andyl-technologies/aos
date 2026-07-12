@@ -508,21 +508,20 @@ fn write_resolved_cleans_temporary_files_after_artifact_commit_failure() {
         resolved.symbols.len() as u32,
     );
     entry.ensure_dir().expect("entry dir creates");
-    entry.write_meta(&meta).expect("stale metadata writes");
-    fs::create_dir(entry.ir_path()).expect("blocking artifact directory creates");
+    // Block the atomic bundle rename target with a directory so the single-file
+    // commit fails after its temp file is written.
+    fs::create_dir(entry.bundle_path()).expect("blocking bundle directory creates");
 
     let error = entry
         .write_resolved(&resolved, &meta)
         .expect_err("artifact commit fails");
     match error {
-        ParseCacheError::WriteArtifact { path, .. } => assert_eq!(path, entry.ir_path()),
+        ParseCacheError::WriteArtifact { path, .. } => assert_eq!(path, entry.bundle_path()),
         other => panic!("unexpected write error: {other:?}"),
     }
 
     assert!(!entry.is_complete());
-    assert!(!entry.meta_path().exists());
-    assert!(entry.resolved_path().is_file());
-    assert!(entry.ir_path().is_dir());
+    assert!(entry.bundle_path().is_dir());
     assert!(
         cache_temp_files(&entry).is_empty(),
         "temporary files were not cleaned up"
@@ -577,7 +576,13 @@ fn load_or_parse_writes_then_hits_by_source_content() {
     assert!(!miss.hit);
     assert!(miss.stored);
     assert!(miss.entry.is_complete());
-    assert!(miss.entry.facts_path().is_file());
+    assert!(
+        miss.entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads")
+            .facts_bytes()
+            .is_some()
+    );
 
     let hit = cache
         .load_or_parse_bytes(source, Some("second-name-is-not-identity.nix".to_owned()))
@@ -657,7 +662,23 @@ fn load_cached_bytes_reports_corrupt_complete_entries() {
     let parsed = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::write(parsed.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+    // Corrupt only the lowered-IR section of the bundle, leaving the frame and
+    // the other sections decodable, so the read still surfaces DecodeArtifact.
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let corrupt = ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
+        b"not an ir artifact".to_vec(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+    );
+    fs::write(
+        parsed.entry.bundle_path(),
+        corrupt.encode().expect("corrupt bundle encodes"),
+    )
+    .expect("corrupt bundle writes");
 
     let error = cache
         .load_cached_bytes(source)
@@ -665,7 +686,7 @@ fn load_cached_bytes_reports_corrupt_complete_entries() {
 
     assert!(matches!(
         error,
-        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.ir_path()
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.bundle_path()
     ));
 
     let _ = fs::remove_dir_all(root);
@@ -707,7 +728,7 @@ fn load_or_parse_recovers_from_corrupt_artifact() {
     let first = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::write(first.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+    fs::write(first.entry.bundle_path(), b"not a bundle artifact").expect("corrupt bundle writes");
 
     let recovered = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
@@ -736,9 +757,21 @@ fn load_or_parse_consumes_valid_lowered_ir_artifact() {
         resolve(parse_str("2").expect("other source parses")).expect("other source resolves");
     let other_ir = lower(file_local_resolved(&other_resolved).expect("other symbols remap"))
         .expect("other source lowers");
-    fs::write(
-        first.entry.ir_path(),
+    // Swap the stored bundle's lowered-IR section for a valid-but-mismatched
+    // artifact: the entry stays complete and the cache trusts the stored IR.
+    let bundle = first
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let swapped = ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
         encode_lowered_ir(&other_ir).expect("other IR encodes"),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+    );
+    fs::write(
+        first.entry.bundle_path(),
+        swapped.encode().expect("swapped bundle encodes"),
     )
     .expect("mismatched IR writes");
 
@@ -919,7 +952,13 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
         .write_resolved(&resolved, &meta)
         .expect("resolved artifact writes");
     assert!(entry.is_complete());
-    assert!(entry.facts_path().is_file());
+    assert!(
+        entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads")
+            .facts_bytes()
+            .is_some()
+    );
 
     let (loaded, _) = entry.read_ir().expect("lowered IR artifact reads");
     assert!(lowered_ir_matches(&loaded, &expected));
@@ -965,16 +1004,24 @@ fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
         escape: Escape::NoEscape,
     };
     *expected.get_mut(fact_id).expect("root fact exists") = root_fact;
-    fs::write(
-        entry.facts_path(),
+    let stored = entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let overlaid = ParseArtifactBundle::new_with_facts(
+        stored.resolved_bytes(),
+        stored.ir_bytes(),
+        stored.symbols_bytes(),
+        stored.meta_toml_bytes(),
         encode_ir_facts(
             &expected,
             lowered_ir_fingerprint(&base_ir).expect("IR fingerprint computes"),
             crate::compile::IR_ANALYSIS_VERSION,
         )
         .expect("fact artifact encodes"),
-    )
-    .expect("fact sidecar writes");
+    );
+    entry
+        .write_artifact_bundle(&overlaid)
+        .expect("fact sidecar writes");
 
     let (loaded, _) = entry.read_ir().expect("lowered IR artifact reads");
 
@@ -1023,8 +1070,8 @@ fn write_fact_sidecar_rejects_ir_for_different_artifact() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_facts =
-        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let original_bundle =
+        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     let mut other = lowered_ir_for_source("let y = 2; in y");
     crate::compile::annotate_ir(&mut other).expect("analysis succeeds");
 
@@ -1036,11 +1083,11 @@ fn write_fact_sidecar_rejects_ir_for_different_artifact() {
     assert!(matches!(
         error,
         ParseCacheError::InvalidFactSidecarUpdate { path, message }
-            if path == parsed.entry.facts_path() && message.contains("fingerprint")
+            if path == parsed.entry.bundle_path() && message.contains("fingerprint")
     ));
     assert_eq!(
-        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
-        original_facts
+        fs::read(parsed.entry.bundle_path()).expect("bundle remains readable"),
+        original_bundle
     );
     assert!(
         parsed
@@ -1062,8 +1109,8 @@ fn write_fact_sidecar_rejects_wrong_fact_table_length() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_facts =
-        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let original_bundle =
+        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     let mut invalid = parsed.ir.clone();
     invalid.facts = IrFacts::conservative(invalid.arena.nodes().len() + 1);
 
@@ -1075,11 +1122,11 @@ fn write_fact_sidecar_rejects_wrong_fact_table_length() {
     assert!(matches!(
         error,
         ParseCacheError::InvalidFactSidecarUpdate { path, message }
-            if path == parsed.entry.facts_path() && message.contains("fact table length")
+            if path == parsed.entry.bundle_path() && message.contains("fact table length")
     ));
     assert_eq!(
-        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
-        original_facts
+        fs::read(parsed.entry.bundle_path()).expect("bundle remains readable"),
+        original_bundle
     );
 
     let _ = fs::remove_dir_all(root);
@@ -1092,7 +1139,23 @@ fn write_fact_sidecar_reports_corrupt_stored_artifact() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::write(parsed.entry.ir_path(), b"not an ir artifact").expect("corrupt ir writes");
+    // Corrupt only the lowered-IR section, keeping the bundle frame decodable so
+    // write_fact_sidecar surfaces a DecodeArtifact for the stored IR.
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let corrupt = ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
+        b"not an ir artifact".to_vec(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+    );
+    fs::write(
+        parsed.entry.bundle_path(),
+        corrupt.encode().expect("corrupt bundle encodes"),
+    )
+    .expect("corrupt ir writes");
 
     let error = parsed
         .entry
@@ -1101,7 +1164,7 @@ fn write_fact_sidecar_reports_corrupt_stored_artifact() {
 
     assert!(matches!(
         error,
-        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.ir_path()
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.bundle_path()
     ));
 
     let _ = fs::remove_dir_all(root);
@@ -1114,8 +1177,23 @@ fn write_fact_sidecar_reports_corrupt_stored_symbols() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::write(parsed.entry.symbols_path(), b"not a symbol artifact")
-        .expect("corrupt symbols write");
+    // Corrupt only the symbol section, keeping the bundle frame decodable so
+    // write_fact_sidecar surfaces a DecodeArtifact for the stored symbols.
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let corrupt = ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        b"not a symbol artifact".to_vec(),
+        bundle.meta_toml_bytes(),
+    );
+    fs::write(
+        parsed.entry.bundle_path(),
+        corrupt.encode().expect("corrupt bundle encodes"),
+    )
+    .expect("corrupt symbols write");
 
     let error = parsed
         .entry
@@ -1124,30 +1202,37 @@ fn write_fact_sidecar_reports_corrupt_stored_symbols() {
 
     assert!(matches!(
         error,
-        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.symbols_path()
+        ParseCacheError::DecodeArtifact { path, .. } if path == parsed.entry.bundle_path()
     ));
 
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn write_fact_sidecar_reports_fact_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::remove_file(parsed.entry.facts_path()).expect("fact sidecar removes");
-    fs::create_dir(parsed.entry.facts_path()).expect("blocking fact path creates");
+    // The stored bundle must still read, but its atomic rewrite must fail: make
+    // the entry directory read-only so the temp file cannot be created while the
+    // existing bundle stays readable.
+    fs::set_permissions(parsed.entry.dir(), fs::Permissions::from_mode(0o555))
+        .expect("entry dir turns read-only");
 
-    let error = parsed
-        .entry
-        .write_fact_sidecar(&parsed.ir)
-        .expect_err("fact sidecar write failure is reported");
+    let error = parsed.entry.write_fact_sidecar(&parsed.ir);
+
+    fs::set_permissions(parsed.entry.dir(), fs::Permissions::from_mode(0o755))
+        .expect("entry dir permissions restore");
+    let error = error.expect_err("fact sidecar write failure is reported");
 
     assert!(matches!(
         error,
-        ParseCacheError::WriteArtifact { path, .. } if path == parsed.entry.facts_path()
+        ParseCacheError::WriteArtifact { path, .. } if path == parsed.entry.bundle_path()
     ));
     assert!(
         cache_temp_files(&parsed.entry).is_empty(),
@@ -1228,14 +1313,30 @@ fn cached_parse_ensure_facts_reanalyzes_on_stale_analysis_version() {
         .ensure_facts_current_and_stored()
         .expect("cold analysis succeeds");
 
-    // Rewrite the sidecar with a stale (bumped-away-from) analysis version.
+    // Rewrite the bundle's fact section with a stale (bumped-away-from) analysis
+    // version, keeping the fingerprint valid so it decodes but is not current.
+    let stored = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("stored bundle reads");
     let stale = encode_ir_facts(
         &parsed.ir.facts,
         lowered_ir_fingerprint(&parsed.ir).expect("IR fingerprint computes"),
         IR_ANALYSIS_VERSION + 1,
     )
     .expect("stale sidecar encodes");
-    fs::write(parsed.entry.facts_path(), stale).expect("stale sidecar writes");
+    let stale_bundle = ParseArtifactBundle::new_with_facts(
+        stored.resolved_bytes(),
+        stored.ir_bytes(),
+        stored.symbols_bytes(),
+        stored.meta_toml_bytes(),
+        stale,
+    );
+    fs::write(
+        parsed.entry.bundle_path(),
+        stale_bundle.encode().expect("stale bundle encodes"),
+    )
+    .expect("stale sidecar writes");
 
     let mut warm = cache
         .load_cached_bytes(source)
@@ -1262,8 +1363,8 @@ fn cached_parse_refresh_facts_updates_memory_without_sidecar_write() {
     let mut parsed = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_facts =
-        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let original_bundle =
+        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
 
     parsed.refresh_facts().expect("facts refresh");
 
@@ -1276,8 +1377,8 @@ fn cached_parse_refresh_facts_updates_memory_without_sidecar_write() {
             .any(|facts| *facts != ExprFacts::conservative())
     );
     assert_eq!(
-        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
-        original_facts
+        fs::read(parsed.entry.bundle_path()).expect("bundle remains readable"),
+        original_bundle
     );
 
     let _ = fs::remove_dir_all(root);
@@ -1290,8 +1391,8 @@ fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing
     let mut parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_facts =
-        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    let original_bundle =
+        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     parsed.ir.root = IrId::new(u32::MAX);
 
     let error = parsed
@@ -1300,8 +1401,8 @@ fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing
 
     assert!(matches!(error, ParseFactRefreshError::Analyze { .. }));
     assert_eq!(
-        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
-        original_facts
+        fs::read(parsed.entry.bundle_path()).expect("bundle remains readable"),
+        original_bundle
     );
 
     let _ = fs::remove_dir_all(root);
@@ -1377,22 +1478,37 @@ fn load_or_parse_analyzed_bytes_refreshes_existing_cache_hits() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn load_or_parse_analyzed_bytes_keeps_analysis_when_fact_storage_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
     let source = b"builtins.toJSON (let x = 1; in x)";
-    let entry = cache.entry_for_source(source);
-    entry.ensure_dir().expect("entry dir creates");
-    fs::create_dir(entry.facts_path()).expect("blocking fact path creates");
+    // Populate a complete entry (conservative facts in its bundle), then make the
+    // entry directory read-only so the analyzed load hits the mandatory bundle
+    // but cannot rewrite its fact section.
+    let entry = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss")
+        .entry;
+    fs::set_permissions(entry.dir(), fs::Permissions::from_mode(0o555))
+        .expect("entry dir turns read-only");
 
     let analyzed = cache
         .load_or_parse_analyzed_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses and analyzes despite fact sidecar failure");
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("cached source loads")
+        .expect("cache entry exists");
+
+    fs::set_permissions(entry.dir(), fs::Permissions::from_mode(0o755))
+        .expect("entry dir permissions restore");
 
     assert!(analyzed.parsed.stored);
     assert!(!analyzed.facts_stored);
-    assert!(entry.facts_path().is_dir());
     assert!(
         analyzed
             .parsed
@@ -1402,10 +1518,6 @@ fn load_or_parse_analyzed_bytes_keeps_analysis_when_fact_storage_fails() {
             .iter()
             .any(|facts| *facts != ExprFacts::conservative())
     );
-    let cached = cache
-        .load_cached_bytes(source)
-        .expect("cached source loads")
-        .expect("cache entry exists");
     assert!(
         cached
             .ir
@@ -1419,8 +1531,11 @@ fn load_or_parse_analyzed_bytes_keeps_analysis_when_fact_storage_fails() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn cached_parse_refresh_and_store_facts_reports_sidecar_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
     let mut parsed = cache
@@ -1429,17 +1544,21 @@ fn cached_parse_refresh_and_store_facts_reports_sidecar_write_failure() {
             Some("expr.nix".to_owned()),
         )
         .expect("source parses on miss");
-    fs::remove_file(parsed.entry.facts_path()).expect("fact sidecar removes");
-    fs::create_dir(parsed.entry.facts_path()).expect("blocking fact path creates");
+    // The stored bundle must still read, but its atomic rewrite must fail: make
+    // the entry directory read-only so the fact-refresh write cannot commit.
+    fs::set_permissions(parsed.entry.dir(), fs::Permissions::from_mode(0o555))
+        .expect("entry dir turns read-only");
 
-    let error = parsed
-        .refresh_and_store_facts()
-        .expect_err("fact sidecar write failure is reported");
+    let error = parsed.refresh_and_store_facts();
+
+    fs::set_permissions(parsed.entry.dir(), fs::Permissions::from_mode(0o755))
+        .expect("entry dir permissions restore");
+    let error = error.expect_err("fact sidecar write failure is reported");
 
     assert!(matches!(
         error,
         ParseFactRefreshError::Cache(ParseCacheError::WriteArtifact { path, .. })
-            if path == parsed.entry.facts_path()
+            if path == parsed.entry.bundle_path()
     ));
     assert!(
         parsed
@@ -1462,9 +1581,26 @@ fn lowered_ir_entry_ignores_mismatched_fact_sidecar_fingerprint() {
         .load_or_parse_bytes(b"1", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
     let other_ir = lowered_ir_for_source("2");
-    fs::write(
-        first.entry.ir_path(),
+    // Replace the bundle's lowered-IR section but keep the original fact section:
+    // the retained facts now fingerprint-mismatch the swapped IR, so read_ir must
+    // ignore them and fall back to conservative facts.
+    let bundle = first
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let facts = bundle
+        .facts_bytes()
+        .expect("freshly parsed entry carries a fact sidecar");
+    let mismatched = ParseArtifactBundle::new_with_facts(
+        bundle.resolved_bytes(),
         encode_lowered_ir(&other_ir).expect("other IR encodes"),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+        facts,
+    );
+    fs::write(
+        first.entry.bundle_path(),
+        mismatched.encode().expect("mismatched bundle encodes"),
     )
     .expect("replacement IR writes");
 

@@ -44,12 +44,22 @@ impl ParseCacheEntry {
         self.dir.join("meta.toml")
     }
 
-    /// Returns whether all mandatory cache-entry files exist.
+    /// Returns the single-file artifact bundle path.
+    ///
+    /// One entry stores all of its artifacts — resolved AST, lowered IR,
+    /// file-local symbols, diagnostic metadata, and the optional analysis fact
+    /// sidecar — framed into this one file by [`ParseArtifactBundle::encode`],
+    /// rather than the five separate files of the pre-v12 layout. Collapsing
+    /// the per-entry fan-out to one file cuts the parse cache's cold-populate
+    /// and warm-read syscall count ~5x (RFC-0007 persist-write-batching-plan
+    /// §11): the sys-time floor tracked the file *count*, not the payload size.
+    pub fn bundle_path(&self) -> PathBuf {
+        self.dir.join("bundle.bin")
+    }
+
+    /// Returns whether the entry's artifact bundle is present.
     pub fn is_complete(&self) -> bool {
-        self.ir_path().is_file()
-            && self.resolved_path().is_file()
-            && self.symbols_path().is_file()
-            && self.meta_path().is_file()
+        self.bundle_path().is_file()
     }
 
     /// Creates the entry directory when it is missing.
@@ -97,7 +107,6 @@ impl ParseCacheEntry {
         resolved: &ResolvedAst,
         meta: &ParseCacheMeta,
     ) -> Result<(), ParseCacheError> {
-        self.ensure_dir()?;
         let resolved = file_local_resolved(resolved)?;
         let mut ir =
             nix_lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
@@ -108,11 +117,6 @@ impl ParseCacheEntry {
             &resolved,
             &ir,
         )?;
-        let ir_path = self.ir_path();
-        let resolved_path = self.resolved_path();
-        let symbols_path = self.symbols_path();
-        let facts_path = self.facts_path();
-        let meta_path = self.meta_path();
         let resolved_bytes = encode_resolved_ir(&resolved)?;
         let ir_bytes = encode_lowered_ir(&ir)?;
         let symbols_bytes = encode_symbols(&resolved.symbols)?;
@@ -124,127 +128,98 @@ impl ParseCacheEntry {
         let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint, facts_version)?;
         let meta_toml = meta.to_toml();
 
-        let _ = fs::remove_file(&meta_path);
-        let _ = fs::remove_file(&facts_path);
-        write_cache_file_atomic(&resolved_path, &resolved_bytes).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: resolved_path,
-                source,
-            }
-        })?;
-        write_cache_file_atomic(&ir_path, &ir_bytes).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: ir_path,
-                source,
-            }
-        })?;
-        write_cache_file_atomic(&symbols_path, &symbols_bytes).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: symbols_path,
-                source,
-            }
-        })?;
-        let _ = write_cache_file_atomic(&facts_path, &facts_bytes);
-        write_cache_file_atomic(&meta_path, meta_toml.as_bytes()).map_err(|source| {
-            ParseCacheError::WriteMeta {
-                path: meta_path,
-                source,
-            }
-        })
+        let bundle = ParseArtifactBundle::new_with_facts(
+            resolved_bytes,
+            ir_bytes,
+            symbols_bytes,
+            meta_toml.into_bytes(),
+            facts_bytes,
+        );
+        self.write_bundle(&bundle)
     }
 
-    /// Reads the raw bytes for a complete parse-cache artifact bundle.
+    /// Encodes and atomically writes an artifact bundle to this entry's file.
+    ///
+    /// The bundle is framed by [`ParseArtifactBundle::encode`] and written with
+    /// [`write_cache_file_atomic`] (temp + `rename`), so a reader sees either
+    /// the previous complete bundle or the new one, never a torn write.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseCacheError`] if any mandatory artifact file cannot be
-    /// read. The returned bundle is raw bytes; callers that need semantic
-    /// validation should decode the individual sections.
-    pub fn read_artifact_bundle(&self) -> Result<ParseArtifactBundle, ParseCacheError> {
-        let resolved_path = self.resolved_path();
-        let ir_path = self.ir_path();
-        let symbols_path = self.symbols_path();
-        let facts_path = self.facts_path();
-        let meta_path = self.meta_path();
-        let resolved =
-            fs::read(&resolved_path).map_err(|source| ParseCacheError::ReadArtifact {
-                path: resolved_path,
-                source,
-            })?;
-        let ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: ir_path,
-            source,
-        })?;
-        let symbols = fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: symbols_path,
-            source,
-        })?;
-        let meta_toml = fs::read(&meta_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: meta_path,
-            source,
-        })?;
-        let facts = read_valid_fact_sidecar(&facts_path, &ir, &symbols);
-        Ok(match facts {
-            Some(facts) => {
-                ParseArtifactBundle::new_with_facts(resolved, ir, symbols, meta_toml, facts)
-            }
-            None => ParseArtifactBundle::new(resolved, ir, symbols, meta_toml),
-        })
+    /// Returns [`ParseCacheError`] if the entry directory cannot be created,
+    /// the bundle cannot be encoded, or the bundle file cannot be written.
+    fn write_bundle(&self, bundle: &ParseArtifactBundle) -> Result<(), ParseCacheError> {
+        self.ensure_dir()?;
+        let payload = bundle.encode()?;
+        let path = self.bundle_path();
+        write_cache_file_atomic(&path, &payload)
+            .map_err(|source| ParseCacheError::WriteArtifact { path, source })
     }
 
-    /// Writes a raw parse-cache artifact bundle into this entry.
+    /// Reads and decodes this entry's artifact bundle.
     ///
-    /// The metadata file is removed before payload files are written and
-    /// rewritten last, so incomplete bundle hydration does not look like a
-    /// complete cache entry. If the raw bundle carries a valid `facts.bin`
-    /// sidecar for its lowered-IR artifact, it is written best-effort before
-    /// metadata is committed; missing or invalid fact sections remove any stale
-    /// sidecar and leave the hydrated entry conservative.
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the bundle file cannot be read or its
+    /// framing is invalid.
+    fn read_bundle(&self) -> Result<ParseArtifactBundle, ParseCacheError> {
+        let path = self.bundle_path();
+        let bytes = fs::read(&path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: path.clone(),
+            source,
+        })?;
+        ParseArtifactBundle::decode(&bytes)
+    }
+
+    /// Reads a complete parse-cache artifact bundle from this entry's file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the bundle file cannot be read or its
+    /// framing is invalid. The returned bundle carries raw section bytes;
+    /// callers that need semantic validation should decode the sections.
+    pub fn read_artifact_bundle(&self) -> Result<ParseArtifactBundle, ParseCacheError> {
+        let bundle = self.read_bundle()?;
+        // Drop a fact section that no longer validates against the bundle's own
+        // lowered-IR artifact, preserving the pre-v12 behavior where an invalid
+        // `facts.bin` sidecar was simply not carried into the hydrated bundle.
+        if bundle.facts_bytes().is_some() && validated_bundle_fact_sidecar(&bundle).is_none() {
+            return Ok(ParseArtifactBundle::new(
+                bundle.resolved_bytes().to_vec(),
+                bundle.ir_bytes().to_vec(),
+                bundle.symbols_bytes().to_vec(),
+                bundle.meta_toml_bytes().to_vec(),
+            ));
+        }
+        Ok(bundle)
+    }
+
+    /// Writes a raw parse-cache artifact bundle into this entry's single file.
+    ///
+    /// The whole bundle is committed with one atomic write, so a reader sees
+    /// either the previous complete entry or the new one. A fact section that
+    /// does not validate against the bundle's own lowered-IR artifact is
+    /// dropped, leaving the hydrated entry conservative — preserving the
+    /// pre-v12 behavior where an invalid `facts.bin` sidecar was not written.
     ///
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if the entry directory cannot be created or
-    /// any bundled artifact file cannot be written.
+    /// the bundle file cannot be encoded or written.
     pub fn write_artifact_bundle(
         &self,
         bundle: &ParseArtifactBundle,
     ) -> Result<(), ParseCacheError> {
-        self.ensure_dir()?;
-        let resolved_path = self.resolved_path();
-        let ir_path = self.ir_path();
-        let symbols_path = self.symbols_path();
-        let facts_path = self.facts_path();
-        let meta_path = self.meta_path();
-
-        let _ = fs::remove_file(&meta_path);
-        let _ = fs::remove_file(&facts_path);
-        write_cache_file_atomic(&resolved_path, bundle.resolved_bytes()).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: resolved_path,
-                source,
-            }
-        })?;
-        write_cache_file_atomic(&ir_path, bundle.ir_bytes()).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: ir_path,
-                source,
-            }
-        })?;
-        write_cache_file_atomic(&symbols_path, bundle.symbols_bytes()).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: symbols_path,
-                source,
-            }
-        })?;
-        if let Some(facts) = validated_bundle_fact_sidecar(bundle) {
-            let _ = write_cache_file_atomic(&facts_path, facts);
+        if bundle.facts_bytes().is_some() && validated_bundle_fact_sidecar(bundle).is_none() {
+            let conservative = ParseArtifactBundle::new(
+                bundle.resolved_bytes().to_vec(),
+                bundle.ir_bytes().to_vec(),
+                bundle.symbols_bytes().to_vec(),
+                bundle.meta_toml_bytes().to_vec(),
+            );
+            return self.write_bundle(&conservative);
         }
-        write_cache_file_atomic(&meta_path, bundle.meta_toml_bytes()).map_err(|source| {
-            ParseCacheError::WriteMeta {
-                path: meta_path,
-                source,
-            }
-        })
+        self.write_bundle(bundle)
     }
 
     /// Validates bundled metadata and artifact counts before writing a bundle.
@@ -272,47 +247,40 @@ impl ParseCacheEntry {
 
     /// Writes refreshed analysis facts for this entry's lowered IR artifact.
     ///
-    /// The supplied IR is encoded and fingerprinted against the `ir.bin` and
-    /// `symbols.bin` artifacts that are already present in the cache entry.
-    /// Only `facts.bin` is updated; mandatory artifacts and diagnostic
-    /// metadata are left unchanged.
+    /// The supplied IR is fingerprinted against the lowered-IR and symbol
+    /// sections already stored in this entry's bundle. On a match the bundle is
+    /// rewritten with the refreshed fact section replacing the previous one;
+    /// the mandatory sections and diagnostic metadata are re-serialized
+    /// byte-for-byte from the stored bundle, so only the fact section changes.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseCacheError`] if the stored lowered IR artifacts cannot be
-    /// read or decoded, the supplied IR or fact table cannot be encoded, the
-    /// supplied IR does not match the stored artifact fingerprint, the fact
-    /// table length does not match the stored node count, or `facts.bin` cannot
-    /// be written.
+    /// Returns [`ParseCacheError`] if the stored bundle cannot be read or
+    /// decoded, the supplied fact table cannot be encoded, the supplied IR does
+    /// not match the stored artifact fingerprint, the fact table length does
+    /// not match the stored node count, or the bundle cannot be written.
     pub fn write_fact_sidecar(&self, ir: &Ir) -> Result<(), ParseCacheError> {
-        let ir_path = self.ir_path();
-        let symbols_path = self.symbols_path();
-        let facts_path = self.facts_path();
-        let stored_ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: ir_path.clone(),
-            source,
-        })?;
-        let stored_symbols =
-            fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
-                path: symbols_path.clone(),
-                source,
-            })?;
-        let stored_fingerprint = lowered_ir_artifact_fingerprint(&stored_ir, &stored_symbols);
-        let stored_symbols =
-            decode_symbols(&stored_symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-                path: symbols_path,
-                message,
-            })?;
-        let stored_ir = decode_lowered_ir(&stored_ir, stored_symbols).map_err(|message| {
+        let bundle_path = self.bundle_path();
+        let stored = self.read_bundle()?;
+        let stored_fingerprint =
+            lowered_ir_artifact_fingerprint(stored.ir_bytes(), stored.symbols_bytes());
+        let stored_symbols = decode_symbols(stored.symbols_bytes()).map_err(|message| {
             ParseCacheError::DecodeArtifact {
-                path: ir_path,
+                path: bundle_path.clone(),
                 message,
             }
         })?;
+        let stored_ir =
+            decode_lowered_ir(stored.ir_bytes(), stored_symbols).map_err(|message| {
+                ParseCacheError::DecodeArtifact {
+                    path: bundle_path.clone(),
+                    message,
+                }
+            })?;
         let supplied_fingerprint = lowered_ir_fingerprint(ir)?;
         if supplied_fingerprint != stored_fingerprint {
             return Err(ParseCacheError::InvalidFactSidecarUpdate {
-                path: facts_path,
+                path: bundle_path,
                 message: "supplied IR fingerprint does not match cached lowered IR artifact"
                     .to_owned(),
             });
@@ -322,7 +290,7 @@ impl ParseCacheEntry {
         let fact_count = ir.facts.len();
         if fact_count != stored_node_count {
             return Err(ParseCacheError::InvalidFactSidecarUpdate {
-                path: facts_path,
+                path: bundle_path,
                 message: format!(
                     "fact table length {fact_count} does not match lowered IR node count {stored_node_count}"
                 ),
@@ -330,99 +298,97 @@ impl ParseCacheEntry {
         }
 
         let facts_bytes = encode_ir_facts(&ir.facts, stored_fingerprint, IR_ANALYSIS_VERSION)?;
-        write_cache_file_atomic(&facts_path, &facts_bytes).map_err(|source| {
-            ParseCacheError::WriteArtifact {
-                path: facts_path,
-                source,
-            }
-        })
+        let refreshed = ParseArtifactBundle::new_with_facts(
+            stored.resolved_bytes().to_vec(),
+            stored.ir_bytes().to_vec(),
+            stored.symbols_bytes().to_vec(),
+            stored.meta_toml_bytes().to_vec(),
+            facts_bytes,
+        );
+        self.write_bundle(&refreshed)
     }
 
     /// Reads a resolved AST artifact from this cache entry.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseCacheError`] if `resolved.bin` or `symbols.bin` cannot be
-    /// read or decoded.
+    /// Returns [`ParseCacheError`] if the bundle cannot be read or its resolved
+    /// or symbol sections cannot be decoded.
     pub fn read_resolved(&self) -> Result<ResolvedAst, ParseCacheError> {
-        let resolved_path = self.resolved_path();
-        let symbols_path = self.symbols_path();
-        let resolved =
-            fs::read(&resolved_path).map_err(|source| ParseCacheError::ReadArtifact {
-                path: resolved_path.clone(),
-                source,
-            })?;
-        let symbols = fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: symbols_path.clone(),
-            source,
-        })?;
-        let symbols =
-            decode_symbols(&symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-                path: symbols_path,
-                message,
-            })?;
-        decode_resolved_ir(&resolved, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-            path: resolved_path,
-            message,
-        })
+        self.decode_resolved(&self.read_bundle()?)
     }
 
     /// Reads a lowered IR artifact from this cache entry.
     ///
-    /// Returns the decoded IR and whether a valid `facts.bin` sidecar carrying
-    /// the current [`IR_ANALYSIS_VERSION`] was applied — i.e. whether the
-    /// analysis pipeline already ran for this artifact and needs no refresh.
+    /// Returns the decoded IR and whether a valid fact section carrying the
+    /// current [`IR_ANALYSIS_VERSION`] was applied — i.e. whether the analysis
+    /// pipeline already ran for this artifact and needs no refresh.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseCacheError`] if `ir.bin` or `symbols.bin` cannot be read
-    /// or decoded. An unreadable or invalid optional `facts.bin` sidecar is
+    /// Returns [`ParseCacheError`] if the bundle cannot be read or its IR or
+    /// symbol sections cannot be decoded. An invalid optional fact section is
     /// ignored, leaving the decoded IR with conservative facts.
     pub(super) fn read_ir(&self) -> Result<(Ir, bool), ParseCacheError> {
-        let ir_path = self.ir_path();
-        let symbols_path = self.symbols_path();
-        let facts_path = self.facts_path();
-        let ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: ir_path.clone(),
-            source,
-        })?;
-        let symbols = fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
-            path: symbols_path.clone(),
-            source,
-        })?;
-        let ir_fingerprint = lowered_ir_artifact_fingerprint(&ir, &symbols);
-        let symbols =
-            decode_symbols(&symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-                path: symbols_path,
-                message,
-            })?;
-        let mut ir =
-            decode_lowered_ir(&ir, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-                path: ir_path,
-                message,
-            })?;
+        self.decode_ir_with_facts(&self.read_bundle()?)
+    }
+
+    /// Reads both the resolved AST and lowered IR from this entry in one open.
+    ///
+    /// The single warm-load read: the bundle file is read once and both
+    /// artifacts are decoded from the in-memory sections, replacing the pre-v12
+    /// [`read_resolved`](Self::read_resolved) + [`read_ir`](Self::read_ir)
+    /// pair's per-section reopen storm.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the bundle cannot be read or any mandatory
+    /// section cannot be decoded.
+    pub(super) fn read_resolved_and_ir(
+        &self,
+    ) -> Result<(ResolvedAst, Ir, bool), ParseCacheError> {
+        let bundle = self.read_bundle()?;
+        let resolved = self.decode_resolved(&bundle)?;
+        let (ir, facts_current) = self.decode_ir_with_facts(&bundle)?;
+        Ok((resolved, ir, facts_current))
+    }
+
+    /// Decodes the resolved AST from an already-read bundle.
+    fn decode_resolved(&self, bundle: &ParseArtifactBundle) -> Result<ResolvedAst, ParseCacheError> {
+        let path = self.bundle_path();
+        let symbols = decode_symbols(bundle.symbols_bytes())
+            .map_err(|message| ParseCacheError::DecodeArtifact { path: path.clone(), message })?;
+        decode_resolved_ir(bundle.resolved_bytes(), symbols)
+            .map_err(|message| ParseCacheError::DecodeArtifact { path, message })
+    }
+
+    /// Decodes the lowered IR and fact-currency flag from an already-read bundle.
+    fn decode_ir_with_facts(
+        &self,
+        bundle: &ParseArtifactBundle,
+    ) -> Result<(Ir, bool), ParseCacheError> {
+        let path = self.bundle_path();
+        let ir_fingerprint =
+            lowered_ir_artifact_fingerprint(bundle.ir_bytes(), bundle.symbols_bytes());
+        let symbols = decode_symbols(bundle.symbols_bytes())
+            .map_err(|message| ParseCacheError::DecodeArtifact { path: path.clone(), message })?;
+        let mut ir = decode_lowered_ir(bundle.ir_bytes(), symbols)
+            .map_err(|message| ParseCacheError::DecodeArtifact { path, message })?;
         let mut facts_current = false;
-        if facts_path.is_file() {
-            if let Ok(facts) = fs::read(&facts_path) {
-                if let Ok((facts, analysis_version)) =
-                    decode_ir_facts(&facts, ir.arena.nodes().len(), ir_fingerprint)
-                {
-                    let conservative = std::mem::replace(&mut ir.facts, facts);
-                    if validate_lowered_ir_artifact(&ir).is_ok() {
-                        facts_current = analysis_version == IR_ANALYSIS_VERSION;
-                    } else {
-                        ir.facts = conservative;
-                    }
+        if let Some(facts) = bundle.facts_bytes() {
+            if let Ok((facts, analysis_version)) =
+                decode_ir_facts(facts, ir.arena.nodes().len(), ir_fingerprint)
+            {
+                let conservative = std::mem::replace(&mut ir.facts, facts);
+                if validate_lowered_ir_artifact(&ir).is_ok() {
+                    facts_current = analysis_version == IR_ANALYSIS_VERSION;
+                } else {
+                    ir.facts = conservative;
                 }
             }
         }
         Ok((ir, facts_current))
     }
-}
-
-fn read_valid_fact_sidecar(path: &Path, ir_bytes: &[u8], symbols_bytes: &[u8]) -> Option<Vec<u8>> {
-    let facts = fs::read(path).ok()?;
-    valid_fact_sidecar(&facts, ir_bytes, symbols_bytes).then_some(facts)
 }
 
 fn validated_bundle_fact_sidecar(bundle: &ParseArtifactBundle) -> Option<&[u8]> {

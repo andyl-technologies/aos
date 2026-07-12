@@ -42,7 +42,14 @@ fn cache_source_index_hydrates_normal_parse_cache_entry() {
     let hydrated = parse_cache.entry_for_source(source);
     assert_eq!(result, Some(expected_entry));
     assert!(hydrated.is_complete());
-    assert!(hydrated.facts_path().is_file());
+    assert!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads")
+            .facts_bytes()
+            .is_some(),
+        "hydrated entry carries facts in its bundle"
+    );
     assert_eq!(
         hydrated
             .read_artifact_bundle()
@@ -254,7 +261,14 @@ fn cache_parse_index_hydrates_normal_parse_cache_entry() {
         "indexed parse-artifact hydration should decode through the scoped mapped files pack"
     );
     assert!(hydrated.is_complete());
-    assert!(hydrated.facts_path().is_file());
+    assert!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads")
+            .facts_bytes()
+            .is_some(),
+        "hydrated entry carries facts in its bundle"
+    );
     assert_eq!(
         hydrated
             .read_artifact_bundle()

@@ -566,3 +566,53 @@ Parity-critical (the parse cache is a reuse cache; `.drv` must be identical
 hit-or-miss) — gated by the byte-parity battery. This is a parse-cache format
 change, a deviation from §3.2-as-written; flagged to the lead for a direction
 call before building.
+
+## 12. §3.2 as-built: 5→1 bundle LANDED, but cold sys did NOT drop (attribution was wrong)
+
+Built the 5→1 parse-cache bundle (`bundle.bin` per entry via the existing
+`ParseArtifactBundle` codec; schema 11→12; single-read warm load). It works and
+is clean:
+- **File count 1175 → 235** (one `bundle.bin` per import, exactly 5x).
+- **Byte-parity GREEN**: zlib + openssl, serial/JIT × cache-on/off (8/8).
+- **All tests green**: 3080 oracle lib (+ the known `heap_cheap_memory_advice`
+  concurrency flake, passes in isolation); 22 ported parse-cache/persist tests.
+- **Durable warm still hits** (`root_cutoffs:1`); the bundle round-trips
+  across processes.
+
+**But the cold cache-populate sys did NOT drop.** Measured (zlib, `time -l`):
+
+```text
+                          real    user   sys
+cold cache-on (1175 files, before)  ~1.6s  0.42s  0.85s
+cold cache-on (235 files,  after)   ~1.3s  0.41s  0.75s   <- sys ~flat
+cutoff-off warm read (before)       ~1.6s  0.41s  1.17s
+cutoff-off warm read (after)        ~1.4s  0.41s  0.83s   <- ~30% better
+```
+
+A 5x file reduction bought ~10% cold sys and ~30% warm-read sys — so the parse
+cache's file *count* was NOT the dominant cold sys after all. **§11's
+"sys tracks file count" attribution was wrong** (the third wrong hypothesis in
+this arc: value-path → persist-artifact → parse-file-count). The `time -l` A/B
+that motivated §11 (cold-write 0.79 vs warm-read 1.17) mislabeled a per-node
+cost as a per-file cost. Controlled knobs ruled out more candidates:
+`AOS_NIX_CACHE_VERIFY=0/1` does not move cold sys either.
+
+**What the cold ~0.75s sys actually is: still unpinned, and it needs a real
+syscall trace.** It is stable under file-count (5x), verify on/off, and JIT — so
+it is something structural in the cache-on eval path touched per node, not per
+file. The leading remaining candidate is the per-reconsidered-node
+`fs::metadata` stat (plan §2: `lookup_node_metadata`, the one unconditional
+per-node disk touch), which would scale with node count (~14k for zlib), not
+file count — consistent with the flat response to the 5x file cut. But I have
+been wrong three times guessing from indirect signals; **this must be confirmed
+with `strace -c` / `dtrace` syscall counts on Linux** (macOS blocks unprivileged
+syscall tracing), not another controlled-knob inference.
+
+**Disposition.** The 5→1 bundle LANDS as a footprint + warm-read improvement
+(5x fewer inodes matters for a cache holding thousands of packages; warm-read
+sys −30%; internally-sectioned format is the extensibility foundation the lead
+asked for), NOT as the cold lever it was scoped to be. The cold cache-populate
+tax is unchanged and its true driver is unidentified pending a syscall trace.
+**Value-path write-behind (§3.2 original) stays deferred-until-measured-need**
+(the census shows cold doesn't touch it; warm-materializing runs are the only
+candidate beneficiary) — do not rebuild it on momentum.
