@@ -56,6 +56,6 @@ tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
-
-[dev-dependencies]
+# nix-bench builds a fresh evaluator per cold sample with an isolated temp cache
+# dir, so tempfile is a runtime (not just test) dependency.
 tempfile = { workspace = true }

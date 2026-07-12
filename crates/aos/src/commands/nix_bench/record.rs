@@ -65,9 +65,34 @@ use aos_nix_harness::diff::DrvDiffReport;
 ///
 /// Version `2` added the native evaluator timings (`native_samples` and
 /// `native_summary`); version `3` added the optional memory instrumentation
-/// fields. Records from older versions omit the newer fields and deserialize
-/// with serde defaults.
-pub(crate) const BENCH_HISTORY_VERSION: u32 = 3;
+/// fields; version `4` added the per-record `temperature_semantics` marker and
+/// the native `median_seconds` field. Records from older versions omit the
+/// newer fields and deserialize with serde defaults.
+pub(crate) const BENCH_HISTORY_VERSION: u32 = 4;
+
+/// `temperature_semantics` value for a schema-v4 true-cold sample.
+///
+/// A cold sample times the first `instantiate()` of a paired cycle whose
+/// evaluator instance and durable caches were both created fresh for that
+/// cycle. See [`super`] for the cycle definition.
+pub(crate) const PAIRED_COLD_SEMANTICS: &str = "paired-cycle-cold-v2";
+
+/// `temperature_semantics` value for a schema-v4 warm sample.
+///
+/// A warm sample times the second `instantiate()` of the same cycle, run on the
+/// now-warm instance created for that cycle's cold sample.
+pub(crate) const PAIRED_WARM_SEMANTICS: &str = "paired-cycle-warm-v2";
+
+/// Returns the legacy (pre-v4) `temperature_semantics` marker for `temperature`.
+///
+/// Records written before schema v4 have no explicit marker; their "cold" leg
+/// was a shared-instance in-process eval (fake cold) and their "warm" leg used a
+/// discarded priming run plus cross-spec instance reuse. Tagging them distinctly
+/// keeps [`previous_benchmark`](super::analysis::previous_benchmark) from
+/// silently comparing an old fake-cold sample against a new true-cold one.
+pub(crate) fn legacy_temperature_semantics(temperature: &str) -> String {
+    format!("in-process-{temperature}-v1")
+}
 
 /// C++ Nix `NIX_SHOW_STATS` counters tracked for the per-benchmark delta report.
 pub(crate) const STATS_DELTA_KEYS: &[&str] = &[
@@ -90,6 +115,10 @@ pub(crate) struct BenchmarkRecord {
     pub(crate) attr: String,
     pub(crate) category: String,
     pub(crate) temperature: String,
+    /// Names how this record's temperature was produced, so regression analysis
+    /// never compares samples measured under different cold/warm semantics
+    /// (e.g. a pre-v4 fake-cold record against a v4 true-cold one). (Schema v4.)
+    pub(crate) temperature_semantics: String,
     pub(crate) context: BenchmarkContext,
     pub(crate) parity: BenchmarkParity,
     /// C++ Nix oracle samples, one per configured sample.
@@ -215,6 +244,11 @@ pub(crate) struct BenchmarkSummary {
 pub(crate) struct NativeBenchmarkSummary {
     pub(crate) samples: usize,
     pub(crate) mean_seconds: f64,
+    /// Median wall-clock seconds over the samples. Robust to the host-load
+    /// spikes that skew the mean on a contended machine. (Schema v4; `0.0` on
+    /// pre-v4 records.)
+    #[serde(default)]
+    pub(crate) median_seconds: f64,
     pub(crate) stddev_seconds: f64,
     pub(crate) min_seconds: f64,
     pub(crate) max_seconds: f64,
@@ -444,10 +478,30 @@ pub(crate) fn summarize_native_samples(
     NativeBenchmarkSummary {
         samples: count,
         mean_seconds,
+        median_seconds: median_seconds(samples.iter().map(|sample| sample.elapsed_seconds)),
         stddev_seconds,
         min_seconds,
         max_seconds,
         memory: summarize_native_memory(samples),
+    }
+}
+
+/// Returns the median of `values`, or `0.0` when the iterator is empty.
+///
+/// For an even count the median is the mean of the two central values. NaN
+/// samples are not expected (wall-clock seconds), so a total order via
+/// [`f64::total_cmp`] is sufficient and panic-free.
+fn median_seconds(values: impl Iterator<Item = f64>) -> f64 {
+    let mut sorted: Vec<f64> = values.collect();
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[mid]
+    } else {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
     }
 }
 
@@ -575,6 +629,8 @@ struct HistoryBenchmarkRecord {
     #[serde(default)]
     temperature: Option<String>,
     #[serde(default)]
+    temperature_semantics: Option<String>,
+    #[serde(default)]
     context: Option<BenchmarkContext>,
     #[serde(default)]
     parity: Option<BenchmarkParity>,
@@ -599,12 +655,17 @@ impl HistoryBenchmarkRecord {
         let file = self.file.unwrap_or_else(|| {
             run_context.map_or_else(|| run_file.to_string(), |ctx| ctx.file.clone())
         });
+        let temperature = self.temperature.unwrap_or_else(|| "cold".to_string());
+        let temperature_semantics = self
+            .temperature_semantics
+            .unwrap_or_else(|| legacy_temperature_semantics(&temperature));
         BenchmarkRecord {
             name: self.name,
             file,
             attr: self.attr,
             category: self.category.unwrap_or_else(|| "legacy".to_string()),
-            temperature: self.temperature.unwrap_or_else(|| "cold".to_string()),
+            temperature,
+            temperature_semantics,
             context,
             parity: self.parity.unwrap_or_else(BenchmarkParity::legacy_missing),
             samples: self.samples,

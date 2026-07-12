@@ -86,6 +86,7 @@ fn record_with_context(
         attr,
         category: "test".to_string(),
         temperature: "cold".to_string(),
+        temperature_semantics: PAIRED_COLD_SEMANTICS.to_string(),
         context,
         parity: matched_parity("aos-nix"),
         summary: summarize_samples(&samples),
@@ -193,16 +194,6 @@ fn parity_spec() -> corpus::BenchmarkSpec {
         .into_iter()
         .next()
         .expect("explicit benchmark spec is present")
-}
-
-fn spec_with_temperature(temperature: &str) -> corpus::BenchmarkSpec {
-    corpus::BenchmarkSpec {
-        name: format!("leaf:{temperature}:pkgs.zlib"),
-        file: PathBuf::from("/repo/default.nix"),
-        attr: "pkgs.zlib".to_string(),
-        category: "leaf".to_string(),
-        temperature: temperature.to_string(),
-    }
 }
 
 #[test]
@@ -579,7 +570,7 @@ fn parity_gate_blocks_divergent_byte_diff() {
     assert!(
         error
             .to_string()
-            .contains("nix benchmark parity gate failed for explicit:cold:pkgs.zlib")
+            .contains("nix benchmark parity gate failed for explicit:pkgs.zlib")
     );
 }
 
@@ -757,48 +748,14 @@ fn read_history_accepts_legacy_run_context_records() {
 }
 
 #[test]
-fn explicit_benchmark_specs_use_cold_explicit_category() {
+fn explicit_benchmark_specs_are_temperature_neutral() {
     let specs =
         corpus::explicit_benchmark_specs(Path::new("/repo/default.nix"), &["pkgs.zlib".into()]);
 
+    // One spec per attr; the paired-cycle driver derives both temperatures.
     assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].name, "explicit:cold:pkgs.zlib");
+    assert_eq!(specs[0].name, "explicit:pkgs.zlib");
     assert_eq!(specs[0].category, "explicit");
-    assert_eq!(specs[0].temperature, "cold");
-}
-
-#[test]
-fn cold_benchmark_samples_do_not_prime_before_recording() {
-    let spec = spec_with_temperature("cold");
-    let mut calls = 0;
-
-    let samples = capture_benchmark_samples(&spec, 2, || {
-        calls += 1;
-        Ok(sample(calls as f64, 0.0, calls))
-    })
-    .expect("cold samples capture");
-
-    assert_eq!(calls, 2);
-    assert_eq!(samples.len(), 2);
-    assert_eq!(samples[0].elapsed_seconds, 1.0);
-    assert_eq!(samples[1].elapsed_seconds, 2.0);
-}
-
-#[test]
-fn warm_benchmark_samples_prime_once_before_recording() {
-    let spec = spec_with_temperature("warm");
-    let mut calls = 0;
-
-    let samples = capture_benchmark_samples(&spec, 2, || {
-        calls += 1;
-        Ok(sample(calls as f64, 0.0, calls))
-    })
-    .expect("warm samples capture");
-
-    assert_eq!(calls, 3);
-    assert_eq!(samples.len(), 2);
-    assert_eq!(samples[0].elapsed_seconds, 2.0);
-    assert_eq!(samples[1].elapsed_seconds, 3.0);
 }
 
 #[test]

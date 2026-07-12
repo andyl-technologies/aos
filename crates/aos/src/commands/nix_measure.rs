@@ -169,7 +169,10 @@ fn measurement_specs(
 }
 
 fn is_buildable_measurement_spec(spec: &BenchmarkSpec) -> bool {
-    spec.category != "diagnostic" && spec.temperature == "cold"
+    // `benchmark_specs` now yields one temperature-neutral spec per attr, so
+    // there is no cold/warm pair to dedup; only the non-buildable diagnostic
+    // corpus is excluded.
+    spec.category != "diagnostic"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,26 +487,24 @@ mod tests {
     #[test]
     fn diagnostic_specs_are_not_build_measurement_workloads() {
         let spec = BenchmarkSpec {
-            name: "diagnostic:cold:diagnostic.attrset_access".to_string(),
+            name: "diagnostic:diagnostic.attrset_access".to_string(),
             file: PathBuf::from("/repo/.aos-benchmarks/corpus/diagnostics.nix"),
             attr: "diagnostic.attrset_access".to_string(),
             category: "diagnostic".to_string(),
-            temperature: "cold".to_string(),
         };
 
         assert!(!is_buildable_measurement_spec(&spec));
     }
 
     #[test]
-    fn warm_benchmark_specs_do_not_double_measure_cold_warm_pairs() {
+    fn leaf_specs_are_build_measurement_workloads() {
         let spec = BenchmarkSpec {
-            name: "leaf:warm:pkgs.zlib".to_string(),
+            name: "leaf:pkgs.zlib".to_string(),
             file: PathBuf::from("/repo/default.nix"),
             attr: "pkgs.zlib".to_string(),
             category: "leaf".to_string(),
-            temperature: "warm".to_string(),
         };
 
-        assert!(!is_buildable_measurement_spec(&spec));
+        assert!(is_buildable_measurement_spec(&spec));
     }
 }

@@ -25,6 +25,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use tempfile::TempDir;
 
 use aos_core::error::AosError;
 use aos_core::nix::{
@@ -194,25 +195,30 @@ pub fn run(
         specs.len()
     ));
 
-    let mut outcomes = Vec::with_capacity(specs.len());
+    // Each attribute yields two records (cold + warm) from one paired-cycle run.
+    let mut outcomes = Vec::with_capacity(specs.len().saturating_mul(2));
     for spec in specs {
-        let record = run_one_benchmark(
+        let records = run_one_benchmark(
             &oracle,
             candidate.as_ref(),
             &candidate_name,
             &spec,
             &eval_config,
+            verbose,
             samples,
         )?;
-        let comparison = previous_benchmark(&previous_runs, &record, &commit).map(|previous| {
-            compare_benchmarks(
-                &record,
-                previous,
-                regression_threshold,
-                memory_regression_threshold,
-            )
-        });
-        outcomes.push(BenchmarkOutcome { record, comparison });
+        for record in records {
+            let comparison =
+                previous_benchmark(&previous_runs, &record, &commit).map(|previous| {
+                    compare_benchmarks(
+                        &record,
+                        previous,
+                        regression_threshold,
+                        memory_regression_threshold,
+                    )
+                });
+            outcomes.push(BenchmarkOutcome { record, comparison });
+        }
     }
 
     let run = BenchmarkRunRecord {
@@ -340,96 +346,200 @@ fn absolute_eval_file(path: &Path) -> Result<std::path::PathBuf> {
         .join(path))
 }
 
-/// Runs the parity gate and captures paired oracle and native timing samples.
+/// Temperature label for the first (cold) run of each paired cycle.
+const COLD_TEMPERATURE: &str = "cold";
+/// Temperature label for the second (warm) run of each paired cycle.
+const WARM_TEMPERATURE: &str = "warm";
+
+/// Runs the parity gate, samples the oracle, and produces the paired cold and
+/// warm records for one attribute.
 ///
-/// The oracle samples carry `NIX_SHOW_STATS` counters; the native samples time a
-/// plain [`NixEval::instantiate`] of the same file and attribute, without the
-/// byte-diff cost the parity gate already paid.
+/// Each of the `samples` native cycles builds a FRESH evaluator instance whose
+/// durable caches point at a fresh temp dir, times its first `instantiate()`
+/// (the cold sample), then times a second `instantiate()` on the now-warm
+/// instance (the warm sample), and drops the instance and its temp caches. The
+/// oracle has no in-process warm state (a fresh `nix-instantiate` subprocess per
+/// call), so it is sampled `samples` times once and its summary is shared as the
+/// denominator for both records — the warm ratio is thus `warm_native /
+/// cold_oracle`.
+///
+/// The parity gate runs on the long-lived `parity_candidate`, never on a cycle
+/// instance, so it cannot pre-warm the first cycle's cold sample.
+///
+/// # Errors
+///
+/// Returns an error if the parity gate fails, or if any oracle or native
+/// instantiation fails, or if a fresh cold evaluator cannot be built.
 fn run_one_benchmark(
     oracle: &NixCli,
-    candidate: &dyn NixEval,
+    parity_candidate: &dyn NixEval,
     candidate_name: &str,
     spec: &BenchmarkSpec,
     eval_config: &NixEvalConfig,
+    verbose: u8,
     samples: usize,
-) -> Result<BenchmarkRecord> {
+) -> Result<[BenchmarkRecord; 2]> {
     trace_phase("parity-gate-start");
-    let parity = run_parity_gate(oracle, candidate, candidate_name, spec)?;
+    let parity = run_parity_gate(oracle, parity_candidate, candidate_name, spec)?;
     trace_phase("parity-gate-done");
-    let oracle_samples = capture_benchmark_samples(spec, samples, || {
+
+    let oracle_samples = capture_oracle_samples(oracle, spec, samples)?;
+    trace_phase("oracle-samples-done");
+
+    let mut cold_samples = Vec::with_capacity(samples);
+    let mut warm_samples = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        // Fresh instance + fresh durable caches: the first run is a true cold
+        // eval, the second run reuses the now-warm instance. Both drop at the
+        // end of the iteration, so no state carries into the next cycle.
+        let (candidate, _cache_dir) = fresh_isolated_candidate(verbose, eval_config, spec)?;
+        cold_samples.push(capture_native_sample(candidate.as_ref(), spec)?);
+        warm_samples.push(capture_native_sample(candidate.as_ref(), spec)?);
+    }
+    trace_phase("native-cycles-done");
+
+    let context = BenchmarkContext::from_eval_config(&spec.file, eval_config);
+    let oracle_summary = summarize_samples(&oracle_samples);
+    Ok([
+        build_paired_record(
+            spec,
+            COLD_TEMPERATURE,
+            PAIRED_COLD_SEMANTICS,
+            &context,
+            &parity,
+            &oracle_samples,
+            &oracle_summary,
+            cold_samples,
+        ),
+        build_paired_record(
+            spec,
+            WARM_TEMPERATURE,
+            PAIRED_WARM_SEMANTICS,
+            &context,
+            &parity,
+            &oracle_samples,
+            &oracle_summary,
+            warm_samples,
+        ),
+    ])
+}
+
+/// Assembles one temperature's [`BenchmarkRecord`] from shared oracle data and
+/// this temperature's native samples.
+#[allow(clippy::too_many_arguments)]
+fn build_paired_record(
+    spec: &BenchmarkSpec,
+    temperature: &str,
+    temperature_semantics: &str,
+    context: &BenchmarkContext,
+    parity: &BenchmarkParity,
+    oracle_samples: &[BenchmarkSample],
+    oracle_summary: &BenchmarkSummary,
+    native_samples: Vec<NativeBenchmarkSample>,
+) -> BenchmarkRecord {
+    let native_summary = summarize_native_samples(&native_samples);
+    BenchmarkRecord {
+        name: format!("{}:{temperature}:{}", spec.category, spec.attr),
+        file: spec.file.to_string_lossy().into_owned(),
+        attr: spec.attr.clone(),
+        category: spec.category.clone(),
+        temperature: temperature.to_string(),
+        temperature_semantics: temperature_semantics.to_string(),
+        context: context.clone(),
+        parity: parity.clone(),
+        summary: oracle_summary.clone(),
+        samples: oracle_samples.to_vec(),
+        native_summary,
+        native_samples,
+    }
+}
+
+/// Samples the C++ Nix oracle `samples` times. Every call is a fresh subprocess,
+/// so all samples are cold; the summary is shared by both temperature records.
+///
+/// # Errors
+///
+/// Returns the first `nix-instantiate` failure.
+fn capture_oracle_samples(
+    oracle: &NixCli,
+    spec: &BenchmarkSpec,
+    samples: usize,
+) -> Result<Vec<BenchmarkSample>> {
+    let mut records = Vec::with_capacity(samples);
+    for _ in 0..samples {
         let child_peak = OracleChildPeakBefore::capture();
         let stats = oracle
             .instantiate_with_stats(&spec.file, &spec.attr)
             .with_context(|| format!("running nix-instantiate for {}", spec.name))?;
-        Ok(BenchmarkSample {
+        records.push(BenchmarkSample {
             elapsed_seconds: stats.elapsed.as_secs_f64(),
             elapsed_nanos: duration_nanos(stats.elapsed),
             drv_path: stats.drv_path.to_string_lossy().into_owned(),
             stats: stats.stats,
             child_peak_rss_bytes: child_peak.finish(),
-        })
-    })?;
-    trace_phase("oracle-samples-done");
-    let native_samples = capture_benchmark_samples(spec, samples, || {
-        let memory_before = NativeMemoryBefore::capture();
-        let started = Instant::now();
-        let drv_path = native_instantiate(candidate, spec)
-            .with_context(|| format!("running native instantiate for {}", spec.name))?;
-        let elapsed = started.elapsed();
-        let memory = memory_before.finish();
-        trace_phase("native-sample-done");
-        Ok(NativeBenchmarkSample {
-            elapsed_seconds: elapsed.as_secs_f64(),
-            elapsed_nanos: duration_nanos(elapsed),
-            drv_path: drv_path.to_string_lossy().into_owned(),
-            memory,
-        })
-    })?;
-
-    Ok(BenchmarkRecord {
-        name: spec.name.clone(),
-        file: spec.file.to_string_lossy().into_owned(),
-        attr: spec.attr.clone(),
-        category: spec.category.clone(),
-        temperature: spec.temperature.clone(),
-        context: BenchmarkContext::from_eval_config(&spec.file, eval_config),
-        parity,
-        summary: summarize_samples(&oracle_samples),
-        samples: oracle_samples,
-        native_summary: summarize_native_samples(&native_samples),
-        native_samples,
-    })
-}
-
-/// Captures `samples` timing samples, priming once for warm-temperature specs.
-///
-/// The same warm-up semantics apply to whichever evaluator `capture` exercises,
-/// so the native and oracle sides both honor the corpus temperature.
-///
-/// # Errors
-///
-/// Returns the first error produced by `capture`, whether during the warm-up
-/// call or a recorded sample.
-fn capture_benchmark_samples<T>(
-    spec: &BenchmarkSpec,
-    samples: usize,
-    mut capture: impl FnMut() -> Result<T>,
-) -> Result<Vec<T>> {
-    if temperature_requires_warmup(&spec.temperature) {
-        let _ = capture().with_context(|| format!("warming eval cache for {}", spec.name))?;
-    }
-
-    let mut records = Vec::with_capacity(samples);
-    for _ in 0..samples {
-        records.push(
-            capture().with_context(|| format!("capturing benchmark sample for {}", spec.name))?,
-        );
+        });
     }
     Ok(records)
 }
 
-fn temperature_requires_warmup(temperature: &str) -> bool {
-    temperature == "warm"
+/// Times one native `instantiate()` with its bracketing memory probes.
+///
+/// # Errors
+///
+/// Returns the native instantiation failure, if any.
+fn capture_native_sample(
+    candidate: &dyn NixEval,
+    spec: &BenchmarkSpec,
+) -> Result<NativeBenchmarkSample> {
+    let memory_before = NativeMemoryBefore::capture();
+    let started = Instant::now();
+    let drv_path = native_instantiate(candidate, spec)
+        .with_context(|| format!("running native instantiate for {}", spec.name))?;
+    let elapsed = started.elapsed();
+    let memory = memory_before.finish();
+    trace_phase("native-sample-done");
+    Ok(NativeBenchmarkSample {
+        elapsed_seconds: elapsed.as_secs_f64(),
+        elapsed_nanos: duration_nanos(elapsed),
+        drv_path: drv_path.to_string_lossy().into_owned(),
+        memory,
+    })
+}
+
+/// Builds a fresh native candidate whose durable caches (parse cache, eval
+/// persist cache, root-cutoff records) point at a fresh temp dir, so its first
+/// eval is a true cold eval against empty caches.
+///
+/// The returned [`TempDir`] owns the cache directory and removes it on drop;
+/// keep it alive for the candidate's lifetime.
+///
+/// # Errors
+///
+/// Returns an error if the temp dir cannot be created, the cache root cannot be
+/// configured, or the evaluator cannot be built.
+fn fresh_isolated_candidate(
+    verbose: u8,
+    base_config: &NixEvalConfig,
+    spec: &BenchmarkSpec,
+) -> Result<(Box<dyn NixEval>, TempDir)> {
+    let cache_dir = tempfile::Builder::new()
+        .prefix("aos-nix-bench-cold-")
+        .tempdir()
+        .with_context(|| format!("creating cold cache dir for {}", spec.name))?;
+    let mut config = base_config.clone();
+    config
+        .set_native_cache_root(cache_dir.path())
+        .with_context(|| format!("configuring cold cache root for {}", spec.name))?;
+    // The cold run populates every durable cache in this fresh dir; the warm run
+    // is then the real-world repeat instantiate, answered from that populated
+    // cache -- including the root-cutoff record the cold run wrote. Root-cutoff
+    // stays at the base config's setting (production-on) rather than being
+    // forced off: the warm leg is meant to measure the product's actual warm
+    // path, and a silent cutoff miss surfacing as a warm regression is the
+    // intended signal. The cold leg carries the eval-performance number.
+    let candidate = select_native_diff_candidate_with_config(verbose, config)
+        .with_context(|| format!("building cold evaluator for {}", spec.name))?;
+    Ok((candidate, cache_dir))
 }
 
 /// Maximum `diff_closure` attempts before the parity gate reports an

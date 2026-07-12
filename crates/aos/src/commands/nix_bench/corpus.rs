@@ -152,16 +152,17 @@ const GCC_TOOLCHAIN_TIER_COMPONENTS: &[&str] = &[
 ];
 const DIAGNOSTIC_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-bench-diagnostic-builder";
-const COLD_TEMPERATURE: &str = "cold";
-const WARM_TEMPERATURE: &str = "warm";
-
+/// One benchmark attribute to evaluate.
+///
+/// A spec is temperature-neutral: the paired-cycle driver
+/// ([`super::run_one_benchmark`]) produces both the cold and warm records for it
+/// from the same fresh-instance cycles, so there is no per-temperature spec.
 #[derive(Debug, Clone)]
 pub(crate) struct BenchmarkSpec {
     pub(crate) name: String,
     pub(crate) file: PathBuf,
     pub(crate) attr: String,
     pub(crate) category: String,
-    pub(crate) temperature: String,
 }
 
 pub(crate) fn benchmark_specs(
@@ -171,7 +172,7 @@ pub(crate) fn benchmark_specs(
     attrs: &[String],
 ) -> Result<Vec<BenchmarkSpec>> {
     if !attrs.is_empty() {
-        return Ok(with_warm_split(explicit_benchmark_specs(file, attrs)));
+        return Ok(explicit_benchmark_specs(file, attrs));
     }
 
     let mut specs = Vec::new();
@@ -195,7 +196,7 @@ pub(crate) fn benchmark_specs(
         }
         .into());
     }
-    Ok(with_warm_split(specs))
+    Ok(specs)
 }
 
 pub(crate) fn explicit_benchmark_specs(file: &Path, attrs: &[String]) -> Vec<BenchmarkSpec> {
@@ -278,37 +279,16 @@ fn diagnostic_benchmark_specs(root: &Path) -> Result<Vec<BenchmarkSpec>> {
     .collect())
 }
 
+/// Builds a temperature-neutral spec. Its `name` (`"<category>:<attr>"`) is a
+/// diagnostic label; the per-record history names (`"<category>:<temperature>:
+/// <attr>"`) are assembled by the paired-cycle driver.
 fn benchmark_spec(file: PathBuf, attr: String, category: &str) -> BenchmarkSpec {
-    benchmark_spec_with_temperature(file, attr, category, COLD_TEMPERATURE)
-}
-
-fn benchmark_spec_with_temperature(
-    file: PathBuf,
-    attr: String,
-    category: &str,
-    temperature: &str,
-) -> BenchmarkSpec {
     BenchmarkSpec {
-        name: format!("{category}:{temperature}:{attr}"),
+        name: format!("{category}:{attr}"),
         file,
         attr,
         category: category.to_string(),
-        temperature: temperature.to_string(),
     }
-}
-
-fn with_warm_split(specs: Vec<BenchmarkSpec>) -> Vec<BenchmarkSpec> {
-    let mut expanded = Vec::with_capacity(specs.len().saturating_mul(2));
-    for spec in specs {
-        expanded.push(spec.clone());
-        expanded.push(benchmark_spec_with_temperature(
-            spec.file,
-            spec.attr,
-            &spec.category,
-            WARM_TEMPERATURE,
-        ));
-    }
-    expanded
 }
 
 fn existing_attr_expr(file: &Path, wanted: &[&str]) -> Result<String> {
@@ -530,20 +510,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warm_split_pairs_each_benchmark_spec() {
-        let specs = with_warm_split(vec![benchmark_spec(
-            PathBuf::from("/repo/default.nix"),
-            "pkgs.zlib".to_string(),
-            "leaf",
-        )]);
+    fn explicit_specs_are_one_temperature_neutral_spec_per_attr() {
+        // Under the paired-cycle driver each attr is a single spec; the driver
+        // emits both the cold and warm records, so there is no warm split.
+        let specs = explicit_benchmark_specs(
+            &PathBuf::from("/repo/default.nix"),
+            &["pkgs.zlib".to_string(), "pkgs.openssl".to_string()],
+        );
 
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].name, "leaf:cold:pkgs.zlib");
-        assert_eq!(specs[0].temperature, "cold");
-        assert_eq!(specs[1].name, "leaf:warm:pkgs.zlib");
-        assert_eq!(specs[1].temperature, "warm");
-        assert_eq!(specs[1].file, PathBuf::from("/repo/default.nix"));
-        assert_eq!(specs[1].attr, "pkgs.zlib");
-        assert_eq!(specs[1].category, "leaf");
+        assert_eq!(specs[0].name, "explicit:pkgs.zlib");
+        assert_eq!(specs[0].attr, "pkgs.zlib");
+        assert_eq!(specs[0].category, "explicit");
+        assert_eq!(specs[0].file, PathBuf::from("/repo/default.nix"));
+        assert_eq!(specs[1].name, "explicit:pkgs.openssl");
     }
 }

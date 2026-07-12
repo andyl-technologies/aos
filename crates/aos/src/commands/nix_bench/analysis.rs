@@ -430,10 +430,12 @@ fn stats_delta(
 
 /// Finds the most recent baseline for `current` from a differing commit.
 ///
-/// The baseline must share the benchmark name, temperature, evaluator context,
-/// and matched parity mode/candidate so comparisons stay like-for-like. Records
-/// from `current_commit` are skipped so a re-run does not compare against
-/// itself.
+/// The baseline must share the benchmark name, temperature, temperature
+/// semantics, evaluator context, and matched parity mode/candidate so
+/// comparisons stay like-for-like. The `temperature_semantics` match is what
+/// stops a pre-v4 fake-cold baseline from being compared against a v4 true-cold
+/// record. Records from `current_commit` are skipped so a re-run does not
+/// compare against itself.
 pub(crate) fn previous_benchmark<'a>(
     history: &'a [BenchmarkRunRecord],
     current: &BenchmarkRecord,
@@ -448,6 +450,7 @@ pub(crate) fn previous_benchmark<'a>(
             .find(|record| {
                 record.name == current.name
                     && record.temperature == current.temperature
+                    && record.temperature_semantics == current.temperature_semantics
                     && record.context == current.context
                     && parity_context_matches(&record.parity, &current.parity)
             })
