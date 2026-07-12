@@ -49,6 +49,7 @@ in
         sed -i '/^sysdep_routines/s/ vm86//' \
           "$SRC/sysdeps/unix/sysv/linux/i386/Makefile"
         patch -d "$SRC" -p1 < ${./glibc-static-test-modules.patch}
+        patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-no-fixed-vsyscall.patch}
 
         # Out-of-tree build required by glibc
         mkdir -p "$TMPDIR/build"

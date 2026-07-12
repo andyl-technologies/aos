@@ -280,19 +280,37 @@
   # stamps the copies with fresh mtimes in readdir order — whether
   # configure.in ends up newer than the pre-generated autotools outputs
   # (configure, config.h.in, stamp-h.in, Makefile.in) is a per-machine
-  # coin flip. When it does, make re-runs autoconf/autoheader/automake,
-  # none of which exist on the bootstrap PATH, and the build dies with
-  # "command not found" (observed as gawk-3.0.6's `autoheader` Error
-  # 127). Interpolate this after `cd`-ing into the copied tree to pin
-  # every autotools input and output to one shared timestamp so no
-  # regeneration rule can fire. Plain shell on purpose: find(1) is not
-  # on the bootstrap PATH, and this must run under bash 2.05b.
+  # coin flip. Generated package-specific files have the same problem:
+  # coreutils 5.0 regenerates doc/version.texi and tests/*/Makefile.am
+  # when their source templates happen to be copied later. Those rules
+  # require date and perl, which intentionally do not exist in the
+  # bootstrap closure.
+  #
+  # Interpolate this after `cd`-ing into the copied tree. It recursively
+  # pins every copied file and directory to configure's timestamp, making
+  # the writable tree match the equal-mtime semantics of its immutable
+  # Nix store source. Symlinks are skipped so an absolute link cannot
+  # mutate a store target. This uses a Bash 2.05-compatible recursive
+  # function because find(1) is not on the bootstrap PATH.
   freezeAutotoolsMtimes = ''
-    for f in aclocal.m4 configure.in configure.ac configure config.h.in \
-      stamp-h.in Makefile.in */aclocal.m4 */configure.in */configure \
-      */config.h.in */stamp-h.in */Makefile.in */*/Makefile.in; do
-      test -e "$f" && touch -r ./configure "$f" || :
-    done
+    freeze_tree_mtimes() {
+      local freeze_dir="$1"
+      local freeze_path
+      for freeze_path in "$freeze_dir"/* "$freeze_dir"/.[!.]* "$freeze_dir"/..?*; do
+        if test ! -e "$freeze_path" && test ! -L "$freeze_path"; then
+          continue
+        fi
+        if test -L "$freeze_path"; then
+          continue
+        fi
+        if test -d "$freeze_path"; then
+          freeze_tree_mtimes "$freeze_path"
+        fi
+        touch -r ./configure "$freeze_path"
+      done
+    }
+    freeze_tree_mtimes .
+    unset -f freeze_tree_mtimes
   '';
 
 }
