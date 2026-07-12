@@ -47,14 +47,17 @@
   snapshot there captures almost no forced work and is worthless (§2). The
   boundary must be a deliberately over-forced prelude root set (§2.3).
 
-- **Recommended image realization: rebase-on-load, not address-free —
-  until Candidate-C is active.** Because live `Value`s and `AtomicValueCell`
-  slots carry raw native pointers (`eval/env.rs:474-547`), the first shippable
-  image is a serialized arena segment plus a **relocation-sensitive-pointer
-  writeback pass** applied on load (the same repair the FV-0 relocation audit
-  built for the B2 moving collector, `relocation_identity.rs` /
-  `payload_identity.rs`). The address-free variant becomes available *for
-  free* once the Candidate-C ABI lands and is the correct end state (§3.3).
+- **Image realization: RULED — wait for the Candidate-C ABI, build
+  address-free (no throwaway rebase machinery).** Live `Value`s and
+  `AtomicValueCell` slots carry raw native pointers today (`eval/env.rs:474-547`),
+  so an image built now would need a rebase-on-load pass. The team lead has
+  ruled (2026-07-12, §9) that we will **not** build that throwaway machinery:
+  the Candidate-C ABI cutover (8-byte compressed-index `Value`) is an already
+  -open FV-4 checklist row, is independently valuable, and was the prior
+  engineer's direction — tracked as **task #12**. Snapshots build address-free
+  *after* that cutover, when heap references are base-relative `u32` offsets and
+  the image maps with no rebase pass at all. The rebase-on-load variant is
+  documented in §3.3 as the rejected interim, not the plan.
 
 - **The persisted JIT and parse caches already survive a snapshot;** the
   fragile handles are live-runtime only (`EvalModuleId`, raw pointers). The
@@ -62,11 +65,21 @@
   node ids), not module-id-keyed (`ratchet-oracle/.../cache/hashing.rs:447`),
   so it composes cleanly (§6).
 
-- **Staged landing:** in-process serialize+reload byte-equality of a trivial
-  eval first, then a forced-prelude snapshot behind `AOS_NIX_SNAPSHOT`, then
-  CHECK-mode re-eval parity, then default-on — parity gate at every stage
-  (§7). Realistically this is the largest single item in doc 31 and should
-  ride behind, or jointly with, the Candidate-C ABI cutover.
+- **Gate: RULED — implementation does not start until a measurement lands
+  (§9).** The team lead has ruled (2026-07-12) that the item is measure-first
+  gated on **the fraction of cold-eval wall spent forcing the `lib`+`stdenv`
+  prelude scaffolding that is identical across packages** — folded into the
+  same `AOS_NIX_EVAL_STATS` increment as the parallel-front-end S0 parse/lower
+  timers (one eval-stats landing). If that number comes back small, the item is
+  re-scoped honestly: the parse cache + import memo may already own most of the
+  prelude win (§2.2). Implementation is blocked on both this metric and the
+  Candidate-C cutover (task #12).
+
+- **Staged landing (post-gate):** in-process serialize+reload byte-equality of
+  a trivial eval first, then a forced-prelude snapshot behind `AOS_NIX_SNAPSHOT`,
+  then CHECK-mode re-eval parity, then default-on — parity gate at every stage
+  (§7). This is the largest single item in doc 31 and rides after the
+  Candidate-C ABI cutover.
 
 ## 1. Prerequisite audit (doc 31 §1's assumptions vs. HEAD)
 
@@ -335,12 +348,14 @@ scale.
   Candidate-C words (`heap/reservation.rs`, 23-bit domain) is exactly what
   lets a loaded image's offsets be distinguished from a live heap's.
 
-**Recommendation:** build the rebase-on-load variant first (it works today),
-but structure the relocation-root table and loader so that flipping to
-address-free is dropping the rebase pass, not a rewrite. Sequence the
-address-free variant to *follow* the Candidate-C ABI cutover (FV-4's open
-`[ ]` rows), and flag to the lead that the doc-31 §1 "address-free by
-construction" endpoint is blocked on that cutover.
+**Ruling (2026-07-12, team lead; §9).** Do **not** build the rebase-on-load
+variant. It is throwaway machinery that a moving-collector-shaped rebase would
+duplicate, and the address-free endpoint is reachable directly via the
+Candidate-C ABI cutover (task #12, an already-open FV-4 row that is independently
+valuable). The snapshot builds address-free only, *after* that cutover: the
+relocation-root table shrinks to empty and no per-pointer pass runs at load. The
+rebase-on-load design above is retained here as the documented rejected interim
+so the reasoning is not re-derived; it is not the plan.
 
 ### 3.4 Integrity and loading semantics
 
@@ -549,26 +564,16 @@ is resolved with the lead (§8).
 
 ### 8.1 Open questions for the lead
 
-- **Q1 — Sequence against the Candidate-C ABI cutover.** The address-free
-  endpoint doc 31 §1 wants is blocked on activating the one-word `Value`
-  (FV-4's open `[ ]` rows). Options: **(a)** ship the rebase-on-load variant
-  now against the 16-byte native-pointer `Value` and convert to address-free
-  after the cutover; **(b)** wait for the cutover and build only the
-  address-free variant. Recommend **(a)** — it delivers a cold-eval win
-  sooner and the loader is structured so address-free is a pass deletion — but
-  this needs the lead's call on whether the rebase pass's per-pointer touch
-  cost is acceptable interim.
-- **Q2 — Is the forced-prelude root set worth it at all?** The honest finding
-  (§2.2) is that the parse/lower fraction is *already* served by the parse
-  cache + import memo, so the snapshot's marginal win is purely *forced-value
-  reuse*, and only for the fixed root set we choose to over-force. Before
-  building, measure (via `AOS_NIX_EVAL_STATS`) what fraction of cold-eval
-  wall is spent forcing `lib`+`stdenv` scaffolding that is identical across
-  packages — doc 31 §1 asserts it is "the dominant portion" but cites the
-  *def-site sharing* evidence, which is about *code* identity, not *forced
-  value* wall share. This measurement should gate the whole item (it is the
-  "share of cold eval spent inside the snapshot boundary" gating measurement
-  doc 31's decision-register table already names).
+- **Q1 — Sequence against the Candidate-C ABI cutover. RULED (§9): wait for
+  C, build address-free only.** No interim rebase-on-load machinery. See §9
+  decision 1 and §3.3.
+- **Q2 — Is the forced-prelude root set worth it at all? RULED (§9):
+  measure-first, implementation gated.** The named metric — the fraction of
+  cold-eval wall spent forcing `lib`+`stdenv` scaffolding identical across
+  packages — must land (folded into the parallel-front-end S0 `AOS_NIX_EVAL_STATS`
+  increment) before implementation begins; a small number re-scopes the item
+  honestly, since the parse cache + import memo may already own most of the
+  prelude win (§2.2). See §9 decision 2.
 - **Q3 — Thunk-frontier policy (§3.2).** Confirm the "snapshot forced values +
   re-thunk the unforced frontier from `(fingerprint, node)`" approach vs. a
   deep-force-everything image. Recommend the former; the latter risks
@@ -614,17 +619,52 @@ is resolved with the lead (§8).
   the tree (`heap/gc.rs:344`, `heap/flat.rs:787`) are GC card-table / edge
   snapshots, unrelated. This is greenfield.
 
+## 9. Decisions (2026-07-12, team lead)
+
+Binding rulings on §8.1's open questions; where a decision refines a question,
+the decision text supersedes it.
+
+1. **Wait for the Candidate-C ABI cutover; build address-free only (Q1).** No
+   throwaway rebase-on-load machinery. The Candidate-C one-word compressed-index
+   `Value` is an already-open FV-4 checklist row, is independently valuable
+   (8-byte values, the memory ladder), and was the prior engineer's direction —
+   tracked as **task #12**. The snapshot image is address-free by construction
+   once that lands (§3.3), with no per-pointer rebase pass. The rebase-on-load
+   design (§3.3) is retained only as the documented rejected interim.
+2. **Measure-first; implementation is gated on the metric (Q2).** The gating
+   number — the fraction of cold-eval wall spent forcing the `lib`+`stdenv`
+   prelude scaffolding identical across packages — is folded into the same
+   `AOS_NIX_EVAL_STATS` increment as the parallel-front-end (task #3) S0
+   parse/lower timers (one eval-stats landing, one lane slot). Snapshot
+   implementation does **not** start until that number exists. If it comes back
+   small, the item is re-scoped honestly: the content-addressed parse cache +
+   the realpath import memo may already own most of the prelude win (§2.2).
+3. **Invalidation key approved as scoped (§4).** The two-part root-cutoff
+   structure — key = per-module `LoweredIrFingerprint`s + `PASS_SET_VERSION` +
+   `result_affecting_fingerprint` (eval-system, `nix_path`, …); revalidation
+   slice = the canonicalized cacheable impure trace — stands as written.
+4. **Rebuild-from-manifest is the default posture for out-of-arena state
+   (§1.4).** For the symbol table, the module table, and `Arc`-backed string
+   contexts, "rebuild on load from the image manifest" is the default wherever
+   the structure is cheap to rebuild; include-in-image or reference-by-key are
+   used only where rebuild is not cheap. The per-structure decisions of §1.4
+   stand under this posture.
+
+**Task-board effect.** Task #6 is gated: `blockedBy` task #12 (Candidate-C
+cutover) and the S0 prelude-wall-share measurement (folds with task #3). It
+stays open but does not begin implementation until both clear.
+
 ---
 
-**Bottom line for the lead.** The flat-object substrate genuinely exists and
-the heap graph is dumpable, so the item is buildable — but two doc-31 §1
-assumptions are optimistic in ways that shape the whole design: the image is
-**not** address-free (native-pointer value words → needs a rebase pass, or the
-Candidate-C ABI first), and the natural boundary forces **nothing** worth
-snapshotting (→ needs a deliberately over-forced prelude root set). The
-recommended path is a serial, rebase-on-load, forced-prelude snapshot behind
-`AOS_NIX_SNAPSHOT`, gated by an `AOS_NIX_SNAPSHOT_CHECK` re-eval and the
-twice-run parity battery, converging to the address-free ideal after the
-Candidate-C cutover. Before committing, measure the forced-`lib`/`stdenv` wall
-share (Q2) — it is the number that decides whether this item earns its
-campaign-scale cost.
+**Bottom line.** The flat-object substrate genuinely exists and the heap graph
+is dumpable, so the item is buildable — but two doc-31 §1 assumptions are
+optimistic in ways that shape the whole design: the image is **not** address-free
+today (native-pointer value words), and the natural boundary forces **nothing**
+worth snapshotting. Per the lead's rulings (§9), the path is: **wait for the
+Candidate-C ABI cutover (task #12)** so the image is address-free with no rebase
+machinery, and **gate the whole item on measuring the forced-`lib`/`stdenv` wall
+share** (folded into the task-#3 S0 instrumentation) — that number decides
+whether this campaign-scale item earns its cost, or whether the parse cache +
+import memo already own the prelude win. Once past the gate, the staged landing
+(§7) is a serial, forced-prelude, address-free snapshot behind `AOS_NIX_SNAPSHOT`,
+gated by `AOS_NIX_SNAPSHOT_CHECK` re-eval and the twice-run parity battery.
