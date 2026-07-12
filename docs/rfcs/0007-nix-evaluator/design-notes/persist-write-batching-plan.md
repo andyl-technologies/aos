@@ -737,3 +737,71 @@ So no append error reaches the eval `Result` — same log-and-continue contract 
 loss-matrix tested on the network tier. Increment A therefore preserves the
 advisory posture; the removed per-op ensure was pure redundancy, not a
 self-heal the eval relied on.
+
+## 16. Increment B: hold-fd, scoped to NodeMetadataIndex (pack indexes deferred)
+
+Held the read+append fd open on `NodeMetadataIndex` (c36b5189d) — the dominant
+after-A writer (the ~7900 metadata.index + persist/nodes ops). Appends
+`O_APPEND` under a `Mutex`, reads `fstat`+seek the same held fd (so same-root
+handles still observe each other's appends — a per-handle length cache would
+under-count demand across the 16-handle coordination test, deferred to a
+shared-per-root increment), compaction reopens after its own rename-over. Gates:
+ratchet-cache + oracle tests green (incl. the coordination test), byte-parity
+8/8, durable warm hits.
+
+**LANDMINE (recorded so the follow-up starts from the constraint): a writer
+whose file can be replaced EXTERNALLY must NOT hold an fd without inode-change
+detection.** Replicating hold-fd to `blob_index` / `artifact_index` broke 17
+storage-maintenance/repack tests with `RecordHashMismatch`: the repack rebuilds
+the values/files pack AND renames a fresh index over the old path from OUTSIDE
+the index object (not via its `replace_entries`), so the held fd points at the
+unlinked old inode and reads return the stale index → wrong pack offsets. The
+per-object compaction-reopen only covers the writer's own rewrite.
+`NodeMetadataIndex` is safe precisely because it is only ever rewritten through
+its own `replace_entries`. Reverted the pack indexes cleanly (no bug shipped).
+
+**Disposition (lead ruling (b), measure-first):** pack indexes stay at
+Increment-A state (per-op open); holding their fd safely needs inode-change
+detection (`fstat` st_dev/st_ino per read, reopen on change — which re-adds a
+cheap `fstat`) or a repack-flow change to refresh the live handle. Both are
+gated on whether the post-B re-strace shows their residual opens (values/files
+`index.blob` ~1k stats + their appends) are worth it. The shared-per-root
+length statx-kill remains its own measure-gated increment too.
+
+### 16.1 Part-1 re-strace + the cache ratio (builder, c36b5189d, default features)
+
+Strace (cache-on cold zlib) vs after-A, and the whole A+B1 ladder vs the
+original storm:
+
+```text
+syscall   original   after-A    after-B1(part1)   A+B1 total
+openat     27,675    16,754      9,352            -66%
+close      27,501    16,580      9,178            -67%
+mkdir      15,211     4,290      4,290            -72%
+statx      42,774    20,931     20,936            -51% (fstat-on-held-fd kept)
+futex(s)     0.66      0.27       0.285
+```
+
+Part 1 killed the metadata index's ~7,400 per-op opens (openat/close each -44%);
+statx is unchanged by design (NodeMetadataIndex keeps a per-read `fstat` for
+same-root coordination).
+
+**Cache-enabled vs cache-less (native-only nix-bench on the Linux builder,
+median of 3):**
+
+```text
+                cache-LESS   cache-ENABLED   ratio
+zlib cold        63.9 ms      312.0 ms       4.9x SLOWER
+zlib warm        62.1 ms        6.6 ms       0.10x (9-10x FASTER)
+```
+
+**This is the headline: cache-enabled cold is now ~4.9x cache-less, down from the
+~13x-class before this campaign** (the pre-A §14 table was 13.2x on darwin;
+this is Linux, so the OS baselines differ, but the syscall-storm reductions cut
+the cold cache-populate roughly 3x). Warm 6.6 ms is ~10x faster than cache-less
+cold and ~28x faster than C++ Nix. The ~1.2x default-cache-root gate is not yet
+met (4.9x), and the remaining cache-on-cold cost is the synchronous
+write-through (write 9.4k + flock 7.5k), the futex (thread coordination), and
+the residual pack-index opens — the candidates for the next measure-gated
+increments (§3.2(b) write-behind, the shared-per-root statx-kill, and the
+pack-index hold-fd with inode detection).
