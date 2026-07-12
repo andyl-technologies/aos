@@ -236,9 +236,9 @@ in
         # only built when --enable-shared. Those optional programs may fail,
         # but the static libc and startup objects are required by every
         # downstream compiler and must never be accepted as missing.
-        echo "==> Building glibc 2.2.5 (static)"
+        echo "==> Building glibc 2.2.5 (static) with $NIX_BUILD_CORES jobs"
         build_status=0
-        $MAKE -k SHELL=${bash}/bin/bash || build_status=$?
+        $MAKE -k -j"$NIX_BUILD_CORES" SHELL=${bash}/bin/bash || build_status=$?
 
         missing_build_artifact=0
         for artifact in libc.a csu/crt1.o csu/crti.o csu/crtn.o; do

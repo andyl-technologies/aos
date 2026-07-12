@@ -328,8 +328,11 @@ stdenv` plus the existing eval/VM checks.
   Keep stage5 glibc fail-closed at the compiler ABI boundary: `make -k` may
   pass optional static-bootstrap program failures, but the producer must
   verify and install `libc.a`, `crt1.o`, `crti.o`, and `crtn.o` before it
-  succeeds. Do not defer that validation to the downstream GCC build because
-  it hides the actual glibc failure and admits an unusable libc store path.
+  succeeds. Honor `NIX_BUILD_CORES` for the build because glibc is the longest
+  bootstrap frontier and its make graph is parallel-safe after the generated
+  ordering inputs are pinned. Do not defer ABI validation to the downstream
+  GCC build because it hides the actual glibc failure and admits an unusable
+  libc store path.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
