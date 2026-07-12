@@ -5,6 +5,8 @@ use crate::cache::hashing::ForceCapturedValueHash;
 use crate::eval::heap::{SharedHeapArena, SharedHeapShard};
 mod force_identity;
 mod force_payload;
+mod force_payload_memo;
+pub(in crate::eval::tree_walk) use force_payload_memo::ForcePayloadMemo;
 mod force_persistence;
 mod memo;
 mod module_env;
@@ -445,6 +447,7 @@ impl TreeWalk {
             persist_cache_open_attempted: false,
             eval_cache,
             force_cache_active,
+            force_payload_memo: std::cell::RefCell::new(ForcePayloadMemo::new(force_cache_active)),
             import_parse_cache_hits: 0,
             import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),

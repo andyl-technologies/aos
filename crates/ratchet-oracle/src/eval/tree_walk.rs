@@ -1305,6 +1305,12 @@ pub struct TreeWalk {
     // subject/payload content hashing is pure waste (every observation is a
     // no-op), so the hot path skips it entirely. See `force_memoized_claimed_thunk`.
     force_cache_active: bool,
+    // Per-worker, identity-keyed cache of finished force-cache payloads for heap
+    // `List`/`Attrs` aggregates, keyed by heap address. Skips re-encoding shared
+    // substructure on the persistent observe path. Sound only under Tier-A's
+    // non-moving permanent lanes; see `eval_core::force_payload_memo` for the B2
+    // relocation hazard and the run-boundary staleness bound.
+    force_payload_memo: std::cell::RefCell<eval_core::ForcePayloadMemo>,
     import_parse_cache_hits: usize,
     import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,

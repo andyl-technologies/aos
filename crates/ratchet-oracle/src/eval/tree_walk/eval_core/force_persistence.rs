@@ -1099,6 +1099,16 @@ impl TreeWalk {
     }
 
     pub(in crate::eval::tree_walk) fn advance_persist_eval_cache_run_boundary(&mut self) {
+        // Drop the identity-keyed observe payload memo unconditionally: a new run
+        // may recycle the heap addresses its entries are keyed on, so bounding
+        // their staleness to one run is a correctness requirement, not an
+        // optimization. Emitted first so the campaign report survives a config
+        // that skips the persist bookkeeping below.
+        {
+            let memo = self.force_payload_memo.borrow();
+            memo.log_report();
+        }
+        self.force_payload_memo.borrow_mut().clear();
         if !self.options.eval_cache_enabled() {
             return;
         }

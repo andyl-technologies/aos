@@ -664,3 +664,40 @@ fn unsupported_force_payload_clears_persistent_value_link() {
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
+
+#[test]
+fn observe_payload_memo_serves_repeated_heap_aggregate_encodes() {
+    // A heap list forced twice on the observe path: the first encode populates
+    // the identity-keyed payload memo, the second is served from it. The
+    // in-crate debug re-encode-compare guard also fires on the served hit,
+    // asserting it equals a fresh encode.
+    let ir = lower("1");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = TreeWalkOptions::with_eval_cache_enabled(true);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    // The memo is opt-in (default off); activate it without touching the
+    // process-global environment, which would race concurrent tests.
+    evaluator.force_payload_memo.borrow_mut().set_active_for_test();
+    let list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+        ]))
+        .expect("list allocates");
+
+    let first = evaluator
+        .force_cache_payload_for_value(list)
+        .and_then(|payload| payload.value_hash().ok());
+    let second = evaluator
+        .force_cache_payload_for_value(list)
+        .and_then(|payload| payload.value_hash().ok());
+    assert!(first.is_some());
+    assert_eq!(first, second, "repeated encodes of one address agree");
+    assert_eq!(
+        evaluator.force_payload_memo.borrow().hits(),
+        1,
+        "the second encode of the same heap list is served from the memo"
+    );
+}

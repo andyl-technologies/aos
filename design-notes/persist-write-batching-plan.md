@@ -432,3 +432,57 @@ once — parity-safe (same encode result, cached) and memory-bounded (cap agains
 the 38 MiB budget). The parse/import artifact writes on cold are a real secondary
 cost but are expected (they buy the warm-parse speedup); §3.2 write-behind
 batching can amortize their open/flock as a follow-up, not a bug fix.
+
+## 10. §3.1 as-built: identity-keyed encode memo — measured NEUTRAL (default-off)
+
+Landed the §3.1 fallback lever: a per-worker, identity-keyed memo of finished
+force-cache payloads for heap `List`/`Attrs` aggregates
+(`eval_core::force_payload_memo`). A hit skips the recursive re-encode and BLAKE3
+of shared substructure. Keyed by `Value::address_identity_bits` — sound only
+because Tier-A never moves or reclaims these aggregates within one evaluation
+(heap-owner confirmed: permanent lanes grow monotonically; the poppable
+worker-closure lane never holds lists/attrs). Cleared at
+`advance_persist_eval_cache_run_boundary`; a debug re-encode-compare guard fires
+on every hit; the B2 relocation hazard is registered in the payload-identity
+audit (`heap/tests/payload_identity.rs`) and the module doc.
+
+**Mechanism proven.** Engagement test
+(`observe_payload_memo_serves_repeated_heap_aggregate_encodes`): the second
+encode of one heap list is served from the memo (`hits == 1`). All 213
+`force_cache` tests plus the engagement test run in debug with the guard active
+— transparency holds on every hit.
+
+**Parity GREEN, engaged and default.** zlib + openssl byte `.drv` match across
+serial/JIT × cache-on, both `AOS_NIX_OBSERVE_MEMO=1` (engaged) and default
+(off). 3078 oracle lib tests + 6 memo/engagement tests green.
+
+**A/B — the memo is roughly noise-level; it is NOT the ~1.2x lever.**
+Cold cache-population median (fresh cache dir + process per sample, n=7 unless
+noted; darwin, release, `--eval-system x86_64-linux`):
+
+```text
+attr           cache-off cold   cache-on cold memoON   cache-on cold memoOFF
+pkgs.zlib          78.6 ms           1131 ms                1183 ms
+pkgs.openssl       80.7 ms           1150 ms                1171 ms
+```
+
+The memo shaves ~2-4% off cold cache-population — inside run-to-run noise
+(±5%, outliers to 2.2s). Cache-on cold stays **~14-15x cache-off** with or
+without the memo. Warm did not reach the 23-35 ms root-cutoff on this HEAD in
+either arm (warm ≈ cold ≈ 1.15 s; a harness/root-cutoff regression to chase
+separately — memoON and memoOFF track together, so it is not the memo).
+
+**Why so small — decisive.** Finding 2 identified the observe *encode* tax
+(BLAKE3 + recursive preimage). This memo removes only the *repeated* encodes of
+shared substructure, which is a small fraction of the encode work, itself a
+small fraction of the write-dominated cold cost. The ~1050 ms of cache-on cold
+overhead is the **synchronous persist write-through** (value/artifact pack
+serialization + open/flock/fsync), which the memo does not touch. **§3.2
+write-behind batching is the real lever to reach ~1.2x**, exactly as framed:
+amortization of the intended writes, not repair.
+
+**Disposition.** Default-OFF behind `AOS_NIX_OBSERVE_MEMO` (mirrors the
+simplifier passes' default-off discipline: a neutral optimization stays off with
+its numbers recorded). It is inert in the production cache-less default and in
+cache-on unless explicitly opted in. Re-measure and consider default-on once
+§3.2 removes the write floor and the encode tax becomes a larger relative share.

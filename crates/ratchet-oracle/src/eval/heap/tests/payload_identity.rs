@@ -114,9 +114,12 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_core/force_payload.rs",
         raw_representation: 0,
-        address_identity_only: 1,
+        address_identity_only: 2,
         relocation_sensitive: 0,
-        b2_disposition: "collector-free payload walk; no repair",
+        b2_disposition: "collector-free payload walk (cycle seen-set); plus the observe \
+                         payload-memo key, retained only within one run and dropped at the \
+                         run boundary. Under B2 the memo must invalidate on every moving \
+                         safepoint or rekey; see force_payload_memo.",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_core/memo.rs",
@@ -294,7 +297,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.address_identity_only)
             .sum::<usize>(),
-        5
+        6
     );
     assert_eq!(
         PAYLOAD_IDENTITY_AUDIT
@@ -319,6 +322,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (29, 5, 18)
+        (29, 6, 18)
     );
 }

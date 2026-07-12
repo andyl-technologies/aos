@@ -469,6 +469,24 @@ impl TreeWalk {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
         }
+        // Identity-keyed memo for heap `List`/`Attrs` aggregates: a hit skips the
+        // recursive re-encode and BLAKE3 of shared substructure. Sound only
+        // because Tier-A never moves or reclaims these within one evaluation; see
+        // `force_payload_memo`.
+        let memo_key = self.force_payload_memo_key(value);
+        if let Some(key) = memo_key {
+            let hit = self.force_payload_memo.borrow_mut().get(key);
+            if let Some(hit) = hit {
+                #[cfg(debug_assertions)]
+                self.debug_assert_force_payload_memo_hit(
+                    value,
+                    depth,
+                    allow_suspended_capture_aliases,
+                    &hit,
+                );
+                return Some(hit);
+            }
+        }
         let payload = match value.tag() {
             ValueTag::Int => CachedExpressionValue::int(self.heap.decode_int_value(value).ok()?),
             ValueTag::Float => {
@@ -620,8 +638,65 @@ impl TreeWalk {
         };
         if value.tag().is_heap() {
             self.cache_heap_value_hash(value, &payload);
+            if let Some(key) = memo_key {
+                self.force_payload_memo.borrow_mut().insert(key, &payload);
+            }
         }
         Some(payload)
+    }
+
+    /// Returns the memo key for `value` when it is an eligible heap aggregate.
+    ///
+    /// `Some` only for heap-backed `List`/`Attrs` values while the memo is
+    /// active (and not bypassed by the debug guard); every other value is
+    /// cheap to re-encode or has force-state-dependent identity, so it is not
+    /// memoized.
+    fn force_payload_memo_key(&self, value: Value) -> Option<u64> {
+        if !self.force_payload_memo.borrow().is_active() {
+            return None;
+        }
+        match value.tag() {
+            ValueTag::List | ValueTag::Attrs if value.tag().is_heap() => {
+                Some(value.address_identity_bits())
+            }
+            _ => None,
+        }
+    }
+
+    /// Asserts a served memo hit matches a fresh, memo-bypassing re-encode.
+    ///
+    /// Guards the Tier-A address-stability invariant: if a heap address were
+    /// reused within one evaluation, the served payload would diverge from a
+    /// fresh encode and this fires. A fresh `None` is tolerated — it only
+    /// arises when this reach is deeper than the memoized encode and hits the
+    /// recursion cutoff, in which case the memo legitimately holds the more
+    /// complete result (harmless: the payload never affects `.drv` output).
+    #[cfg(debug_assertions)]
+    fn debug_assert_force_payload_memo_hit(
+        &self,
+        value: Value,
+        depth: usize,
+        allow_suspended_capture_aliases: bool,
+        hit: &CachedExpressionValue,
+    ) {
+        self.force_payload_memo.borrow_mut().set_bypass(true);
+        let mut fresh_seen = BTreeSet::new();
+        let fresh = self.force_cache_payload_for_value_with_depth(
+            value,
+            depth,
+            &mut fresh_seen,
+            allow_suspended_capture_aliases,
+        );
+        self.force_payload_memo.borrow_mut().set_bypass(false);
+        if let (Some(fresh), Ok(hit_hash)) = (fresh, hit.value_hash()) {
+            if let Ok(fresh_hash) = fresh.value_hash() {
+                debug_assert_eq!(
+                    fresh_hash, hit_hash,
+                    "observe payload memo served a payload that diverges from a fresh encode; \
+                     a heap address was reused within an evaluation (Tier-A invariant broken)"
+                );
+            }
+        }
     }
 
     fn cache_heap_value_hash(&self, value: Value, payload: &CachedExpressionValue) {
