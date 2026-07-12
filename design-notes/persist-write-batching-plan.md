@@ -191,10 +191,28 @@ boundary:
 - One flush amortizes the flock/open cost across all records (open each pack/
   sidecar once, append the whole batch, one flush) instead of per record.
 
-**Thresholds:** flush at run boundary always; add a size cap (e.g. flush when the
-buffer exceeds N MiB or M records) so a pathological single eval can't hold
-unbounded memory. Latency is irrelevant for a batch benchmark tool; for a
-long-lived daemon a periodic flush timer can bound staleness.
+**Thresholds and the memory ceiling (hard constraint from the 0.5x-of-C++ RSS
+goal).** The write-behind buffer holds records in memory until flush, so it adds
+directly to peak RSS — and the memory target is **≤38 MiB wide-eval RSS (half of
+C++'s ~77 MiB)**. A batching design that trades latency for a fat buffer would
+fight that goal. Therefore:
+
+- **Buffer cap: single-digit MiB (target 4 MiB, hard ceiling 8 MiB) OR a few
+  thousand records, whichever first.** Flush mid-eval when the cap is hit, and
+  always at the run boundary. This keeps the buffer a rounding error against the
+  38 MiB budget while still amortizing the open/flock cost across a large batch.
+- The buffer only exists on **materializing (warm-populate)** runs; on the cold
+  run that the memory target is measured against, the cost model keeps nodes in
+  memory and nothing is buffered for write, so the buffer adds **zero** to the
+  headline cold RSS number.
+- Note the interaction with the primary lever (§3.1): deferring the per-force
+  payload build is **memory-positive** too — today `force_cache_payload_for_value`
+  allocates an encoded payload for every force and discards most of them
+  (`force_persistence.rs:55` before the `KeepInMemory` decision), which is
+  transient allocation churn the 38 MiB goal wants gone. So §3.1 helps both axes;
+  §3.2's buffer must be capped so it does not give the memory back.
+- Latency is irrelevant for a batch benchmark tool; for a long-lived daemon a
+  periodic flush timer can bound staleness.
 
 **Content-addressing makes the buffer safe against duplicates**: value payloads
 are keyed by `PersistBlobKey::for_value(value_hash)` whose bytes are the BLAKE3
@@ -276,12 +294,77 @@ regress). Parity must stay byte-green in both legs.
 
 ---
 
-## 5. Target
+## 5. Target (both axes)
 
-- **Cache-enabled cold within ~1.2x of cache-less cold** (from 6.2-7.7x today on
-  leaf packages; from the ~150s tak pathology to a small multiple of ~17 ms).
+The user's program-level targets are **10x C++ performance** (v4 honest cold
+baseline is 0.515x native/oracle geomean = ~1.9x; 10x = a 0.1x geomean) and
+**half of C++'s RSS** (wide-eval ≤38 MiB vs C++'s ~77; today's native is
+140-190 MiB — task #15 owns the memory ladder). This campaign's local targets
+must not fight either:
+
+- **Latency:** cache-enabled cold within **~1.2x of cache-less cold** (from
+  6.2-7.7x today on leaf packages; from the ~150s tak pathology to a small
+  multiple of ~17 ms). This removes the cache from *blocking* the default-on
+  decision; the cold-latency scoreboard number (§5.1) is what the 10x goal is
+  measured against, cache on or off.
+- **Memory:** the write-behind buffer is capped at ≤8 MiB (§3.2) so it never
+  eats into the ≤38 MiB wide-eval RSS budget; the lazy-payload lever (§3.1) is
+  net memory-*positive*. No landing here may move the wide-eval RSS scoreboard
+  number (§5.1) up.
 - **Preserve cache-enabled warm at 23-35 ms** (the root-cutoff-answered repeat).
 - **Byte-parity green** throughout (representation/schedule-internal only).
+
+### 5.1 Canonical target measurements — the 0.5x/10x scoreboard
+
+*(Added as bench-methodology owner: every RFC-0007 campaign landing — memory
+ladder, JIT, parallel, this one — reports the same two numbers so progress
+toward the 0.5x-memory / 10x-perf goals is comparable across campaigns. Define
+once, here.)*
+
+Both come from `aos nix-bench --json` (fields already emitted; no schema change),
+run in the standard config (default cache-less, `AOS_NIX_JIT=1`, quiet machine,
+interleaved A/B, median over ≥3 samples):
+
+1. **Wide-eval memory ratio (the 0.5x-of-C++ number).** On `-A bench.wide`,
+   the ratio of native post-run RSS to the C++ oracle's child peak RSS, reported
+   for **cold and warm** separately:
+   ```text
+   mem_ratio(temp) = median(native_summary.memory.rss_after_bytes_max) [temp]
+                     / median(summary.child_peak_rss_bytes_max)          [temp]
+   ```
+   (`rss_after_bytes_max` and `child_peak_rss_bytes_max` are the existing v3
+   memory fields in `crates/aos/src/commands/nix_bench/record.rs`.) **Goal:
+   mem_ratio ≤ 0.5** cold and warm. Today wide-eval native is ~140-190 MiB vs
+   C++ ~77 MiB (~1.8-2.5x); the target is ≤38 MiB (0.5x). Also report the raw
+   MiB and the native arena peak (`arena_peak_live_mapped_bytes_max`) so a
+   regression is attributable to arena vs non-arena traffic.
+2. **Cold-latency geomean (the 10x number).** Over the canonical 17-attr suite
+   (9 leaf + 8 toolchain, doc 15), the geometric mean of the per-attr cold
+   `native/oracle` medians:
+   ```text
+   cold_geomean = geomean over 17 attrs of
+       ( median(native_summary.median_seconds)[cold]
+         / median(summary.mean_seconds)[cold] )
+   ```
+   **Goal: cold_geomean ≤ 0.1** (10x faster than C++). v4 honest baseline is
+   **0.515** (~1.9x). Report warm geomean alongside for context, but the cold
+   geomean is the headline (warm rides the cache/cutoff and is a different
+   signal).
+
+**Scoreboard line every landing pastes into its report/commit body:**
+```text
+scoreboard: cold_geomean=<x> (goal <=0.10; v4 baseline 0.515)
+            wide_mem_ratio cold=<x> warm=<x> (goal <=0.50; native <MiB> vs C++ <MiB>)
+            [+ this-campaign local: cache-enabled cold vs cache-less <x> (goal <=1.2)]
+```
+Use `median_seconds` (v4) not `mean_seconds` for the native leg — it is robust
+to the host-load spikes that skew the mean on a contended machine (the reason
+the raw ratio was discarded in the v4 methodology). The exact wide-eval command:
+```text
+env AOS_NIX_ORACLE=.../nix-instantiate AOS_NIX_NATIVE=1 AOS_NIX_JIT=1 \
+    crates/target/release/aos --eval-system x86_64-linux nix-bench \
+    --file ./default.nix -A bench.wide --samples 5 --no-record
+```
 
 ---
 
