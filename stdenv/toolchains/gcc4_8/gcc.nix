@@ -94,10 +94,14 @@ in
       find . -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
       chmod +x move-if-change mkinstalldirs install-sh missing depcomp ylwrap 2>/dev/null || true
 
+      # GCC's top-level recursive make drops a command-line GENGTYPE_FLAGS
+      # override, so enable its bounded parser/state trace in the template.
       ${prev.sed}/bin/sed -i \
         -e 's@\./fixinc\.sh@-c true@' \
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
+        -e 's/^GENGTYPE_FLAGS= *$/GENGTYPE_FLAGS= -D -v -v/' \
         gcc/Makefile.in
+      ${prev.grep}/bin/grep -Fq 'GENGTYPE_FLAGS= -D -v -v' gcc/Makefile.in
 
       # Enumerate every shipped language descriptor directly because the early
       # bootstrap shell does not expand gcc/*/config-lang.in reliably. The
@@ -269,9 +273,6 @@ in
       printf '\nall-target-libiberty:\n\t@true\ninstall-target-libiberty:\n\t@true\nconfigure-target-libiberty:\n\t@true\n' >> Makefile
     '';
     makeFlags = [
-      # Preserve the last parser/state operation in Span's bounded failure log
-      # when gengtype crashes; -D is GCC's built-in gengtype debug trace.
-      ''GENGTYPE_FLAGS="-D -v -v"''
       ''NATIVE_SYSTEM_HEADER_DIR="${prev.glibc}/include"''
       ''CFLAGS_FOR_TARGET="-O2 -isystem ${prev.glibc}/include -B${prev.glibc}/lib"''
       ''CXXFLAGS_FOR_TARGET="-O2 -isystem ${prev.glibc}/include -B${prev.glibc}/lib -D__NO_MATH_INLINES"''
