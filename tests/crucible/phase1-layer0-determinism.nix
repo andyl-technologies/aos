@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
-  openTaskIds ? ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
+  openTaskIds ? ["T-TIME-5" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
@@ -430,8 +430,8 @@ in
             require_leaf ${clockDeadline} \
               "gate=gate:layer0-determinism" \
               "gate=gate:scheduler-liveness" \
-              "tasks=T-PATCH-10" \
-              "open_tasks=T-TIME-6" \
+              "tasks=T-PATCH-10,T-TIME-6" \
+              "open_tasks=" \
               "status=partial" \
               "deadline_symbol=qemu_plugin_clock_deadline_ns" \
               "deadline_source=QEMU_CLOCK_VIRTUAL" \

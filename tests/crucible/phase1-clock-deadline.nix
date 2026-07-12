@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.clockDeadline",
-  taskIds ? ["T-PATCH-10"],
-  openTaskIds ? ["T-TIME-6"],
+  taskIds ? ["T-PATCH-10" "T-TIME-6"],
+  openTaskIds ? [],
   qemuPackage ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -287,8 +287,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-6 remains open";
-        needle = "- [ ] **T-TIME-6**";
+        label = "T-TIME-6 completed by the live plugin quantum gate";
+        needle = "- [x] **T-TIME-6**";
+      }
+      {
+        label = "T-TIME-6 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [

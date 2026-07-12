@@ -660,11 +660,19 @@ instruction-primary.
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
-- [ ] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
+- [x] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
   next `QEMU_CLOCK_VIRTUAL` timer deadline) and feed it as the node's exact local
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
   loudly if the capability is unavailable. — satisfies [TIME-24], [TIME-25],
   [TIME-26]; spec §9.8.
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which records the
+  plugin reading the exact next `QEMU_CLOCK_VIRTUAL` timer deadline and feeding it
+  to the scheduler as the node's exact local event: at idle onset the gate emits
+  `idle_next_deadline_icount` equal to the introspected, ceil-converted deadline
+  with no overshoot-and-correct, the scheduler consumes it as the idle horizon,
+  and the value is identical on both runs. Advancing the node to that deadline is
+  T-TIME-7 / T-PLUG-7. The fail-loud-on-missing-capability and QEMU-export
+  microtest halves are held by `checks.crucible.phase1.clockDeadline`.
 - [ ] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
   horizon → ceiling icount ([TIME-4]), publish ceiling and reached-icount in the
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
