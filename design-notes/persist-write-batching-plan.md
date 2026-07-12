@@ -505,3 +505,44 @@ simplifier passes' default-off discipline: a neutral optimization stays off with
 its numbers recorded). It is inert in the production cache-less default and in
 cache-on unless explicitly opted in. Re-measure and consider default-on once
 §3.2 removes the write floor and the encode tax becomes a larger relative share.
+
+## 11. §3.2 increment-0: the cold tax is SYSCALL-bound, in the ARTIFACT path
+
+Before building the write-behind buffer, disambiguated (per §4.0) *where* the
+cache-on cold tax goes, with `/usr/bin/time -l` (CPU vs wall) + a cache-tree file
+census. Decisive:
+
+**CPU-vs-wall (zlib nix-diff, cache-off vs cache-on cold, n=3, oracle identical
+so it cancels in the diff):**
+
+```text
+             real     user     sys      cpu(user+sys)
+cache-off    0.31 s   0.16 s   0.06 s   0.22 s
+cache-on cold 1.60 s  0.42 s   0.91 s   1.33 s
+Δ (tax)      1.29 s   0.26 s   0.85 s   1.13 s
+```
+
+The tax is **on-CPU** (cpu≈wall, not idle-blocked) and **kernel-dominated:
+~0.85 s of the ~1.13 s is SYSTEM time** (syscalls executing), only ~0.26 s is
+user (encode/BLAKE3/serialize). This is why §3.1 (a user-space encode memo)
+measured neutral and why §3.2 (batch the syscalls) is the lever: the cold cost is
+the per-record `open+flock+write+close` churn, not the hashing.
+
+**Located — the parse/import ARTIFACT cache, not the value path.** One zlib cold
+populate writes **1192 files**: the `parse/<hash>/` tree holds **5 files per
+parsed import** (~234 imports → ~234 dirs × 5 ≈ 1170 files). Value
+materialization does NOT fire on cold (§9: the cost model keeps nodes in memory),
+so `indexed_values.rs` (the value path §1.2 focused on) is ~absent on cold. The
+cold syscall churn is `materialize_persist_cached_import`
+(`eval_import.rs:954`) + `materialize_parse_artifact_entry_indexed`
+(`cache/persist/cache.rs:799`) + `materialize_file_artifact_indexed`
+(`artifact_materialization.rs:175`), each writing its ~5-file artifact set with
+per-file open/flock/write/close.
+
+**Refined §3.2 target.** The write-behind buffer's *cold headline* target is the
+ARTIFACT path (batch the per-import 5-file set; buffer across imports and flush
+open-once/append-batch/flush-once per pack at the run boundary), not primarily
+the value path. The value-path write-behind (§1.2/§3.2 as originally written)
+still matters for WARM/materializing runs but is not the cold lever. Buffer cap
+and run-boundary flush (§3.2) unchanged; the 5-files-per-import fan-out is the
+thing to coalesce.
