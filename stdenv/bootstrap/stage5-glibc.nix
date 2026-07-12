@@ -53,6 +53,7 @@ in
   builtins.derivation {
     name = "glibc-2.2.5";
     inherit system;
+    requiredSystemFeatures = ["big-parallel"];
     builder = "${bash}/bin/bash";
     args = [
       "-c"
