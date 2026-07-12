@@ -67,6 +67,21 @@ Two facts sharpen the target immediately:
 
 ## 1. Attribution breakdown (measured vs inferred)
 
+**L0 MEASURED (2026-07-12, commit landing symbol_table_resident_bytes; bench.wide,
+default cache-less, JIT=1):** arena WORKER 44.9 MiB (mapped; B2-attackable, holds
+the 54%-dead) + arena PERMANENT 16.5 MiB (immortal hash-cons floor) = arena TOTAL
+61.4 MiB; symbols 2.2 MiB (7,414); `record_table_records` **0** (confirmed — the
+pre-flat 51 MiB table is gone post-FV-3); `flat_objects` 369,361 live; thunk-state
+Arc traffic 697,236. **Cold RSS 152.0 MiB (1.53x oracle 99.3), warm 188.2 MiB
+(1.89x).** => **non-arena malloc residual ~= 90 MiB, i.e. ~60% of RSS is malloc,
+not arena.** This REORDERS the ladder: B2 attacks only the worker arena's 54%-dead
+(~24 MiB of the 61), so it is not the single biggest lever — the ~90 MiB residual
+(mimalloc retained-free ~34 MiB Linux-purgeable + thunk-state Arcs ~26 MiB +
+alloc overhead) outranks it. Elevate the mimalloc purge (Linux) + L4 (arena-own
+thunk state) ahead of B2 by measured yield; B2 still recovers the arena's dead
+half but waits for cutover S4 regardless. The estimated table below is retained
+as the pre-L0 record; the measured line above supersedes it where they differ.
+
 | Holder | Size | M/E | Freed | Counter at HEAD |
 | --- | --- | --- | --- | --- |
 | Arena mapped peak (flat worker payloads + immortal hash-cons) | **67.5 MiB** | **Measured** (`30-...:1967`) | munmap at end only (`arena.rs:945-953`) | EXISTS (`gauges.rs`, `permanent_heap_*_bytes` `eval_stats.rs:63-70`) |
