@@ -536,3 +536,55 @@ warrants the most test investment and possibly its own multi-commit sub-plan.
   Benign (it is a resolution shortcut, not a value fold), but it means "the IR is
   never simplified today" is not strictly true — a precedent to cite, and a case
   the constant folder must not double-handle.
+
+## 8. Decisions (2026-07-12)
+
+The team lead's rulings on §5's open questions and the §7 divergences. These are
+binding on the staged implementation; where a decision refines a §5 question, the
+decision text below supersedes the question.
+
+1. **Seam = A (Q1).** Simplify in the lowering→persist seam, before
+   encode/fingerprint (`entry.rs:103→116` + the cold-parse path
+   `parse/mod.rs:409-413`). Everything downstream keys off the post-simplify
+   fingerprint and warm loads stay verbatim; the separate compile-node (option B)
+   is not pursued now.
+2. **Pass set is part of the cache schema (Q2).** Introduce a `PASS_SET_VERSION`,
+   bumped whenever a pass is added / enabled / changed, and fold it into the
+   parse-cache schema/fingerprint domain (alongside `PARSE_CACHE_SCHEMA_VERSION`,
+   `ratchet-oracle/src/cache/parse/mod.rs`). A pass-set change is then a clean
+   cold miss everywhere — the JIT compiled-body keys and source-less memo keys
+   shift coherently, never silently. No cross-pass-set cache compatibility is
+   attempted.
+3. **Runtime side-table identity is a rule, not a mechanism (Q3).** Any runtime
+   structure keyed by `IrId` (inline-cache tables, etc.) must be **built after
+   simplification within a run** and **never persisted across
+   `PASS_SET_VERSION`s**. If implementation uncovers a structure that violates
+   this (a persisted `IrId`-keyed table), stop and report rather than work around
+   it.
+4. **Driver placement keeps arena internals encapsulated (Q4).** Put the pass
+   framework/driver **inside the `ir` module** (same crate as the arena) so it can
+   use the rebuild/remap primitive without widening the `pub(super)` arena
+   mutators for an external crate. If doc 28's Core/dialect layering argues the
+   *driver* belongs in the dialect-generic engine, the driver may live there, but
+   the arena rebuild/remap primitive stays next to the arena — the `pub(super)`
+   boundary is not relaxed for another crate.
+5. **`currentSystem`/CLI-sensitive effect member: approved and REQUIRED before
+   any folding pass (Q5/D3).** Land a non-speculable dialect effect member for
+   CLI/system-sensitive builtins as its **own increment**, ahead of constant
+   folding, with a test that folds under a fixed system and proves the sensitive
+   node is refused. No fold may ever bake an `--eval-system`-dependent value.
+6. **Simplifier tier = P4 (Q6/D2).** Reconcile to P4 (doc 26 + task #7 win). Doc
+   25 §7 line 735 gets a pointer note (done in this commit); history is not
+   rewritten.
+7. **`MAX_ITERS` = 4 fixed default (Q7).** Expose an eval-stats counter for
+   iterations-used and a tracing `warn` (not `assert`) on non-convergence.
+   Non-convergence must degrade to "stop rewriting", never to an error.
+8. **Pass order approved (§4).** Constant folding → case-of-known → inlining/beta
+   → dead-binding (value-elision cut). The D1 wording fix (Status "Committed" =
+   decision status, not shipped code; checklist authoritative) is landed in doc 26
+   in this commit.
+
+**Stage-1 gating (build lane held for fv5's A/B benchmarking).** When the driver
+skeleton is built: all passes off, `simplify(ir) == ir` asserted by a test over
+the whole-corpus parse (twice-run `LoweredIrFingerprint` equality), zero
+fingerprint movement proven before/after, and the full byte-parity battery green.

@@ -733,6 +733,10 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 
 - [x] Current source-to-IR cache path: `ParseCache::load_or_parse_bytes` maps source bytes, schema version, and parse flags to cached resolved frontend artifacts plus lowered `Ir`; cache hits return `CachedParse { resolved, ir }`, misses parse/resolve/lower and write the artifact, and import/native frontend lowering paths consume the cached `Ir` (§6, §7.2) — parse-node **P1/P2** substrate, `C-19`/`C-20`; gate: parse-cache key/hit/recovery/artifact tests.
 - [ ] Full demand-graph compile-node integration remains: represent source→IR as an actual demand-graph node with speculation/early-cutoff semantics, add the simplifier compile-node keyed by input-IR hash, and add the lazy hot native-compile node over the same IR (§6) — simplify-node **P2** (`C-21`); native-compile **P6**.
+  (Reconciliation note, 2026-07-12: the simplifier compile-node is scheduled in
+  **P4**, per [26](26-optimization-pass-catalog.md)'s checklist and the task
+  board; this **P2** reference predates that decision and is retained for
+  history — **P4** is authoritative.)
 - [ ] Disambiguation held in code/comments: "demand graph" (memoization graph) vs "graph reduction" (lazy evaluation) vs "derivation graph" (`.drv` DAG); IR nodes vs graph nodes never conflated (§6) — **P1** discipline.
 
 ### Serialization (§7)

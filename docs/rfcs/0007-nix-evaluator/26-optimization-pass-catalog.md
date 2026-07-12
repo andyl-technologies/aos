@@ -105,6 +105,13 @@ The remainder of this document is one subsection per pass, each with the same
 template: **Matches** / **Rewrite** / **Preconditions** / **Phase** /
 **Soundness** / **Status**.
 
+A **Status** of "Committed (`C-21`)" records the *decision* status — the pass is
+committed to the design under `C-21` — **not** shipped code. As of this writing
+**none of the 14 passes is implemented as an IR-to-IR rewrite**; only the
+licensing analyses (the "current precursor" notes) exist. The
+[implementation checklist](#implementation-checklist) below is the authoritative
+record of what is actually built, and every pass there is unchecked.
+
 ## 2. The pass catalog
 
 ### 2.1 Inlining / beta-reduction (GHC simplifier)
