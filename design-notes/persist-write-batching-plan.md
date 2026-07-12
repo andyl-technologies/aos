@@ -528,21 +528,41 @@ user (encode/BLAKE3/serialize). This is why §3.1 (a user-space encode memo)
 measured neutral and why §3.2 (batch the syscalls) is the lever: the cold cost is
 the per-record `open+flock+write+close` churn, not the hashing.
 
-**Located — the parse/import ARTIFACT cache, not the value path.** One zlib cold
-populate writes **1192 files**: the `parse/<hash>/` tree holds **5 files per
-parsed import** (~234 imports → ~234 dirs × 5 ≈ 1170 files). Value
-materialization does NOT fire on cold (§9: the cost model keeps nodes in memory),
-so `indexed_values.rs` (the value path §1.2 focused on) is ~absent on cold. The
-cold syscall churn is `materialize_persist_cached_import`
-(`eval_import.rs:954`) + `materialize_parse_artifact_entry_indexed`
-(`cache/persist/cache.rs:799`) + `materialize_file_artifact_indexed`
-(`artifact_materialization.rs:175`), each writing its ~5-file artifact set with
-per-file open/flock/write/close.
+**Located — the PARSE CACHE's 5-files-per-import on-disk layout (verified).**
+One zlib cold populate writes **1192 files**, of which **1175 are in `parse/`
+and only 15 in `persist/`**. The parse cache stores each import as its own
+`parse/<hash>/` dir holding **5 files** — `resolved.bin`, `ir.bin`,
+`symbols.bin`, `facts.bin`, `meta.toml` — each written by
+`write_cache_file_atomic` (temp-write + `rename`, no fsync) in
+`cache/parse/entry.rs:95 write_resolved`. ~234 imports × 5 files ≈ 1175 files ×
+(open+write+close+rename) is the syscall churn (`rename` = per-file directory
+metadata mutation).
 
-**Refined §3.2 target.** The write-behind buffer's *cold headline* target is the
-ARTIFACT path (batch the per-import 5-file set; buffer across imports and flush
-open-once/append-batch/flush-once per pack at the run boundary), not primarily
-the value path. The value-path write-behind (§1.2/§3.2 as originally written)
-still matters for WARM/materializing runs but is not the cold lever. Buffer cap
-and run-boundary flush (§3.2) unchanged; the 5-files-per-import fan-out is the
-thing to coalesce.
+Verified this is the cost, not the persist blob pack, with a controlled A/B
+(`AOS_NIX_ROOT_CUTOFF=0`): cold populate (parse WRITES) sys=0.79 s vs warm
+parse-HIT (no parse writes, but parse READS all 1175 files during a full eval)
+sys=1.17 s — the sys cost tracks the **file count**, not write-vs-read, and does
+not collapse when writes are removed. The `persist/` pack (15 files, append-based
+with flock+mutex) is a rounding error on cold. My earlier §11 draft and the §9
+profile named `materialize_persist_cached_import` / the persist artifact path —
+that was the on-CPU *encode* work (the ~0.26 s user), NOT the sys-time file I/O.
+The sys is the parse cache.
+
+**This is a COLD-only cost.** Production warm answers from the durable root
+cutoff *before constructing an evaluator or consulting the parse cache*
+(`native/mod.rs:568-584`), so warm = 23 ms and never touches these 1175 files.
+The tax is paid only on the first (cold) eval that populates the caches.
+
+**Refined lever — parse-cache file consolidation, NOT a blob-pack write-behind.**
+The plan's §3.2 write-behind-buffer model (append many records to one pack,
+flush once) fits the *value* path but NOT the parse cache's dir-per-entry
+layout, where there is no shared append target — deferring the writes would not
+reduce the file *count*. The lever that cuts the 1175-file syscall churn is to
+**consolidate the 5-file artifact set into one bundle file per parse entry**
+(`write_resolved` writes one file; `read_artifact_bundle` reads+splits one file;
+parse-cache format version bump to invalidate the old 5-file layout). ~5x fewer
+files → ~5x less parse-cache sys on both cold-populate and cutoff-off eval.
+Parity-critical (the parse cache is a reuse cache; `.drv` must be identical
+hit-or-miss) — gated by the byte-parity battery. This is a parse-cache format
+change, a deviation from §3.2-as-written; flagged to the lead for a direction
+call before building.
