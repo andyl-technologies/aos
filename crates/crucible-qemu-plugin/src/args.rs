@@ -26,6 +26,8 @@ pub const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 pub const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 /// The optional coverage hook switch argument key.
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
+/// The optional single-VM fingerprint sampling switch argument key.
+pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 
 /// Parsed QEMU plugin launch arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +37,7 @@ pub struct PluginArgs {
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     coverage: PluginSwitch,
+    fingerprint: PluginSwitch,
 }
 
 impl PluginArgs {
@@ -53,6 +56,7 @@ impl PluginArgs {
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
+        let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
@@ -61,6 +65,7 @@ impl PluginArgs {
             inherited_fds,
             whitebox,
             coverage,
+            fingerprint,
         })
     }
 
@@ -92,6 +97,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn coverage(&self) -> PluginSwitch {
         self.coverage
+    }
+
+    /// Returns whether single-VM fingerprint sampling is enabled.
+    #[must_use]
+    pub const fn fingerprint(&self) -> PluginSwitch {
+        self.fingerprint
     }
 
     /// Validates the slot against the host-advertised node count.
@@ -332,6 +343,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
             | PLUGIN_ARG_COVERAGE
+            | PLUGIN_ARG_FINGERPRINT
     )
 }
 
@@ -349,13 +361,16 @@ mod tests {
         assert_eq!(args.inherited_fds(), None);
         assert_eq!(args.whitebox(), PluginSwitch::Off);
         assert_eq!(args.coverage(), PluginSwitch::Off);
+        assert_eq!(args.fingerprint(), PluginSwitch::Off);
         assert_eq!(args.validate_slot_index(3), Ok(()));
     }
 
     #[test]
     fn plugin_args_parse_optional_fds_and_switches() {
-        let args = PluginArgs::parse("simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,coverage=off")
-            .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
+        let args = PluginArgs::parse(
+            "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,coverage=off,fingerprint=on",
+        )
+        .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
 
         assert_eq!(args.sim_fd(), 4);
         assert_eq!(args.slot(), 1);
@@ -368,6 +383,7 @@ mod tests {
         );
         assert!(args.whitebox().is_on());
         assert!(!args.coverage().is_on());
+        assert!(args.fingerprint().is_on());
     }
 
     #[test]
