@@ -182,6 +182,7 @@ mod tests {
     use super::*;
     use crate::compile::IrId;
     use crate::eval::heap::{EvalThunk, SharedHeapArena};
+    use crate::list::NixList;
     use crate::string::NixString;
 
     #[test]
@@ -304,5 +305,82 @@ mod tests {
             heap.candidate_c_encode_value(value),
             Err(CandidateCValueError::ReservationUnavailable)
         ));
+    }
+
+    /// Stage S1: broaden the active-value bridge round-trip beyond the single
+    /// scalar+string+thunk smoke to a corpus-representative set of heap value
+    /// shapes and scalar edge cases, flushing encode/decode + heap-location +
+    /// membership bugs across the flat kinds before the carrier flip demands
+    /// them at eval scale.
+    #[test]
+    fn serial_bridge_roundtrips_broad_heap_and_scalar_corpus() {
+        let mut heap = EvalHeap::new();
+
+        // Strings: empty, short, and a >4 KiB payload that exceeds the FV-1b
+        // inline-bytes cap so the moved owned-buffer path is exercised too.
+        let empty = heap
+            .alloc_string(NixString::from_bytes(Vec::new()))
+            .expect("empty string allocates");
+        let short = heap
+            .alloc_string(NixString::from_bytes(b"candidate-c".to_vec()))
+            .expect("short string allocates");
+        let large = heap
+            .alloc_string(NixString::from_bytes(vec![b'x'; 5000]))
+            .expect("large string allocates");
+        let path = heap
+            .alloc_path(NixString::from_bytes(b"/nix/store/aaaa-example".to_vec()))
+            .expect("path allocates");
+
+        // Lists: empty, flat scalars, and nested (a list holding a list plus a
+        // heap string), so the spine's element `Value`s cross the bridge.
+        let empty_list = heap.alloc_list(NixList::new(Vec::new())).expect("empty list");
+        let flat_list = heap
+            .alloc_list(NixList::new(vec![Value::int(1), Value::int(-2), Value::bool(true)]))
+            .expect("flat list");
+        let nested_list = heap
+            .alloc_list(NixList::new(vec![flat_list, short, Value::int(9)]))
+            .expect("nested list");
+
+        let scalars = [
+            Value::int(0),
+            Value::int(1),
+            Value::int(-1),
+            Value::int(i64::from(i32::MAX)),
+            Value::int(i64::from(i32::MIN)),
+            Value::int(i64::from(i32::MAX) + 1),
+            Value::int(i64::MAX),
+            Value::int(i64::MIN),
+            Value::float(0.0),
+            Value::float(-0.0),
+            Value::float(f64::from_bits(0xfff8_0000_0000_0042)),
+            Value::float(f64::from_bits(1)),
+            Value::bool(false),
+            Value::bool(true),
+            Value::null(),
+        ];
+
+        let heap_values = [
+            empty,
+            short,
+            large,
+            path,
+            empty_list,
+            flat_list,
+            nested_list,
+        ];
+
+        for value in scalars.into_iter().chain(heap_values) {
+            let word = heap
+                .candidate_c_encode_value(value)
+                .expect("value encodes through the bridge");
+            let decoded = heap
+                .candidate_c_decode_value(word)
+                .expect("word decodes through the bridge");
+            assert!(
+                decoded.raw_eq(value),
+                "bridge round-trip changed value {:?}",
+                value.tag()
+            );
+        }
     }
 }
