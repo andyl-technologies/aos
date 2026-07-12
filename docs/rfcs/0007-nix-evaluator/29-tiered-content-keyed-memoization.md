@@ -1264,10 +1264,16 @@ design above with the code as ground truth:
       (`tailscale ping` pong 21 ms) and the server listens on `*:8791`, but
       inbound TCP to the server process was blocked by the darwin host's macOS
       Application Firewall (`curl` connect timeout) — an environment/host-policy
-      block, not the code and not tailnet topology; enabling it needs a host
-      firewall allow-rule outside this change's scope. The loopback e2e is
-      therefore the acceptance. The full primary/secondary-loss/poisoned matrix
-      remains open.
+      block, not the code and not tailnet topology. A second, firewall-free
+      reverse topology (server on the Linux builder, publish from darwin, consume
+      on the builder) was then attempted, but the builder needs an `aos` rebuild
+      to carry the endpoint and its from-source Rust toolchain output
+      (`mrustc` → `rustc-1.74`) was no longer in the store (GC'd), so any rebuild
+      triggers an hours-long bootstrap that exceeds the bounded window — again an
+      environment block, not the code. Both cross-host topologies are therefore
+      documented-blocked by host environment (firewall / toolchain rebuild); the
+      client↔server loopback e2e stands as the acceptance. The full
+      primary/secondary-loss/poisoned matrix remains open.
 - [x] Node-record secondary tiering: **decided against, by design** (not a
       pending gap). Per-node force-cache records (node metadata / trace /
       materialized-value-hash) tier only in memory (L0/L1) and, at most, the
