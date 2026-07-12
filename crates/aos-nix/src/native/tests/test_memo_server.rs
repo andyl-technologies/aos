@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -12,10 +12,14 @@ use anyhow::Result;
 /// A minimal single-request-per-connection HTTP record server.
 ///
 /// Every `PUT /v1/...` stores its body under the complete request path, and a
-/// matching `GET` returns those bytes. Other requests return 404.
+/// matching `GET` returns those bytes. Other requests return 404. When a forced
+/// status is set (see [`MemoTestServer::force_status`]) every request is
+/// answered with that status and an empty body instead, so tests can drive the
+/// client's server-error and rejection paths.
 pub(crate) struct MemoTestServer {
     addr: SocketAddr,
     records: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    forced_status: Arc<AtomicU16>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -31,8 +35,10 @@ impl MemoTestServer {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let records: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let forced_status = Arc::new(AtomicU16::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_records = Arc::clone(&records);
+        let thread_forced = Arc::clone(&forced_status);
         let thread_shutdown = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -40,15 +46,24 @@ impl MemoTestServer {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve_one(stream, &thread_records);
+                let _ = serve_one(stream, &thread_records, &thread_forced);
             }
         });
         Ok(Self {
             addr,
             records,
+            forced_status,
             shutdown,
             handle: Some(handle),
         })
+    }
+
+    /// Forces every subsequent response to `status` with an empty body.
+    ///
+    /// A `status` of `0` restores normal record-serving behavior. Used to drive
+    /// the client's non-success-status path (for example a `500`).
+    pub(crate) fn force_status(&self, status: u16) {
+        self.forced_status.store(status, Ordering::Relaxed);
     }
 
     /// Returns the endpoint base URL.
@@ -93,6 +108,7 @@ impl Drop for MemoTestServer {
 fn serve_one(
     mut stream: TcpStream,
     records: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    forced_status: &Arc<AtomicU16>,
 ) -> std::io::Result<()> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -128,6 +144,12 @@ fn serve_one(
             break;
         }
         body.extend_from_slice(&chunk[..read]);
+    }
+
+    let forced = forced_status.load(Ordering::Relaxed);
+    if forced != 0 {
+        stream.write_all(&http_response(forced, "Forced", b""))?;
+        return stream.flush();
     }
 
     let response = match method.as_str() {

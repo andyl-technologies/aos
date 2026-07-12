@@ -448,3 +448,105 @@ pkg2 = derivationStrict {
     );
     Ok(())
 }
+
+#[test]
+fn reachable_endpoint_missing_record_is_a_clean_miss() -> Result<()> {
+    let _net = net_lock();
+    let fx = fixture("aos-nix-memo-net-404")?;
+    write_derivation(&fx.file, r#""memo-net-404""#)?;
+    // A reachable server that has never seen this record answers 404. That is a
+    // clean miss (not an error, no backoff latch): a present-but-empty catalog
+    // is a normal state, unlike a transport failure.
+    let server = MemoTestServer::spawn()?;
+    let mut options = tier_options(&fx, &fx.root.join("persist-a"))?;
+    options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadOnly)));
+    let native = NixNative::with_options(0, options)?;
+    let (_, stats) = native.instantiate_closure_with_stats(&fx.file, "pkg")?;
+    assert_eq!(stats.root_cutoffs(), 0, "a missing record evaluates normally");
+    assert_eq!(stats.memo_net_misses(), 1, "404 is a miss");
+    assert_eq!(stats.memo_net_errors(), 0, "404 is not an error");
+    Ok(())
+}
+
+#[test]
+fn server_error_status_is_an_advisory_miss() -> Result<()> {
+    let _net = net_lock();
+    let fx = fixture("aos-nix-memo-net-5xx")?;
+    write_derivation(&fx.file, r#""memo-net-5xx""#)?;
+    let server = MemoTestServer::spawn()?;
+
+    let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
+    publisher_options.set_memo_net(Some(net_options(
+        server.endpoint(),
+        MemoNetMode::ReadWrite,
+    )));
+    let publisher = NixNative::with_options(0, publisher_options)?;
+    let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
+
+    // The server now answers 500 for every request: the fetch is an advisory
+    // error and the run evaluates correctly. A received non-success status is
+    // not a transport failure, so it does not latch the process backoff.
+    server.force_status(500);
+    let mut fetcher_options = tier_options(&fx, &fx.root.join("persist-b"))?;
+    fetcher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadOnly)));
+    let fetcher = NixNative::with_options(0, fetcher_options)?;
+    let (closure, stats) = fetcher.instantiate_closure_with_stats(&fx.file, "pkg")?;
+    assert_eq!(stats.root_cutoffs(), 0, "a 5xx record must miss");
+    assert_eq!(stats.memo_net_errors(), 1);
+    assert_eq!(closure, cold_closure, "the fallback evaluation is correct");
+    Ok(())
+}
+
+#[test]
+fn truncated_network_bundle_is_rejected() -> Result<()> {
+    let _net = net_lock();
+    let fx = fixture("aos-nix-memo-net-truncated")?;
+    write_derivation(&fx.file, r#""memo-net-truncated""#)?;
+    let server = MemoTestServer::spawn()?;
+
+    let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
+    publisher_options.set_memo_net(Some(net_options(
+        server.endpoint(),
+        MemoNetMode::ReadWrite,
+    )));
+    let publisher = NixNative::with_options(0, publisher_options)?;
+    let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
+
+    // Truncate every stored bundle to a stub too short to decode: the codec
+    // rejects it, the fetch is an advisory error, and the run evaluates fresh.
+    server.mutate_records(|records| {
+        for bytes in records.values_mut() {
+            bytes.truncate(4);
+        }
+    });
+    let mut fetcher_options = tier_options(&fx, &fx.root.join("persist-b"))?;
+    fetcher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadOnly)));
+    let fetcher = NixNative::with_options(0, fetcher_options)?;
+    let (closure, stats) = fetcher.instantiate_closure_with_stats(&fx.file, "pkg")?;
+    assert_eq!(stats.root_cutoffs(), 0, "a truncated record must miss");
+    assert_eq!(stats.memo_net_errors(), 1);
+    assert_eq!(closure, cold_closure, "the fallback evaluation is correct");
+    Ok(())
+}
+
+#[test]
+fn read_only_mode_never_publishes() -> Result<()> {
+    let _net = net_lock();
+    let fx = fixture("aos-nix-memo-net-ro-suppress")?;
+    write_derivation(&fx.file, r#""memo-net-ro-suppress""#)?;
+    let server = MemoTestServer::spawn()?;
+
+    // A cold read-only run computes a fresh record but must NOT publish it: the
+    // rw policy gate lives on the client, so a public/interactive evaluator
+    // never writes to the catalog.
+    let mut options = tier_options(&fx, &fx.root.join("persist-a"))?;
+    options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadOnly)));
+    let native = NixNative::with_options(0, options)?;
+    native.instantiate_closure_with_stats(&fx.file, "pkg")?;
+    assert_eq!(
+        server.record_count(),
+        0,
+        "a read-only evaluator must not publish records"
+    );
+    Ok(())
+}

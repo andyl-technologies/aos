@@ -851,6 +851,48 @@ forwarded/dead entries at collection points. Registering as a root is
 the simple, correct default; its retention cost is exactly the memory
 growth accounted in §11 and bounded by the L0/L1 budgets.
 
+### 7.7 Failure and hostile-record acceptance matrix
+
+The invariant every cell upholds: a lost, unreachable, hostile, or malformed
+record degrades to a **miss** (or, under CHECK, a loud divergence) and a correct
+evaluation — never a wrong `.drv`, never an evaluation error. The advisory tier
+is transparent to correctness. Each cell has a test.
+
+**Loss (network / location failure → miss, never error):**
+
+| Cell | Behavior | Test |
+| --- | --- | --- |
+| Offline / connection refused | error + process backoff latch, correct eval | `offline_endpoint_degrades_to_a_miss` |
+| Network timeout (connect/read) | same transport-failure path (bounded by `timeout_ms`) → error + backoff | shares the offline path (one `NET_BACKOFF` latch); no separate flaky hang test |
+| Reachable server, record absent (404) | clean miss, **no** backoff | `reachable_endpoint_missing_record_is_a_clean_miss` |
+| Server 5xx | error, **no** backoff (a received response), correct eval | `server_error_status_is_an_advisory_miss` |
+| Truncated / short bundle | codec reject → error, correct eval | `truncated_network_bundle_is_rejected` |
+| Missing L2 secondary location | miss, not error | `missing_secondary_location_is_a_miss_not_an_error` |
+
+**Poisoned / hostile (caught → miss or CHECK failure, never wrong output):**
+
+| Cell | Behavior | Test |
+| --- | --- | --- |
+| Single-byte corruption (content-hash mismatch) | error + correct eval | `poisoned_network_record_is_rejected` |
+| Stale slice (observed input changed) | slice-revalidation failure + fresh eval | `network_record_revalidates_impure_inputs` |
+| Swapped valid record (wrong-key semantics) | caught by CHECK (diverged) | `check_l3_detects_a_swapped_network_record` |
+| Corrupted L2 secondary record | caught by CHECK | `check_l2_detects_a_corrupted_secondary_record` |
+| Corrupted / swapped compiled body | advisory miss | `corrupted_or_swapped_network_body_is_an_advisory_miss` |
+
+**Publish (`rw`) gate:**
+
+| Cell | Behavior | Test |
+| --- | --- | --- |
+| Read-only evaluator (client) | never publishes | `read_only_mode_never_publishes` |
+| Read-only server / public mirror | `PUT` → 403 | `aos-server` `read_only_store_refuses_writes_but_still_serves` |
+| Malformed key or body (server) | 400 | `aos-server` `bad_keys_and_bodies_are_rejected` |
+
+Backoff precision: **transport** failures (offline, timeout, body-read) latch the
+process-wide `NET_BACKOFF` so an unreachable endpoint costs one timeout per
+process, not one per instantiation; **HTTP-level** failures (404, 5xx, malformed
+body) do not latch — a reachable server that misses or errors on one record may
+serve the next.
+
 ---
 
 ## 8. Cold-eval content memoization
@@ -1272,8 +1314,21 @@ design above with the code as ground truth:
       triggers an hours-long bootstrap that exceeds the bounded window — again an
       environment block, not the code. Both cross-host topologies are therefore
       documented-blocked by host environment (firewall / toolchain rebuild); the
-      client↔server loopback e2e stands as the acceptance. The full
-      primary/secondary-loss/poisoned matrix remains open.
+      client↔server loopback e2e stands as the acceptance.
+- [x] MEMO-2 failure & hostile-record acceptance matrix (§7.7): every loss cell
+      (offline/timeout backoff, reachable-404 clean miss, 5xx, truncated bundle,
+      missing L2 secondary), poisoned cell (content-hash corruption, stale-slice
+      revalidation, wrong-key swap under CHECK, corrupted secondary, corrupted/
+      swapped compiled body), and publish-gate cell (read-only client never
+      publishes, read-only server 403, malformed key/body 400) is documented and
+      tested. Added `reachable_endpoint_missing_record_is_a_clean_miss`,
+      `server_error_status_is_an_advisory_miss`,
+      `truncated_network_bundle_is_rejected`, and `read_only_mode_never_publishes`
+      (test server gained a forced-status mode). Invariant proven per cell: every
+      failure degrades to a miss or a loud CHECK divergence and a correct
+      evaluation, never a wrong `.drv`. The remaining MEMO-2 final-acceptance
+      items are root-cutoff latency non-regression, the repeat-heavy CI hit-mass
+      demonstration, and a cross-machine L3 replay (environment-blocked above).
 - [x] Node-record secondary tiering: **decided against, by design** (not a
       pending gap). Per-node force-cache records (node metadata / trace /
       materialized-value-hash) tier only in memory (L0/L1) and, at most, the
