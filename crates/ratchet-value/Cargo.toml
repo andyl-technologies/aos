@@ -3,6 +3,13 @@ name = "ratchet-value"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12). Off by default;
+# selects the 8-byte compressed-index `Value` representation once the staged
+# carrier flip lands. Empty today (S4 sub-increment 1 establishes the variant
+# and its JIT-off-by-construction constraint before any representation change).
+candidate_c_value = []
+
 [dependencies]
 aos-nix-syntax = { workspace = true }
 libc = { workspace = true }

@@ -6,6 +6,10 @@ edition = "2024"
 [features]
 default = ["mimalloc"]
 native-eval = ["aos-core/native-eval", "dep:aos-nix"]
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12). Build with
+# `--features native-eval,candidate_c_value` for the variant carrier; off by
+# default so the shipped carrier is unaffected.
+candidate_c_value = ["native-eval", "aos-core/candidate_c_value", "aos-nix/candidate_c_value"]
 # Install mimalloc as the process-wide `#[global_allocator]` (on by default).
 # mimalloc's crate source is already vendored (a transitive dependency of
 # `alejandra` and `nix-compat`) and already compiled into every build, so

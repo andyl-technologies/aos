@@ -6,6 +6,10 @@ edition = "2024"
 [features]
 default = []
 native-eval = ["dep:aos-nix"]
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12): implies native-eval
+# and forwards to aos-nix; gates the native JIT off by construction under the
+# variant (see `EvalConfig::native_jit`).
+candidate_c_value = ["native-eval", "aos-nix/candidate_c_value"]
 
 [dependencies]
 anyhow = { workspace = true }

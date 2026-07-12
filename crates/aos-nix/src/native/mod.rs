@@ -786,16 +786,30 @@ impl NixNative {
     /// runtime-symbol candidate preflight cannot be built, in which case
     /// evaluation transparently falls back to the tree walk.
     fn tier1_engine_for(&self, options: &TreeWalkOptions) -> Option<Rc<dyn Tier1Engine>> {
-        if options.parallel_workers().is_some() {
+        // RFC-0007 Candidate-C cutover: the tier-1 JIT emits the active two-word
+        // value ABI and two-word stack maps. Under the `candidate_c_value`
+        // variant the runtime value is one word, so the JIT is unreachable by
+        // construction until S4b reworks its ABI + stack-map geometry; the
+        // engine is never created here. See design-notes/candidate-c-cutover-plan.md
+        // §6.1 (S4b re-enables JIT after S3's one-word stack maps land).
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let _ = options;
             return None;
         }
-        if !options.jit_tier1_publish_enabled() {
-            return None;
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            if options.parallel_workers().is_some() {
+                return None;
+            }
+            if !options.jit_tier1_publish_enabled() {
+                return None;
+            }
+            NixJitTier1Engine::new().ok().map(|engine| {
+                Rc::new(engine.with_compiled_body_cache_options(options))
+                    as Rc<dyn Tier1Engine>
+            })
         }
-        NixJitTier1Engine::new().ok().map(|engine| {
-            Rc::new(engine.with_compiled_body_cache_options(options))
-                as Rc<dyn Tier1Engine>
-        })
     }
 
     fn instantiation_options(&self) -> TreeWalkOptions {

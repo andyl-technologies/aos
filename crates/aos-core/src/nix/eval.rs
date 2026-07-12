@@ -915,7 +915,18 @@ impl NixEvalConfig {
     /// Cranelift tier-1 code and dispatches it, deoptimizing to the tree walk on
     /// any trap so results are unchanged.
     pub const fn native_jit(&self) -> bool {
-        self.native_jit
+        // RFC-0007 Candidate-C cutover: under the `candidate_c_value` variant the
+        // tier-1 JIT is unreachable by construction (it emits the two-word value
+        // ABI and stack maps). Report off regardless of `AOS_NIX_JIT` until S4b
+        // reworks the JIT ABI; see design-notes/candidate-c-cutover-plan.md §6.1.
+        #[cfg(feature = "candidate_c_value")]
+        {
+            false
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            self.native_jit
+        }
     }
 
     /// Enables or disables the native tier-1 JIT engine.
@@ -3341,6 +3352,21 @@ mod tests {
     use tracing::field::{Field, Visit};
     #[cfg(feature = "native-eval")]
     use tracing::{Event, Level, Metadata, Subscriber, span};
+
+    // RFC-0007 Candidate-C cutover (S4 condition 1): the tier-1 JIT is
+    // unreachable by construction under the `candidate_c_value` variant, so
+    // `native_jit()` reports off even when explicitly enabled. Runs only in the
+    // variant test build; S4b re-enables the JIT after its ABI rework.
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn candidate_c_variant_forces_native_jit_off() {
+        let mut config = NixEvalConfig::new();
+        config.set_native_jit(true);
+        assert!(
+            !config.native_jit(),
+            "candidate_c_value must force the tier-1 JIT off by construction"
+        );
+    }
 
     #[cfg(unix)]
     fn command_env_bytes(command: &Command, name: &[u8]) -> Option<Vec<u8>> {

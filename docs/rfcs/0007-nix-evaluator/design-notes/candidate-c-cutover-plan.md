@@ -452,8 +452,78 @@ assumed the two-word representation and the cutover cannot avoid rebuilding it.
 
 ---
 
-**Handoff (2026-07-12).** Phase 1 (this design note, with the lead's rulings
-recorded in §6.1) is complete. Phase 2 — the S0-S5 implementation — HANDS OFF:
-this session pauses at the implementation boundary, and the cutover will be
-resumed by the next engineer (Codex) starting from S0 (§5). No source was
-changed; the build lane was never used.
+**Handoff (2026-07-12, superseded below).** Phase 1 (this design note) is
+complete. The Phase-2 handoff recorded here was **reactivated** by the lead the
+same day (option A: prioritize the S4 JIT-off carrier flip = the memory prize);
+implementation is now underway in this session. See §7.
+
+## 7. Implementation progress and remaining handoff (2026-07-12)
+
+Worked in a dedicated clone (`.claude/worktrees/rfc0007-cutover-clone`, branch
+`worktree-rfc-0007-nix-evaluator`), pushing directly to origin with
+`pull --rebase` before each push (candidate-b / fv5 push concurrently).
+
+**Gate harness (important).** The full 4-attr byte-parity battery requires the
+**system nix store**, not the repo-relative store: run with
+`AOS_NIX_STORE_DIR=/nix/store AOS_NIX_STATE_DIR=/nix/var/nix NIX_REMOTE=daemon`
+(+ `AOS_NIX_ORACLE=<nix-2.24.12>/bin/nix-instantiate`, `AOS_NIX_NATIVE=1`). A
+cold repo-local store hits a pre-existing `fetchTarball` tree-hash divergence on
+the gcc bootstrap source (task #19: mirror drift vs. the pin; native
+store-short-circuits correctly against the warm system store). Baseline 4-attr
+serial is byte-green in this config (zlib/openssl/stdenv.bash/stdenv.coreutils).
+
+**Landed:**
+- **S0** (commit `813fc859b`) — `AOS_NIX_CANDIDATE_C_SHADOW` scalar-store shadow
+  in `active_values.rs`, default-off; proves the boxed-scalar encode/decode +
+  reservation-membership path at eval scale. Byte-parity green shadow off + on.
+- **S1** (commit `1cc5e302c`) — broadened active-value bridge round-trip test
+  across all flat kinds (strings incl >4 KiB, path, nested lists, scalar edge
+  cases).
+- **S4 sub-increment 1** — the `candidate_c_value` compile-time variant + JIT
+  **unreachable by construction** under it (condition 1): feature plumbed
+  `ratchet-value` -> `aos-nix` -> `aos-core` -> `aos`; `tier1_engine_for`
+  (`aos-nix/src/native/mod.rs`) returns `None` under the variant so no engine is
+  ever created; `EvalConfig::native_jit()` (`aos-core/src/nix/eval.rs`) reports
+  off regardless of `AOS_NIX_JIT`; a variant-only refusal test asserts it. Both
+  carriers compile; the default carrier is unchanged (all `cfg(not(...))`).
+
+**Remaining S4 (the carrier flip — hand off from here, staged, never
+half-flipped):**
+
+- **SI-1 completion** — sweep the variant test suite
+  (`cargo test --features native-eval,candidate_c_value`) and `#[cfg(not(feature
+  = "candidate_c_value"))]`-gate the JIT-ABI tests that assert engine engagement
+  (e.g. `aos-nix/src/native/tests/expr_eval.rs:61`
+  `native_jit_enabled_eval_gates_and_matches_tree_walk`), each with a loud
+  `// S4b re-enables; see cutover plan §6.1` comment. JIT tests that exercise the
+  engine directly (not via the eval-config gate) still pass and need no gating.
+- **SI-2 — accessor-contract mechanicals** (compile-through on both carriers):
+  ensure every `Value` access goes through the `value.rs` accessor surface
+  (constructors `:123-241`, accessors `tag`/`payload_bits`/`*_identity_bits`/
+  `as_*` `:259-541`); refactor any direct field / `payload_bits`-as-`u64`
+  consumer (the 60 `payload_bits` + 18 `relocation_sensitive_identity_bits`
+  sites, tracked by `eval/heap/tests/payload_identity.rs`) so the representation
+  can swap under them. No-op on the default carrier.
+- **SI-3 — the flip** (one reviewable step, variant only): cfg-swap `Value`
+  (`ratchet-value/src/value.rs:113-119`) to the 8-byte `CompressedValueWord`
+  representation, re-point the accessor surface to the 32-bit halves, collapse
+  `AtomicValueCell` (`eval/env.rs:474-554`) to one `AtomicU64`, switch
+  `active_values.rs` + the bridge to native Candidate-C, select the one-word
+  layout from `runtime_abi_value_layout()`
+  (`ratchet-core/src/runtime_abi/value_layout.rs:12`), and remove the
+  `ForcedThunkUnsupported` bridge path (`value/compressed/bridge.rs:52-54`)
+  atomically with the flip. Gate: full 4-attr battery serial + K=4 + sweep on
+  the variant (JIT off), both carriers green, RSS scoreboard line.
+- **S4b** — re-enable JIT under the variant after S3's one-word stack-map
+  geometry lands (§6.1 condition 2).
+
+**Cross-agent coordination (fv5 / memory-campaign L4).** L4 arena-owns the
+thunk state (kills the `Arc<ThunkCell>` sidecars). Agreed contract: L4 sizes its
+inline arena slot off the **type** (`mem::size_of::<ThunkCell>()`), not a
+hardcoded constant, and treats `AtomicValueCell` as **opaque** (public
+store/load API, no field-offset assumptions). Then the variant's
+`AtomicValueCell` shrink (16B -> 8B, cfg-gated) is inherited for free with no
+merge note. S4 owns `AtomicValueCell`'s internal representation (`env.rs`,
+cfg-gated); L4 owns `ThunkCell` placement (`thunk.rs` + the arena) and the
+force-path re-entrant-borrow / stable-`*const ThunkCell` solution — S4 does not
+touch that borrow.
