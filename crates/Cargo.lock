@@ -137,6 +137,7 @@ dependencies = [
  "hyper-util",
  "ignore",
  "indicatif",
+ "mimalloc",
  "rand",
  "regex",
  "reqwest",

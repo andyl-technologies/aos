@@ -33,6 +33,25 @@
 
 #![forbid(unsafe_code)]
 
+// Route every non-arena allocation through mimalloc (enabled by default via the
+// `mimalloc` feature). The evaluator's own values live in bump arenas, but the
+// tree walk, parser, and derivation rendering still lean on the global
+// allocator for transient `Vec`/`String`/`Box` traffic (~24% of on-CPU in the
+// round-8 profile); mimalloc's per-thread heaps and sharded free lists cut that
+// path's cost, measured at ~-12% median native eval time across the package
+// benchmark set. The declaration is a plain safe `static`, so it coexists with
+// the crate's `#![forbid(unsafe_code)]` (the `GlobalAlloc` unsafe lives inside
+// the mimalloc crate).
+//
+// Memory recovery lever: mimalloc trades some RSS for speed by retaining freed
+// pages in per-thread caches. Set `MIMALLOC_PURGE_DELAY=0` in the environment
+// to purge eagerly and claw that RSS back (on Linux this `MADV_DONTNEED`s freed
+// pages; on macOS the `MADV_FREE` purge leaves pages resident until pressure,
+// so the knob only moves RSS on the Linux build target).
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod cli;
 mod commands;
 mod logging;

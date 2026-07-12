@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["mimalloc"]
 native-eval = ["aos-core/native-eval", "dep:aos-nix"]
+# Install mimalloc as the process-wide `#[global_allocator]` (on by default).
+# mimalloc's crate source is already vendored (a transitive dependency of
+# `alejandra` and `nix-compat`) and already compiled into every build, so
+# enabling this adds no new vendored crate and no compile cost. Disable with
+# `--no-default-features` for an allocator A/B against the system allocator.
+mimalloc = ["dep:mimalloc"]
 
 [[bin]]
 name = "aos"
@@ -18,6 +24,7 @@ path = "src/main.rs"
 [dependencies]
 aos-core = { workspace = true }
 aos-nix = { workspace = true, optional = true }
+mimalloc = { version = "0.1", optional = true }
 aos-nix-harness = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }
