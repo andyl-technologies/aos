@@ -209,6 +209,7 @@ in
           --disable-profile \
           --disable-nscd \
           --disable-multi-arch \
+          --enable-add-ons=nptl \
           --enable-static-nss \
           --without-gd \
           --without-selinux \
