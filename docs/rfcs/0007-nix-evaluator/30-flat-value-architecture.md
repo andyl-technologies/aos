@@ -1820,7 +1820,37 @@ value word (Candidates B and C) remains open and separately gated:**
       forcing/apply helpers, and tier 2 therefore remain open. The new unsafe
       wrapper and direct test call are isolated in a dedicated executable
       safety-manifest module with exact token counts and `SAFETY`/`# Safety`
-      checks. **Gate evidence is recorded below after the full landing battery.**
+      checks. The landing battery was green across `ratchet-value` (380 tests;
+      the known parallel `heap::gauges` flake passed on its required serial
+      rerun),
+      `ratchet-core` (355), `ratchet-jit` (272 plus both 19-test integration
+      lanes), `ratchet-oracle` (3,061 active), `ratchet-runtime-ffi` (86 plus
+      2/6 integration tests), `ratchet-cache` (112), `aos-nix` (340), and the
+      38-test language-conformance lane. The source-size gate retained only its
+      frozen pre-existing offenders; neither touched offender grew. Byte parity
+      held for all 16 package/mode legs, compute x9 under forced tier 2, wide
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and all nine
+      changed-tree scenarios. The 384 locally evaluable strict-JSON expressions
+      passed in all four modes. A full 650-expression local replay was not
+      claimed: the cold Darwin store tried to realize non-Darwin bootstrap
+      toolchains through IFD, and the known effectful `derivation.seed` still
+      needs store writes; the four other hand seeds passed all modes.
+
+      Three balanced exact-parent release pairs (`B,C,C,B,B,C`) were
+      parity-green. Candidate wide medians moved 1.3221 -> 0.5204 s cold and
+      0.4848 -> 0.5840 s warm; the warm result exceeds the nominal 10% guard,
+      but oracle phases were taking 22-78 s and pair direction alternated on
+      the saturated host, so this inactive/default-neutral bridge makes no
+      throughput or ABI-selection claim. Retained-RSS medians moved -2.1% cold
+      and -13.5% warm, while peak-RSS medians moved -3.7%/-2.5%, so there was no
+      measured memory regression. Candidate changed-tree aos/C++ ratios were
+      1.693-2.976 first-run and 1.245-3.182 settled. The exact-parent repeat
+      ranged 1.219-4.090 and 2.188-3.086 respectively, with matching cache
+      counter signatures and outputs throughout; those swings reinforce that
+      one-sample busy-host timings are not a selection result. The useful
+      locality signal remained: scattered leaf changes forced 16,550 thunks
+      initially and 142 after settling, versus 150/150 for unchanged, while
+      preserving 88 versus 96 early cutoffs.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
