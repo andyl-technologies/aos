@@ -114,6 +114,11 @@ in
       # build-generator flags, matching GCC's existing cross-build behavior.
       ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-native-build-cxxflags.patch}
 
+      # Emit synchronous stage markers from gengtype even when GCC is built
+      # without ENABLE_CHECKING so a remote bootstrap crash has a precise last
+      # successful operation in the captured build log.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-gengtype-stage-trace.patch}
+
       # Disable split-stack support in libgcc: this glibc lacks NPTL pthread.h.
       ${prev.sed}/bin/sed -i '/t-stack/d' libgcc/config.host
 
