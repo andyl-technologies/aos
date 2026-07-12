@@ -270,7 +270,7 @@ in rec {
             "T-DET-9"
             "T-DET-10"
           ];
-          openTaskIds = ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
+          openTaskIds = ["T-TIME-5" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
         };
         dependencies = [harnessLint];
         phase = "phase1";
