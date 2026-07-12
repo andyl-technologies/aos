@@ -805,3 +805,17 @@ write-through (write 9.4k + flock 7.5k), the futex (thread coordination), and
 the residual pack-index opens — the candidates for the next measure-gated
 increments (§3.2(b) write-behind, the shared-per-root statx-kill, and the
 pack-index hold-fd with inode detection).
+
+### 16.2 Harness lesson: strace `-c` %time double-counts blocked threads
+
+The futex attribution (strace `-f -e trace=futex -k`, cache-on cold zlib) showed
+only **152 futex calls total**, with stacks in thread-start / the tokio blocking
+pool / minor `Mutex::lock_contended`. The "futex = 0.285s = 77% of traced time"
+in the `strace -c` summary is **blocked time on parked-idle threads summed across
+parallel waiters** — the tokio pool and finished eval workers park while the main
+thread does the serial persist writes. It is a *symptom* of the persist-write
+duration, not an independent cost; shrinking the write-through shrinks it.
+
+**Lesson: `strace -c` %time sums blocked time across threads, so a parked-idle
+futex reads as huge — attribute with `-k` stacks (or off-CPU perf) before
+believing it.** Don't chase a futex `%time` as a lever without the stacks.
