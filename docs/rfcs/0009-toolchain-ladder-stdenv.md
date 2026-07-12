@@ -355,6 +355,11 @@ stdenv` plus the existing eval/VM checks.
   `-B<previous-glibc>/lib` as well as `-L`: `-L` locates `libc.a`, while the
   in-tree `xgcc` resolves `crt1.o`, `crti.o`, and `crtn.o` through compiler
   prefixes before the new compiler has an installed start-file directory.
+  Build and install the C-only GCC 3.4 tier through `all-gcc` and
+  `install-gcc`: the full GCC 3.4 source archive's default top-level target
+  also enters `libstdc++`, Boehm GC, and libffi despite
+  `--enable-languages=c`, exposing target runtimes that this tier does not
+  promise and that are incompatible with its bootstrap kernel headers.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
