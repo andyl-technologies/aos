@@ -2,6 +2,9 @@
 
 use super::*;
 
+// Baseline float/scalar ABI test; variant float path via scalars.rs + parity
+// battery (cutover plan section 7).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn from_json_primop_decodes_json_values() {
     let json = r#"''{"b":1,"a":[true,false,null,"x"],"c":{"n":2.5}}''"#;

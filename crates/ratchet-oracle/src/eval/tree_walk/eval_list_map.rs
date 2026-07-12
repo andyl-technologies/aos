@@ -259,7 +259,9 @@ impl TreeWalk {
                 index_span,
             ));
         }
-        let index = index_value.payload_bits() as i64;
+        let index = self.heap.decode_int_value(index_value).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id: index_id, source }, index_span)
+        })?;
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
         let list_value = self.force_value(list_id, list_span, list_value)?;
@@ -314,7 +316,9 @@ impl TreeWalk {
                 index.span(),
             ));
         }
-        let index_value = index_value.payload_bits() as i64;
+        let index_value = self.heap.decode_int_value(index_value).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id: index.id(), source }, index.span())
+        })?;
         let list_value = self.force_value(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(

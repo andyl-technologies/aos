@@ -767,10 +767,18 @@ impl TreeWalk {
             ValueTag::String => self.clone_string_value(value_id, value_span, value),
             ValueTag::Path => self.clone_path_value(value_id, value_span, value),
             ValueTag::Int => Ok(NixString::from_bytes(
-                (value.payload_bits() as i64).to_string().into_bytes(),
+                self.heap
+                    .decode_int_value(value)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    })?
+                    .to_string()
+                    .into_bytes(),
             )),
             ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
-                f64::from_bits(value.payload_bits()),
+                self.heap.decode_float_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                })?,
             ))),
             ValueTag::Bool => {
                 if self.expect_bool(value_id, value, value_span)? {

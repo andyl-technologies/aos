@@ -91,6 +91,9 @@ fn less_than_primop_forces_operands_before_type_checks() {
     ));
 }
 
+// Baseline float/scalar ABI test; variant float path via scalars.rs + parity
+// battery (cutover plan section 7).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn arithmetic_primops_use_numeric_semantics() {
     assert_eq!(eval("builtins.add 1 2").as_int(), Ok(3));

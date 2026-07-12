@@ -15,10 +15,18 @@ impl TreeWalk {
             ValueTag::String => self.clone_string_value(value_id, value_span, value),
             ValueTag::Path => self.source_path_store_string(value_id, value_span, value),
             ValueTag::Int => Ok(NixString::from_bytes(
-                (value.payload_bits() as i64).to_string().into_bytes(),
+                self.heap
+                    .decode_int_value(value)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    })?
+                    .to_string()
+                    .into_bytes(),
             )),
             ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
-                f64::from_bits(value.payload_bits()),
+                self.heap.decode_float_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                })?,
             ))),
             ValueTag::Bool => {
                 if self.expect_bool(value_id, value, value_span)? {
@@ -626,12 +634,12 @@ impl TreeWalk {
                     Self::extend_bytes_for_node(id, span, out, b"false")
                 }
             }
-            ValueTag::Int => Self::extend_bytes_for_node(
-                id,
-                span,
-                out,
-                (value.payload_bits() as i64).to_string().as_bytes(),
-            ),
+            ValueTag::Int => {
+                let scalar = self.heap.decode_int_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                Self::extend_bytes_for_node(id, span, out, scalar.to_string().as_bytes())
+            }
             ValueTag::Float => self.write_json_float(id, span, value, out),
             ValueTag::String => {
                 self.write_json_string_value(id, span, value_id, value_span, value, out, context)
@@ -662,7 +670,10 @@ impl TreeWalk {
         value: Value,
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
-        let value = f64::from_bits(value.payload_bits());
+        let value = self
+            .heap
+            .decode_float_value(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         // C++ Nix serializes floats through nlohmann/json, which renders
         // non-finite values as `null` and everything else with its Grisu2
         // printer (see `json_float`).

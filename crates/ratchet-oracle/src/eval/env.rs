@@ -470,12 +470,14 @@ const TAG_THUNK: u64 = ValueTag::Thunk as u64;
 /// racing writers or a reader racing an in-progress rewrite can observe a
 /// mixed tag/payload pair. Owning structures must guarantee that all writes
 /// happen-before any cross-thread read (see the module docs).
+#[cfg(not(feature = "candidate_c_value"))]
 #[derive(Debug)]
 pub(crate) struct AtomicValueCell {
     tag: AtomicU64,
     payload: AtomicU64,
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 impl AtomicValueCell {
     /// Creates an empty cell.
     pub(crate) const fn empty() -> Self {
@@ -525,7 +527,70 @@ impl AtomicValueCell {
     }
 }
 
+/// A [`Value`]-sized cell published through a single atomic word.
+///
+/// On the Candidate-C carrier a [`Value`] is one 8-byte word, so the cell
+/// collapses to a single [`AtomicU64`]: a store/load is a lone atomic and the
+/// two-word tearing protocol disappears. [`ATOMIC_VALUE_CELL_EMPTY_TAG`]
+/// (`u64::MAX`, whose high-byte kind `0xff` is not a valid Candidate-C kind) is
+/// reused as the empty sentinel word.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Debug)]
+pub(crate) struct AtomicValueCell {
+    word: AtomicU64,
+}
+
+#[cfg(feature = "candidate_c_value")]
+impl AtomicValueCell {
+    /// Creates an empty cell.
+    pub(crate) const fn empty() -> Self {
+        Self {
+            word: AtomicU64::new(ATOMIC_VALUE_CELL_EMPTY_TAG),
+        }
+    }
+
+    /// Creates a cell holding `value`.
+    pub(crate) fn filled(value: Value) -> Self {
+        Self {
+            word: AtomicU64::new(value.word().raw()),
+        }
+    }
+
+    /// Stores `value` with release ordering.
+    pub(crate) fn store(&self, value: Value) {
+        self.word.store(value.word().raw(), Ordering::Release);
+    }
+
+    /// Clears the cell back to empty.
+    pub(crate) fn clear(&self) {
+        self.word
+            .store(ATOMIC_VALUE_CELL_EMPTY_TAG, Ordering::Release);
+    }
+
+    /// Loads the stored value, or `None` if the cell is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AtomicValueCellError::InvalidEncoding`] if the stored word is
+    /// not a valid Candidate-C value word. This is unreachable through
+    /// [`AtomicValueCell::store`], which only accepts well-formed values.
+    pub(crate) fn load(&self) -> Result<Option<Value>, AtomicValueCellError> {
+        let word = self.word.load(Ordering::Acquire);
+        if word == ATOMIC_VALUE_CELL_EMPTY_TAG {
+            return Ok(None);
+        }
+        match crate::value::compressed::CompressedValueWord::from_raw(word) {
+            Ok(compressed) => Ok(Some(Value::from_word(compressed))),
+            Err(_) => Err(AtomicValueCellError::InvalidEncoding {
+                tag: word,
+                payload: word,
+            }),
+        }
+    }
+}
+
 /// Rebuilds a [`Value`] from its raw tag and payload words.
+#[cfg(not(feature = "candidate_c_value"))]
 fn decode_value(tag: u64, payload: u64) -> Result<Value, AtomicValueCellError> {
     match tag {
         TAG_INT => Ok(Value::int(payload as i64)),
@@ -826,6 +891,11 @@ pub enum EvalEnvError {
 mod tests {
     use super::*;
 
+    // Baseline two-word AtomicValueCell internals. The `candidate_c_value`
+    // variant collapses the cell to one word (different fields), so these are
+    // gated off there; the one-word cell's store/load is exercised end-to-end by
+    // the K=4 parallel parity battery. See cutover plan §7.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn atomic_value_cell_roundtrips_every_value_tag() {
         let ptr = NonNull::<HeapObject>::dangling();
@@ -861,6 +931,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn atomic_value_cell_rejects_invalid_encodings() {
         let cell = AtomicValueCell::empty();

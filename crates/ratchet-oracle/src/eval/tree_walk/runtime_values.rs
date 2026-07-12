@@ -18,6 +18,7 @@ impl TreeWalk {
     ///
     /// Returns a Candidate-B codec, scalar-allocation, or heap-membership error
     /// when the active value cannot be represented in this evaluator's domain.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[inline(always)]
     pub fn candidate_b_runtime_value_word(
         &mut self,

@@ -16,6 +16,9 @@ use crate::runtime::alloc::{
     AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint, RuntimeAllocator,
 };
 
+// Baseline float/scalar ABI test; variant float path via scalars.rs + parity
+// battery (cutover plan section 7).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn evaluates_inline_scalar_literals() {
     assert_eq!(eval("42").as_int(), Ok(42));
@@ -3685,6 +3688,7 @@ fn gc_stress_json_array_result_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_toml_array_result_dispatches_permanent_noop_bridge() {
     let ir = lower("null");

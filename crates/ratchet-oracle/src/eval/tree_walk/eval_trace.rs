@@ -56,11 +56,17 @@ impl TreeWalk {
                 }
             }
             ValueTag::Int => {
-                let bytes = Self::raw_int_bytes(value.payload_bits() as i64);
+                let scalar = self.heap.decode_int_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                let bytes = Self::raw_int_bytes(scalar);
                 Self::extend_bytes_for_node(id, span, out, &bytes)
             }
             ValueTag::Float => {
-                let bytes = Self::raw_float_bytes(f64::from_bits(value.payload_bits()));
+                let scalar = self.heap.decode_float_value(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                let bytes = Self::raw_float_bytes(scalar);
                 Self::extend_bytes_for_node(id, span, out, &bytes)
             }
             ValueTag::String => {

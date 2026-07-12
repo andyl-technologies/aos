@@ -9,8 +9,19 @@ const CANDIDATE_B_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::n
 const CANDIDATE_C_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::new(8, 1, 8);
 
 /// Returns the by-value runtime layout currently used at native call boundaries.
+///
+/// The `candidate_c_value` variant selects the one-word (8/1/8) Candidate-C
+/// layout so the ABI descriptor matches the active 8-byte carrier; the baseline
+/// carrier uses the two-word (16/2/8) layout.
+#[cfg(not(feature = "candidate_c_value"))]
 pub const fn runtime_abi_value_layout() -> RuntimeAbiValueLayout {
     ACTIVE_VALUE_LAYOUT
+}
+
+/// Returns the by-value runtime layout used at native call boundaries.
+#[cfg(feature = "candidate_c_value")]
+pub const fn runtime_abi_value_layout() -> RuntimeAbiValueLayout {
+    CANDIDATE_C_VALUE_LAYOUT
 }
 
 /// Returns the inactive Candidate-B tagged-word runtime layout.

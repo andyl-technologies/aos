@@ -52,9 +52,15 @@ use super::*;
 pub(super) mod attrs;
 mod active_values;
 pub(super) mod closures;
+// The Candidate-B/-C `Value <-> word` bridges exist to exercise the compressed
+// codecs against the baseline 16-byte carrier. Under the `candidate_c_value`
+// carrier the runtime value already IS the compressed word, so the bridges are
+// superseded (identity) and their only callers are the baseline-carrier tests.
+#[cfg(not(feature = "candidate_c_value"))]
 mod compressed_values;
 mod lists;
 mod scalars;
+#[cfg(not(feature = "candidate_c_value"))]
 mod tagged_values;
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
