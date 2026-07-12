@@ -200,17 +200,16 @@ impl TreeWalk {
         self.symbols = std::mem::take(&mut ir.symbols);
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
-    /// Parallel-mode fresh import load: parse standalone, then remap.
+    /// Parallel-mode fresh import load: parse into an isolated table, then remap.
     ///
-    /// Under a shared demand pool the live symbol table is a prefix replica
-    /// of the shared symbol log, so the serial fast path (seeding the parser
-    /// with the live table and adopting the grown superset) would fork the
-    /// replica outside the log. Instead the module is parsed and lowered with
-    /// an isolated symbol table, then remapped through the same
-    /// [`TreeWalk::remap_cached_import_ir`] path cached imports use, whose
-    /// interning runs through the shared-log choke point. Parsing happens
-    /// outside any shared lock, so concurrent imports of different files
-    /// still parse in parallel.
+    /// Under a shared demand pool the live symbol table is a prefix replica of the
+    /// shared symbol log, so the serial fast path (seeding the parser with the live
+    /// table and adopting the grown superset) would fork the replica outside the
+    /// log. Instead the module is parsed and lowered with an isolated symbol table
+    /// via [`Self::parse_lower_import_isolated`], then remapped through the same
+    /// [`TreeWalk::remap_cached_import_ir`] path cached imports use, whose interning
+    /// runs through the shared-log choke point. Parsing happens outside any shared
+    /// lock, so concurrent imports of different files still parse in parallel.
     #[allow(clippy::too_many_arguments)]
     fn load_and_eval_import_bytes_shared(
         &mut self,
@@ -223,6 +222,35 @@ impl TreeWalk {
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        let ir = self.parse_lower_import_isolated(argument, path, source, global_scope)?;
+        let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
+        self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
+    }
+    /// Parses, resolves, lowers, and annotates `source` into an *isolated* symbol
+    /// table, returning the fresh IR.
+    ///
+    /// The IR's file-local symbols must be remapped into the live table (via
+    /// [`TreeWalk::remap_cached_import_ir`]) before the module can be evaluated.
+    /// Because parsing runs against a private `SymbolTable::new()` rather than the
+    /// live table, this is the reusable front-end unit the pooled import path and
+    /// the speculative parse-ahead scheduler (RFC-0007 §S2) build on: parsing never
+    /// fabricates symbol ids on the live table, and under a demand pool concurrent
+    /// imports of different files parse in parallel with no shared lock. The serial
+    /// no-pool path deliberately keeps its faster `mem::take` fast path (measured
+    /// +2-7% cold via this remap, with no K=1 speculation benefit — the S1
+    /// fallback). Carries the `AOS_NIX_EVAL_STATS` front-end timers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkError`] if parsing, scope resolution, or IR lowering of the
+    /// imported source fails.
+    fn parse_lower_import_isolated(
+        &mut self,
+        argument: IrId,
+        path: &[u8],
+        source: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Result<Ir, TreeWalkError> {
         let parse_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let parsed = parse_bytes_with_symbols(source, SymbolTable::new()).map_err(|error| {
             let span = error.span();
@@ -286,8 +314,7 @@ impl TreeWalk {
         if let Some(timer) = annotate_timer {
             self.add_front_end_annotate_nanos(timer);
         }
-        let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
-        self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
+        Ok(ir)
     }
     pub(super) fn load_and_eval_import_ir(
         &mut self,
