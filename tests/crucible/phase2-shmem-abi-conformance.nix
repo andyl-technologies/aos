@@ -806,7 +806,7 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 450560u);
+                atomic_init(&header.region_size, 8840704u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -836,11 +836,20 @@ in
                 frame.len = 4u;
                 memcpy(frame.data, "PING", 4);
 
+                crucible_shmem_coverage_entry coverage;
+                memset(&coverage, 0, sizeof(coverage));
+                coverage.current_icount = 901u;
+                coverage.guest_pc = 0x4010u;
+                coverage.map_index = 17u;
+                coverage.vcpu_index = 2u;
+                coverage.block_len = 4u;
+
                 int failed = 0;
                 failed |= write_exact(out, &header, sizeof(header), "region header");
                 failed |= write_exact(out, &slot, sizeof(slot), "node slot");
                 failed |= write_exact(out, &ring, sizeof(ring), "ring header");
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
+                failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
                 if (fclose(out) != 0) {
                     perror("fclose");
                     failed = 1;
@@ -895,12 +904,14 @@ in
                 crucible_shmem_node_slot slot;
                 crucible_shmem_ring_header ring;
                 crucible_shmem_frame_entry frame;
+                crucible_shmem_coverage_entry coverage;
 
                 int failed = 0;
                 failed |= read_exact(in, &header, sizeof(header), "region header");
                 failed |= read_exact(in, &slot, sizeof(slot), "node slot");
                 failed |= read_exact(in, &ring, sizeof(ring), "ring header");
                 failed |= read_exact(in, &frame, sizeof(frame), "frame entry");
+                failed |= read_exact(in, &coverage, sizeof(coverage), "coverage entry");
                 if (fclose(in) != 0) {
                     perror("fclose input");
                     failed = 1;
@@ -917,7 +928,7 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 450560u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 8840704u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u) {
@@ -953,6 +964,15 @@ in
                     return 1;
                 }
 
+                if (coverage.current_icount != 901u
+                    || coverage.guest_pc != 0x4010u
+                    || coverage.map_index != 17u
+                    || coverage.vcpu_index != 2u
+                    || coverage.block_len != 4u) {
+                    fprintf(stderr, "coverage entry validation failed\n");
+                    return 1;
+                }
+
                 FILE *out = fopen(argv[2], "wb");
                 if (out == NULL) {
                     perror("fopen output");
@@ -962,6 +982,7 @@ in
                 failed |= write_exact(out, &slot, sizeof(slot), "node slot");
                 failed |= write_exact(out, &ring, sizeof(ring), "ring header");
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
+                failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
                 if (fclose(out) != 0) {
                     perror("fclose output");
                     failed = 1;
