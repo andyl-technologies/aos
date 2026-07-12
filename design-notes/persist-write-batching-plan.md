@@ -376,3 +376,59 @@ default-on cache that makes every cold eval 6-8x slower is a net regression for
 the common single-eval case. Once cache-enabled cold is within ~1.2x of
 cache-less, the default-on decision becomes a clear win (small cold tax, large
 warm/repeat win) and can be taken with data.
+
+## 9. Increment-0 profile findings (2026-07-12, candidate-b, macOS `sample`)
+
+Measured on this darwin box (release + mimalloc), cache-enabled cold vs
+cache-less cold, `nix-bench` native median, plus a `sample` profile of a
+true-cold single `nix-diff --attr=pkgs.zlib` (fresh `mktemp` cache, no warm
+cycle). Three findings; §0's primary hypothesis holds, §0's write-on-cold
+premise is confirmed *correct* (my first read of the profile misattributed it —
+see finding 3).
+
+**Finding 1 — pathology confirmed, LARGER than stated, and reframed as
+encode-size- not force-count-bound.** Cache-enabled cold: `pkgs.zlib`
+80.7 → 1353.7 ms = **16.8x**, `pkgs.openssl` 80.3 → 1418 ms = **17.7x**,
+`bench.compute.tak` 16.4 → 34.2 ms = **2.1x**. Warm (root-cutoff hit) healthy:
+zlib 24.6 ms, tak 0.56 ms. The tax scales with per-force *value encode size*, not
+force count: `tak` forces ~10M tiny ints (cheap encode → 2x), leaf packages force
+big derivation values (huge recursive encode+BLAKE3 → 16-18x). **So `tak`
+UNDERSTATES the pathology; leaf packages are the real target.** §0's "6-8x" was
+conservative.
+
+**Finding 2 — the observe tax dominates (confirms §0/§3.1).** On true cold the
+on-CPU cost is BLAKE3 hashing (~364 leaf samples) + recursive payload encode
+(`force_payload`/preimage ~118) via `force_cache_payload_for_value`
+(`force_persistence.rs:55`), built before the `KeepInMemory` decision and
+discarded for most nodes. → §3.1 (defer/memoize the per-force payload build) is
+the primary lever.
+
+**Finding 3 — CORRECTED: there is NO cold value-materialization bug; the value
+cost model is correct.** My first pass read `indexed_values` write frames on true
+cold as per-node value materialization and reported a "cost model admits on
+first demand" defect. That was wrong. The value cost model
+(`cache/policy.rs`: `MaterializationReuse` gates `decide()` on
+`previous_run_demands > 0`, i.e. genuine *cross-run* reuse; `record_current_demand`
+only bumps `current_run_demands`, promoted to `previous` by `advance_run` at the
+run boundary) correctly returns `KeepInMemory` on a fresh cache, and the profile
+confirms the value path (`materialize_persist_forced_expression_payload` /
+`materialize_cached_expression_node_value_indexed`) is ~absent on true cold
+(0-2 frames). The `node_demand.rs:41-42` "previous RUN" comment is accurate.
+**What the ~124 cold write frames actually are: the parse/import artifact cache**
+— `materialize_persist_cached_import` (77) + `materialize_parse_artifact_entry_indexed`
+(54) + `materialize_file_artifact_indexed` (42) — storing parsed `.nix` imports
+and parse artifacts so *warm* runs skip re-parsing. That is the persist cache's
+intended job, not a defect, and not gated by the value cost model.
+
+**Revised lever for §3.1.** The plan's stated primary idea — "key the DCG on the
+O(1) `value_hash` instead of the full encode" — is **infeasible**: `value_hash()`
+is only an O(1) accessor on an already-built `CachedExpressionValue`, and the
+hash *is* the BLAKE3 of the encoded payload (`expression_value.rs:336/356-362`,
+`DurableBlake3Hash::for_bytes(encode) == value_hash`), so you cannot obtain the
+hash without the full recursive encode. The **viable** lever is this plan's own
+§3.1 *fallback*: **memoize `force_cache_payload_for_value` by Value identity** so
+repeated forces of the same big shared value (rampant in leaf packages) encode
+once — parity-safe (same encode result, cached) and memory-bounded (cap against
+the 38 MiB budget). The parse/import artifact writes on cold are a real secondary
+cost but are expected (they buy the warm-parse speedup); §3.2 write-behind
+batching can amortize their open/flock as a follow-up, not a bug fix.
