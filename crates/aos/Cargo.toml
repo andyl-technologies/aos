@@ -11,10 +11,12 @@ native-eval = ["aos-core/native-eval", "dep:aos-nix"]
 # default so the shipped carrier is unaffected.
 candidate_c_value = ["native-eval", "aos-core/candidate_c_value", "aos-nix/candidate_c_value"]
 # Install mimalloc as the process-wide `#[global_allocator]` (on by default).
-# mimalloc's crate source is already vendored (a transitive dependency of
-# `alejandra` and `nix-compat`) and already compiled into every build, so
-# enabling this adds no new vendored crate and no compile cost. Disable with
-# `--no-default-features` for an allocator A/B against the system allocator.
+# The declaration in `src/main.rs` is cfg-gated to the complement of alejandra's
+# own allocator gate (alejandra declares mimalloc on Linux gnu/musl), so this
+# feature supplies mimalloc on the remaining targets (notably macOS) — exactly
+# one declaration per target, avoiding the E0152 conflict. mimalloc's crate
+# source is already vendored (a transitive dep of `alejandra`), so this adds no
+# new vendored crate. Disable with `--no-default-features` for an allocator A/B.
 mimalloc = ["dep:mimalloc"]
 
 [[bin]]

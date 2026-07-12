@@ -33,22 +33,58 @@
 
 #![forbid(unsafe_code)]
 
-// Route every non-arena allocation through mimalloc (enabled by default via the
-// `mimalloc` feature). The evaluator's own values live in bump arenas, but the
-// tree walk, parser, and derivation rendering still lean on the global
-// allocator for transient `Vec`/`String`/`Box` traffic (~24% of on-CPU in the
-// round-8 profile); mimalloc's per-thread heaps and sharded free lists cut that
-// path's cost, measured at ~-12% median native eval time across the package
-// benchmark set. The declaration is a plain safe `static`, so it coexists with
-// the crate's `#![forbid(unsafe_code)]` (the `GlobalAlloc` unsafe lives inside
-// the mimalloc crate).
+// mimalloc is the process-wide global allocator on every supported target, but
+// which crate *declares* it is target-dependent, because a binary may hold only
+// one `#[global_allocator]` (a second is a hard E0152). The embedded alejandra
+// formatter (linked for `aos fmt`) declares `mimalloc::MiMalloc` in its library
+// on a fixed set of Linux gnu/musl target triples (alejandra 3.1.0
+// `src/lib.rs`), which covers the hermetic `x86_64-unknown-linux-gnu` build.
+// This crate therefore declares mimalloc only on the exact COMPLEMENT of that
+// gate — notably macOS dev builds — so every target has exactly one declaration.
+// Routing the tree walk / parser / derivation-rendering global traffic (~24% of
+// on-CPU in the round-8 profile, ~-12% median native eval time measured on
+// darwin) through mimalloc's per-thread heaps applies on every target.
 //
-// Memory recovery lever: mimalloc trades some RSS for speed by retaining freed
-// pages in per-thread caches. Set `MIMALLOC_PURGE_DELAY=0` in the environment
-// to purge eagerly and claw that RSS back (on Linux this `MADV_DONTNEED`s freed
-// pages; on macOS the `MADV_FREE` purge leaves pages resident until pressure,
-// so the knob only moves RSS on the Linux build target).
-#[cfg(feature = "mimalloc")]
+// Memory recovery lever: `MIMALLOC_PURGE_DELAY=0` (set in the aos wrapper on
+// Linux) purges freed pages eagerly via `MADV_DONTNEED` and reclaims retained
+// RSS (wide-eval 0.70x -> 0.19x of C++; doc 15 §5.4). On macOS the purge is
+// MADV_FREE and does not lower RSS, so the knob is a no-op there.
+//
+// CROSS-CRATE LANDMINE: the cfg below is the exact inverse of alejandra 3.1.0's
+// allocator gate. If alejandra changes that gate, bumps to a version with a
+// different one, or is dropped as a dependency, revisit this cfg — otherwise a
+// target ends up with two `#[global_allocator]`s (E0152) or none (silent loss
+// of mimalloc). Keep it in lockstep with alejandra's `src/lib.rs`.
+#[cfg(all(
+    feature = "mimalloc",
+    not(any(
+        all(
+            target_arch = "aarch64",
+            target_vendor = "unknown",
+            target_os = "linux",
+            target_env = "musl"
+        ),
+        all(
+            target_arch = "arm",
+            target_vendor = "unknown",
+            target_os = "linux",
+            target_env = "musl",
+            target_abi = "eabihf"
+        ),
+        all(
+            target_arch = "x86",
+            target_vendor = "unknown",
+            target_os = "linux",
+            target_env = "musl"
+        ),
+        all(
+            target_arch = "x86_64",
+            target_vendor = "unknown",
+            target_os = "linux",
+            any(target_env = "gnu", target_env = "musl")
+        )
+    ))
+))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
