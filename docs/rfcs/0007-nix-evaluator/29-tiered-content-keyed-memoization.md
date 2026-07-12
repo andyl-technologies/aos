@@ -206,6 +206,22 @@ warm hit. Real admitted records are only 5-10 KiB and persistence already sits
 behind the tier-2 hotness/profitability gate, so measurement does not justify a
 second record-size floor.
 
+**Measured persist write-cost floor (2026-07-12, from the paired-cycle
+`nix-bench` harness).** When a cold eval populates the persist cache from empty
+with an *unbatched* per-force write path (`AOS_NIX_CACHE` set, cache dir empty),
+the write cost dominates eval: `bench.compute.tak` cold measured ~158 s versus
+~17 ms cache-less (its ~10M forces each issuing a durable write -- a ~9000x
+write amplification on the first, cache-populating eval), and `pkgs.zlib` cold
+measured 1537 ms versus 106 ms cache-less. This is the static write-cost floor
+the persist path pays on a cache-cold populating eval, independent of whether
+the records are ever reused, and it is the concrete evidence the economics gate
+(§5.7) needs: admission must decide *which forces write*, not only which records
+are sized -- a per-force write is only justified when the record's expected
+recompute cost exceeds its write cost. The paired-cycle harness's default
+(cache-less) leg is unaffected; this floor is specific to the cache-populating
+first eval and is why `nix-bench` isolates the durable cache per cold cycle
+rather than forcing one on by default.
+
 A balanced seven-pair, stats-off release A/B against pristine `426a122bd`
 measured zlib candidate/baseline medians of 855.11/857.47 ms cold and
 861.85/863.73 ms warm, with paired-median ratios 0.978/0.961. Median retained
