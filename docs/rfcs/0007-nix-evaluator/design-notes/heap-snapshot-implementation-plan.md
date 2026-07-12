@@ -639,6 +639,22 @@ the decision text supersedes it.
    implementation does **not** start until that number exists. If it comes back
    small, the item is re-scoped honestly: the content-addressed parse cache +
    the realpath import memo may already own most of the prelude win (§2.2).
+
+   **MEASURED — gate PASSES (task #13, S0 commit `c3a02187d`, native, JIT off).**
+   The prelude-*force* share is substantial, not small: zlib
+   `prelude_thunks_forced/thunks_forced` = 62.9% (count) / 38.8% (inclusive
+   nanos); openjdk = 85.0% / 44.8%. True wall share sits between the
+   inclusive-nanos floor (~39-45%) and the count ceiling (~63-85%) — count
+   overstates (prelude thunks are numerous but individually cheaper),
+   inclusive-nanos double-counts nesting — and it **grows with eval size**
+   (openjdk > zlib), which is exactly the snapshot's value case. Per §2.2 this
+   is the snapshot's *unique* contribution: the prelude *parse* share (measured
+   24.6%/22.4% of cold, and already amortized by the parse cache) is **not** the
+   snapshot's win; the prelude *force* share above is. Net: **GO** — the item is
+   justified and is **not** re-scoped. Sizing caveat (§5): this share is the
+   *ceiling* on payoff; subtract image load/map cost, and take the authoritative
+   single wall number from a sampling profile with module attribution before the
+   final go/no-go on absolute speedup.
 3. **Invalidation key approved as scoped (§4).** The two-part root-cutoff
    structure — key = per-module `LoweredIrFingerprint`s + `PASS_SET_VERSION` +
    `result_affecting_fingerprint` (eval-system, `nix_path`, …); revalidation
@@ -650,9 +666,11 @@ the decision text supersedes it.
    used only where rebuild is not cheap. The per-structure decisions of §1.4
    stand under this posture.
 
-**Task-board effect.** Task #6 is gated: `blockedBy` task #12 (Candidate-C
-cutover) and the S0 prelude-wall-share measurement (folds with task #3). It
-stays open but does not begin implementation until both clear.
+**Task-board effect.** Task #6 was gated `blockedBy` task #12 (Candidate-C
+cutover) and task #13 (the S0 prelude-wall-share measurement). **Task #13 is now
+complete and the gate PASSES (GO, above).** Task #12 (address-free carrier via
+the Candidate-C cutover) is the **sole remaining blocker**; #6 begins
+implementation from §7 once #12 lands.
 
 ---
 
