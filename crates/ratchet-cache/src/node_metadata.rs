@@ -18,10 +18,11 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
@@ -183,9 +184,25 @@ impl NodeMetadataEntry {
 }
 
 /// An append-only fixed-record node metadata index file.
+///
+/// The read+append file handle is held open for the object's lifetime
+/// (RFC-0007 persist-write plan Increment B): each append is one `write` and
+/// each read `fstat`s and seeks the same handle, replacing the pre-B
+/// open/stat/read/close per operation. Reads still `fstat` the held handle so
+/// they observe the current on-disk length — including appends made through
+/// other same-root handles or processes — preserving cross-handle demand
+/// coordination (deferring an in-memory length cache to a later increment).
 #[derive(Clone, Debug)]
 pub struct NodeMetadataIndex {
     path: PathBuf,
+    /// Read+append handle held open for the run. Shared through `Arc` so `Clone`
+    /// shares one fd; the `Mutex` serializes this process's reads and appends
+    /// (cross-process coordination stays with the caller's advisory lock).
+    /// Appends use `O_APPEND` (writes land at EOF regardless of the read
+    /// cursor); reads `fstat` then seek this same handle. Reopened by
+    /// [`Self::replace_entries`] after a compaction renames a fresh file over
+    /// `path`, since the rename unlinks the inode this handle points at.
+    handle: Arc<Mutex<File>>,
 }
 
 impl NodeMetadataIndex {
@@ -199,7 +216,19 @@ impl NodeMetadataIndex {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, NodeMetadataIndexError> {
         let path = path.into();
         ensure_node_metadata_index_file(&path)?;
-        Ok(Self { path })
+        let handle = open_node_metadata_handle(&path)?;
+        let len = handle
+            .metadata()
+            .map_err(|source| NodeMetadataIndexError::Metadata {
+                path: path.clone(),
+                source,
+            })?
+            .len();
+        validate_node_metadata_index_len(&path, len)?;
+        Ok(Self {
+            path,
+            handle: Arc::new(Mutex::new(handle)),
+        })
     }
 
     /// Returns this index file's filesystem path.
@@ -214,15 +243,11 @@ impl NodeMetadataIndex {
     /// Returns [`NodeMetadataIndexError`] if the index cannot be opened,
     /// validated, written, or flushed.
     pub fn append_entry(&self, entry: NodeMetadataEntry) -> Result<(), NodeMetadataIndexError> {
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| NodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.write_all(&entry.encode())
-            .and_then(|()| file.flush())
+        let bytes = entry.encode();
+        let mut handle = self.handle.lock().unwrap_or_else(PoisonError::into_inner);
+        handle
+            .write_all(&bytes)
+            .and_then(|()| handle.flush())
             .map_err(|source| NodeMetadataIndexError::Write {
                 path: self.path.clone(),
                 source,
@@ -315,14 +340,11 @@ impl NodeMetadataIndex {
         &self,
         offset: u64,
     ) -> Result<(Vec<NodeMetadataEntry>, u64), NodeMetadataIndexError> {
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| NodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
+        let mut handle = self.handle.lock().unwrap_or_else(PoisonError::into_inner);
+        // `fstat` the held handle (no reopen) so the length reflects appends
+        // from every same-root handle and process — preserving cross-handle
+        // demand coordination.
+        let len = handle
             .metadata()
             .map_err(|source| NodeMetadataIndexError::Metadata {
                 path: self.path.clone(),
@@ -334,18 +356,21 @@ impl NodeMetadataIndex {
             return Ok((Vec::new(), len));
         }
         validate_node_metadata_index_len(&self.path, len - offset)?;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|source| NodeMetadataIndexError::Read {
-                path: self.path.clone(),
-                source,
-            })?;
         let remaining = (len - offset) as usize;
         let mut buffer = vec![0; remaining];
-        file.read_exact(&mut buffer)
+        handle
+            .seek(SeekFrom::Start(offset))
             .map_err(|source| NodeMetadataIndexError::Read {
                 path: self.path.clone(),
                 source,
             })?;
+        handle
+            .read_exact(&mut buffer)
+            .map_err(|source| NodeMetadataIndexError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        drop(handle);
         let mut entries = Vec::with_capacity(remaining / NODE_METADATA_ENTRY_LEN);
         for chunk in buffer.chunks_exact(NODE_METADATA_ENTRY_LEN) {
             entries.push(NodeMetadataEntry::decode(chunk).map_err(|source| {
@@ -432,6 +457,10 @@ impl NodeMetadataIndex {
                 source,
             }
         })?;
+        // The rename unlinked the inode our held handle pointed at; reopen so
+        // subsequent reads and appends target the compacted file.
+        let reopened = open_node_metadata_handle(&self.path)?;
+        *self.handle.lock().unwrap_or_else(PoisonError::into_inner) = reopened;
         Ok(entries.len())
     }
 
@@ -439,14 +468,8 @@ impl NodeMetadataIndex {
         &self,
         mut visit: impl FnMut(NodeMetadataEntry),
     ) -> Result<(), NodeMetadataIndexError> {
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| NodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
+        let mut handle = self.handle.lock().unwrap_or_else(PoisonError::into_inner);
+        let len = handle
             .metadata()
             .map_err(|source| NodeMetadataIndexError::Metadata {
                 path: self.path.clone(),
@@ -454,16 +477,22 @@ impl NodeMetadataIndex {
             })?
             .len();
         validate_node_metadata_index_len(&self.path, len)?;
-
-        let records = len / NODE_METADATA_ENTRY_LEN as u64;
-        let mut encoded = [0; NODE_METADATA_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded)
-                .map_err(|source| NodeMetadataIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            let entry = NodeMetadataEntry::decode(&encoded).map_err(|source| {
+        let mut buffer = vec![0; len as usize];
+        handle
+            .seek(SeekFrom::Start(0))
+            .map_err(|source| NodeMetadataIndexError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        handle
+            .read_exact(&mut buffer)
+            .map_err(|source| NodeMetadataIndexError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        drop(handle);
+        for chunk in buffer.chunks_exact(NODE_METADATA_ENTRY_LEN) {
+            let entry = NodeMetadataEntry::decode(chunk).map_err(|source| {
                 NodeMetadataIndexError::Format {
                     path: self.path.clone(),
                     source,
@@ -473,6 +502,22 @@ impl NodeMetadataIndex {
         }
         Ok(())
     }
+}
+
+/// Opens the read+append handle held by a [`NodeMetadataIndex`].
+///
+/// The handle allows both seeking reads and `O_APPEND` writes on one fd. The
+/// index file must already exist (created by `ensure_node_metadata_index_file`
+/// at [`NodeMetadataIndex::open`]).
+fn open_node_metadata_handle(path: &Path) -> Result<File, NodeMetadataIndexError> {
+    fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path)
+        .map_err(|source| NodeMetadataIndexError::Open {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// Node metadata sidecar bytes had an invalid shape.
@@ -637,6 +682,39 @@ mod tests {
         bytes[16] = 1;
         bytes[17..].copy_from_slice(&[marker; 32]);
         NodeMetadataValue::from_bytes(bytes)
+    }
+
+    #[test]
+    fn held_handle_read_observes_external_appends() {
+        // Increment B holds the read+append fd open but still `fstat`s it per
+        // read, so an append made through a different same-root handle or
+        // process is observed — cross-handle demand coordination is preserved
+        // (an in-memory length cache that would trade this for fewer stats is
+        // deferred to a later increment).
+        let path = temp_path("held-handle-external-append");
+        let index = NodeMetadataIndex::open(&path).expect("index opens");
+        let mine = NodeMetadataEntry::new(metadata_key(NODES, 1), value(1));
+        index.append_entry(mine).expect("own append succeeds");
+
+        let external = NodeMetadataEntry::new(metadata_key(OTHER_NODES, 2), value(2));
+        {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("external handle opens");
+            file.write_all(&external.encode())
+                .and_then(|()| file.flush())
+                .expect("external append succeeds");
+        }
+
+        let (entries, _) = index.read_entries_from(0).expect("read succeeds");
+        assert_eq!(
+            entries,
+            vec![mine, external],
+            "the held handle fstat observes the external append"
+        );
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
