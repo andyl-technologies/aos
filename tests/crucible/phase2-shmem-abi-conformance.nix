@@ -11,7 +11,15 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  # The `#[repr(C)]` structs and their static layout assertions live in the
+  # `shmem/` submodules re-exported by lib.rs; concatenate them so the assertion
+  # conformance needles resolve against the whole ABI surface.
+  shmemLib =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/fingerprint_sample.rs;
   shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
   setupValidation = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   goldenFixture = builtins.readFile ../../crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture;
@@ -253,6 +261,18 @@
       {
         label = "node slot alignment Rust static assertion";
         needle = "const _: () = assert!(NODE_SLOT_ALIGN == 128);";
+      }
+      {
+        label = "fingerprint sample slot gen offset Rust static assertion";
+        needle = "const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET == 0);";
+      }
+      {
+        label = "fingerprint sample slot words offset Rust static assertion";
+        needle = "const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET == 8);";
+      }
+      {
+        label = "fingerprint sample slot alignment Rust static assertion";
+        needle = "const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_ALIGN == 128);";
       }
       {
         label = "generated C header API";
@@ -551,6 +571,18 @@
       {
         label = "coverage reserved offset static assert";
         needle = "offsetof(crucible_shmem_coverage_entry, reserved) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET";
+      }
+      {
+        label = "fingerprint sample slot C struct";
+        needle = "crucible_shmem_fingerprint_sample_slot";
+      }
+      {
+        label = "fingerprint sample slot size static assert";
+        needle = "sizeof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE";
+      }
+      {
+        label = "fingerprint sample slot words offset static assert";
+        needle = "offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
