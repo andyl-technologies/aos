@@ -10,7 +10,6 @@ test-util = []
 
 [dependencies]
 thiserror = { workspace = true }
-tracing = { workspace = true }
 aos-nix-syntax = { workspace = true }
 
 [dev-dependencies]

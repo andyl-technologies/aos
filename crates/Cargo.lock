@@ -3986,7 +3986,6 @@ dependencies = [
  "aos-nix-syntax",
  "proptest",
  "thiserror",
- "tracing",
 ]
 
 [[package]]

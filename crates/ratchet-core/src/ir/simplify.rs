@@ -62,7 +62,9 @@ pub const PASS_SET_VERSION: u32 = 0;
 ///
 /// A phase that keeps finding work past this many sweeps stops rewriting and
 /// yields to the next phase rather than spinning. Non-convergence degrades to
-/// "stop rewriting" (a [`tracing::warn`]), never to an error.
+/// "stop rewriting" — the phase yields silently rather than erroring; surfacing
+/// it (an eval-stats counter) is deferred to the first pass that can reach the
+/// cap, since the empty stage-1 pass set never iterates.
 pub const SIMPLIFY_MAX_ITERS: usize = 4;
 
 /// A pass-ordering phase, run gentle to final (doc 26 §3).
@@ -179,7 +181,12 @@ pub fn simplify_with_passes(
         if !passes.iter().any(|pass| pass.runs_in(phase)) {
             continue;
         }
-        for iteration in 0..SIMPLIFY_MAX_ITERS {
+        // Non-convergence degrades to "stop rewriting this phase": the loop
+        // exits once it has run `SIMPLIFY_MAX_ITERS` sweeps, never erroring and
+        // never spinning unbounded. Surfacing a non-convergence signal (an
+        // eval-stats counter) is deferred to the first pass that can actually
+        // reach the cap; see the design note (§4, §8).
+        for _ in 0..SIMPLIFY_MAX_ITERS {
             let mut rewrote = false;
             for pass in passes.iter().filter(|pass| pass.runs_in(phase)) {
                 if pass.run(ir)? == PassOutcome::Rewritten {
@@ -188,14 +195,6 @@ pub fn simplify_with_passes(
             }
             if !rewrote {
                 break;
-            }
-            if iteration + 1 == SIMPLIFY_MAX_ITERS {
-                tracing::warn!(
-                    target: "aos_nix::simplify",
-                    ?phase,
-                    max_iters = SIMPLIFY_MAX_ITERS,
-                    "simplifier did not reach a fixpoint; stopping rewrites for this phase"
-                );
             }
         }
     }
