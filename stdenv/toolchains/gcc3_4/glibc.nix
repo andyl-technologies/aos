@@ -66,6 +66,7 @@ in
           --disable-shared \
           --disable-profile \
           --disable-nscd \
+          --enable-static-nss \
           --enable-add-ons=nptl \
           --enable-kernel=2.6.0 \
           --without-gd \
@@ -75,6 +76,12 @@ in
 
         make -j"$NIX_BUILD_CORES"
         make install
+
+        "${this.binutils}/bin/nm" "$out/lib/libc.a" | \
+          grep -Eq ' [Tt] _nss_files_getpwnam_r$' || {
+          echo "FATAL: static NSS implementations not installed in libc.a" >&2
+          exit 1
+        }
 
         # Copy linux headers into glibc output for downstream use
         cp -r "${this.linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
