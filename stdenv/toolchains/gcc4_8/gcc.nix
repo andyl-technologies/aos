@@ -105,6 +105,11 @@ in
       # their target libraries from the build.
       ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-explicit-cxx-lto-frontends.patch}
 
+      # Native GCC builds normally derive BUILD_CXXFLAGS from ALL_CXXFLAGS and
+      # ignore CXXFLAGS_FOR_BUILD. Make the native path honor the dedicated
+      # build-generator flags, matching GCC's existing cross-build behavior.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-native-build-cxxflags.patch}
+
       # Disable split-stack support in libgcc: this glibc lacks NPTL pthread.h.
       ${prev.sed}/bin/sed -i '/t-stack/d' libgcc/config.host
 
@@ -231,9 +236,9 @@ in
       ''CXXFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CFLAGS_FOR_BUILD="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       # GCC 4.4.7 miscompiles the GCC 4.8 build generators at -O2; the freshly
-      # linked build/gengtype then segfaults while producing gtype.state. GCC's
-      # configure script snapshots this variable into BUILD_CXXFLAGS while
-      # leaving CXXFLAGS in charge of the installed compiler.
+      # linked build/gengtype then segfaults while producing gtype.state. The
+      # native-build patch above routes this value into BUILD_CXXFLAGS while
+      # leaving CXXFLAGS in charge of the host compiler itself.
       ''CXXFLAGS_FOR_BUILD="-O0 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CPPFLAGS="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CPPFLAGS_FOR_BUILD="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
