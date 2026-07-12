@@ -325,6 +325,11 @@ stdenv` plus the existing eval/VM checks.
 - **All of `stdenv/bootstrap/`.** hex0 → GCC 2.95.3 and the
   stage4/stage5 MesCC/TinyCC/autoconf-2.5x workarounds
   (`stdenv/bootstrap/lib.nix`) are irreducibly bespoke. Untouched.
+  Keep stage5 glibc fail-closed at the compiler ABI boundary: `make -k` may
+  pass optional static-bootstrap program failures, but the producer must
+  verify and install `libc.a`, `crt1.o`, `crti.o`, and `crtn.o` before it
+  succeeds. Do not defer that validation to the downstream GCC build because
+  it hides the actual glibc failure and admits an unusable libc store path.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
