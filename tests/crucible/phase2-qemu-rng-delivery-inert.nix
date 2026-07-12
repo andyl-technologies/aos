@@ -299,6 +299,9 @@ in
           reference_and_patched_sim_off_execute_identical_rng_delivery_instructions=true
           rng_completion_delivery_icount_equivalence_is_structural_not_measured=true
           rng_completion_icount_equivalence_proven=true
+          proof_method=structural-sim-guard
+          durable_invariant_fails_if_future_patch_adds_unguarded_delivery_code=true
+          contract_e7a_sim_off_direction_is_behavioral_identity_not_runtime_witness=true
           RESULT
         '';
       }
