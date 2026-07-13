@@ -394,3 +394,39 @@ Nothing here changes behavior for expressions that currently succeed natively
 (the fallback seam is `Result`-based and only widens which *failures* defer to
 C++). Regex/JSON/TOML flagged as ambiguous per the ruling's "ping before code if
 ambiguous."
+
+---
+
+## 6. Ruling (team lead, 2026-07-13): evidence COMPLETE; flip STAGED behind the doc-14 acceptance gate (live CI)
+
+**The engineering evidence for default-on is complete and green** — 648/648
+native-side strict-JSON parity over the full corpus (after faithful oracle
+config), 546/546 full-closure `.drv` byte-parity on the promoted one-word
+carrier, 4/4 drv witnesses, and the flipped binary building green through the
+hermetic `pkgs.aos` path. The §2.3 hard-fail promotion (dialect-op + fetch-attr
+classifier) is approved and landing.
+
+**But the flip itself does not land now.** Doc 14 §7 binds it explicitly:
+
+> `AOS_NIX_NATIVE` defaults to `On` **only after** the differential harness is
+> green across the entire AOS package closure, **and stays green in CI**.
+
+with a deliberately staged rollout (§7.1: Phase A harness-in-CI → B Shadow-in-CI
+→ C `eval_expr` → D `instantiate` + VERIFY sampling → E reduced sampling). CI is
+not live on master (the nix-checks suite is unmerged — see the dead-CI finding
+in §3), so the acceptance gate cannot be satisfied yet. The flip is therefore
+STAGED: it proceeds through the §7.1 phases as soon as the CI suite lands
+(a repo-governance decision surfaced to the user separately). No unilateral
+early flip — the RFC's paranoia clause exists precisely for this asymmetry
+(a wrong `.drv` is invisible and forces a from-source rebuild).
+
+**Correction to §1.2 (Ambient interplay), load-bearing for the Phase C/D
+design:** `NixEvalMode::Ambient` is the CLI default (no `--impure-eval` /
+`--pure-eval` / `--restrict-eval` flag), and `select_evaluator_with_config`
+falls back to nix-cli for Ambient even under `AOS_NIX_NATIVE=1`
+("native evaluator requires an explicit evaluation mode",
+`tree_walk_options_from_config`). So an env-default flip alone would be inert
+for a plain `aos build`. Phase C/D must therefore also decide the default
+evaluation policy for NixRunner subcommands (explicit mode per subcommand, or
+ambient-policy resolution at startup) — that design question is part of the
+staged flip, not of this readiness ruling.
