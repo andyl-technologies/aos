@@ -185,6 +185,7 @@ references several structures that do not live in the dumpable arena:
 | **String-context elements** — kept `Arc`-backed deliberately (`38da57c37`; [30](../30-flat-value-architecture.md) §5). | Interior to string values. | **Include** (serialize the context set) or intern into the image; store-path-bearing strings dominate derivation output, so context must round-trip byte-exactly or `.drv` parity breaks. |
 | **Per-module lowered IR** — captures reference `(EvalModuleId, node)`; `EvalModuleId(u32)` is a process-local sequential module-table index (`eval/module.rs:11`; `eval_core/module_env.rs:202-211`). | The module table + each module's `Ir`. | **Reference via a stable key, not the live id.** The live `EvalModuleId` will not survive reload with a different load order; the image must record modules by content key (parse-cache `LoweredIrFingerprint`) and rebuild the id↔module mapping (§6.2). |
 | **Parse-cache handles / JIT code** | `ratchet-oracle/src/cache/parse/`; `aos-nix/src/jit/`. | **Reference / recompute.** Parse artifacts are content-addressed on disk and reload verbatim; JIT native code is never persisted and is always recompiled (`compiled_body_cache.rs:1-8`). Neither needs to be in the image. |
+| **Flat compound-object payload interiors — NOT address-free (found 2026-07-13, stage-1b; see D6).** Two kinds of interior reference live *inside* the arena bytes but are not `(domain, index)` words: (a) `FlatSlice<T> { ptr: NonNull<T>, len }` (`ratchet-value/src/heap/flat/slice.rs:66`) and `FlatBytes` store an **absolute** native pointer into the arena's own trailing bytes, baked at alloc time — used by attrsets (`AttrsStorage::Flat { entries: FlatSlice<AttrEntry>, … }`) and inline string bytes; (b) `NixList` keeps an **owned out-of-arena `Vec<Value>`** spine (FV-4 measured decision, `flat_values/lists.rs:54-65`). | (a) inside the arena bytes but address-*dependent*; (b) outside the arena entirely. | **Make address-free (RULED — option B, §9 decision 5).** (a) offset-based `FlatSlice`/`FlatBytes` resolved through the reservation base on access (stage B1); (b) an inline arena `NixList` spine, revisiting FV-4 (stage B2), with a serialize-list-payloads-only contingency. Absolute pointers dangle on remap at a new base; the owned `Vec` dangles when the source heap drops. This is what actually blocks a raw-arena-dump image of any list/attrset/string. |
 
 **Net prerequisite verdict.** Doc 31 §1 is directionally correct that the flat
 layout + relocation audit are the substrate — but it overstates readiness in
@@ -799,6 +800,32 @@ the decision text supersedes it.
    the structure is cheap to rebuild; include-in-image or reference-by-key are
    used only where rebuild is not cheap. The per-structure decisions of §1.4
    stand under this posture.
+5. **Make the flat compound payloads address-free — option B, staged and
+   perf-gated (2026-07-13, addressing D6 / the §1.4 payload-interior row).** The
+   stage-1b implementation discovered that `FlatSlice`/`FlatBytes` carry absolute
+   pointers and `NixList` carries an owned out-of-arena `Vec`, so the raw-arena
+   dump is address-free only for scalars (D6). Ruling:
+   - **Stage B1 — offset-based `FlatSlice`/`FlatBytes`.** Convert the inline-array
+     witnesses to an arena offset resolved through the reservation base on access
+     (the same `domain -> base` indirection the value words already use; the
+     absolute payload pointer was the odd one out). **Perf gate:** `nix-bench`
+     A/B on the Linux builder, accept **≤1.5% cold** regression; if it exceeds
+     that, **stop and report** — do not tune in place. Behind `candidate_c_value`;
+     byte-parity ×4 per landing.
+   - **Stage B2 (separate increment, only after B1 is green) — inline `NixList`
+     spine, revisiting FV-4.** The FV-4 ~1.5%-qsort decision was measured against
+     nothing on the other side; the prelude snapshot is worth ~2.4 s of the
+     6.3 s cold force on zlib, so the trade is re-measured with that payoff in
+     view. Same A/B gate. **Contingency (not the plan):** if the inline-spine tax
+     is unacceptable, serialize *only* list payloads at capture (a "C-lite"
+     hybrid — offsets make attrs/strings mmap-clean, lists rebuild on load).
+   - **Option A (same-base `MAP_FIXED`) is rejected:** it reintroduces the
+     address-dependence the registry exists to remove and still strands lists.
+   - **Sequencing:** the stage-2 thunk collapse (§3.2) stays **after** B1/B2 —
+     there is no point collapsing thunks into an image whose compound payloads
+     cannot survive the dump. The B-shaped work is independently valuable to a
+     future moving/compacting GC and cross-process value sharing, both of which
+     also want address-free payloads.
 
 **Task-board effect.** Task #6 was gated `blockedBy` task #12 (Candidate-C
 cutover) and task #13 (the S0 prelude-wall-share measurement). **Task #13 is now
