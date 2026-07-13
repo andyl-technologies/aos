@@ -398,12 +398,15 @@ preserves executable modes such as `configure`. Keep this workaround at the
 gcc4_1 boundary; later tiers use newer libc-backed tools and should retain
 their normal manifest recipes.
 
-glibc 2.3.4 and glibc 2.5 hardcode `gettimeofday` and `time` calls through the
-x86_64 fixed vsyscall page. Patch both wrappers to issue normal system calls
-before building either libc. This keeps the static cross-tier tools and the
-glibc 2.5 Bash used by the GCC 4.4 builder portable to kernels booted without
-`vsyscall=emulate` or `vsyscall=xonly`; do not solve this by requiring a legacy
-kernel boot option on build workers.
+glibc 2.3.4, glibc 2.5, and glibc 2.12 hardcode `gettimeofday` and `time` calls
+through the x86_64 fixed vsyscall page. Patch all three wrappers to issue normal
+system calls before building each libc. This keeps the static cross-tier tools,
+the glibc 2.5 Bash used by the GCC 4.4 builder, and GCC 4.8's statically linked
+`cc1` portable to kernels booted without `vsyscall=emulate` or
+`vsyscall=xonly`; do not solve this by requiring a legacy kernel boot option on
+build workers. GCC 4.8's install phase must compile and execute a static program
+that calls both functions so an unusable installed compiler is rejected at its
+producer boundary.
 
 Build the native glibc 2.5 tier with its in-tree NPTL add-on and a Linux 2.6
 kernel floor. RHEL 5 compatibility includes the NPTL `libpthread` ABI, and
