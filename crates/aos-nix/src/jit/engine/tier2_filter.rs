@@ -340,10 +340,10 @@ const fn all_any_continued(promoted: bool, blacklisted: bool) -> Tier2AllAnyHook
     }
 }
 
-// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
-// candidate bridges, or two-word CLIF shape asserts), which declines on the
-// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+// These tests exercise tier-2 curried-chain codegen. They run on both carriers
+// now that the S4b phase-2 one-word emitters have landed; individual tests that
+// still require two-word specifics are gated inline.
+#[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
@@ -458,6 +458,13 @@ mod tests {
 
     /// A closed arithmetic predicate (no environment reads) filters natively
     /// and keeps exactly the oracle's elements, checksum-pinned.
+    ///
+    /// Baseline-only: the `a * 31 + b` checksum fold over the kept set crosses
+    /// the inline `i32` range, so on the one-word carrier the fold operator
+    /// boxes each wide result and deopts — the zero-deopt invariant here is
+    /// two-word-specific. The filter predicate itself lowers on both carriers
+    /// (see [`let_bound_intermediate_predicate_filters_natively`]).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn closed_arithmetic_predicate_keeps_the_same_elements() {
         let source = "builtins.foldl' (a: b: a * 31 + b) 0 \
@@ -630,6 +637,13 @@ mod tests {
     /// test-thread stack (deep `++` spines overflow it well before the
     /// interpreter's own `max_call_depth` — a pre-existing interpreter
     /// limit, unrelated to the filter seam).
+    ///
+    /// Baseline-only: the closing `acc * 31 + x` checksum fold crosses the
+    /// inline `i32` range, so on the one-word carrier that fold operator boxes
+    /// each wide result and deopts — the zero-deopt invariant is
+    /// two-word-specific. The partition predicates themselves (`x < pivot`,
+    /// `x >= pivot`) lower and dispatch on both carriers.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn quicksort_partitions_filter_natively_and_match() {
         let source = "let mod = a: b: a - b * (a / b); \

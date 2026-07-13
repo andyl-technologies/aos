@@ -290,10 +290,10 @@ const fn fold_gen_continued(promoted: bool, blacklisted: bool) -> Tier2FoldHook 
     }
 }
 
-// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
-// candidate bridges, or two-word CLIF shape asserts), which declines on the
-// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+// These tests exercise tier-2 curried-chain codegen. They run on both carriers
+// now that the S4b phase-2 one-word emitters have landed; individual tests that
+// still require two-word specifics are gated inline.
+#[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
@@ -341,6 +341,11 @@ mod tests {
     /// The canonical sum-fold shape — operator with a pinned callee over an
     /// identity generator — fuses, folds natively, and matches the oracle
     /// with zero deopts and zero interpreted element forces on the fused run.
+    ///
+    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
+    /// it has no inline word on the one-word carrier and the fused operator
+    /// declines to lower (never promotes) there by design.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn sum_fold_over_genlist_fuses_and_matches_the_oracle() {
         let source = "let mod = a: b: a - b * (a / b); in \

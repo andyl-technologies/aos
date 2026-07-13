@@ -440,10 +440,10 @@ const fn fold_continued(promoted: bool, blacklisted: bool) -> Tier2FoldHook {
     }
 }
 
-// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
-// candidate bridges, or two-word CLIF shape asserts), which declines on the
-// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+// These tests exercise tier-2 curried-chain codegen. They run on both carriers
+// now that the S4b phase-2 one-word emitters have landed; individual tests that
+// still require two-word specifics are gated inline.
+#[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
@@ -491,6 +491,11 @@ mod tests {
     /// The canonical sum-fold operator — with its truncating-modulus helper as
     /// a pinned inlined callee — folds natively and matches the oracle with
     /// zero deopts.
+    ///
+    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
+    /// it has no inline word on the one-word carrier and the operator declines
+    /// to lower (never promotes) there by design.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn sum_fold_operator_with_pinned_callee_folds_natively() {
         let source = "let mod = a: b: a - b * (a / b); in \
@@ -535,15 +540,39 @@ mod tests {
 
     /// A float element mid-run deopts the native loop at that element; the
     /// interpreted resume reproduces the oracle's exact value.
+    ///
+    /// The folded result is a float. On the two-word carrier a float is inline
+    /// (`(tag, bits)`), so it compares by raw words; on the one-word carrier a
+    /// float boxes into an evaluator-owned arena whose word embeds an
+    /// evaluator-specific domain, so the result is compared by decoded value
+    /// through each evaluator's heap rather than by raw words.
     #[test]
     fn float_element_deopts_mid_run_and_matches_the_oracle() {
         let source = "builtins.foldl' (a: b: a + b) 0 \
              (builtins.genList (i: if i == 40 then 0.5 else i) 64)";
-        let oracle = eval_oracle(source);
-        let (native, stats) = eval_with_tier2(source);
+        let oracle_ir = lower(source);
+        let mut oracle_eval = TreeWalk::new(&oracle_ir);
+        let oracle = oracle_eval.eval_root().expect("oracle evaluates");
 
-        assert!(
-            oracle.raw_eq(native),
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(NixJitTier1Engine::new().expect("engine builds")));
+        let native = eval.eval_root().expect("tier-2 evaluation succeeds");
+        let stats = eval.stats();
+
+        let oracle_float = oracle_eval
+            .heap()
+            .decode_float_value(oracle)
+            .expect("oracle float decodes");
+        let native_float = eval
+            .heap()
+            .decode_float_value(native)
+            .expect("native float decodes");
+        assert_eq!(
+            oracle_float.to_bits(),
+            native_float.to_bits(),
             "fold deopt changed a result: oracle {oracle:?} vs native {native:?}"
         );
         assert!(
@@ -589,6 +618,11 @@ mod tests {
     /// A fold operator with a `let`-bound intermediate compiles: the binding
     /// becomes a virtual register and the fused genList loop still fires
     /// (the improved sum-fold shape), matching the oracle with zero deopts.
+    ///
+    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
+    /// it has no inline word on the one-word carrier and the operator declines
+    /// to lower (never promotes) there by design.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn let_bound_intermediate_fold_operator_folds_natively() {
         let source = "builtins.foldl'              (acc: i: let m = acc + i * i + 2654435761;               in m - 1000000007 * (m / 1000000007)) 0              (builtins.genList (i: i) 500)";
@@ -616,9 +650,36 @@ mod tests {
 
     /// Nested dependent lets compile: an inner binding may read an outer
     /// one, and both become virtual registers.
+    ///
+    /// Baseline-only: `b + a` (the fold result) grows ~4x per element and
+    /// crosses the inline `i32` range within the run, so on the one-word
+    /// carrier every wide result boxes and deopts the encode guard — the
+    /// zero-deopt, inline-result invariant is two-word-specific. The one-word
+    /// let-scope machinery is covered by
+    /// [`nested_dependent_lets_fold_natively_in_range`].
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn nested_dependent_lets_fold_natively() {
         let source = "builtins.foldl'              (acc: i: let a = acc + i; in let b = a * 3; in b + a) 0              (builtins.genList (i: i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native), "nested-let fold changed a result");
+        assert!(
+            stats.tier2_dispatched() >= 1,
+            "the nested-let fold must run natively, got {stats:?}"
+        );
+        assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
+    }
+
+    /// The one-word sibling of [`nested_dependent_lets_fold_natively`]: a
+    /// shorter run keeps every fold result inside the inline `i32` range, so
+    /// the nested `let`-scope virtual registers fold natively with zero deopts
+    /// on the compressed carrier and match the oracle by raw words.
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn nested_dependent_lets_fold_natively_in_range() {
+        let source = "builtins.foldl'              (acc: i: let a = acc + i; in let b = a * 3; in b + a) 0              (builtins.genList (i: i) 8)";
         let oracle = eval_oracle(source);
         let (native, stats) = eval_with_tier2(source);
 

@@ -524,10 +524,10 @@ pub(super) fn chain_guard_argv(
     Some(argv)
 }
 
-// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
-// candidate bridges, or two-word CLIF shape asserts), which declines on the
-// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+// These tests exercise tier-2 curried-chain codegen. They run on both carriers
+// now that the S4b phase-2 one-word emitters have landed; individual tests that
+// still require two-word specifics are gated inline.
+#[cfg(test)]
 mod tests {
     use std::{
         fs,
