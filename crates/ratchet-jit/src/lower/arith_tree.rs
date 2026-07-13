@@ -36,36 +36,41 @@
 //! which blacklists the def-site: a body that cannot be proven safe stays on the
 //! tree walk rather than risking a wrong compilation.
 
-use cranelift_codegen::{
-    cursor::{Cursor, FuncCursor},
-    ir::{Function, InstBuilder, condcodes::IntCC, types},
-};
-use ratchet_core::{
-    IrArena, IrData, IrId, IrKind, runtime_thunk_call_signature, syntax::BinOpKind,
-};
+#[cfg(not(feature = "candidate_c_value"))]
+use cranelift_codegen::cursor::{Cursor, FuncCursor};
+#[cfg(not(feature = "candidate_c_value"))]
+use cranelift_codegen::ir::{Function, InstBuilder, types};
+use cranelift_codegen::ir::condcodes::IntCC;
+#[cfg(not(feature = "candidate_c_value"))]
+use ratchet_core::runtime_thunk_call_signature;
+use ratchet_core::{IrArena, IrData, IrId, IrKind, syntax::BinOpKind};
 
+use super::JitLowerError;
+#[cfg(not(feature = "candidate_c_value"))]
 use super::{
-    AOS_DEOPT_SYMBOL, AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
+    AOS_DEOPT_SYMBOL, AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
     clif_name_for_ir_root, import_env_get_function, import_runtime_helper_function,
     import_upval_get_function, stack_maps, thunk_body_artifact, verify_clif_function,
 };
-use crate::{
-    abi::clif_signature_for_runtime_call,
-    artifact::{JitClifArtifact, JitClifArtifactSource},
-};
+use crate::artifact::JitClifArtifact;
+#[cfg(not(feature = "candidate_c_value"))]
+use crate::{abi::clif_signature_for_runtime_call, artifact::JitClifArtifactSource};
 
 /// A Cranelift SSA value, aliased to avoid confusion with the runtime `Value`.
+#[cfg(not(feature = "candidate_c_value"))]
 type ClifValue = cranelift_codegen::ir::Value;
 
 /// The runtime tag word for an inline integer value (`ValueTag::Int`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_INT: i64 = 0x00;
 /// The runtime tag word for an inline boolean value (`ValueTag::Bool`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_BOOL: i64 = 0x02;
 
 /// The scalar operation a supported `BinOp` lowers to.
 #[derive(Clone, Copy)]
-enum ArithKind {
+pub(super) enum ArithKind {
     /// Wrapping integer addition.
     Add,
     /// Wrapping integer subtraction.
@@ -83,7 +88,7 @@ enum ArithKind {
 /// Returns `None` for operators outside the arithmetic/comparison grammar
 /// (including attr update, list concat, and the short-circuiting boolean and
 /// pipe operators), so the caller can reject the shape.
-fn classify(op: BinOpKind) -> Option<ArithKind> {
+pub(super) fn classify(op: BinOpKind) -> Option<ArithKind> {
     Some(match op {
         BinOpKind::Add => ArithKind::Add,
         BinOpKind::Sub => ArithKind::Sub,
@@ -100,6 +105,7 @@ fn classify(op: BinOpKind) -> Option<ArithKind> {
 }
 
 /// Shared CLIF references and entry values threaded through the tree emitter.
+#[cfg(not(feature = "candidate_c_value"))]
 struct ArithCtx {
     /// Imported `aos_env_get` helper for local-slot loads.
     env_get: cranelift_codegen::ir::FuncRef,
@@ -161,19 +167,25 @@ pub(super) fn lower_binop_ir_thunk_body_artifact(
     if op == BinOpKind::Update {
         return super::lower_update_local_slots_ir_thunk_body_artifact(arena, root);
     }
-    // Update routes to the delegating aos_update lowerer above; everything
-    // below decodes integer payloads inline, which is two-word-carrier
-    // codegen, so the one-word carrier declines here (S4b phase 2).
-    super::value_words::require_two_word_carrier("arith-tree")?;
-    if classify(op).is_none() {
-        return Err(JitLowerError::UnsupportedArithOp { op });
-    }
+    // Update routes to the delegating aos_update lowerer above. The inline
+    // arithmetic below is per-carrier codegen: the two-word emitter threads
+    // (tag, payload) pairs, the one-word emitter decodes compressed words.
+    #[cfg(feature = "candidate_c_value")]
+    return super::arith_tree_compressed::lower_binop_compressed_ir_thunk_body_artifact(
+        arena, root, binop_id,
+    );
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        if classify(op).is_none() {
+            return Err(JitLowerError::UnsupportedArithOp { op });
+        }
 
-    let function = build_arith_function(arena, root, binop_id)?;
-    Ok(thunk_body_artifact(
-        JitClifArtifactSource::IrRoot(root),
-        function,
-    ))
+        let function = build_arith_function(arena, root, binop_id)?;
+        Ok(thunk_body_artifact(
+            JitClifArtifactSource::IrRoot(root),
+            function,
+        ))
+    }
 }
 
 /// Returns the operator and operand ids of a `BinOp` node.
@@ -183,7 +195,10 @@ pub(super) fn lower_binop_ir_thunk_body_artifact(
 /// Returns [`JitLowerError::MissingIrBody`] when the node is absent and
 /// [`JitLowerError::MismatchedIrNodeData`] when it is not a binary-operator node
 /// with a binary payload.
-fn binop_operands(arena: &IrArena, id: IrId) -> Result<(BinOpKind, IrId, IrId), JitLowerError> {
+pub(super) fn binop_operands(
+    arena: &IrArena,
+    id: IrId,
+) -> Result<(BinOpKind, IrId, IrId), JitLowerError> {
     let node = arena
         .node(id)
         .copied()
@@ -211,6 +226,7 @@ fn binop_operands(arena: &IrArena, id: IrId) -> Result<(BinOpKind, IrId, IrId), 
 /// the operand errors of [`emit_binop`], [`JitLowerError::MissingEntryBlockParameter`]
 /// when the entry block lacks the runtime or environment parameter, and
 /// [`JitLowerError::Verifier`] when Cranelift rejects the generated body.
+#[cfg(not(feature = "candidate_c_value"))]
 fn build_arith_function(
     arena: &IrArena,
     root: IrId,
@@ -281,6 +297,7 @@ fn build_arith_function(
 /// Returns [`JitLowerError::MissingArithOperand`] when the operand node is
 /// absent, [`JitLowerError::UnsupportedArithOperand`] for an operand outside the
 /// grammar, and the call-arity errors of the helper calls it emits.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_operand(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -341,7 +358,7 @@ fn emit_operand(
 /// slot reads, nested binary operators). Used to decide whether the arithmetic
 /// body needs to import `aos_upval_get`, so a pure local-slot tree declares no
 /// upvalue import.
-fn arith_tree_reads_upval(arena: &IrArena, id: IrId) -> bool {
+pub(super) fn arith_tree_reads_upval(arena: &IrArena, id: IrId) -> bool {
     let Some(node) = arena.node(id).copied() else {
         return false;
     };
@@ -366,6 +383,7 @@ fn arith_tree_reads_upval(arena: &IrArena, id: IrId) -> bool {
 ///
 /// Returns [`JitLowerError::UnsupportedArithOp`] for an unsupported operator and
 /// the operand errors of [`emit_operand`].
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -430,6 +448,7 @@ fn emit_binop(
 }
 
 /// Materializes an integer runtime value word pair from a computed payload.
+#[cfg(not(feature = "candidate_c_value"))]
 fn int_word_pair(cursor: &mut FuncCursor, payload: ClifValue) -> (ClifValue, ClifValue) {
     let tag = cursor.ins().iconst(types::I64, TAG_INT);
     (tag, payload)
@@ -447,6 +466,7 @@ fn int_word_pair(cursor: &mut FuncCursor, payload: ClifValue) -> (ClifValue, Cli
 ///
 /// Returns [`JitLowerError::InvalidRuntimeCallResultArity`] if the frozen
 /// `aos_deopt` ABI stops returning a two-word value.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_deopt_block(cursor: &mut FuncCursor, ctx: &ArithCtx) -> Result<(), JitLowerError> {
     cursor.insert_block(ctx.deopt);
     let deopt_record = cursor.ins().iconst(types::I64, 0);
@@ -467,6 +487,7 @@ fn emit_deopt_block(cursor: &mut FuncCursor, ctx: &ArithCtx) -> Result<(), JitLo
 /// Returns [`JitLowerError::InvalidRuntimeCallResultArity`] when the callee does
 /// not produce exactly two CLIF results, i.e. the frozen two-word `Value` return
 /// ABI changed.
+#[cfg(not(feature = "candidate_c_value"))]
 fn call2(
     cursor: &mut FuncCursor,
     callee: cranelift_codegen::ir::FuncRef,

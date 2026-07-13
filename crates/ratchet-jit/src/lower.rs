@@ -34,6 +34,8 @@ use crate::{
     tier::JitTier,
 };
 mod arith_tree;
+#[cfg(feature = "candidate_c_value")]
+mod arith_tree_compressed;
 mod alloc_cons;
 mod candidate_b;
 mod candidate_c;

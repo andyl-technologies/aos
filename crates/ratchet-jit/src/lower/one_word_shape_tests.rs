@@ -181,7 +181,7 @@ fn apply_local_slots_passes_one_word_per_operand() {
 }
 
 #[test]
-fn arith_tree_declines_on_the_one_word_carrier() {
+fn arith_tree_lowers_to_one_word_compressed_codegen() {
     let arena = IrArena::from_raw_parts(
         vec![
             node(IrKind::LocalVar, IrData::Local { slot: 0 }),
@@ -198,12 +198,64 @@ fn arith_tree_declines_on_the_one_word_carrier() {
         Vec::new(),
     );
 
+    let function =
+        lower_tier1_ir_thunk_body(&arena, IrId::new(2)).expect("arith tree lowers one-word");
+    assert_eq!(return_arity(&function), 1);
+}
+
+/// A comparison root selects between the two canonical boolean words.
+#[test]
+fn arith_comparison_embeds_both_boolean_words() {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            node(IrKind::Int, IrData::Int(1)),
+            node(IrKind::Int, IrData::Int(2)),
+            node(
+                IrKind::BinOp,
+                IrData::Binary {
+                    op: BinOpKind::Lt,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+
+    let function =
+        lower_tier1_ir_thunk_body(&arena, IrId::new(2)).expect("comparison lowers one-word");
+    let words = iconst_words(&function);
+    assert!(words.contains(&CompressedValueWord::boolean(true).raw()));
+    assert!(words.contains(&CompressedValueWord::boolean(false).raw()));
+}
+
+/// A wide integer literal operand can never pass the inline guard, so the
+/// lowering declines up front and the def-site stays on the tree walk.
+#[test]
+fn arith_tree_declines_wide_literal_operands() {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            node(IrKind::Int, IrData::Int(i64::from(i32::MAX) + 1)),
+            node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+            node(
+                IrKind::BinOp,
+                IrData::Binary {
+                    op: BinOpKind::Add,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+
     let error = lower_tier1_ir_thunk_body(&arena, IrId::new(2))
-        .expect_err("arith trees are two-word codegen");
+        .expect_err("wide literal has no inline word");
     assert!(matches!(
         error,
-        JitLowerError::CarrierUnsupportedShape {
-            shape: "arith-tree"
+        JitLowerError::UnsupportedArithOperand {
+            kind: IrKind::Int,
+            ..
         }
     ));
 }

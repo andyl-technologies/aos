@@ -669,9 +669,6 @@ mod tests {
         assert_eq!(native.trap, Some(RuntimeTrap::Deopt));
     }
 
-    // Arith trees decline on the one-word carrier (inline payload decode is
-    // two-word codegen), so this differential runs on the baseline only.
-    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn upvalue_operand_arith_native_computes_through_aos_upval_get() {
         // Body: `upval(depth 1, slot 0) + 1`. The upvalue holds 41 one frame above
@@ -760,9 +757,6 @@ mod tests {
         assert!(eval.last_gc_sweep_report().is_some());
     }
 
-    // Arith trees decline on the one-word carrier (inline payload decode is
-    // two-word codegen), so this differential runs on the baseline only.
-    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn binary_local_arith_native_sweeps_with_live_lhs_map() {
         let arena = IrArena::from_raw_parts(
