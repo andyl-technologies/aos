@@ -104,10 +104,24 @@ pub(crate) fn embedded_constant_words(value: Value) -> Result<[i64; VALUE_WORDS]
 pub(crate) fn embedded_constant_words(value: Value) -> Result<[i64; VALUE_WORDS], JitLowerError> {
     use ratchet_value::value::{ValueTag, compressed::CompressedValueWord};
 
+    // Decode through the typed accessors, not `payload_bits`: on this carrier
+    // the payload bits are the whole compressed word, and inline integers
+    // store a sign-extended `i32` that only `as_int` decodes correctly. The
+    // accessors also reject boxed scalars, whose words carry arena indices.
     let word = match value.tag() {
-        ValueTag::Int => CompressedValueWord::inline_int(value.payload_bits() as i64)
-            .map_err(|_| JitLowerError::ArenaBackedConstant { tag: ValueTag::Int })?,
-        ValueTag::Bool => CompressedValueWord::boolean(value.payload_bits() != 0),
+        ValueTag::Int => {
+            let int = value
+                .as_int()
+                .map_err(|_| JitLowerError::ArenaBackedConstant { tag: ValueTag::Int })?;
+            CompressedValueWord::inline_int(int)
+                .map_err(|_| JitLowerError::ArenaBackedConstant { tag: ValueTag::Int })?
+        }
+        ValueTag::Bool => {
+            let boolean = value
+                .as_bool()
+                .map_err(|_| JitLowerError::ArenaBackedConstant { tag: ValueTag::Bool })?;
+            CompressedValueWord::boolean(boolean)
+        }
         ValueTag::Null => CompressedValueWord::null(),
         tag => return Err(JitLowerError::ArenaBackedConstant { tag }),
     };

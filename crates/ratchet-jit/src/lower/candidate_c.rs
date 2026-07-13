@@ -70,10 +70,21 @@ pub fn lower_candidate_c_constant_ir_thunk_body_artifact(
 }
 
 fn arena_independent_word(value: Value) -> Result<CompressedValueWord, JitCandidateCConstantError> {
+    // Decode through the typed accessors, not `payload_bits`: on the one-word
+    // carrier the payload bits are the whole compressed word, and inline
+    // integers store a sign-extended `i32` that only `as_int` decodes
+    // correctly. The accessors also reject boxed scalars, whose words carry
+    // arena indices.
     match value.tag() {
-        ValueTag::Int => CompressedValueWord::inline_int(value.payload_bits() as i64)
-            .map_err(|_| JitCandidateCConstantError::RequiresArena { tag: ValueTag::Int }),
-        ValueTag::Bool => Ok(CompressedValueWord::boolean(value.payload_bits() != 0)),
+        ValueTag::Int => value
+            .as_int()
+            .ok()
+            .and_then(|int| CompressedValueWord::inline_int(int).ok())
+            .ok_or(JitCandidateCConstantError::RequiresArena { tag: ValueTag::Int }),
+        ValueTag::Bool => value
+            .as_bool()
+            .map(CompressedValueWord::boolean)
+            .map_err(|_| JitCandidateCConstantError::RequiresArena { tag: ValueTag::Bool }),
         ValueTag::Null => Ok(CompressedValueWord::null()),
         tag => Err(JitCandidateCConstantError::RequiresArena { tag }),
     }

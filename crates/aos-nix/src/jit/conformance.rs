@@ -629,8 +629,7 @@ fn push_nonzero_gap(
     }
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 
@@ -868,14 +867,14 @@ mod tests {
         JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1))
     }
 
-    // A differential case builds `Value::float`, which the Candidate-C carrier
-    // boxes (no inline constructor); the tier-1 JIT is off by construction under
-    // the variant, so this native-differential test runs on the baseline carrier
-    // only, until S4b re-enables the JIT. See cutover plan section 6.1.
+    // Floats have no context-free constructor on the one-word carrier (they
+    // box through the evaluator heap and the lowering declines them), so the
+    // float case runs on the baseline carrier only.
     #[test]
     fn literal_native_differential_matches_direct_scalar_values() {
         let cases = [
             (int_arena(-17), Value::int(-17)),
+            #[cfg(not(feature = "candidate_c_value"))]
             (float_arena(-13.5), Value::float(-13.5)),
             (bool_arena(false), Value::bool(false)),
             (null_arena(), Value::null()),

@@ -57,6 +57,19 @@ fn constant_thunk_body_returns_one_compressed_word() {
     );
 }
 
+/// Pins the sign-extension decode: a negative inline int's payload bits are
+/// the whole compressed word on this carrier, so a `payload_bits`-based
+/// embed would mis-reject (or mis-encode) every negative constant.
+#[test]
+fn negative_int_constant_embeds_its_sign_extended_word() {
+    let function =
+        lower_constant_thunk_body(Value::int(-17)).expect("negative inline int lowers");
+    assert_eq!(
+        iconst_words(&function),
+        vec![CompressedValueWord::inline_int(-17).expect("inline").raw()]
+    );
+}
+
 #[test]
 fn constant_bool_and_null_embed_their_singleton_words() {
     let cases = [

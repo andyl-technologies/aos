@@ -101,6 +101,9 @@ fn update_merges_attrsets_matching_tree_walk() {
     );
 }
 
+// Arith trees decline on the one-word carrier (inline payload decode is
+// two-word codegen), so this differential runs on the baseline only.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn integer_arithmetic_matches_tree_walk() {
     use ratchet_core::syntax::BinOpKind;
@@ -124,6 +127,9 @@ fn integer_arithmetic_matches_tree_walk() {
     }
 }
 
+// Arith trees decline on the one-word carrier (inline payload decode is
+// two-word codegen), so this differential runs on the baseline only.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn integer_comparison_matches_tree_walk() {
     use ratchet_core::syntax::BinOpKind;
@@ -149,6 +155,9 @@ fn integer_comparison_matches_tree_walk() {
     }
 }
 
+// Arith trees decline on the one-word carrier (inline payload decode is
+// two-word codegen), so this differential runs on the baseline only.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn integer_division_by_zero_transfers_trap() {
     use ratchet_core::syntax::BinOpKind;
@@ -163,6 +172,9 @@ fn integer_division_by_zero_transfers_trap() {
     );
 }
 
+// Arith trees decline on the one-word carrier (inline payload decode is
+// two-word codegen), so this differential runs on the baseline only.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn integer_division_overflow_transfers_trap() {
     use ratchet_core::syntax::BinOpKind;

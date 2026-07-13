@@ -915,6 +915,5 @@ fn binary_slot_ir(arena: IrArena) -> Ir {
     }
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests;
