@@ -833,6 +833,67 @@ complete and the gate PASSES (GO, above).** Task #12 (address-free carrier via
 the Candidate-C cutover) is the **sole remaining blocker**; #6 begins
 implementation from §7 once #12 lands.
 
+## 10. Stage B2 plan — inline `NixList` spine (+ C-lite contingency)
+
+Concrete plan for §9 decision 5's stage B2, written after the stage-B1
+address-free `FlatSlice`/`FlatBytes` landing. B2 makes the last non-address-free
+compound payload — the `NixList` spine — snapshottable. It is gated on B1's cold
+perf gate being green and, itself, on the same `nix-bench` A/B ≤1.5% discipline
+(the `sort`/`qsort` leg is the one to watch).
+
+### 10.1 The surface (FV-4 revisit)
+
+`NixList` is `{ elements: Vec<Value> }` (`ratchet-value/src/list.rs:16`) — an
+owned **out-of-arena** `Vec`, so a flat list object's arena bytes hold only a
+`Vec` header whose backing frees when the source heap drops (D6). Its own module
+doc already anticipates the fix: "Later heap layouts can replace the backing
+storage with an inline flexible-array object without changing the safe access
+surface." The model to mirror is `FlatAttrs`: `AttrsStorage::{ Owned { Vec },
+Flat { FlatSlice } }` (`ratchet-value/src/attrs.rs:92`), which already inlines
+its entries via `alloc_with_trailing` and deep-copies `Flat → Owned` on `Clone`.
+
+### 10.2 B2-primary — the inline spine
+
+- **Representation:** give `NixList` a `NixListStorage::{ Owned(Vec<Value>),
+  Flat(FlatSlice<Value>) }` exactly like `AttrsStorage`. `Flat` is address-free
+  by construction via B1, so a flat list object survives a snapshot remap.
+- **Allocation:** `flat_alloc_list`
+  (`ratchet-oracle/src/eval/heap/flat_values/lists.rs:66`) switches from
+  `alloc_with_aux` (which *moves* the owned `NixList` in, `Vec` and all) to
+  `alloc_with_trailing`, writing the spine inline as a `FlatSlice<Value>` and
+  storing a `Flat` `NixList` — the `flat_alloc_attrs` shape.
+- **Access surface to dual-dispatch:** `get`/`get_ref`/`as_slice`/`iter`/`len`/
+  `is_empty` match on the storage. `Clone` deep-copies `Flat → Owned` (a `Flat`
+  witness must never escape the store, per `FlatAttrs::Clone`).
+- **Landmines:** `into_vec(self) -> Vec<Value>` and `concat` currently *move* the
+  owned `Vec`; for a `Flat` list they must **copy out** (`as_slice().to_vec()`).
+  Both are used by list builtins, so this is a real allocation the old path did
+  not pay.
+- **Perf risk (why FV-4 rejected it):** `sort` reads the input spine
+  (`as_slice`/`get`) repeatedly under the comparator and allocates a **new** list
+  from the sorted `Vec`, so under B2 it pays (a) a per-element `NixListStorage`
+  enum-tag match (FV-4 measured ~+1% qsort), (b) B1's per-`as_slice`
+  `reservation_base` lookup for `Flat` lists, and (c) an `alloc_with_trailing`
+  per sort result. FV-4 measured the inline spine at ~+1.5% qsort against *no*
+  payoff; B2 re-measures with the snapshot payoff (~2.4 s of the 6.3 s zlib cold
+  force) on the other side of the scale. `sort`/`qsort` is the gating A/B leg.
+
+### 10.3 B2-fallback — C-lite list-payload serialization (contingency)
+
+If B2-primary fails its ≤1.5% gate, keep `NixList` as the owned `Vec` (zero
+hot-path change) and instead serialize list spines at capture:
+
+- **Capture:** walk the `flat_lists` store; for each list object serialize its
+  `Vec` element run into a dedicated image "list-spine" segment keyed by the
+  object's `ArenaIndex`.
+- **Restore:** rebuild each `Vec` from the segment and **patch** the flat object's
+  stale `Vec` header (ptr/len/cap) in place — a per-list writeback at load,
+  enumerated through the restored `flat_lists` store.
+
+This moves all cost to capture/restore and leaves eval untouched, at the price of
+a bespoke (list-scoped) value-graph serializer rather than the pure
+"mmap the arena" ideal. It is the contingency, not the plan.
+
 ---
 
 **Bottom line.** The flat-object substrate genuinely exists and the heap graph
