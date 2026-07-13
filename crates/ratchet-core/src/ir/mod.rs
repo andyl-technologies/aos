@@ -19,6 +19,7 @@ use crate::syntax::{
 };
 
 mod annotate;
+mod beta_reduce;
 mod case_of_known;
 mod const_fold;
 mod dead_binding_elim;
@@ -31,6 +32,7 @@ pub use annotate::{
     IR_ANALYSIS_VERSION, IrAnalysisError, IrAnalysisReport, IrDependencyFootprint,
     IrFrameCaptureFootprint, annotate_import_ir, annotate_ir,
 };
+pub use beta_reduce::BetaReduceApply;
 pub use case_of_known::CaseOfKnown;
 pub use const_fold::ConstFold;
 pub use dead_binding_elim::DeadBindingElim;

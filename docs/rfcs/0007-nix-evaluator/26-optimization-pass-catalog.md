@@ -643,12 +643,22 @@ The simplifier is the GHC-style Core-to-Core optimizer (decision `C-21`), a memo
 > single-use bindings, and dead bindings all fire rarely enough on real Nix that
 > the per-parse fact refresh offsets any win, and the warm-load annotate savings
 > are sub-noise against eval. **The perf lever is NOT literal/structural
-> simplification — it is beta-reduction of lambda applications (§2.1 full),**
-> which needs compacting rebuild/remap + de-Bruijn renumbering and is sequenced
-> **after the JIT ABI stabilizes (snapshot-design S4b)** so IR is not renumbered
-> under a moving JIT. `Select`/`HasAttr` case-of-known, CSE, eta, let-floating,
-> and the rest mostly fire only after beta-reduction exposes constructors at use
-> sites. See `design-notes/simplifier-implementation-plan.md` §9.
+> simplification — it is beta-reduction of lambda applications (§2.1 full).**
+>
+> **UPDATE (2026-07-12): the literal-apply cut of beta IS LANDED**
+> (`BetaReduceApply`, `ir/beta_reduce.rs`): `Apply(Lambda-literal, arg)` →
+> `Let` **reusing the lambda's one-slot frame**, which keeps every de-Bruijn
+> reference in the body valid with **zero renumbering** (only the argument
+> subtree shifts one binder, in place) — so this cut needed neither the
+> compacting rebuild nor the S4b sequencing. Byte-parity green default AND
+> engaged (JIT, serial, K=4). Neutral-within-noise on leaf packages (immediate
+> literal application is rare in package scaffolding); the decisive
+> measurement is the module-system **toplevel** A/B, pending on the Linux
+> builder. The REMAINING §2.1 surface — inlining named/`Once` lambdas across
+> binders — still needs compacting rebuild/remap + renumbering and stays
+> sequenced after S4b. `Select`/`HasAttr` case-of-known, CSE, eta,
+> let-floating, and the rest mostly fire only after beta exposes constructors
+> at use sites. See `design-notes/simplifier-implementation-plan.md` §9.
 
 ### The driver (§1, §3)
 
