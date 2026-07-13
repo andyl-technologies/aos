@@ -17,6 +17,32 @@ use super::*;
 
 static NEXT_HEAP_REGION_OWNER: AtomicU64 = AtomicU64::new(1);
 
+/// A thunk handle detached from the heap for the force path (doc 15 §5.5).
+///
+/// [`EvalHeap::share_thunk`] returns this so the serial flat store can hand back
+/// a cheap [`Shared`](Self::Shared) `Arc` clone minted on a thunk's first force,
+/// while the record-table and shared-backend paths keep returning an
+/// [`Owned`](Self::Owned) clone with no behavior change and no extra allocation
+/// (I2 promotes those to `Shared` too). Both dereference to `&EvalThunk`, so the
+/// serial and parallel force paths read the handle uniformly.
+pub(crate) enum ClonedThunk {
+    /// An owned clone, from the record-table or shared-backend paths (pre-I2).
+    Owned(EvalThunk),
+    /// A shared handle minted lazily on the serial flat force path (I1).
+    Shared(Arc<EvalThunk>),
+}
+
+impl std::ops::Deref for ClonedThunk {
+    type Target = EvalThunk;
+
+    fn deref(&self) -> &EvalThunk {
+        match self {
+            Self::Owned(thunk) => thunk,
+            Self::Shared(thunk) => thunk,
+        }
+    }
+}
+
 /// A whole-heap high-water memory-budget decision.
 ///
 /// `EvalHeap` owns a worker allocation domain and a permanent shared domain, so
@@ -2618,22 +2644,23 @@ impl EvalHeap {
         }
     }
 
-    /// Returns an `Arc`-shared handle to the thunk referenced by `value`.
+    /// Returns a force-path handle to the thunk referenced by `value`.
     ///
     /// This is the force path's cheap replacement for [`clone_thunk`]
     /// (doc 15 §5.5 cheap-thunk-clone I1). For a serial flat thunk it mints an
     /// `Arc<EvalThunk>` on first force ([`flat_share_thunk`]) and caches it in
-    /// the flat slot, so every force after the first pays a single `Arc::clone`
-    /// (one refcount increment) instead of copying the whole ~128-byte record
-    /// and re-incrementing its ~5 inner `Arc`s. Forcing reads all the thunk's
-    /// handles *through* the returned `Arc`, releasing the heap borrow before
-    /// re-entering evaluation exactly as the owned clone did.
+    /// the flat slot, returning [`ClonedThunk::Shared`], so every force after the
+    /// first pays a single `Arc::clone` (one refcount increment) instead of
+    /// copying the whole ~128-byte record and re-incrementing its ~5 inner
+    /// `Arc`s. Forcing reads the thunk's handles *through* the shared `Arc`,
+    /// releasing the heap borrow before re-entering evaluation exactly as the
+    /// owned clone did.
     ///
-    /// Shared-backend (parallel) and record-table thunks are not yet minted (I2
-    /// extends the handle to them); until then they fall back to
-    /// `Arc::new(self.clone_thunk(value)?)`, which is the previous owned clone
-    /// wrapped in one allocation. Those paths are cold relative to the serial
-    /// flat store that carries essentially all toplevel forces.
+    /// Shared-backend (parallel) and record-table thunks are not yet minted; I2
+    /// extends the shared handle to them. Until then they return
+    /// [`ClonedThunk::Owned`] — the previous owned clone, unchanged and with no
+    /// extra allocation — so I1 stays strictly a flat-hot-path change with zero
+    /// regression on those (cold) paths.
     ///
     /// # Errors
     ///
@@ -2643,14 +2670,14 @@ impl EvalHeap {
     ///
     /// [`clone_thunk`]: Self::clone_thunk
     /// [`flat_share_thunk`]: Self::flat_share_thunk
-    pub(crate) fn share_thunk(&mut self, value: Value) -> Result<Arc<EvalThunk>, EvalHeapError> {
+    pub(crate) fn share_thunk(&mut self, value: Value) -> Result<ClonedThunk, EvalHeapError> {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
         if self.shared.is_none() {
             if let Some(shared) = self.flat_share_thunk(ptr)? {
-                return Ok(shared);
+                return Ok(ClonedThunk::Shared(shared));
             }
         }
-        Ok(Arc::new(self.clone_thunk(value)?))
+        Ok(ClonedThunk::Owned(self.clone_thunk(value)?))
     }
 
     /// Clones lambda metadata so application can release the heap borrow before evaluating the body.
