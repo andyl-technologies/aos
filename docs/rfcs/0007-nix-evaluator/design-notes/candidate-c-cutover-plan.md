@@ -501,6 +501,27 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   embedding as plain `iconst.i64`, decoded self-call arguments, and
   boundary-only encode with a deopt on wide escapes (task #30). S5
   promotion is BLOCKED on phase 3 plus the residual-tax attribution.
+
+  **S5 MATRIX RE-RUN (2026-07-13, same builder/method, after decoded-core
+  task #30 + the decode-accessor inline pass #31 + the HAMT incremental
+  insert fix): CLEAN SWEEP.** Variant/baseline cold medians: sum-fold
+  **0.948x** (was 290x), qsort **0.985x** (RSS 412 vs 484 MiB — the boxing
+  cliff is gone from memory too), tak 0.908x, string-builder 0.978x,
+  lambda-interp 0.983x, hash-loop 0.998x, all-any 1.007x, fib 1.043x,
+  packages 1.007-1.013x, wide-eval 1.017x/1.006x with 208 vs 220 MiB. The
+  attr-fixpoint cold 1.30x in the matrix was a transient: an 8-sample
+  re-run measures variant 0.492s vs baseline 0.539s cold (**0.91x**) and
+  0.96x warm. The variant wins or ties every leg within noise while
+  holding the memory advantage everywhere — the §6.1(1) kill-date
+  criterion's performance clause is MET. Remaining for the promotion
+  ruling: the strict-JSON fuzz parity matrix (in flight) and the
+  546-package full-corpus re-anchor at this HEAD (in flight). Promotion
+  mechanics recommendation (lead): flip `candidate_c_value` into the
+  default build first (small, reversible), and schedule the Active-carrier
+  DELETION as a separate follow-up commit after a deprecation window with
+  the default flipped — the kill-date criterion is met, but the deletion
+  is large and erases the fallback, so it should not ride the same commit
+  as the flip.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
