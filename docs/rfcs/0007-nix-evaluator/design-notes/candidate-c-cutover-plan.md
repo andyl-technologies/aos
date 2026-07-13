@@ -377,6 +377,30 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   geometry is GC-stress + sweep-zero proven, wire the active JIT dispatch to the
   Candidate-C layout under the variant and add `AOS_NIX_JIT=1` to the S4 gate.
   This decouples the two hardest risks (carrier flip vs. stack-map rework).
+
+  **STATUS (2026-07-12): increment 1 LANDED** (82113215b..bb63c3110). S2
+  dissolved into the flip (under the variant `runtime_abi_value_layout()` is
+  one-word, so the frozen-signature adapter and the `-> Value` FFI helpers are
+  already one-word ABI). S3's one-word geometry landed beside the two-word one
+  in `lower/stack_maps.rs`; the runtime-side binding walker strides by
+  `size_of::<Value>()`. The delegating tier-1 shapes (constant, env/upval get
+  + forced, primop trampoline, stringLength inline, apply, update,
+  select/has-attr) emit through a width-generic `lower/value_words.rs` facade
+  and lower on both carriers; `emit_value_return` embeds only
+  arena-independent compressed words (wide ints/floats decline as
+  `ArenaBackedConstant`, decoded via `as_int`/`as_bool` — `payload_bits` is
+  the whole word on this carrier and loses sign extension). Compound emitters
+  (inline arith trees, alloc-cons, tier-2 lambda bodies) decline at their
+  entries via `require_two_word_carrier` and stay on the tree walk. The engine
+  and `AOS_NIX_JIT` gates are open on both carriers; ~370 JIT tests run under
+  the variant (native execution, publish/dispatch, differentials), with only
+  genuinely two-word test bodies still baseline-gated. Gate results: byte
+  parity x4 (zlib/openssl/bash/coreutils) green on the variant release binary
+  with `AOS_NIX_JIT=1`, tier-1/tier-2 counters identical to baseline.
+  **Remaining (S4b phase 2):** compressed-word emitters for arith trees
+  (inline-int decode/re-encode + deopt), alloc-cons, and the tier-2 bodies;
+  then the GC-stress + sweep-zero battery over live one-word stack maps with
+  a non-trivial dispatch mass.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
