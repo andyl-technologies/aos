@@ -11,12 +11,14 @@
 //!
 //! # Scope
 //!
-//! Strings, paths, attrsets, and lists are handled. A list's element `Vec` lives
-//! outside the reservation, so capture serializes its address-free element words
-//! into a [`ListPayload`] segment and restore rebuilds the `Vec`, overwrites the
-//! stale dumped header, and registers the object so the rebuilt buffer drops
-//! exactly once. `Arc`-backed string contexts remain refused at capture (the
-//! §1.4 stage-2 residual).
+//! Strings, paths, attrsets, lists, and context-bearing strings are handled. A
+//! list's element `Vec` lives outside the reservation, so capture serializes its
+//! address-free element words into a [`ListPayload`] segment and restore rebuilds
+//! the `Vec`. A string's non-empty `Arc`-backed context is likewise out of arena:
+//! capture serializes it into a [`ContextPayload`] keyed by the string's
+//! relocation index, and restore rebuilds the context and re-installs it. In both
+//! cases restore overwrites the stale dumped payload without dropping it and
+//! registers the object so the rebuilt owner drops exactly once.
 //!
 //! # Completeness audit (`AOS_NIX_SNAPSHOT_VERIFY`)
 //!
@@ -32,10 +34,11 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use ratchet_value::heap::{
-    ArenaIndex, HeapImage, ListPayload, RelocationEntry, SnapshotError, capture_reservation,
-    reservation_base, restore_reservation,
+    ArenaIndex, ContextPayload, HeapImage, ListPayload, RelocationEntry, SnapshotError,
+    capture_reservation, reservation_base, restore_reservation,
 };
 
+use crate::string::{ContextElement, ContextKind, StringContext};
 use crate::value::Value;
 use crate::value::compressed::CompressedValueWord;
 
@@ -53,10 +56,9 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError`] for a parallel heap, a heap holding a
-    /// kind not yet snapshottable (worker closures, record-table objects, or a
-    /// flat string with a non-empty context), a list object outside the
-    /// reservation, a reservation that is not address-free, or a failed
-    /// completeness audit.
+    /// kind not yet snapshottable (worker closures or record-table objects), a
+    /// flat object outside the reservation, a reservation that is not
+    /// address-free, or a failed completeness audit.
     pub fn capture_heap_image(&self) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
@@ -71,11 +73,20 @@ impl EvalHeap {
         }
 
         let mut relocations = Vec::new();
+        let mut context_payloads = Vec::new();
         for object in self.flat.iter() {
-            if !object.object().payload().context().is_empty() {
-                return Err(EvalHeapSnapshotError::UnsnapshottableStringContext);
+            let entry = self.relocation_entry_for(object.ptr(), object.object().kind())?;
+            // A non-empty string context is an out-of-arena `Arc`-backed set; the
+            // relocation entry rebases the inline bytes, and this supplemental
+            // payload (keyed by the same index) carries the context to rebuild.
+            let context = object.object().payload().context();
+            if !context.is_empty() {
+                context_payloads.push(ContextPayload {
+                    index: entry.index,
+                    context_bytes: encode_context(context),
+                });
             }
-            relocations.push(self.relocation_entry_for(object.ptr(), object.object().kind())?);
+            relocations.push(entry);
         }
         for object in self.flat_attrs.iter() {
             relocations.push(self.relocation_entry_for(object.ptr(), FlatObjectKind::Attrs)?);
@@ -107,6 +118,7 @@ impl EvalHeap {
             capture_reservation(&self.flat_arena).map_err(EvalHeapSnapshotError::Snapshot)?;
         image.relocations = relocations;
         image.list_payloads = list_payloads;
+        image.context_payloads = context_payloads;
 
         if std::env::var_os(SNAPSHOT_VERIFY_ENV).is_some() {
             self.verify_relocation_completeness(&image)?;
@@ -134,22 +146,25 @@ impl EvalHeap {
     ///
     /// Maps the image into a new reservation (original domain preserved),
     /// assembles the flat stores, primes their membership indexes, rebases every
-    /// relocation object's interior witnesses by `new_base − old_base`, and
-    /// re-attaches each list's out-of-arena element `Vec` from its payload segment.
+    /// relocation object's interior witnesses by `new_base − old_base`, re-attaches
+    /// each list's out-of-arena element `Vec`, and rebuilds each context-bearing
+    /// string's out-of-arena dependency set from its payload segment.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError::Snapshot`] when the image is malformed or
     /// its domain is still live, [`EvalHeapSnapshotError::ObjectOutsideReservation`]
-    /// when a relocation or list-payload index does not resolve,
+    /// when a relocation, list, or context index does not resolve,
     /// [`EvalHeapSnapshotError::UnknownKind`] for an unrecognized relocation kind,
     /// [`EvalHeapSnapshotError::DuplicateObjectIndex`] when two records name the
     /// same arena object (a malformed image that would otherwise double-rebase a
-    /// witness or double-register a list for `Drop`),
-    /// [`EvalHeapSnapshotError::MalformedListPayload`] when a list payload's bytes
-    /// are not a whole number of valid words, and
-    /// [`EvalHeapSnapshotError::FlatResolve`] when a recorded object cannot be
-    /// resolved for rebasing or list rewriting.
+    /// witness, double-register a list, or double-install a context),
+    /// [`EvalHeapSnapshotError::ContextForUnrelocatedString`] when a context
+    /// payload names an object that was not rebased as a string,
+    /// [`EvalHeapSnapshotError::MalformedListPayload`] or
+    /// [`EvalHeapSnapshotError::MalformedContextPayload`] when a payload's bytes do
+    /// not decode, and [`EvalHeapSnapshotError::FlatResolve`] when a recorded
+    /// object cannot be resolved for rewriting.
     pub fn from_restored_heap_image(image: &HeapImage) -> Result<Self, EvalHeapSnapshotError> {
         let arena = restore_reservation(image).map_err(EvalHeapSnapshotError::Snapshot)?;
         let new_base = arena
@@ -168,6 +183,9 @@ impl EvalHeap {
         // pointer), and a duplicate list index would register the same object in
         // the store twice, dropping it twice (a double free).
         let mut seen: HashSet<u32> = HashSet::new();
+        // Indices of the strings/paths whose inline byte witness was rebased —
+        // exactly the objects a context payload may re-key against.
+        let mut relocated_strings: HashSet<u32> = HashSet::new();
 
         for entry in &image.relocations {
             if !seen.insert(entry.index) {
@@ -178,11 +196,13 @@ impl EvalHeap {
                 .pointer_for_index(ArenaIndex::new(entry.index))
                 .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
             match kind_from_byte(entry.kind)? {
-                kind @ (FlatObjectKind::String | FlatObjectKind::Path) => heap
-                    .flat
-                    .resolve_mut(ptr, kind)
-                    .map_err(EvalHeapSnapshotError::FlatResolve)?
-                    .rebase_witnesses(delta),
+                kind @ (FlatObjectKind::String | FlatObjectKind::Path) => {
+                    heap.flat
+                        .resolve_mut(ptr, kind)
+                        .map_err(EvalHeapSnapshotError::FlatResolve)?
+                        .rebase_witnesses(delta);
+                    relocated_strings.insert(entry.index);
+                }
                 FlatObjectKind::Attrs => heap
                     .flat_attrs
                     .resolve_mut(ptr, FlatObjectKind::Attrs)
@@ -200,6 +220,23 @@ impl EvalHeap {
                 });
             }
             heap.restore_list_payload(payload)?;
+        }
+
+        // A context payload supplements a relocated string (not a new object), so
+        // its index is checked against the string set, not the object-record set.
+        let mut seen_contexts: HashSet<u32> = HashSet::new();
+        for payload in &image.context_payloads {
+            if !relocated_strings.contains(&payload.index) {
+                return Err(EvalHeapSnapshotError::ContextForUnrelocatedString {
+                    index: payload.index,
+                });
+            }
+            if !seen_contexts.insert(payload.index) {
+                return Err(EvalHeapSnapshotError::DuplicateObjectIndex {
+                    index: payload.index,
+                });
+            }
+            heap.restore_context_payload(payload)?;
         }
         Ok(heap)
     }
@@ -227,6 +264,47 @@ impl EvalHeap {
         let elements = decode_list_elements(&payload.element_bytes)?;
         self.flat_lists
             .restore_payload(ptr, FlatObjectKind::List, NixList::new(elements))
+            .map_err(EvalHeapSnapshotError::FlatResolve)
+    }
+
+    /// Rebuilds one context-bearing string's dependency set and re-installs it on
+    /// the restored string.
+    ///
+    /// The string's inline bytes were already rebased by its relocation entry;
+    /// this decodes the context, reconstructs the string over those rebased bytes
+    /// with the rebuilt context ([`NixString::with_replaced_context`]), and
+    /// delegates the in-place payload rewrite and Drop registration to
+    /// [`FlatObjectStore::restore_payload`] so the stale dumped context `Arc` is
+    /// overwritten without being dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapSnapshotError::ObjectOutsideReservation`] when the index
+    /// does not resolve, [`EvalHeapSnapshotError::MalformedContextPayload`] when
+    /// the context bytes do not decode, and [`EvalHeapSnapshotError::FlatResolve`]
+    /// when the string cannot be resolved for rewriting.
+    fn restore_context_payload(
+        &mut self,
+        payload: &ContextPayload,
+    ) -> Result<(), EvalHeapSnapshotError> {
+        let ptr = self
+            .flat_arena
+            .pointer_for_index(ArenaIndex::new(payload.index))
+            .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+        // The index was verified to be a relocated string, so it resolves as
+        // String or Path; `kind_of` recovers which for the typed rewrite.
+        let kind = self
+            .flat
+            .kind_of(ptr)
+            .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+        let context = decode_context(&payload.context_bytes)?;
+        let replacement = self
+            .flat
+            .resolve_mut(ptr, kind)
+            .map_err(EvalHeapSnapshotError::FlatResolve)?
+            .with_replaced_context(context);
+        self.flat
+            .restore_payload(ptr, kind, replacement)
             .map_err(EvalHeapSnapshotError::FlatResolve)
     }
 
@@ -340,6 +418,96 @@ fn decode_list_elements(bytes: &[u8]) -> Result<Vec<Value>, EvalHeapSnapshotErro
     Ok(elements)
 }
 
+/// Encodes a string context's elements into the opaque bytes of a
+/// [`ContextPayload`].
+///
+/// Layout (little-endian): `count(u32)`, then per element `kind(u8) |
+/// path_len(u32) | path`, followed by `output_len(u32) | output` only for
+/// [`ContextKind::SingleOutput`]. The elements are already in canonical order.
+fn encode_context(context: &StringContext) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(context.len() as u32).to_le_bytes());
+    for element in context.elements() {
+        bytes.push(context_kind_byte(element.kind()));
+        let path = element.path();
+        bytes.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(path);
+        if let Some(output) = element.output() {
+            bytes.extend_from_slice(&(output.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(output);
+        }
+    }
+    bytes
+}
+
+/// Decodes the opaque bytes of a [`ContextPayload`] back into a [`StringContext`].
+///
+/// # Errors
+///
+/// Returns [`EvalHeapSnapshotError::MalformedContextPayload`] when `bytes` is
+/// truncated, carries an unknown kind tag, has trailing bytes, or names an empty
+/// context path (which the element constructors reject).
+fn decode_context(bytes: &[u8]) -> Result<StringContext, EvalHeapSnapshotError> {
+    decode_context_inner(bytes).ok_or(EvalHeapSnapshotError::MalformedContextPayload {
+        byte_len: bytes.len(),
+    })
+}
+
+/// Fallible core of [`decode_context`]; returns `None` on any malformed input.
+fn decode_context_inner(bytes: &[u8]) -> Option<StringContext> {
+    let mut cursor = 0usize;
+    let count = read_le_u32(bytes, &mut cursor)? as usize;
+    // Push without pre-reserving: `count` is untrusted, so a bogus value must not
+    // drive a large speculative allocation before the bytes are consumed.
+    let mut elements = Vec::new();
+    for _ in 0..count {
+        let kind = *bytes.get(cursor)?;
+        cursor += 1;
+        let path = read_length_prefixed(bytes, &mut cursor)?;
+        let element = match kind {
+            0 => ContextElement::opaque_path(path).ok()?,
+            1 => {
+                let output = read_length_prefixed(bytes, &mut cursor)?;
+                ContextElement::single_output(path, output).ok()?
+            }
+            2 => ContextElement::deep_derivation(path).ok()?,
+            _ => return None,
+        };
+        elements.push(element);
+    }
+    // Reject trailing bytes so a malformed segment is a loud miss, not silent.
+    if cursor != bytes.len() {
+        return None;
+    }
+    Some(StringContext::new(elements))
+}
+
+/// Maps a [`ContextKind`] to its wire tag byte.
+fn context_kind_byte(kind: ContextKind) -> u8 {
+    match kind {
+        ContextKind::OpaquePath => 0,
+        ContextKind::SingleOutput => 1,
+        ContextKind::DeepDerivation => 2,
+    }
+}
+
+/// Reads a little-endian `u32` at `*cursor`, advancing it, or `None` if truncated.
+fn read_le_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    let end = cursor.checked_add(4)?;
+    let field: [u8; 4] = bytes.get(*cursor..end)?.try_into().ok()?;
+    *cursor = end;
+    Some(u32::from_le_bytes(field))
+}
+
+/// Reads a `u32`-length-prefixed byte run at `*cursor`, advancing past it.
+fn read_length_prefixed(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
+    let len = read_le_u32(bytes, cursor)? as usize;
+    let end = cursor.checked_add(len)?;
+    let run = bytes.get(*cursor..end)?.to_vec();
+    *cursor = end;
+    Some(run)
+}
+
 /// Decodes a relocation-entry kind byte into a [`FlatObjectKind`].
 fn kind_from_byte(byte: u8) -> Result<FlatObjectKind, EvalHeapSnapshotError> {
     match byte {
@@ -384,9 +552,19 @@ pub enum EvalHeapSnapshotError {
         /// The number of live heap-record-table objects.
         count: usize,
     },
-    /// A flat string carries an `Arc`-backed context (doc 31 §1.4 stage-2 residual).
-    #[error("cannot snapshot a heap with a context-bearing string")]
-    UnsnapshottableStringContext,
+    /// A context payload's bytes did not decode to a valid context.
+    #[error("context payload has malformed element bytes (length {byte_len})")]
+    MalformedContextPayload {
+        /// The offending payload's byte length.
+        byte_len: usize,
+    },
+    /// A context payload named an object that was not rebased as a string, so
+    /// installing its context would attach to unrelocated (stale) bytes.
+    #[error("context payload names object {index}, which was not relocated as a string")]
+    ContextForUnrelocatedString {
+        /// The arena index the context payload referenced.
+        index: u32,
+    },
     /// A flat object's pointer did not lie inside the reservation.
     #[error("flat object is outside the snapshot reservation")]
     ObjectOutsideReservation,

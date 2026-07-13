@@ -40,6 +40,12 @@ use std::ptr::NonNull;
 /// Created only by the flat store's trailing-bytes allocation (see
 /// [`super::FlatObjectStore::alloc_with_trailing_bytes`]); see the [module
 /// documentation](self) for the layout and the sealing discipline.
+///
+/// [`Copy`] because the witness is a plain non-owning `(ptr, len)` handle: a
+/// copy witnesses the same sealed bytes and confers no ownership, so it neither
+/// frees nor mutates on drop. Copies must still respect the sealing discipline —
+/// they may not outlive the flat allocation that owns the bytes.
+#[derive(Clone, Copy)]
 pub struct FlatBytes {
     ptr: NonNull<u8>,
     len: usize,

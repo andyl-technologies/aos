@@ -163,8 +163,9 @@ impl NixString {
     /// string's bytes into a reservation mapped at a new base, then shifts its
     /// `Flat` witness by `delta = new_base − old_base`. `Owned` strings carry no
     /// arena witness and are unchanged. The `Arc`-backed string context is not an
-    /// arena interior and is handled separately (§1.4 stage-2 residual): capture
-    /// refuses a flat string whose context is non-empty. Reads/writes no byte.
+    /// arena interior and is rebuilt separately by the stage-2 context-collapse
+    /// path ([`NixString::with_replaced_context`]), not shifted here. Reads/writes
+    /// no byte.
     #[cfg(feature = "candidate_c_value")]
     pub fn rebase_witnesses(&mut self, delta: isize) {
         if let NixStringBytes::Flat(bytes) = &mut self.bytes {
@@ -175,6 +176,24 @@ impl NixString {
     /// Returns whether this string carries any context elements.
     pub fn has_context(&self) -> bool {
         !self.context.is_empty()
+    }
+
+    /// Returns a copy of this string over the same byte storage but carrying
+    /// `context` (RFC-0007 doc 31 §1 stage-2 context collapse).
+    ///
+    /// Unlike [`Clone`], this preserves a `Flat` witness rather than deep-copying
+    /// to owned bytes: heap-image restore rebases the flat witness in place, then
+    /// reconstructs the string with a rebuilt context so the whole payload can be
+    /// written over the stale `Arc`-backed context without dropping it. The
+    /// returned value therefore shares the same flat allocation and must be
+    /// written straight back into that allocation's store payload.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn with_replaced_context(&self, context: StringContext) -> Self {
+        let bytes = match &self.bytes {
+            NixStringBytes::Flat(bytes) => NixStringBytes::Flat(*bytes),
+            NixStringBytes::Owned(bytes) => NixStringBytes::Owned(bytes.clone()),
+        };
+        Self { bytes, context }
     }
 
     /// Returns this string's in-process structural hash.
