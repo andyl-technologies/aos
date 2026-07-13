@@ -560,6 +560,80 @@ The whole item is doc-31 §1's "campaign-scale effort in its own right"
 (§9 ordering) and should not be undertaken before the Candidate-C ABI question
 is resolved with the lead (§8).
 
+### 7.1 Anchors re-verified against HEAD (post-#12, 2026-07-13) + stage-1/2 spec
+
+Increment-0 recon after the Candidate-C carrier flip (task #12) landed
+(`ef2360f46`). The plan predates the flip; the seams are re-anchored here so a
+fresh implementation agent starts from verified line references, not the
+now-stale §8.2 D1.
+
+**What the flip changed (in our favor):**
+
+- **D1 is resolved.** The address-free words are live under the
+  `candidate_c_value` cargo variant: a `Value` is one `CompressedValueWord`
+  (`ratchet-value/src/value/compressed.rs:119`) = `kind | 23-bit domain |
+  forced` high word + a `u32` `ArenaIndex` low word, resolved to a native
+  pointer only through the process-global reservation registry
+  (`ratchet-value/src/heap/reservation_registry.rs`, `domain -> base`). **Build
+  the snapshot under this variant: the image is address-free by construction and
+  no rebase pass runs** (§3.3 end state, §9 decision 1). The registry is the
+  load-time rebind seam — map the image, register `domain -> new_base`, done.
+
+**What already exists (stage-1 substrate, not greenfield):**
+
+- Arena backing + used-region enumeration: `ReservedArena`
+  (`ratchet-value/src/heap/reservation.rs:144`) with `high_mark()`, plus
+  `SharedFlatStoreArena::snapshot_chunk_regions()`
+  (`ratchet-value/src/heap/flat/backing.rs:360`) and `mapped_bytes`
+  (`backing.rs:421`). Stage-1's arena dump is a thin serializer over these.
+
+**The live gating obstacle (D3 is CURRENT, not stale — FV-6 did not remove it):**
+
+- `EvalThunk` (`ratchet-oracle/src/eval/heap/mod.rs:200`) still holds
+  `cell: Arc<ThunkCell>` (`:202`) and `parallel_cell:
+  Option<Arc<TreeWalkParallelThunkCell>>` (`:210`). A mapped read-only segment
+  MUST be `Arc`-free (§3.4), so **a live thunk cannot be snapshotted**. This is
+  exactly why the §3.2 thunk-collapse canonicalization is the stage-2
+  correctness core, not an optimization.
+
+**Residuals (§1.4) are current:** the authoritative global symbol table
+(`ratchet-oracle/src/eval/tree_walk/parallel_demand.rs:138`), the process-local
+module table, and `Arc`-backed string contexts live outside the arena and take
+the **rebuild-from-manifest** posture (do not map them; reconstruct from a
+manifest segment and re-intern).
+
+**Stage 1 (in-process serialize+reload, byte/value-equality) — build spec:**
+
+1. Under `candidate_c_value`, evaluate a **fully-forced** trivial value (no
+   thunks at the frontier — e.g. force `let x = { a = 1; b = [ 1 2 ]; }; in x`
+   to WHNF *and* deep-force its elements so the arena holds only flat WHNF
+   objects). Thunks are deliberately out of scope until stage 2.
+2. Serialize the arena's used regions (`snapshot_chunk_regions` + `mapped_bytes`)
+   into an image segment, plus a manifest segment for the symbol ids the values
+   reference.
+3. Reload into a fresh `EvalHeap` in the same process: allocate a new
+   reservation, `register(domain -> new_base)` via the registry, copy the image
+   bytes into the reservation, re-intern the manifest symbols.
+4. Assert the reloaded root is value-equal to the original (`raw_eq` on the flat
+   WHNF graph). No parity-battery coupling. Gate stays green on BOTH carriers
+   (the snapshot module is `#[cfg(feature = "candidate_c_value")]`; the default
+   carrier compiles it out).
+
+**Stage 2 (thunk-collapse canonicalization) — the correctness core:**
+
+- Extend to a graph with forced thunks. Snapshot **only the forced WHNF result**
+  (drop the `Arc<ThunkCell>`), and re-thunk the **unforced frontier** from its
+  `(LoweredIrFingerprint, IrId node)` pair on load — do NOT deep-force
+  everything (over-forcing risks divergence, §8.1 Q3). Invest adversarial test
+  effort here: `rec` sets, `__overrides`, string-context unions (the same
+  slot-rewrite shapes that AtomicValueCell handles). This is the subtle core;
+  everything after it (stages 3-6) is prelude-root-set + invalidation +
+  hardening on top of a proven collapse.
+
+**Handoff note:** #12 (address-free words) and #13 (force-share GATE=GO) are both
+landed; stages 1-6 are unblocked. A fresh snapshot-impl agent should take stage 1
+from this spec.
+
 ## 8. Open questions and doc-vs-code divergences
 
 ### 8.1 Open questions for the lead
