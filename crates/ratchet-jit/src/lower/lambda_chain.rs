@@ -61,29 +61,41 @@
 //! interpreted, which is sound because in-grammar bodies are pure except for
 //! memoizing parameter and environment forces.
 
+#[cfg(not(feature = "candidate_c_value"))]
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
-    ir::{Function, InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
+    ir::{InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
-use ratchet_core::{IrArena, IrBinding, IrId, runtime_lambda_argv_call_signature};
+use cranelift_codegen::ir::Function;
+#[cfg(not(feature = "candidate_c_value"))]
+use ratchet_core::runtime_lambda_argv_call_signature;
+use ratchet_core::{IrArena, IrBinding, IrId};
 
-use super::{
-    JitLowerError, append_entry_block_params, clif_name_for_ir_root, verify_clif_function,
-};
+use super::JitLowerError;
+#[cfg(not(feature = "candidate_c_value"))]
+use super::{append_entry_block_params, clif_name_for_ir_root, verify_clif_function};
+#[cfg(not(feature = "candidate_c_value"))]
 use super::lambda_rec::import_tier2_local_function;
+#[cfg(not(feature = "candidate_c_value"))]
 use crate::abi::clif_signature_for_runtime_call;
 
 /// The runtime tag word for an inline integer value (`ValueTag::Int`).
+#[cfg(not(feature = "candidate_c_value"))]
 pub(super) const TAG_INT: i64 = 0x00;
 /// The runtime tag word for an inline boolean value (`ValueTag::Bool`).
+#[cfg(not(feature = "candidate_c_value"))]
 pub(super) const TAG_BOOL: i64 = 0x02;
 /// The runtime tag word for a null value (`ValueTag::Null`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_NULL: i64 = 0x03;
 /// The internal deopt-unwind sentinel tag (see `lambda_rec`).
+#[cfg(not(feature = "candidate_c_value"))]
 pub(super) const TIER2_DEOPT_SENTINEL_TAG: i64 = 0xFF;
 /// The byte stride of one by-value runtime value in the entry's `argv` run.
+#[cfg(not(feature = "candidate_c_value"))]
 const VALUE_STRIDE_BYTES: i32 = 16;
 /// The byte offset of the payload word within one by-value runtime value.
+#[cfg(not(feature = "candidate_c_value"))]
 const VALUE_PAYLOAD_OFFSET_BYTES: i32 = 8;
 
 /// The maximum curried-chain arity the fused lowering compiles today.
@@ -208,6 +220,9 @@ pub struct JitTier2PinnedCallee {
     pub body: IrId,
 }
 
+#[cfg(feature = "candidate_c_value")]
+mod compressed;
+#[cfg(not(feature = "candidate_c_value"))]
 mod emit;
 mod fold_gen;
 mod scan;
@@ -319,7 +334,41 @@ pub fn lower_tier2_curried_chain(
     env_boundary: JitTier2EnvBoundary,
     depth_budget: i64,
 ) -> Result<JitTier2ChainLowering, JitLowerError> {
-    super::value_words::require_two_word_carrier("tier2-curried-chain")?;
+    // The body emitter is per-carrier codegen: this one threads (tag, payload)
+    // pairs, the compressed sibling threads one-word values.
+    #[cfg(feature = "candidate_c_value")]
+    return compressed::lower_tier2_curried_chain_compressed(
+        arena,
+        bindings,
+        scan,
+        self_upval,
+        pinned,
+        env_boundary,
+        depth_budget,
+    );
+    #[cfg(not(feature = "candidate_c_value"))]
+    lower_tier2_curried_chain_two_word(
+        arena,
+        bindings,
+        scan,
+        self_upval,
+        pinned,
+        env_boundary,
+        depth_budget,
+    )
+}
+
+/// The two-word (baseline-carrier) body of [`lower_tier2_curried_chain`].
+#[cfg(not(feature = "candidate_c_value"))]
+fn lower_tier2_curried_chain_two_word(
+    arena: &IrArena,
+    bindings: &[IrBinding],
+    scan: &JitTier2ChainScan,
+    self_upval: Option<(u32, u32)>,
+    pinned: &[JitTier2PinnedCallee],
+    env_boundary: JitTier2EnvBoundary,
+    depth_budget: i64,
+) -> Result<JitTier2ChainLowering, JitLowerError> {
     let entry_signature = clif_signature_for_runtime_call(runtime_lambda_argv_call_signature())?;
     let inner_signature = inner_signature_for_arity(&entry_signature, scan.arity);
 
@@ -359,6 +408,7 @@ pub fn lower_tier2_curried_chain(
 /// `inner` keeps the entry's `(rt, env)` prefix, replaces the `argv` pointer
 /// with `2 * K` unboxed `i64` tag/payload words, and appends one trailing
 /// `i64` budget parameter.
+#[cfg(not(feature = "candidate_c_value"))]
 fn inner_signature_for_arity(entry: &Signature, arity: u32) -> Signature {
     let mut signature = entry.clone();
     signature.params.truncate(2);
@@ -382,6 +432,7 @@ fn inner_signature_for_arity(entry: &Signature, arity: u32) -> Signature {
 /// `argv` run (16-byte stride, tag word first), calls `inner` with the seeded
 /// depth budget, and translates the internal deopt sentinel into a valid null
 /// return (the recorded trap, not the value, signals the deopt).
+#[cfg(not(feature = "candidate_c_value"))]
 fn build_entry_function(
     body: IrId,
     entry_signature: Signature,

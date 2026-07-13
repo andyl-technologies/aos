@@ -34,14 +34,19 @@
 //!
 //! [`scan_tier2_pinned_callee`]: super::scan_tier2_pinned_callee
 
-use ratchet_core::{IrArena, IrBinding, IrId, runtime_lambda_argv_call_signature};
+#[cfg(not(feature = "candidate_c_value"))]
+use ratchet_core::runtime_lambda_argv_call_signature;
+use ratchet_core::{IrArena, IrBinding, IrId};
 
-use super::super::{JitLowerError, verify_clif_function};
+use super::super::JitLowerError;
+#[cfg(not(feature = "candidate_c_value"))]
+use super::super::verify_clif_function;
+#[cfg(not(feature = "candidate_c_value"))]
 use super::emit::{ChainInnerBody, build_inner_function};
-use super::{
-    JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee,
-    build_entry_function, inner_signature_for_arity,
-};
+use super::{JitTier2ChainLowering, JitTier2ChainScan, JitTier2PinnedCallee};
+#[cfg(not(feature = "candidate_c_value"))]
+use super::{JitTier2EnvBoundary, build_entry_function, inner_signature_for_arity};
+#[cfg(not(feature = "candidate_c_value"))]
 use crate::abi::clif_signature_for_runtime_call;
 
 /// Lowers a fold operator fused with a `builtins.genList` generator body.
@@ -70,7 +75,31 @@ pub fn lower_tier2_fold_genlist(
     generator_body: IrId,
     depth_budget: i64,
 ) -> Result<JitTier2ChainLowering, JitLowerError> {
-    crate::lower::value_words::require_two_word_carrier("tier2-fold-genlist")?;
+    // The body emitter is per-carrier codegen: this one threads (tag, payload)
+    // pairs, the compressed sibling threads one-word values.
+    #[cfg(feature = "candidate_c_value")]
+    return super::compressed::lower_tier2_fold_genlist_compressed(
+        arena,
+        bindings,
+        scan,
+        pinned,
+        generator_body,
+        depth_budget,
+    );
+    #[cfg(not(feature = "candidate_c_value"))]
+    lower_tier2_fold_genlist_two_word(arena, bindings, scan, pinned, generator_body, depth_budget)
+}
+
+/// The two-word (baseline-carrier) body of [`lower_tier2_fold_genlist`].
+#[cfg(not(feature = "candidate_c_value"))]
+fn lower_tier2_fold_genlist_two_word(
+    arena: &IrArena,
+    bindings: &[IrBinding],
+    scan: &JitTier2ChainScan,
+    pinned: &[JitTier2PinnedCallee],
+    generator_body: IrId,
+    depth_budget: i64,
+) -> Result<JitTier2ChainLowering, JitLowerError> {
     if scan.arity() != 2 {
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: scan.inner_body(),

@@ -56,11 +56,17 @@ pub(super) struct Runtime {
 /// remains live across the call, then reloads the latter after the runtime has
 /// had an opportunity to rewrite the frame. A distinct address anchor lets the
 /// runtime identify the finalized map even when Cranelift reorders blocks.
+///
+/// Two-word geometry only: the one-word carrier's emitters build their force
+/// safepoints inline over [`spill_values_one_word`], so this struct is unused
+/// under the `candidate_c_value` variant.
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 pub(super) struct ForceSafepoints {
     runtime: Runtime,
     next_safepoint: u32,
 }
 
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 impl ForceSafepoints {
     /// Imports the binding helpers and starts a new function-local map table.
     pub(super) fn import(
@@ -178,6 +184,7 @@ pub(super) struct Binding {
 }
 
 /// Spills two-word runtime values after an intrusive binding header.
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 pub(super) fn spill_values(cursor: &mut FuncCursor<'_>, values: &[[Value; 2]]) -> Binding {
     let value_count = values.len() as u32;
     let size = BINDING_HEADER_BYTES.saturating_add(
@@ -202,6 +209,7 @@ pub(super) fn spill_values(cursor: &mut FuncCursor<'_>, values: &[[Value; 2]]) -
 }
 
 /// Attaches every spilled runtime-value anchor to one call safepoint.
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 pub(super) fn attach(cursor: &mut FuncCursor<'_>, call: Inst, binding: Binding) {
     cursor.func.dfg.append_user_stack_map_entry(
         call,
@@ -224,6 +232,7 @@ pub(super) fn attach(cursor: &mut FuncCursor<'_>, call: Inst, binding: Binding) 
 }
 
 /// Reloads a runtime value that may have been rewritten at a safepoint.
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 pub(super) fn reload(cursor: &mut FuncCursor<'_>, binding: Binding, index: usize) -> [Value; 2] {
     let offset = value_offset(index);
     [
@@ -284,6 +293,7 @@ pub(super) fn exit(
     cursor.ins().call(runtime.exit, &[rt, binding_address]);
 }
 
+#[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 fn value_offset(index: usize) -> i32 {
     BINDING_HEADER_BYTES as i32 + (index as i32) * VALUE_STACK_SLOT_BYTES as i32
 }

@@ -399,15 +399,32 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   with `AOS_NIX_JIT=1`, tier-1/tier-2 counters identical to baseline.
   **Phase 2 progress (2026-07-12, same day):** the compressed arith-tree
   emitter (`lower/arith_tree_compressed.rs` — decode at guarded leaves,
-  wrapping-i64 tree compute, single root re-encode with inline-range deopt)
-  and the tier-2 unary self-recursive-lambda emitter
+  wrapping-i64 tree compute, single root re-encode with inline-range deopt),
+  the tier-2 unary self-recursive-lambda emitter
   (`lower/lambda_rec/compressed.rs` — one word per value, `0xFF`-kind deopt
-  sentinel, first-strict-use force discipline preserved) are LIVE under the
-  variant: fib promotes and dispatches natively, the six arith differentials
-  and the tier-2 engine tests run on both carriers, and the persistent
-  compiled-body cache schema is carrier-discriminated so cross-carrier
-  records read as schema mismatches. The curried-chain + fold-genlist port
-  is in flight (same conventions).
+  sentinel, first-strict-use force discipline preserved), and the fused
+  **curried-chain** tiers (`lower/lambda_chain/compressed.rs` +
+  `compressed/emit.rs` — apply-seam chains, fold operators, filter predicates,
+  and the fused `foldl'`-over-`genList` step) are all LIVE under the variant:
+  fib promotes and dispatches natively, and the arith differentials plus the
+  tier-2 lambda / chain / fold / filter / fold-gen engine tests run on both
+  carriers. Each emitter is a Candidate-C sibling routed by a `cfg` dispatch
+  beside its two-word original (both carriers compile warning-free; the
+  two-word-only items are `cfg`-gated so neither carrier builds dead code), and
+  the persistent compiled-body cache schema is carrier-discriminated so
+  cross-carrier records read as schema mismatches. The chain emitter carries
+  the full two-word discipline one word wide: per-parameter and per-environment
+  first-strict-use forces (live values threaded through the fast/slow force
+  join and reloaded across the one-word stack-map safepoint), `let`-scope
+  virtual registers, pinned-callee inlining, direct budgeted self-calls with
+  sentinel propagation, and the boundary `argv` entry reading one
+  `size_of::<Value>()`-strided word per argument. Engine fixtures whose
+  arithmetic crosses the inline `i32` range — an out-of-range literal (the
+  operator declines to lower) or a wide runtime intermediate/result (which
+  boxes and deopts where the two-word carrier keeps a full `i64` inline) — stay
+  baseline-only with an accurate comment, and a heap-boxed float/int result is
+  compared by decoded value rather than raw words (the compressed word embeds
+  an evaluator-specific arena domain).
 
   **Deliberately deferred:** the alloc-cons (singleton-list) shape stays
   declined on the one-word carrier. Its helper returns a raw allocation
@@ -425,7 +442,7 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   zero divergences, builder-hil1, release build). The variant now holds the
   same full-closure ground truth as the baseline.
 
-  **Remaining (S4b phase 2):** the chain/fold-genlist port (in flight), then
+  **Remaining (S4b phase 2):** the compressed-word alloc-cons emitter, then
   the GC-stress + sweep-zero battery over live one-word stack maps with a
   non-trivial dispatch mass.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
