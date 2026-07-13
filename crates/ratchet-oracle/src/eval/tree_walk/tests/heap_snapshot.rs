@@ -87,6 +87,22 @@ fn list_integers(heap: &EvalHeap, root: Value) -> Vec<i64> {
         .collect()
 }
 
+/// Projects a forced list of strings to their bytes, exercising both the list
+/// payload and each element string's rebased `FlatBytes` witness after a restore.
+fn list_strings(heap: &EvalHeap, root: Value) -> Vec<Vec<u8>> {
+    heap.get_list(root)
+        .expect("root is a list")
+        .as_slice()
+        .iter()
+        .map(|value| {
+            heap.get_string(*value)
+                .expect("list element is a string")
+                .bytes()
+                .to_vec()
+        })
+        .collect()
+}
+
 #[test]
 fn heap_image_round_trips_a_list_via_payload() {
     let outcome = eval_owned_with_source(b"snapshot-list", "[ 1 2 3 ]");
@@ -121,4 +137,40 @@ fn heap_image_round_trips_a_list_via_payload() {
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
     let restored = EvalHeap::from_restored_heap_image(&reloaded).expect("image restores");
     assert_eq!(list_integers(&restored, root), expected);
+}
+
+#[test]
+fn heap_image_round_trips_a_list_of_strings_with_relocated_witnesses() {
+    let outcome = eval_owned_with_source(b"snapshot-list-str", "[ \"alpha\" \"beta\" ]");
+    let root = outcome.value();
+
+    let image = match outcome.heap().capture_heap_image() {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        // If the list spine or its string elements are still thunks, skip.
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => return,
+        Err(other) => panic!("unexpected capture failure: {other}"),
+    };
+    // The fixture must exercise both mechanisms at once: one list payload and a
+    // relocation table entry per element string.
+    assert_eq!(image.list_payloads.len(), 1, "one forced list");
+    assert!(
+        image.relocations.len() >= 2,
+        "each element string needs a relocation entry"
+    );
+    outcome
+        .heap()
+        .verify_relocation_completeness(&image)
+        .expect("relocation table covers every interior pointer");
+    let expected = list_strings(outcome.heap(), root);
+    assert_eq!(expected, vec![b"alpha".to_vec(), b"beta".to_vec()]);
+
+    let bytes = image.to_bytes();
+    drop(outcome);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    let restored = EvalHeap::from_restored_heap_image(&reloaded).expect("image restores");
+    // Value equality here requires the list payload to rebuild the spine AND the
+    // element strings' `FlatBytes` witnesses to be delta-rebased.
+    assert_eq!(list_strings(&restored, root), expected);
 }
