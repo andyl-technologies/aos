@@ -7172,6 +7172,24 @@ impl EvalHeap {
         payload: &FlatClosurePayload,
     ) -> Result<Vec<HeapEdge>, EvalHeapError> {
         let mut edges = Vec::new();
+        // A lazily shared thunk (`SharedThunk`) carries the same thunk as the
+        // inline `Thunk` variant; both scan identical edges through the deref.
+        let push_thunk_edges =
+            |edges: &mut Vec<HeapEdge>, thunk: &EvalThunk| -> Result<(), EvalHeapError> {
+                match thunk.cell().state()? {
+                    ThunkState::Suspended | ThunkState::Blackhole => {
+                        push_thunk_kind_edges(edges, thunk.kind())?;
+                        push_parallel_thunk_payload_edge(edges, thunk)?;
+                    }
+                    ThunkState::Forced => {
+                        if let Some(value) = thunk.cell().cached_value()? {
+                            push_heap_edge(edges, HeapEdgeSource::ThunkCachedResult, value)?;
+                        }
+                        push_parallel_thunk_payload_edge(edges, thunk)?;
+                    }
+                }
+                Ok(())
+            };
         match payload {
             FlatClosurePayload::Lambda(lambda) => {
                 push_capture_edges(
@@ -7191,18 +7209,8 @@ impl EvalHeap {
                     )?;
                 }
             }
-            FlatClosurePayload::Thunk(thunk) => match thunk.cell().state()? {
-                ThunkState::Suspended | ThunkState::Blackhole => {
-                    push_thunk_kind_edges(&mut edges, thunk.kind())?;
-                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
-                }
-                ThunkState::Forced => {
-                    if let Some(value) = thunk.cell().cached_value()? {
-                        push_heap_edge(&mut edges, HeapEdgeSource::ThunkCachedResult, value)?;
-                    }
-                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
-                }
-            },
+            FlatClosurePayload::Thunk(thunk) => push_thunk_edges(&mut edges, thunk)?,
+            FlatClosurePayload::SharedThunk(thunk) => push_thunk_edges(&mut edges, thunk.as_ref())?,
             FlatClosurePayload::Retired(tag) => {
                 return Err(EvalHeapError::UnknownPointer {
                     tag: *tag,

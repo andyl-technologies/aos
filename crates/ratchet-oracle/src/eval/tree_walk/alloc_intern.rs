@@ -1641,7 +1641,7 @@ impl TreeWalk {
         };
         let thunk = self
             .heap
-            .clone_thunk(value)
+            .share_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some(parallel_cell) = thunk.parallel_payload_cell() {
             return self.force_parallel_payload_thunk(id, span, value, &thunk, parallel_cell);

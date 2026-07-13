@@ -50,6 +50,7 @@
 //! [`EvalThunkKind::Released`]: super::super::EvalThunkKind::Released
 
 use super::*;
+use std::sync::Arc;
 
 /// Where a heap places newly allocated worker-domain closures (doc 30 FV-3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,8 +73,18 @@ pub enum WorkerClosurePlacement {
 /// header state.
 #[derive(Debug)]
 pub(crate) enum FlatClosurePayload {
-    /// A suspended (or forced, or shed) thunk handle.
+    /// A suspended (or forced, or shed) thunk handle owned inline.
     Thunk(EvalThunk),
+    /// A thunk handle promoted into a shared `Arc` on its first force clone.
+    ///
+    /// The force path mints this lazily (doc 15 §5.5 cheap-thunk-clone I1): the
+    /// inline [`EvalThunk`] is moved into an `Arc` on the first
+    /// [`EvalHeap::share_thunk`] so subsequent forces pay one `Arc::clone`
+    /// instead of copying the whole record and re-incrementing its ~5 inner
+    /// `Arc`s. The variant carries the same thunk the [`Thunk`](Self::Thunk)
+    /// variant would; every reader dereferences it identically through
+    /// [`FlatClosurePayload::as_thunk`].
+    SharedThunk(Arc<EvalThunk>),
     /// A lambda closure handle.
     Lambda(EvalLambda),
     /// A builtin or partially applied builtin handle.
@@ -88,7 +99,7 @@ impl FlatClosurePayload {
     /// Returns the runtime tag this payload resolves under.
     pub(in crate::eval::heap) const fn tag(&self) -> ValueTag {
         match self {
-            Self::Thunk(_) => ValueTag::Thunk,
+            Self::Thunk(_) | Self::SharedThunk(_) => ValueTag::Thunk,
             Self::Lambda(_) => ValueTag::Lambda,
             Self::Primop(_) => ValueTag::Primop,
             Self::Retired(tag) => *tag,
@@ -98,6 +109,20 @@ impl FlatClosurePayload {
     /// Returns `true` when the payload was reclaimed by the Tier-B sweep.
     pub(in crate::eval::heap) const fn is_retired(&self) -> bool {
         matches!(self, Self::Retired(_))
+    }
+
+    /// Borrows the inline or lazily shared thunk, if this payload holds one.
+    ///
+    /// Both [`Thunk`](Self::Thunk) and [`SharedThunk`](Self::SharedThunk)
+    /// resolve to the same `&EvalThunk`; every non-mint reader (get, clone,
+    /// root scan, sweep, shed) goes through here so the lazy `Arc` promotion is
+    /// invisible to them.
+    pub(in crate::eval::heap) fn as_thunk(&self) -> Option<&EvalThunk> {
+        match self {
+            Self::Thunk(thunk) => Some(thunk),
+            Self::SharedThunk(thunk) => Some(thunk.as_ref()),
+            Self::Lambda(_) | Self::Primop(_) | Self::Retired(_) => None,
+        }
     }
 }
 
@@ -287,7 +312,9 @@ impl EvalHeap {
                 lambda.replace_env(env);
                 Ok(true)
             }
-            FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => Ok(false),
+            FlatClosurePayload::SharedThunk(_)
+            | FlatClosurePayload::Primop(_)
+            | FlatClosurePayload::Retired(_) => Ok(false),
         }
     }
 
@@ -474,6 +501,7 @@ impl EvalHeap {
         match self.flat_closures.resolve(ptr, kind) {
             Ok(object) => match object.payload() {
                 payload @ (FlatClosurePayload::Thunk(_)
+                | FlatClosurePayload::SharedThunk(_)
                 | FlatClosurePayload::Lambda(_)
                 | FlatClosurePayload::Primop(_)) => {
                     self.deref_counters.note_flat_resolution(tag);
@@ -535,6 +563,14 @@ impl EvalHeap {
     /// attached because conservative descendants may inherit it through their
     /// flat-base owner edge.
     ///
+    /// A [`SharedThunk`](FlatClosurePayload::SharedThunk) slot (minted by the
+    /// force path) is accepted the same way: the whole payload is replaced with
+    /// the new inline thunk, dropping this slot's `Arc` reference. Any in-flight
+    /// force still holds its own `Arc` clone of the pre-shed thunk, so the
+    /// captured graph is released only once that last reference drops — one
+    /// stack frame later — which is observationally identical to the inline
+    /// swap.
+    ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` is not a live flat
@@ -545,12 +581,49 @@ impl EvalHeap {
         thunk: EvalThunk,
     ) -> Result<(), EvalHeapError> {
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
-            Ok(FlatClosurePayload::Thunk(payload)) => {
-                *payload = thunk;
+            Ok(payload @ (FlatClosurePayload::Thunk(_) | FlatClosurePayload::SharedThunk(_))) => {
+                *payload = FlatClosurePayload::Thunk(thunk);
                 Ok(())
             }
             Ok(_) => Err(EvalHeapError::unknown(ValueTag::Thunk, ptr)),
             Err(error) => Err(self.closure_resolution_error(ValueTag::Thunk, ptr, error)),
+        }
+    }
+
+    /// Returns a lazily minted shared handle to the flat thunk at `ptr`.
+    ///
+    /// On the first call the inline [`EvalThunk`] is moved into an `Arc` and the
+    /// slot is swapped to [`FlatClosurePayload::SharedThunk`] in place — the
+    /// header, address, and any inline capture tail are preserved exactly as the
+    /// retirement swap preserves them ([`flat_retire_closure`] is the
+    /// precedent). Later calls return a cheap `Arc::clone` of the cached handle.
+    ///
+    /// Returns `Ok(None)` for anything that is not a live flat thunk at `ptr`
+    /// (a different flat kind, a retired slot, a record-table or shared-backend
+    /// thunk, or an unknown address); the caller then falls back to the owned
+    /// [`EvalHeap::clone_thunk`] path, which reproduces the authoritative error
+    /// or record/shared resolution.
+    ///
+    /// [`flat_retire_closure`]: Self::flat_retire_closure
+    pub(in crate::eval::heap) fn flat_share_thunk(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Option<Arc<EvalThunk>>, EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
+            Ok(FlatClosurePayload::SharedThunk(shared)) => Ok(Some(Arc::clone(shared))),
+            Ok(payload @ FlatClosurePayload::Thunk(_)) => {
+                let FlatClosurePayload::Thunk(inner) =
+                    std::mem::replace(payload, FlatClosurePayload::Retired(ValueTag::Thunk))
+                else {
+                    unreachable!("payload matched Thunk in the arm guard above")
+                };
+                let shared = Arc::new(inner);
+                *payload = FlatClosurePayload::SharedThunk(Arc::clone(&shared));
+                Ok(Some(shared))
+            }
+            // Not a live flat thunk here: defer error/record/shared fidelity to
+            // the owned clone path (mirrors `clone_thunk`'s fallbacks exactly).
+            Ok(_) | Err(_) => Ok(None),
         }
     }
 
