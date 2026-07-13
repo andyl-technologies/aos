@@ -90,6 +90,7 @@ pub use cranelift::{
     jit_cranelift_artifact_finalization_preflight_for_artifact,
     jit_cranelift_call_context_finalized_candidate_b_thunk_entry,
     jit_cranelift_call_context_finalized_candidate_c_thunk_entry,
+    jit_cranelift_call_context_finalized_fold_step_i64acc_entry,
     jit_cranelift_call_context_finalized_lambda_argv_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
@@ -118,8 +119,8 @@ pub use lower::{
 pub use lower::{
     JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
     JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain,
-    lower_tier2_fold_genlist, scan_tier2_curried_chain, scan_tier2_pinned_callee,
-    scan_tier2_unary_predicate,
+    lower_tier2_fold_genlist, lower_tier2_fold_i64acc, scan_tier2_curried_chain,
+    scan_tier2_pinned_callee, scan_tier2_unary_predicate,
 };
 pub use lower::{
     AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,

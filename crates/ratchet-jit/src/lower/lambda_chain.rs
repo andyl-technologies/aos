@@ -227,7 +227,7 @@ mod emit;
 mod fold_gen;
 mod scan;
 
-pub use fold_gen::lower_tier2_fold_genlist;
+pub use fold_gen::{lower_tier2_fold_genlist, lower_tier2_fold_i64acc};
 pub use scan::{scan_tier2_curried_chain, scan_tier2_pinned_callee, scan_tier2_unary_predicate};
 
 /// A verified fused lowering of one curried lambda chain.

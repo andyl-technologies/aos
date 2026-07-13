@@ -388,6 +388,31 @@ impl NixJitTier1Engine {
             Err(_) => None,
         }
     }
+
+    /// Finalizes a fold-step (decoded-`i64`-accumulator) lowering into the
+    /// engine's shared JIT module.
+    ///
+    /// The fold-step sibling of [`finalize_tier2_chain`](Self::finalize_tier2_chain):
+    /// the lowering carries the same entry/inner pair shape but is defined with
+    /// the fold-step artifact kind so the native fold-loop boundary calls it
+    /// through the decoded-`i64`-accumulator ABI.
+    pub(super) fn finalize_tier2_fold_step_i64acc(
+        &self,
+        lowering: JitTier2ChainLowering,
+    ) -> Option<(JitModuleContextFinalizedBody, JitModuleContextKeepAlive)> {
+        let mut context_slot = self.context.borrow_mut();
+        if context_slot.is_none() {
+            match JitModuleContext::with_candidates(&self.candidates) {
+                Ok(context) => *context_slot = Some(context),
+                Err(_) => return None,
+            }
+        }
+        let context = context_slot.as_ref()?;
+        match context.define_and_finalize_tier2_fold_step_i64acc(lowering) {
+            Ok(finalized_body) => Some((finalized_body, context.keep_alive())),
+            Err(_) => None,
+        }
+    }
 }
 
 /// Distinguishes the evaluator seam that owns one persisted chain body.
@@ -401,6 +426,14 @@ pub(super) enum Tier2ChainCacheRole {
     Predicate,
     /// A binary fold operator fused with a generated-list body.
     FoldGen,
+    /// A binary integer fold operator lowered onto the decoded-`i64`-accumulator
+    /// fold-step ABI. Distinct from [`Fold`](Self::Fold) so a persisted
+    /// value-threading body and a persisted fold-step body of the same operator
+    /// never alias in the compiled-body cache.
+    FoldI64Acc,
+    /// A decoded-`i64`-accumulator fold operator fused with a generated-list
+    /// body. The fold-step counterpart of [`FoldGen`](Self::FoldGen).
+    FoldGenI64Acc,
 }
 
 /// Canonically encodes every runtime-resolved input that can change chain CLIF.
@@ -431,6 +464,8 @@ pub(super) fn chain_cache_identity(
         Tier2ChainCacheRole::Fold => 2,
         Tier2ChainCacheRole::Predicate => 3,
         Tier2ChainCacheRole::FoldGen => 4,
+        Tier2ChainCacheRole::FoldI64Acc => 5,
+        Tier2ChainCacheRole::FoldGenI64Acc => 6,
     });
     extend_identity_u32(&mut identity, root_pattern.as_u32());
     extend_identity_u32(&mut identity, root_body.as_u32());

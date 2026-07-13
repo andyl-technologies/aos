@@ -95,6 +95,23 @@ pub type JitLambdaFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr
 /// [`runtime_lambda_argv_call_signature`]: ratchet_core::runtime_lambda_argv_call_signature
 pub type JitLambdaArgvFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, *const Value) -> Value;
 
+/// Native entry type for a compiled fold-step with a decoded `i64` accumulator.
+///
+/// The signature is the concrete Rust type-level counterpart of
+/// [`runtime_fold_step_i64acc_call_signature`]: `extern "C"` calling
+/// convention, runtime context pointer, environment pointer, the running
+/// accumulator as a plain decoded `i64`, and the current element by value. The
+/// entry returns the next accumulator as a decoded `i64`. A native fold loop
+/// threads its accumulator through this ABI with no per-element encode/decode
+/// round-trip; a per-element deopt is signaled out of band by the runtime trap
+/// flag, not by the returned integer (which the loop then discards). Calling a
+/// value of this type is unsafe because it crosses into compiled code with raw
+/// pointers and evaluator-owned state. This alias does not create, cast,
+/// register, or call any function pointer.
+///
+/// [`runtime_fold_step_i64acc_call_signature`]: ratchet_core::runtime_fold_step_i64acc_call_signature
+pub type JitFoldStepI64AccFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, i64, Value) -> i64;
+
 /// Address-free runtime-call signatures required by JIT lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JitRuntimeAbiInventory {

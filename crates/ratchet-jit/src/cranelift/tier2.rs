@@ -25,7 +25,9 @@ use cranelift_module::{Linkage, Module};
 use ratchet_core::IrId;
 use ratchet_value::value::Value;
 
-use crate::abi::{JitEnvFramePtr, JitLambdaArgvFn, JitLambdaFn, JitRuntimeContextPtr};
+use crate::abi::{
+    JitEnvFramePtr, JitFoldStepI64AccFn, JitLambdaArgvFn, JitLambdaFn, JitRuntimeContextPtr,
+};
 use crate::artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 use crate::lower::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2ChainLowering, JitTier2LambdaLowering,
@@ -99,6 +101,33 @@ impl JitModuleContext {
         let (entry, inner) = lowering.into_functions();
         self.define_and_finalize_tier2_pair(
             JitClifArtifactKind::Tier2LambdaChainEntry { arity },
+            source,
+            entry,
+            inner,
+        )
+    }
+
+    /// Defines and finalizes one tier-2 fold-step (decoded-`i64`-accumulator)
+    /// lowering into the module.
+    ///
+    /// The fold-step analogue of
+    /// [`define_and_finalize_tier2_chain`](Self::define_and_finalize_tier2_chain):
+    /// identical paired-define protocol, with the entry carrying
+    /// [`JitClifArtifactKind::Tier2FoldStepI64AccEntry`] metadata so the native
+    /// fold-loop boundary can reject an entry lowered against the wrong ABI.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`define_and_finalize_tier2_chain`](Self::define_and_finalize_tier2_chain).
+    pub fn define_and_finalize_tier2_fold_step_i64acc(
+        &self,
+        lowering: JitTier2ChainLowering,
+    ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
+        let source = lowering.source();
+        let (entry, inner) = lowering.into_functions();
+        self.define_and_finalize_tier2_pair(
+            JitClifArtifactKind::Tier2FoldStepI64AccEntry,
             source,
             entry,
             inner,
@@ -425,6 +454,68 @@ pub unsafe fn jit_cranelift_call_context_finalized_lambda_argv_entry(
     })?;
 
     Ok(chain_dispatched)
+}
+
+/// Invokes a finalized fold-step entry with a decoded `i64` accumulator.
+///
+/// The fold-step analogue of
+/// [`jit_cranelift_call_context_finalized_lambda_argv_entry`]: it validates that
+/// `body` is a fold-step entry, casts the finalized code pointer to
+/// [`JitFoldStepI64AccFn`], and invokes it with `rt`, `env`, the running
+/// accumulator `acc` as a plain decoded `i64`, and the current element `elem` by
+/// value. The returned `i64` is the next accumulator. A deopting execution
+/// records the deopt trap in the armed runtime trap scope; the caller must read
+/// that flag — not the returned integer — to detect it, because on a deopt the
+/// entry returns an unspecified placeholder integer.
+///
+/// # Safety
+///
+/// Identical to [`jit_cranelift_call_context_finalized_lambda_argv_entry`]: `rt`
+/// must be the pinned runtime context over the caller's evaluator, `env` the
+/// caller-owned environment, and `elem` a live runtime value owned by that
+/// evaluator; the caller keeps `body`'s finalizing module alive across the call.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError::UnsupportedNativeValueAbi`] when the
+/// host has no reviewed by-value [`Value`] ABI and
+/// [`JitCraneliftNativeCallError::UnsupportedArtifactKind`] when the body is not
+/// a fold-step entry.
+pub unsafe fn jit_cranelift_call_context_finalized_fold_step_i64acc_entry(
+    body: &JitModuleContextFinalizedBody,
+    rt: JitRuntimeContextPtr,
+    env: JitEnvFramePtr,
+    acc: i64,
+    elem: Value,
+) -> Result<i64, JitCraneliftNativeCallError> {
+    require_supported_native_value_abi()?;
+
+    let kind = body.artifact().kind();
+    if !matches!(kind, JitClifArtifactKind::Tier2FoldStepI64AccEntry) {
+        return Err(JitCraneliftNativeCallError::UnsupportedArtifactKind { kind });
+    }
+
+    let fold_step_entry =
+        fold_step_i64acc_entry_from_finalized_code(body.finalized_function().code_ptr());
+    // SAFETY: The caller keeps the finalizing `JitModuleContext` (or a cloned
+    // keep-alive handle) alive across this call, so the shared module's code
+    // memory stays live. The body was produced by the fold-step lowerer and
+    // verified with the frozen fold-step CLIF signature, so the entry takes the
+    // decoded accumulator and one live element word and returns the next decoded
+    // accumulator; a deopt is recorded in the armed trap scope, never encoded in
+    // the returned integer (any `i64` is a valid decoded accumulator).
+    let acc_next = unsafe { fold_step_entry(rt, env, acc, elem) };
+    Ok(acc_next)
+}
+
+/// Casts a finalized fold-step entry code pointer to the frozen fold-step ABI.
+fn fold_step_i64acc_entry_from_finalized_code(code_ptr: NonNull<u8>) -> JitFoldStepI64AccFn {
+    // SAFETY: Cranelift returned this pointer for a function defined with the
+    // frozen fold-step i64-accumulator signature lowered from `ratchet-core`
+    // metadata. The caller validates the artifact kind and keeps the owning
+    // `JITModule` alive while the returned entry is called.
+    let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };
+    entry
 }
 
 /// Casts a finalized tier-2 chain entry code pointer to the frozen argv ABI.

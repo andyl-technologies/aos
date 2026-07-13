@@ -174,6 +174,7 @@ mod tests {
                 && trimmed.ends_with("-> u64;"))
             || trimmed.starts_with("pub type JitLambdaFn = unsafe extern")
             || trimmed.starts_with("pub type JitLambdaArgvFn = unsafe extern")
+            || trimmed.starts_with("pub type JitFoldStepI64AccFn = unsafe extern")
     }
 
     fn is_allowed_native_thunk_call_token(source_path: &Path, code: &str, token: &str) -> bool {
@@ -255,7 +256,8 @@ mod tests {
 
     /// The tier-2 lambda-entry boundary lives in `cranelift/tier2.rs`: one
     /// dispatch entrypoint, one native call, and one code-pointer transmute,
-    /// each pinned to a single reviewed line.
+    /// each pinned to a single reviewed line. The decoded-`i64`-accumulator
+    /// fold-step entry adds one further reviewed triple of the same shape.
     fn is_allowed_native_lambda_call_token(source_path: &Path, code: &str, token: &str) -> bool {
         if source_path.file_name().and_then(|name| name.to_str()) != Some("tier2.rs") {
             return false;
@@ -268,18 +270,25 @@ mod tests {
                     "pub unsafe fn jit_cranelift_call_context_finalized_lambda_entry(",
                 ) || trimmed.starts_with(
                     "pub unsafe fn jit_cranelift_call_context_finalized_lambda_argv_entry(",
+                ) || trimmed.starts_with(
+                    "pub unsafe fn jit_cranelift_call_context_finalized_fold_step_i64acc_entry(",
                 ) || trimmed == "let lambda_dispatched = unsafe { lambda_entry(rt, env, argument) };"
                     || trimmed == "let chain_dispatched = unsafe { argv_entry(rt, env, argv.as_ptr()) };"
+                    || trimmed == "let acc_next = unsafe { fold_step_entry(rt, env, acc, elem) };"
                     || trimmed
                         == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
                     || trimmed
                         == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };"
+                    || trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };"
             }
             "transmute" => {
                 trimmed
                     == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
                     || trimmed
                         == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };"
+                    || trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };"
             }
             _ => false,
         }
@@ -526,6 +535,30 @@ mod tests {
             ),
             1,
             "tier-2 chain code-pointer transmute must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "pub unsafe fn jit_cranelift_call_context_finalized_fold_step_i64acc_entry(",
+            ),
+            1,
+            "tier-2 fold-step dispatch entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "let acc_next = unsafe { fold_step_entry(rt, env, acc, elem) };",
+            ),
+            1,
+            "tier-2 fold-step native call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };",
+            ),
+            1,
+            "tier-2 fold-step code-pointer transmute must stay singly reviewed"
         );
     }
 

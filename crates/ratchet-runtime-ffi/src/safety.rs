@@ -567,6 +567,11 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };"
     );
+    const CONTEXT_FINALIZED_FOLD_STEP_I64ACC_JIT_BOUNDARY_LINE: &str = concat!(
+        "let fold_step = ",
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_fold_step_i64acc_entry(body, rt, env, accumulator, element) };"
+    );
     const CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE: &str = concat!(
         "let filter_step = ",
         "uns",
@@ -1030,6 +1035,7 @@ mod tests {
                 || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE
+                || trimmed == CONTEXT_FINALIZED_FOLD_STEP_I64ACC_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_ALL_ANY_STEP_JIT_BOUNDARY_LINE
         } else {
@@ -1397,6 +1403,7 @@ mod unchecked_cfg;
             (CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE, "lambda call"),
             (CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE, "chain call"),
             (CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE, "fold step"),
+            (CONTEXT_FINALIZED_FOLD_STEP_I64ACC_JIT_BOUNDARY_LINE, "fold step i64acc"),
             (CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE, "filter step"),
             (CONTEXT_FINALIZED_ALL_ANY_STEP_JIT_BOUNDARY_LINE, "all/any step"),
         ] {

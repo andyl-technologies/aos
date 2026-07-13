@@ -65,6 +65,7 @@ pub use candidate_c::jit_cranelift_call_context_finalized_candidate_c_thunk_entr
 pub use finalized::JitCraneliftFinalizedFunction;
 pub use native_error::JitCraneliftNativeCallError;
 use native_error::require_artifact_value_abi;
+pub use tier2::jit_cranelift_call_context_finalized_fold_step_i64acc_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_argv_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -3319,6 +3320,7 @@ fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> Stri
         JitClifArtifactKind::ThunkBody => "thunk_body",
         JitClifArtifactKind::Tier2LambdaEntry => "tier2_lambda_entry",
         JitClifArtifactKind::Tier2LambdaChainEntry { .. } => "tier2_chain_entry",
+        JitClifArtifactKind::Tier2FoldStepI64AccEntry => "tier2_fold_step_i64acc_entry",
     };
     match artifact.source() {
         JitClifArtifactSource::ConstantSmoke => format!("aos.jit.constant_smoke.{kind}"),

@@ -201,6 +201,37 @@ impl TreeWalk {
         self.heap.clone_lambda(value).ok()
     }
 
+    /// Forces the initial fold accumulator and decodes it to a plain `i64`.
+    ///
+    /// The decoded-`i64`-accumulator fold seam (see
+    /// [`ratchet_jit::lower_tier2_fold_i64acc`]) threads its accumulator as a
+    /// decoded integer, so it must resolve the (possibly suspended) seed once
+    /// before entering the native loop — a strict fold forces its accumulator on
+    /// every step anyway, and the promotion gate guarantees at least one element.
+    /// A seed that forces to a non-integer, or whose forcing raises an evaluator
+    /// error, yields `None`; the fold then stays on the value-threading path,
+    /// which reproduces that value or error exactly.
+    pub fn tier2_force_decode_int_accumulator(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Option<i64> {
+        let forced = self.force_value(id, span, value).ok()?;
+        self.heap.decode_int_value(forced).ok()
+    }
+
+    /// Encodes a decoded `i64` fold accumulator back into a runtime value.
+    ///
+    /// The single boundary crossing of the decoded-`i64`-accumulator fold seam:
+    /// the native loop threads its accumulator as a plain `i64` and this re-boxes
+    /// the final (or deopt-resume) accumulator once through the evaluator heap,
+    /// so an accumulator outside the inline range boxes correctly instead of
+    /// deopting per element. Returns `None` when the heap allocation fails.
+    pub fn tier2_encode_int_accumulator(&mut self, value: i64) -> Option<Value> {
+        self.heap.alloc_int_value(value).ok()
+    }
+
     /// Consults the tier-2 engine for one run of a strict left fold.
     ///
     /// Called by the `builtins.foldl'` loops with the current accumulator and

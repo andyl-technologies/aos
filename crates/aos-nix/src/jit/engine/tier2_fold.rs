@@ -49,13 +49,15 @@ use std::rc::Rc;
 use ratchet_core::{IrId, syntax::Span};
 use ratchet_jit::{
     JitModuleContextFinalizedBody, JitModuleContextKeepAlive, JitTier2ChainScan,
-    JitTier2EnvBoundary, JitTier2PinnedCallee, lower_tier2_curried_chain, scan_tier2_curried_chain,
-    scan_tier2_pinned_callee,
+    JitTier2EnvBoundary, JitTier2PinnedCallee, lower_tier2_curried_chain, lower_tier2_fold_i64acc,
+    scan_tier2_curried_chain, scan_tier2_pinned_callee,
 };
 use ratchet_oracle::eval::Tier2FoldHook;
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
-use ratchet_runtime_ffi::run_context_finalized_native_fold_loop;
+use ratchet_runtime_ffi::{
+    run_context_finalized_native_fold_loop, run_context_finalized_native_fold_loop_i64acc,
+};
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
@@ -96,6 +98,10 @@ struct NixJitTier2FoldEntry {
     _keep_alive: JitModuleContextKeepAlive,
     /// The pinned callees re-validated per fold call.
     pinned: Vec<Tier2PinIdentity>,
+    /// Whether `body` is the decoded-`i64`-accumulator fold-step entry (dispatched
+    /// through the single-boundary-crossing i64-accumulator native loop) rather
+    /// than the ordinary value-threading chain entry.
+    i64acc: bool,
 }
 
 /// The outcome of preparing a fold-operator promotion.
@@ -193,6 +199,37 @@ impl NixJitTier1Engine {
         }
 
         let env = lambda.env().clone();
+        if entry.i64acc {
+            // The decoded-`i64`-accumulator entry threads its accumulator as a
+            // plain integer: decode the seed once, run the native loop, and
+            // re-encode the resulting accumulator once (the single boundary
+            // crossing). A non-integer seed (which the integer-typed operator
+            // could not have folded) or a heap-boxing failure stays interpreted.
+            let Some(initial) = eval.tier2_force_decode_int_accumulator(id, span, accumulator)
+            else {
+                return fold_continued(promoted, false);
+            };
+            return match run_context_finalized_native_fold_loop_i64acc(
+                eval,
+                id,
+                span,
+                &env,
+                initial,
+                elements,
+                &entry.body,
+            ) {
+                Ok(outcome) => match eval.tier2_encode_int_accumulator(outcome.accumulator()) {
+                    Some(accumulator) => Tier2FoldHook::Ran {
+                        consumed: outcome.consumed(),
+                        accumulator,
+                        deopted: outcome.deopted(),
+                        promoted,
+                    },
+                    None => fold_continued(promoted, false),
+                },
+                Err(_) => fold_continued(promoted, false),
+            };
+        }
         match run_context_finalized_native_fold_loop(
             eval,
             id,
@@ -230,6 +267,32 @@ impl NixJitTier1Engine {
         // against `OperatorEnv`.
         let budget = self.tier2.borrow().budget;
         let env_boundary = JitTier2EnvBoundary::OperatorEnv;
+
+        // Prefer the decoded-`i64`-accumulator fold-step entry (single boundary
+        // crossing, no per-element encode/decode, no wide-accumulator boxing)
+        // when the operator body is statically integer-typed. It declines
+        // (falling through to the value-threading chain entry below) for a
+        // non-integer operator or on the two-word carrier, where the payload
+        // word already holds a full `i64` with no boxing cliff. It persists
+        // through the same compiled-body cache under a distinct role.
+        if let Some((finalized_body, keep_alive)) = self.prepare_tier2_fold_i64acc(
+            ir,
+            &resolved,
+            Tier2ChainCacheRole::FoldI64Acc,
+            lambda.pattern(),
+            lambda.body(),
+            None,
+            env_boundary,
+            &[],
+        ) {
+            return FoldPreparation::Ready(Rc::new(NixJitTier2FoldEntry {
+                body: Rc::new(finalized_body),
+                _keep_alive: keep_alive,
+                pinned: resolved.pinned,
+                i64acc: true,
+            }));
+        }
+
         let Some(cache_identity) = chain_cache_identity(
             Tier2ChainCacheRole::Fold,
             lambda.pattern(),
@@ -281,7 +344,74 @@ impl NixJitTier1Engine {
             body: Rc::new(finalized_body),
             _keep_alive: keep_alive,
             pinned: resolved.pinned,
+            i64acc: false,
         }))
+    }
+
+    /// Lowers, caches, and finalizes a fold operator on the
+    /// decoded-`i64`-accumulator fold-step ABI.
+    ///
+    /// Returns the finalized entry parts, or `None` when the operator body is not
+    /// statically integer-typed (the caller falls back to the value-threading
+    /// chain entry), when the two-word carrier declines the lowering, or when
+    /// caching/finalization fails. The body persists through the compiled-body
+    /// cache under `role` (distinct from the value-threading roles so the two
+    /// ABIs never alias). `generator_body` is `Some` for a fused `genList` fold,
+    /// and `extra_identity` carries the generator's def-site identity in that
+    /// case. Shared by the plain fold promotion above and the fused `genList`
+    /// promotion (see [`tier2_fold_gen`](super::tier2_fold_gen)).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_tier2_fold_i64acc(
+        &self,
+        ir: &ratchet_core::Ir,
+        resolved: &ResolvedFoldOperator,
+        role: Tier2ChainCacheRole,
+        root_pattern: IrId,
+        root_body: IrId,
+        generator_body: Option<IrId>,
+        env_boundary: JitTier2EnvBoundary,
+        extra_identity: &[IrId],
+    ) -> Option<(JitModuleContextFinalizedBody, JitModuleContextKeepAlive)> {
+        let cache_identity = chain_cache_identity(
+            role,
+            root_pattern,
+            root_body,
+            &resolved.scan,
+            None,
+            &resolved.pinned,
+            &resolved.pinned_callees,
+            env_boundary,
+            extra_identity,
+        )?;
+        let budget = self.tier2.borrow().budget;
+        let cached = {
+            let state = self.tier2.borrow();
+            state.compiled_cache.as_ref().and_then(|cache| {
+                cache.load_chain(
+                    ir,
+                    &cache_identity,
+                    resolved.scan.inner_body(),
+                    resolved.scan.arity(),
+                    None,
+                    budget,
+                )
+            })
+        };
+        let cache_hit = cached.is_some();
+        let lowering = cached.or_else(|| {
+            lower_tier2_fold_i64acc(
+                &ir.arena,
+                &ir.bindings,
+                &resolved.scan,
+                &resolved.pinned_callees,
+                generator_body,
+            )
+            .ok()
+        })?;
+        if !cache_hit && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref() {
+            cache.store_chain(ir, &cache_identity, budget, &lowering);
+        }
+        self.finalize_tier2_fold_step_i64acc(lowering)
     }
 
     /// Resolves one fold operator's chain scan and pinned callees.
@@ -646,45 +776,77 @@ mod tests {
         );
     }
 
-    /// Nested dependent lets compile: an inner binding may read an outer
-    /// one, and both become virtual registers.
+    /// Nested dependent lets compile: an inner binding may read an outer one,
+    /// and both become virtual registers. The `b + a` fold result grows ~4x per
+    /// element and crosses the inline `i32` range within the run, yet both
+    /// carriers fold every element natively with zero deopts.
     ///
-    /// Baseline-only: `b + a` (the fold result) grows ~4x per element and
-    /// crosses the inline `i32` range within the run, so on the one-word
-    /// carrier every wide result boxes and deopts the encode guard — the
-    /// zero-deopt, inline-result invariant is two-word-specific. The one-word
-    /// let-scope machinery is covered by
-    /// [`nested_dependent_lets_fold_natively_in_range`].
-    #[cfg(not(feature = "candidate_c_value"))]
+    /// This is the decoded-`i64`-accumulator win (task #32): the accumulator
+    /// threads as a full `i64` across the whole run, so a value past the inline
+    /// range no longer boxes and deopts the encode guard on the one-word carrier
+    /// (previously this run was two-word-only). The final accumulator is wide
+    /// and boxes into each evaluator's own arena, so the result is compared by
+    /// decoded integer through each heap rather than by raw words.
     #[test]
     fn nested_dependent_lets_fold_natively() {
         let source = "builtins.foldl'              (acc: i: let a = acc + i; in let b = a * 3; in b + a) 0              (builtins.genList (i: i) 64)";
-        let oracle = eval_oracle(source);
-        let (native, stats) = eval_with_tier2(source);
+        let oracle_ir = lower(source);
+        let mut oracle_eval = TreeWalk::new(&oracle_ir);
+        let oracle = oracle_eval.eval_root().expect("oracle evaluates");
 
-        assert!(oracle.raw_eq(native), "nested-let fold changed a result");
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(NixJitTier1Engine::new().expect("engine builds")));
+        let native = eval.eval_root().expect("tier-2 evaluation succeeds");
+        let stats = eval.stats();
+
+        let oracle_int = oracle_eval
+            .heap()
+            .decode_int_value(oracle)
+            .expect("oracle int decodes");
+        let native_int = eval
+            .heap()
+            .decode_int_value(native)
+            .expect("native int decodes");
+        assert_eq!(
+            oracle_int, native_int,
+            "nested-let fold changed a result: oracle {oracle:?} vs native {native:?}"
+        );
         assert!(
             stats.tier2_dispatched() >= 1,
             "the nested-let fold must run natively, got {stats:?}"
         );
-        assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
+        assert_eq!(
+            stats.tier2_deopted(),
+            0,
+            "the decoded-i64-accumulator fold must never deopt on the wide result, got {stats:?}"
+        );
     }
 
-    /// The one-word sibling of [`nested_dependent_lets_fold_natively`]: a
-    /// shorter run keeps every fold result inside the inline `i32` range, so
-    /// the nested `let`-scope virtual registers fold natively with zero deopts
-    /// on the compressed carrier and match the oracle by raw words.
-    #[cfg(feature = "candidate_c_value")]
+    /// A fold over a materialized (non-`genList`) list runs through the plain
+    /// decoded-`i64`-accumulator slice loop with real element values.
+    ///
+    /// `builtins.map` materializes the list, so the fold takes the plain fold
+    /// seam (not the fused generator), exercising the `Slice` element source of
+    /// the i64-accumulator loop; its elements are forced by the compiled step
+    /// while the accumulator threads decoded. The sum stays inline, so the
+    /// result compares by raw words.
     #[test]
-    fn nested_dependent_lets_fold_natively_in_range() {
-        let source = "builtins.foldl'              (acc: i: let a = acc + i; in let b = a * 3; in b + a) 0              (builtins.genList (i: i) 8)";
+    fn materialized_list_fold_uses_the_i64acc_slice_loop() {
+        let source = "builtins.foldl' (a: b: a + b) 0 \
+             (builtins.map (x: x * 2) (builtins.genList (i: i) 32))";
         let oracle = eval_oracle(source);
         let (native, stats) = eval_with_tier2(source);
 
-        assert!(oracle.raw_eq(native), "nested-let fold changed a result");
+        assert!(
+            oracle.raw_eq(native),
+            "materialized-list fold changed a result: oracle {oracle:?} vs native {native:?}"
+        );
         assert!(
             stats.tier2_dispatched() >= 1,
-            "the nested-let fold must run natively, got {stats:?}"
+            "the materialized-list fold must run natively, got {stats:?}"
         );
         assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
     }

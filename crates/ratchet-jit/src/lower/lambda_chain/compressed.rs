@@ -24,7 +24,8 @@ use cranelift_codegen::{
     ir::{AbiParam, Function, InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
 use ratchet_core::{
-    IrArena, IrBinding, IrData, IrId, IrKind, runtime_lambda_argv_call_signature,
+    IrArena, IrBinding, IrData, IrId, IrKind, runtime_fold_step_i64acc_call_signature,
+    runtime_lambda_argv_call_signature,
     syntax::{BinOpKind, UnaryOpKind},
 };
 use ratchet_value::value::compressed::CompressedValueWord;
@@ -217,6 +218,116 @@ pub(super) fn lower_tier2_fold_genlist_compressed(
         None,
         self_call_count,
     ))
+}
+
+/// Lowers a fold operator onto the decoded-`i64`-accumulator fold-step ABI.
+///
+/// The one-word fold seam's single-boundary-crossing variant: the compiled
+/// entry has the frozen `(rt, env, acc: i64, elem) -> i64` fold-step signature
+/// ([`runtime_fold_step_i64acc_call_signature`]), so a native fold loop threads
+/// its accumulator as a plain decoded integer across every element — no
+/// per-element encode/decode round-trip and, crucially, no wide-accumulator
+/// boxing, so an accumulator that grows past the inline `i32` range keeps
+/// folding natively instead of deopting the encode guard on every element. The
+/// operator body must be statically integer-typed (so its result is always a
+/// decoded integer). When `generator_body` is `Some`, the element parameter is
+/// a `builtins.genList` index whose call-free generator body is fused in
+/// exactly as [`lower_tier2_fold_genlist_compressed`].
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::UnsupportedArithOperand`] when `scan` is not arity 2
+/// or the operator body is not statically integer-typed (the tree walk keeps
+/// folding it through the ordinary value-threading loop), plus the ABI and
+/// verifier errors of the sibling lowerers.
+pub(super) fn lower_tier2_fold_i64acc_compressed(
+    arena: &IrArena,
+    bindings: &[IrBinding],
+    scan: &JitTier2ChainScan,
+    pinned: &[JitTier2PinnedCallee],
+    generator_body: Option<IrId>,
+) -> Result<JitTier2ChainLowering, JitLowerError> {
+    if scan.arity() != 2 || infer_class(arena, scan.inner_body()) != ExprClass::Int {
+        return Err(JitLowerError::UnsupportedArithOperand {
+            operand: scan.inner_body(),
+            kind: ratchet_core::IrKind::Lambda,
+        });
+    }
+    let entry_signature =
+        clif_signature_for_runtime_call(runtime_fold_step_i64acc_call_signature())?;
+    // The fold-step inner shares the entry's `(rt, env, acc: i64, elem) -> i64`
+    // shape: no self-call budget word (a fold operator never self-recurses) and
+    // both value parameters arrive already unboxed to one word each.
+    let inner_signature = entry_signature.clone();
+
+    let body = match generator_body {
+        Some(generator_body) => emit::ChainInnerBody::FusedGenerator(generator_body),
+        None => emit::ChainInnerBody::Plain,
+    };
+    let (inner, self_call_count) = emit::build_inner_function(
+        arena,
+        bindings,
+        scan,
+        inner_signature.clone(),
+        None,
+        pinned,
+        JitTier2EnvBoundary::OperatorEnv,
+        body,
+        emit::InnerAbi::FoldStep,
+    )?;
+    let entry =
+        build_fold_step_entry_function(scan.inner_body(), entry_signature, &inner_signature)?;
+
+    verify_clif_function(&inner)?;
+    verify_clif_function(&entry)?;
+
+    Ok(JitTier2ChainLowering::from_cached_parts(
+        entry,
+        inner,
+        scan.inner_body(),
+        scan.arity(),
+        None,
+        self_call_count,
+    ))
+}
+
+/// Builds the fold-step boundary entry with the decoded-`i64`-accumulator ABI.
+///
+/// The entry has the frozen `(rt, env, acc: i64, elem) -> i64` fold-step
+/// signature and forwards its parameters straight to `inner`: there is no
+/// `argv` run to unpack and no self-call budget to seed. A deopting `inner`
+/// returns the sentinel placeholder word and the entry returns it unchanged,
+/// because the native fold loop reads the recorded trap flag — never the
+/// returned integer — to detect the deopt, so no sentinel-to-null translation
+/// is needed (an arbitrary `i64` accumulator is a valid decoded integer).
+fn build_fold_step_entry_function(
+    body: IrId,
+    entry_signature: Signature,
+    inner_signature: &Signature,
+) -> Result<Function, JitLowerError> {
+    let mut function = Function::with_name_signature(clif_name_for_ir_root(body), entry_signature);
+    let inner_ref = import_tier2_local_function(&mut function, inner_signature);
+
+    let entry_block = append_entry_block_params(&mut function);
+    let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
+    let params = cursor.func.dfg.block_params(entry_block).to_vec();
+    let [rt, env, acc, elem] = params[..] else {
+        return Err(JitLowerError::MissingEntryBlockParameter {
+            index: params.len(),
+        });
+    };
+    let call = cursor.ins().call(inner_ref, &[rt, env, acc, elem]);
+    let results = cursor.func.dfg.inst_results(call).to_vec();
+    let [acc_next] = results[..] else {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: "tier2_fold_step_i64acc_inner",
+            expected: 1,
+            actual: results.len(),
+        });
+    };
+    cursor.ins().return_(&[acc_next]);
+    drop(cursor);
+    Ok(function)
 }
 
 /// Builds the internal recursive signature for a K-parameter one-word body.

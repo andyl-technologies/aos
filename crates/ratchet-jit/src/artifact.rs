@@ -43,6 +43,18 @@ pub enum JitClifArtifactKind {
         /// The chain arity K the entry's `argv` run must carry.
         arity: u8,
     },
+    /// A tier-2 fold-step boundary entry with a decoded `i64` accumulator.
+    ///
+    /// The entry adapts the frozen `(rt, env, acc: i64, elem) -> i64` fold-step
+    /// signature ([`ratchet_core::RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE`]) onto
+    /// a module-local arity-2 body function whose first parameter is the running
+    /// accumulator, threaded across the native fold loop as a plain decoded
+    /// integer with no per-element encode/decode round-trip. Only the entry is
+    /// ever called from Rust (see `lower::lambda_chain`); it is produced only
+    /// when the fold operator body is statically integer-typed, so its result is
+    /// always a decoded integer and a per-element deopt is signaled out of band
+    /// by the runtime trap flag.
+    Tier2FoldStepI64AccEntry,
 }
 
 /// The source identity for a non-executable CLIF artifact.

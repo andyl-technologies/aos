@@ -23,6 +23,7 @@ use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError, JitValueAbi,
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitModuleContextFinalizedBody,
     JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_argv_entry,
+    jit_cranelift_call_context_finalized_fold_step_i64acc_entry,
     jit_cranelift_call_context_finalized_candidate_b_thunk_entry,
     jit_cranelift_call_context_finalized_candidate_c_thunk_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
@@ -468,6 +469,117 @@ pub fn run_context_finalized_native_fold_genlist_loop(
     )
 }
 
+/// The result of one native decoded-`i64`-accumulator fold loop.
+///
+/// `consumed` leading elements of the caller's run were folded natively and
+/// `accumulator` is the decoded running accumulator after them. When `deopted`
+/// is true the loop stopped early — a guard failed, a forcing evaluator error
+/// was transferred, or a generated index exceeded `i64` — and the caller must
+/// re-run element `consumed` (and everything after it) interpreted, seeding the
+/// interpreted fold with `accumulator` re-encoded to a runtime value.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFoldI64AccLoopOutcome {
+    consumed: usize,
+    accumulator: i64,
+    deopted: bool,
+}
+
+impl NativeFoldI64AccLoopOutcome {
+    /// Returns how many leading elements were folded natively.
+    pub const fn consumed(self) -> usize {
+        self.consumed
+    }
+
+    /// Returns the decoded running accumulator after the consumed prefix.
+    pub const fn accumulator(self) -> i64 {
+        self.accumulator
+    }
+
+    /// Returns true when the loop stopped early on a deopt or error trap.
+    pub const fn deopted(self) -> bool {
+        self.deopted
+    }
+}
+
+/// Runs a fold operator natively over an element run with a decoded `i64`
+/// accumulator.
+///
+/// The single-boundary-crossing counterpart of
+/// [`run_context_finalized_native_fold_loop`]: `body` must be a fold-step entry
+/// (lowered by `lower_tier2_fold_i64acc`), and the accumulator is threaded as a
+/// plain decoded `i64` across every element — no per-element encode/decode
+/// round-trip and no wide-accumulator boxing, so an accumulator that grows past
+/// the inline range keeps folding natively. `initial_acc` is the decoded initial
+/// accumulator; the caller re-encodes the returned accumulator to a runtime
+/// value exactly once (on both the full-run and deopt paths).
+///
+/// Any transferred trap — a compiled-body deopt (for example a wide or
+/// non-integer element the step could not decode) or a forcing evaluator error
+/// while folding element `k` — stops the loop with `consumed == k`; the caller
+/// re-runs that element interpreted (see [`NativeFoldI64AccLoopOutcome`]).
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI or the finalized body is not a fold-step entry.
+pub fn run_context_finalized_native_fold_loop_i64acc(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial_acc: i64,
+    elements: &[Value],
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldI64AccLoopOutcome, JitCraneliftNativeCallError> {
+    run_native_fold_loop_i64acc(
+        eval,
+        id,
+        span,
+        env,
+        initial_acc,
+        FoldElementSource::Slice(elements),
+        body,
+    )
+}
+
+/// Runs a fused fold-generator entry natively over a `genList` index range with
+/// a decoded `i64` accumulator.
+///
+/// The decoded-accumulator counterpart of
+/// [`run_context_finalized_native_fold_genlist_loop`]: the compiled entry fuses
+/// the `builtins.genList` generator, so its element argument is the raw index,
+/// and the accumulator is threaded as a plain decoded `i64`. The loop covers
+/// indices `start_index .. start_index + run_len` and otherwise behaves exactly
+/// like [`run_context_finalized_native_fold_loop_i64acc`].
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI or the finalized body is not a fold-step entry.
+pub fn run_context_finalized_native_fold_genlist_loop_i64acc(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial_acc: i64,
+    start_index: usize,
+    run_len: usize,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldI64AccLoopOutcome, JitCraneliftNativeCallError> {
+    run_native_fold_loop_i64acc(
+        eval,
+        id,
+        span,
+        env,
+        initial_acc,
+        FoldElementSource::GenIndices {
+            start: start_index,
+            len: run_len,
+        },
+        body,
+    )
+}
+
 /// The result of one native strict-filter loop over an element run.
 ///
 /// `consumed` leading elements of the caller's run were decided natively and
@@ -823,6 +935,86 @@ fn run_native_fold_loop(
     drop(scope);
     drop(context);
     Ok(NativeFoldLoopOutcome {
+        consumed: source.len(),
+        accumulator,
+        deopted: false,
+    })
+}
+
+/// Shared native fold-loop core threading a decoded `i64` accumulator.
+///
+/// See [`run_context_finalized_native_fold_loop_i64acc`] for the boundary
+/// contract. Structurally identical to [`run_native_fold_loop`] but the
+/// accumulator lives in a plain `i64` register across the whole run: each step
+/// receives the decoded accumulator and the current element word and returns
+/// the next decoded accumulator, so nothing is encoded or decoded per element.
+fn run_native_fold_loop_i64acc(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial_acc: i64,
+    source: FoldElementSource<'_>,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldI64AccLoopOutcome, JitCraneliftNativeCallError> {
+    let stack_maps = body
+        .finalized_function()
+        .runtime_user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = rt;
+
+    let scope = RuntimeTrapScope::new();
+    let mut accumulator = initial_acc;
+    for index in 0..source.len() {
+        let Some(element) = source.step_value(index) else {
+            drop(scope);
+            drop(context);
+            return Ok(NativeFoldI64AccLoopOutcome {
+                consumed: index,
+                accumulator,
+                deopted: true,
+            });
+        };
+        // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
+        // environment clone, the element a live value on `eval`'s heap; the
+        // caller keeps `body`'s module alive and the armed scope converts every
+        // trap. `accumulator` is a plain decoded integer requiring no validation.
+        let fold_step = unsafe { jit_cranelift_call_context_finalized_fold_step_i64acc_entry(body, rt, env, accumulator, element) };
+        let next = match fold_step {
+            Ok(next) => next,
+            Err(error) => {
+                if index == 0 {
+                    drop(scope);
+                    return Err(error);
+                }
+                // A mid-run boundary error abandons this element natively; the
+                // interpreted re-run of element `index` is authoritative.
+                drop(scope);
+                drop(context);
+                return Ok(NativeFoldI64AccLoopOutcome {
+                    consumed: index,
+                    accumulator,
+                    deopted: true,
+                });
+            }
+        };
+        if scope.take_trap().is_some() {
+            drop(scope);
+            drop(context);
+            return Ok(NativeFoldI64AccLoopOutcome {
+                consumed: index,
+                accumulator,
+                deopted: true,
+            });
+        }
+        accumulator = next;
+    }
+    drop(scope);
+    drop(context);
+    Ok(NativeFoldI64AccLoopOutcome {
         consumed: source.len(),
         accumulator,
         deopted: false,

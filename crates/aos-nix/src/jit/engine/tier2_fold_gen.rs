@@ -57,7 +57,10 @@ use ratchet_jit::{
 use ratchet_oracle::eval::Tier2FoldHook;
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
-use ratchet_runtime_ffi::run_context_finalized_native_fold_genlist_loop;
+use ratchet_runtime_ffi::{
+    run_context_finalized_native_fold_genlist_loop,
+    run_context_finalized_native_fold_genlist_loop_i64acc,
+};
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
@@ -85,6 +88,10 @@ struct NixJitTier2FoldGenEntry {
     _keep_alive: JitModuleContextKeepAlive,
     /// The operator's pinned callees re-validated per fold call.
     pinned: Vec<Tier2PinIdentity>,
+    /// Whether `body` is the decoded-`i64`-accumulator fold-step entry
+    /// (dispatched through the single-boundary-crossing i64-accumulator native
+    /// genList loop) rather than the value-threading chain entry.
+    i64acc: bool,
 }
 
 /// The outcome of preparing one fused promotion.
@@ -169,6 +176,38 @@ impl NixJitTier1Engine {
         }
 
         let env = op_lambda.env().clone();
+        if entry.i64acc {
+            // The decoded-`i64`-accumulator entry threads its accumulator as a
+            // plain integer: decode the seed once, run the native genList loop,
+            // and re-encode the resulting accumulator once (the single boundary
+            // crossing). A non-integer seed or a heap-boxing failure stays
+            // interpreted.
+            let Some(initial) = eval.tier2_force_decode_int_accumulator(id, span, accumulator)
+            else {
+                return fold_gen_continued(promoted, false);
+            };
+            return match run_context_finalized_native_fold_genlist_loop_i64acc(
+                eval,
+                id,
+                span,
+                &env,
+                initial,
+                next_index,
+                remaining,
+                &entry.body,
+            ) {
+                Ok(outcome) => match eval.tier2_encode_int_accumulator(outcome.accumulator()) {
+                    Some(accumulator) => Tier2FoldHook::Ran {
+                        consumed: outcome.consumed(),
+                        accumulator,
+                        deopted: outcome.deopted(),
+                        promoted,
+                    },
+                    None => fold_gen_continued(promoted, false),
+                },
+                Err(_) => fold_gen_continued(promoted, false),
+            };
+        }
         match run_context_finalized_native_fold_genlist_loop(
             eval,
             id,
@@ -221,13 +260,38 @@ impl NixJitTier1Engine {
             return FoldGenPreparation::Structural;
         };
 
-        let budget = self.tier2.borrow().budget;
         let env_boundary = JitTier2EnvBoundary::OperatorEnv;
         let generator_identity = [
             generator_lambda.pattern(),
             generator_lambda.body(),
             generator_body,
         ];
+
+        // Prefer the decoded-`i64`-accumulator fused fold-step entry when the
+        // operator body is statically integer-typed: the accumulator threads as
+        // a plain integer across the whole generated run with no per-element
+        // encode/decode and no wide-accumulator boxing (sum-fold's exact shape).
+        // It declines to the value-threading genList entry below otherwise, and
+        // persists through the same compiled-body cache under a distinct role.
+        if let Some((finalized_body, keep_alive)) = self.prepare_tier2_fold_i64acc(
+            ir,
+            &resolved,
+            Tier2ChainCacheRole::FoldGenI64Acc,
+            op_lambda.pattern(),
+            op_lambda.body(),
+            Some(generator_body),
+            env_boundary,
+            &generator_identity,
+        ) {
+            return FoldGenPreparation::Ready(Rc::new(NixJitTier2FoldGenEntry {
+                body: Rc::new(finalized_body),
+                _keep_alive: keep_alive,
+                pinned: resolved.pinned,
+                i64acc: true,
+            }));
+        }
+
+        let budget = self.tier2.borrow().budget;
         let Some(cache_identity) = chain_cache_identity(
             Tier2ChainCacheRole::FoldGen,
             op_lambda.pattern(),
@@ -278,6 +342,7 @@ impl NixJitTier1Engine {
             body: Rc::new(finalized_body),
             _keep_alive: keep_alive,
             pinned: resolved.pinned,
+            i64acc: false,
         }))
     }
 }

@@ -90,6 +90,54 @@ pub fn lower_tier2_fold_genlist(
     lower_tier2_fold_genlist_two_word(arena, bindings, scan, pinned, generator_body, depth_budget)
 }
 
+/// Lowers a fold operator onto the decoded-`i64`-accumulator fold-step ABI.
+///
+/// The single-boundary-crossing fold variant: the compiled entry has the frozen
+/// `(rt, env, acc: i64, elem) -> i64` fold-step signature, so a native fold loop
+/// threads its accumulator as a plain decoded integer across every element with
+/// no per-element encode/decode round-trip and no wide-accumulator boxing. Pass
+/// `generator_body = Some(_)` to additionally fuse a `builtins.genList`
+/// generator into the step (the element parameter is then the raw index);
+/// `None` folds a materialized element run.
+///
+/// This lowering is one-word-carrier only: it depends on the compressed
+/// carrier's decoded-core emitter (the operator body threads decoded integers),
+/// which the two-word carrier does not have. On the two-word carrier the
+/// accumulator already holds a full `i64` in its payload word with no boxing
+/// cliff, so the ordinary value-threading fold loop is used and this lowering
+/// declines.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::UnsupportedArithOperand`] when `scan` is not arity 2
+/// or the operator body is not statically integer-typed, when the caller is
+/// built on the two-word carrier, plus the ABI and verifier errors of the
+/// compressed fold-step lowerer.
+pub fn lower_tier2_fold_i64acc(
+    arena: &IrArena,
+    bindings: &[IrBinding],
+    scan: &JitTier2ChainScan,
+    pinned: &[JitTier2PinnedCallee],
+    generator_body: Option<IrId>,
+) -> Result<JitTier2ChainLowering, JitLowerError> {
+    #[cfg(feature = "candidate_c_value")]
+    return super::compressed::lower_tier2_fold_i64acc_compressed(
+        arena,
+        bindings,
+        scan,
+        pinned,
+        generator_body,
+    );
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        let _ = (arena, bindings, pinned, generator_body);
+        Err(JitLowerError::UnsupportedArithOperand {
+            operand: scan.inner_body(),
+            kind: ratchet_core::IrKind::Lambda,
+        })
+    }
+}
+
 /// The two-word (baseline-carrier) body of [`lower_tier2_fold_genlist`].
 #[cfg(not(feature = "candidate_c_value"))]
 fn lower_tier2_fold_genlist_two_word(
