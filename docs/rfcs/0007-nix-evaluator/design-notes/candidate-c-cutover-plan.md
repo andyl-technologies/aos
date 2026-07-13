@@ -419,9 +419,15 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   work's natural first customer, and the shape covers only literal
   singleton-list bodies that the STEP-0 profit gate holds back anyway.
 
+  **Variant full-corpus Linux gate GREEN (2026-07-12):** 546/546 packages
+  byte-matched vs the pinned C++ Nix 2.24.12 oracle with `AOS_NIX_JIT=1` on
+  the one-word carrier (`nix-diff --all --mode byte`, `FULLGATE_EXIT=0`,
+  zero divergences, builder-hil1, release build). The variant now holds the
+  same full-closure ground truth as the baseline.
+
   **Remaining (S4b phase 2):** the chain/fold-genlist port (in flight), then
   the GC-stress + sweep-zero battery over live one-word stack maps with a
-  non-trivial dispatch mass, and the variant full-corpus Linux parity run.
+  non-trivial dispatch mass.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
