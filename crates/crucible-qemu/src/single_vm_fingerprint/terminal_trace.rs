@@ -242,12 +242,32 @@ impl QemuTerminalHorizonTraceImport {
         if u64_field(value, "raw_ram_regions", line)? == 0 {
             return Err(malformed(line, "raw RAM region count must be non-zero"));
         }
-        require_u64(
-            value,
-            "raw_ram_bytes",
-            self.observation.guest_ram_bytes(),
-            line,
-        )?;
+        // `raw_ram_bytes` is the effective RAM mapped into the guest address
+        // space at the terminal boundary: patch 0036 walks the FlatView of
+        // `address_space_memory` and, by design, excludes readonly/ROM sections.
+        // `guest_ram_bytes` is a different quantity — the full RAMBlock backing
+        // store measured at genesis (patch 0002 sums `block->used_length`). On
+        // pc-q35 the two differ by the 256 KiB legacy-BIOS PAM shadow window
+        // (0xC0000-0xFFFFF), which is ROM-shadowed once firmware has run and is
+        // therefore not RAM-mapped at the terminal boundary (observed:
+        // 133955584 vs a 134217728 RAMBlock). The exact mapped total is pinned
+        // deterministically by `raw_ram_region_map_digest` and the two-run
+        // fingerprint comparison; the only structural invariant here is that the
+        // terminal maps a positive amount of RAM not exceeding the backing
+        // RAMBlock. (The original `== guest_ram_bytes` equality assumed the two
+        // walks agree; that assumption was never exercised by a live run and is
+        // false for pc-q35.)
+        let raw_ram_bytes = u64_field(value, "raw_ram_bytes", line)?;
+        if raw_ram_bytes == 0 || raw_ram_bytes > self.observation.guest_ram_bytes() {
+            return Err(malformed(
+                line,
+                format!(
+                    "terminal mapped raw_ram_bytes {raw_ram_bytes} must be in 1..={} \
+                     (the genesis RAMBlock total)",
+                    self.observation.guest_ram_bytes()
+                ),
+            ));
+        }
         if u64_field(value, "vmstate_bytes", line)? == 0 {
             return Err(malformed(
                 line,
