@@ -831,7 +831,7 @@ measurements (builder-hil1-87eb5b00), native `nix-bench`, byte-parity green.
 ```text
   before campaign   ~13x slower   (995 ms vs 76 ms, darwin baseline)
   after A + B1       ~4.9x slower  (312 ms vs 63.9 ms, Linux)
-  after §3.2(b)      TBD           (persist-exec; write-through is the last big cold cost)
+  after §3.2(b)      ~4.3x slower  (283 ms vs ~66 ms, Linux, WB=1; see §18.1)
 ```
 
 **Warm repeat-instantiate (the flagship):** `AOS_NIX_CACHE` warm = **6.6 ms** —
@@ -970,14 +970,66 @@ off-by-default write-through). Darwin cold-populate A/B at the closure-batch sta
 (total nix-diff wall incl. the constant ~180 ms oracle, median of 3): pkgs.zlib
 −10.0% (814→732 ms), pkgs.openssl −17.0% (977→811 ms).
 
-**Default-on decision: LEFT OFF (`AOS_NIX_CACHE_WRITE_BEHIND` default false).**
-The A/B is a clear cold-populate win and parity is green, but the knob gates a
-cache that is itself default-*off* in production (`AOS_NIX_CACHE` unset — §17's
-decision package), so there is no production surface to flip on yet; and the
-authoritative signal the default-on flip is supposed to record — the Linux
-syscall histogram (write/flock drop) and the 13x→4.9x→final cache-enabled cold
-ratio — is **still blocked** on the builder (now on Tailscale SSH re-auth, on top
-of the GC'd from-source toolchain). Flipping default-on is therefore deferred to
-the same landing that turns the durable cache on by default, when the Linux ratio
-can gate both together. The darwin A/B + parity + kill-tests stand as the signal
-that the buffer is correct and a cold win.
+### 18.1 Linux validation package (builder, task #27, HEAD 135384074)
+
+Ran on the builder (builder-hil1-87eb5b00, stock nixpkgs toolchain, pinned
+2.24.12 oracle, native `nix-bench` / `nix-diff`, byte-parity green throughout).
+
+**Syscall drop (D1 — `strace -f -c`, cache-on cold zlib, WB=0 vs WB=1):**
+
+```text
+syscall   WB=0      WB=1     drop
+write     9,378     6,111    -35%
+flock     7,540     4,068    -46%
+```
+
+WB=0 reproduces the §16.1 baseline (write 9.4k + flock 7.5k) exactly; the buffer
+coalesces the per-record pack+index writes into one batched write per store per
+run. (Counts include the constant C++ oracle child under `-f`, so the persist
+write-through's own drop is larger in relative terms.)
+
+**Cache-enabled cold-populate ratio (D2 — native `nix-bench`, zlib, median):**
+
+```text
+                       cache-less cold ~66 ms (clean; §16.1 63.9 ms)
+cache-ENABLED cold  WB=0  311 ms   = 4.7x   (matches §16.1's 312 ms A+B1 state)
+cache-ENABLED cold  WB=1  283 ms   = 4.3x   (-9% vs WB=0)
+warm (root-cutoff)         6.4 ms  = ~10x faster than cache-less cold, ~29x C++
+```
+
+Trajectory: **13x → 4.9x (A+B1 / WB=0) → 4.3x (WB=1).**
+
+**System toplevel before/after (D3 — `systems.server.build.toplevel`, native
+cache-populate, byte-parity green, IFD builds succeed on Linux):**
+
+```text
+cold-populate  WB=0 ~16.4 s   WB=1 ~16.2 s   (-1.3%)
+warm (root-cutoff)  ~0.020 s  = ~820x faster than its own cold
+```
+
+**Reading the numbers honestly.** The write-behind *wall* win scales with the
+write-through's share of the eval: −9% on tiny zlib (writes ≈9% of a 311 ms
+cold) but only −1.3% on the 16 s toplevel, whose wall is dominated by forcing
+the whole system closure, not I/O. The syscall drop (−35% write / −46% flock) is
+large everywhere, but §16.2 already showed the remaining cache-on-cold cost is
+eval work + thread-coordination (the parked-futex time), not the write calls —
+so batching the writes moves the ratio only 4.9x → 4.3x. The campaign's
+dramatic before/after is not the WB delta at all; it is the **durable-cache warm
+(root-cutoff) repeat**: zlib 6.4 ms (~29x C++), toplevel **20 ms vs its 16.4 s
+cold (~820x)**.
+
+**Coupled default-on decision (write-behind AND durable-cache-root): BOTH stay
+default-OFF, re-coupled at the ≤1.2x gate.** The durable cache's first-eval
+cold-populate tax is now 4.3x cache-less (write-behind cut it from 4.9x), still
+far from the ≤1.2x one-shot gate, and the dominant remaining cost is eval +
+coordination, not writes — so the cache stays opt-in (§17: default-on for
+repeat-eval workflows, cache-off for one-shot). Write-behind's benefit only
+materializes when the cache is on, where it is a **pure win** (−9% package cold,
+big syscall drop, parity green, warm unaffected at 6.4 ms, buffer memory bounded
+by the 8 MiB×2 cap): so the standing rule is **whenever the cache is enabled,
+enable write-behind with it** — the repeat-eval opt-in preset/wrapper sets both
+`AOS_NIX_CACHE` and `AOS_NIX_CACHE_WRITE_BEHIND=1`. The global env default is
+*not* flipped: with the cache default-off it would be inert, and it would force a
+broad persist-test migration (much of the suite asserts synchronous default
+durability). Re-couple for a global default-on when the cold tax reaches ≤1.2x;
+the next lever is the eval-work/coordination floor, not more write batching.

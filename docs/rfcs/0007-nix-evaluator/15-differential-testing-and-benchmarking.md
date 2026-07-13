@@ -664,13 +664,17 @@ zlib, AOS_NIX_CACHE set:  cold 312 ms  /  warm 6.6 ms
 This is the number a repeat `aos` eval on a warm durable cache actually pays, and
 the strongest single stat in the campaign. It gates the **default-cache-root
 product decision**: warm is decisively worth a default cache root; the open item
-is the first-eval **cold** cache-populate tax (312 ms ≈ 4.9x cache-less, down
-from the ~13x-class before the persist-storm campaign — see
-`design-notes/persist-write-batching-plan.md` §16.1), which the remaining
-measure-gated increments (write-behind, statx-kill, pack-index hold-fd) drive
-toward the ≤1.2x gate. **The full decision package** — trajectory, memory,
-recommendation (default-on for repeat-eval workflows; cache-off one-shot until
-§3.2(b) lands) — lives in `design-notes/persist-write-batching-plan.md` §17.
+is the first-eval **cold** cache-populate tax, now **283 ms ≈ 4.3x cache-less**
+(§3.2(b) write-behind cut it from 312 ms / 4.9x; syscalls dropped write −35% /
+flock −46%, but the remaining cold cost is eval work + thread-coordination, not
+I/O — see `design-notes/persist-write-batching-plan.md` §18.1), down from the
+~13x-class before the persist-storm campaign. The whole-system-toplevel view is
+the same story writ large: cold-populate ~16.4 s, **warm 20 ms (~820x)** via the
+root-cutoff record. **The full decision package** — trajectory, memory, and the
+coupled default-on ruling (both write-behind and the durable cache stay
+default-off until the cold tax reaches the ≤1.2x gate; write-behind rides with
+the cache whenever it is opt-in enabled) — lives in
+`design-notes/persist-write-batching-plan.md` §17–§18.
 
 **Scoreboard line every landing pastes into its report/commit body:**
 ```text
