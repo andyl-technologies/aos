@@ -10,6 +10,12 @@ use ratchet_oracle::runtime::{
 use ratchet_runtime_ffi::wrappers::runtime_native_wrapper_bindings;
 
 use super::*;
+#[allow(unused_imports)]
+use super::candidates::{
+    helper_callable_address, jit_address_candidate_for_helper_binding,
+    jit_address_candidate_for_helper_callable,
+    jit_address_candidate_for_runtime_ffi_native_wrapper, runtime_native_wrappers_by_symbol,
+};
 
 const EXPECTED_ALLOCATION_SYMBOLS: &[&str] = &[
     "aos_alloc_attrs",
