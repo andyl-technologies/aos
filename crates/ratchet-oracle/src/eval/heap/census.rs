@@ -27,7 +27,9 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::Arc;
 
+use crate::eval::env::EvalFrame;
 use crate::eval::module::EvalModuleId;
 use crate::eval::thunk::ThunkState;
 use crate::value::ValueTag;
@@ -109,6 +111,17 @@ pub(crate) struct RefusalCensus {
     pub forced_holds_thunk: u64,
     /// Forced thunks whose cached value was absent or an unclassified tag.
     pub forced_holds_unknown: u64,
+
+    // Captured-environment frame graph (step-3 increment-2 stop-condition
+    // measurement): the `Arc<EvalFrame>` retention the inline byte mass does not
+    // count. Frames are deduplicated by `Arc` identity across all closure envs.
+    /// Distinct `Arc<EvalFrame>` reached from every closure environment.
+    pub env_distinct_frames: u64,
+    /// Total frame references across all closure envs, before dedup (the ratio
+    /// against `env_distinct_frames` shows how much sharing the DAG exploits).
+    pub env_frame_refs: u64,
+    /// Total slot count summed over the distinct frames (one `Value` word each).
+    pub env_total_slots: u64,
 }
 
 impl RefusalCensus {
@@ -151,6 +164,25 @@ impl RefusalCensus {
     /// Projected inline bytes still refused after forced-thunk collapse.
     pub fn projected_residual_refused_bytes(&self) -> u64 {
         self.lambdas.inline_bytes + self.primops.inline_bytes + self.thunks_suspended.inline_bytes
+    }
+
+    /// Frame-sharing dedup ratio: frame references per distinct frame. A high
+    /// ratio means the `Arc<EvalFrame>` DAG shares heavily and the serialized
+    /// frame table stays small relative to the closure count.
+    pub fn env_frame_dedup_ratio(&self) -> f64 {
+        if self.env_distinct_frames == 0 {
+            0.0
+        } else {
+            self.env_frame_refs as f64 / self.env_distinct_frames as f64
+        }
+    }
+
+    /// Estimated serialized frame-table size: per distinct frame an 8-byte header
+    /// (parent frame id + slot count) plus one 8-byte `Value` word per slot. This
+    /// is the retained env mass the inline byte census could not size — the
+    /// step-3 stop-condition input.
+    pub fn env_serialized_bytes_estimate(&self) -> u64 {
+        self.env_distinct_frames * 8 + self.env_total_slots * 8
     }
 
     /// Classifies one thunk (owned or `Arc`-shared) into the refused-closure
@@ -247,6 +279,20 @@ impl fmt::Display for RefusalCensus {
             "projected residual after collapse   count={:>8}  inline_bytes={:>12}",
             self.projected_residual_refused_count(),
             self.projected_residual_refused_bytes()
+        )?;
+        writeln!(f, "captured-env frame graph (step-3 stop condition):")?;
+        writeln!(f, "  distinct frames        {}", self.env_distinct_frames)?;
+        writeln!(f, "  frame refs (pre-dedup) {}", self.env_frame_refs)?;
+        writeln!(
+            f,
+            "  dedup ratio            {:.2}",
+            self.env_frame_dedup_ratio()
+        )?;
+        writeln!(f, "  total slots            {}", self.env_total_slots)?;
+        writeln!(
+            f,
+            "  est. serialized bytes  {}",
+            self.env_serialized_bytes_estimate()
         )
     }
 }
@@ -309,6 +355,30 @@ impl EvalHeap {
             }
         }
         census.distinct_code_modules = modules.len() as u64;
+
+        // Size the captured-environment frame DAG (step-3 stop condition): walk
+        // every closure's env, deduplicating frames by `Arc` identity so shared
+        // parents count once.
+        let mut seen_frames: HashSet<*const EvalFrame> = HashSet::new();
+        for object in self.flat_closures.iter() {
+            let env = match object.object().payload() {
+                FlatClosurePayload::Thunk(thunk) => thunk.env(),
+                FlatClosurePayload::SharedThunk(thunk) => thunk.env(),
+                FlatClosurePayload::Lambda(lambda) => Some(lambda.env()),
+                FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => None,
+            };
+            if let Some(env) = env {
+                for frame in env.frames().iter() {
+                    census.env_frame_refs += 1;
+                    if seen_frames.insert(Arc::as_ptr(frame)) {
+                        census.env_distinct_frames += 1;
+                        if let Ok(values) = frame.slot_values() {
+                            census.env_total_slots += values.len() as u64;
+                        }
+                    }
+                }
+            }
+        }
         census
     }
 }

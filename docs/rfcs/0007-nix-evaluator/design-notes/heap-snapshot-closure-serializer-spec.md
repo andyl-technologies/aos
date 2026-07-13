@@ -108,6 +108,26 @@ representation adjacent to the eval path.
 - If the mutating collapse breaks byte-parity anywhere on the builder, stop and
   report; "defer, bank data-residual completeness" remains a live outcome.
 
+## Symbols and cross-process images (in-process assumption, made explicit)
+
+Every current segment reuses raw interned symbol ids on the assumption that the
+symbol table is shared in-process (stage 1): attrset entry keys are `Symbol`s,
+step 2's primop payloads reused the symbol id directly, and a lambda's captured
+env references symbols through its `with`-scopes and scoped globals. In-process
+restore is correct because the id space is identical. A **cross-process / durable
+(L3) image is not** — the loader's symbol table assigns different ids, so raw ids
+would silently rebind keys and scopes.
+
+Making an image portable therefore needs a **serialized symbol-name table plus a
+re-intern pass** applied across *all* segments (attrs keys, primop symbols, lambda
+env scopes), keyed the same content-first way as code identity. That is a distinct
+workstream from step 3 and is **out of scope here**, but it is recorded so the
+in-process assumption is a deliberate, documented boundary rather than a latent
+correctness gap: step 3 keeps reusing symbol ids in-process and does not close the
+cross-process symbol hole. The `LambdaCodeDrift`/registry refuse-on-mismatch guards
+protect *code* identity; symbol identity across processes is the parallel
+unclosed axis.
+
 ## Wire format
 
 Grows from v5: add a code-ref-keyed lambda-payload segment, a frame table, and a
