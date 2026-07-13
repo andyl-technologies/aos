@@ -296,6 +296,135 @@ fn value_offset(index: usize) -> i32 {
     BINDING_HEADER_BYTES as i32 + (index as i32) * VALUE_STACK_SLOT_BYTES as i32
 }
 
+// ---------------------------------------------------------------------------
+// One-word (Candidate-C) slot geometry.
+//
+// Under `JitValueAbi::CandidateC` a runtime value is a single 8-byte
+// compressed word, so a binding region stores one word per value at a stride
+// of 8 after the same 32-byte intrusive header (identity anchor at 24). This
+// is a SECOND geometry beside the two-word one above — selected per artifact
+// by its value ABI, never replacing the two-word path (cutover plan §6.1) —
+// and both live until S4b promotes the one-word carrier's JIT.
+// ---------------------------------------------------------------------------
+
+const ONE_WORD_VALUE_STACK_SLOT_BYTES: u32 = 8;
+
+/// Spills one-word runtime values after an intrusive binding header.
+///
+/// The Candidate-C sibling of [`spill_values`]: one `stack_store` per value at
+/// an 8-byte stride, same header and identity-anchor layout, so the runtime's
+/// enter/exit binding protocol is geometry-agnostic.
+pub(super) fn spill_values_one_word(cursor: &mut FuncCursor<'_>, values: &[Value]) -> Binding {
+    let value_count = values.len() as u32;
+    let size = BINDING_HEADER_BYTES
+        .saturating_add(value_count.saturating_mul(ONE_WORD_VALUE_STACK_SLOT_BYTES));
+    let slot = cursor.func.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        size,
+        VALUE_STACK_SLOT_ALIGN_SHIFT,
+    ));
+    for (index, value) in values.iter().enumerate() {
+        cursor
+            .ins()
+            .stack_store(*value, slot, one_word_value_offset(index));
+    }
+    Binding {
+        slot,
+        values: value_count,
+    }
+}
+
+/// Attaches every spilled one-word anchor to one call safepoint.
+///
+/// The Candidate-C sibling of [`attach`]: each value contributes exactly one
+/// `I64` map entry (the compressed word itself); a collector that relocates
+/// the referenced heap object rewrites that single word in place.
+pub(super) fn attach_one_word(cursor: &mut FuncCursor<'_>, call: Inst, binding: Binding) {
+    cursor.func.dfg.append_user_stack_map_entry(
+        call,
+        UserStackMapEntry {
+            ty: types::I32,
+            slot: binding.slot,
+            offset: BINDING_IDENTITY_OFFSET,
+        },
+    );
+    for index in 0..binding.values {
+        cursor.func.dfg.append_user_stack_map_entry(
+            call,
+            UserStackMapEntry {
+                ty: types::I64,
+                slot: binding.slot,
+                offset: BINDING_HEADER_BYTES + index * ONE_WORD_VALUE_STACK_SLOT_BYTES,
+            },
+        );
+    }
+}
+
+/// Reloads a one-word value that may have been rewritten at a safepoint.
+pub(super) fn reload_one_word(cursor: &mut FuncCursor<'_>, binding: Binding, index: usize) -> Value {
+    cursor
+        .ins()
+        .stack_load(types::I64, binding.slot, one_word_value_offset(index))
+}
+
+fn one_word_value_offset(index: usize) -> i32 {
+    BINDING_HEADER_BYTES as i32 + (index as i32) * ONE_WORD_VALUE_STACK_SLOT_BYTES as i32
+}
+
+/// The one-word geometry is pure CLIF construction with no carrier
+/// dependence, so its test runs on BOTH carriers (unlike the gated two-word
+/// lowering tests below).
+#[cfg(test)]
+mod one_word_tests {
+    use cranelift_codegen::cursor::Cursor;
+    use cranelift_codegen::ir::{AbiParam, Function, Signature, UserFuncName};
+
+    use super::*;
+
+    #[test]
+    fn one_word_spill_anchors_single_word_at_eight_byte_stride() {
+        let mut signature = Signature::new(cranelift_codegen::isa::CallConv::SystemV);
+        signature.params.push(AbiParam::new(types::I64));
+        signature.params.push(AbiParam::new(types::I64));
+        let mut function = Function::with_name_signature(UserFuncName::default(), signature);
+        let callee_signature =
+            function.import_signature(Signature::new(cranelift_codegen::isa::CallConv::SystemV));
+        let callee = function.import_function(cranelift_codegen::ir::ExtFuncData {
+            name: cranelift_codegen::ir::ExternalName::testcase("safepoint1w"),
+            signature: callee_signature,
+            colocated: false,
+        });
+        let block = function.dfg.make_block();
+        function.dfg.append_block_param(block, types::I64);
+        function.dfg.append_block_param(block, types::I64);
+        let mut cursor = FuncCursor::new(&mut function);
+        cursor.insert_block(block);
+        let params = cursor.func.dfg.block_params(block).to_vec();
+        let binding = spill_values_one_word(&mut cursor, &[params[0], params[1]]);
+        let call = cursor.ins().call(callee, &[]);
+        attach_one_word(&mut cursor, call, binding);
+        let reloaded = reload_one_word(&mut cursor, binding, 1);
+        cursor.ins().return_(&[reloaded]);
+
+        let entries = function
+            .dfg
+            .user_stack_map_entries(call)
+            .expect("call carries a stack map");
+        // Identity anchor + one entry per value.
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].ty, types::I32);
+        assert_eq!(entries[0].offset, BINDING_IDENTITY_OFFSET);
+        assert_eq!(entries[1].ty, types::I64);
+        assert_eq!(entries[1].offset, BINDING_HEADER_BYTES);
+        assert_eq!(
+            entries[2].offset,
+            BINDING_HEADER_BYTES + ONE_WORD_VALUE_STACK_SLOT_BYTES
+        );
+        // Header (32) + two 8-byte value words = 48 bytes.
+        assert_eq!(function.sized_stack_slots[binding.slot].size, 48);
+    }
+}
+
 // JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
 #[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
