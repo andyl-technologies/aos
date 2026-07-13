@@ -327,6 +327,20 @@ in
       if [ ! -f "$LIBGCC_DIR/libgcc_eh.a" ]; then
         cp "$LIBGCC_DIR/libgcc.a" "$LIBGCC_DIR/libgcc_eh.a"
       fi
+
+      cat > "$TMPDIR/gcc-installed-smoke.c" <<'AOS_GCC_SMOKE'
+      #include <sys/time.h>
+      #include <time.h>
+      int main(void) {
+        struct timeval tv;
+        time_t now;
+        return gettimeofday(&tv, 0) != 0 || time(&now) == (time_t) -1;
+      }
+      AOS_GCC_SMOKE
+      "$out/bin/gcc" -O2 -static "$TMPDIR/gcc-installed-smoke.c" \
+        -o "$TMPDIR/gcc-installed-smoke" -isystem ${prev.glibc}/include \
+        -B${prev.glibc}/lib -L${prev.glibc}/lib
+      "$TMPDIR/gcc-installed-smoke"
     '';
     finalMessage = "GCC 4.8.5 installed to $out";
     meta = {
