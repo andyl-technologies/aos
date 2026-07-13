@@ -861,6 +861,18 @@ the decision text supersedes it.
    - **One serializer, three payloads, one restore pass.** The relocation table +
      list-payload segment are new image segments; restore runs one patch pass
      after the arena copy + registry rebind.
+   - **Completeness audit (REQUIRED, 2026-07-13 lead ack).** Delta-rebase
+     correctness rests entirely on the relocation table covering *every* interior
+     pointer, so capture runs a debug/verify pass that makes that a *checked*
+     invariant rather than an enumeration-by-convention: scan the dumped lanes for
+     any 8-byte-aligned word whose value falls in `[old_base, old_base + capacity)`
+     (a suspected interior pointer) that is **not** in the relocation table, and
+     the inverse (every table entry points into the dump); fail capture on either.
+     This guards the exact silent-UAF failure mode the campaign already hit once —
+     a new compound payload type added later without a capture arm. Gated under
+     the image-verify flag if too slow for production capture. **String-context
+     `Arc`s stay OUT** of this mechanism — they are heap `Arc`s, not arena
+     interiors, and remain on the §1.4 stage-2 residual list.
    - The remap-survival test returns, re-targeted at the serialize-and-patch path
      (a compound value dumped/reloaded resolves value-equal). §10's B2 inline
      spine is **subsumed** — lists serialize the same way, so the FV-4 revisit is
