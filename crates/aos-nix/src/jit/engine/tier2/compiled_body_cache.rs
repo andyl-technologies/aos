@@ -32,10 +32,20 @@ mod stats;
 use stats::CompiledBodyCacheStats;
 
 const MAGIC: &[u8; 8] = b"AOSJIT2\0";
-const SCHEMA_VERSION: u32 = 2;
+/// Distinguishes cached CLIF by the value carrier that compiled it.
+///
+/// The cached functions embed carrier-specific codegen (two-word tag/payload
+/// pairs vs one compressed word), and both carriers' binaries share the same
+/// on-disk cache roots, so a record written by one carrier must read as a
+/// schema mismatch — never as loadable code — under the other.
+#[cfg(not(feature = "candidate_c_value"))]
+const CARRIER_DISCRIMINANT: u32 = 0;
+#[cfg(feature = "candidate_c_value")]
+const CARRIER_DISCRIMINANT: u32 = 1 << 16;
+const SCHEMA_VERSION: u32 = 2 | CARRIER_DISCRIMINANT;
 const HEADER_LEN: usize = 68;
 const CHAIN_MAGIC: &[u8; 8] = b"AOSJTC1\0";
-const CHAIN_SCHEMA_VERSION: u32 = 1;
+const CHAIN_SCHEMA_VERSION: u32 = 1 | CARRIER_DISCRIMINANT;
 const CHAIN_HEADER_LEN: usize = 52;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 
