@@ -44,6 +44,11 @@ in
 
         SRC="$TMPDIR/glibc-2.3.4"
 
+        # glibc 2.3.4's x86_64 time wrappers call the fixed vsyscall page.
+        # Modern kernels may boot without that compatibility mapping, so use
+        # ordinary syscall instructions in every static bootstrap binary.
+        patch -d "$SRC" -p1 < ${../gcc3_4/patches/glibc-2.3.4-no-fixed-vsyscall.patch}
+
         # Fix hardcoded /bin/pwd
         sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 

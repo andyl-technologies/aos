@@ -1,0 +1,49 @@
+diff --git a/sysdeps/unix/sysv/linux/x86_64/gettimeofday.S b/sysdeps/unix/sysv/linux/x86_64/gettimeofday.S
+index 28fa429..9aaa9ea 100644
+--- a/sysdeps/unix/sysv/linux/x86_64/gettimeofday.S
++++ b/sysdeps/unix/sysv/linux/x86_64/gettimeofday.S
+@@ -23,22 +23 @@
+-/* For the calculation see asm/vsyscall.h.  */
+-#define VSYSCALL_ADDR_vgettimeofday	0xffffffffff600000
+-
+-
+-ENTRY (__gettimeofday)
+-	/* Align stack.  */
+-	sub	$0x8, %rsp
+-	cfi_adjust_cfa_offset(8)
+-#ifdef SHARED
+-	movq	__vdso_gettimeofday(%rip), %rax
+-	PTR_DEMANGLE (%rax)
+-#else
+-	movq	$VSYSCALL_ADDR_vgettimeofday, %rax
+-#endif
+-	callq	*%rax
+-	/* Check error return.  */
+-	cmpl	$-4095, %eax
+-	jae	SYSCALL_ERROR_LABEL
+-
+-L(pseudo_end):
+-	add	$0x8, %rsp
+-	cfi_adjust_cfa_offset(-8)
++PSEUDO (__gettimeofday, gettimeofday, 2)
+diff --git a/sysdeps/unix/sysv/linux/x86_64/time.S b/sysdeps/unix/sysv/linux/x86_64/time.S
+index e4a438a..babea8c 100644
+--- a/sysdeps/unix/sysv/linux/x86_64/time.S
++++ b/sysdeps/unix/sysv/linux/x86_64/time.S
+@@ -23,4 +22,0 @@
+-/* For the calculation see asm/vsyscall.h.  */
+-#define VSYSCALL_ADDR_vtime	0xffffffffff600400
+-
+-
+@@ -30,10 +26 @@
+-ENTRY (time)
+-	/* Align stack.  */
+-	sub	$0x8, %rsp
+-	cfi_adjust_cfa_offset(8)
+-
+-	movq	$VSYSCALL_ADDR_vtime, %rax
+-	callq	*%rax
+-
+-	add	$0x8, %rsp
+-	cfi_adjust_cfa_offset(-8)
++PSEUDO_NOERRNO (time, time, 1)

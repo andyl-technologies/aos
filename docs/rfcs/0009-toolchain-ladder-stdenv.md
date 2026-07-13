@@ -325,13 +325,107 @@ stdenv` plus the existing eval/VM checks.
 - **All of `stdenv/bootstrap/`.** hex0 → GCC 2.95.3 and the
   stage4/stage5 MesCC/TinyCC/autoconf-2.5x workarounds
   (`stdenv/bootstrap/lib.nix`) are irreducibly bespoke. Untouched.
+  Keep stage5 glibc fail-closed at the compiler ABI boundary: `make -k` may
+  pass optional static-bootstrap program failures, but the producer must
+  verify and install `libc.a`, `crt1.o`, `crti.o`, and `crtn.o` before it
+  succeeds. Honor `NIX_BUILD_CORES` for the build because glibc is the longest
+  bootstrap frontier and its make graph is parallel-safe after the generated
+  ordering inputs are pinned. Do not require `big-parallel`: the 2026-07-12
+  validation reserved a whole builder but the glibc 2.2.5 make graph used
+  only 1.2–1.3 cores, so reserving that capacity reduces graph-level fan-out
+  without shortening this frontier. Do not defer ABI validation to the
+  downstream GCC build because it hides the actual glibc failure and admits an
+  unusable libc store path.
+- **Bootstrap POSIX outputs.** Treat the exported stage5 tools as compiler
+  inputs, not best-effort conveniences. In particular, stage5 findutils must
+  verify executable `bin/find` and `bin/xargs` before publishing its output;
+  every later GCC tier puts that output on `PATH`, and admitting a partial
+  object turns the missing utility into misleading `GCC_NO_EXECUTABLES`
+  failures deep inside fixincludes and target-library configure scripts.
+  Expose glibc's stable `FNM_CASEFOLD` flag bit directly for findutils 4.1's
+  `-iname`/`-ipath` implementation; enabling all GNU declarations instead
+  conflicts with the package's legacy `basename` declaration. Its recursive
+  Makefile can mask the failed `find` subdirectory behind later successful
+  subdirectories, which is why the executable validation remains mandatory.
+  Preserve the immutable source tree's equal-mtime semantics when copying it
+  into the writable build directory: recursively stamp every regular file and
+  directory from `configure`, while skipping symlinks. Package-specific rules
+  such as coreutils 5.0's documentation generation can otherwise depend on
+  copy order and invoke tools that intentionally are absent from the bootstrap
+  closure.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
   defaults genuinely don't apply to a cross-built libc or an
-  in-tree-GMP compiler.
+  in-tree-GMP compiler. GCC 3.4's target-library link flags must carry
+  `-B<previous-glibc>/lib` as well as `-L`: `-L` locates `libc.a`, while the
+  in-tree `xgcc` resolves `crt1.o`, `crti.o`, and `crtn.o` through compiler
+  prefixes before the new compiler has an installed start-file directory.
+  Build and install the C-only GCC 3.4 tier through `all-gcc` and
+  `install-gcc`: the full GCC 3.4 source archive's default top-level target
+  also enters `libstdc++`, Boehm GC, and libffi despite
+  `--enable-languages=c`, exposing target runtimes that this tier does not
+  promise and that are incompatible with its bootstrap kernel headers.
+  Keep the matching native glibc 2.3.4 static-only, as the neighboring
+  cross-glibc and glibc 2.5 bootstrap tiers already are. Its consumers link
+  with `-static`; building the unconsumed dynamic loader enters glibc's
+  `rtld-Rules` path before the old make graph has produced every subdirectory
+  stamp and does not expand the compiler ABI this tier promises. Remove the
+  versioned i386 `vm86` routine from that static build, because glibc only
+  generates its object rule when shared libraries are enabled; retaining the
+  routine leaves `misc/stamp.o` with an impossible `vm86.o` prerequisite.
+
+  Likewise, only add the ELF shared-object test modules to `extra-objs` when
+  shared libraries are enabled; otherwise `make all` tries to compile
+  `tst-dlmopen1mod` without the shared build's generated `gnu/lib-names.h`.
+  Enable static NSS and verify that `libnss_files.a` defines
+  `_nss_files_getpwnam_r` before publishing. Route the GCC 3.4 manifest tools
+  through `staticNssWrapper`, as later static tiers already do, so executable
+  links include the separate NSS and resolver archives in a linker group;
+  raw `gcc -static` otherwise fails later with unresolved `_nss_files_*`
+  references even though the libc build itself reports success.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
+
+### Early static-tool compatibility
+
+Treat the first x86_64 cross-tier tools as compatibility-constrained build
+inputs, not general-purpose host utilities. In particular, do not invoke the
+static glibc 2.3.4 `sed` with `-i`: that mode segfaults on newer Linux 6.12
+kernels. Stream the transform to a sibling file and copy it back into the
+original inode because this works across the supported builder kernels and
+preserves executable modes such as `configure`. Keep this workaround at the
+gcc4_1 boundary; later tiers use newer libc-backed tools and should retain
+their normal manifest recipes.
+
+glibc 2.3.4, glibc 2.5, and glibc 2.12 hardcode `gettimeofday` and `time` calls
+through the x86_64 fixed vsyscall page. Patch all three wrappers to issue normal
+system calls before building each libc. This keeps the static cross-tier tools,
+the glibc 2.5 Bash used by the GCC 4.4 builder, and GCC 4.8's statically linked
+`cc1` portable to kernels booted without `vsyscall=emulate` or
+`vsyscall=xonly`; do not solve this by requiring a legacy kernel boot option on
+build workers. GCC 4.8's install phase must compile and execute a static program
+that calls both functions so an unusable installed compiler is rejected at its
+producer boundary.
+
+Build the native glibc 2.5 tier with its in-tree NPTL add-on and a Linux 2.6
+kernel floor. RHEL 5 compatibility includes the NPTL `libpthread` ABI, and
+glibc 2.5 intentionally rejects a Linux build that silently omits that add-on.
+
+Build glibc 2.17 with its in-tree NPTL add-on as well. Its configure sanity
+check rejects a normal GNU/Linux libc without NPTL, so the producer must pass
+`--enable-add-ons=nptl` rather than bypassing the check. Pin `BISON` and
+`INSTALL_INFO` to the preceding AOS tier because glibc 2.17's generated
+configure script appends `/usr/bin` to both searches even when the hermetic
+`PATH` excludes it; never let a worker image's host tools influence the libc
+derivation.
+
+Before configuring GCC 4.4, patch its language-fragment loop to enumerate the
+unpacked `gcc/cp/config-lang.in` directly and assert that file exists. GCC 4.4
+is the first C++ rung and this tier intentionally carries only core C plus g++;
+do not make frontend discovery depend on glob state inherited from an early
+bootstrap shell. A suppressed glob misleadingly reports that only C is
+supported even though the g++ source component was unpacked.
 
 ## Expected outcome
 
