@@ -365,10 +365,15 @@ mod tests {
         // mapping, and one defensive unmap when re-registering the preserved
         // domain fails after a successful mapping, all under the reviewed
         // `ContiguousAddressReservation` operation.
+        // flat.rs count 6 -> 7 (RFC-0007 doc 31 §1 list increment): one exclusive
+        // `ptr::write` in `restore_payload` overwrites a restored list object's
+        // stale dumped `Vec` header with a freshly-owned payload without dropping
+        // the dangling one, behind `resolve_mut`'s `&mut self` proof, under
+        // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
-            ("flat.rs", 6usize),
+            ("flat.rs", 7usize),
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/region_ops.rs", 3usize),

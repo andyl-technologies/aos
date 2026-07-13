@@ -9,11 +9,14 @@
 //! in the image's relocation table; [`EvalHeap::from_restored_heap_image`]
 //! resolves each and shifts its witnesses by `new_base − old_base`.
 //!
-//! # Scope (increment 2)
+//! # Scope
 //!
-//! Strings, paths, and attrsets are handled. Lists (an owned out-of-arena `Vec`)
-//! and `Arc`-backed string contexts are refused at capture and land in later
-//! increments (list-payload segment; the §1.4 stage-2 context residual).
+//! Strings, paths, attrsets, and lists are handled. A list's element `Vec` lives
+//! outside the reservation, so capture serializes its address-free element words
+//! into a [`ListPayload`] segment and restore rebuilds the `Vec`, overwrites the
+//! stale dumped header, and registers the object so the rebuilt buffer drops
+//! exactly once. `Arc`-backed string contexts remain refused at capture (the
+//! §1.4 stage-2 residual).
 //!
 //! # Completeness audit (`AOS_NIX_SNAPSHOT_VERIFY`)
 //!
@@ -27,11 +30,17 @@
 use thiserror::Error;
 
 use ratchet_value::heap::{
-    ArenaIndex, HeapImage, RelocationEntry, SnapshotError, capture_reservation, reservation_base,
-    restore_reservation,
+    ArenaIndex, HeapImage, ListPayload, RelocationEntry, SnapshotError, capture_reservation,
+    reservation_base, restore_reservation,
 };
 
+use crate::value::Value;
+use crate::value::compressed::CompressedValueWord;
+
 use super::*;
+
+/// Byte width of one serialized Candidate-C list element word.
+const LIST_ELEMENT_WORD_LEN: usize = 8;
 
 /// Environment flag enabling the capture-time relocation completeness audit.
 const SNAPSHOT_VERIFY_ENV: &str = "AOS_NIX_SNAPSHOT_VERIFY";
@@ -42,9 +51,10 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError`] for a parallel heap, a heap holding a
-    /// kind not yet snapshottable (worker closures, lists, record-table objects,
-    /// or a flat string with a non-empty context), a reservation that is not
-    /// address-free, or a failed completeness audit.
+    /// kind not yet snapshottable (worker closures, record-table objects, or a
+    /// flat string with a non-empty context), a list object outside the
+    /// reservation, a reservation that is not address-free, or a failed
+    /// completeness audit.
     pub fn capture_heap_image(&self) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
@@ -52,10 +62,6 @@ impl EvalHeap {
         let closures = self.flat_closures.len();
         if closures != 0 {
             return Err(EvalHeapSnapshotError::UnsnapshottableClosures { count: closures });
-        }
-        let lists = self.flat_lists.len();
-        if lists != 0 {
-            return Err(EvalHeapSnapshotError::UnsnapshottableLists { count: lists });
         }
         let records = self.record_count();
         if records != 0 {
@@ -73,9 +79,32 @@ impl EvalHeap {
             relocations.push(self.relocation_entry_for(object.ptr(), FlatObjectKind::Attrs)?);
         }
 
+        // Each flat list's element `Vec` lives outside the reservation, so the
+        // dumped lanes do not carry it. Serialize each list's element words —
+        // address-free Candidate-C words that resolve unchanged after restore —
+        // into a list-payload segment tagged by the list header's arena index.
+        // The closure guard above guarantees no element is an unforced thunk.
+        let mut list_payloads = Vec::new();
+        for object in self.flat_lists.iter() {
+            let index = self
+                .flat_arena
+                .index_for_pointer(object.ptr())
+                .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+            let elements = object.object().payload().as_slice();
+            let mut element_bytes = Vec::with_capacity(elements.len() * LIST_ELEMENT_WORD_LEN);
+            for value in elements {
+                element_bytes.extend_from_slice(&value.word().raw().to_le_bytes());
+            }
+            list_payloads.push(ListPayload {
+                index: index.raw(),
+                element_bytes,
+            });
+        }
+
         let mut image =
             capture_reservation(&self.flat_arena).map_err(EvalHeapSnapshotError::Snapshot)?;
         image.relocations = relocations;
+        image.list_payloads = list_payloads;
 
         if std::env::var_os(SNAPSHOT_VERIFY_ENV).is_some() {
             self.verify_relocation_completeness(&image)?;
@@ -102,16 +131,20 @@ impl EvalHeap {
     /// Restores a fresh evaluator heap from a serialize-and-patch heap image.
     ///
     /// Maps the image into a new reservation (original domain preserved),
-    /// assembles the flat stores, primes their membership indexes, and rebases
-    /// every relocation object's interior witnesses by `new_base − old_base`.
+    /// assembles the flat stores, primes their membership indexes, rebases every
+    /// relocation object's interior witnesses by `new_base − old_base`, and
+    /// re-attaches each list's out-of-arena element `Vec` from its payload segment.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError::Snapshot`] when the image is malformed or
     /// its domain is still live, [`EvalHeapSnapshotError::ObjectOutsideReservation`]
-    /// when a relocation index does not resolve, [`EvalHeapSnapshotError::UnknownKind`]
-    /// for an unrecognized relocation kind, and [`EvalHeapSnapshotError::FlatResolve`]
-    /// when a recorded object cannot be resolved for rebasing.
+    /// when a relocation or list-payload index does not resolve,
+    /// [`EvalHeapSnapshotError::UnknownKind`] for an unrecognized relocation kind,
+    /// [`EvalHeapSnapshotError::MalformedListPayload`] when a list payload's bytes
+    /// are not a whole number of valid words, and
+    /// [`EvalHeapSnapshotError::FlatResolve`] when a recorded object cannot be
+    /// resolved for rebasing or list rewriting.
     pub fn from_restored_heap_image(image: &HeapImage) -> Result<Self, EvalHeapSnapshotError> {
         let arena = restore_reservation(image).map_err(EvalHeapSnapshotError::Snapshot)?;
         let new_base = arena
@@ -143,7 +176,37 @@ impl EvalHeap {
                 kind => return Err(EvalHeapSnapshotError::UnknownKind { kind: kind as u8 }),
             }
         }
+
+        for payload in &image.list_payloads {
+            heap.restore_list_payload(payload)?;
+        }
         Ok(heap)
+    }
+
+    /// Rebuilds one flat list's element `Vec` from its serialized words and
+    /// re-attaches it to the restored list object.
+    ///
+    /// Decodes the address-free element words, then delegates the in-place
+    /// header rewrite and Drop registration to
+    /// [`FlatObjectStore::restore_payload`] (the unsafe write lives in
+    /// `ratchet-value`, which this `#![forbid(unsafe_code)]` crate cannot host).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapSnapshotError::ObjectOutsideReservation`] when the
+    /// payload index does not resolve, [`EvalHeapSnapshotError::MalformedListPayload`]
+    /// when the element bytes are not a whole number of valid words, and
+    /// [`EvalHeapSnapshotError::FlatResolve`] when the list object cannot be
+    /// resolved for rewriting.
+    fn restore_list_payload(&mut self, payload: &ListPayload) -> Result<(), EvalHeapSnapshotError> {
+        let ptr = self
+            .flat_arena
+            .pointer_for_index(ArenaIndex::new(payload.index))
+            .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+        let elements = decode_list_elements(&payload.element_bytes)?;
+        self.flat_lists
+            .restore_payload(ptr, FlatObjectKind::List, NixList::new(elements))
+            .map_err(EvalHeapSnapshotError::FlatResolve)
     }
 
     /// Primes each flat store's membership index over the restored arena.
@@ -180,6 +243,13 @@ impl EvalHeap {
             covered.push((self.offset_of(object.ptr(), base)?, object.size_bytes()));
         }
         for object in self.flat_attrs.iter() {
+            covered.push((self.offset_of(object.ptr(), base)?, object.size_bytes()));
+        }
+        // List objects hold no interior reservation witness (their element `Vec`
+        // is out of the reservation), but their header words — notably the
+        // structural hash — can coincidentally look like an in-range pointer, so
+        // cover their whole extent to keep the scan free of false positives.
+        for object in self.flat_lists.iter() {
             covered.push((self.offset_of(object.ptr(), base)?, object.size_bytes()));
         }
         self.compressed_scalars
@@ -219,6 +289,36 @@ impl EvalHeap {
     }
 }
 
+/// Decodes a list payload's little-endian words into runtime [`Value`]s.
+///
+/// The words are address-free Candidate-C words; each resolves unchanged once
+/// its domain is re-registered against the restored base.
+///
+/// # Errors
+///
+/// Returns [`EvalHeapSnapshotError::MalformedListPayload`] when `bytes` is not a
+/// whole number of word-sized chunks or a chunk is not a valid value word.
+fn decode_list_elements(bytes: &[u8]) -> Result<Vec<Value>, EvalHeapSnapshotError> {
+    if bytes.len() % LIST_ELEMENT_WORD_LEN != 0 {
+        return Err(EvalHeapSnapshotError::MalformedListPayload {
+            byte_len: bytes.len(),
+        });
+    }
+    let mut elements = Vec::with_capacity(bytes.len() / LIST_ELEMENT_WORD_LEN);
+    for chunk in bytes.chunks_exact(LIST_ELEMENT_WORD_LEN) {
+        let mut word = [0u8; LIST_ELEMENT_WORD_LEN];
+        word.copy_from_slice(chunk);
+        let raw = u64::from_le_bytes(word);
+        let word = CompressedValueWord::from_raw(raw).map_err(|_| {
+            EvalHeapSnapshotError::MalformedListPayload {
+                byte_len: bytes.len(),
+            }
+        })?;
+        elements.push(Value::from_word(word));
+    }
+    Ok(elements)
+}
+
 /// Decodes a relocation-entry kind byte into a [`FlatObjectKind`].
 fn kind_from_byte(byte: u8) -> Result<FlatObjectKind, EvalHeapSnapshotError> {
     match byte {
@@ -251,11 +351,11 @@ pub enum EvalHeapSnapshotError {
         /// The number of live flat worker-closure objects.
         count: usize,
     },
-    /// The arena holds lists, whose owned out-of-arena `Vec` is a later increment.
-    #[error("cannot snapshot a heap with {count} live list object(s)")]
-    UnsnapshottableLists {
-        /// The number of live flat list objects.
-        count: usize,
+    /// A list payload's serialized bytes are not a whole number of valid words.
+    #[error("list payload has malformed element bytes (length {byte_len})")]
+    MalformedListPayload {
+        /// The offending payload's byte length.
+        byte_len: usize,
     },
     /// The arena has record-table (non-flat) objects, which are not dumped.
     #[error("cannot snapshot a heap with {count} live record-table object(s)")]

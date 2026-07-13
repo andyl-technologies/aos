@@ -17,17 +17,29 @@
 //! # Wire format (little-endian)
 //!
 //! ```text
-//! heap-image v1:
-//!   magic:    8 bytes  = IMAGE_MAGIC ("AOSNIXH1")
-//!   version:  u32      = IMAGE_VERSION
-//!   domain:   u32      = the reservation's 23-bit Candidate-C domain
-//!   capacity: u64      = the reservation's virtual size in bytes
-//!   low_len:  u64      = permanent (upward) used-lane byte length
-//!   high_len: u64      = rewindable (downward) used-lane byte length
-//!   low:      low_len bytes   (the permanent lane, offset 0)
-//!   high:     high_len bytes  (the rewindable lane, ending at `capacity`)
-//!   digest:   u64      = xxh3-64 of every preceding byte (integrity guard)
+//! heap-image v3:
+//!   magic:       8 bytes  = IMAGE_MAGIC ("AOSNIXH1")
+//!   version:     u32      = IMAGE_VERSION
+//!   domain:      u32      = the reservation's 23-bit Candidate-C domain
+//!   capacity:    u64      = the reservation's virtual size in bytes
+//!   old_base:    u64      = the reservation's mapped base at capture time
+//!   low_len:     u64      = permanent (upward) used-lane byte length
+//!   high_len:    u64      = rewindable (downward) used-lane byte length
+//!   reloc_count: u64      = number of relocation-table entries
+//!   list_count:  u64      = number of list-payload segments
+//!   low:         low_len bytes   (the permanent lane, offset 0)
+//!   high:        high_len bytes  (the rewindable lane, ending at `capacity`)
+//!   relocs:      reloc_count * (index:u32 | kind:u8)
+//!   lists:       list_count * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   digest:      u64      = xxh3-64 of every preceding byte (integrity guard)
 //! ```
+//!
+//! The relocation table names compound flat objects (strings, paths, attrsets)
+//! whose interior witness pointers restore must rebase; the list-payload segments
+//! carry each flat list's out-of-arena element words (an owned `Vec<Value>` that
+//! the dumped arena bytes do not capture), which restore rebuilds and re-attaches.
+//! Both are filled by the `EvalHeap`-level capture; the words are opaque bytes to
+//! this value-agnostic layer.
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -41,18 +53,25 @@ use super::reservation_registry::reservation_base;
 pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 
 /// The heap-image wire-format version. Bumped on any layout change so a stale
-/// image is a clean, loud miss rather than a silent misparse. v2 adds
-/// `old_base` and the relocation table (RFC-0007 doc 31 §1 stage B / decision 6).
-pub const IMAGE_VERSION: u32 = 2;
+/// image is a clean, loud miss rather than a silent misparse. v2 added
+/// `old_base` and the relocation table; v3 adds the list-payload segments that
+/// carry each flat list's out-of-arena element words (RFC-0007 doc 31 §1 stage B
+/// / decision 6, list increment).
+pub const IMAGE_VERSION: u32 = 3;
 
-/// Byte length of the fixed image header preceding the lane and relocation bytes.
+/// Byte length of the fixed image header preceding the lane, relocation, and
+/// list-payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
-/// high_len(8) | reloc_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+/// high_len(8) | reloc_count(8) | list_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
+
+/// Wire size of a list-payload segment's fixed prefix (`index(4) | byte_len(8)`),
+/// preceding its variable-length element-word bytes.
+const LIST_PAYLOAD_PREFIX_LEN: usize = 12;
 
 /// One compound flat object whose interior witness pointers must be rebased on
 /// restore (RFC-0007 doc 31 §1 decision 6).
@@ -68,6 +87,24 @@ pub struct RelocationEntry {
     /// The object's [`FlatObjectKind`](super::flat::FlatObjectKind) discriminant,
     /// naming which store resolves it on restore.
     pub kind: u8,
+}
+
+/// One flat list's out-of-arena element words (RFC-0007 doc 31 §1 list increment).
+///
+/// A flat list object's arena bytes hold only an owned `Vec<Value>` header
+/// (pointer, length, capacity) whose backing buffer lives outside the
+/// reservation, so the dumped lanes do not carry the elements. Capture copies the
+/// element words here as opaque little-endian bytes; restore rebuilds the buffer,
+/// overwrites the stale header, and registers the object so its rebuilt `Vec`
+/// drops exactly once.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListPayload {
+    /// The list object's byte offset from the reservation base (its header's
+    /// arena index), naming which restored object receives the rebuilt buffer.
+    pub index: u32,
+    /// The element words as contiguous little-endian bytes; length is a multiple
+    /// of the value word size. Opaque to this value-agnostic layer.
+    pub element_bytes: Vec<u8>,
 }
 
 /// A captured Candidate-C reservation heap image.
@@ -93,6 +130,9 @@ pub struct HeapImage {
     /// The compound objects whose interior witnesses restore must rebase; filled
     /// by the `EvalHeap`-level capture that enumerates the flat stores.
     pub relocations: Vec<RelocationEntry>,
+    /// Each flat list's out-of-arena element words; filled by the `EvalHeap`-level
+    /// capture and re-attached to the restored list objects on load.
+    pub list_payloads: Vec<ListPayload>,
 }
 
 impl HeapImage {
@@ -101,8 +141,14 @@ impl HeapImage {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let reloc_bytes = self.relocations.len() * RELOCATION_ENTRY_LEN;
-        let mut out =
-            Vec::with_capacity(HEADER_LEN + self.low.len() + self.high.len() + reloc_bytes + 8);
+        let list_bytes: usize = self
+            .list_payloads
+            .iter()
+            .map(|payload| LIST_PAYLOAD_PREFIX_LEN + payload.element_bytes.len())
+            .sum();
+        let mut out = Vec::with_capacity(
+            HEADER_LEN + self.low.len() + self.high.len() + reloc_bytes + list_bytes + 8,
+        );
         out.extend_from_slice(&IMAGE_MAGIC);
         out.extend_from_slice(&IMAGE_VERSION.to_le_bytes());
         out.extend_from_slice(&self.domain.to_le_bytes());
@@ -111,11 +157,17 @@ impl HeapImage {
         out.extend_from_slice(&(self.low.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.high.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.relocations.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.list_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
             out.extend_from_slice(&entry.index.to_le_bytes());
             out.push(entry.kind);
+        }
+        for payload in &self.list_payloads {
+            out.extend_from_slice(&payload.index.to_le_bytes());
+            out.extend_from_slice(&(payload.element_bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(&payload.element_bytes);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -151,32 +203,29 @@ impl HeapImage {
         let low_len = u64::from_le_bytes(read8(bytes, 32)) as usize;
         let high_len = u64::from_le_bytes(read8(bytes, 40)) as usize;
         let reloc_count = u64::from_le_bytes(read8(bytes, 48)) as usize;
+        let list_count = u64::from_le_bytes(read8(bytes, 56)) as usize;
 
+        // Bound the fixed-width prefix (lanes + relocation table + each list's
+        // fixed header) before parsing; the list element bytes are length-checked
+        // per segment as the cursor advances.
         let lanes_start = HEADER_LEN;
-        let digest_start = [low_len, high_len, reloc_count * RELOCATION_ENTRY_LEN]
-            .iter()
-            .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
-            .ok_or(SnapshotError::Truncated {
-                needed: usize::MAX,
-                got: bytes.len(),
-            })?;
-        let total = digest_start
-            .checked_add(8)
-            .ok_or(SnapshotError::Truncated {
-                needed: usize::MAX,
-                got: bytes.len(),
-            })?;
-        if bytes.len() < total {
+        let fixed_end = [
+            low_len,
+            high_len,
+            reloc_count * RELOCATION_ENTRY_LEN,
+            list_count * LIST_PAYLOAD_PREFIX_LEN,
+        ]
+        .iter()
+        .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
+        .ok_or(SnapshotError::Truncated {
+            needed: usize::MAX,
+            got: bytes.len(),
+        })?;
+        if bytes.len() < fixed_end + 8 {
             return Err(SnapshotError::Truncated {
-                needed: total,
+                needed: fixed_end + 8,
                 got: bytes.len(),
             });
-        }
-
-        let expected = xxh3_64(&bytes[..digest_start]);
-        let actual = u64::from_le_bytes(read8(bytes, digest_start));
-        if expected != actual {
-            return Err(SnapshotError::IntegrityMismatch { expected, actual });
         }
 
         let low = bytes[lanes_start..lanes_start + low_len].to_vec();
@@ -190,6 +239,39 @@ impl HeapImage {
             });
             cursor += RELOCATION_ENTRY_LEN;
         }
+
+        let mut list_payloads = Vec::with_capacity(list_count);
+        for _ in 0..list_count {
+            let index = u32::from_le_bytes(read4(bytes, cursor));
+            let byte_len = u64::from_le_bytes(read8(bytes, cursor + 4)) as usize;
+            cursor += LIST_PAYLOAD_PREFIX_LEN;
+            let end = cursor
+                .checked_add(byte_len)
+                .ok_or(SnapshotError::Truncated {
+                    needed: usize::MAX,
+                    got: bytes.len(),
+                })?;
+            // The variable segment must fit before the trailing digest.
+            if bytes.len() < end + 8 {
+                return Err(SnapshotError::Truncated {
+                    needed: end + 8,
+                    got: bytes.len(),
+                });
+            }
+            list_payloads.push(ListPayload {
+                index,
+                element_bytes: bytes[cursor..end].to_vec(),
+            });
+            cursor = end;
+        }
+
+        let digest_start = cursor;
+        let expected = xxh3_64(&bytes[..digest_start]);
+        let actual = u64::from_le_bytes(read8(bytes, digest_start));
+        if expected != actual {
+            return Err(SnapshotError::IntegrityMismatch { expected, actual });
+        }
+
         Ok(Self {
             domain,
             capacity,
@@ -197,6 +279,7 @@ impl HeapImage {
             low,
             high,
             relocations,
+            list_payloads,
         })
     }
 }
@@ -204,8 +287,9 @@ impl HeapImage {
 /// Captures a heap image of a reservation-backed serial flat arena.
 ///
 /// Records the reservation's current base as [`HeapImage::old_base`] and leaves
-/// [`HeapImage::relocations`] empty; the `EvalHeap`-level capture enumerates the
-/// flat stores and fills the relocation table before serializing.
+/// [`HeapImage::relocations`] and [`HeapImage::list_payloads`] empty; the
+/// `EvalHeap`-level capture enumerates the flat stores and fills both before
+/// serializing.
 ///
 /// # Errors
 ///
@@ -223,6 +307,7 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         low,
         high,
         relocations: Vec::new(),
+        list_payloads: Vec::new(),
     })
 }
 
@@ -446,6 +531,10 @@ mod tests {
             low: vec![1, 2, 3, 4],
             high: Vec::new(),
             relocations: vec![RelocationEntry { index: 8, kind: 4 }],
+            list_payloads: vec![ListPayload {
+                index: 16,
+                element_bytes: vec![9, 10, 11, 12, 13, 14, 15, 16],
+            }],
         };
         let good = image.to_bytes();
 

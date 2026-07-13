@@ -1,7 +1,9 @@
 //! Stage-B serialize-and-patch round-trip tests (RFC-0007 doc 31 §1, §9
 //! decision 6): a forced value of strings + attrsets of scalars survives an
 //! `EvalHeap` heap-image capture + restore, its interior `FlatBytes`/`FlatSlice`
-//! witnesses rebased on load; lists are refused; the completeness audit passes.
+//! witnesses rebased on load; a forced list's out-of-arena element `Vec` is
+//! serialized to a payload segment and rebuilt on restore; the completeness
+//! audit passes.
 
 use ratchet_value::heap::HeapImage;
 
@@ -74,28 +76,49 @@ fn heap_image_round_trips_a_string_and_attrset_via_rebase() {
     assert_eq!(attrset_structure(&restored, root), expected);
 }
 
-#[test]
-fn capture_refuses_a_heap_with_a_list() {
-    let outcome = eval_owned_with_source(b"snapshot-list", "{ xs = [ 1 2 3 ]; }");
-    // Forcing the attrset leaves `xs` a flat list object (owned out-of-arena Vec),
-    // which the serialize-and-patch increment 2 refuses.
-    let _ = attrset_structure_or_skip(outcome.heap(), outcome.value());
-    match outcome.heap().capture_heap_image() {
-        Err(EvalHeapSnapshotError::UnsnapshottableLists { count }) => assert!(count >= 1),
-        // If `xs` is still an unforced thunk, capture refuses on the closure arm.
-        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => {}
-        Err(EvalHeapSnapshotError::Snapshot(_)) => {}
-        other => panic!("expected a list/closure refusal, got {other:?}"),
-    }
+/// Projects a forced integer list to its element values, exercising each
+/// element word through `heap` after a restore.
+fn list_integers(heap: &EvalHeap, root: Value) -> Vec<i64> {
+    heap.get_list(root)
+        .expect("root is a list")
+        .as_slice()
+        .iter()
+        .map(|value| value.as_int().expect("list element is an integer"))
+        .collect()
 }
 
-/// Forces the attrset's `xs` list to materialize (so it is a flat list object,
-/// not an unforced thunk) and ignores the projection; a helper for the refusal
-/// test that keeps `attrset_structure`'s scalar/string-only contract intact.
-fn attrset_structure_or_skip(heap: &EvalHeap, root: Value) {
-    if let Ok(attrs) = heap.get_attrs(root) {
-        for entry in attrs.entries_by_symbol() {
-            let _ = heap.get_list(entry.value);
-        }
-    }
+#[test]
+fn heap_image_round_trips_a_list_via_payload() {
+    let outcome = eval_owned_with_source(b"snapshot-list", "[ 1 2 3 ]");
+    let root = outcome.value();
+
+    let image = match outcome.heap().capture_heap_image() {
+        Ok(image) => image,
+        // The list's element buffer is out of arena; a chunked fallback heap has
+        // no reservation to dump.
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        // If the lowerer left the list spine or its elements as thunks, this
+        // value is not yet snapshottable (stage-2 collapse).
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => return,
+        Err(other) => panic!("unexpected capture failure: {other}"),
+    };
+    // The fixture must actually exercise a list-payload segment.
+    assert_eq!(
+        image.list_payloads.len(),
+        1,
+        "one forced list yields one payload segment"
+    );
+    outcome
+        .heap()
+        .verify_relocation_completeness(&image)
+        .expect("relocation table covers every interior pointer");
+    let expected = list_integers(outcome.heap(), root);
+    assert_eq!(expected, vec![1, 2, 3]);
+
+    let bytes = image.to_bytes();
+    drop(outcome);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    let restored = EvalHeap::from_restored_heap_image(&reloaded).expect("image restores");
+    assert_eq!(list_integers(&restored, root), expected);
 }
