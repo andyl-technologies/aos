@@ -225,6 +225,28 @@ So a default-on world has an asymmetry: the deepest native validation (546/546,
 549/549) is real but off-CI, while the on-CI gates run C++. This is the single
 most actionable pre-flip item.
 
+> **Correction (2026-07-13, shape investigation).** The §3.2 framing ("no
+> `AOS_NIX_NATIVE` in the flake") is precise but easy to misread: the native
+> parity gate does **not** need `AOS_NIX_NATIVE` at all. The differential
+> `aos nix-diff --eval-json` codepath runs the native evaluator and the C++
+> oracle side by side and fails on divergence regardless of the env var — and
+> it is the *correct* instrument precisely because a default-on
+> `AOS_NIX_NATIVE=on` eval would let the per-op C++ fallback (§2.1) silently
+> mask a native regression and stay green. Two full-breadth differential checks
+> already **exist** in the checks tree — `checks.integration.aos-eval-json-corpus-full`
+> (whole package set + toolchain overlay + `systems.*` toplevels + the pinned
+> C++ lang-conformance corpus) and `aos-drv-parity-representative` — using the
+> AOS-built pinned `nix` as oracle inside a hermetic sandbox-local store. They
+> are not gating merges only because the aos repo has **no live CI on `master`**
+> (the nix-checks suite lives on the unmerged `ci/nix-checks-suite` branch; PR
+> #149 merged 2026-07-09 with an empty status-check rollup). Landing that branch
+> gates native parity automatically — its `lib/ci/groups.nix` folds every
+> `integration-*` check into the required `integration` job by prefix. So the
+> "wire native parity into CI" recommendation below resolves to *land the CI
+> suite* (tracked as task #35, user-decision scope), not *write a new check*.
+> This note also adds an unbudgeted `aos-eval-json-corpus-required` variant so
+> the required gate's coverage is deterministic rather than runner-speed-bounded.
+
 ---
 
 ## 4. Risk verdict and recommendation — READY-WITH-FALLBACK

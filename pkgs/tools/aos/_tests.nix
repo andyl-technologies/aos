@@ -388,6 +388,97 @@ in {
     echo "PASS" > "$out/result"
   '';
 
+  # Unbudgeted, deterministic full generated eval-json corpus (RFC-0007 doc 15
+  # §2.7 / task #33 pre-flip hardening). Identical to `eval-json-corpus-full`
+  # except it drops `--time-budget`, so `aos nix-diff` compares EVERY generated
+  # seed (native vs the AOS-built C++ oracle) instead of stopping at a wall-clock
+  # budget. This is the shape intended for a REQUIRED merge gate: a budgeted
+  # check's coverage depends on runner speed (which seeds get compared varies
+  # run to run), so it is a smoke, not a gate. Absence of `--time-budget` maps to
+  # `time_budget = None`, and the replay loop only breaks on a budget when one is
+  # set (crates/aos/src/commands/nix_diff.rs), so all entries run.
+  #
+  # KNOWN GAP (documented so a green result is not misread as full-tree): this
+  # hermetic check EXCLUDES the eval-time-IFD attrs `systems`, `pkgs.bazel*`,
+  # `pkgs.envoy`, `pkgs.linux`, and `pkgs.gcc-libs` — evaluating them forces
+  # `builtins.readFile` on a built derivation output, which the sandbox store
+  # cannot realize without network. Those attrs stay covered by the networked
+  # `.drv` acceptance-gate runs (`aos nix-diff --all --systems` on builders).
+  # So: green here == native/C++ eval parity across the whole hermetically-
+  # evaluable package set + toolchain + `systems.*` toplevels + the pinned C++
+  # `tests/functional/lang` conformance corpus; the IFD corners are a separate,
+  # networked gate.
+  eval-json-corpus-required = pkgs.runCommand "aos-eval-json-corpus-required" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-eval-json-corpus-required"
+    nix_conf="$work/nix-conf"
+    generated="$work/generated"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE" \
+      "$generated"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    # Unpack the pinned C++ Nix source so the generator can synthesize the
+    # eval-okay conformance seed set from tests/functional/lang.
+    tar -xzf ${pkgs.nix.src} -C "$work"
+    export AOS_NIX_LANG_TESTS="$work/nix-${pkgs.nix.version}/tests/functional/lang"
+
+    # Exclusions — eval-time IFD (hermetically infeasible here); see the KNOWN
+    # GAP note above. These stay covered by the networked `.drv` acceptance gate.
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-fuzz-corpus \
+      --file ${repoSrc}/default.nix \
+      --output-dir "$generated" \
+      --clean \
+      --exclude systems \
+      --exclude pkgs.bazel-bootstrap \
+      --exclude pkgs.bazel-7 \
+      --exclude pkgs.bazel-8 \
+      --exclude pkgs.bazel-9 \
+      --exclude pkgs.bazel \
+      --exclude pkgs.envoy \
+      --exclude pkgs.linux \
+      --exclude pkgs.gcc-libs
+
+    # No `--time-budget`: every seed is compared in deterministic seed-name
+    # order, and any divergence in ANY seed fails the check.
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-diff \
+      --eval-json \
+      --eval-json-corpus "$generated"
+
+    echo "PASS" > "$out/result"
+  '';
+
   # Representative `.drv` byte-parity differential (RFC-0007 doc 15 §2):
   # instantiates a fixed witness set spanning the compression/crypto/coreutils/
   # shell corners of the package graph with both the C++ Nix oracle and the
