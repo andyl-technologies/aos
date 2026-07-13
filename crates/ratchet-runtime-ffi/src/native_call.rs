@@ -38,41 +38,9 @@ use crate::trap::{RuntimeTrap, RuntimeTrapScope};
 
 mod value_abi;
 use value_abi::NativeThunkReturn;
+mod outcomes;
+pub use outcomes::*;
 
-/// The value and optional trap observed from one native thunk execution.
-///
-/// `value` is the raw runtime value the compiled body returned. When `trap` is
-/// `Some`, a forcing or environment-access wrapper transferred an evaluator
-/// error out of the call and `value` is the meaningless trap sentinel.
-#[derive(Clone, Debug)]
-pub struct NativeThunkCallOutcome {
-    value: Value,
-    trap: Option<RuntimeTrap>,
-}
-
-impl NativeThunkCallOutcome {
-    /// Returns the raw runtime value returned by the compiled thunk body.
-    ///
-    /// The value is only meaningful when [`Self::trap`] is `None`.
-    pub const fn value(&self) -> Value {
-        self.value
-    }
-
-    /// Returns the trap transferred out of the call, if any.
-    pub const fn trap(&self) -> Option<&RuntimeTrap> {
-        self.trap.as_ref()
-    }
-
-    /// Returns true when a wrapper transferred a trap out of the call.
-    pub const fn is_trap(&self) -> bool {
-        self.trap.is_some()
-    }
-
-    /// Consumes the outcome and returns the transferred trap, if any.
-    pub fn into_trap(self) -> Option<RuntimeTrap> {
-        self.trap
-    }
-}
 
 /// Finalizes and runs one registered native thunk artifact against `eval`.
 ///
@@ -360,37 +328,6 @@ pub fn run_context_finalized_native_chain_call(
     }
 }
 
-/// The result of one native strict-fold loop over an element run.
-///
-/// `consumed` leading elements of the caller's run were folded natively and
-/// `accumulator` is the accumulator value after them. When `deopted` is true
-/// the loop stopped early — a guard failed or a forcing evaluator error was
-/// transferred while folding element `consumed` — and the caller must re-run
-/// that element (and everything after it) through the interpreted fold loop,
-/// which reproduces the exact tree-walk result or error.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeFoldLoopOutcome {
-    consumed: usize,
-    accumulator: Value,
-    deopted: bool,
-}
-
-impl NativeFoldLoopOutcome {
-    /// Returns how many leading elements were folded natively.
-    pub const fn consumed(&self) -> usize {
-        self.consumed
-    }
-
-    /// Returns the accumulator value after the consumed elements.
-    pub const fn accumulator(&self) -> Value {
-        self.accumulator
-    }
-
-    /// Returns true when the loop stopped early on a deopt or error trap.
-    pub const fn deopted(&self) -> bool {
-        self.deopted
-    }
-}
 
 /// Runs a compiled arity-2 fold operator natively over an element run.
 ///
@@ -469,37 +406,6 @@ pub fn run_context_finalized_native_fold_genlist_loop(
     )
 }
 
-/// The result of one native decoded-`i64`-accumulator fold loop.
-///
-/// `consumed` leading elements of the caller's run were folded natively and
-/// `accumulator` is the decoded running accumulator after them. When `deopted`
-/// is true the loop stopped early — a guard failed, a forcing evaluator error
-/// was transferred, or a generated index exceeded `i64` — and the caller must
-/// re-run element `consumed` (and everything after it) interpreted, seeding the
-/// interpreted fold with `accumulator` re-encoded to a runtime value.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeFoldI64AccLoopOutcome {
-    consumed: usize,
-    accumulator: i64,
-    deopted: bool,
-}
-
-impl NativeFoldI64AccLoopOutcome {
-    /// Returns how many leading elements were folded natively.
-    pub const fn consumed(self) -> usize {
-        self.consumed
-    }
-
-    /// Returns the decoded running accumulator after the consumed prefix.
-    pub const fn accumulator(self) -> i64 {
-        self.accumulator
-    }
-
-    /// Returns true when the loop stopped early on a deopt or error trap.
-    pub const fn deopted(self) -> bool {
-        self.deopted
-    }
-}
 
 /// Runs a fold operator natively over an element run with a decoded `i64`
 /// accumulator.
@@ -580,43 +486,6 @@ pub fn run_context_finalized_native_fold_genlist_loop_i64acc(
     )
 }
 
-/// The result of one native strict-filter loop over an element run.
-///
-/// `consumed` leading elements of the caller's run were decided natively and
-/// `kept` is the kept subsequence of that prefix, in element order. When
-/// `deopted` is true the loop stopped early — a guard failed, a forcing
-/// evaluator error was transferred, or the compiled predicate produced a
-/// non-boolean while deciding element `consumed` — and the caller must re-run
-/// that element (and everything after it) through the interpreted filter
-/// loop, which reproduces the exact tree-walk result or error.
-#[derive(Clone, Debug)]
-pub struct NativeFilterLoopOutcome {
-    consumed: usize,
-    kept: Vec<Value>,
-    deopted: bool,
-}
-
-impl NativeFilterLoopOutcome {
-    /// Returns how many leading elements were decided natively.
-    pub const fn consumed(&self) -> usize {
-        self.consumed
-    }
-
-    /// Returns the kept elements of the decided prefix, in element order.
-    pub fn kept(&self) -> &[Value] {
-        &self.kept
-    }
-
-    /// Consumes the outcome and returns the kept elements.
-    pub fn into_kept(self) -> Vec<Value> {
-        self.kept
-    }
-
-    /// Returns true when the loop stopped early on a deopt or error trap.
-    pub const fn deopted(&self) -> bool {
-        self.deopted
-    }
-}
 
 /// Runs a compiled arity-1 filter predicate natively over an element run.
 ///
@@ -718,30 +587,6 @@ pub fn run_context_finalized_native_filter_loop(
     })
 }
 
-/// The result of one native strict `all`/`any` predicate loop.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeAllAnyLoopOutcome {
-    consumed: usize,
-    short_circuited: bool,
-    deopted: bool,
-}
-
-impl NativeAllAnyLoopOutcome {
-    /// Returns how many leading elements were decided natively.
-    pub const fn consumed(self) -> usize {
-        self.consumed
-    }
-
-    /// Returns whether the predicate reached the requested short-circuit value.
-    pub const fn short_circuited(self) -> bool {
-        self.short_circuited
-    }
-
-    /// Returns whether the next element must be retried interpreted.
-    pub const fn deopted(self) -> bool {
-        self.deopted
-    }
-}
 
 /// Runs a compiled arity-1 predicate until `all` or `any` is decided.
 ///
@@ -1022,158 +867,4 @@ fn run_native_fold_loop_i64acc(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{ffi::c_void, num::NonZeroUsize};
-
-    use ratchet_jit::{
-        JitModuleContext, JitRuntimeSymbolAddress, TIER2_NATIVE_DEPTH_BUDGET,
-        lower_tier2_self_recursive_lambda,
-    };
-    use ratchet_oracle::{
-        compile::{
-            EffectClass, IrArena, IrData, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
-            resolve,
-        },
-        eval::{heap::EvalGcMode, tree_walk::TreeWalkOptions},
-        syntax::{Symbol, parse_str},
-    };
-
-    use super::*;
-
-    mod candidate_b;
-    mod candidate_c;
-
-    fn candidate(
-        symbol_name: &str,
-        role: RuntimeHelperRole,
-        address: *mut c_void,
-    ) -> JitRuntimeSymbolAddressCandidate {
-        let address = NonZeroUsize::new(address as usize).expect("wrapper address is non-zero");
-        JitRuntimeSymbolAddressCandidate::new(
-            symbol_name.to_owned(),
-            RuntimeSymbolKind::Helper(role),
-            JitRuntimeSymbolAddress::new(address),
-        )
-    }
-
-    #[test]
-    fn native_thunk_call_outcome_reports_value_and_trap() {
-        let value_outcome = NativeThunkCallOutcome {
-            value: Value::int(7),
-            trap: None,
-        };
-        assert!(!value_outcome.is_trap());
-        assert!(value_outcome.trap().is_none());
-        assert_eq!(value_outcome.value().as_int(), Ok(7));
-        assert!(value_outcome.into_trap().is_none());
-    }
-
-    #[test]
-    // Lowers a tier-2 force through the two-word stack-map geometry; tier-2
-    // emitters decline on the one-word carrier, so this runs baseline-only
-    // until the S4b phase-2 one-word emitters land.
-    #[cfg(not(feature = "candidate_c_value"))]
-    fn tier2_inner_force_dispatches_sweep_through_retained_stack_map() {
-        let lowering_arena = IrArena::from_raw_parts(
-            vec![
-                IrNode::new(
-                    IrKind::Formal,
-                    Span::new(0, 1),
-                    EffectClass::pure(),
-                    IrData::Formal {
-                        name: Symbol::new(0),
-                        default: None,
-                    },
-                ),
-                IrNode::new(
-                    IrKind::LocalVar,
-                    Span::new(0, 1),
-                    EffectClass::pure(),
-                    IrData::Local { slot: 0 },
-                ),
-            ],
-            Vec::new(),
-        );
-        let lowering = lower_tier2_self_recursive_lambda(
-            &lowering_arena,
-            IrId::new(0),
-            IrId::new(1),
-            TIER2_NATIVE_DEPTH_BUDGET,
-        )
-        .expect("tier-2 parameter force lowers");
-        let force_address = crate::force::runtime_forcing_native_wrapper_bindings()
-            .into_iter()
-            .find(|binding| binding.symbol_name() == "aos_force")
-            .expect("force wrapper binding exists")
-            .address()
-            .as_ptr();
-        let candidates = [
-            candidate(
-                "aos_force",
-                RuntimeHelperRole::ForcingControl,
-                force_address,
-            ),
-            candidate(
-                "aos_deopt",
-                RuntimeHelperRole::Deoptimization,
-                crate::deopt::aos_deopt_native_wrapper_address(),
-            ),
-            candidate(
-                "aos_upval_get",
-                RuntimeHelperRole::EnvironmentAccess,
-                crate::env::aos_upval_get_native_wrapper_address(),
-            ),
-            candidate(
-                "aos_jit_stack_map_enter",
-                RuntimeHelperRole::SafepointControl,
-                crate::stack_map::aos_jit_stack_map_enter_native_wrapper_address(),
-            ),
-            candidate(
-                "aos_jit_stack_map_exit",
-                RuntimeHelperRole::SafepointControl,
-                crate::stack_map::aos_jit_stack_map_exit_native_wrapper_address(),
-            ),
-        ];
-        let context = JitModuleContext::with_candidates(&candidates)
-            .expect("tier-2 module context builds");
-        let body = context
-            .define_and_finalize_tier2_lambda(lowering)
-            .expect("tier-2 pair finalizes");
-
-        let parsed = parse_str("{ v = 1 + 1; }").expect("source parses");
-        let resolved = resolve(parsed).expect("source resolves");
-        let ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
-        let mut options = TreeWalkOptions::default();
-        options.set_gc_mode(EvalGcMode::Sweep);
-        options.set_gc_sweep_threshold(0);
-        let mut eval = TreeWalk::with_options(&ir, options);
-        let root = eval.eval_root().expect("attribute set evaluates");
-        let symbol = ir
-            .symbols
-            .symbols()
-            .iter()
-            .position(|name| name.as_slice() == b"v")
-            .map(|index| Symbol::new(index as u32))
-            .expect("binding symbol exists");
-        let argument = eval
-            .heap()
-            .get_attrs(root)
-            .expect("root is attrs")
-            .get(symbol)
-            .expect("binding exists");
-
-        let outcome = run_context_finalized_native_lambda_call(
-            &mut eval,
-            ir.root,
-            Span::new(0, 14),
-            &EvalEnv::default(),
-            argument,
-            &body,
-        )
-        .expect("tier-2 native call succeeds");
-
-        assert!(outcome.trap().is_none());
-        assert_eq!(outcome.value().as_int(), Ok(2));
-        assert_eq!(eval.stats().gc_sweeps(), 1);
-    }
-}
+mod tests;
