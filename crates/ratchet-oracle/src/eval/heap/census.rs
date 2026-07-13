@@ -30,6 +30,7 @@ use std::fmt;
 
 use crate::eval::module::EvalModuleId;
 use crate::eval::thunk::ThunkState;
+use crate::value::ValueTag;
 
 use super::*;
 
@@ -87,6 +88,27 @@ pub(crate) struct RefusalCensus {
     pub distinct_code_modules: u64,
     /// Live closures that capture a lexical environment (retention proxy).
     pub closures_capturing_env: u64,
+
+    // Forced-thunk collapse projection: what each forced thunk holds. Collapsing
+    // a forced thunk replaces references to it with its cached value, so the
+    // wrapper vanishes and the target (already counted elsewhere) remains. These
+    // classify the collapse targets to confirm it is clean and to size the
+    // post-collapse residual without mutating the heap.
+    /// Forced thunks whose cached value is heap data (string/path/list/attrs) —
+    /// collapse to an already-counted accepted object.
+    pub forced_holds_heap_data: u64,
+    /// Forced thunks whose cached value is an inline scalar (int/float/bool/null)
+    /// — collapse to a wordless value, no object.
+    pub forced_holds_inline_scalar: u64,
+    /// Forced thunks whose cached value is a lambda — collapse reveals an
+    /// already-counted lambda object.
+    pub forced_holds_lambda: u64,
+    /// Forced thunks whose cached value is a primop.
+    pub forced_holds_primop: u64,
+    /// Forced thunks whose cached value is another thunk (a collapse chain).
+    pub forced_holds_thunk: u64,
+    /// Forced thunks whose cached value was absent or an unclassified tag.
+    pub forced_holds_unknown: u64,
 }
 
 impl RefusalCensus {
@@ -113,6 +135,38 @@ impl RefusalCensus {
     /// Total inline bytes held by the accepted data objects.
     pub fn accepted_inline_bytes(&self) -> u64 {
         self.strings_and_paths.inline_bytes + self.attrs.inline_bytes + self.lists.inline_bytes
+    }
+
+    /// Projected count of objects still refused after forced-thunk collapse.
+    ///
+    /// Collapsing a forced thunk replaces references to it with its cached value,
+    /// so every forced thunk wrapper vanishes and its target is already counted
+    /// elsewhere. The residual is the lambdas, primops, and thunks that forcing
+    /// did not reach (suspended, e.g. inside lambda bodies). This is the size of
+    /// the genuine closure-serialization problem that gates the next increment.
+    pub fn projected_residual_refused_count(&self) -> u64 {
+        self.lambdas.count + self.primops.count + self.thunks_suspended.count
+    }
+
+    /// Projected inline bytes still refused after forced-thunk collapse.
+    pub fn projected_residual_refused_bytes(&self) -> u64 {
+        self.lambdas.inline_bytes + self.primops.inline_bytes + self.thunks_suspended.inline_bytes
+    }
+
+    /// Records the kind of value a forced thunk holds (its collapse target).
+    fn classify_collapse_target(&mut self, tag: ValueTag) {
+        match tag {
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs => {
+                self.forced_holds_heap_data += 1
+            }
+            ValueTag::Int | ValueTag::Float | ValueTag::Bool | ValueTag::Null => {
+                self.forced_holds_inline_scalar += 1
+            }
+            ValueTag::Lambda => self.forced_holds_lambda += 1,
+            ValueTag::Primop => self.forced_holds_primop += 1,
+            ValueTag::Thunk => self.forced_holds_thunk += 1,
+            _ => self.forced_holds_unknown += 1,
+        }
     }
 }
 
@@ -151,6 +205,19 @@ impl fmt::Display for RefusalCensus {
             f,
             "  closures capturing env {} (retained env bytes not counted here)",
             self.closures_capturing_env
+        )?;
+        writeln!(f, "forced-thunk collapse projection (targets, no mutation):")?;
+        writeln!(f, "  -> heap data           {}", self.forced_holds_heap_data)?;
+        writeln!(f, "  -> inline scalar       {}", self.forced_holds_inline_scalar)?;
+        writeln!(f, "  -> lambda              {}", self.forced_holds_lambda)?;
+        writeln!(f, "  -> primop              {}", self.forced_holds_primop)?;
+        writeln!(f, "  -> thunk (chain)       {}", self.forced_holds_thunk)?;
+        writeln!(f, "  -> unknown/absent      {}", self.forced_holds_unknown)?;
+        writeln!(
+            f,
+            "projected residual after collapse   count={:>8}  inline_bytes={:>12}",
+            self.projected_residual_refused_count(),
+            self.projected_residual_refused_bytes()
         )
     }
 }
@@ -192,7 +259,14 @@ impl EvalHeap {
                     match thunk.cell().state() {
                         Ok(ThunkState::Suspended) => census.thunks_suspended.add(size),
                         // Forced or Blackhole: the value exists or is in flight.
-                        Ok(_) => census.thunks_forced.add(size),
+                        Ok(_) => {
+                            census.thunks_forced.add(size);
+                            // Classify the collapse target for the projection.
+                            match thunk.cell().cached_value() {
+                                Ok(Some(value)) => census.classify_collapse_target(value.tag()),
+                                _ => census.forced_holds_unknown += 1,
+                            }
+                        }
                         // A poisoned cell still occupies a refused slot.
                         Err(_) => census.thunks_forced.add(size),
                     }
