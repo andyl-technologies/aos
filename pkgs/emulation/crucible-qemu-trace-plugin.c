@@ -743,6 +743,19 @@ record_definition(void)
   uint64_t ram_bytes = 0;
   const int ram_status =
       qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
+  /*
+   * Authoritative RR genesis-quiescence probe: definition raw-state validation,
+   * not a live cursor-source fallback. record_definition() runs only in
+   * definition_only mode at a pre-execution boundary where no vCPU is yet
+   * current, so it reads the individual RR primitives directly rather than the
+   * qemu_plugin_rr_cursor() aggregate (which fails closed without a current
+   * vCPU and would zero the quantum here). The values are validated as
+   * genesis-canonical (quantum nonzero, cursor 0, vCPU in range) and are never
+   * carried as live cursor evidence: the per-instruction cursor stream is
+   * sourced independently through read_rr_cursor_snapshot()/last_valid_rr_* so
+   * this C observer remains a differential oracle whose live cursor derivation
+   * does not depend on the patched-QEMU helpers.
+   */
   const uint64_t rr_switch_quantum =
       qemu_plugin_crucible_rr_switch_quantum();
   const uint64_t rr_current_vcpu =

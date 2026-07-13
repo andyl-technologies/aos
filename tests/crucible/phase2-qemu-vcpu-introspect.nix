@@ -32,6 +32,21 @@
       builtins.substring index needleLen haystack == needle)
     indexes;
 
+  countOccurrences = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0 || maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.length (
+      builtins.filter (index:
+        builtins.substring index needleLen haystack == needle)
+      indexes
+    );
+
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
       requirement:
@@ -121,6 +136,18 @@
         label = "trace plugin publishes formal cursor validity";
         needle = "\\\"rr_cursor_valid\\\":%s";
       }
+      {
+        label = "live cursor evidence is tracked independently, not helper-sourced";
+        needle = "last_valid_rr_cursor_available";
+      }
+      {
+        label = "live cursor provenance tag pins live-instruction observation";
+        needle = "\"live_instruction\"";
+      }
+      {
+        label = "genesis RR primitive reads are marked authoritative, not a fallback";
+        needle = "Authoritative RR genesis-quiescence probe: definition raw-state validation";
+      }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackage [
       {
@@ -168,12 +195,45 @@
         needle = "qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix";
       }
     ]
-    ++ lib.optionals (hasInfix "qemu_plugin_crucible_rr_current_vcpu()" tracePluginSource) [
-      "pkgs/emulation/crucible-qemu-trace-plugin.c: trace plugin must not fall back to qemu_plugin_crucible_rr_current_vcpu()"
-    ]
-    ++ lib.optionals (hasInfix "qemu_plugin_crucible_rr_cursor_position()" tracePluginSource) [
-      "pkgs/emulation/crucible-qemu-trace-plugin.c: trace plugin must not fall back to qemu_plugin_crucible_rr_cursor_position()"
-    ];
+    # Oracle-independence guard (refined 2026-07-13). The C trace plugin is the
+    # independent differential oracle: its LIVE per-instruction RR-cursor
+    # evidence (rr_cursor_source=="live_instruction") must be derived by live
+    # observation via read_rr_cursor_snapshot()/last_valid_rr_*, NOT by querying
+    # the patched-QEMU RR primitives that the Rust control plugin also consumes.
+    # The original guard blanket-banned the two primitive strings. That was too
+    # broad: record_definition() legitimately reads them ONCE at a pre-execution
+    # genesis boundary where no vCPU is current and the qemu_plugin_rr_cursor()
+    # aggregate fails closed — pure genesis-quiescence validation, distinct
+    # (kind:"definition", rr_state_status key) from and never conflated with the
+    # live cursor evidence. The refinement keeps the ban's teeth via an exact
+    # occurrence count (any second read would be a live-path helper-source and
+    # trips the gate) plus positive needles pinning the live-tracking machinery
+    # and the required adjacent authoritative-probe marker in the C source.
+    ++ helperCountFailures;
+
+  sanctionedHelperCounts = [
+    {
+      label = "genesis-only RR current-vCPU primitive read";
+      needle = "qemu_plugin_crucible_rr_current_vcpu()";
+      sanctioned = 1;
+    }
+    {
+      label = "genesis-only RR cursor-position primitive read";
+      needle = "qemu_plugin_crucible_rr_cursor_position()";
+      sanctioned = 1;
+    }
+  ];
+
+  helperCountFailures =
+    lib.concatMap (
+      probe: let
+        actual = countOccurrences probe.needle tracePluginSource;
+      in
+        lib.optionals (actual != probe.sanctioned) [
+          "pkgs/emulation/crucible-qemu-trace-plugin.c: ${probe.label} `${probe.needle}` must appear exactly ${toString probe.sanctioned} time(s) — the sanctioned record_definition() genesis probe — found ${toString actual}. A live cursor-evidence path must source the RR cursor through qemu_plugin_rr_cursor()/read_rr_cursor_snapshot(), never these primitives, to keep the C observer independent of the Rust control plugin."
+        ]
+    )
+    sanctionedHelperCounts;
 in
   if failures != []
   then throw "crucible phase2 QEMU vCPU introspection check failed:\n${builtins.concatStringsSep "\n" failures}"
