@@ -226,10 +226,14 @@ The §2.3 taxonomy fact stands in the abstract — a `MissingAttribute` on the
 corpus actually triggers it under native**; the earlier hypothesis that native
 lacked `parseFlakeRef` was an oracle-flakes-config artifact, now corrected.
 
-Harness follow-ups (not flip blockers, tracked with the CI/gate work): the corpus
-differential's oracle should enable `experimental-features = flakes` for the
-flake-conformance seeds, and the openssl `LD_LIBRARY_PATH` in ad-hoc verification
-wrappers must be scoped so it does not leak into oracle subprocesses.
+Harness follow-ups: the `corpus-full`/`corpus-required` checks now write
+`experimental-features = flakes` into the oracle's `nix.conf` (matching upstream
+`lang.sh`) so the flake-conformance seeds compare against a flakes-enabled C++
+Nix — landed in `_tests.nix`, taking those two checks from red-on-artifact to
+green modulo #36. The remaining note (build-infra, not a flip blocker): the
+openssl `LD_LIBRARY_PATH` in ad-hoc verification wrappers must be scoped so it
+does not leak into oracle subprocesses (the packaged binary bakes its rpath and
+is unaffected).
 
 ### 2.4 Two structural caveats
 

@@ -341,7 +341,14 @@ in {
       "$AOS_NIX_CACHE" \
       "$generated"
 
-    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+    # The pinned C++ `tests/functional/lang` corpus includes flake-conformance
+    # seeds (`builtins.parseFlakeRef`, `flakeRefToString`) that C++ Nix 2.24.12
+    # gates behind the `flakes` experimental feature; the native evaluator
+    # implements them unconditionally. Enable flakes on the oracle so those
+    # seeds compare against a flakes-enabled C++ Nix (matching upstream
+    # `lang.sh`) instead of failing oracle-side. `substituters` stays empty so
+    # the run remains hermetic.
+    printf 'substituters =\nexperimental-features = flakes\n' > "$NIX_CONF_DIR/nix.conf"
 
     ${pkgs.nix}/bin/nix-store --init
 
@@ -441,7 +448,14 @@ in {
       "$AOS_NIX_CACHE" \
       "$generated"
 
-    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+    # The pinned C++ `tests/functional/lang` corpus includes flake-conformance
+    # seeds (`builtins.parseFlakeRef`, `flakeRefToString`) that C++ Nix 2.24.12
+    # gates behind the `flakes` experimental feature; the native evaluator
+    # implements them unconditionally. Enable flakes on the oracle so those
+    # seeds compare against a flakes-enabled C++ Nix (matching upstream
+    # `lang.sh`) instead of failing oracle-side. `substituters` stays empty so
+    # the run remains hermetic.
+    printf 'substituters =\nexperimental-features = flakes\n' > "$NIX_CONF_DIR/nix.conf"
 
     ${pkgs.nix}/bin/nix-store --init
 
