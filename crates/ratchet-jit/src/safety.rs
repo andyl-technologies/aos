@@ -215,43 +215,57 @@ mod tests {
                 _ => false,
             };
         }
-        if file_name != Some("cranelift.rs") {
-            return false;
-        }
-
-        let trimmed = code.trim_start();
-        match token {
-            "unsafe" => {
-                trimmed.starts_with(
-                    "pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(",
-                )
-                    || trimmed.starts_with(
-                        "pub unsafe fn jit_cranelift_call_finalized_thunk_entry(",
-                    )
-                    || trimmed.starts_with(
+        // The former single `cranelift.rs` native thunk-call boundary was split
+        // (§2 cap) across three `cranelift/` submodules; each reviewed line is
+        // pinned to exactly the submodule that now owns it.
+        if file_name == Some("context.rs") {
+            let trimmed = code.trim_start();
+            return match token {
+                "unsafe" => {
+                    trimmed.starts_with(
                         "pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(",
-                    )
-                    || trimmed.starts_with(
-                        "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(",
-                    )
-                    || trimmed.starts_with(
-                        "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(",
-                    )
-                    || trimmed
-                        == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
-                    || trimmed == "let value = unsafe { thunk_entry(rt, env) };"
-                    || trimmed == "let dispatched = unsafe { thunk_entry(rt, env) };"
-                    || trimmed == "let context_dispatched = unsafe { thunk_entry(rt, env) };"
-                    || trimmed == "let promotion_gated_registered_native_thunk_invocation = unsafe {"
-                    || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
-            }
-            "transmute" => {
-                trimmed
-                    == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
-            }
-            _ => false,
+                    ) || trimmed == "let context_dispatched = unsafe { thunk_entry(rt, env) };"
+                }
+                _ => false,
+            };
         }
+        if file_name == Some("preflight_fns.rs") {
+            let trimmed = code.trim_start();
+            return match token {
+                "unsafe" => {
+                    trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(",
+                    ) || trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_call_finalized_thunk_entry(",
+                    ) || trimmed
+                        == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
+                        || trimmed == "let value = unsafe { thunk_entry(rt, env) };"
+                        || trimmed == "let dispatched = unsafe { thunk_entry(rt, env) };"
+                }
+                _ => false,
+            };
+        }
+        if file_name == Some("tier1.rs") {
+            let trimmed = code.trim_start();
+            return match token {
+                "unsafe" => {
+                    trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(",
+                    ) || trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(",
+                    ) || trimmed
+                        == "let promotion_gated_registered_native_thunk_invocation = unsafe {"
+                        || trimmed
+                            == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
+                }
+                "transmute" => {
+                    trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
+                }
+                _ => false,
+            };
+        }
+        false
     }
 
     /// The tier-2 lambda-entry boundary lives in `cranelift/tier2.rs`: one
@@ -349,12 +363,19 @@ mod tests {
     }
 
     fn assert_reviewed_unsafe_boundary_counts(source_root: &Path) {
-        let cranelift = fs::read_to_string(source_root.join("cranelift.rs"))
-            .expect("Cranelift source file is readable");
+        // The former `cranelift.rs` native thunk-call boundary was split (§2 cap)
+        // across three `cranelift/` submodules; each reviewed line is now pinned to
+        // the submodule that owns it. The total pin count is preserved.
+        let context = fs::read_to_string(source_root.join("cranelift").join("context.rs"))
+            .expect("Cranelift context source file is readable");
+        let preflight_fns = fs::read_to_string(source_root.join("cranelift").join("preflight_fns.rs"))
+            .expect("Cranelift preflight-fns source file is readable");
+        let tier1 = fs::read_to_string(source_root.join("cranelift").join("tier1.rs"))
+            .expect("Cranelift tier1 source file is readable");
 
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &preflight_fns,
                 "pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(",
             ),
             1,
@@ -362,7 +383,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &tier1,
                 "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(",
             ),
             1,
@@ -370,7 +391,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &tier1,
                 "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(",
             ),
             1,
@@ -378,20 +399,20 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &preflight_fns,
                 "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };",
             ),
             1,
             "no-import native thunk call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&cranelift, "let value = unsafe { thunk_entry(rt, env) };"),
+            trimmed_line_occurrences(&preflight_fns, "let value = unsafe { thunk_entry(rt, env) };"),
             1,
             "registered native thunk call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &preflight_fns,
                 "pub unsafe fn jit_cranelift_call_finalized_thunk_entry(",
             ),
             1,
@@ -399,7 +420,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &preflight_fns,
                 "let dispatched = unsafe { thunk_entry(rt, env) };",
             ),
             1,
@@ -407,7 +428,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &context,
                 "pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(",
             ),
             1,
@@ -415,7 +436,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &context,
                 "let context_dispatched = unsafe { thunk_entry(rt, env) };",
             ),
             1,
@@ -423,7 +444,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &tier1,
                 "let promotion_gated_registered_native_thunk_invocation = unsafe {",
             ),
             2,
@@ -431,7 +452,7 @@ mod tests {
         );
         assert_eq!(
             trimmed_line_occurrences(
-                &cranelift,
+                &tier1,
                 "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };",
             ),
             1,
