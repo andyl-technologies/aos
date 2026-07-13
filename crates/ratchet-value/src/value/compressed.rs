@@ -496,6 +496,21 @@ impl CandidateCScalarStore {
         self.floats.len()
     }
 
+    /// Primes the typed cell stores' membership indexes for a scalar store
+    /// constructed over a reloaded reservation (RFC-0007 doc 31 §1 heap-image
+    /// restore).
+    ///
+    /// After this call [`CandidateCScalarStore::decode_int`] and
+    /// [`CandidateCScalarStore::decode_float`] resolve boxed cells the restored
+    /// image already holds; the hash-cons address maps stay empty because a
+    /// restored store re-boxes fresh values rather than deduplicating against the
+    /// image.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn adopt_reloaded_regions(&mut self) {
+        self.ints.adopt_shared_regions();
+        self.floats.adopt_shared_regions();
+    }
+
     fn index_for_allocation(
         &self,
         ptr: std::ptr::NonNull<crate::value::HeapObject>,

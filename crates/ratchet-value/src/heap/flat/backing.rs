@@ -356,6 +356,41 @@ impl SharedFlatStoreArena {
         }
     }
 
+    /// Captures the reservation's domain, capacity, and used-lane bytes for a
+    /// Candidate-C heap-image dump (RFC-0007 doc 31 §1, stage 1).
+    ///
+    /// Returns `None` on the chunked compatibility backend, which is not
+    /// address-free and therefore not snapshottable. The two byte vectors are
+    /// the permanent (upward) and rewindable (downward) used lanes; see
+    /// [`ReservedArena::copy_used_lanes`].
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) fn capture_reservation_image(
+        &self,
+    ) -> Option<(ArenaDomainId, usize, Vec<u8>, Vec<u8>)> {
+        match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Reserved(arena) => {
+                let capacity = arena.stats().virtual_reserved_bytes;
+                let (low, high) = arena.copy_used_lanes();
+                Some((arena.domain_id(), capacity, low, high))
+            }
+            SharedFlatStoreBacking::Chunked(_) => None,
+        }
+    }
+
+    /// Wraps a reloaded Candidate-C reservation as a serial shared flat arena.
+    ///
+    /// Used by [`crate::heap::snapshot`] to present a restored heap image through
+    /// the same handle production allocation uses. The rewindable high lane is
+    /// unclaimed: a restored image is read as an immortal prelude generation
+    /// (doc 31 §6.3), not region-popped.
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) fn from_reserved(arena: ReservedArena) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(SharedFlatStoreBacking::Reserved(arena))),
+            rewindable_claimed: Rc::new(Cell::new(false)),
+        }
+    }
+
     /// Copies the arena's current chunk byte regions into `regions`.
     pub(super) fn snapshot_chunk_regions(&self, regions: &mut Vec<(usize, usize)>) {
         regions.clear();

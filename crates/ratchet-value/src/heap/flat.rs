@@ -760,6 +760,20 @@ impl<T> FlatObjectStore<T> {
             .is_some_and(|&(_start, end)| address < end)
     }
 
+    /// Primes the shared-arena membership index for a store constructed over an
+    /// already-populated reloaded reservation (RFC-0007 doc 31 §1 heap-image
+    /// restore).
+    ///
+    /// A freshly built store has an empty region index and only refreshes it on
+    /// allocation, so a store that never allocated cannot resolve objects the
+    /// arena already holds from a restored image. This adopts the backing arena's
+    /// current regions once, after which [`FlatObjectStore::resolve`] resolves
+    /// restored objects by header witness exactly as for freshly allocated ones.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn adopt_shared_regions(&mut self) {
+        self.refresh_regions();
+    }
+
     /// Rebuilds the sorted chunk-region membership index when chunks change.
     ///
     /// On a shared arena the index covers every sharing store's chunks; the

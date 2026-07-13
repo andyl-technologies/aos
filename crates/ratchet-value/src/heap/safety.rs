@@ -353,6 +353,18 @@ mod tests {
         // destruction before unmapping are one reviewed lifecycle operation,
         // all under
         // `SharedReservationObjectPublication`.
+        // reservation.rs -> reservation/mod.rs, count unchanged at 8 (RFC-0007
+        // doc 31 §1 heap-image split): the file became a directory module so its
+        // child `image.rs` can reach the reservation's private fields; the eight
+        // reviewed operations moved verbatim (the anonymous `mmap` now sits in a
+        // shared `map_anonymous_reservation` helper used by both the fresh and
+        // the reloaded constructor). No unsafe operation was added or changed.
+        // reservation/image.rs count 0 -> 3 (RFC-0007 doc 31 §1 heap-image
+        // round-trip): one used-lane read building the dump byte vectors, one
+        // `copy_nonoverlapping` block copying both lanes into a fresh reloaded
+        // mapping, and one defensive unmap when re-registering the preserved
+        // domain fails after a successful mapping, all under the reviewed
+        // `ContiguousAddressReservation` operation.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
@@ -364,7 +376,8 @@ mod tests {
             ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
-            ("reservation.rs", 8usize),
+            ("reservation/mod.rs", 8usize),
+            ("reservation/image.rs", 3usize),
         ] {
             let source_path = heap_root.join(file_name);
             let source = fs::read_to_string(&source_path).expect("source file is readable");
@@ -437,7 +450,8 @@ mod tests {
                     | "flat/slice.rs"
                     | "flat/shared.rs"
                     | "flat/value_tail.rs"
-                    | "reservation.rs"
+                    | "reservation/mod.rs"
+                    | "reservation/image.rs"
                     | "resident.rs"
             )
         )

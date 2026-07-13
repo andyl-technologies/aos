@@ -17,6 +17,8 @@ pub mod reservation;
 pub mod reservation_registry;
 pub mod resident;
 pub mod safety;
+#[cfg(feature = "candidate_c_value")]
+pub mod snapshot;
 
 pub use advice::{
     AllocatorReleaseOutcome, MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
@@ -80,3 +82,5 @@ pub use resident::{
     ProcessResidentMemorySource, peak_resident_memory_bytes, process_resident_memory_sample,
     process_resident_memory_sample_from_linux_statm,
 };
+#[cfg(feature = "candidate_c_value")]
+pub use snapshot::{HeapImage, SnapshotError, capture_reservation, restore_reservation};

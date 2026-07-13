@@ -634,6 +634,35 @@ manifest segment and re-intern).
 landed; stages 1-6 are unblocked. A fresh snapshot-impl agent should take stage 1
 from this spec.
 
+**Stage-1 core — LANDED (reservation round-trip primitive).** The address-free
+dump/reload seam is implemented and tested in `ratchet-value` behind
+`candidate_c_value`, one layer below the `EvalHeap`:
+
+- `ReservedArena::copy_used_lanes` / `from_reloaded_image`
+  (`heap/reservation/image.rs`) dump the two used lanes and reload them into a
+  fresh mapping, re-registering the **original domain** against the new base — the
+  §3.3 end-state, no per-pointer rebase pass. `reservation.rs` became a directory
+  module (`reservation/mod.rs` + `image.rs`) so the child can reach the private
+  fields; the anonymous `mmap` moved to a shared `map_anonymous_reservation`
+  helper.
+- The image file format (magic / version / domain / capacity / lane lengths +
+  xxh3 integrity trailer) and the `SharedFlatStoreArena` capture/restore live in
+  `heap/snapshot.rs` (`capture_reservation` / `restore_reservation` /
+  `HeapImage::{to_bytes,from_bytes}`). `SharedFlatStoreArena::from_reserved` and
+  `FlatObjectStore::adopt_shared_regions` / `CandidateCScalarStore::adopt_reloaded_regions`
+  prime a fresh store view over a restored reservation.
+- Tests (`heap::snapshot::tests`): a boxed-wide-integer graph round-trips
+  drop→restore to (a) domain preserved, (b) registry rebind resolving
+  `domain + index` into the fresh mapping, (c) byte-identical re-capture, and
+  (d) end-to-end `decode_int` value equality; plus corruption / bad-magic /
+  bad-version / truncation rejection. Both carriers green; byte-parity battery
+  green ×4 both carriers (eval path untouched — the module is inert on the
+  default carrier and unwired into eval).
+
+This is the reservation-level proof the smallest-surface stage-1 asks for; the
+`EvalHeap`-level round trip (whole-heap reconstruction + symbol/context manifest
+segments) and the stage-2 thunk-collapse core build on top of this seam.
+
 ## 8. Open questions and doc-vs-code divergences
 
 ### 8.1 Open questions for the lead

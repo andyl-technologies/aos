@@ -22,6 +22,13 @@ use super::reservation_registry::{
 };
 use crate::value::HeapObject;
 
+/// Heap-image round-trip primitive for the Candidate-C address-free snapshot
+/// (RFC-0007 doc 31 §1, stage 1). Adds `impl ReservedArena` methods that dump
+/// the used lanes and reload them into a fresh mapping with the domain
+/// preserved, gated to the variant carrier where compressed words are live.
+#[cfg(feature = "candidate_c_value")]
+mod image;
+
 /// The virtual address-space size required by a full unsigned 32-bit offset.
 pub const CANDIDATE_C_ADDRESS_SPACE_BYTES: u64 = 1_u64 << 32;
 /// Maximum nonzero arena domain encodable beside kind and forced metadata.
@@ -194,41 +201,16 @@ impl ReservedArena {
         }
         validate_capacity(capacity)?;
         let domain_id = ArenaDomainId::next()?;
-
-        // SAFETY: The arguments request a private anonymous mapping, pass no
-        // file descriptor, and `capacity` is nonzero and representable by
-        // `usize`. The returned range is owned exclusively by this arena.
-        let mapped = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                capacity,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | MAP_ANONYMOUS_FLAG,
-                -1,
-                0,
-            )
-        };
-        if mapped == libc::MAP_FAILED {
-            return Err(ReservedArenaError::MappingFailed {
-                capacity,
-                source: std::io::Error::last_os_error(),
-            });
-        }
-        let Some(base) = NonNull::new(mapped.cast::<u8>()) else {
-            // SAFETY: A null successful return still denotes the exact mapping
-            // created above; release it before reporting the unsupported base.
-            let _ = unsafe { libc::munmap(mapped, capacity) };
-            return Err(ReservedArenaError::NullMapping { capacity });
-        };
+        let base = map_anonymous_reservation(capacity)?;
         // Publish `domain_id -> base` so a context-free holder of a compressed
         // `(domain, index)` word can reconstruct a native pointer without a heap
         // handle (see `reservation_registry`). This happens before the
         // reservation escapes and is withdrawn in `Drop` before the mapping is
         // released, so a published entry always names live memory.
         if let Err(error) = register_reservation_base(domain_id, base.as_ptr() as usize, capacity) {
-            // SAFETY: `mapped`/`capacity` denote the mapping created above and no
+            // SAFETY: `base`/`capacity` denote the mapping created above and no
             // reference into it exists yet, so releasing it here is sound.
-            let _ = unsafe { libc::munmap(mapped, capacity) };
+            let _ = unsafe { libc::munmap(base.as_ptr().cast(), capacity) };
             return Err(ReservedArenaError::from(error));
         }
         Ok(Self {
@@ -603,6 +585,53 @@ impl Drop for ReservedArena {
         // SAFETY: `base..base+capacity` is the exact still-owned mapping
         // returned by `mmap`; this type never splits or transfers that range.
         let _ = unsafe { libc::munmap(self.base.as_ptr().cast(), self.capacity) };
+    }
+}
+
+/// Maps `capacity` bytes of demand-paged, private, anonymous read/write memory.
+///
+/// This is the single mmap seam shared by the fresh reservation constructor
+/// ([`ReservedArena::with_capacity`]) and the heap-image reload constructor
+/// (`reservation::image`); centralizing it keeps the one `mmap` `unsafe` in a
+/// single reviewed place. The returned range is owned exclusively by the caller,
+/// which must eventually `munmap` exactly `[base, base + capacity)`.
+///
+/// # Errors
+///
+/// Returns [`ReservedArenaError::MappingFailed`] when the operating system
+/// rejects the mapping, or [`ReservedArenaError::NullMapping`] on the
+/// pathological null-but-successful return.
+#[cfg(unix)]
+pub(super) fn map_anonymous_reservation(
+    capacity: usize,
+) -> Result<NonNull<u8>, ReservedArenaError> {
+    // SAFETY: The arguments request a private anonymous mapping, pass no file
+    // descriptor, and `capacity` is nonzero and representable by `usize`. The
+    // returned range is owned exclusively by the caller.
+    let mapped = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            capacity,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | MAP_ANONYMOUS_FLAG,
+            -1,
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(ReservedArenaError::MappingFailed {
+            capacity,
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    match NonNull::new(mapped.cast::<u8>()) {
+        Some(base) => Ok(base),
+        None => {
+            // SAFETY: A null successful return still denotes the exact mapping
+            // created above; release it before reporting the unsupported base.
+            let _ = unsafe { libc::munmap(mapped, capacity) };
+            Err(ReservedArenaError::NullMapping { capacity })
+        }
     }
 }
 
