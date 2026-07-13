@@ -38,6 +38,7 @@ const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
+const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
 const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
 const FIXED_PLUGIN_WAKE_FD: i32 = 5;
@@ -813,6 +814,7 @@ pub struct QemuLaunchPluginConfig {
     slot: u32,
     whitebox: QemuLaunchPluginSwitch,
     coverage: QemuLaunchPluginSwitch,
+    fingerprint: QemuLaunchPluginSwitch,
 }
 
 impl QemuLaunchPluginConfig {
@@ -824,6 +826,7 @@ impl QemuLaunchPluginConfig {
             slot,
             whitebox: QemuLaunchPluginSwitch::Off,
             coverage: QemuLaunchPluginSwitch::Off,
+            fingerprint: QemuLaunchPluginSwitch::Off,
         }
     }
 
@@ -838,6 +841,17 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
         self.coverage = coverage;
+        self
+    }
+
+    /// Returns a config with the single-VM fingerprint sampling switch set.
+    ///
+    /// The `fingerprint` argument is emitted only when it is `On`, so a config
+    /// that leaves sampling off produces a byte-identical plugin argument string
+    /// to the pre-fingerprint ABI and does not perturb existing argv attestation.
+    #[must_use]
+    pub fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
+        self.fingerprint = fingerprint;
         self
     }
 
@@ -871,6 +885,12 @@ impl QemuLaunchPluginConfig {
         self.coverage
     }
 
+    /// Returns the single-VM fingerprint sampling switch passed to the plugin.
+    #[must_use]
+    pub const fn fingerprint(&self) -> QemuLaunchPluginSwitch {
+        self.fingerprint
+    }
+
     /// Returns the fixed inherited setup descriptors.
     #[must_use]
     pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {
@@ -883,15 +903,21 @@ impl QemuLaunchPluginConfig {
     /// Returns the raw plugin argument string passed after the plugin path.
     #[must_use]
     pub fn plugin_args_raw(&self) -> String {
-        [
+        let mut args = vec![
             format!("{PLUGIN_ARG_SIMFD}={FIXED_PLUGIN_SIM_FD}"),
             format!("{PLUGIN_ARG_SLOT}={}", self.slot),
             format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
             format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
-        ]
-        .join(",")
+        ];
+        // Emit fingerprint only when enabled so the disabled default keeps a
+        // byte-identical argv to the pre-fingerprint ABI (the plugin parser
+        // treats an absent fingerprint key as off).
+        if self.fingerprint == QemuLaunchPluginSwitch::On {
+            args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
+        }
+        args.join(",")
     }
 
     /// Returns the complete QEMU `-plugin` option value.

@@ -1279,6 +1279,31 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 }
 
 #[test]
+fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
+    let base = QemuLaunchPluginConfig::new(
+        "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
+        0,
+    );
+    // Disabled default is byte-identical to the pre-fingerprint ABI: no key.
+    assert_eq!(
+        base.plugin_args_raw(),
+        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+    );
+    assert_eq!(
+        base.clone()
+            .with_fingerprint(QemuLaunchPluginSwitch::Off)
+            .plugin_args_raw(),
+        base.plugin_args_raw()
+    );
+    // Enabled appends the fingerprint key after coverage.
+    assert_eq!(
+        base.with_fingerprint(QemuLaunchPluginSwitch::On)
+            .plugin_args_raw(),
+        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
+    );
+}
+
+#[test]
 fn launch_command_hash_material_feeds_scenario_identity() {
     let profile = default_profile();
     let command = profile
