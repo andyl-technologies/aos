@@ -9,7 +9,7 @@
 //! through [`crate::trap::RuntimeTrapScope`] instead of aborting when a scope is
 //! active; a null pointer or malformed payload still aborts.
 
-use std::{ffi::c_void, process};
+use std::ffi::c_void;
 
 use ratchet_oracle::{
     compile::{IrId, IrInlineCacheSiteId},
