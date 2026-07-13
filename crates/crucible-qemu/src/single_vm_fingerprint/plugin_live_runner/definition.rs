@@ -58,6 +58,13 @@ const BUILD_DIGEST_HEX_LEN: usize = 64;
 /// Combining the fixed cadence and topology with the observed QEMU and Rust
 /// plugin build digests yields the content-addressed `definition_digest`
 /// threaded through the scenario, the run inputs, and every published sample.
+///
+/// The topology (`vcpu_count`, `rr_switch_quantum`) is owned by this domain and
+/// is deliberately single-vCPU for now: the live single-vCPU time-authority
+/// path is the one the loaded-QEMU quantum gate proves. Multi-vCPU topology and
+/// the aggregate-icount clock it needs are deferred to M3 (T-TIME-9 /
+/// T-QEMU-16); a future `.v2` domain widens `vcpu_count` there. This is a
+/// scoped deferral, not an oversight.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RustPluginFingerprintDefinition {
     rr_switch_quantum: u64,

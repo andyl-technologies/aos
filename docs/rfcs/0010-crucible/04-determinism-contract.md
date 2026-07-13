@@ -699,6 +699,16 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     the horizon interaction boundary; frame-delivery and fault-activation
     sampling and an integrated launcher/rerun adapter for instruction-exact
     bisection and both-side state dumps remain absent, so this task remains open.
+  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
+    integrated launcher/rerun adapter now exists as the Rust `PluginFingerprintRunner`,
+    which computes the execution fingerprint black-box from the host with the
+    Rust plugin as the sole authority. It samples a periodic aggregate-icount
+    cadence (not only the horizon) — SHA-256 register-file, writable-RAM, and
+    non-RAM VMState digests per boundary — under the fixed content-addressed
+    definition `crucible.qemu.rust-plugin-fingerprint.v1`, and performs
+    instruction-exact bisection by RESTART to an exact icount. Still absent:
+    frame-delivery and fault-activation sampling and real both-side state dumps
+    at a divergence, both M4/M5 scope.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.

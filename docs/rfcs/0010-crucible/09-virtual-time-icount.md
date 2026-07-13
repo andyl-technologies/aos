@@ -694,11 +694,24 @@ instruction-primary.
   ceiling (59,645,960), never self-extending past it, because the max-advance
   budget is computed as `ceiling - logical_offset`. The terminal icount is
   byte-identical on the second, host-loaded run.
-- [ ] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
+- [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
   time path. — satisfies [TIME-31], [TIME-32], [TIME-33]; spec §9.10.
+  Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`: a single live
+  node (the Rust control plugin as sole time authority) is driven to a fixed
+  ascending icount cadence and the whole scenario runs twice, the second run
+  under deliberate host CPU load. Both runs produce a byte-identical fingerprint
+  stream whose per-vCPU retired-instruction counts and per-boundary aggregate
+  icount are the time-derived fields — a bit-identical `(icount, virtual_time)`
+  trajectory, since virtual time is the icount left-shifted by the fixed
+  `icount_shift`. The input list is the empty recorded list (Contract-A time
+  isolation, no injection). Host-time reads on the plugin time path stay
+  lint-banned: the plugin advances virtual time from the retired icount, and the
+  only wall-clock reads (diagnostic advancement-rate windows in the host runner)
+  carry explicit `crucible-lint` allow annotations and never enter guest state,
+  the fingerprint, or the cross-run comparison.
 - [ ] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the

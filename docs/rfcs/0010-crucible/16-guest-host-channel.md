@@ -938,6 +938,14 @@ the transport layer by construction.
   marker-neutrality proof, so white-box disabled, enabled-but-unused, and
   marker-enabled modes are fingerprint-equal except for observational event-log
   entries.
+  **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
+  black-box sufficiency clause is now proven on a real QEMU run — the live Rust
+  plugin fingerprints an unmodified guest with no in-guest agent and no injected
+  content, and the flipped phase2 `gate:single-vm-fingerprint` (which
+  `gate:any-guest` depends on) is certified by this live gate. Still open: a
+  live real-QEMU run with white-box events enabled proving white-box on/off
+  fingerprint-equality (this gate runs white-box off only), which lands with the
+  M5 guest-host-channel/white-box work.
 - [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,

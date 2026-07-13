@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:7c6c819cfecef654`
+Checklist sync digest: `rfc0010-checklist-v1:06019735053ca3cc`
 
 ### Adversarial completion audit (2026-07-09)
 
