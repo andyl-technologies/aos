@@ -732,6 +732,35 @@ at application/env-frame cost; the levers that reach it are general (not
 literal-only) beta/inlining, env-release-on-force (memory), and getting the JIT
 to fire on this shape — not literal-apply beta.
 
+### 5.6 The carrier matrix — one-word variant vs baseline (S5 gate, 2026-07-12)
+
+First full both-carrier comparison at one HEAD (Linux builder, quiet,
+5-sample medians, `AOS_NIX_NATIVE=1 AOS_NIX_JIT=1`, pinned 2.24.12 oracle),
+after S4b made the JIT fully live on the one-word carrier (546/546
+full-corpus byte-green on both carriers). Ruling: **NO-GO for carrier
+promotion** (cutover plan §S4b/S5 status). Key rows (variant/baseline time
+ratio; peak RSS variant vs baseline):
+
+| leg | var/base cold | var RSS | base RSS | note |
+|---|---|---|---|---|
+| pkgs.zlib / openssl | 1.06x | 93 MiB | 95 MiB | residual carrier tax, unattributed |
+| bench.wide-eval | 1.075x | 208 MiB | 228 MiB | the memory win holds |
+| compute.tak | **0.87x** | 41 MiB | 41 MiB | variant faster |
+| compute.fib | 1.07x | 41 MiB | 41 MiB | tier-2 native on both |
+| compute.sum-fold | **290x** | 1543 MiB | 41 MiB | DISQUALIFYING — wide-int cliff |
+| compute.qsort | 1.26x | 1543 MiB | 486 MiB | same cliff (LCG intermediates) |
+| compute.string-builder | 1.11x | — | — | ~7.4% of it is the B1 FlatBytes lookup |
+
+The `sum-fold` cliff attribution and the fix plan live in the cutover plan
+§S4b status block and `design-notes/decoded-core-tier2-spec.md` (task #30):
+the wide operator literal `2654435761` declined lowering → the tier-2 fold
+blacklisted (0 promoted / 0 dispatched / 7 blacklisted) → the interpreted
+fold boxed every wide intermediate (3M thunks / 6M values / 876 MB heap;
+hash-consing cannot help distinct accumulator streams). Wide literals and
+loop intermediates never materialize as runtime values and therefore need
+no inline word — the decoded-core emitters remove both the decline and the
+boxing for natively-run bodies.
+
 ---
 
 ## 6. The measure-first principle in practice
