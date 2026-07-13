@@ -204,9 +204,9 @@ pub fn run_context_finalized_native_thunk_call(
     let scope = RuntimeTrapScope::new();
     let native_return = match body.artifact().value_abi() {
         // The Candidate-B one-word return ABI is gone under the `candidate_c_value`
-        // carrier (its heap bridge decode does not exist there), and the tier-1
-        // JIT is off by construction, so this arm is unreachable; keep the match
-        // exhaustive with a value-ABI mismatch rather than the Candidate-B path.
+        // carrier (its heap bridge decode does not exist there), so a Candidate-B
+        // artifact can never dispatch; keep the match exhaustive with a value-ABI
+        // mismatch rather than the Candidate-B path.
         #[cfg(feature = "candidate_c_value")]
         JitValueAbi::CandidateB => Err(JitCraneliftNativeCallError::UnsupportedArtifactValueAbi {
             expected: JitValueAbi::CandidateC,
@@ -877,9 +877,9 @@ mod tests {
     }
 
     #[test]
-    // Lowers a tier-2 force through the two-word stack-map geometry; under the
-    // Candidate-C carrier the value is one word (entry-block param index shifts)
-    // and the JIT is off by construction. Re-enabled at S4b (cutover plan 6.1).
+    // Lowers a tier-2 force through the two-word stack-map geometry; tier-2
+    // emitters decline on the one-word carrier, so this runs baseline-only
+    // until the S4b phase-2 one-word emitters land.
     #[cfg(not(feature = "candidate_c_value"))]
     fn tier2_inner_force_dispatches_sweep_through_retained_stack_map() {
         let lowering_arena = IrArena::from_raw_parts(

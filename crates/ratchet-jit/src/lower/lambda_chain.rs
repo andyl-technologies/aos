@@ -441,6 +441,8 @@ fn build_entry_function(
     Ok(function)
 }
 
-// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
+// candidate bridges, or two-word CLIF shape asserts), which declines on the
+// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
 #[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests;

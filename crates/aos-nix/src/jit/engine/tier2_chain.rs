@@ -524,7 +524,9 @@ pub(super) fn chain_guard_argv(
     Some(argv)
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
+// candidate bridges, or two-word CLIF shape asserts), which declines on the
+// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
 #[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use std::{

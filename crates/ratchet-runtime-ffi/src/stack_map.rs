@@ -396,8 +396,8 @@ mod tests {
 
     // Exercises the JIT stack-map enter/leave path with a synthetic runtime
     // pointer (address 4096), which the Candidate-C carrier rejects as outside
-    // any live reservation; the JIT is off by construction here. Re-enabled at
-    // S4b (cutover plan section 6.1).
+    // any live reservation, so this synthetic-pointer exercise stays
+    // baseline-only.
     #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn bindings_nest_without_allocating_runtime_storage() {

@@ -90,8 +90,7 @@ fn arena_independent_word(value: Value) -> Result<CompressedValueWord, JitCandid
     }
 }
 
-// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use cranelift_codegen::ir::{InstructionData, Opcode, types};
     use ratchet_core::{EffectClass, IrData, IrKind, IrNode, syntax::Span};
@@ -147,10 +146,25 @@ mod tests {
             ) else {
                 panic!("arena-owned scalar is not embedded");
             };
+            // On the baseline carrier the shared constant path constructs any
+            // scalar, so this lowerer's own classification rejects it; on the
+            // one-word carrier the shared path already declines arena-owned
+            // scalars (ArenaBackedConstant / unsupported float), surfacing as
+            // the wrapped lower error instead.
+            #[cfg(not(feature = "candidate_c_value"))]
             assert!(matches!(
                 error,
                 JitCandidateCConstantError::RequiresArena { tag: actual } if actual == tag
             ));
+            #[cfg(feature = "candidate_c_value")]
+            {
+                let _ = tag;
+                assert!(matches!(
+                    error,
+                    JitCandidateCConstantError::RequiresArena { .. }
+                        | JitCandidateCConstantError::Lower(_)
+                ));
+            }
         }
     }
 

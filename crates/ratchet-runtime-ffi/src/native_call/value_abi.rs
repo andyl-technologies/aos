@@ -65,8 +65,8 @@ fn candidate_c_value(
 
 /// On the Candidate-C carrier the active runtime value already *is* the
 /// compressed word, so the native return adapter is the identity — no heap
-/// bridge decode is needed. (The tier-1 JIT is off by construction under this
-/// variant, so this path is currently unreachable, but it stays correct.)
+/// bridge decode is needed, so this is the live return adapter for the
+/// variant's tier-1 dispatches.
 #[cfg(feature = "candidate_c_value")]
 fn candidate_c_value(
     _heap: &EvalHeap,
@@ -78,10 +78,9 @@ fn candidate_c_value(
 // These adapters bridge the Candidate-B/-C one-word return ABIs back to the
 // active two-word `Value`. Under the `candidate_c_value` carrier the value IS
 // the word (the `candidate_*_encode_value` heap bridges and `Value::float` /
-// `as_float` do not exist) and the tier-1 JIT is off by construction, so the
-// adapters are exercised only on the baseline carrier here; the variant's
-// identity `candidate_c_value` is covered by the parity battery. See cutover
-// plan section 6.1 (S4b re-enables the JIT under the variant).
+// `as_float` do not exist), so the two-word adapters are exercised only on
+// the baseline carrier here; the variant's identity `candidate_c_value` is
+// covered by the parity battery and the live tier-1 dispatch tests.
 #[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use super::*;
