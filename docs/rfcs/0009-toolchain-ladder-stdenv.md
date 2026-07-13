@@ -412,6 +412,14 @@ Build the native glibc 2.5 tier with its in-tree NPTL add-on and a Linux 2.6
 kernel floor. RHEL 5 compatibility includes the NPTL `libpthread` ABI, and
 glibc 2.5 intentionally rejects a Linux build that silently omits that add-on.
 
+Build glibc 2.17 with its in-tree NPTL add-on as well. Its configure sanity
+check rejects a normal GNU/Linux libc without NPTL, so the producer must pass
+`--enable-add-ons=nptl` rather than bypassing the check. Pin `BISON` and
+`INSTALL_INFO` to the preceding AOS tier because glibc 2.17's generated
+configure script appends `/usr/bin` to both searches even when the hermetic
+`PATH` excludes it; never let a worker image's host tools influence the libc
+derivation.
+
 Before configuring GCC 4.4, patch its language-fragment loop to enumerate the
 unpacked `gcc/cp/config-lang.in` directly and assert that file exists. GCC 4.4
 is the first C++ rung and this tier intentionally carries only core C plus g++;
