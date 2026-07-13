@@ -465,10 +465,7 @@ const fn gated() -> Tier2ApplyHook {
     continued_hook(false, false, true)
 }
 
-// These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
-// candidate bridges, or two-word CLIF shape asserts), which declines on the
-// one-word carrier; baseline-only until the S4b phase-2 one-word emitters land.
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
@@ -620,6 +617,11 @@ mod tests {
     /// Compiled arithmetic wraps on i64 overflow exactly like the tree walk
     /// (the pinned C++ Nix 2.24 semantics), across the wrap boundary in both
     /// directions and through the multiply path.
+    ///
+    /// Baseline-only: the fixtures use i64-wide literals, which have no
+    /// inline word on the one-word carrier, so the body declines there by
+    /// design (see the variant sibling below for the wide-result deopt).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn compiled_arithmetic_wraps_exactly_like_the_oracle() {
         let sources = [
@@ -645,6 +647,56 @@ mod tests {
                 "the wrap fixture must actually dispatch, got {stats:?}"
             );
         }
+    }
+
+    /// A result outside the inline `i32` range deopts the one-word carrier's
+    /// re-encode guard and the interpreted re-run boxes it, producing the
+    /// oracle's exact value; the in-range recursion levels still dispatch.
+    ///
+    /// Boxed results from two evaluators compare by decoded integer, not raw
+    /// words, because the raw word embeds an evaluator-specific arena domain.
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn wide_result_deopts_and_boxes_like_the_oracle() {
+        // 2147483647 is the inline i32 maximum; adding n crosses the inline
+        // range at runtime, after 16 natively-dispatched recursion levels.
+        let source = "let f = n: if n < 1 then 2147483647 + 3 \
+             else f (n - 1) + 0; in f 16";
+        let oracle_ir = lower(source);
+        let mut oracle_eval = TreeWalk::new(&oracle_ir);
+        let oracle = oracle_eval.eval_root().expect("oracle evaluates");
+
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(
+            NixJitTier1Engine::new().expect("engine builds"),
+        ));
+        let native = eval.eval_root().expect("tier-2 evaluation succeeds");
+        let stats = eval.stats();
+
+        let oracle_int = oracle_eval
+            .heap()
+            .decode_int_value(oracle)
+            .expect("oracle int decodes");
+        let native_int = eval
+            .heap()
+            .decode_int_value(native)
+            .expect("native int decodes");
+        assert_eq!(oracle_int, native_int);
+        assert_eq!(oracle_int, i64::from(i32::MAX) + 3);
+        // Every native attempt reaches the wide base case, deopts the encode
+        // guard, and unwinds; the linear recursion never completes natively —
+        // the other fixtures in this module cover completed dispatches.
+        assert!(
+            stats.tier2_promoted() >= 1,
+            "the body must promote, got {stats:?}"
+        );
+        assert!(
+            stats.tier2_deopted() >= 1,
+            "the wide result must deopt the encode guard, got {stats:?}"
+        );
     }
 
     /// A float argument at the boundary fails the integer guard, deopts, and

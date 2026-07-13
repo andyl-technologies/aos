@@ -55,35 +55,45 @@
 //! Any body shape outside this grammar fails to lower, which blacklists the
 //! def-site: an unprovable body stays on the tree walk.
 
-use cranelift_codegen::{
-    cursor::{Cursor, FuncCursor},
-    ir::{
-        AbiParam, ExtFuncData, ExternalName, Function, InstBuilder, Signature, UserExternalName,
-        UserFuncName, condcodes::IntCC, types,
-    },
+#[cfg(not(feature = "candidate_c_value"))]
+use cranelift_codegen::cursor::{Cursor, FuncCursor};
+#[cfg(not(feature = "candidate_c_value"))]
+use cranelift_codegen::ir::{InstBuilder, UserFuncName, condcodes::IntCC};
+use cranelift_codegen::ir::{
+    AbiParam, ExtFuncData, ExternalName, Function, Signature, UserExternalName, types,
 };
-use ratchet_core::{
-    IrArena, IrData, IrId, IrKind, runtime_lambda_call_signature, syntax::BinOpKind,
-};
+#[cfg(not(feature = "candidate_c_value"))]
+use ratchet_core::{runtime_lambda_call_signature, syntax::BinOpKind};
+use ratchet_core::{IrArena, IrData, IrId, IrKind};
 
+use super::JitLowerError;
+#[cfg(not(feature = "candidate_c_value"))]
 use super::{
-    AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, JitLowerError, append_entry_block_params,
+    AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, append_entry_block_params,
     clif_external_name_for_aos_deopt, clif_external_name_for_aos_force, clif_name_for_ir_root,
     import_runtime_helper_function, stack_maps, verify_clif_function,
 };
+#[cfg(not(feature = "candidate_c_value"))]
 use crate::abi::clif_signature_for_runtime_call;
+
+#[cfg(feature = "candidate_c_value")]
+mod compressed;
 
 /// A Cranelift SSA value, aliased to avoid confusion with the runtime `Value`.
 type ClifValue = cranelift_codegen::ir::Value;
 type Block = cranelift_codegen::ir::Block;
 
 /// The runtime tag word for an inline integer value (`ValueTag::Int`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_INT: i64 = 0x00;
 /// The runtime tag word for an inline boolean value (`ValueTag::Bool`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_BOOL: i64 = 0x02;
 /// The runtime tag word for a null value (`ValueTag::Null`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_NULL: i64 = 0x03;
 /// The runtime tag word for a suspended thunk (`ValueTag::Thunk`).
+#[cfg(not(feature = "candidate_c_value"))]
 const TAG_THUNK: i64 = 0x20;
 
 /// The internal deopt-unwind sentinel tag.
@@ -93,6 +103,7 @@ const TAG_THUNK: i64 = 0x20;
 /// translates it to a valid null return before the pair crosses back into
 /// Rust, because materializing an invalid `ValueTag` discriminant on the Rust
 /// side would be undefined behavior. No real runtime tag uses this value.
+#[cfg(not(feature = "candidate_c_value"))]
 const TIER2_DEOPT_SENTINEL_TAG: i64 = 0xFF;
 
 /// The user-external-name namespace for tier-2 module-local function references.
@@ -189,6 +200,7 @@ impl JitTier2LambdaLowering {
 }
 
 /// Shared CLIF references threaded through the body emitter.
+#[cfg(not(feature = "candidate_c_value"))]
 struct LambdaCtx {
     /// Imported `aos_force` helper (forces the parameter at first strict use).
     force: cranelift_codegen::ir::FuncRef,
@@ -250,7 +262,27 @@ pub fn lower_tier2_self_recursive_lambda(
     body: IrId,
     depth_budget: i64,
 ) -> Result<JitTier2LambdaLowering, JitLowerError> {
-    super::value_words::require_two_word_carrier("tier2-self-recursive-lambda")?;
+    // The body emitter is per-carrier codegen: this one threads (tag, payload)
+    // pairs, the compressed sibling threads one-word values.
+    #[cfg(feature = "candidate_c_value")]
+    return compressed::lower_tier2_self_recursive_lambda_compressed(
+        arena,
+        pattern,
+        body,
+        depth_budget,
+    );
+    #[cfg(not(feature = "candidate_c_value"))]
+    lower_tier2_self_recursive_lambda_two_word(arena, pattern, body, depth_budget)
+}
+
+/// The two-word (baseline-carrier) body of [`lower_tier2_self_recursive_lambda`].
+#[cfg(not(feature = "candidate_c_value"))]
+fn lower_tier2_self_recursive_lambda_two_word(
+    arena: &IrArena,
+    pattern: IrId,
+    body: IrId,
+    depth_budget: i64,
+) -> Result<JitTier2LambdaLowering, JitLowerError> {
     require_bare_formal_pattern(arena, pattern)?;
     let self_upval = find_single_self_callee(arena, body)?;
 
@@ -444,6 +476,7 @@ pub(super) fn import_tier2_local_function(
 }
 
 /// Builds the compiled body function and returns it with its self-call count.
+#[cfg(not(feature = "candidate_c_value"))]
 fn build_inner_function(
     arena: &IrArena,
     body: IrId,
@@ -518,6 +551,7 @@ fn build_inner_function(
 }
 
 /// Builds the boundary entry adapter with the frozen lambda-call ABI.
+#[cfg(not(feature = "candidate_c_value"))]
 fn build_entry_function(
     body: IrId,
     entry_signature: Signature,
@@ -573,6 +607,7 @@ fn build_entry_function(
 /// a force emitted before a branch dominates both arms, but a force inside an
 /// arm must not leak past the join, so `If` emission clones the cache per arm
 /// and restores the pre-branch cache afterwards.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_expr(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -624,6 +659,7 @@ fn emit_expr(
 /// (a suspended thunk, a float, a trap sentinel) takes the slow path through
 /// `aos_force`, whose result feeds the operand guards exactly as the tree
 /// walk's own forced value would.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_forced_param(
     cursor: &mut FuncCursor,
     ctx: &mut LambdaCtx,
@@ -665,6 +701,7 @@ fn emit_forced_param(
 /// operand order only matters for which guard deopts first — either way the
 /// deopt re-runs the body interpreted — but mirroring it keeps the native
 /// path's parameter-force point identical to the interpreter's.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -756,6 +793,7 @@ fn emit_binop(
 /// boolean-tag guard is needed (a comparison's operand guards already deopt on
 /// non-integers). Parameter forces emitted inside one arm do not leak into the
 /// other arm or past the join.
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_if(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -831,6 +869,7 @@ fn emit_if(
 /// unboxed. The budget guard deopts when no native depth remains; the
 /// dispatcher's headroom precondition makes that deopt reproduce the
 /// interpreter's own behavior (see the module docs).
+#[cfg(not(feature = "candidate_c_value"))]
 fn emit_self_call(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -892,12 +931,14 @@ fn emit_self_call(
 }
 
 /// Materializes an integer runtime value pair from a computed payload.
+#[cfg(not(feature = "candidate_c_value"))]
 fn int_pair(cursor: &mut FuncCursor, payload: ClifValue) -> (ClifValue, ClifValue) {
     let tag = cursor.ins().iconst(types::I64, TAG_INT);
     (tag, payload)
 }
 
 /// Materializes a boolean runtime value pair from an integer comparison.
+#[cfg(not(feature = "candidate_c_value"))]
 fn bool_pair(
     cursor: &mut FuncCursor,
     condition: IntCC,
@@ -911,6 +952,7 @@ fn bool_pair(
 }
 
 // Suppress an unused-constant lint until a future grammar reads raw thunks.
+#[cfg(not(feature = "candidate_c_value"))]
 const _: i64 = TAG_THUNK;
 
 // These tests exercise two-word-carrier codegen (tier-2 bodies, inline arith,
