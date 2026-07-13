@@ -135,6 +135,7 @@ pub(super) fn lower_tier2_curried_chain_compressed(
         pinned,
         env_boundary,
         emit::ChainInnerBody::Plain,
+        emit::InnerAbi::ChainInner,
     )?;
     let entry = build_entry_function(
         scan.inner_body(),
@@ -195,6 +196,7 @@ pub(super) fn lower_tier2_fold_genlist_compressed(
         pinned,
         JitTier2EnvBoundary::OperatorEnv,
         emit::ChainInnerBody::FusedGenerator(generator_body),
+        emit::InnerAbi::ChainInner,
     )?;
     let entry = build_entry_function(
         scan.inner_body(),

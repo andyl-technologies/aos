@@ -68,6 +68,21 @@ enum TypedVal {
     Word(ClifValue),
 }
 
+/// The call ABI the compiled body function is emitted against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::lower::lambda_chain) enum InnerAbi {
+    /// The chain inner ABI: `(rt, env, K words, budget) -> word`. Every value
+    /// is a compressed word; the body result materializes to a word; full-arity
+    /// self-calls use the budget and the `0xFF`-kind deopt sentinel.
+    ChainInner,
+    /// The fold-step ABI: `(rt, env, acc: i64, elem: word) -> i64`. Parameter 0
+    /// arrives as a decoded accumulator and the body result returns as a
+    /// decoded `i64`, so the native fold loop threads its accumulator with no
+    /// per-element encode/decode round-trip. A deopt records the trap and
+    /// returns a placeholder word; the loop reads the trap flag, not the value.
+    FoldStep,
+}
+
 /// The body shape compiled into one chain inner function.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::lower::lambda_chain) enum ChainInnerBody {
@@ -120,6 +135,12 @@ struct ChainCtx<'a> {
     pinned: Vec<JitTier2PinnedCallee>,
     /// The number of self-call chains emitted so far.
     self_call_count: u32,
+    /// Whether parameter 0 (the accumulator) arrives as a decoded `i64`.
+    ///
+    /// Set for the fold-step ABI: the native fold loop passes the running
+    /// accumulator as a plain decoded integer, so its read skips the force
+    /// fast path and yields an `IntDecoded` directly.
+    decoded_acc: bool,
 }
 
 /// The per-dominating-path evaluation state of the emitter.
@@ -172,6 +193,7 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
     pinned: &[JitTier2PinnedCallee],
     env_boundary: JitTier2EnvBoundary,
     body: ChainInnerBody,
+    abi: InnerAbi,
 ) -> Result<(Function, u32), JitLowerError> {
     let mut function = Function::with_name_signature(
         UserFuncName::user(
@@ -206,10 +228,13 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
     let deopt = function.dfg.make_block();
     let sentinel = function.dfg.make_block();
 
+    // The fold-step ABI has no self-call budget parameter (a fold operator
+    // never self-recurses); the chain ABI carries one trailing budget word.
+    let has_budget = abi == InnerAbi::ChainInner;
     let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
     let params = cursor.func.dfg.block_params(entry_block).to_vec();
     let arity = scan.arity();
-    let expected = 2 + arity as usize + 1;
+    let expected = 2 + arity as usize + usize::from(has_budget);
     if params.len() != expected {
         return Err(JitLowerError::MissingEntryBlockParameter {
             index: params.len(),
@@ -221,7 +246,13 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
     for j in 0..arity as usize {
         raw_params.push(params[2 + j]);
     }
-    let budget = params[expected - 1];
+    // A fold step never reads the budget (no self-calls); a placeholder keeps
+    // the field total without adding a parameter.
+    let budget = if has_budget {
+        params[expected - 1]
+    } else {
+        cursor.ins().iconst(types::I64, 0)
+    };
 
     let mut ctx = ChainCtx {
         bindings,
@@ -243,6 +274,7 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
         self_upval,
         pinned: pinned.to_vec(),
         self_call_count: 0,
+        decoded_acc: abi == InnerAbi::FoldStep,
     };
     let mut state = EmitState {
         forced_params: vec![None; arity as usize],
@@ -274,8 +306,13 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
     }
 
     let result = emit_expr(&mut cursor, arena, &mut ctx, scan.inner_body(), &mut state)?;
-    let result_word = to_word(&mut cursor, &ctx, result);
-    cursor.ins().return_(&[result_word]);
+    // The fold step returns its accumulator decoded (the operator body is
+    // integer-typed by dispatch); the chain inner materializes a word.
+    let returned = match abi {
+        InnerAbi::ChainInner => to_word(&mut cursor, &ctx, result),
+        InnerAbi::FoldStep => to_int(&mut cursor, &ctx, result),
+    };
+    cursor.ins().return_(&[returned]);
 
     // Shared guard-failure block: record the deopt trap, unwind with the sentinel.
     cursor.insert_block(deopt);
@@ -515,6 +552,14 @@ fn emit_forced_param(
 ) -> Result<TypedVal, JitLowerError> {
     if let Some(cached) = state.forced_params[index] {
         return Ok(cached);
+    }
+    // The fold-step accumulator (parameter 0) arrives as a decoded `i64` from
+    // the native loop, already in weak head normal form: read it directly with
+    // no force and no encode/decode round-trip.
+    if ctx.decoded_acc && index == 0 {
+        let typed = TypedVal::IntDecoded(ctx.raw_params[0]);
+        state.forced_params[0] = Some(typed);
+        return Ok(typed);
     }
     let raw = ctx.raw_params[index];
     let word = emit_force_int_fast_path(cursor, ctx, raw)?;
