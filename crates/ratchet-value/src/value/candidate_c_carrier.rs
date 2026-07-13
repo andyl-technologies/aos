@@ -219,6 +219,7 @@ impl Value {
     }
 
     /// Returns the encoding kind byte (the low 8 bits of the high half).
+    #[inline]
     const fn kind_byte(self) -> u8 {
         (self.word.raw() >> 32) as u8
     }
@@ -227,6 +228,7 @@ impl Value {
     ///
     /// Const so it stays usable from the `const fn` classifiers that the
     /// baseline carrier's `tag` supported (GC root scanning, WHNF fast path).
+    #[inline]
     pub const fn tag(self) -> ValueTag {
         match self.kind_byte() {
             // InlineInt (0x00) and BoxedInt (0x30) are both `int`.
@@ -247,6 +249,7 @@ impl Value {
     }
 
     /// Returns the raw 8-byte word as identity/diagnostic bits.
+    #[inline]
     pub const fn payload_bits(self) -> u64 {
         self.word.raw()
     }
@@ -271,26 +274,31 @@ impl Value {
     /// On the Candidate-C carrier the whole word is the identity: a moving
     /// collector rewrites the index half, so retained words participate in the
     /// same writeback protocol as the baseline carrier's addresses.
+    #[inline]
     pub const fn relocation_sensitive_identity_bits(self) -> u64 {
         self.word.raw()
     }
 
     /// Returns raw representation equality (not Nix semantic equality).
+    #[inline]
     pub const fn raw_eq(self, other: Self) -> bool {
         self.word.raw() == other.word.raw()
     }
 
     /// Returns whether this value is already in weak head normal form.
+    #[inline]
     pub const fn is_whnf(self) -> bool {
         self.kind_byte() != 0x20
     }
 
     /// Returns whether this value is a thunk.
+    #[inline]
     pub const fn is_thunk(self) -> bool {
         self.kind_byte() == 0x20
     }
 
     /// Returns whether this value is a thunk already marked forced.
+    #[inline]
     pub const fn is_forced_thunk(self) -> bool {
         self.word.is_forced_thunk()
     }

@@ -71,6 +71,7 @@ pub enum CompressedValueKind {
 }
 
 impl CompressedValueKind {
+    #[inline]
     fn from_bits(bits: u32) -> Result<Self, CompressedValueError> {
         match bits {
             0x00 => Ok(Self::InlineInt),
@@ -91,6 +92,7 @@ impl CompressedValueKind {
     }
 
     /// Returns the semantic runtime tag represented by this encoding kind.
+    #[inline]
     pub const fn semantic_tag(self) -> ValueTag {
         match self {
             Self::InlineInt | Self::BoxedInt => ValueTag::Int,
@@ -108,6 +110,7 @@ impl CompressedValueKind {
         }
     }
 
+    #[inline]
     const fn carries_arena_index(self) -> bool {
         !matches!(self, Self::InlineInt | Self::Bool | Self::Null)
     }
@@ -216,11 +219,18 @@ impl CompressedValueWord {
     }
 
     /// Returns the complete encoded word.
+    #[inline]
     pub const fn raw(self) -> u64 {
         self.raw
     }
 
     /// Returns the representation kind with metadata flags removed.
+    ///
+    /// Inlined so that the common `kind() == Variant` comparison folds to a
+    /// direct bit compare instead of materializing the full decode match: the
+    /// word is validated at construction and by `from_raw`, so the `from_bits`
+    /// branch is dead at every call site the optimizer can prove.
+    #[inline]
     pub fn kind(self) -> CompressedValueKind {
         // Construction and `from_raw` validate this field.
         match CompressedValueKind::from_bits((self.raw >> 32) as u32 & KIND_MASK) {
@@ -230,26 +240,31 @@ impl CompressedValueWord {
     }
 
     /// Returns the semantic runtime tag.
+    #[inline]
     pub fn semantic_tag(self) -> ValueTag {
         self.kind().semantic_tag()
     }
 
     /// Returns the low 32-bit payload.
+    #[inline]
     pub const fn payload(self) -> u32 {
         self.raw as u32
     }
 
     /// Returns the inline signed integer, if present.
+    #[inline]
     pub fn as_inline_int(self) -> Option<i64> {
         (self.kind() == CompressedValueKind::InlineInt).then(|| self.payload() as i32 as i64)
     }
 
     /// Returns the inline boolean, if present.
+    #[inline]
     pub fn as_bool(self) -> Option<bool> {
         (self.kind() == CompressedValueKind::Bool).then(|| self.payload() != 0)
     }
 
     /// Returns the arena index carried by a heap or boxed-scalar word.
+    #[inline]
     pub fn arena_index(self) -> Option<ArenaIndex> {
         self.kind()
             .carries_arena_index()
