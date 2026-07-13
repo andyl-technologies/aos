@@ -721,6 +721,37 @@ segments) and the stage-2 thunk-collapse core build on top of this seam.
 - **D5 — no heap-image snapshot code exists yet.** The "snapshot" symbols in
   the tree (`heap/gc.rs:344`, `heap/flat.rs:787`) are GC card-table / edge
   snapshots, unrelated. This is greenfield.
+- **D6 — the flat compound-object PAYLOADS are not address-free; the
+  Candidate-C cutover makes only the value WORDS address-free (found
+  2026-07-13, stage-1b).** §0/§1.1's premise that the compressed indices make
+  "the image address-free by construction" is true for the `(domain, index)`
+  value words but **false for the interiors of compound flat objects**, so a
+  dumped arena cannot be remapped at a new base (nor survive the source heap's
+  drop) for any list, attrset, or string. Two concrete residuals the §1.4 table
+  missed, both fatal to a raw-arena-dump-and-remap image:
+  - **`NixList` keeps an owned out-of-arena `Vec<Value>`** — an explicit FV-4
+    *measured* decision (`ratchet-oracle/src/eval/heap/flat_values/lists.rs:54-65`,
+    kept for ~1.5% qsort wall; inline spines showed no win). The flat list
+    object's arena bytes hold a `Vec` header whose backing frees when the source
+    heap drops → dangling. Same-base (`MAP_FIXED`) mapping cannot save it.
+  - **`FlatSlice<T> { ptr: NonNull<T>, len }`** (`ratchet-value/src/heap/flat/slice.rs:66`)
+    and `FlatBytes` store **absolute** pointers into the arena's own trailing
+    bytes, baked at allocation time. Attrsets (`AttrsStorage::Flat { entries:
+    FlatSlice<AttrEntry>, … }`) and inline string bytes carry these; a remap at
+    a new base leaves them dangling. Same-base mapping *would* keep them valid.
+
+  Evidence: a bare-list `[1 2 3]` `EvalHeap` round trip panics decoding a
+  clobbered element word (use-after-free of the freed `Vec`); `{a=1;b=[4 5]}`
+  "passed" only by UAF luck. Only inline scalars (no arena) and boxed scalars
+  (`compressed_scalars`, plain `i64`/`f64`, no interior pointers) are provably
+  snapshottable today — useless for the compound `lib`+`stdenv` prelude. **Open
+  (lead):** (A) same-base `MAP_FIXED` mapping (rescues absolute-ptr attrs/strings,
+  strands list `Vec`s); (B) make the payloads address-free — offset-based
+  `FlatSlice` + an inline `NixList` spine (reverts the FV-4 perf decision, touches
+  the hot flat-value paths); or (C) a payload serializer that walks the graph and
+  serializes `Vec` contents / slice runs / string contexts into the image
+  (robust, but a bespoke value-graph format, not the "mmap the arena" ideal).
+  The stage-1 *core* landed (§7.1) is unaffected — it snapshots scalars only.
 
 ## 9. Decisions (2026-07-12, team lead)
 
