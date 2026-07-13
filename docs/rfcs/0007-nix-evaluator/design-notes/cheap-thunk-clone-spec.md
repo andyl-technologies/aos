@@ -110,3 +110,37 @@ profile lines (`EvalThunk::clone`, `memmove`, drop cluster) and the toplevel
 cold `native_mean`. **Target: double-digit-% cold win** on the toplevel, else
 re-examine. Land as: (1) this clone lever, (2) frame-alloc fast path, (3)
 env-release-on-force behind a flag (daemon reclaim).
+
+## 5. Implementation increments (grounded in the storage)
+
+Thunks live in three stores, each read by `clone_thunk`
+(`eval/heap/arena.rs:2567`): the **serial flat store** (FV-3, default via
+`WorkerClosurePlacement::Flat` -> `flat_alloc_thunk`; `FlatClosurePayload::Thunk`
+holds the `EvalThunk` inline), the **record table** fallback
+(`reserve_record_slot`; `HeapObjectValue::Thunk`), and the **shared arena**
+(parallel; `shared_alloc_thunk` / `clone_thunk_ptr`).
+
+- **I1 — serial flat store (the hot path; ~all toplevel forces).** Lazily mint
+  `Arc<EvalThunk>` on first `clone_thunk`: move the inline `EvalThunk` into an
+  `Arc` through the existing `flat_swap_thunk_payload` door (add a
+  `FlatClosurePayload::SharedThunk(Arc<EvalThunk>)` variant, or a slot-side
+  `OnceLock<Arc<EvalThunk>>`), cache it in the slot, return `Arc::clone`.
+  `force_value`/`force_serial_thunk_value` take `&EvalThunk` via `Arc` deref —
+  read through the Arc, no per-force struct copy. Keep a `get_thunk` borrow for
+  the routing reads (`parallel_payload_cell`, `is_single_entry_force_storage`)
+  before the detach. Gate: parity ×4 serial + JIT, before/after profile, cold.
+  This alone should show the ~12%.
+- **I2 — record-table + shared/parallel paths.** Extend the same Arc handle to
+  the record-table fallback and the shared `clone_thunk_ptr` (worker-safe: `Arc`
+  is Send+Sync; the parallel_cell path is unchanged). Gate: K=4 parity + sweep.
+- **I3 — frame-alloc fast path** (`EvalFrame::new_linked` + alloc cluster).
+- **I4 — env-release-on-force behind a flag** (promote `shed_forced_thunk_captures`
+  to Tier-A at publication; per hazard row 3, gate its swap on `Arc` sole
+  ownership — `strong_count == 1` / `Arc::get_mut` — else defer, since an
+  in-flight force holds a second ref).
+
+Hazard resolutions to encode in I1: JIT `dispatch_env` keeps cloning an **owned**
+env snapshot out of the Arc'd thunk (never the shared handle); GC sweep reads the
+record kind through the Arc deref; FV-5 `EvalFlatCapture` stays a Copy handle
+(the Arc wraps the thunk, not the capture values, which remain inline in the
+owner).
