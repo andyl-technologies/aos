@@ -2672,11 +2672,23 @@ impl EvalHeap {
     /// [`flat_share_thunk`]: Self::flat_share_thunk
     pub(crate) fn share_thunk(&mut self, value: Value) -> Result<ClonedThunk, EvalHeapError> {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
-        if self.shared.is_none() {
-            if let Some(shared) = self.flat_share_thunk(ptr)? {
-                return Ok(ClonedThunk::Shared(shared));
-            }
+        if let Some(shared) = self.shared.as_ref() {
+            // Parallel path (I2): the shared arena forbids in-slot mints
+            // (publish-once), so each worker caches its own `Arc` in a
+            // worker-private side map. Account the mint's one-time clone exactly
+            // as `clone_thunk`'s shared arm did.
+            let (arc, state_arc_clones) = shared.share_thunk_ptr(ptr)?;
+            self.deref_counters
+                .note_thunk_state_arc_clones(state_arc_clones);
+            return Ok(ClonedThunk::Shared(arc));
         }
+        if let Some(shared) = self.flat_share_thunk(ptr)? {
+            return Ok(ClonedThunk::Shared(shared));
+        }
+        // Record-table path: reachable only under `GcStressPolicy` (never a
+        // production config, where placement is always `Flat`), so it is left
+        // as an owned clone rather than growing `HeapObjectValue` a shared
+        // variant across its many exhaustive match sites (doc 15 §5.5 I2 scope).
         Ok(ClonedThunk::Owned(self.clone_thunk(value)?))
     }
 

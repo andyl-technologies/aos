@@ -94,6 +94,22 @@ use crate::heap::HeapGeneration;
 /// A worker-private cutoff-hash side map (record address -> cached hash).
 type ColdHashIndex = HashMap<usize, ValueHash, BuildHasherDefault<AddressHasher>>;
 
+/// A worker-private lazy-shared-thunk side map (slot address -> cached `Arc`).
+///
+/// The parallel analog of the serial flat store's in-slot `SharedThunk` mint
+/// (doc 15 §5.5 cheap-thunk-clone I2). The shared arena publishes thunks at
+/// **stable, append-only, immutable-after-publish** slot addresses with GC
+/// quiesced under parallel evaluation, so an address always names the same
+/// thunk for the arena's lifetime — keying by address is sound (no retire /
+/// reissue within an eval). Cross-worker mutation of a published slot is
+/// forbidden (the publish-once protocol), so each worker instead caches its own
+/// `Arc` here: the first force per worker deep-clones once to populate, repeats
+/// are one `Arc::clone`. Per-worker duplication (K workers hold K `Arc`s of one
+/// thunk) is the same "distinct addresses, never semantics" trade the backend
+/// already makes for hash-consing, and the inner `Arc<ThunkCell>` stays shared
+/// so force-state publication remains cross-worker correct.
+type SharedThunkArcIndex = HashMap<usize, Arc<EvalThunk>, BuildHasherDefault<AddressHasher>>;
+
 /// The parallel-mode allocation/resolution backend of one worker's
 /// [`EvalHeap`].
 ///
@@ -109,6 +125,8 @@ pub(super) struct SharedHeapBackend {
     cold_value_hashes: RefCell<ColdHashIndex>,
     /// Worker-private force-capture value hashes.
     cold_captured_value_hashes: RefCell<ColdHashIndex>,
+    /// Worker-private lazily minted shared-thunk handles (doc 15 §5.5 I2).
+    shared_thunk_arcs: RefCell<SharedThunkArcIndex>,
 }
 
 impl SharedHeapBackend {
@@ -119,6 +137,7 @@ impl SharedHeapBackend {
             shard,
             cold_value_hashes: RefCell::new(ColdHashIndex::default()),
             cold_captured_value_hashes: RefCell::new(ColdHashIndex::default()),
+            shared_thunk_arcs: RefCell::new(SharedThunkArcIndex::default()),
         }
     }
 
@@ -365,6 +384,44 @@ impl SharedHeapBackend {
         ptr: NonNull<HeapObject>,
     ) -> Result<EvalThunk, EvalHeapError> {
         self.thunk_ref(ptr).cloned()
+    }
+
+    /// Returns this worker's lazily minted shared `Arc` handle to `ptr`.
+    ///
+    /// The parallel force path's cheap replacement for [`clone_thunk_ptr`]
+    /// (doc 15 §5.5 cheap-thunk-clone I2): the first force per worker deep-clones
+    /// the shard thunk once into a worker-private `Arc` cached in
+    /// [`SharedThunkArcIndex`], and every later force by the same worker returns
+    /// one `Arc::clone`. Keying by slot address is sound because the shared
+    /// arena publishes at stable, immutable, never-reissued addresses (GC
+    /// quiesced under parallel evaluation).
+    ///
+    /// Returns the handle plus the number of thunk state-`Arc` clones the call
+    /// incurred — the mint's one-time deep clone on a cache miss, or `0` on a
+    /// cache hit — so the caller can account it exactly as
+    /// [`clone_thunk_ptr`] did.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if no shard owns `ptr` and
+    /// [`EvalHeapError::RecordTypeMismatch`] if the record is not a thunk.
+    ///
+    /// [`clone_thunk_ptr`]: Self::clone_thunk_ptr
+    pub(super) fn share_thunk_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<(Arc<EvalThunk>, u64), EvalHeapError> {
+        let key = ptr.as_ptr() as usize;
+        if let Some(shared) = self.shared_thunk_arcs.borrow().get(&key) {
+            return Ok((Arc::clone(shared), 0));
+        }
+        let thunk = self.thunk_ref(ptr)?.clone();
+        let state_arc_clones = thunk.state_arc_clone_count();
+        let shared = Arc::new(thunk);
+        self.shared_thunk_arcs
+            .borrow_mut()
+            .insert(key, Arc::clone(&shared));
+        Ok((shared, state_arc_clones))
     }
 
     /// Clones the shared lambda metadata behind `ptr`.
