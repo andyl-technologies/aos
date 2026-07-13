@@ -508,7 +508,21 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedFetchTreeFeature { .. }
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
-        | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
+        | TreeWalkErrorKind::ImportFromDerivation { .. }
+        // §2.3 hard-fail -> fallback-eligible (readiness ruling, disposition table
+        // in aos-nix-native-default-on-readiness.md). An unimplemented internal
+        // dialect op is a native gap, never a real error; the per-argument
+        // fetch/source/flake attr rejections name a valid Nix attr C++ accepts
+        // (transparent C++ retry beats a hard stop; these are also preflight-shadowed
+        // today, so this is defense-in-depth). Regex/JSON/TOML deliberately NOT here.
+        | TreeWalkErrorKind::UnsupportedDialectOp { .. }
+        | TreeWalkErrorKind::UnsupportedSourcePathAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchUrlAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchGitAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchMercurialAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchTarballAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchTreeAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFlakeRefAttr { .. } => Some(kind.to_string()),
         TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
             Some((*feature).to_string())
         }
