@@ -395,9 +395,10 @@ impl SharedHeapBackend {
 
     fn thunk_ref(&self, ptr: NonNull<HeapObject>) -> Result<&EvalThunk, EvalHeapError> {
         if let Some(object) = self.resolve_flat_closure(ptr) {
-            return match object.payload() {
-                FlatClosurePayload::Thunk(thunk) => Ok(thunk),
-                payload => Err(EvalHeapError::record_type_mismatch(
+            let payload = object.payload();
+            return match payload.as_thunk() {
+                Some(thunk) => Ok(thunk),
+                None => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Thunk,
                     payload.tag(),
                     ptr,

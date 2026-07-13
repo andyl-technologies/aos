@@ -1,6 +1,7 @@
 //! Allocation, lookup, and cons-table machinery for the [`EvalHeap`] arena.
 
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use xxhash_rust::xxh3::Xxh3;
@@ -2554,9 +2555,9 @@ impl EvalHeap {
             return shared.get_thunk_ptr(ptr);
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
-            return match payload {
-                FlatClosurePayload::Thunk(inner) => Ok(inner),
-                payload => Err(EvalHeapError::record_type_mismatch(
+            return match payload.as_thunk() {
+                Some(inner) => Ok(inner),
+                None => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Thunk,
                     payload.tag(),
                     ptr,
@@ -2588,13 +2589,13 @@ impl EvalHeap {
             return Ok(thunk);
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
-            return match payload {
-                FlatClosurePayload::Thunk(inner) => {
+            return match payload.as_thunk() {
+                Some(inner) => {
                     self.deref_counters
                         .note_thunk_state_arc_clones(inner.state_arc_clone_count());
                     Ok(inner.clone())
                 }
-                payload => Err(EvalHeapError::record_type_mismatch(
+                None => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Thunk,
                     payload.tag(),
                     ptr,
@@ -2615,6 +2616,41 @@ impl EvalHeap {
                 ptr,
             )),
         }
+    }
+
+    /// Returns an `Arc`-shared handle to the thunk referenced by `value`.
+    ///
+    /// This is the force path's cheap replacement for [`clone_thunk`]
+    /// (doc 15 §5.5 cheap-thunk-clone I1). For a serial flat thunk it mints an
+    /// `Arc<EvalThunk>` on first force ([`flat_share_thunk`]) and caches it in
+    /// the flat slot, so every force after the first pays a single `Arc::clone`
+    /// (one refcount increment) instead of copying the whole ~128-byte record
+    /// and re-incrementing its ~5 inner `Arc`s. Forcing reads all the thunk's
+    /// handles *through* the returned `Arc`, releasing the heap borrow before
+    /// re-entering evaluation exactly as the owned clone did.
+    ///
+    /// Shared-backend (parallel) and record-table thunks are not yet minted (I2
+    /// extends the handle to them); until then they fall back to
+    /// `Arc::new(self.clone_thunk(value)?)`, which is the previous owned clone
+    /// wrapped in one allocation. Those paths are cold relative to the serial
+    /// flat store that carries essentially all toplevel forces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a thunk value, and
+    /// otherwise the same resolution errors as [`clone_thunk`]
+    /// ([`EvalHeapError::UnknownPointer`], [`EvalHeapError::RecordTypeMismatch`]).
+    ///
+    /// [`clone_thunk`]: Self::clone_thunk
+    /// [`flat_share_thunk`]: Self::flat_share_thunk
+    pub(crate) fn share_thunk(&mut self, value: Value) -> Result<Arc<EvalThunk>, EvalHeapError> {
+        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        if self.shared.is_none() {
+            if let Some(shared) = self.flat_share_thunk(ptr)? {
+                return Ok(shared);
+            }
+        }
+        Ok(Arc::new(self.clone_thunk(value)?))
     }
 
     /// Clones lambda metadata so application can release the heap borrow before evaluating the body.
