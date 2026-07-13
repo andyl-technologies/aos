@@ -70,6 +70,7 @@ pub fn lower_tier2_fold_genlist(
     generator_body: IrId,
     depth_budget: i64,
 ) -> Result<JitTier2ChainLowering, JitLowerError> {
+    crate::lower::value_words::require_two_word_carrier("tier2-fold-genlist")?;
     if scan.arity() != 2 {
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: scan.inner_body(),

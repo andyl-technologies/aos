@@ -34,6 +34,16 @@ pub enum JitLowerError {
         /// The value tag whose compressed word cannot be embedded in code.
         tag: ValueTag,
     },
+    /// The shape family is not yet lowerable on the one-word carrier.
+    ///
+    /// Compound shapes that decode or compose value payloads in native code
+    /// (arithmetic trees, allocating cons cells, tier-2 lambda bodies) still
+    /// assume the two-word carrier; until their one-word codegen lands they
+    /// decline so the def-site stays on the tree walk.
+    CarrierUnsupportedShape {
+        /// The declining shape family.
+        shape: &'static str,
+    },
     /// The generated thunk function did not have the expected entry parameter.
     MissingEntryBlockParameter {
         /// The expected entry-block parameter index.
@@ -260,6 +270,10 @@ impl fmt::Display for JitLowerError {
                 formatter,
                 "{tag:?} constants require evaluator-owned arena storage on the one-word carrier"
             ),
+            Self::CarrierUnsupportedShape { shape } => write!(
+                formatter,
+                "{shape} bodies are not yet lowerable on the one-word carrier"
+            ),
             Self::MissingEntryBlockParameter { index } => write!(
                 formatter,
                 "generated thunk function is missing entry-block parameter {index}"
@@ -468,6 +482,7 @@ impl Error for JitLowerError {
             Self::Verifier(error) => Some(error),
             Self::UnsupportedHeapConstant { .. }
             | Self::ArenaBackedConstant { .. }
+            | Self::CarrierUnsupportedShape { .. }
             | Self::MissingRuntimeHelperSignature { .. }
             | Self::MissingEntryBlockParameter { .. }
             | Self::InvalidRuntimeCallResultArity { .. }

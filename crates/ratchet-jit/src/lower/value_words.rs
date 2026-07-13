@@ -46,6 +46,29 @@ pub(crate) fn push_words(args: &mut Vec<ir::Value>, words: ValueWords) {
     args.extend_from_slice(&words);
 }
 
+/// Declines shapes whose emitters still assume the two-word carrier.
+///
+/// Compound emitters decode or compose value payloads in native code
+/// (arithmetic trees, allocating cons cells, tier-2 lambda bodies). Until
+/// their compressed-word codegen lands, the one-word carrier declines them at
+/// the lowering entry so the def-site stays on the tree walk.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::CarrierUnsupportedShape`] under the
+/// `candidate_c_value` variant; always succeeds on the baseline carrier.
+pub(crate) fn require_two_word_carrier(shape: &'static str) -> Result<(), JitLowerError> {
+    #[cfg(feature = "candidate_c_value")]
+    {
+        Err(JitLowerError::CarrierUnsupportedShape { shape })
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        let _ = shape;
+        Ok(())
+    }
+}
+
 /// Returns the constant words embeddable in shared code for `value`.
 ///
 /// The baseline carrier embeds the (tag, payload) pair of any non-heap value.

@@ -43,6 +43,8 @@ mod lambda_chain;
 mod lambda_rec;
 mod stack_maps;
 mod value_words;
+#[cfg(all(test, feature = "candidate_c_value"))]
+mod one_word_shape_tests;
 pub use stack_maps::{
     AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
     clif_external_name_for_aos_jit_stack_map_enter,
@@ -1449,7 +1451,20 @@ fn constant_value_for_root(arena: &IrArena, root: IrId) -> Result<Value, JitLowe
 
 fn constant_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
+        // The one-word carrier can only construct inline-range integers
+        // context-free; wider integers box through the evaluator heap.
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Int, IrData::Int(value)) => {
+            if i32::try_from(value).is_ok() {
+                Ok(Value::int(value))
+            } else {
+                Err(JitLowerError::ArenaBackedConstant {
+                    tag: ratchet_value::value::ValueTag::Int,
+                })
+            }
+        }
         // The Candidate-C carrier has no context-free float constructor (floats
         // box through the evaluator heap); the tier-1 JIT is unreachable by
         // construction under that variant, so this arm is dead there.
@@ -1470,7 +1485,20 @@ fn constant_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
 
 fn constant_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
+        // See constant_value_for_body: inline-range integers only on the
+        // one-word carrier.
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Int, IrData::Int(value)) => {
+            if i32::try_from(value).is_ok() {
+                Ok(Value::int(value))
+            } else {
+                Err(JitLowerError::ArenaBackedConstant {
+                    tag: ratchet_value::value::ValueTag::Int,
+                })
+            }
+        }
         // Dead under the Candidate-C variant (JIT off; no float constructor).
         #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
@@ -2071,8 +2099,17 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
             }
         },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
-        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(arena, root),
-        IrKind::List => alloc_cons::lower_singleton_list_ir_thunk_body_artifact(arena, root),
+        // Arithmetic trees decode integer payloads and cons cells compose a
+        // heap value from a raw allocation pointer; both are two-word-carrier
+        // codegen, so the one-word carrier declines them (S4b phase 2).
+        IrKind::BinOp => {
+            value_words::require_two_word_carrier("arith-tree")?;
+            arith_tree::lower_binop_ir_thunk_body_artifact(arena, root)
+        }
+        IrKind::List => {
+            value_words::require_two_word_carrier("alloc-cons")?;
+            alloc_cons::lower_singleton_list_ir_thunk_body_artifact(arena, root)
+        }
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
         kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }
@@ -2088,7 +2125,11 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind_with_ir(
     match kind {
         IrKind::HasAttr => lower_has_attr_local_slot_ir_thunk_body_artifact(ir, root),
         IrKind::Select => lower_select_local_slot_ir_thunk_body_artifact(ir, root),
-        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(&ir.arena, root),
+        // See the arena-only selector: arith trees stay two-word codegen.
+        IrKind::BinOp => {
+            value_words::require_two_word_carrier("arith-tree")?;
+            arith_tree::lower_binop_ir_thunk_body_artifact(&ir.arena, root)
+        }
         _ => lower_tier1_ir_thunk_body_artifact_for_kind(
             &ir.arena,
             root,

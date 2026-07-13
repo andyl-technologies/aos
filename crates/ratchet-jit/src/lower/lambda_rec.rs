@@ -250,6 +250,7 @@ pub fn lower_tier2_self_recursive_lambda(
     body: IrId,
     depth_budget: i64,
 ) -> Result<JitTier2LambdaLowering, JitLowerError> {
+    super::value_words::require_two_word_carrier("tier2-self-recursive-lambda")?;
     require_bare_formal_pattern(arena, pattern)?;
     let self_upval = find_single_self_callee(arena, body)?;
 

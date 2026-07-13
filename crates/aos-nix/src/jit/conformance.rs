@@ -562,8 +562,19 @@ fn literal_oracle_value_for_ir_root(arena: &IrArena, root: IrId) -> Result<Value
 
 fn literal_oracle_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
+        // The one-word carrier can only construct inline-range integers
+        // context-free; wide integers and floats box through the heap, so the
+        // lowering declines them and the oracle mirrors that decline.
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
-        // Dead under the Candidate-C variant (JIT off; floats box through the heap).
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Int, IrData::Int(value)) => {
+            if i32::try_from(value).is_ok() {
+                Ok(Value::int(value))
+            } else {
+                Err(JitLowerError::UnsupportedIrBody { kind: IrKind::Int })
+            }
+        }
         #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
         #[cfg(feature = "candidate_c_value")]
@@ -581,7 +592,18 @@ fn literal_oracle_value_for_body(node: IrNode) -> Result<Value, JitLowerError> {
 
 fn literal_oracle_value_for_node(node: IrNode) -> Result<Value, JitLowerError> {
     match (node.kind, node.data) {
+        // See literal_oracle_value_for_body: inline-range integers only on
+        // the one-word carrier.
+        #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Int, IrData::Int(value)) => Ok(Value::int(value)),
+        #[cfg(feature = "candidate_c_value")]
+        (IrKind::Int, IrData::Int(value)) => {
+            if i32::try_from(value).is_ok() {
+                Ok(Value::int(value))
+            } else {
+                Err(JitLowerError::UnsupportedIrRoot { kind: IrKind::Int })
+            }
+        }
         #[cfg(not(feature = "candidate_c_value"))]
         (IrKind::Float, IrData::Float(value)) => Ok(Value::float(value)),
         #[cfg(feature = "candidate_c_value")]

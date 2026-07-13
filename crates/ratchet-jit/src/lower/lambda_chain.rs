@@ -319,6 +319,7 @@ pub fn lower_tier2_curried_chain(
     env_boundary: JitTier2EnvBoundary,
     depth_budget: i64,
 ) -> Result<JitTier2ChainLowering, JitLowerError> {
+    super::value_words::require_two_word_carrier("tier2-curried-chain")?;
     let entry_signature = clif_signature_for_runtime_call(runtime_lambda_argv_call_signature())?;
     let inner_signature = inner_signature_for_arity(&entry_signature, scan.arity);
 
