@@ -90,9 +90,10 @@ struct CompressedArithCtx {
 ///
 /// Returns [`JitLowerError::UnsupportedArithOp`] for an operator outside the
 /// supported set, [`JitLowerError::UnsupportedArithOperand`] for an operand
-/// outside the grammar (including an out-of-`i32`-range integer literal, which
-/// has no inline word), plus the ABI, entry-parameter, call-arity, and
-/// verifier errors of the emitted body.
+/// outside the grammar, plus the ABI, entry-parameter, call-arity, and
+/// verifier errors of the emitted body. Integer literals of any width are in
+/// the grammar: operands join the decoded `i64` computation directly and only
+/// the root re-encode constrains the result.
 pub(super) fn lower_binop_compressed_ir_thunk_body_artifact(
     arena: &IrArena,
     root: IrId,
@@ -175,12 +176,14 @@ pub(super) fn lower_binop_compressed_ir_thunk_body_artifact(
 
 /// Emits one operand subtree, returning its decoded `i64` integer value.
 ///
-/// Literals materialize the integer directly (an out-of-inline-range literal
-/// declines the whole lowering — it could never pass the runtime guard). Slot
-/// reads load, force, guard, and decode. Nested binary operators recurse; a
-/// nested comparison is outside this integer grammar and declines, so a body
-/// mixing booleans into arithmetic stays on the tree walk (which reports the
-/// type error).
+/// Literals materialize the integer directly — including out-of-inline-range
+/// integers: an operand-position literal never materializes as a runtime
+/// value, so it needs no inline word (it participates in the decoded `i64`
+/// computation exactly like a wrapped intermediate; only the root re-encode
+/// constrains the final result). Slot reads load, force, guard, and decode.
+/// Nested binary operators recurse; a nested comparison is outside this
+/// integer grammar and declines, so a body mixing booleans into arithmetic
+/// stays on the tree walk (which reports the type error).
 ///
 /// # Errors
 ///
@@ -198,15 +201,7 @@ fn emit_int_operand(
         .copied()
         .ok_or(JitLowerError::MissingArithOperand { operand: id })?;
     match (node.kind, node.data) {
-        (IrKind::Int, IrData::Int(value)) => {
-            if i32::try_from(value).is_err() {
-                return Err(JitLowerError::UnsupportedArithOperand {
-                    operand: id,
-                    kind: IrKind::Int,
-                });
-            }
-            Ok(cursor.ins().iconst(types::I64, value))
-        }
+        (IrKind::Int, IrData::Int(value)) => Ok(cursor.ins().iconst(types::I64, value)),
         (IrKind::LocalVar, IrData::Local { slot }) => {
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
             let loaded = call1(cursor, ctx.env_get, &[ctx.env, slot], AOS_ENV_GET_SYMBOL)?;

@@ -229,13 +229,16 @@ fn arith_comparison_embeds_both_boolean_words() {
     assert!(words.contains(&CompressedValueWord::boolean(false).raw()));
 }
 
-/// A wide integer literal operand can never pass the inline guard, so the
-/// lowering declines up front and the def-site stays on the tree walk.
+/// A wide integer literal operand lowers: it joins the decoded `i64`
+/// computation directly (operand literals never materialize as runtime
+/// values, so they need no inline word) and the wide constant appears as a
+/// plain `iconst` in the body. Only the root re-encode constrains the result.
 #[test]
-fn arith_tree_declines_wide_literal_operands() {
+fn arith_tree_embeds_wide_literal_operands_decoded() {
+    let wide = i64::from(i32::MAX) + 1;
     let arena = IrArena::from_raw_parts(
         vec![
-            node(IrKind::Int, IrData::Int(i64::from(i32::MAX) + 1)),
+            node(IrKind::Int, IrData::Int(wide)),
             node(IrKind::LocalVar, IrData::Local { slot: 0 }),
             node(
                 IrKind::BinOp,
@@ -249,15 +252,10 @@ fn arith_tree_declines_wide_literal_operands() {
         Vec::new(),
     );
 
-    let error = lower_tier1_ir_thunk_body(&arena, IrId::new(2))
-        .expect_err("wide literal has no inline word");
-    assert!(matches!(
-        error,
-        JitLowerError::UnsupportedArithOperand {
-            kind: IrKind::Int,
-            ..
-        }
-    ));
+    let function = lower_tier1_ir_thunk_body(&arena, IrId::new(2))
+        .expect("wide operand literal lowers on the decoded path");
+    assert_eq!(return_arity(&function), 1);
+    assert!(iconst_words(&function).contains(&(wide as u64)));
 }
 
 #[test]
