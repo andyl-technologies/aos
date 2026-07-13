@@ -523,6 +523,26 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   the default flipped — the kill-date criterion is met, but the deletion
   is large and erases the fallback, so it should not ride the same commit
   as the flip.
+
+  **S5 PROMOTION RULING (2026-07-13, team lead): GO — Candidate-C is the
+  shipped carrier.** Final evidence, all green: (1) the matrix re-run clean
+  sweep above (perf clause met); (2) variant full-corpus 546/546 byte-parity
+  at HEAD, twice; (3) strict-JSON parity — darwin language seeds
+  variant == baseline == oracle (the one non-evaluable seed,
+  `derivation.seed`, fails identically on both carriers with the known
+  carrier-independent effectful-eval limitation) and zero fuzz divergences;
+  (4) the Linux builder replay of all 549 generated package-eval seeds vs
+  the pinned 2.24.12 oracle: **serial 549/549 and JIT 549/549 matched**
+  (`eval-json diff matched 549 expression(s)`, exit 0, both legs). Baseline
+  replay legs were dropped as redundant: darwin already established
+  variant/baseline outcome-identity, so variant-vs-oracle is the gate. The
+  fuzz harness now honors AOS_NIX_JIT/PARALLEL/GC (479295f0b + ef1dce36b),
+  so future replays select modes for real. Mechanics as recommended: the
+  hermetic `pkgs.aos` build now enables `candidate_c_value`
+  (pkgs/tools/aos/aos.nix); the cargo feature itself stays opt-in so the
+  two-word Active carrier remains buildable during the deprecation window.
+  Active-carrier DELETION is a separate follow-up requiring explicit user
+  sign-off (irreversible).
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full

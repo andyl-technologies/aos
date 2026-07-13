@@ -53,7 +53,9 @@ in
     pname = "aos";
     inherit version src;
 
-    cargoFlags = "-p aos --features native-eval";
+    # RFC-0007 S5 promotion: the Candidate-C one-word value carrier
+    # (`candidate_c_value`) is the shipped carrier.
+    cargoFlags = "-p aos --features native-eval,candidate_c_value";
 
     cargoDeps = fetchCargoDeps {
       inherit src;
@@ -74,7 +76,7 @@ in
     '';
 
     doCheck = true;
-    cargoTestFlags = "--workspace --features native-eval";
+    cargoTestFlags = "--workspace --features native-eval,candidate_c_value";
 
     # Each of aos/apm/apr is the same binary, dispatched by argv[0]. We install
     # a thin wrapper per name that sets the hermetic runtime PATH and execs the
