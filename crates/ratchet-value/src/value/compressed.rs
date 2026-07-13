@@ -526,6 +526,24 @@ impl CandidateCScalarStore {
         self.floats.adopt_shared_regions();
     }
 
+    /// Appends each boxed-scalar cell's `(base-relative offset, byte size)` to
+    /// `regions`, relative to `base`.
+    ///
+    /// The heap-image capture completeness audit (RFC-0007 doc 31 §1 decision 6)
+    /// marks these as known non-pointer data: a boxed `i64`/`f64` cell holds a
+    /// scalar payload, not an arena interior pointer, so a dump word inside one
+    /// that coincidentally falls in the reservation's address range must not be
+    /// flagged as an uncovered witness.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn append_cell_regions(&self, base: usize, regions: &mut Vec<(usize, usize)>) {
+        for object in self.ints.iter() {
+            regions.push((object.ptr().as_ptr() as usize - base, object.size_bytes()));
+        }
+        for object in self.floats.iter() {
+            regions.push((object.ptr().as_ptr() as usize - base, object.size_bytes()));
+        }
+    }
+
     fn index_for_allocation(
         &self,
         ptr: std::ptr::NonNull<crate::value::HeapObject>,

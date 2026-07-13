@@ -594,7 +594,22 @@ impl EvalHeap {
     }
 
     fn with_worker_allocator(allocator: RuntimeAllocator) -> Self {
-        let flat_arena = SharedFlatStoreArena::new();
+        Self::assemble_over_arena(SharedFlatStoreArena::new(), allocator)
+    }
+
+    /// Assembles an evaluator heap over an already-constructed serial flat arena.
+    ///
+    /// The shared field-initialization seam behind both the fresh constructor
+    /// (a brand-new [`SharedFlatStoreArena`]) and the RFC-0007 doc-31 §1
+    /// heap-image restore path (an arena mapped from a snapshot; see
+    /// `eval::heap::snapshot`). Every arena-derived field — the flat string/path,
+    /// list, and attrset stores, the compressed scalar store, and the worker
+    /// closure store — is built over `flat_arena`; all remaining state is fresh
+    /// and empty.
+    pub(super) fn assemble_over_arena(
+        flat_arena: SharedFlatStoreArena,
+        allocator: RuntimeAllocator,
+    ) -> Self {
         let flat_closures = serial_flat_closure_store(&flat_arena);
         Self {
             allocator,

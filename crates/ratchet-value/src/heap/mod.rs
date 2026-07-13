@@ -83,4 +83,6 @@ pub use resident::{
     process_resident_memory_sample_from_linux_statm,
 };
 #[cfg(feature = "candidate_c_value")]
-pub use snapshot::{HeapImage, SnapshotError, capture_reservation, restore_reservation};
+pub use snapshot::{
+    HeapImage, RelocationEntry, SnapshotError, capture_reservation, restore_reservation,
+};

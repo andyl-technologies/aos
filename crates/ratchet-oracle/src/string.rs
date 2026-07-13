@@ -157,6 +157,21 @@ impl NixString {
         self.bytes.as_slice().is_empty()
     }
 
+    /// Rebases the inline byte-run witness by `delta` bytes.
+    ///
+    /// The heap-image restore path (RFC-0007 doc 31 §1 decision 6) copies a flat
+    /// string's bytes into a reservation mapped at a new base, then shifts its
+    /// `Flat` witness by `delta = new_base − old_base`. `Owned` strings carry no
+    /// arena witness and are unchanged. The `Arc`-backed string context is not an
+    /// arena interior and is handled separately (§1.4 stage-2 residual): capture
+    /// refuses a flat string whose context is non-empty. Reads/writes no byte.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn rebase_witnesses(&mut self, delta: isize) {
+        if let NixStringBytes::Flat(bytes) = &mut self.bytes {
+            bytes.rebase(delta);
+        }
+    }
+
     /// Returns whether this string carries any context elements.
     pub fn has_context(&self) -> bool {
         !self.context.is_empty()

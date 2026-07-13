@@ -41,17 +41,41 @@ use super::reservation_registry::reservation_base;
 pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 
 /// The heap-image wire-format version. Bumped on any layout change so a stale
-/// image is a clean, loud miss rather than a silent misparse.
-pub const IMAGE_VERSION: u32 = 1;
+/// image is a clean, loud miss rather than a silent misparse. v2 adds
+/// `old_base` and the relocation table (RFC-0007 doc 31 §1 stage B / decision 6).
+pub const IMAGE_VERSION: u32 = 2;
 
-/// Byte length of the fixed image header preceding the lane bytes.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8;
+/// Byte length of the fixed image header preceding the lane and relocation bytes.
+///
+/// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
+/// high_len(8) | reloc_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+
+/// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
+const RELOCATION_ENTRY_LEN: usize = 5;
+
+/// One compound flat object whose interior witness pointers must be rebased on
+/// restore (RFC-0007 doc 31 §1 decision 6).
+///
+/// The object's run bytes are already in the dumped lanes; only its
+/// `FlatBytes`/`FlatSlice` pointer words are stale after a remap. Restore
+/// resolves the object at `new_base + index` and shifts each witness by
+/// `new_base − old_base`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RelocationEntry {
+    /// The object's byte offset from the reservation base.
+    pub index: u32,
+    /// The object's [`FlatObjectKind`](super::flat::FlatObjectKind) discriminant,
+    /// naming which store resolves it on restore.
+    pub kind: u8,
+}
 
 /// A captured Candidate-C reservation heap image.
 ///
-/// Holds the reservation identity and its two used-lane byte ranges. Serialize
-/// with [`HeapImage::to_bytes`] and reload with [`HeapImage::from_bytes`] +
-/// [`restore_reservation`].
+/// Holds the reservation identity, its two used-lane byte ranges, the base it
+/// was mapped at when captured, and the relocation table of compound objects to
+/// rebase on restore. Serialize with [`HeapImage::to_bytes`] and reload with
+/// [`HeapImage::from_bytes`] + [`restore_reservation`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeapImage {
     /// The reservation's 23-bit Candidate-C domain, re-registered on restore so
@@ -59,10 +83,16 @@ pub struct HeapImage {
     pub domain: u32,
     /// The reservation's virtual capacity in bytes (the restore mapping size).
     pub capacity: u64,
+    /// The reservation's mapped base address when captured. The restore rebase
+    /// delta is `new_base − old_base`.
+    pub old_base: u64,
     /// The permanent, upward-growing lane bytes, at offset zero.
     pub low: Vec<u8>,
     /// The rewindable, downward-growing lane bytes, ending at `capacity`.
     pub high: Vec<u8>,
+    /// The compound objects whose interior witnesses restore must rebase; filled
+    /// by the `EvalHeap`-level capture that enumerates the flat stores.
+    pub relocations: Vec<RelocationEntry>,
 }
 
 impl HeapImage {
@@ -70,15 +100,23 @@ impl HeapImage {
     /// integrity digest.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(HEADER_LEN + self.low.len() + self.high.len() + 8);
+        let reloc_bytes = self.relocations.len() * RELOCATION_ENTRY_LEN;
+        let mut out =
+            Vec::with_capacity(HEADER_LEN + self.low.len() + self.high.len() + reloc_bytes + 8);
         out.extend_from_slice(&IMAGE_MAGIC);
         out.extend_from_slice(&IMAGE_VERSION.to_le_bytes());
         out.extend_from_slice(&self.domain.to_le_bytes());
         out.extend_from_slice(&self.capacity.to_le_bytes());
+        out.extend_from_slice(&self.old_base.to_le_bytes());
         out.extend_from_slice(&(self.low.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.high.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.relocations.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
+        for entry in &self.relocations {
+            out.extend_from_slice(&entry.index.to_le_bytes());
+            out.push(entry.kind);
+        }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
         out
@@ -109,13 +147,15 @@ impl HeapImage {
         }
         let domain = u32::from_le_bytes(read4(bytes, 12));
         let capacity = u64::from_le_bytes(read8(bytes, 16));
-        let low_len = u64::from_le_bytes(read8(bytes, 24)) as usize;
-        let high_len = u64::from_le_bytes(read8(bytes, 32)) as usize;
+        let old_base = u64::from_le_bytes(read8(bytes, 24));
+        let low_len = u64::from_le_bytes(read8(bytes, 32)) as usize;
+        let high_len = u64::from_le_bytes(read8(bytes, 40)) as usize;
+        let reloc_count = u64::from_le_bytes(read8(bytes, 48)) as usize;
 
         let lanes_start = HEADER_LEN;
-        let digest_start = lanes_start
-            .checked_add(low_len)
-            .and_then(|end| end.checked_add(high_len))
+        let digest_start = [low_len, high_len, reloc_count * RELOCATION_ENTRY_LEN]
+            .iter()
+            .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
             .ok_or(SnapshotError::Truncated {
                 needed: usize::MAX,
                 got: bytes.len(),
@@ -140,17 +180,32 @@ impl HeapImage {
         }
 
         let low = bytes[lanes_start..lanes_start + low_len].to_vec();
-        let high = bytes[lanes_start + low_len..digest_start].to_vec();
+        let high = bytes[lanes_start + low_len..lanes_start + low_len + high_len].to_vec();
+        let mut relocations = Vec::with_capacity(reloc_count);
+        let mut cursor = lanes_start + low_len + high_len;
+        for _ in 0..reloc_count {
+            relocations.push(RelocationEntry {
+                index: u32::from_le_bytes(read4(bytes, cursor)),
+                kind: bytes[cursor + 4],
+            });
+            cursor += RELOCATION_ENTRY_LEN;
+        }
         Ok(Self {
             domain,
             capacity,
+            old_base,
             low,
             high,
+            relocations,
         })
     }
 }
 
 /// Captures a heap image of a reservation-backed serial flat arena.
+///
+/// Records the reservation's current base as [`HeapImage::old_base`] and leaves
+/// [`HeapImage::relocations`] empty; the `EvalHeap`-level capture enumerates the
+/// flat stores and fills the relocation table before serializing.
 ///
 /// # Errors
 ///
@@ -160,11 +215,14 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
     let (domain, capacity, low, high) = arena
         .capture_reservation_image()
         .ok_or(SnapshotError::NotReservationBacked)?;
+    let old_base = reservation_base(domain).ok_or(SnapshotError::NotReservationBacked)? as u64;
     Ok(HeapImage {
         domain: domain.raw(),
         capacity: capacity as u64,
+        old_base,
         low,
         high,
+        relocations: Vec::new(),
     })
 }
 
@@ -384,8 +442,10 @@ mod tests {
         let image = HeapImage {
             domain: 1,
             capacity: 0x1000,
+            old_base: 0x4000,
             low: vec![1, 2, 3, 4],
             high: Vec::new(),
+            relocations: vec![RelocationEntry { index: 8, kind: 4 }],
         };
         let good = image.to_bytes();
 

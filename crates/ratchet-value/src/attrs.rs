@@ -214,6 +214,27 @@ impl FlatAttrs {
         }
     }
 
+    /// Rebases the interior inline-array witnesses by `delta` bytes.
+    ///
+    /// The heap-image restore path (RFC-0007 doc 31 §1 decision 6) copies a flat
+    /// attrset's bytes into a reservation mapped at a new base, then shifts each
+    /// `Flat` witness by `delta = new_base − old_base` so it names its run's new
+    /// location. `Owned` attrsets carry no arena witnesses and are left
+    /// unchanged. Reads and writes no entry.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn rebase_witnesses(&mut self, delta: isize) {
+        if let AttrsStorage::Flat {
+            entries,
+            source_order,
+            iteration_order,
+        } = &mut self.storage
+        {
+            entries.rebase(delta);
+            source_order.rebase(delta);
+            iteration_order.rebase(delta);
+        }
+    }
+
     /// Creates a flat attrset from unsorted entries.
     ///
     /// Entries are sorted by interned symbol id for binary-search selection. The

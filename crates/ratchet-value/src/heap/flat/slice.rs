@@ -116,10 +116,7 @@ impl<T> FlatSlice<T> {
     /// moved with the remapped reservation, the shifted pointer names the run's
     /// new location. This is a pure pointer-arithmetic fixup; it reads and
     /// writes no witnessed element.
-    // Consumed by the heap-image restore rebase pass (RFC-0007 doc 31 §1 stage
-    // B), which lands in the next increment; the survival test exercises it now.
     #[cfg(feature = "candidate_c_value")]
-    #[allow(dead_code)]
     pub(crate) fn rebase(&mut self, delta: isize) {
         let shifted = (self.ptr.as_ptr() as isize).wrapping_add(delta) as *mut T;
         if let Some(ptr) = NonNull::new(shifted) {

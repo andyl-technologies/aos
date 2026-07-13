@@ -63,6 +63,8 @@ mod root_scan;
 mod roots;
 mod shared_arena;
 mod shared_backend;
+#[cfg(feature = "candidate_c_value")]
+mod snapshot;
 mod structural_writeback;
 mod thunk;
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
@@ -77,6 +79,8 @@ use crate::heap::flat::{
     SharedFlatStoreArena,
 };
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
+#[cfg(feature = "candidate_c_value")]
+pub use snapshot::EvalHeapSnapshotError;
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
 
