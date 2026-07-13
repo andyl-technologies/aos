@@ -7,8 +7,8 @@ edition = "2024"
 default = []
 # RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
 # one-word carrier + layout descriptor coherently through the whole ratchet
-# stack and gates the tier-1 JIT engine off by construction under the variant
-# (see native/mod.rs `tier1_engine_for`). Enabling every layer keeps the carrier
+# stack. Since S4b the JIT is fully live on this carrier (one-word stack maps
+# + decoded-core tier-2 emitters). Enabling every layer keeps the carrier
 # (`ratchet-value`) and the ABI layout descriptor (`ratchet-core`) in lock-step.
 candidate_c_value = [
   "ratchet-value/candidate_c_value",
