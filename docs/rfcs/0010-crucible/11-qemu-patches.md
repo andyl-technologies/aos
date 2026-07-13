@@ -1261,7 +1261,16 @@ time-control primitives the whole design rests on.
     prefix-attributed sim-on effects and sim-off inertness so a later patch
     cannot make an earlier patch's test pass. The `gate:qemu-inert` phase gate
     depends on the patch-microtests aggregate; its full upstream-equivalence
-    corpus remains owned by T-PATCH-3.
+    corpus remains owned by T-PATCH-3. Drop-one attribution
+    (`checks.crucible.phase2.gates.patchMicrotests.dropOne`) removes each carried
+    patch from the series and observes the result live; as verified at series
+    074fb5a9a it gives 29 of 36 patches airtight anti-masking evidence (23
+    assembly load-bearing via a later patch's failed 3-way apply, 3
+    exported-ABI-symbol present-in-full-absent-in-variant, 3 run-to-run sim
+    divergence at runtime), with the remaining 7 composition patches attributed
+    by series-level stock negative control and flagged for a per-patch
+    runtime-probe upgrade. Closure still requires patch-granular runtime
+    attribution for those 7.
 - [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
@@ -1271,6 +1280,15 @@ time-control primitives the whole design rests on.
     runs it against patched `qemu-crucible` with no plugin, no sim accelerator,
     and no sim flags, and compares normalized boot/device-I/O, plain-icount boot,
     QMP introspection, migration stream, and snapshot/restore command surface.
+    Closure requires two concrete steps: (a) audit each normalization in the
+    corpus comparison and document it as host-noise-only — guest-visible bytes
+    (e.g. the boot serial stream) must be raw-compared, and any normalization that
+    could hide a guest-visible divergence is a defect to fix or explicitly
+    justify; and (b) either expand the corpus to the full upstream test surface or
+    define "upstream-equivalent corpus" in the gate docs as this curated
+    boot/device-I/O/plain-icount/QMP/migration/snapshot set with its rationale.
+    The async virtio-rng delivery-timing residual is already closed structurally
+    (`phase2-qemu-rng-delivery-inert.nix`).
 - [x] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
   deterministic TCG sim accelerator (`-accel sim`), inert under other
   accelerators, with a cross-run icount-trace micro-test. — satisfies [PATCH-11];

@@ -597,7 +597,12 @@ carries findings across an incompatible build.
     package output on series/pin/header drift. Closure remains blocked on
     prefix-attributed sim-on and sim-off semantic micro-tests for every patch;
     the existing semantic tests cannot attribute an effect to an individual
-    patch because they target the fully patched package.
+    patch because they target the fully patched package. The package-check wiring
+    itself is complete and reachable: `checks.crucible.phase7.crucibleGateCiWiring`
+    verifies that integration import, so apply-clean, patched build, and the
+    semantic tests re-run against the package output on series/pin/header drift.
+    Semantic closure inherits T-PATCH-2's residual — the 7 composition patches
+    (per drop-one at series 074fb5a9a) lack patch-granular runtime attribution.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
