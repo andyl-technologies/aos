@@ -710,6 +710,84 @@ fn trailing_arrays_are_written_inline_and_resolve_by_witness() {
     assert_eq!(drops.get(), 1, "payload drop glue ran exactly once");
 }
 
+/// A Drop-free, `Arc`-free payload holding one inline-array witness — safe to
+/// dump and reload for the serialize-and-patch survival test.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Debug)]
+struct RebasePayload {
+    words: FlatSlice<u64>,
+}
+
+/// Stage B / decision 6 (RFC-0007 doc 31 §1): a `FlatSlice` witness inlined in a
+/// reservation survives a heap-image dump + reload when its interior pointer is
+/// rebased by `new_base − old_base` on restore — the serialize-and-patch path
+/// that replaces the reverted make-address-free approach.
+#[cfg(feature = "candidate_c_value")]
+#[test]
+fn flat_slice_witness_survives_a_snapshot_via_rebase() {
+    use crate::heap::reservation_base;
+    use crate::heap::snapshot::{HeapImage, capture_reservation, restore_reservation};
+
+    let arena = SharedFlatStoreArena::new();
+    if !arena.uses_reservation() {
+        return; // the chunked fallback is not snapshottable
+    }
+    let mut store =
+        FlatObjectStore::with_shared_arena(arena.clone(), FlatKindSet::of(&[FlatObjectKind::Attrs]));
+    let words: Vec<u64> = (0..29).map(|i| i * 11 + 3).collect();
+    let mut tail = FlatTailLayout::new();
+    tail.add_slice::<u64>(words.len()).expect("layout fits");
+    let allocation = store
+        .alloc_with_trailing(
+            FlatObjectKind::Attrs,
+            flat_aux_for_len(words.len()),
+            0xb17e,
+            1,
+            tail,
+            |writer| {
+                Ok(RebasePayload {
+                    words: writer.write_slice(&words)?,
+                })
+            },
+        )
+        .expect("allocation succeeds");
+
+    let domain = arena.arena_domain_id().expect("reservation-backed");
+    let index = arena.index_for_pointer(allocation.ptr).expect("has an index");
+    let old_base = reservation_base(domain).expect("domain registered");
+
+    let image = capture_reservation(&arena).expect("captures the reservation");
+    let bytes = image.to_bytes();
+    drop(store);
+    drop(arena);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("parses the image");
+    let restored = restore_reservation(&reloaded).expect("restores the reservation");
+    let new_base = reservation_base(domain).expect("domain re-registered");
+    let delta = new_base as isize - old_base as isize;
+
+    let mut store2: FlatObjectStore<RebasePayload> = FlatObjectStore::with_shared_arena(
+        restored.clone(),
+        FlatKindSet::of(&[FlatObjectKind::Attrs]),
+    );
+    store2.adopt_shared_regions();
+    let ptr2 = restored
+        .pointer_for_index(index)
+        .expect("index resolves in the restored arena");
+
+    // The witness copied verbatim still holds `old_base + run_offset`; patch it.
+    store2
+        .resolve_mut(ptr2, FlatObjectKind::Attrs)
+        .expect("resolves for rebase")
+        .words
+        .rebase(delta);
+
+    let object = store2
+        .resolve(ptr2, FlatObjectKind::Attrs)
+        .expect("resolves after rebase");
+    assert_eq!(object.payload().words.as_slice(), words.as_slice());
+}
+
 #[test]
 fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
     let drops = Rc::new(Cell::new(0));

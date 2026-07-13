@@ -106,6 +106,26 @@ impl<T> FlatSlice<T> {
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Shifts the witnessed run pointer by `delta` bytes in place.
+    ///
+    /// The heap-image restore path (RFC-0007 doc 31 §1, stage B / decision 6)
+    /// copies a flat object's bytes — witness pointer and all — into a
+    /// reservation mapped at a *new* base, then rebases each compound object's
+    /// interior witnesses by `delta = new_base − old_base`. Because the run
+    /// moved with the remapped reservation, the shifted pointer names the run's
+    /// new location. This is a pure pointer-arithmetic fixup; it reads and
+    /// writes no witnessed element.
+    // Consumed by the heap-image restore rebase pass (RFC-0007 doc 31 §1 stage
+    // B), which lands in the next increment; the survival test exercises it now.
+    #[cfg(feature = "candidate_c_value")]
+    #[allow(dead_code)]
+    pub(crate) fn rebase(&mut self, delta: isize) {
+        let shifted = (self.ptr.as_ptr() as isize).wrapping_add(delta) as *mut T;
+        if let Some(ptr) = NonNull::new(shifted) {
+            self.ptr = ptr;
+        }
+    }
 }
 
 // SAFETY: the witnessed elements are immutable after construction (the `new`

@@ -84,6 +84,23 @@ impl FlatBytes {
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Shifts the witnessed byte-run pointer by `delta` bytes in place.
+    ///
+    /// See [`super::FlatSlice::rebase`]: the heap-image restore path shifts each
+    /// interior witness by `delta = new_base − old_base` after copying the flat
+    /// object into a reservation mapped at a new base. A pure pointer-arithmetic
+    /// fixup; it reads and writes no witnessed byte.
+    // Consumed by the heap-image restore rebase pass (RFC-0007 doc 31 §1 stage
+    // B), which lands in the next increment; the survival test exercises it now.
+    #[cfg(feature = "candidate_c_value")]
+    #[allow(dead_code)]
+    pub(crate) fn rebase(&mut self, delta: isize) {
+        let shifted = (self.ptr.as_ptr() as isize).wrapping_add(delta) as *mut u8;
+        if let Some(ptr) = NonNull::new(shifted) {
+            self.ptr = ptr;
+        }
+    }
 }
 
 // SAFETY: the witnessed bytes are immutable after construction (the `new`
