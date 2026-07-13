@@ -44,6 +44,13 @@ in
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
         sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 
+        # vm86 is versioned, so glibc only generates its object rule for a
+        # shared build. The static bootstrap must not retain the stale routine.
+        sed -i '/^sysdep_routines/s/ vm86//' \
+          "$SRC/sysdeps/unix/sysv/linux/i386/Makefile"
+        patch -d "$SRC" -p1 < ${./glibc-static-test-modules.patch}
+        patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-no-fixed-vsyscall.patch}
+
         # Out-of-tree build required by glibc
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
@@ -57,8 +64,10 @@ in
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="${this.linuxHeaders}/include" \
+          --disable-shared \
           --disable-profile \
           --disable-nscd \
+          --enable-static-nss \
           --enable-add-ons=nptl \
           --enable-kernel=2.6.0 \
           --without-gd \
@@ -68,6 +77,16 @@ in
 
         make -j"$NIX_BUILD_CORES"
         make install
+
+        test -f "$out/lib/libnss_files.a" || {
+          echo "FATAL: static NSS archive not installed" >&2
+          exit 1
+        }
+        "${this.binutils}/bin/nm" "$out/lib/libnss_files.a" | \
+          grep -Eq ' [Tt] _nss_files_getpwnam_r$' || {
+          echo "FATAL: static NSS implementations missing from libnss_files.a" >&2
+          exit 1
+        }
 
         # Copy linux headers into glibc output for downstream use
         cp -r "${this.linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true

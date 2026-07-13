@@ -39,10 +39,23 @@ in
     sourceDir = "gcc-core-4.1.2";
     src = gccSrc;
     postUnpack = ''
+      # The cross-tier sed 4.1.2 binary is static glibc 2.3.4 userspace.
+      # Its in-place mode segfaults on newer 6.12 kernels, while the same
+      # transform through stdout is stable. Rewrite the original inode so
+      # executable modes and source permissions stay intact.
+      rewriteWithPrevSed() {
+        file="$1"
+        shift
+        ${prev.sed}/bin/sed "$@" "$file" > "$file.tmp-sed"
+        ${prev.coreutils}/bin/cat "$file.tmp-sed" > "$file"
+        ${prev.coreutils}/bin/rm "$file.tmp-sed"
+      }
+
       touch gcc/gengtype-lex.c gcc/gengtype-yacc.c gcc/gengtype-yacc.h
 
-      ${prev.sed}/bin/sed -i 's/ix86_attribute_table\[\]/ix86_attribute_table[10]/' gcc/config/i386/i386.c 2>/dev/null || true
-      ${prev.sed}/bin/sed -i 's/C_alloca/alloca/g' libiberty/alloca.c include/libiberty.h
+      rewriteWithPrevSed gcc/config/i386/i386.c 's/ix86_attribute_table\[\]/ix86_attribute_table[10]/'
+      rewriteWithPrevSed libiberty/alloca.c 's/C_alloca/alloca/g'
+      rewriteWithPrevSed include/libiberty.h 's/C_alloca/alloca/g'
     '';
     configureEnv = [
       ''CC="${prev.gcc}/bin/gcc"''
@@ -66,9 +79,8 @@ in
     ];
     postConfigure = ''
       make configure-gcc
-      ${prev.sed}/bin/sed -i \
-        "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|" \
-        gcc/Makefile
+      rewriteWithPrevSed gcc/Makefile \
+        "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|"
 
       mkdir -p "$out/${targetPlatform.config}/sys-include"
       for item in "${prev.glibc}/include"/*; do

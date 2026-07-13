@@ -104,6 +104,14 @@ in
         cd glibc-2.12.2
         chmod -R u+w .
 
+        # glibc 2.12 still routes static x86_64 gettimeofday(2) and time(2)
+        # through the fixed legacy vsyscall page. Current hardened kernels may
+        # omit that mapping entirely, which makes statically linked compiler
+        # processes such as GCC 4.8's cc1 segfault on their first time query.
+        # Issue ordinary syscalls so every later bootstrap tool runs on both
+        # kernel configurations.
+        ${prev.patch}/bin/patch -p1 < ${./patches/glibc-2.12.2-no-fixed-vsyscall.patch}
+
         # Remove libidn add-on — not needed for bootstrap, and its
         # configure fragment fails when AUTOCONF=true regenerates it
         rm -rf libidn
@@ -209,6 +217,7 @@ in
           --disable-profile \
           --disable-nscd \
           --disable-multi-arch \
+          --enable-add-ons=nptl \
           --enable-static-nss \
           --without-gd \
           --without-selinux \

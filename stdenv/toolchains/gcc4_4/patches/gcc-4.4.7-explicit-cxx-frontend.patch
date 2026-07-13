@@ -1,0 +1,7 @@
+diff --git a/configure b/configure
+index 3df12d7..f5303e3 100755
+--- a/configure
++++ b/configure
+@@ -5139 +5139 @@ if test "${enable_languages+set}" = set; then
+-  for lang_frag in ${srcdir}/gcc/*/config-lang.in .. ; do
++  for lang_frag in ${srcdir}/gcc/cp/config-lang.in .. ; do
