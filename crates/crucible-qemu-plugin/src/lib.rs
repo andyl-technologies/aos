@@ -152,6 +152,13 @@ pub use device_io::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
     DeviceIoRequestToken, PluginDeviceIoFreeze,
 };
+pub use fingerprint_sampler::{
+    FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA,
+    FINGERPRINT_FAILURE_RAM, FingerprintSamplerError, PluginFingerprintDigester,
+    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
+    QemuDigestFn, assemble_fingerprint_sample,
+};
 pub use handshake::{
     PluginControlHandshake, PluginHandshakeError, perform_plugin_handshake,
     plugin_handshake_config, validate_plugin_handshake,
@@ -234,12 +241,6 @@ pub use time_control::{
     QemuRequestTimeControlFn, QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance,
     QueuedIdleAdvanceError, SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
-};
-pub use fingerprint_sampler::{
-    FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA, FINGERPRINT_FAILURE_RAM,
-    FingerprintSamplerError, PluginFingerprintDigester, QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
-    QemuDigestFn, assemble_fingerprint_sample,
 };
 pub use vcpu_introspection::{
     MAX_VCPU_REGISTER_FILE_BYTES, PLUGIN_REGISTER_DIGEST_BYTES, PluginNvcpuFingerprintInputs,
