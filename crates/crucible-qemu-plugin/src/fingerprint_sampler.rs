@@ -21,6 +21,16 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
+/// NUL-terminated writable-RAM digest export name for `dlsym`.
+const QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_guest_ram_sha256\0";
+/// NUL-terminated device-state VMState digest export name for `dlsym`.
+const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_device_state_sha256\0";
+/// NUL-terminated device-state schema digest export name for `dlsym`.
+const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL_C: &[u8] =
+    b"qemu_plugin_crucible_device_state_schema_sha256\0";
+
 use crate::{PluginNvcpuFingerprintInputs, PluginVcpuRegisterDigest};
 
 /// Required QEMU export that digests length-framed writable guest RAM.
@@ -76,6 +86,20 @@ impl PluginFingerprintDigester {
             device_state_sha256,
             device_state_schema_sha256,
         }
+    }
+
+    /// Resolves the patched QEMU digest exports from the loaded process.
+    ///
+    /// Returns `None` when any of the three exports is absent (fail closed), so
+    /// the plugin only samples fingerprints against a QEMU build that carries
+    /// the fingerprint helper patch.
+    #[must_use]
+    pub fn resolve() -> Option<Self> {
+        Some(Self::new(
+            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL_C)?,
+            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL_C)?,
+            resolve_digest_symbol(QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL_C)?,
+        ))
     }
 
     fn read(function: QemuDigestFn) -> DigestReading {
@@ -151,6 +175,29 @@ pub fn assemble_fingerprint_sample(
     }
 
     sample.validate().map_err(FingerprintSamplerError::Slot)
+}
+
+/// Resolves one patched QEMU digest export by NUL-terminated name.
+#[cfg(unix)]
+fn resolve_digest_symbol(name_c: &[u8]) -> Option<QemuDigestFn> {
+    // SAFETY: `name_c` is a static NUL-terminated symbol name and `dlsym`
+    // returns either null or a process symbol address. Every patched QEMU digest
+    // export shares the `int fn(uint8_t[32], uint64_t*)` ABI of `QemuDigestFn`;
+    // the caller fails closed when a symbol is absent.
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name_c.as_ptr().cast()) };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address resolved a patched QEMU digest export
+        // whose declaration matches `QemuDigestFn` exactly.
+        Some(unsafe { std::mem::transmute::<*mut std::os::raw::c_void, QemuDigestFn>(symbol) })
+    }
+}
+
+/// Resolves one patched QEMU digest export by NUL-terminated name.
+#[cfg(not(unix))]
+fn resolve_digest_symbol(_name_c: &[u8]) -> Option<QemuDigestFn> {
+    None
 }
 
 fn vcpu_from_register_digest(register: &PluginVcpuRegisterDigest) -> FingerprintSampleVcpu {
@@ -263,7 +310,17 @@ mod tests {
         assert_eq!(sample.device_state_schema_digest, digest_bytes(0xC0));
         assert_eq!(sample.vcpus[0].retired_instruction_count, 100_000);
         assert_eq!(sample.vcpus[1].retired_instruction_count, 100_000);
-        assert_ne!(sample.vcpus[0].register_digest, sample.vcpus[1].register_digest);
+        assert_ne!(
+            sample.vcpus[0].register_digest,
+            sample.vcpus[1].register_digest
+        );
+    }
+
+    #[test]
+    fn resolve_fails_closed_without_the_patched_qemu() {
+        // The fingerprint digest exports exist only inside patched QEMU, so a
+        // standalone test process cannot resolve them and must get no digester.
+        assert!(PluginFingerprintDigester::resolve().is_none());
     }
 
     #[test]
