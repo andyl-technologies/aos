@@ -54,6 +54,8 @@ mod alloc_counters;
 mod arena;
 #[cfg(all(test, feature = "candidate_c_value"))]
 mod census;
+#[cfg(feature = "candidate_c_value")]
+mod closure_code_ref;
 mod deref_counters;
 mod environment_writeback;
 mod flat_values;
