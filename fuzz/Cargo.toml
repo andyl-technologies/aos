@@ -13,6 +13,12 @@ aos-nix = { path = "../crates/aos-nix" }
 arbitrary = "1"
 libfuzzer-sys = "0.4"
 
+[features]
+# RFC-0007 Candidate-C one-word carrier variant (task #29 fuzz-parity leg):
+# forwards `candidate_c_value` down to aos-nix so `cargo fuzz run <target>
+# --features candidate_c_value` replays the corpus on the compressed carrier.
+candidate_c_value = ["aos-nix/candidate_c_value"]
+
 [[bin]]
 name = "parity_json"
 path = "fuzz_targets/parity_json.rs"

@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 
 use aos_nix::compile::{Ir, lower, resolve};
 use aos_nix::eval::{
-    EvalMode, GcConformanceCaseError, InternalDiffError, InternalDiffTier, TreeWalkError,
-    TreeWalkOptions, compare_gc_conformance_tier_a_tier_b_raw_bytes_source,
+    EvalGcMode, EvalMode, GcConformanceCaseError, InternalDiffError, InternalDiffTier,
+    TreeWalkError, TreeWalkOptions, compare_gc_conformance_tier_a_tier_b_raw_bytes_source,
     compare_raw_with_oracle, eval_raw_bytes_with_options,
 };
 use aos_nix::syntax::parse_bytes;
@@ -282,7 +282,43 @@ fn native_options_from_source_config(config: &FuzzSourceConfig) -> Option<TreeWa
     for uri in &config.allowed_uris {
         options.add_allowed_uri(uri.as_bytes().to_vec()).ok()?;
     }
+    apply_native_eval_mode_env(&mut options);
     Some(options)
+}
+
+/// Applies the `AOS_NIX_JIT` / `AOS_NIX_PARALLEL` / `AOS_NIX_GC` execution-mode
+/// env vars to the native fuzz evaluator's options, mirroring the `aos` CLI's
+/// `NixEvalConfig`->`TreeWalkOptions` mapping (`aos-core/src/nix/eval.rs`).
+///
+/// Without this the fuzz matrix would silently run serial + no-JIT regardless of
+/// the leg selected, which is exactly the JIT-off mismeasurement landmine: the
+/// carrier-specific code (one-word stack maps, decoded-core emitters, deopt)
+/// lives in the JIT path, so the JIT and parallel legs must be real. The C++
+/// oracle is unaffected — these knobs only select the native execution tier, not
+/// the evaluated result — so a mode change must not change parity.
+fn apply_native_eval_mode_env(options: &mut TreeWalkOptions) {
+    let jit = std::env::var("AOS_NIX_JIT")
+        .map(|value| matches!(value.trim(), "1" | "true"))
+        .unwrap_or(false);
+    options.set_jit_tier1_publish_enabled(jit);
+    if let Ok(value) = std::env::var("AOS_NIX_GC") {
+        if value.trim().eq_ignore_ascii_case("sweep") {
+            options.set_gc_mode(EvalGcMode::Sweep);
+        }
+    }
+    if let Ok(value) = std::env::var("AOS_NIX_GC_THRESHOLD") {
+        if let Ok(threshold) = value.trim().parse::<u64>() {
+            options.set_gc_sweep_threshold(threshold);
+        }
+    }
+    if let Ok(value) = std::env::var("AOS_NIX_PARALLEL") {
+        if let Some(workers) = value.trim().parse::<usize>().ok().and_then(std::num::NonZeroUsize::new)
+        {
+            options.set_parallel_workers(Some(workers));
+            // The CLI mapping forces tier-1 JIT off under parallel workers.
+            options.set_jit_tier1_publish_enabled(false);
+        }
+    }
 }
 
 fn eval_cpp_nix_json(source: &str, config: &FuzzSourceConfig) -> Option<Result<String, String>> {
