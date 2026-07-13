@@ -513,9 +513,10 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   re-run measures variant 0.492s vs baseline 0.539s cold (**0.91x**) and
   0.96x warm. The variant wins or ties every leg within noise while
   holding the memory advantage everywhere — the §6.1(1) kill-date
-  criterion's performance clause is MET. Remaining for the promotion
-  ruling: the strict-JSON fuzz parity matrix (in flight) and the
-  546-package full-corpus re-anchor at this HEAD (in flight). Promotion
+  criterion's performance clause is MET. The 546-package
+  full-corpus gate is RE-ANCHORED GREEN at this HEAD (546/546 byte-matched,
+  `FULLGATE_EXIT=0`, decoded-core + inline pass live). Remaining for the
+  promotion ruling: the strict-JSON fuzz parity matrix (in flight). Promotion
   mechanics recommendation (lead): flip `candidate_c_value` into the
   default build first (small, reversible), and schedule the Active-carrier
   DELETION as a separate follow-up commit after a deprecation window with
