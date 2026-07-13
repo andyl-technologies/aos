@@ -688,6 +688,50 @@ env AOS_NIX_ORACLE=.../nix-instantiate AOS_NIX_NATIVE=1 AOS_NIX_JIT=1 \
     --file ./default.nix -A bench.wide --samples 5 --no-record
 ```
 
+### 5.5 The real-workload row — full system toplevel (the campaign finding)
+
+The 17-attr suite is a package/leaf workload; the **real** deliverable is a full
+system config's `system.build.toplevel`, whose evaluation is dominated by the
+module-system fixpoint (`lib.evalModules`). Measured on builder-hil1-87eb5b00
+(idle, `MIMALLOC_PURGE_DELAY=0`), IFD deps realized once via the oracle
+(realization excluded from eval timings), native (HEAD 5c5a9c57) vs pinned C++
+Nix 2.24.12, both `--option system x86_64-linux`:
+
+| attr | native cold | C++ cold | ratio | native warm (root-cutoff) | native RSS | C++ RSS | mem ratio | parity |
+|------|------------:|---------:|------:|--------------------------:|-----------:|--------:|----------:|:------:|
+| `systems.server.build.toplevel` | 2.66s | ~0.53s | **4.9x slower** | **0.039s** | 28.6 MiB | 1044 MiB | **0.027x** | byte |
+| `systems.edge.build.toplevel`   | 2.38s | ~0.50s | **4.8x slower** | **0.033s** | 30.1 MiB |  956 MiB | **0.031x** | byte |
+
+**Reading it.** Native is **~4.8-4.9x slower cold** on the real workload — the
+opposite sign from the leaf suite (native ~2x *faster*), because the
+module-system fixpoint is the JIT-gap shape class (cf. `bench.compute.lambda-interp`
+8.9x). But native uses **~35x less memory** (0.03x of C++'s ~1 GiB), and on
+**warm repeats** the durable root-cutoff makes native **~14x faster** (~35-40 ms
+vs C++ ~0.5s — C++'s eval cache does not help `nix-instantiate`, so its cold and
+warm are both ~0.5s). Byte-parity is green on both. Caveat: the cache-enabled
+**cold-populate** leg costs ~28-33s (a per-derivation persist write-amp storm,
+measured pre-write-behind and under load) — that is cache I/O, not eval, and is
+the target of the §3.2(b) write-behind work.
+
+**Cold attribution** (`AOS_NIX_EVAL_STATS`, server, load-insensitive counts): the
+2.6s is lambda-application + environment-frame churn — **3.18M function calls,
+3.45M env-frame allocations (61 MB of frame slots), 8.6M thunk-state `Arc`
+clones** — with the JIT tiers **idle** (zero promotions/dispatches on this shape),
+memo cold, and the front-end only ~5-15% (~128 ms warm / ~377 ms cold-first).
+Frame pooling is dead: an independent probe found **0 of 7,160** env frames
+recyclable at pop (every frame is thunk-retained under Tier-A). The lever is
+therefore reducing/reclaiming that retention, not pooling.
+
+**Literal-apply beta-reduction is NEUTRAL here** (measured, `AOS_NIX_SIMPLIFY=1`
+vs off at HEAD 31ee38a67, interleaved x3, parity stays byte-green): server 2.98s
+vs 2.96s, edge 2.45s vs 2.46-2.81s (the off spread is variance). `Apply(lambda-
+literal, arg)` frame-reuse does not fire on the module system, whose applications
+are overwhelmingly of **variable-bound** lambdas (`evalModules` mapping module
+functions), which the literal form does not catch. The attribution still points
+at application/env-frame cost; the levers that reach it are general (not
+literal-only) beta/inlining, env-release-on-force (memory), and getting the JIT
+to fire on this shape — not literal-apply beta.
+
 ---
 
 ## 6. The measure-first principle in practice
