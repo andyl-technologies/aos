@@ -74,7 +74,9 @@ impl EvalHeap {
             .filter(|object| {
                 matches!(
                     object.object().payload(),
-                    FlatClosurePayload::Thunk(_) | FlatClosurePayload::Lambda(_)
+                    FlatClosurePayload::Thunk(_)
+                        | FlatClosurePayload::SharedThunk(_)
+                        | FlatClosurePayload::Lambda(_)
                 )
             })
             .count();

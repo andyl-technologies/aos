@@ -153,6 +153,35 @@ impl RefusalCensus {
         self.lambdas.inline_bytes + self.primops.inline_bytes + self.thunks_suspended.inline_bytes
     }
 
+    /// Classifies one thunk (owned or `Arc`-shared) into the refused-closure
+    /// tallies: suspended vs forced, its collapse target, code module, and env.
+    fn classify_thunk(
+        &mut self,
+        thunk: &EvalThunk,
+        size: usize,
+        modules: &mut HashSet<EvalModuleId>,
+    ) {
+        match thunk.cell().state() {
+            Ok(ThunkState::Suspended) => self.thunks_suspended.add(size),
+            // Forced or Blackhole: the value exists or is in flight.
+            Ok(_) => {
+                self.thunks_forced.add(size);
+                match thunk.cell().cached_value() {
+                    Ok(Some(value)) => self.classify_collapse_target(value.tag()),
+                    _ => self.forced_holds_unknown += 1,
+                }
+            }
+            // A poisoned cell still occupies a refused slot.
+            Err(_) => self.thunks_forced.add(size),
+        }
+        if let Some(module) = thunk.code_module() {
+            modules.insert(module);
+        }
+        if thunk.env().is_some() {
+            self.closures_capturing_env += 1;
+        }
+    }
+
     /// Records the kind of value a forced thunk holds (its collapse target).
     fn classify_collapse_target(&mut self, tag: ValueTag) {
         match tag {
@@ -255,27 +284,13 @@ impl EvalHeap {
         for object in self.flat_closures.iter() {
             let size = object.size_bytes();
             match object.object().payload() {
+                // Owned and `Arc`-shared thunks classify identically (deref
+                // coercion turns `&Arc<EvalThunk>` into `&EvalThunk`).
                 FlatClosurePayload::Thunk(thunk) => {
-                    match thunk.cell().state() {
-                        Ok(ThunkState::Suspended) => census.thunks_suspended.add(size),
-                        // Forced or Blackhole: the value exists or is in flight.
-                        Ok(_) => {
-                            census.thunks_forced.add(size);
-                            // Classify the collapse target for the projection.
-                            match thunk.cell().cached_value() {
-                                Ok(Some(value)) => census.classify_collapse_target(value.tag()),
-                                _ => census.forced_holds_unknown += 1,
-                            }
-                        }
-                        // A poisoned cell still occupies a refused slot.
-                        Err(_) => census.thunks_forced.add(size),
-                    }
-                    if let Some(module) = thunk.code_module() {
-                        modules.insert(module);
-                    }
-                    if thunk.env().is_some() {
-                        census.closures_capturing_env += 1;
-                    }
+                    census.classify_thunk(thunk, size, &mut modules)
+                }
+                FlatClosurePayload::SharedThunk(thunk) => {
+                    census.classify_thunk(thunk, size, &mut modules)
                 }
                 FlatClosurePayload::Lambda(lambda) => {
                     census.lambdas.add(size);
