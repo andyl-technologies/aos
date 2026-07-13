@@ -183,6 +183,42 @@ where C++ succeeded and the gates would be red). The exposure is therefore a
 *future* AOS package introducing one of these constructs — caught by the verify
 canary (§1.4), not silently mis-built.
 
+### 2.5 Builtins CALL-parity gap — a new hard-fail class the C++ lang corpus reaches (2026-07-13)
+
+The verification run (task #33, HEAD `2271d218a`) surfaced a category not in the
+§2.3 list, and it is the sharpest completeness finding: **attribute parity is
+complete, but call parity is not.** Native's `builtins` set exposes all 118 of
+C++ Nix 2.24.12's builtin names — `builtins ? <name>` matches the oracle for
+every name, and `builtins.langVersion` (6) / `builtins.nixVersion` (2.24.12)
+match — but some names are present-as-attr yet **unimplemented**, and *calling*
+them raises `TreeWalkErrorKind::MissingAttribute` ("attribute '<name>' missing").
+`MissingAttribute` is **not** in `tree_walk_unsupported_feature`'s fallback set
+(`native/error.rs:501-532`), so it hits `_ => None` → authoritative `EvalError`
+→ **no C++ fallback** → hard-fail under `AOS_NIX_NATIVE=on`.
+
+Confirmed hard-fail builtins so far (from the pinned C++ `tests/functional/lang`
+conformance corpus, which the `-full`/`-required` differential includes):
+`builtins.parseFlakeRef`, `builtins.flakeRefToString`. (The complete call-fail
+set is the lang-corpus differential's failing-seed list — appended when that run
+lands.) Contrast the flake/fetch builtins that route through the *Unsupported*
+path and therefore DO fall back safely: `getFlake` ("does not yet support
+flakes"), `fetchTree` ("does not yet support CLI-sensitive builtin evaluation").
+
+Key consequences:
+- The AOS package set does not use these builtins (that is why 546/546 and
+  549/549 stay green — they are package-derived), so **`aos build` is unaffected**.
+  The exposure is user expressions using flake builtins directly.
+- The `-full`/`-required` differential checks are therefore **RED at HEAD** on
+  these lang seeds — correctly. Per the ruling, the fix is to implement the
+  builtins natively (byte-identical to 2.24.12, error cases included), not to
+  exclude the seeds; the RED check is the system working. Implementation is a
+  chain-port task; this note only records the gap.
+- Enumeration note: `builtins.attrNames builtins` cannot be the discovery
+  mechanism — native rejects whole-`builtins`-set evaluation as CLI-sensitive
+  (Unsupported) — and it would not reveal the gap anyway since attr-parity is
+  complete. The gap is only observable by *calling* each builtin, so the lang
+  corpus is the right discovery surface.
+
 ### 2.4 Two structural caveats
 
 - **Fallback is Result-based, so it does not catch panics.** A `panic!` in the
@@ -246,6 +282,21 @@ most actionable pre-flip item.
 > suite* (tracked as task #35, user-decision scope), not *write a new check*.
 > This note also adds an unbudgeted `aos-eval-json-corpus-required` variant so
 > the required gate's coverage is deterministic rather than runner-speed-bounded.
+>
+> **Dead-CI corroboration (task #35 evidence).** Building `pkgs.aos` from source
+> for this verification surfaced that its `doCheck` has not passed in a long time:
+> a `ratchet-core` unit test used `include_str!("../../../../pkgs/tools/nix.nix")`,
+> a compile-time include whose path was calibrated for a full checkout and broke
+> under the crates-only build sandbox after `f8a7bb51f` moved the crate one level
+> shallower — failing the whole `pkgs.aos` compile before any test ran (fixed in
+> `2271d218a`, which also fixed a latent runtime sibling in `upstream_tests.rs`).
+> Once the compile was fixed, the first-ever in-sandbox `doCheck` run then failed
+> a pre-existing, unrelated apm CLI test
+> (`apm_profile_lifecycle_cli_full_upgrades_and_executes_new_generation`, fetching
+> a nonexistent mock-registry narinfo). A live `build`/`rust`/`integration` CI job
+> would have been RED on every one of these since `f8a7bb51f` — concrete proof the
+> nix-checks suite is not gating master. The remaining `doCheck` green-up is a
+> cross-lane test-debt cleanup tracked as task #36, separate from the flip.
 
 ---
 
