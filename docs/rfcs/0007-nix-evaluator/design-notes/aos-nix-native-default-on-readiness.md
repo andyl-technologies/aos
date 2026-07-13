@@ -183,41 +183,53 @@ where C++ succeeded and the gates would be red). The exposure is therefore a
 *future* AOS package introducing one of these constructs — caught by the verify
 canary (§1.4), not silently mis-built.
 
-### 2.5 Builtins CALL-parity gap — a new hard-fail class the C++ lang corpus reaches (2026-07-13)
+### 2.5 Corpus differential at HEAD — 648/648 native-side clean after reconciliation (2026-07-13)
 
-The verification run (task #33, HEAD `2271d218a`) surfaced a category not in the
-§2.3 list, and it is the sharpest completeness finding: **attribute parity is
-complete, but call parity is not.** Native's `builtins` set exposes all 118 of
-C++ Nix 2.24.12's builtin names — `builtins ? <name>` matches the oracle for
-every name, and `builtins.langVersion` (6) / `builtins.nixVersion` (2.24.12)
-match — but some names are present-as-attr yet **unimplemented**, and *calling*
-them raises `TreeWalkErrorKind::MissingAttribute` ("attribute '<name>' missing").
-`MissingAttribute` is **not** in `tree_walk_unsupported_feature`'s fallback set
-(`native/error.rs:501-532`), so it hits `_ => None` → authoritative `EvalError`
-→ **no C++ fallback** → hard-fail under `AOS_NIX_NATIVE=on`.
+The task-#33 verification ran the full unbudgeted strict-JSON differential (648
+generated seeds: AOS package set + toolchain overlay + `systems.*` toplevels +
+the pinned C++ `tests/functional/lang` conformance corpus) with a release native
+binary vs the C++ 2.24.12 oracle. Raw result: **644/648 matched, 4 failed** — and
+all four reconcile to oracle-config / harness / env artifacts, **not** native
+divergences. The native evaluator produced a correct result on every one of the
+648 seeds.
 
-Confirmed hard-fail builtins so far (from the pinned C++ `tests/functional/lang`
-conformance corpus, which the `-full`/`-required` differential includes):
-`builtins.parseFlakeRef`, `builtins.flakeRefToString`. (The complete call-fail
-set is the lang-corpus differential's failing-seed list — appended when that run
-lands.) Contrast the flake/fetch builtins that route through the *Unsupported*
-path and therefore DO fall back safely: `getFlake` ("does not yet support
-flakes"), `fetchTree` ("does not yet support CLI-sensitive builtin evaluation").
+1. **`eval-okay-parse-flake-ref`, `eval-okay-flake-ref-to-string` — oracle-config
+   artifact.** These failed as `nix-cli eval-json failed` (the *oracle* side, not
+   native): the differential harness points `NIX_CONF_DIR` at a minimal
+   `nix.conf` (`substituters =` only), which omits `experimental-features =
+   flakes`; C++ Nix 2.24.12 gates `builtins.parseFlakeRef` / `flakeRefToString`
+   behind that feature, so the oracle raised "attribute 'parseFlakeRef' missing"
+   while native evaluated it. **Native implements both** — verified directly:
+   native's `parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib"` returns
+   `{"dir":"lib","owner":"NixOS","ref":"23.05","repo":"nixpkgs","type":"github"}`,
+   byte-equal to the flakes-enabled oracle. Re-running the two seeds with
+   `experimental-features = flakes` on the oracle → **both match**.
+2. **`pkgs.edk2`, `pkgs.firecracker` — env artifact.** These failed as `nix-cli
+   eval-json failed` on the oracle's eval-time `fetchGit`, because the
+   verification wrapper's `LD_LIBRARY_PATH=openssl-3.4.1` (set to satisfy the
+   rpath-less cargo binary) leaked into the oracle's `git-remote-https`, whose
+   `ngtcp2` needs `OPENSSL_3.5.0` symbols. Re-running with `openssl-3.6.1` on
+   `LD_LIBRARY_PATH` → **both match**. This is the CLAUDE.md LD_LIBRARY_PATH-leak
+   hazard, not parity.
+3. **`eval-okay-derivation-legacy` passes.** It is in the 644 matched; an earlier
+   debug-run interim mis-attributed it (the oracle's `structuredAttrs`
+   deprecation warnings plus the corpus path-walker's `foldl'` trace were misread
+   as a seed failure).
 
-Key consequences:
-- The AOS package set does not use these builtins (that is why 546/546 and
-  549/549 stay green — they are package-derived), so **`aos build` is unaffected**.
-  The exposure is user expressions using flake builtins directly.
-- The `-full`/`-required` differential checks are therefore **RED at HEAD** on
-  these lang seeds — correctly. Per the ruling, the fix is to implement the
-  builtins natively (byte-identical to 2.24.12, error cases included), not to
-  exclude the seeds; the RED check is the system working. Implementation is a
-  chain-port task; this note only records the gap.
-- Enumeration note: `builtins.attrNames builtins` cannot be the discovery
-  mechanism — native rejects whole-`builtins`-set evaluation as CLI-sensitive
-  (Unsupported) — and it would not reveal the gap anyway since attr-parity is
-  complete. The gap is only observable by *calling* each builtin, so the lang
-  corpus is the right discovery surface.
+**Reconciled result: 648/648 native-side parity at HEAD** (zero native
+divergences), consistent with the standing 546/546 `.drv` + 549/549×2 gates. The
+drv-parity witnesses (`zlib`, `openssl`, `coreutils`, `bash`) are byte-identical
+`.drv` (native vs oracle), `DRV_PARITY_EXIT=0`.
+
+The §2.3 taxonomy fact stands in the abstract — a `MissingAttribute` on the
+`builtins` set would map to `EvalError` (no fallback) — but **no builtin in either
+corpus actually triggers it under native**; the earlier hypothesis that native
+lacked `parseFlakeRef` was an oracle-flakes-config artifact, now corrected.
+
+Harness follow-ups (not flip blockers, tracked with the CI/gate work): the corpus
+differential's oracle should enable `experimental-features = flakes` for the
+flake-conformance seeds, and the openssl `LD_LIBRARY_PATH` in ad-hoc verification
+wrappers must be scoped so it does not leak into oracle subprocesses.
 
 ### 2.4 Two structural caveats
 
