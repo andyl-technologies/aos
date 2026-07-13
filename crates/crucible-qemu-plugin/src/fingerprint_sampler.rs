@@ -31,7 +31,10 @@ const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL_C: &[u8] =
 const QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_device_state_schema_sha256\0";
 
-use crate::{PluginNvcpuFingerprintInputs, PluginVcpuRegisterDigest};
+use crate::{
+    PluginNvcpuFingerprintInputs, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
+    VcpuIntrospectionError, resolve_qemu_read_vcpu_regs_symbol, resolve_qemu_rr_cursor_symbol,
+};
 
 /// Required QEMU export that digests length-framed writable guest RAM.
 pub const QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL: &str =
@@ -177,6 +180,61 @@ pub fn assemble_fingerprint_sample(
     sample.validate().map_err(FingerprintSamplerError::Slot)
 }
 
+/// The resolved capability set the plugin needs to sample fingerprints live.
+///
+/// It pairs the per-vCPU register/RR-cursor introspector with the RAM and
+/// device-state digesters. Both are `dlsym`-resolved from the loaded QEMU, so a
+/// value of this type is proof the running QEMU carries the full fingerprint
+/// helper patch surface.
+#[derive(Clone, Copy, Debug)]
+pub struct PluginFingerprintSampling {
+    introspector: PluginVcpuIntrospector,
+    digester: PluginFingerprintDigester,
+}
+
+impl PluginFingerprintSampling {
+    /// Resolves the complete fingerprint sampling capability from loaded QEMU.
+    ///
+    /// Returns `None` (fail closed) when any register, RR-cursor, or digest
+    /// export is absent, so the plugin never publishes a partial fingerprint
+    /// against a QEMU build missing the helper patch.
+    #[must_use]
+    pub fn resolve() -> Option<Self> {
+        let introspector = PluginVcpuIntrospector::require(
+            resolve_qemu_read_vcpu_regs_symbol(),
+            resolve_qemu_rr_cursor_symbol(),
+        )
+        .ok()?;
+        let digester = PluginFingerprintDigester::resolve()?;
+        Some(Self {
+            introspector,
+            digester,
+        })
+    }
+
+    /// Captures one fingerprint sample for `vcpu_count` at `current_icount`.
+    ///
+    /// This is the boundary-time entry point: it reads every vCPU's registers
+    /// and the RR cursor, digests guest RAM and device state, and assembles the
+    /// shared-memory [`FingerprintSample`] the host reads after the quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FingerprintSamplerError`] when introspection fails or the
+    /// assembled sample exceeds the slot capacity or fails validation.
+    pub fn sample(
+        &self,
+        current_icount: u64,
+        vcpu_count: u32,
+    ) -> Result<FingerprintSample, FingerprintSamplerError> {
+        let inputs = self
+            .introspector
+            .read_nvcpu_fingerprint_inputs(vcpu_count)
+            .map_err(FingerprintSamplerError::Introspection)?;
+        assemble_fingerprint_sample(current_icount, &inputs, &self.digester)
+    }
+}
+
 /// Resolves one patched QEMU digest export by NUL-terminated name.
 #[cfg(unix)]
 fn resolve_digest_symbol(name_c: &[u8]) -> Option<QemuDigestFn> {
@@ -209,7 +267,7 @@ fn vcpu_from_register_digest(register: &PluginVcpuRegisterDigest) -> Fingerprint
 }
 
 /// Error produced while assembling a plugin fingerprint sample.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum FingerprintSamplerError {
     /// More vCPU register digests were supplied than the slot can carry.
     #[error("fingerprint sampler saw {requested} vcpus but the slot holds {capacity}")]
@@ -219,6 +277,9 @@ pub enum FingerprintSamplerError {
         /// Fixed fingerprint slot capacity.
         capacity: usize,
     },
+    /// Reading the per-vCPU registers or round-robin cursor failed.
+    #[error("fingerprint vCPU introspection failed: {0}")]
+    Introspection(VcpuIntrospectionError),
     /// The assembled sample failed shared-memory slot validation.
     #[error("assembled fingerprint sample is invalid: {0}")]
     Slot(FingerprintSampleError),
@@ -321,6 +382,8 @@ mod tests {
         // The fingerprint digest exports exist only inside patched QEMU, so a
         // standalone test process cannot resolve them and must get no digester.
         assert!(PluginFingerprintDigester::resolve().is_none());
+        // The full sampling capability likewise fails closed.
+        assert!(PluginFingerprintSampling::resolve().is_none());
     }
 
     #[test]
