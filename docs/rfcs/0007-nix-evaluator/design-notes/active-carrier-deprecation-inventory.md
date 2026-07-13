@@ -100,15 +100,17 @@ Two distinct classes, and telling them apart is the load-bearing pre-deletion wo
   two-word-inherent. **Deleting these without porting would silently drop
   coverage** — this is the main correctness risk of a naive deletion.
 
-### 2.4 candidate-B (related but a SEPARATE decision)
-The tagged-word Candidate-B bridge is **654 LOC** across 5 files
-(`ratchet-jit/src/cranelift/candidate_b.rs`, `lower/candidate_b.rs` +
-3 test files) and **16 pinned safety-allowlist entries** (10 in
-ratchet-jit/safety.rs, 6 in ratchet-runtime-ffi/safety.rs). It is **not**
-feature-gated (always compiled; exercised only in tests) — an inactive
-alternative experiment. Once Candidate-C is the sole carrier it is dead weight,
-but its removal is a distinct ruling from the two-word Active-carrier deletion and
-is the only part of this cleanup that meaningfully shrinks the safety allowlists.
+### 2.4 candidate-B (related but a SEPARATE decision — see §6 liveness proof)
+The tagged-word Candidate-B carrier is a **full parallel one-word carrier**
+(codec `candidate_b_encode_value`/`decode`, the `tagged_values.rs` scalar store,
+a JIT bridge in `cranelift/candidate_b.rs` + `lower/candidate_b.rs`, and an FFI
+env/thunk path), **not** merely 5 files — but it is **never executed on the
+shipped Candidate-C build** (its execution entry and all tests are
+`#[cfg(not(candidate_c_value))]`). It carries **16 pinned safety-allowlist
+entries** (10 ratchet-jit + 6 ratchet-runtime-ffi). Its removal is a distinct
+ruling from the two-word Active-carrier deletion — and is the only part of this
+cleanup that meaningfully shrinks the safety allowlists. Full liveness proof in
+§6 (added per review).
 
 ## 3. Deletion diff scale (rough)
 
@@ -172,3 +174,67 @@ baseline-only halves delete.
    and the compressed carrier) to keep some second-implementation cross-check, or
    to rely solely on the C++ parity gate. Recommend the latter unless a concrete
    carrier-bug class is identified that the C++ gate cannot catch.
+
+## 6. Candidate-B liveness proof (addendum — demonstrated, not asserted)
+
+Requested before ruling on Candidate-B removal: prove it dead rather than assert
+it. Candidate-B is the tagged-word one-word carrier that competed with
+Candidate-C (compressed-index) during the one-word-ABI design; Candidate-C won and
+shipped. Findings at HEAD:
+
+### 6a. Non-test references — what actually uses the carrier
+Careful grep (excluding the `candidate_bundle`/`candidate_bytes` diff-harness
+false positives, which are the *diff candidate side*, unrelated to Candidate-B):
+the real carrier — `candidate_b_encode_value`/`decode`, `CandidateB*` types,
+`candidate_b_runtime_call`, `candidate_b_env_get`, `candidate_b_thunk_entry`,
+`candidate_b_runtime_abi_value_layout`, the `tagged_values.rs` scalar store — is
+referenced (non-test) across `ratchet-core` (runtime_abi, value_layout),
+`ratchet-jit` (abi, artifact, cranelift{,/candidate_b,/native_error}, lower{,/candidate_b}, safety),
+`ratchet-oracle` (eval/heap/flat_values/tagged_values, eval/heap/shared_arena/scalars,
+eval/tree_walk{,/runtime_values}, runtime/helpers), `ratchet-runtime-ffi`
+(env, native_call{,/value_abi}, safety), `ratchet-value` (value/tag{,/bridge}),
+and `aos-nix` (jit/engine/value_abi). **The `aos-nix-harness` diff tooling and the
+`aos nix-diff` command do NOT reference the Candidate-B carrier** — every apparent
+hit there is `candidate_bundle`/`candidate_bytes`.
+
+### 6b. It is never EXECUTED on the shipped build
+The sole non-test execution entry into the carrier is
+`TreeWalk::candidate_b_runtime_value_word` (`tree_walk/runtime_values.rs`), which
+is **`#[cfg(not(feature = "candidate_c_value"))]`** and is called from exactly one
+place — `ratchet-runtime-ffi/src/env.rs` (the Candidate-B FFI env-get path, also
+baseline-gated). That path is reached only when Candidate-B-lowered JIT code runs,
+which only the Candidate-B **test suites** trigger. Consequences:
+- On the **shipped Candidate-C build**, the execution entry is not even compiled →
+  Candidate-B is compiled-but-dead (never invoked).
+- On the **baseline (two-word) build**, Candidate-B is exercised solely by its own
+  tests, all `#[cfg(all(test, not(candidate_c_value)))]`.
+So Candidate-B's entire liveness is coupled to the baseline build; deleting the
+two-word carrier (which removes the `not(candidate_c_value)` cfg surface) strands
+Candidate-B as pure dead code, and it should be removed in the same window.
+
+### 6c. Disjoint from snapshot-impl's stage-B1 (same letter, different campaign)
+`stage-B1`/`B1-alt` appears only in `ratchet-oracle/src/eval/heap/gc.rs` (the
+heap-snapshot reservation staging) and references **no** Candidate-B symbol; no
+file mentions both. The SI serializer work does not depend on any `candidate_b`
+symbol. Confirmed disjoint — safe to remove Candidate-B without touching the
+snapshot lane.
+
+### 6d. Test coverage — unique, but of a non-shipping encoding
+The three Candidate-B test files cover: production tier-1 dispatch of Candidate-B
+literal artifacts (`aos-nix/.../tests/candidate_b.rs`), shared-context thunk
+dispatch (`ratchet-runtime-ffi/.../native_call/tests/candidate_b.rs`), and the
+Candidate-B env-wrapper unsafe-review manifest (`.../safety/tests/candidate_b_env.rs`),
+plus the tagged-word codec round-trips in `tagged_values.rs`'s test module. This
+coverage is **unique to the tagged-word ABI** — but that ABI **does not ship**
+(Candidate-C is the sole carrier). So removing it drops **zero shipped-behavior
+coverage**; it only stops testing a discarded alternative encoding. Candidate-C's
+own suites plus the C++ `.drv` parity gate fully cover shipped behavior.
+
+### 6e. Ruling input
+Candidate-B is provably dead on the shipped build, disjoint from the snapshot
+lane, and its unique tests validate only a non-shipping encoding. **Recommend
+removing it together with (or immediately after) the Active-carrier deletion** —
+they share the `not(candidate_c_value)` execution/test surface — as a distinct
+sub-PR whose one gate-touching effect is deleting the 16 Candidate-B
+safety-allowlist entries (10 ratchet-jit + 6 ratchet-runtime-ffi). No production
+execution path, benchmark, or the diff harness depends on it.
