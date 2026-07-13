@@ -401,7 +401,20 @@ fn canonical_sample(
         sample.remove(field);
     }
     rename(&mut sample, "raw_ram_digest", "ram_digest");
-    rename(&mut sample, "raw_ram_bytes", "ram_bytes");
+    // `raw_ram_bytes` is the FlatView-mapped RAM total, which on pc-q35 is
+    // 256 KiB short of the RAMBlock backing store (the ROM-shadowed legacy-BIOS
+    // PAM window at 0xC0000-0xFFFFF). The canonical `ram_bytes` field means the
+    // guest RAM backing size that must equal the genesis preflight (a RAMBlock
+    // measurement), so carry the RAMBlock total here rather than the mapped
+    // total. The mapped total, region map, and raw content are already folded
+    // into `ram_digest` by fold_raw_ram_identity, so terminal RAM determinism is
+    // preserved without conflating the two measurements. (In the in-process
+    // doubles raw_ram_bytes == guest_ram_bytes, so this is transparent to them.)
+    sample.remove("raw_ram_bytes");
+    sample.insert(
+        "ram_bytes".to_owned(),
+        Value::from(observation.guest_ram_bytes()),
+    );
     rename(&mut sample, "raw_ram_status", "ram_status");
     rename(&mut sample, "vmstate_digest", "device_state_digest");
     rename(&mut sample, "vmstate_bytes", "device_state_bytes");
