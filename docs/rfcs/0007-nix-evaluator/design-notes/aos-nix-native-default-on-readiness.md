@@ -268,3 +268,40 @@ mode is not present on the current package set.
 The flip is defensible today behind the fallback + the canary; the CI-native gate
 and the canary-in-CI are the two items that convert "defensible" into "safe by
 construction."
+
+---
+
+## Addendum — §2.3 hard-fail → fallback-eligible disposition (chain-port)
+
+Per the ruling to promote the highest-risk §2.3 `EvalError` conditions to
+fallback-eligible (transparent per-operation C++ retry) *only where C++ genuinely
+succeeds*. The conversion mechanism is a one-line-per-variant addition to
+`tree_walk_unsupported_feature` (`crates/aos-nix/src/native/error.rs:501-533`):
+listing a `TreeWalkErrorKind` there maps it to `Unsupported` (fallback), otherwise
+it stays authoritative `EvalError`. Taxonomy applied first (does C++ succeed where
+native rejects? does the site even get reached with fallback on?):
+
+| §2.3 condition | variant(s) | reachable w/ fallback on? | C++ succeeds where native rejects? | disposition |
+|---|---|---|---|---|
+| **Unsupported dialect op** | `UnsupportedDialectOp` | **YES** — `eval_apply.rs:238`, any expr lowering to an unhandled aos-nix-dialect op | **YES** — valid Nix; the gap is an internal unimplemented tree-walk op, never a real error | **CONVERT** (priority 1; the verdict-moving change) |
+| **Per-arg fetch/source/flake attr** | `UnsupportedSourcePathAttr`, `UnsupportedFetchUrlAttr`, `UnsupportedFetchGitAttr`, `UnsupportedFetchMercurialAttr`, `UnsupportedFetchTarballAttr`, `UnsupportedFetchTreeAttr`, `UnsupportedFlakeRefAttr` | mostly **NO** — the owning builtins (`path`/`fetch*`/flakes) are rejected in the `ensure_native_json_subset` preflight and fall back wholesale before the attr code runs | **YES** — a real Nix fetch/source attr native hasn't implemented; C++ accepts it | **CONVERT (defensive)** — moot in today's fallback path but removes the hard-fail with zero downside if the preflight is ever narrowed or a source-coercion path reaches it |
+| **Regex ERE limits** | `RegexCompile` (message-discriminated: escape / empty-alt / lazy-quantifier / group) | **YES** — `builtins.match`/`split`, not preflighted | **AMBIGUOUS** — C++ uses `std::regex` extended (POSIX ERE), stdlib-dependent. Escape/empty-alt *may* be accepted by C++; lazy-quantifier (`*?`) and `(?`-group are non-ERE and C++ almost certainly **also rejects** | **KEEP + FLAG** — `RegexCompile` is a **shared** variant that also carries genuine "your pattern is invalid" compile errors; listing it wholesale would fall genuine errors back too (wasted double-eval + muddied attribution). A correct conversion needs a variant split (native-ERE-limitation vs true-compile-error) + empirical C++ per-pattern testing. Deferred pending lead call. |
+| **JSON number** | `JsonNumberUnsupported` | **YES** — `fromJSON` | **NARROW** — fires only when a JSON number is neither i64/u64/f64-representable (e.g. `1e400`→∞, or an out-of-i64 integer). C++ Nix also rejects out-of-range integers; only the float-representable-overflow sliver is a C++-success | **KEEP + FLAG** — mostly mirrors a C++-side failure; converting buys a wasted double-eval for the common (both-reject) case |
+| **TOML kind** | TOML-kind variant (`error_kind.rs:~1119`) | **YES** — `fromTOML` | **UNCERTAIN** — depends on which TOML kind (e.g. datetime) and C++'s `fromTOML` mapping | **KEEP + FLAG** — judge empirically if pursued |
+| **Fixed-output derivations** | `derivation_build.rs:438,454` | **NO** — inside `derivation`/`derivationStrict`, both preflight-fallback builtins | YES but unreachable | **KEEP** — moot (the whole derivation call defers to C++) |
+| **Fetch/flake scheme + entry-type** | `fetch_*.rs` scheme/entry-type limits | **NO** — inside `fetch*` preflight-fallback builtins | YES but unreachable | **KEEP** — moot |
+
+### Recommendation
+- **Convert now:** `UnsupportedDialectOp` (reachable, unambiguous, removes a whole
+  future class of internal hard-stops — the one change that materially moves the
+  default-on verdict) **and** the 7 per-argument fetch/source/flake attr variants
+  (defensive; genuine C++-succeeds cases, safe even though preflight-shadowed today).
+- **Keep as `EvalError` (for now):** regex, JSON number, TOML kind (ambiguous /
+  mostly mirror C++ failure / need a variant split + empirical testing) and the
+  fixed-output & scheme/entry-type limits (unreachable behind wholesale builtin
+  fallback — converting them is pure dead code).
+
+Nothing here changes behavior for expressions that currently succeed natively
+(the fallback seam is `Result`-based and only widens which *failures* defer to
+C++). Regex/JSON/TOML flagged as ambiguous per the ruling's "ping before code if
+ambiguous."
