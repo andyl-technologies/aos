@@ -57,44 +57,13 @@ impl<T> FlatSliceLayoutCheck<T> {
     const ELEMENT_FITS_ARENA_ALIGNMENT: () = assert!(mem::align_of::<T>() <= MAX_ALIGN);
 }
 
-/// The address representation behind a [`FlatSlice`] on the `candidate_c_value`
-/// carrier: either an address-free reservation `(domain, offset)` pair — which
-/// survives a heap-image snapshot remap (RFC-0007 doc 31 §1, stage B1) — or an
-/// absolute pointer for the chunked compatibility backend (not snapshottable).
-///
-/// The address-free form is preferred by construction; the absolute form only
-/// arises when the run is not inside a registered Candidate-C reservation (the
-/// chunked fallback), which candidate-C value words already cannot address.
-#[cfg(feature = "candidate_c_value")]
-enum FlatSliceRepr<T> {
-    /// The run named by `reservation_base(domain) + offset` — address-free.
-    Addressed {
-        /// The reservation the run lives in.
-        domain: crate::heap::ArenaDomainId,
-        /// The run's byte offset from the reservation base.
-        offset: crate::heap::ArenaIndex,
-    },
-    /// The run named by an absolute pointer (chunked, non-address-free backend).
-    Absolute {
-        /// The absolute run pointer.
-        ptr: NonNull<T>,
-    },
-}
-
 /// A non-owning witness to immutable `Copy` elements inlined in a flat-object
 /// allocation.
 ///
 /// Created only by [`FlatTailWriter::write_slice`]; see this module's
-/// documentation (`slice`) for the layout and the sealing discipline. On the
-/// `candidate_c_value` carrier the witness stores an address-free reservation
-/// `(domain, offset)` pair whenever the run lives in a registered reservation
-/// (stage B1), so it survives a heap-image snapshot remap; the baseline carrier
-/// stores an absolute pointer.
+/// documentation (`slice`) for the layout and the sealing discipline.
 pub struct FlatSlice<T> {
-    #[cfg(not(feature = "candidate_c_value"))]
     ptr: NonNull<T>,
-    #[cfg(feature = "candidate_c_value")]
-    repr: FlatSliceRepr<T>,
     len: usize,
 }
 
@@ -111,49 +80,8 @@ impl<T> FlatSlice<T> {
     /// Normal witnesses live in a payload that drops before the arena unmaps;
     /// the registry-backed `Value`-tail door drops its witness before taking
     /// exclusive ownership of the run.
-    ///
-    /// On the `candidate_c_value` carrier this resolves `ptr` to its reservation
-    /// `(domain, offset)` through the process-global registry so the witness is
-    /// address-free; a run outside any registered reservation (the chunked
-    /// backend) keeps the absolute pointer and is not snapshot-eligible.
-    #[cfg(not(feature = "candidate_c_value"))]
     pub(super) const fn new(ptr: NonNull<T>, len: usize) -> Self {
         Self { ptr, len }
-    }
-
-    /// See the baseline-carrier [`FlatSlice::new`]; this variant additionally
-    /// resolves the run to an address-free reservation `(domain, offset)`.
-    #[cfg(feature = "candidate_c_value")]
-    pub(super) fn new(ptr: NonNull<T>, len: usize) -> Self {
-        let repr = match crate::heap::reservation_containing_address(ptr.as_ptr() as usize) {
-            Some((domain, base)) => FlatSliceRepr::Addressed {
-                domain,
-                offset: crate::heap::ArenaIndex::new((ptr.as_ptr() as usize - base) as u32),
-            },
-            None => FlatSliceRepr::Absolute { ptr },
-        };
-        Self { repr, len }
-    }
-
-    /// Resolves the run's element pointer for the current carrier.
-    #[inline]
-    fn data_ptr(&self) -> *const T {
-        #[cfg(not(feature = "candidate_c_value"))]
-        {
-            self.ptr.as_ptr()
-        }
-        #[cfg(feature = "candidate_c_value")]
-        match &self.repr {
-            FlatSliceRepr::Addressed { domain, offset } => {
-                match crate::heap::cached_reservation_base(*domain) {
-                    Some(base) => (base + offset.raw() as usize) as *const T,
-                    // The sealing contract keeps the run mapped for the witness's
-                    // lifetime, so its reservation is always live and registered.
-                    None => unreachable!("live FlatSlice reservation domain is registered"),
-                }
-            }
-            FlatSliceRepr::Absolute { ptr } => ptr.as_ptr(),
-        }
     }
 
     /// Returns the inline elements.
@@ -161,11 +89,10 @@ impl<T> FlatSlice<T> {
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: the sealed construction site (`FlatTailWriter::write_slice`,
         // the only `FlatSlice::new` caller) guarantees an initialized,
-        // aligned, immutable, mapped run of `self.len` elements for the
-        // witness's whole lifetime; `data_ptr` recovers that run's address
-        // (an absolute pointer, or `reservation_base(domain) + offset` on the
-        // address-free carrier). The returned borrow cannot outlive the witness.
-        unsafe { std::slice::from_raw_parts(self.data_ptr(), self.len) }
+        // aligned, immutable, mapped run of `self.len` elements at `self.ptr`
+        // for the witness's whole lifetime; the returned borrow cannot outlive
+        // the witness.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
     /// Returns the number of inline elements.

@@ -34,40 +34,14 @@
 use std::fmt;
 use std::ptr::NonNull;
 
-/// The address representation behind a [`FlatBytes`] on the `candidate_c_value`
-/// carrier: an address-free reservation `(domain, offset)` pair that survives a
-/// heap-image snapshot remap (RFC-0007 doc 31 §1, stage B1), or an absolute
-/// pointer for the chunked compatibility backend (not snapshottable).
-#[cfg(feature = "candidate_c_value")]
-enum FlatBytesRepr {
-    /// The byte run named by `reservation_base(domain) + offset` — address-free.
-    Addressed {
-        /// The reservation the run lives in.
-        domain: crate::heap::ArenaDomainId,
-        /// The run's byte offset from the reservation base.
-        offset: crate::heap::ArenaIndex,
-    },
-    /// The byte run named by an absolute pointer (chunked backend).
-    Absolute {
-        /// The absolute run pointer.
-        ptr: NonNull<u8>,
-    },
-}
-
 /// A non-owning witness to immutable bytes inlined in a flat-object
 /// allocation.
 ///
 /// Created only by the flat store's trailing-bytes allocation (see
 /// [`super::FlatObjectStore::alloc_with_trailing_bytes`]); see the [module
-/// documentation](self) for the layout and the sealing discipline. On the
-/// `candidate_c_value` carrier the witness stores an address-free reservation
-/// `(domain, offset)` pair whenever the run lives in a registered reservation
-/// (stage B1), so it survives a heap-image snapshot remap.
+/// documentation](self) for the layout and the sealing discipline.
 pub struct FlatBytes {
-    #[cfg(not(feature = "candidate_c_value"))]
     ptr: NonNull<u8>,
-    #[cfg(feature = "candidate_c_value")]
-    repr: FlatBytesRepr,
     len: usize,
 }
 
@@ -84,49 +58,8 @@ impl FlatBytes {
     /// its own arena reservation immediately before construction, never
     /// mutating them afterwards, and dropping the payload holding the
     /// witness before the arena unmaps.
-    ///
-    /// On the `candidate_c_value` carrier this resolves `ptr` to its reservation
-    /// `(domain, offset)` through the process-global registry so the witness is
-    /// address-free; a run outside any registered reservation (the chunked
-    /// backend) keeps the absolute pointer and is not snapshot-eligible.
-    #[cfg(not(feature = "candidate_c_value"))]
     pub(super) const fn new(ptr: NonNull<u8>, len: usize) -> Self {
         Self { ptr, len }
-    }
-
-    /// See the baseline-carrier [`FlatBytes::new`]; this variant additionally
-    /// resolves the run to an address-free reservation `(domain, offset)`.
-    #[cfg(feature = "candidate_c_value")]
-    pub(super) fn new(ptr: NonNull<u8>, len: usize) -> Self {
-        let repr = match crate::heap::reservation_containing_address(ptr.as_ptr() as usize) {
-            Some((domain, base)) => FlatBytesRepr::Addressed {
-                domain,
-                offset: crate::heap::ArenaIndex::new((ptr.as_ptr() as usize - base) as u32),
-            },
-            None => FlatBytesRepr::Absolute { ptr },
-        };
-        Self { repr, len }
-    }
-
-    /// Resolves the byte run's pointer for the current carrier.
-    #[inline]
-    fn data_ptr(&self) -> *const u8 {
-        #[cfg(not(feature = "candidate_c_value"))]
-        {
-            self.ptr.as_ptr()
-        }
-        #[cfg(feature = "candidate_c_value")]
-        match &self.repr {
-            FlatBytesRepr::Addressed { domain, offset } => {
-                match crate::heap::cached_reservation_base(*domain) {
-                    Some(base) => (base + offset.raw() as usize) as *const u8,
-                    // The sealing contract keeps the run mapped for the witness's
-                    // lifetime, so its reservation is always live and registered.
-                    None => unreachable!("live FlatBytes reservation domain is registered"),
-                }
-            }
-            FlatBytesRepr::Absolute { ptr } => ptr.as_ptr(),
-        }
     }
 
     /// Returns the inline bytes.
@@ -134,11 +67,10 @@ impl FlatBytes {
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: the sealed construction site (`FlatObjectStore::
         // alloc_with_trailing_bytes`, the only `FlatBytes::new` caller)
-        // guarantees an initialized, immutable, mapped byte run of `self.len`
-        // bytes for the witness's whole lifetime; `data_ptr` recovers that
-        // run's address (an absolute pointer, or `reservation_base(domain) +
-        // offset` on the address-free carrier). The borrow cannot outlive it.
-        unsafe { std::slice::from_raw_parts(self.data_ptr(), self.len) }
+        // guarantees an initialized, immutable, mapped byte run of
+        // `self.len` bytes at `self.ptr` for the witness's whole lifetime;
+        // the returned borrow cannot outlive the witness.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
     /// Returns the byte length of the inline run.
