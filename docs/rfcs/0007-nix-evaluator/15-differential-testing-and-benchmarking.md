@@ -771,6 +771,42 @@ within noise while holding the memory advantage — the S5 kill-date
 criterion's performance clause is met (promotion ruling pending the fuzz
 matrix + the full-corpus re-anchor; see the cutover plan §S4b/S5).
 
+**Strict-JSON fuzz-parity matrix (2026-07-13, the S5 conformance-breadth
+leg): CLEAN SWEEP — this closed the ruling to GO.** The `parity_json` fuzz
+corpus is the package-derived adversarial seed set (`aos nix-fuzz-corpus
+--clean` → 549 generated `# aos-nix-fuzz-source` seeds, each an
+`import default.nix` + `getAttr pkgs.<x>` full-package eval defaulting to
+`system = "x86_64-linux"`; the pinned nix lang corpus was not local so the
+count is package-only, short of the ~648 with `AOS_NIX_LANG_TESTS`). It is
+replayed as a strict-JSON differential vs the pinned 2.24.12 oracle through
+the CLI gate `aos nix-diff --eval-json --eval-json-corpus
+fuzz/corpus/parity_json/generated` (the same path as
+`checks.integration.aos-eval-json-corpus-smoke`), NOT the ASAN fuzz binary —
+a full `pkgs.edk2` eval exceeds libfuzzer's 2048 MiB default RSS under ASAN
+(2127 MiB; a memory ceiling, not a divergence — raise with
+`-rss_limit_mb=8192`), and IFD only resolves on Linux, so the matrix runs on
+the builder. Crucially the harness must select the execution tier: the fuzz
+target's `native_options_from_source_config` (and the CLI's
+`NixEvalConfig`→`TreeWalkOptions` map, `aos-core/src/nix/eval.rs`) apply
+`AOS_NIX_JIT`/`AOS_NIX_PARALLEL`/`AOS_NIX_GC` to the native evaluator — without
+that the sweep silently runs serial + no-JIT and would miss the one-word
+carrier's JIT-path code (stack maps, decoded-core emitters, deopt), a nominal
+gate rather than a real one.
+
+| carrier | leg | corpus | vs pinned 2.24.12 oracle |
+|---|---|---|---|
+| one-word variant | serial (no JIT) | 549 generated | **549/549 matched**, exit 0 |
+| one-word variant | JIT (`AOS_NIX_JIT=1`) | 549 generated | **549/549 matched**, exit 0 |
+
+Baseline legs were omitted as redundant: the darwin language-seed replay
+already established variant/baseline outcome-identity (4/5 byte-matched,
+`derivation.seed` failing identically on both carriers with the
+carrier-independent "native evaluator does not yet support effectful
+expression evaluation" limitation), so variant-vs-oracle is the authoritative
+gate. Both legs matched byte-for-byte at HEAD `ef1dce36b`; the flip to
+`candidate_c_value` as the shipped carrier landed at `5c22a8bab`. Ruling:
+**GO for carrier promotion** (cutover plan §5).
+
 ---
 
 ## 6. The measure-first principle in practice
