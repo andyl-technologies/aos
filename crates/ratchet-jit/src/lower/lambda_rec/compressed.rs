@@ -5,21 +5,24 @@
 //! discipline, but every runtime value is one compressed word instead of a
 //! `(tag, payload)` pair.
 //!
-//! # Value discipline
+//! # Value discipline (decoded core)
 //!
-//! Expressions uniformly produce one encoded word, mirroring the two-word
-//! emitter's per-node pairs. An inline integer's high half (kind, domain,
-//! forced bit) is all zero, so binary operations guard both operand words
-//! with one `or`-and-compare, decode by sign-extending the low halves,
-//! compute on wrapping `i64` (the tree walk's per-step semantics), and
-//! re-encode the result — deopting when it exceeds the inline `i32` range,
-//! where the tree walk re-runs and boxes it. Comparisons select between the
-//! two canonical boolean words. The parameter is forced at its first strict
-//! use on each path, exactly like the two-word emitter and the tree walk (a
-//! force can record impure observations, so its timing is load-bearing for
-//! trace parity); the fast path skips the `aos_force` call when the raw
-//! argument word is already an inline integer, which the recursion's own
-//! self-call arguments always are.
+//! Expressions carry one of two `i64` SSA classes (decoded-core-tier2-spec):
+//! statically integer-typed nodes — literals of ANY width, arithmetic
+//! results, and `if` joins whose arms are both integer-typed — live as plain
+//! decoded `i64` values with no inline-range constraint (wrapping ops are
+//! the tree walk's per-step semantics; intermediates never materialize as
+//! runtime values); everything else is an encoded compressed word. Guards
+//! happen only at word-to-int coercions (an inline integer's high half is
+//! all zero) and encodes only at materialization points (the body return
+//! and self-call arguments), where a wide value deopts so the tree walk
+//! re-runs and boxes it. Comparisons select between the two canonical
+//! boolean words. The parameter is forced at its first strict use on each
+//! path, exactly like the two-word emitter and the tree walk (a force can
+//! record impure observations, so its timing is load-bearing for trace
+//! parity); the fast path skips the `aos_force` call when the raw argument
+//! word is already an inline integer, which the recursion's own self-call
+//! arguments always are.
 //!
 //! # Sentinel
 //!
@@ -51,6 +54,60 @@ use crate::lower::{
 
 /// The internal deopt-unwind sentinel word (invalid kind byte `0xFF`).
 const TIER2_DEOPT_SENTINEL_WORD: i64 = 0xFF << 32;
+
+/// The SSA class of one emitted expression (both classes are `i64` values).
+///
+/// `IntDecoded` is a plain decoded integer with no inline-range constraint;
+/// `Word` is an encoded compressed word. Coercions between them are the only
+/// guard/encode sites (see the module docs).
+#[derive(Clone, Copy)]
+enum TypedVal {
+    /// A statically integer-typed value, decoded, full `i64` range.
+    IntDecoded(ClifValue),
+    /// An encoded compressed word (booleans, parameter reads, call results).
+    Word(ClifValue),
+}
+
+/// The statically inferred class of a grammar expression.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExprClass {
+    /// Produces a decoded integer.
+    Int,
+    /// Produces an encoded word (booleans, dynamic reads, call results).
+    Word,
+}
+
+/// Infers the emission class of a grammar node.
+///
+/// Mirrors the emitter's own rules exactly: integer literals and arithmetic
+/// are `Int`; `if` is `Int` only when both arms are; everything dynamic
+/// (parameter reads, self-calls, booleans) is `Word`. Nodes outside the
+/// grammar report `Word` — the emitter rejects them later regardless.
+fn infer_class(arena: &IrArena, id: IrId) -> ExprClass {
+    let Some(node) = arena.node(id).copied() else {
+        return ExprClass::Word;
+    };
+    match (node.kind, node.data) {
+        (IrKind::Int, _) => ExprClass::Int,
+        (IrKind::BinOp, IrData::Binary { op, .. }) => match op {
+            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div => ExprClass::Int,
+            _ => ExprClass::Word,
+        },
+        (
+            IrKind::If,
+            IrData::Triple { second, third, .. },
+        ) => {
+            if infer_class(arena, second) == ExprClass::Int
+                && infer_class(arena, third) == ExprClass::Int
+            {
+                ExprClass::Int
+            } else {
+                ExprClass::Word
+            }
+        }
+        _ => ExprClass::Word,
+    }
+}
 
 /// Shared CLIF references threaded through the compressed body emitter.
 struct CompressedLambdaCtx {
@@ -173,7 +230,8 @@ fn build_inner_function(
 
     let mut forced_param: Option<ClifValue> = None;
     let result = emit_expr(&mut cursor, arena, &mut ctx, body, &mut forced_param)?;
-    cursor.ins().return_(&[result]);
+    let result_word = to_word(&mut cursor, &ctx, result);
+    cursor.ins().return_(&[result_word]);
 
     // Shared guard-failure block: record the deopt trap, unwind with the sentinel.
     cursor.insert_block(deopt);
@@ -252,26 +310,23 @@ fn emit_expr(
     ctx: &mut CompressedLambdaCtx,
     id: IrId,
     forced_param: &mut Option<ClifValue>,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let node = arena
         .node(id)
         .copied()
         .ok_or(JitLowerError::MissingIrBody { body: id })?;
     match (node.kind, node.data) {
+        // Any-width literal: operand position never materializes a word.
         (IrKind::Int, IrData::Int(value)) => {
-            let word = CompressedValueWord::inline_int(value).map_err(|_| {
-                JitLowerError::UnsupportedArithOperand {
-                    operand: id,
-                    kind: IrKind::Int,
-                }
-            })?;
-            Ok(cursor.ins().iconst(types::I64, word.raw() as i64))
+            Ok(TypedVal::IntDecoded(cursor.ins().iconst(types::I64, value)))
         }
-        (IrKind::Bool, IrData::Bool(value)) => Ok(cursor
-            .ins()
-            .iconst(types::I64, CompressedValueWord::boolean(value).raw() as i64)),
+        (IrKind::Bool, IrData::Bool(value)) => Ok(TypedVal::Word(
+            cursor
+                .ins()
+                .iconst(types::I64, CompressedValueWord::boolean(value).raw() as i64),
+        )),
         (IrKind::LocalVar, IrData::Local { slot: 0 }) => {
-            emit_forced_param(cursor, ctx, forced_param)
+            Ok(TypedVal::Word(emit_forced_param(cursor, ctx, forced_param)?))
         }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
             emit_binop(cursor, arena, ctx, op, lhs, rhs, forced_param)
@@ -354,13 +409,44 @@ fn emit_force(
     }
 }
 
+/// Coerces a typed value to a decoded `i64` integer.
+///
+/// A `Word` gets the inline-integer guard (all-zero high half; anything
+/// else — bools, boxed scalars, heap words, the sentinel — deopts) and a
+/// sign-extending decode; an `IntDecoded` is already the integer.
+fn to_int(cursor: &mut FuncCursor, ctx: &CompressedLambdaCtx, value: TypedVal) -> ClifValue {
+    match value {
+        TypedVal::IntDecoded(int) => int,
+        TypedVal::Word(word) => {
+            let high = cursor.ins().ushr_imm(word, 32);
+            let is_inline_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
+            let decode = cursor.func.dfg.make_block();
+            cursor.ins().brif(is_inline_int, decode, &[], ctx.deopt, &[]);
+            cursor.insert_block(decode);
+            let low = cursor.ins().ireduce(types::I32, word);
+            cursor.ins().sextend(types::I64, low)
+        }
+    }
+}
+
+/// Coerces a typed value to an encoded word (a materialization point).
+///
+/// An `IntDecoded` re-encodes with the inline-range check, deopting when
+/// wide so the tree walk re-runs and boxes it; a `Word` is already encoded.
+fn to_word(cursor: &mut FuncCursor, ctx: &CompressedLambdaCtx, value: TypedVal) -> ClifValue {
+    match value {
+        TypedVal::Word(word) => word,
+        TypedVal::IntDecoded(int) => emit_inline_int_encode(cursor, ctx, int),
+    }
+}
+
 /// Emits one binary operation, mirroring the tree walk's operand order.
 ///
-/// Both operand words are guarded to be inline integers with one combined
-/// high-half check, decoded, computed on wrapping `i64`, and the result
-/// re-encoded (or, for comparisons, selected between the two canonical
-/// boolean words). An arithmetic result outside the inline range deopts so
-/// the tree walk re-runs and boxes it.
+/// Operands coerce to decoded integers (`Word` operands get the inline
+/// guard exactly once; decoded operands join directly), the operation runs
+/// on wrapping `i64` — intermediates carry no inline-range constraint — and
+/// arithmetic stays decoded while comparisons select between the two
+/// canonical boolean words.
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -369,50 +455,27 @@ fn emit_binop(
     lhs: IrId,
     rhs: IrId,
     forced_param: &mut Option<ClifValue>,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let rhs_first = matches!(op, BinOpKind::Gt | BinOpKind::Le);
-    let (lhs_word, rhs_word) = if rhs_first {
-        let rhs_word = emit_expr(cursor, arena, ctx, rhs, forced_param)?;
-        let lhs_word = emit_expr(cursor, arena, ctx, lhs, forced_param)?;
-        (lhs_word, rhs_word)
+    let (lhs_val, rhs_val) = if rhs_first {
+        let rhs_val = emit_expr(cursor, arena, ctx, rhs, forced_param)?;
+        let lhs_val = emit_expr(cursor, arena, ctx, lhs, forced_param)?;
+        (lhs_val, rhs_val)
     } else {
-        let lhs_word = emit_expr(cursor, arena, ctx, lhs, forced_param)?;
-        let rhs_word = emit_expr(cursor, arena, ctx, rhs, forced_param)?;
-        (lhs_word, rhs_word)
+        let lhs_val = emit_expr(cursor, arena, ctx, lhs, forced_param)?;
+        let rhs_val = emit_expr(cursor, arena, ctx, rhs, forced_param)?;
+        (lhs_val, rhs_val)
     };
-
-    // Both operands must be inline integers (all-zero high halves) for the
-    // inline path; anything else (bools, boxed scalars, heap words, the
-    // sentinel) deopts.
-    let combined = cursor.ins().bor(lhs_word, rhs_word);
-    let combined_high = cursor.ins().ushr_imm(combined, 32);
-    let both_int = cursor.ins().icmp_imm(IntCC::Equal, combined_high, 0);
-    let compute = cursor.func.dfg.make_block();
-    cursor.ins().brif(both_int, compute, &[], ctx.deopt, &[]);
-    cursor.insert_block(compute);
-
-    let lhs_low = cursor.ins().ireduce(types::I32, lhs_word);
-    let lhs_int = cursor.ins().sextend(types::I64, lhs_low);
-    let rhs_low = cursor.ins().ireduce(types::I32, rhs_word);
-    let rhs_int = cursor.ins().sextend(types::I64, rhs_low);
+    let lhs_int = to_int(cursor, ctx, lhs_val);
+    let rhs_int = to_int(cursor, ctx, rhs_val);
 
     match op {
-        BinOpKind::Add => {
-            let result = cursor.ins().iadd(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
-        BinOpKind::Sub => {
-            let result = cursor.ins().isub(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
-        BinOpKind::Mul => {
-            let result = cursor.ins().imul(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
+        BinOpKind::Add => Ok(TypedVal::IntDecoded(cursor.ins().iadd(lhs_int, rhs_int))),
+        BinOpKind::Sub => Ok(TypedVal::IntDecoded(cursor.ins().isub(lhs_int, rhs_int))),
+        BinOpKind::Mul => Ok(TypedVal::IntDecoded(cursor.ins().imul(lhs_int, rhs_int))),
         BinOpKind::Div => {
-            // With inline `i32`-range operands a zero divisor is the only
-            // reachable tree-walk error (`i64::MIN` cannot be an operand),
-            // but keep both guards for uniformity with the tree walk.
+            // The tree walk errors on a zero divisor and on `i64::MIN / -1`;
+            // both are reachable through wide decoded operands and deopt.
             let nonzero = cursor.ins().icmp_imm(IntCC::NotEqual, rhs_int, 0);
             let lhs_is_min = cursor.ins().icmp_imm(IntCC::Equal, lhs_int, i64::MIN);
             let rhs_is_neg1 = cursor.ins().icmp_imm(IntCC::Equal, rhs_int, -1);
@@ -423,24 +486,39 @@ fn emit_binop(
             cursor.ins().brif(safe, divide, &[], ctx.deopt, &[]);
             cursor.insert_block(divide);
             let result = cursor.ins().sdiv(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
+            Ok(TypedVal::IntDecoded(result))
         }
-        BinOpKind::Lt => Ok(bool_word(cursor, IntCC::SignedLessThan, lhs_int, rhs_int)),
-        BinOpKind::Gt => Ok(bool_word(cursor, IntCC::SignedGreaterThan, lhs_int, rhs_int)),
-        BinOpKind::Le => Ok(bool_word(
+        BinOpKind::Lt => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::SignedLessThan,
+            lhs_int,
+            rhs_int,
+        ))),
+        BinOpKind::Gt => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::SignedGreaterThan,
+            lhs_int,
+            rhs_int,
+        ))),
+        BinOpKind::Le => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::SignedLessThanOrEqual,
             lhs_int,
             rhs_int,
-        )),
-        BinOpKind::Ge => Ok(bool_word(
+        ))),
+        BinOpKind::Ge => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::SignedGreaterThanOrEqual,
             lhs_int,
             rhs_int,
-        )),
-        BinOpKind::Eq => Ok(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int)),
-        BinOpKind::Ne => Ok(bool_word(cursor, IntCC::NotEqual, lhs_int, rhs_int)),
+        ))),
+        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int))),
+        BinOpKind::Ne => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::NotEqual,
+            lhs_int,
+            rhs_int,
+        ))),
         op => Err(JitLowerError::UnsupportedArithOp { op }),
     }
 }
@@ -490,7 +568,7 @@ fn emit_if(
     then_id: IrId,
     else_id: IrId,
     forced_param: &mut Option<ClifValue>,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let cond_node = arena
         .node(cond)
         .copied()
@@ -514,8 +592,21 @@ fn emit_if(
             kind: cond_node.kind,
         });
     }
-    let cond_word = emit_expr(cursor, arena, ctx, cond, forced_param)?;
+    let cond_val = emit_expr(cursor, arena, ctx, cond, forced_param)?;
+    let cond_word = to_word(cursor, ctx, cond_val);
     let truth = cursor.ins().band_imm(cond_word, 1);
+
+    // Both classes are i64 SSA, so the join parameter type never changes;
+    // only the wrapper class does. An Int/Int join stays decoded across the
+    // branch (the common recursive-arithmetic pattern), everything else
+    // joins as encoded words (a wide arm deopts at its own to_word).
+    let join_class = if infer_class(arena, then_id) == ExprClass::Int
+        && infer_class(arena, else_id) == ExprClass::Int
+    {
+        ExprClass::Int
+    } else {
+        ExprClass::Word
+    };
 
     let then_block = cursor.func.dfg.make_block();
     let else_block = cursor.func.dfg.make_block();
@@ -526,18 +617,29 @@ fn emit_if(
     let before_branch = *forced_param;
     cursor.insert_block(then_block);
     let mut then_param = before_branch;
-    let then_word = emit_expr(cursor, arena, ctx, then_id, &mut then_param)?;
-    cursor.ins().jump(join, &[then_word.into()]);
+    let then_val = emit_expr(cursor, arena, ctx, then_id, &mut then_param)?;
+    let then_carried = match join_class {
+        ExprClass::Int => to_int(cursor, ctx, then_val),
+        ExprClass::Word => to_word(cursor, ctx, then_val),
+    };
+    cursor.ins().jump(join, &[then_carried.into()]);
 
     cursor.insert_block(else_block);
     let mut else_param = before_branch;
-    let else_word = emit_expr(cursor, arena, ctx, else_id, &mut else_param)?;
-    cursor.ins().jump(join, &[else_word.into()]);
+    let else_val = emit_expr(cursor, arena, ctx, else_id, &mut else_param)?;
+    let else_carried = match join_class {
+        ExprClass::Int => to_int(cursor, ctx, else_val),
+        ExprClass::Word => to_word(cursor, ctx, else_val),
+    };
+    cursor.ins().jump(join, &[else_carried.into()]);
 
     cursor.insert_block(join);
     *forced_param = before_branch;
     let joined = cursor.func.dfg.block_params(join).to_vec();
-    Ok(joined[0])
+    Ok(match join_class {
+        ExprClass::Int => TypedVal::IntDecoded(joined[0]),
+        ExprClass::Word => TypedVal::Word(joined[0]),
+    })
 }
 
 /// Emits one direct self-call with its depth guard and sentinel propagation.
@@ -548,7 +650,7 @@ fn emit_self_call(
     callee: IrId,
     argument: IrId,
     forced_param: &mut Option<ClifValue>,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let callee_node = arena
         .node(callee)
         .copied()
@@ -564,7 +666,10 @@ fn emit_self_call(
         }
     }
     let argument = unwrap_thunk_alloc(arena, argument)?;
-    let arg_word = emit_expr(cursor, arena, ctx, argument, forced_param)?;
+    let arg_val = emit_expr(cursor, arena, ctx, argument, forced_param)?;
+    // Materialization point: the inner ABI takes an encoded word, so a wide
+    // decoded argument deopts here (the tree walk re-runs and boxes it).
+    let arg_word = to_word(cursor, ctx, arg_val);
 
     // Depth guard: a self-call needs remaining budget for the callee frame.
     let has_budget = cursor
@@ -597,5 +702,5 @@ fn emit_self_call(
         .brif(is_sentinel, ctx.sentinel, &[], continue_block, &[]);
     cursor.insert_block(continue_block);
     ctx.self_call_count = ctx.self_call_count.saturating_add(1);
-    Ok(word)
+    Ok(TypedVal::Word(word))
 }
