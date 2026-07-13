@@ -225,6 +225,7 @@ impl OwnedCallbackRuntimeState {
         exact_deadline: crate::ExactDeadlineReader,
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
+        fingerprint: Option<crate::PluginFingerprintSampling>,
     ) -> Result<*mut live_callbacks::LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
         // SAFETY: this projection does not move the pinned parent or any
         // independently pinned callback allocation. The new allocation is
@@ -285,6 +286,19 @@ impl OwnedCallbackRuntimeState {
             .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
         let ninep_rings = live_callbacks::LiveDirectedRingPair::new(mapped.first, mapped.second)?;
         let callback_state = callback_state.attach_devices(slot_index, block_rings, ninep_rings)?;
+        let callback_state = match fingerprint {
+            Some(sampling) => {
+                let slot = state
+                    .setup
+                    .mapped_region()
+                    .fingerprint_sample(slot_index)
+                    .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
+                        source,
+                    })?;
+                callback_state.attach_fingerprint(sampling, slot)
+            }
+            None => callback_state,
+        };
         let callback_state = Box::pin(callback_state);
         let callback_pointer = std::ptr::from_ref(callback_state.as_ref().get_ref()).cast_mut();
         state.live_vcpu_time = Some(callback_state);

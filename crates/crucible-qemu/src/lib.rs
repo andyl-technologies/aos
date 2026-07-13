@@ -207,9 +207,12 @@ pub use single_vm_fingerprint::{
     LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession,
     LiveRunnerSleeper, LiveTerminalHorizonExecutor, LiveTerminalHorizonExecutorError,
     LiveTerminalHorizonReport, LiveTerminalTargetExecutor, LiveTerminalTargetExecutorError,
-    LiveTerminalTargetObservation, LiveTerminalTargetReport, RawUnixArgvIdentity,
-    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
-    VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
+    LiveTerminalTargetObservation, LiveTerminalTargetReport, PLUGIN_FINGERPRINT_CADENCE_ICOUNT,
+    PLUGIN_FINGERPRINT_TARGET_ICOUNTS, PluginFingerprintRunner, PluginFingerprintRunnerConfig,
+    PluginFingerprintRunnerError, RUST_PLUGIN_FINGERPRINT_DOMAIN, RawUnixArgvIdentity,
+    RustPluginFingerprintDefinition, ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector,
+    VerifiedGuestImageDigests, VerifiedLiveRunInputs, VerifiedLiveRunInputsError,
+    spawn_live_observation_process,
 };
 pub use single_vm_fingerprint::{
     PluginFingerprintBoundary, QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTerminalHorizonTraceImport,
