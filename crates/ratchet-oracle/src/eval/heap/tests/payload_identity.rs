@@ -13,6 +13,14 @@
 //! longer read raw payload bits (raw-representation total 29 -> 11). The
 //! Candidate-C carrier's own accessor definitions live in
 //! `value/candidate_c_carrier.rs`, excluded here alongside `value.rs`.
+//!
+//! The S4b tier-1 JIT value-word facade then folded the two `lower.rs`
+//! constant-embedding relocation readers into one `lower/value_words.rs`
+//! `embedded_constant_words` reader (relocation-sensitive total 20 -> 19), and
+//! dropped the two `lower/candidate_c.rs` raw `payload_bits` constant readers —
+//! the one-word carrier now decodes embeddable constants through the typed
+//! `as_int`/`as_bool` accessors, which reject arena-backed words, so no raw read
+//! remains (raw-representation total 11 -> 9).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -36,10 +44,17 @@ struct PayloadIdentityAuditRow {
 
 const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
     PayloadIdentityAuditRow {
-        path: "ratchet-jit/src/lower.rs",
+        // The tier-1 constant-embedding read moved here from `lower.rs` when the
+        // width-generic value-word facade landed (S4b): the two former call sites
+        // consolidated into one `embedded_constant_words` reader on the baseline
+        // carrier. The `candidate_c.rs` raw `payload_bits` readers were dropped in
+        // the same refactor — the one-word carrier decodes constants through the
+        // typed `as_int`/`as_bool` accessors, which reject arena-backed words,
+        // rather than reading raw payload bits.
+        path: "ratchet-jit/src/lower/value_words.rs",
         raw_representation: 0,
         address_identity_only: 0,
-        relocation_sensitive: 2,
+        relocation_sensitive: 1,
         b2_disposition: "reject heap constants before CLIF payload emission",
     },
     PayloadIdentityAuditRow {
@@ -48,13 +63,6 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         address_identity_only: 0,
         relocation_sensitive: 1,
         b2_disposition: "reject heap constants before singleton-list head emission",
-    },
-    PayloadIdentityAuditRow {
-        path: "ratchet-jit/src/lower/candidate_c.rs",
-        raw_representation: 2,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "encode only arena-independent scalar literals into reusable code",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/env.rs",
@@ -265,7 +273,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.raw_representation)
             .sum::<usize>(),
-        11
+        9
     );
     assert_eq!(
         PAYLOAD_IDENTITY_AUDIT
@@ -279,12 +287,12 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.relocation_sensitive)
             .sum::<usize>(),
-        20
+        19
     );
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
         .filter(|row| !row.path.ends_with("capture_validation.rs"));
-    assert_eq!(production_rows.clone().count(), 16);
+    assert_eq!(production_rows.clone().count(), 15);
     assert_eq!(
         production_rows
             .map(|row| {
@@ -297,6 +305,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (11, 6, 18)
+        (9, 6, 17)
     );
 }
