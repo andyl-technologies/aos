@@ -222,6 +222,8 @@ use support::lower;
 mod analysis_soundness;
 mod attr_shape_modes;
 #[cfg(feature = "candidate_c_value")]
+mod heap_census;
+#[cfg(feature = "candidate_c_value")]
 mod heap_snapshot;
 mod attrs_1;
 mod attrs_2;

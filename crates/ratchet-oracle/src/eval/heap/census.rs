@@ -1,0 +1,225 @@
+//! Heap-image snapshot refusal census (RFC-0007 doc 31 §1 feasibility probe).
+//!
+//! [`EvalHeap::capture_heap_image`](super::EvalHeap::capture_heap_image) refuses
+//! a heap that holds worker closures or record-table objects. The compound
+//! *data* class (strings, paths, attrsets, lists, and context-bearing strings)
+//! now round-trips, so the open question for snapshotting the real forced
+//! lib+stdenv prelude is the *refused* mass: how much of the heap is closures,
+//! split by thunk/lambda/primop and — for thunks — by force state, since an
+//! unforced (`Suspended`) thunk can be collapsed to a value the snapshot already
+//! handles, whereas a lambda needs genuine closure serialization.
+//!
+//! This module walks a forced heap and tallies both the accepted (snapshottable)
+//! and refused object mass by kind, producing a [`RefusalCensus`] table. It is a
+//! diagnostic: it never mutates the heap and is not on the capture path.
+//!
+//! # Caveats
+//!
+//! - Byte mass is the *inline* flat-allocation size (`size_bytes()`): header plus
+//!   inline payload plus the inline recursive-binding capture tail. It does **not**
+//!   count a closure's captured [`EvalEnv`](crate::eval::env::EvalEnv), whose
+//!   frames are `Arc`-shared outside the arena — so closure retention is
+//!   undercounted. The census reports how many closures capture an environment as
+//!   a proxy; precise retained-env mass needs a dedicated frame-graph walk.
+//! - Source attribution (prelude vs package, top-level vs nested) needs the
+//!   `TreeWalk` module registry, which the `EvalOutcome` does not retain. The
+//!   census reports the count of distinct referenced code modules only.
+
+use std::collections::HashSet;
+use std::fmt;
+
+use crate::eval::module::EvalModuleId;
+use crate::eval::thunk::ThunkState;
+
+use super::*;
+
+/// A count-and-byte tally for one object kind.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct KindTally {
+    /// Number of live objects of this kind.
+    pub count: u64,
+    /// Summed inline flat-allocation bytes (`size_bytes()`); see the module
+    /// caveats — this excludes out-of-arena captured environments.
+    pub inline_bytes: u64,
+}
+
+impl KindTally {
+    /// Records one object of `inline_bytes` reserved size.
+    fn add(&mut self, inline_bytes: usize) {
+        self.count += 1;
+        self.inline_bytes += inline_bytes as u64;
+    }
+}
+
+/// A refusal census of one forced [`EvalHeap`] (RFC-0007 doc 31 §1 probe).
+///
+/// Groups every live flat object into the snapshot's *accepted* set (data that
+/// already round-trips) and *refused* set (worker closures and record-table
+/// objects), the latter split finely enough to choose the next increment.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RefusalCensus {
+    // Accepted (snapshottable) data.
+    /// Strings and paths (`flat`): both are `NixString` objects.
+    pub strings_and_paths: KindTally,
+    /// Attribute sets (`flat_attrs`).
+    pub attrs: KindTally,
+    /// Lists (`flat_lists`).
+    pub lists: KindTally,
+
+    // Refused: worker closures (`flat_closures`), by payload kind.
+    /// Unforced thunks — `Suspended` cell state; collapsible to a value.
+    pub thunks_suspended: KindTally,
+    /// Thunks that are `Forced` or `Blackhole` (in flight); the value exists or
+    /// is being computed.
+    pub thunks_forced: KindTally,
+    /// Lambda closures (genuine function values).
+    pub lambdas: KindTally,
+    /// Builtins and partially applied builtins.
+    pub primops: KindTally,
+    /// Retired (swept) closure slots; refused by count but hold no live payload.
+    pub retired_closures: KindTally,
+
+    // Refused: record-table objects (≈0 without a GC-stress policy).
+    /// Live typed record-table objects (`record_count()`).
+    pub records: u64,
+
+    /// Distinct code modules referenced by the live closures.
+    pub distinct_code_modules: u64,
+    /// Live closures that capture a lexical environment (retention proxy).
+    pub closures_capturing_env: u64,
+}
+
+impl RefusalCensus {
+    /// Total live objects the snapshot would refuse (closures + records).
+    pub fn refused_count(&self) -> u64 {
+        self.thunks_suspended.count
+            + self.thunks_forced.count
+            + self.lambdas.count
+            + self.primops.count
+            + self.retired_closures.count
+            + self.records
+    }
+
+    /// Total inline bytes held by the refused closures (records excluded — their
+    /// bytes live in a separate table).
+    pub fn refused_inline_bytes(&self) -> u64 {
+        self.thunks_suspended.inline_bytes
+            + self.thunks_forced.inline_bytes
+            + self.lambdas.inline_bytes
+            + self.primops.inline_bytes
+            + self.retired_closures.inline_bytes
+    }
+
+    /// Total inline bytes held by the accepted data objects.
+    pub fn accepted_inline_bytes(&self) -> u64 {
+        self.strings_and_paths.inline_bytes + self.attrs.inline_bytes + self.lists.inline_bytes
+    }
+}
+
+impl fmt::Display for RefusalCensus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let row = |f: &mut fmt::Formatter<'_>, label: &str, t: KindTally| {
+            writeln!(f, "  {label:<22} count={:>8}  inline_bytes={:>12}", t.count, t.inline_bytes)
+        };
+        writeln!(f, "heap-image refusal census (RFC-0007 doc 31 §1)")?;
+        writeln!(f, "accepted (snapshottable) data:")?;
+        row(f, "strings+paths", self.strings_and_paths)?;
+        row(f, "attrs", self.attrs)?;
+        row(f, "lists", self.lists)?;
+        writeln!(
+            f,
+            "  accepted total          inline_bytes={:>12}",
+            self.accepted_inline_bytes()
+        )?;
+        writeln!(f, "refused: closures:")?;
+        row(f, "thunks (suspended)", self.thunks_suspended)?;
+        row(f, "thunks (forced)", self.thunks_forced)?;
+        row(f, "lambdas", self.lambdas)?;
+        row(f, "primops", self.primops)?;
+        row(f, "retired (swept)", self.retired_closures)?;
+        writeln!(f, "refused: records:")?;
+        writeln!(f, "  record-table objects   count={:>8}", self.records)?;
+        writeln!(
+            f,
+            "refused total            count={:>8}  closure_inline_bytes={:>12}",
+            self.refused_count(),
+            self.refused_inline_bytes()
+        )?;
+        writeln!(f, "closure detail:")?;
+        writeln!(f, "  distinct code modules  {}", self.distinct_code_modules)?;
+        writeln!(
+            f,
+            "  closures capturing env {} (retained env bytes not counted here)",
+            self.closures_capturing_env
+        )
+    }
+}
+
+impl EvalHeap {
+    /// Tallies this forced heap's accepted and refused object mass by kind.
+    ///
+    /// Walks every flat store without mutating the heap: `flat` (strings/paths),
+    /// `flat_attrs`, and `flat_lists` are the accepted data; `flat_closures` is
+    /// the refused closure mass, split into suspended thunks, in-flight thunks,
+    /// lambdas, primops, and retired slots; `record_count()` reports the refused
+    /// record-table objects. Also collects the distinct code modules referenced
+    /// by live closures and how many capture a lexical environment.
+    ///
+    /// This is the RFC-0007 doc 31 §1 feasibility probe: the numbers decide
+    /// whether the next snapshot increment is closure serialization, a
+    /// force-then-collapse hybrid, or a re-scope.
+    pub(crate) fn refusal_census(&self) -> RefusalCensus {
+        let mut census = RefusalCensus {
+            records: self.record_count() as u64,
+            ..RefusalCensus::default()
+        };
+
+        for object in self.flat.iter() {
+            census.strings_and_paths.add(object.size_bytes());
+        }
+        for object in self.flat_attrs.iter() {
+            census.attrs.add(object.size_bytes());
+        }
+        for object in self.flat_lists.iter() {
+            census.lists.add(object.size_bytes());
+        }
+
+        let mut modules: HashSet<EvalModuleId> = HashSet::new();
+        for object in self.flat_closures.iter() {
+            let size = object.size_bytes();
+            match object.object().payload() {
+                FlatClosurePayload::Thunk(thunk) => {
+                    match thunk.cell().state() {
+                        Ok(ThunkState::Suspended) => census.thunks_suspended.add(size),
+                        // Forced or Blackhole: the value exists or is in flight.
+                        Ok(_) => census.thunks_forced.add(size),
+                        // A poisoned cell still occupies a refused slot.
+                        Err(_) => census.thunks_forced.add(size),
+                    }
+                    if let Some(module) = thunk.code_module() {
+                        modules.insert(module);
+                    }
+                    if thunk.env().is_some() {
+                        census.closures_capturing_env += 1;
+                    }
+                }
+                FlatClosurePayload::Lambda(lambda) => {
+                    census.lambdas.add(size);
+                    modules.insert(lambda.module());
+                    census.closures_capturing_env += 1;
+                }
+                FlatClosurePayload::Primop(primop) => {
+                    census.primops.add(size);
+                    // A primop is a builtin plus already-applied argument slots;
+                    // each captured arg carries the module it was lowered in.
+                    for arg in primop.args() {
+                        modules.insert(arg.module());
+                    }
+                }
+                FlatClosurePayload::Retired(_) => census.retired_closures.add(size),
+            }
+        }
+        census.distinct_code_modules = modules.len() as u64;
+        census
+    }
+}

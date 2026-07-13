@@ -52,6 +52,8 @@ use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 mod alloc_counters;
 mod arena;
+#[cfg(all(test, feature = "candidate_c_value"))]
+mod census;
 mod deref_counters;
 mod environment_writeback;
 mod flat_values;
