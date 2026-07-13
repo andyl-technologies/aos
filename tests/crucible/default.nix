@@ -496,19 +496,24 @@ in rec {
         reason = "the sim-off corpus is diagnostic until per-prefix semantic inertness and effect attribution are complete";
         taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
       };
-      singleVmFingerprint = redBeforeAdvance {
+      singleVmFingerprint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
         # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
+        # Canonical ordering dependency is qemu-inert only (the phase4
+        # channel-wiring gate pins `qemuInert -> singleVmFingerprint -> anyGuest`);
+        # the certifying evidence gates ride on the outer greenBeforeAdvance
+        # dependencies, where they are still forced to build. Certified by the
+        # live Rust-plugin fingerprint authority (phase2.qemuLivePluginFingerprint)
+        # in addition to the diagnostic C-trace importer
+        # (phase2.qemuSingleVmFingerprint): T-DET-8, T-HARN-7, T-QEMU-11,
+        # T-QEMU-16, T-TIME-8.
         gate = import ./phase1-single-vm-fingerprint-gate.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
           taskIds = [];
-          dependencies = [qemuInert.rawGate phase2.qemuSingleVmFingerprint];
+          dependencies = [qemuInert.rawGate];
         };
-        dependencies = [qemuInert phase2.qemuSingleVmFingerprint];
-        phase = "phase2";
-        reason = "the real-QEMU fingerprint importer is diagnostic-only and cannot yet certify the canonical gate";
-        taskIds = ["T-DET-8" "T-HARN-6" "T-HARN-7" "T-QEMU-11" "T-QEMU-16"];
+        dependencies = [qemuInert phase2.qemuSingleVmFingerprint phase2.qemuLivePluginFingerprint];
       };
       anyGuest = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.anyGuest";

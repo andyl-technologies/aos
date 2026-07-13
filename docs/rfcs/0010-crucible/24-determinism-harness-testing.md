@@ -915,6 +915,15 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
     This does not execute an installed production plugin, so the live-plugin
     half remains open.
+  - The installed production plugin is now executed live by
+    `checks.crucible.phase2.qemuLivePluginQuantum` and
+    `checks.crucible.phase2.qemuLivePluginFingerprint`, which prove the live
+    plugin's host-observable behaviour (idle/deadline/idle-jump schedule and a
+    deterministic run-twice fingerprint) is reproducible. The remaining open
+    piece is the explicit cross-check that replays one recorded host-observable
+    schedule through both the `SimDouble` and the installed plugin and asserts
+    byte-for-byte equality of the two live schedules; that comparison harness is
+    not yet built.
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
@@ -929,15 +938,34 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     samples the exact horizon event. Live
     frame-delivery and fault-activation boundary hooks and the integrated
     fixed-input runner remain absent; therefore this task remains open.
+  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
+    integrated fixed-input runner now exists (`PluginFingerprintRunner`) and does
+    icount-driven, observation-only sampling through the live Rust plugin (not
+    QMP): registers, guest-RAM, and non-RAM VMState digests are read into the
+    per-node fingerprint slot at each host-ceiling boundary along a fixed
+    aggregate-icount cadence, and folded into the rolling hash. Still absent: the
+    frame-delivery and fault-activation boundary sampling triggers, which are
+    implemented as honest hooks but cannot fire until the M4/M5 live-I/O and
+    fault paths deliver real events (the runner never synthesizes them).
 - [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
   - The model comparator, provenance-bound real-QEMU comparison, exact
     bisection-report invariants, and typed both-side state-dump schema exist, but
-    trace mutations provide only coarse post-processing localization. There is
-    no live runner hook for instruction-exact restart/checkpoint refinement or
-    real both-side dumps. `greenBeforeAdvance` and `gate:any-guest` therefore
-    remain blocked on this task.
+    trace mutations provide only coarse post-processing localization.
+  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the live
+    runner hook for instruction-exact refinement now exists — `PluginFingerprintRunner`
+    boots one unmodified guest twice and compares the fingerprint streams live
+    (byte-identical, the second run under host CPU load), and
+    `SingleVmFingerprintProbeRunner` refines by RESTART to an exact icount
+    (`loadvm` stays policy-disabled; the probe replays from the same immutable
+    inputs), with restart-probe equality attested at an interior icount. On this
+    evidence the phase2 `gate:single-vm-fingerprint` is advanced to
+    `greenBeforeAdvance`, and `gate:any-guest` depends on it. The task stays open
+    only for the real both-side architectural state dump at a divergence: the
+    deterministic gate proves equality so that path is unreached, and
+    `dump_single_vm_fingerprint_state` fails loud rather than fabricating a dump,
+    pending the M4/M5 whitebox register/memory value capture.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.

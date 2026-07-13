@@ -637,8 +637,11 @@ impl LiveVcpuTimeCallbackState {
     /// progress publish (which would make the boundary hash dominate wall time).
     /// It runs immediately before the reached-icount publish so the host's
     /// post-`finish_quantum` read observes an already-published, quiescent
-    /// sample. The vCPU count is the setup-captured `-smp N` bound into this
-    /// callback state, so the sample covers every configured vCPU.
+    /// sample. The vCPU count is `self.vcpu_count` — the install-time
+    /// `smp_vcpus` QEMU reported to the plugin (`execution_model.smp_vcpus()`),
+    /// bound into this callback state at construction — so the sample covers
+    /// every configured vCPU. Multi-vCPU aggregation of the sampled material is
+    /// deferred to M3 (T-TIME-9); this provenance is what that slice keys on.
     ///
     /// # Errors
     ///
@@ -860,6 +863,16 @@ impl LiveVcpuTimeCallbackState {
                 ceiling_icount,
             });
         }
+        // Sample the fingerprint only at the host-driven ceiling, and gate on
+        // exact equality (not `>=`): the plugin clamps advance at the max-advance
+        // ceiling, so a reached publish at a host-driven boundary lands on
+        // `current_icount == ceiling_icount` by construction (the same
+        // exact-ceiling-stop the install/quantum gates prove). Exact equality is
+        // therefore both correct and determinism-load-bearing — it makes the
+        // sampled boundary a function of the host's ceiling alone, independent of
+        // how many intermediate progress publishes the busy advance emitted, so
+        // the guest-RAM SHA-256 runs once per host-read boundary rather than on
+        // every publish.
         if current_icount == ceiling_icount {
             self.publish_fingerprint_sample(current_icount)?;
         }
