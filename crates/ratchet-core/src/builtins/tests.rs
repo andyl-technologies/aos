@@ -106,7 +106,32 @@ fn builtin_lookup_distinguishes_top_level_names_from_attrs() {
 
 #[test]
 fn pinned_nix_version_matches_packaged_cpp_nix() {
-    let package = include_str!("../../../../pkgs/tools/nix.nix");
+    // Read `pkgs/tools/nix.nix` at runtime (not `include_str!`) and SKIP when it
+    // is absent, so this test runs in a full checkout and is inert in the
+    // crates-only Nix build sandbox (`pkgs.aos` uses `src = ../../../crates`,
+    // which omits the repo root). The prior `include_str!("../../../../…")` was
+    // a compile-time include whose path was calibrated for the full-checkout
+    // layout; f8a7bb51f ("extract ratchet-core crate") moved this crate one
+    // directory shallower, so the same relative path overshot to the sandbox
+    // build root and failed the whole `pkgs.aos` doCheck at compile time. This
+    // mirrors the runtime-read precedent in
+    // aos-nix/tests/lang_conformance/upstream_tests.rs.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let Some(repo_root) = manifest_dir.parent().and_then(std::path::Path::parent) else {
+        eprintln!(
+            "no repo root above {}; skipping pinned-nix-version check",
+            manifest_dir.display()
+        );
+        return;
+    };
+    let nix_nix = repo_root.join("pkgs/tools/nix.nix");
+    let Ok(package) = std::fs::read_to_string(&nix_nix) else {
+        eprintln!(
+            "{} absent (crates-only sandbox); skipping pinned-nix-version check",
+            nix_nix.display()
+        );
+        return;
+    };
     let version = package
         .lines()
         .find_map(|line| {

@@ -43,8 +43,19 @@ fn pinned_lang_version_matches_packaged_cpp_nix() -> Result<()> {
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| anyhow!("{} has no repo root parent", manifest_dir.display()))?;
-    let package = fs::read_to_string(repo_root.join("pkgs/tools/nix.nix"))
-        .context("reading packaged C++ Nix derivation")?;
+    // SKIP when the packaged derivation is absent, so this runs in a full
+    // checkout and is inert in the crates-only Nix build sandbox (`pkgs.aos`
+    // uses `src = ../../../crates`, which omits the repo root). Without the
+    // skip this `--workspace` integration test fails the hermetic `pkgs.aos`
+    // doCheck (the repo root resolves to the sandbox build dir).
+    let nix_nix = repo_root.join("pkgs/tools/nix.nix");
+    let Ok(package) = fs::read_to_string(&nix_nix) else {
+        eprintln!(
+            "{} absent (crates-only sandbox); skipping pinned-lang-version check",
+            nix_nix.display()
+        );
+        return Ok(());
+    };
     let version = package
         .lines()
         .find_map(|line| {
