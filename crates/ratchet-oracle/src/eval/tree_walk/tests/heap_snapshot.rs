@@ -140,6 +140,29 @@ fn heap_image_round_trips_a_list_via_payload() {
 }
 
 #[test]
+fn restore_rejects_a_duplicate_list_index() {
+    let outcome = eval_owned_with_source(b"snapshot-dup", "[ 1 2 3 ]");
+    let mut image = match outcome.heap().capture_heap_image() {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => return,
+        Err(other) => panic!("unexpected capture failure: {other}"),
+    };
+    assert_eq!(image.list_payloads.len(), 1);
+    // Forge a malformed image: two records naming the same list object. Restoring
+    // both would register it in the store twice and free it twice.
+    image.list_payloads.push(image.list_payloads[0].clone());
+    let bytes = image.to_bytes();
+    drop(outcome);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    assert!(matches!(
+        EvalHeap::from_restored_heap_image(&reloaded),
+        Err(EvalHeapSnapshotError::DuplicateObjectIndex { .. })
+    ));
+}
+
+#[test]
 fn heap_image_round_trips_a_list_of_strings_with_relocated_witnesses() {
     let outcome = eval_owned_with_source(b"snapshot-list-str", "[ \"alpha\" \"beta\" ]");
     let root = outcome.value();

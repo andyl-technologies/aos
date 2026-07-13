@@ -27,6 +27,8 @@
 //! uncovered witness — and fails capture, converting store-enumeration
 //! completeness into a checked invariant (doc 31 §9 decision 6).
 
+use std::collections::HashSet;
+
 use thiserror::Error;
 
 use ratchet_value::heap::{
@@ -141,6 +143,9 @@ impl EvalHeap {
     /// its domain is still live, [`EvalHeapSnapshotError::ObjectOutsideReservation`]
     /// when a relocation or list-payload index does not resolve,
     /// [`EvalHeapSnapshotError::UnknownKind`] for an unrecognized relocation kind,
+    /// [`EvalHeapSnapshotError::DuplicateObjectIndex`] when two records name the
+    /// same arena object (a malformed image that would otherwise double-rebase a
+    /// witness or double-register a list for `Drop`),
     /// [`EvalHeapSnapshotError::MalformedListPayload`] when a list payload's bytes
     /// are not a whole number of valid words, and
     /// [`EvalHeapSnapshotError::FlatResolve`] when a recorded object cannot be
@@ -156,7 +161,18 @@ impl EvalHeap {
         let mut heap = Self::assemble_over_arena(arena, RuntimeAllocator::tier_a_one_shot());
         heap.adopt_restored_regions();
 
+        // Each arena object has exactly one kind, so every relocation and
+        // list-payload index must be distinct across both records. Rejecting a
+        // repeat closes an untrusted-image hazard: a duplicate relocation index
+        // would delta-rebase a witness twice (a doubly-shifted, out-of-arena
+        // pointer), and a duplicate list index would register the same object in
+        // the store twice, dropping it twice (a double free).
+        let mut seen: HashSet<u32> = HashSet::new();
+
         for entry in &image.relocations {
+            if !seen.insert(entry.index) {
+                return Err(EvalHeapSnapshotError::DuplicateObjectIndex { index: entry.index });
+            }
             let ptr = heap
                 .flat_arena
                 .pointer_for_index(ArenaIndex::new(entry.index))
@@ -178,6 +194,11 @@ impl EvalHeap {
         }
 
         for payload in &image.list_payloads {
+            if !seen.insert(payload.index) {
+                return Err(EvalHeapSnapshotError::DuplicateObjectIndex {
+                    index: payload.index,
+                });
+            }
             heap.restore_list_payload(payload)?;
         }
         Ok(heap)
@@ -374,6 +395,13 @@ pub enum EvalHeapSnapshotError {
     UnknownKind {
         /// The rejected kind byte.
         kind: u8,
+    },
+    /// Two records named the same arena object; restoring both would double-rebase
+    /// a witness or double-register a list for `Drop` (a malformed image).
+    #[error("relocation records name arena object {index} more than once")]
+    DuplicateObjectIndex {
+        /// The arena index that appeared more than once.
+        index: u32,
     },
     /// A recorded relocation object could not be resolved for rebasing.
     #[error("relocation object resolution failed: {0}")]
