@@ -22,8 +22,10 @@ pub use value_layout::{
     candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
 };
 pub use signature_tables::{
-    MAX_RUNTIME_PRIMOP_ABI_ARITY, RUNTIME_HELPER_CALL_SIGNATURES, RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE, RUNTIME_LAMBDA_CALL_SIGNATURE,
-    RUNTIME_PRIMOP_CALL_SIGNATURES, RUNTIME_THUNK_CALL_SIGNATURE, runtime_helper_call_signature,
+    MAX_RUNTIME_PRIMOP_ABI_ARITY, RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE,
+    RUNTIME_HELPER_CALL_SIGNATURES, RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE, RUNTIME_LAMBDA_CALL_SIGNATURE,
+    RUNTIME_PRIMOP_CALL_SIGNATURES, RUNTIME_THUNK_CALL_SIGNATURE,
+    runtime_fold_step_i64acc_call_signature, runtime_helper_call_signature,
     runtime_helper_call_signatures, runtime_lambda_argv_call_signature,
     runtime_lambda_call_signature, runtime_primop_call_signature, runtime_primop_call_signatures,
     runtime_thunk_call_signature,
@@ -250,6 +252,16 @@ pub enum RuntimeAbiParameterKind {
     InlineCacheSiteId,
     /// A 32-bit unsigned integer.
     U32,
+    /// A target-pointer-sized signed integer carrying a decoded runtime
+    /// integer out of band from the [`Value`](Self::Value) representation.
+    ///
+    /// Used by the fold-step entry ABI to thread a loop accumulator as a plain
+    /// `i64` across the native fold loop, bypassing the per-element compressed
+    /// encode/decode round-trip. The producer guarantees the bits are a valid
+    /// decoded integer (the emitter only returns `DecodedInt` from an
+    /// integer-typed operator body); a deopt is signaled out of band by the
+    /// runtime trap flag, never by a reserved value in this word.
+    DecodedInt,
 }
 
 /// The machine-level result kind returned by runtime-call signatures.
@@ -273,6 +285,9 @@ pub enum RuntimeAbiReturnKind {
     StringHeaderPointer,
     /// A pointer to raw heap storage.
     RawPointer,
+    /// A target-pointer-sized signed integer carrying a decoded runtime integer
+    /// (see [`RuntimeAbiParameterKind::DecodedInt`]).
+    DecodedInt,
 }
 
 /// A frozen native-call signature for a runtime callable family.

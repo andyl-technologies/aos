@@ -337,7 +337,9 @@ fn append_parameter(
         | RuntimeAbiParameterKind::InlineCacheSiteId
         | RuntimeAbiParameterKind::TypeTag
         | RuntimeAbiParameterKind::U32 => params.push(AbiParam::new(types::I32)),
-        RuntimeAbiParameterKind::Usize => params.push(AbiParam::new(pointer_type)),
+        RuntimeAbiParameterKind::Usize | RuntimeAbiParameterKind::DecodedInt => {
+            params.push(AbiParam::new(pointer_type))
+        }
     }
 }
 
@@ -355,7 +357,8 @@ fn append_return_kind(
         | RuntimeAbiReturnKind::AttrsPointer
         | RuntimeAbiReturnKind::ListPointer
         | RuntimeAbiReturnKind::StringHeaderPointer
-        | RuntimeAbiReturnKind::RawPointer => returns.push(AbiParam::new(pointer_type)),
+        | RuntimeAbiReturnKind::RawPointer
+        | RuntimeAbiReturnKind::DecodedInt => returns.push(AbiParam::new(pointer_type)),
     }
 }
 

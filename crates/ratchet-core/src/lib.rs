@@ -64,7 +64,8 @@ pub use ir::{
 };
 pub use runtime_abi::{
     BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, MAX_RUNTIME_PRIMOP_ABI_ARITY,
-    RUNTIME_HELPER_CALL_SIGNATURES, RUNTIME_HELPER_SYMBOL_PREFIX, RUNTIME_HELPER_SYMBOLS,
+    RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE, RUNTIME_HELPER_CALL_SIGNATURES,
+    RUNTIME_HELPER_SYMBOL_PREFIX, RUNTIME_HELPER_SYMBOLS,
     RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE, RUNTIME_LAMBDA_CALL_SIGNATURE,
     RUNTIME_PRIMOP_CALL_SIGNATURES, RUNTIME_THUNK_CALL_SIGNATURE,
     RuntimeAbiCallingConvention, RuntimeAbiParameter, RuntimeAbiParameterKind,
@@ -76,7 +77,8 @@ pub use runtime_abi::{
     RuntimeSymbolKind, RuntimeSymbolManifestEntry, RuntimeSymbolNameError,
     candidate_b_runtime_abi_value_layout, candidate_c_runtime_abi_value_layout,
     runtime_abi_value_layout, runtime_builtin_call_manifest, runtime_builtin_call_preflight,
-    runtime_helper_call_signature, runtime_helper_call_signatures, runtime_helper_symbols,
+    runtime_fold_step_i64acc_call_signature, runtime_helper_call_signature,
+    runtime_helper_call_signatures, runtime_helper_symbols,
     runtime_lambda_argv_call_signature, runtime_lambda_call_signature,
     runtime_primop_call_signature, runtime_primop_call_signatures, runtime_symbol_manifest,
     runtime_thunk_call_signature,

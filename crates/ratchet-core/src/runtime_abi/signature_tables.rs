@@ -87,6 +87,34 @@ pub const RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCall
     RuntimeAbiReturnKind::Value,
 );
 
+const FOLD_STEP_I64ACC_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+    RuntimeAbiParameter::new("acc", RuntimeAbiParameterKind::DecodedInt),
+    RuntimeAbiParameter::new("elem", RuntimeAbiParameterKind::Value),
+];
+
+/// The frozen runtime-call signature for a tier-2 fold-step entry with a
+/// decoded `i64` loop accumulator.
+///
+/// A native fold loop threads its accumulator as a plain decoded `i64`
+/// ([`RuntimeAbiParameterKind::DecodedInt`]) rather than re-encoding it into a
+/// compressed [`Value`](RuntimeAbiParameterKind::Value) on every element. The
+/// step receives `(rt, env, acc, elem)` — `acc` the running decoded integer and
+/// `elem` the current element by value — and returns the next decoded `i64`
+/// accumulator. It is used only when the fold operator body is statically
+/// integer-typed (so its result is always a decoded integer); a per-element
+/// deopt (a non-integer element, division error, etc.) is signaled out of band
+/// by the runtime trap flag, and the loop then re-encodes the current `acc` to
+/// a `Value` and resumes the fold interpreted from that element.
+pub const RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE: RuntimeCallSignature =
+    RuntimeCallSignature::new(
+        RuntimeCallableKind::LambdaBody,
+        RuntimeAbiCallingConvention::ExternC,
+        FOLD_STEP_I64ACC_CALL_PARAMETERS,
+        RuntimeAbiReturnKind::DecodedInt,
+    );
+
 const RUNTIME_PRIMOP_0_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Primop { arity: 0 },
     RuntimeAbiCallingConvention::ExternC,
@@ -424,6 +452,14 @@ pub const fn runtime_lambda_call_signature() -> RuntimeCallSignature {
 /// See [`RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE`] for the `argv` convention.
 pub const fn runtime_lambda_argv_call_signature() -> RuntimeCallSignature {
     RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE
+}
+
+/// Returns the frozen runtime-call signature for a decoded-`i64`-accumulator
+/// fold-step entry.
+///
+/// See [`RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE`] for the accumulator contract.
+pub const fn runtime_fold_step_i64acc_call_signature() -> RuntimeCallSignature {
+    RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE
 }
 
 /// Returns the frozen primop call-signature inventory.
