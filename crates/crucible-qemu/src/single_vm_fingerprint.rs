@@ -18,6 +18,8 @@
 mod compare;
 #[cfg(target_os = "linux")]
 mod live_runner;
+#[cfg(target_os = "linux")]
+mod plugin_live_runner;
 mod plugin_sample;
 mod probe;
 mod run;
@@ -47,6 +49,12 @@ pub use live_runner::{
     LiveTerminalTargetObservation, LiveTerminalTargetReport, RawUnixArgvIdentity,
     ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
     VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
+};
+#[cfg(target_os = "linux")]
+pub use plugin_live_runner::{
+    CADENCE_ICOUNT as PLUGIN_FINGERPRINT_CADENCE_ICOUNT, PluginFingerprintRunner,
+    PluginFingerprintRunnerConfig, PluginFingerprintRunnerError, RUST_PLUGIN_FINGERPRINT_DOMAIN,
+    RustPluginFingerprintDefinition, TARGET_ICOUNTS as PLUGIN_FINGERPRINT_TARGET_ICOUNTS,
 };
 pub use plugin_sample::{
     PluginFingerprintBoundary, build_plugin_fingerprint_stream, nvcpu_material_from_shmem_sample,

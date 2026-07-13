@@ -6,8 +6,8 @@ use crucible::{
 };
 use crucible_protocol::PluginBasicBlockCoverageObservation;
 use crucible_shmem::{
-    MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    RegionControlError, STATUS_DONE,
+    FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
+    MappedSetupRegionAccessError, RegionControlError, STATUS_DONE,
 };
 use thiserror::Error;
 
@@ -48,6 +48,28 @@ impl QemuMappedQuantumShmemHotPath {
             .request_shutdown([slot])
             .map(|_wake| ())
             .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionControl { source })
+    }
+
+    /// Returns this VM's most recent plugin-published fingerprint sample.
+    ///
+    /// Reads the per-node fingerprint sample slot the plugin publishes at each
+    /// scheduler boundary when launched with `fingerprint=on`, returning a
+    /// tear-free snapshot. Returns `None` when the plugin has published no
+    /// sample yet — for example when fingerprint sampling was left disabled.
+    /// The read borrows `&self` and mutates nothing, so it is safe to call
+    /// after `finish_quantum` while the slot is quiescent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
+    /// no longer validates or the configured VM slot has no fingerprint segment.
+    pub fn fingerprint_sample(
+        &self,
+    ) -> Result<Option<FingerprintSample>, QemuMappedQuantumShmemHotPathError> {
+        self.region
+            .fingerprint_sample(self.config.vm_slot)
+            .map(|slot| slot.snapshot())
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
     }
 
     /// Returns whether the plugin published terminal `Done` for this VM slot.

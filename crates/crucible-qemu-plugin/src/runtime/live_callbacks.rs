@@ -13,27 +13,28 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
-    DirectedRing, FrameEntry, FutexWaitOutcome, MappedDirectedRingMut,
-    MappedSetupRegionAccessError, NodeSlot, NodeSlotError, RegionControlAction, RegionHeader,
-    RingHeader, SLOT_NET_ROUTER,
+    DirectedRing, FingerprintSampleError, FingerprintSampleSlot, FrameEntry, FutexWaitOutcome,
+    MappedDirectedRingMut, MappedSetupRegionAccessError, NodeSlot, NodeSlotError,
+    RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER,
 };
 use thiserror::Error;
 
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, IdleHotLoopError, IdleParkRequest, InboundFrameError,
-    InboundFrameRing, NetworkRxError, NetworkTxError, NetworkTxRing, PendingIdleAdvance,
-    PluginArgs, PluginInboundFrames, PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering,
-    PluginShutdownRequested, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
-    QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue,
-    QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn,
-    QemuRegisterBlkCbFn, QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn,
-    QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn,
-    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, SchedulerCeiling,
-    TimeAdvanceCompletion, compute_idle_wake_plan, handle_network_rx_idle_callback,
+    ExactDeadlineError, ExactDeadlineReader, FingerprintSamplerError, IdleHotLoopError,
+    IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
+    NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
+    PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering, PluginShutdownRequested,
+    QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
+    QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeNsFn, QemuClockDeadlineFn,
+    QemuIcountRawFn, QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId,
+    QemuPluginNetFlushFn, QemuPluginNetSendFn, QemuRegisterBlkCbFn, QemuRegisterNetTxCbFn,
+    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
+    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion, compute_idle_wake_plan,
+    handle_network_rx_idle_callback,
 };
 
 use super::{
@@ -171,6 +172,15 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let capabilities = self
             .required_capabilities(args)
             .map_err(live_callback_registration_error)?;
+        let fingerprint = if args.fingerprint().is_on() {
+            Some(PluginFingerprintSampling::resolve().ok_or_else(|| {
+                live_callback_registration_error(
+                    LiveVcpuTimeCallbackError::FingerprintCapabilityUnavailable,
+                )
+            })?)
+        } else {
+            None
+        };
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
@@ -182,6 +192,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
+                fingerprint,
             )
             .map_err(live_callback_registration_error)?;
         LIVE_VCPU_TIME_STATE
@@ -294,6 +305,37 @@ impl StableNodeSlotHandle {
         // through its cross-process atomic API.
         unsafe { self.slot.as_ref() }
     }
+}
+
+/// Stable fingerprint-slot address retained by the setup mapping owner.
+struct StableFingerprintSlotHandle {
+    slot: NonNull<FingerprintSampleSlot>,
+}
+
+impl StableFingerprintSlotHandle {
+    fn new(slot: &FingerprintSampleSlot) -> Self {
+        Self {
+            slot: NonNull::from(slot),
+        }
+    }
+
+    fn get(&self) -> &FingerprintSampleSlot {
+        // SAFETY: the fingerprint slot lives in the same setup-owned mapping as
+        // the node slot and directed rings. `OwnedCallbackRuntimeState` retains
+        // that mapping for the process lifetime after registration, and the slot
+        // is published only through its interior seqlock-guarded atomics.
+        unsafe { self.slot.as_ref() }
+    }
+}
+
+/// Registration-fixed fingerprint sampling joined to the reached-icount publish.
+///
+/// Present only when the launch enabled `fingerprint=on`. It pairs the resolved
+/// [`PluginFingerprintSampling`] capability with a stable handle to this VM's
+/// per-node [`FingerprintSampleSlot`].
+struct LiveFingerprintCallbackState {
+    sampling: PluginFingerprintSampling,
+    slot: StableFingerprintSlotHandle,
 }
 
 /// Stable raw view of one directed ring retained by the mapping owner.
@@ -434,6 +476,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
     network: Option<LiveNetworkCallbackState>,
     devices: Option<Mutex<LiveDeviceCallbackState>>,
+    fingerprint: Option<LiveFingerprintCallbackState>,
 }
 
 #[derive(Debug)]
@@ -505,6 +548,7 @@ impl LiveVcpuTimeCallbackState {
             pending_idle_advance: Mutex::new(None),
             network: None,
             devices: None,
+            fingerprint: None,
         })
     }
 
@@ -563,6 +607,58 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(LiveVcpuTimeCallbackError::live_device)?,
         ));
         Ok(self)
+    }
+
+    /// Binds the resolved fingerprint sampler and this VM's shared-memory slot.
+    ///
+    /// Called only when the launch enabled `fingerprint=on`; afterwards each
+    /// reached-icount publish first captures and publishes a black-box
+    /// fingerprint sample. `slot` is the per-node
+    /// [`FingerprintSampleSlot`] retained by the same setup mapping owner as the
+    /// node slot and directed rings.
+    pub(super) fn attach_fingerprint(
+        mut self,
+        sampling: PluginFingerprintSampling,
+        slot: &FingerprintSampleSlot,
+    ) -> Self {
+        self.fingerprint = Some(LiveFingerprintCallbackState {
+            sampling,
+            slot: StableFingerprintSlotHandle::new(slot),
+        });
+        self
+    }
+
+    /// Captures and publishes a black-box fingerprint sample stamped at `icount`.
+    ///
+    /// A no-op unless the launch enabled `fingerprint=on`. Callers invoke it only
+    /// when the published icount equals the host-set scheduler ceiling — the
+    /// host's ceiling is the sample request, so the guest-RAM SHA-256 runs once
+    /// per host-driven quantum boundary rather than on every intermediate
+    /// progress publish (which would make the boundary hash dominate wall time).
+    /// It runs immediately before the reached-icount publish so the host's
+    /// post-`finish_quantum` read observes an already-published, quiescent
+    /// sample. The vCPU count is the setup-captured `-smp N` bound into this
+    /// callback state, so the sample covers every configured vCPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LiveVcpuTimeCallbackError::FingerprintSample`] when boundary
+    /// introspection or assembly fails, or
+    /// [`LiveVcpuTimeCallbackError::FingerprintPublish`] when the assembled
+    /// sample fails shared-memory slot publication.
+    fn publish_fingerprint_sample(&self, icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(fingerprint) = self.fingerprint.as_ref() else {
+            return Ok(());
+        };
+        let sample = fingerprint
+            .sampling
+            .sample(icount, self.vcpu_count)
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { source })?;
+        fingerprint
+            .slot
+            .get()
+            .publish(&sample)
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintPublish { source })
     }
 
     fn idle_advance_is_pending(&self) -> Result<bool, LiveVcpuTimeCallbackError> {
@@ -764,6 +860,9 @@ impl LiveVcpuTimeCallbackState {
                 ceiling_icount,
             });
         }
+        if current_icount == ceiling_icount {
+            self.publish_fingerprint_sample(current_icount)?;
+        }
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
             current_icount,
@@ -921,6 +1020,9 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
         }
 
+        if pending.target_icount == ceiling_icount {
+            self.publish_fingerprint_sample(pending.target_icount)?;
+        }
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
             pending.target_icount,
@@ -1243,6 +1345,27 @@ pub enum LiveVcpuTimeCallbackError {
     MappedNodeSlot {
         /// Underlying typed mapping error.
         source: MappedSetupRegionAccessError,
+    },
+    /// The mapped region could not provide this VM's fingerprint sample slot.
+    #[error("mapped setup region cannot provide the live callback fingerprint slot")]
+    MappedFingerprintSlot {
+        /// Underlying typed mapping error.
+        source: MappedSetupRegionAccessError,
+    },
+    /// `fingerprint=on` was requested but the loaded QEMU lacks the exports.
+    #[error("fingerprint sampling requested but QEMU is missing the fingerprint helper exports")]
+    FingerprintCapabilityUnavailable,
+    /// Capturing a boundary fingerprint sample failed.
+    #[error("boundary fingerprint sampling failed: {source}")]
+    FingerprintSample {
+        /// Underlying plugin fingerprint sampler error.
+        source: FingerprintSamplerError,
+    },
+    /// Publishing the boundary fingerprint sample into shared memory failed.
+    #[error("boundary fingerprint publish failed: {source}")]
+    FingerprintPublish {
+        /// Underlying shared-memory fingerprint slot error.
+        source: FingerprintSampleError,
     },
     /// A mapped callback ring unexpectedly had no backing entries.
     #[error("mapped callback ring {ring_index} has no backing entries")]
