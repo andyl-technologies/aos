@@ -45,29 +45,53 @@ copying in the eval path, a distinct second lever, not this clone.)
 stop cloning the whole `EvalThunk` per force — either detach a minimal handle or
 share the record by one Arc.
 
-## 2. Candidate representations
+## 2. The cost is Arc-refcount churn, not memcpy (so the fix is (A))
 
-- **(A) Arc the thunk record.** Store thunks as `Arc<EvalThunk>` (or force reads
-  through the flat-store slot by a cloned `Arc`), so `clone_thunk` = one
-  `Arc::clone` (1 bump, no struct memcpy). Kills most of 9.5% + 4%. Cost: +16 B
-  refcount + an allocation per thunk (memory — but toplevel RSS is 0.03x, ample
-  headroom), and it must reconcile with the flat-thunk store (FV-3) which owns
-  thunks inline today.
-- **(B) Minimal owned `ForcePlan`.** `clone_thunk` returns a small
-  `{ body: EvalNodeRef, env: EvalEnv, with_env, scoped_globals, cell: Arc<ThunkCell> }`
-  instead of the full `EvalThunk` — drops `force_storage_mode`/`parallel_cell`
-  from the copy and lets the compiler pack it tighter. Smaller memcpy, same Arc
-  bumps. Lower ceiling than (A) but zero memory cost and zero representation
-  change.
-- **(C) Borrow restructure.** Split the heap borrow so force reads the thunk
-  fields by reference and re-enters `&mut` on a disjoint sub-borrow (e.g. take
-  the body+env by value up front, then borrow only the allocator). Highest
-  ceiling (no clone at all) but the deepest change to the force loop.
+The memcpy-vs-churn split is resolvable by arithmetic, which rules out the two
+cheaper candidates before any build:
 
-**Recommendation:** prototype **(B)** first (cheapest, no representation/memory
-change, measurable) to bank the memcpy-shrink and confirm the split of clone
-cost between memcpy and Arc-churn; if the residual is Arc-churn-bound, escalate
-to **(A)**. Hold **(C)** unless (A)+(B) miss the double-digit target.
+- **memcpy is ~1%.** `EvalThunk` is ~128 B; 128 B x 2.9M forces = ~371 MB copied;
+  at ~15 GB/s that is ~25 ms = ~1% of the 2.6s cold wall. Negligible.
+- **the clone+drop clusters are Arc atomics.** `EvalThunk::clone` (9.5%) is ~5
+  `Arc::clone` **increments** (`EvalEnvStorage::Chain` head, `with_env`,
+  `scoped_globals`, `cell`, parallel-cell slot) x 2.9M forces ~= 14.5M atomic
+  ops; the ~4% drop cluster (`Arc::drop_slow` x2, `drop_in_place<EvalThunk>`,
+  `mi_free`) is the matching ~14.5M decrements when the per-force clone is
+  dropped moments later. ~13.5% combined is refcount churn.
+
+**Chosen representation — (A) single-Arc thunk record.** Put the record behind
+one `Arc` so `clone_thunk` on the force path is a single `Arc::clone`
+(1 increment) and its drop is a single decrement, and force reads all the
+handles *through* the `Arc` — no struct memcpy, no dangle across the serial
+record-`Vec` realloc (the `Arc` keeps the record alive + at a stable address).
+Collapsing ~5+5 atomics to ~1+1 takes the ~13.5% to ~1.5% = **~12% cold win,
+clearing the double-digit target on its own.** The before/after profile of the
+`clone`/`drop` clusters is the measurement; there is no cheaper probe (a copy
+shrink can't move a churn-bound cost).
+
+Rejected alternatives, recorded so the escalation question never reopens:
+- **(B) minimal `ForcePlan`** — the two fields it would drop
+  (`force_storage_mode`, `parallel_cell`) are read on the hot path
+  (`is_single_entry_force_storage`; serial-vs-parallel routing), so dropping
+  them is a behavior change, not a shrink; and even if reordered (route first,
+  clone `kind`+`cell`), it removes ~8 B from an already-~1% memcpy and **zero**
+  Arc bumps on the serial path (`parallel_cell` is `None` there). Answers
+  nothing.
+- **(C) borrow restructure** — the serial record table is a `Vec` that
+  reallocates when body-eval allocates, so a `&EvalThunk` held across the force
+  re-entry dangles. That realloc hazard is *why* `clone_thunk` detaches; a pure
+  borrow can't replace it on the serial path. (Rider-1 answer: the Arc bumps
+  that would have to become borrows under (C) are exactly the ones (A) removes,
+  so (A) captures (C)'s ceiling without the unsafe borrow.)
+
+**FV-3 reconciliation (the real design fork).** The flat-thunk store owns thunks
+inline today; (A) needs the force path to obtain a stable ref-counted handle to
+a thunk regardless of whether it lives in the record `Vec` or the flat store.
+Options to resolve in the impl increment: (i) store `Arc<EvalThunk>` in the
+record slot / flat slot uniformly; (ii) keep inline storage but hand force an
+`Arc` minted lazily and cached in the slot on first force (amortizes the alloc
+to first-force, not per-force). Prototype (ii) first — it preserves FV-3's
+inline placement and only pays the +16 B on thunks that are actually forced.
 
 ## 3. Hazard rows (must each stay green)
 
