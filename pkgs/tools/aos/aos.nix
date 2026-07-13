@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   bash,
   git,
   gnupg,
@@ -57,9 +57,15 @@ in
     # (`candidate_c_value`) is the shipped carrier.
     cargoFlags = "-p aos --features native-eval,candidate_c_value";
 
-    cargoDeps = fetchCargoDeps {
+    # fetchCargoVendor (not fetchCargoDeps): the workspace depends on the
+    # git-sourced `nix-compat` crate from the snix MONOREPO, which the manual
+    # gitDeps mechanism can't vendor (it copies a whole fetched repo as the
+    # crate root). fetchCargoVendor discovers git sources from Cargo.lock and
+    # extracts monorepo crate subtrees automatically.
+    cargoDeps = fetchCargoVendor {
       inherit src;
-      hash = "sha256-6EfQouGFbOEyg4YYLYn36hHuvJacVFsygLnTn2dfmbM=";
+      name = "aos-vendor-${version}";
+      hash = "sha256-fGfEwyn8MmkKGZr13hKDTBt1yQkgojxlcwQQDjP3yf4=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
