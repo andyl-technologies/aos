@@ -4,14 +4,17 @@ use cranelift_codegen::ir::{
     ExtFuncData, ExternalName, FuncRef, InstructionData, Opcode, Type, types,
 };
 use ratchet_core::{
-    BindingLowering, Cardinality, EffectClass, Escape, Ir, IrFacts, IrNode, Strictness,
-    ThunkSharing, lower, resolve,
+    BindingLowering, Cardinality, EffectClass, Escape, Ir, IrAttrPathId, IrAttrPathSegment,
+    IrFacts, IrInlineCacheSiteId, IrNode, Strictness, ThunkSharing, lower, resolve,
+    runtime_helper_call_signature, runtime_thunk_call_signature,
     syntax::{Span, SymbolTable, parse_str},
 };
-use ratchet_value::value::ValueTag;
+use ratchet_value::value::{Value, ValueTag};
 
 use super::*;
 use crate::abi::clif_signature_for_runtime_call;
+use crate::artifact::{JitClifArtifactKind, JitClifArtifactSource};
+use crate::tier::JitTier;
 
 mod stack_map_binding;
 
