@@ -773,7 +773,15 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   - Partial evidence under `checks.crucible.phase2.gates.qemuInert` plus
     `checks.crucible.phase2.gates.patchMicrotests`: the former compares
     unpatched pinned QEMU against patched sim-off QEMU over the real-QEMU corpus,
-    and the latter requires each carried patch's focused micro-test.
+    and the latter requires each carried patch's focused micro-test. The
+    out-of-sim inert half is strengthened: the async virtio-rng delivery-timing
+    residual is closed structurally by `checks.crucible.phase2.gates.qemuInert`
+    (consuming `phase2-qemu-rng-delivery-inert.nix`, which proves the sim-off
+    delivery path byte-identical to the unpatched reference —
+    `rng_completion_icount_equivalence_proven=true`). Effective-in-sim is proven
+    per patch at runtime for 6 of 36 (3 exported-ABI-symbol + 3 run-to-run sim
+    divergence, via drop-one at series 074fb5a9a); the remainder rest on assembly
+    load-bearing and stock negative control rather than per-patch runtime-in-sim.
 - [x] **T-DET-24** Pin the QEMU build identity into the reproduction artifact and
   re-gate on any QEMU/patch change; document the version-drift contract. —
   satisfies [DET-35]; spec §4.9.
