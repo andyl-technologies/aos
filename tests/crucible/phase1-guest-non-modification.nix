@@ -87,13 +87,30 @@
         label = "genesis backing-state policy setter";
         needle = "pub fn with_guest_backing_state(";
       }
+      # The storage-mode validation refactored from two independent `if !=`
+      # guards into one exhaustive match over the (disk_image_mode,
+      # guest_backing_state) pair when the diskless firmware-pinned launch
+      # landed. The invariant is unchanged (stronger: mismatched pairs are
+      # also rejected); these needles pin the match's load-bearing arms.
       {
-        label = "copy-on-write validation";
-        needle = "if self.disk_image_mode != DiskImageMode::CopyOnWriteOverlay";
+        label = "storage-mode pair validation";
+        needle = "match (self.disk_image_mode, self.guest_backing_state)";
       }
       {
-        label = "byte-identical genesis validation";
-        needle = "if self.guest_backing_state != GuestBackingStateMode::ByteIdenticalGenesis";
+        label = "copy-on-write canonical pair";
+        needle = "(DiskImageMode::CopyOnWriteOverlay, GuestBackingStateMode::ByteIdenticalGenesis)";
+      }
+      {
+        label = "diskless coherent pair";
+        needle = "(DiskImageMode::NoBlockDevice, GuestBackingStateMode::NoBlockDevice)";
+      }
+      {
+        label = "writable-backing rejection";
+        needle = "LaunchProfileError::DiskImageMutatesBacking";
+      }
+      {
+        label = "byte-identical genesis rejection";
+        needle = "LaunchProfileError::GuestBackingStateNotByteIdentical";
       }
       {
         label = "guest core content mode contract";
