@@ -41,8 +41,13 @@ fn literal_def_site_publishes_candidate_c_artifact() {
     assert!(stats.thunk_cache_hits() >= 1);
 }
 
+/// On the baseline carrier an arena-owned scalar (wide int, float) still
+/// lowers through the two-word Active-ABI literal path. On the one-word
+/// carrier there is no wider fallback — the Active ABI *is* one word and
+/// arena-owned scalars cannot be embedded in shared code — so the lowering
+/// declines and the def-site stays on the tree walk.
 #[test]
-fn arena_owned_scalars_fall_back_to_the_active_abi() {
+fn arena_owned_scalars_fall_back_to_the_active_abi_or_decline() {
     for source in ["2147483648", "1.5"] {
         let ir = lower(source);
         let eval = TreeWalk::new(&ir);
@@ -50,10 +55,18 @@ fn arena_owned_scalars_fall_back_to_the_active_abi() {
             .expect("engine builds")
             .candidate_c_value_abi();
         let body = EvalNodeRef::new(ratchet_oracle::eval::EvalModuleId::ROOT, ir.root);
-        let artifact = engine
-            .lower_body_artifact(&eval, body)
-            .expect("active literal fallback lowers");
+        let lowered = engine.lower_body_artifact(&eval, body);
 
-        assert_eq!(artifact.value_abi(), JitValueAbi::Active, "source {source}");
+        #[cfg(not(feature = "candidate_c_value"))]
+        assert_eq!(
+            lowered.expect("active literal fallback lowers").value_abi(),
+            JitValueAbi::Active,
+            "source {source}"
+        );
+        #[cfg(feature = "candidate_c_value")]
+        assert!(
+            lowered.is_none(),
+            "arena-owned scalar {source} must decline on the one-word carrier"
+        );
     }
 }

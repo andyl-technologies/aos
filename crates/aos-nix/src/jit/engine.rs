@@ -977,8 +977,7 @@ fn def_site_key(body: EvalNodeRef) -> u64 {
     ((body.module().index() as u64) << 32) | u64::from(body.id().as_u32())
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -989,6 +988,9 @@ mod tests {
     use ratchet_oracle::eval::tree_walk::{TreeWalkError, TreeWalkOptions};
     use ratchet_oracle::syntax::parse_str;
 
+    // The Candidate-B one-word bridge is compiled out under the active
+    // Candidate-C carrier, so its differential stays baseline-only.
+    #[cfg(not(feature = "candidate_c_value"))]
     mod candidate_b;
     mod candidate_c;
 
@@ -1083,16 +1085,53 @@ mod tests {
             "let x = 2.0; y = 3; in x * y",
         ];
         for source in sources {
-            let oracle = eval_oracle(source);
             for threshold in [1_u32, 8] {
-                let (native, _) = eval_with_engine(source, threshold);
-                assert!(
-                    oracle.raw_eq(native),
-                    "engine changed result of `{source}` at threshold {threshold}: \
-                     oracle {oracle:?} vs native {native:?}"
-                );
+                assert_engine_preserves_result(source, threshold);
             }
         }
+    }
+
+    /// Asserts an engine evaluation matches the plain tree walk for `source`.
+    ///
+    /// Inline scalars compare by raw words. Floats decode through each
+    /// evaluator's heap before comparing: on the one-word carrier a float
+    /// boxes into an evaluator-owned arena, so its raw word embeds an
+    /// evaluator-specific arena domain and raw equality across two
+    /// evaluators would compare identity, not value.
+    fn assert_engine_preserves_result(source: &str, threshold: u32) {
+        let oracle_ir = lower(source);
+        let mut oracle_eval = TreeWalk::new(&oracle_ir);
+        let oracle = oracle_eval.eval_root().expect("oracle evaluates");
+
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(
+            NixJitTier1Engine::with_threshold(threshold)
+                .expect("engine builds")
+                .force_promote(),
+        ));
+        let native = eval.eval_root().expect("jit evaluation succeeds");
+
+        let matches = if oracle.tag() == ratchet_value::value::ValueTag::Float {
+            let oracle_float = oracle_eval
+                .heap()
+                .decode_float_value(oracle)
+                .expect("oracle float decodes");
+            let native_float = eval
+                .heap()
+                .decode_float_value(native)
+                .expect("native float decodes");
+            oracle_float.to_bits() == native_float.to_bits()
+        } else {
+            oracle.raw_eq(native)
+        };
+        assert!(
+            matches,
+            "engine changed result of `{source}` at threshold {threshold}: \
+             oracle {oracle:?} vs native {native:?}"
+        );
     }
 
     /// A hot lowerable def-site promotes once and its later instances dispatch,
