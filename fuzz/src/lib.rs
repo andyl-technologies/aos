@@ -302,7 +302,8 @@ fn apply_native_eval_mode_env(options: &mut TreeWalkOptions) {
         .unwrap_or(false);
     options.set_jit_tier1_publish_enabled(jit);
     if let Ok(value) = std::env::var("AOS_NIX_GC") {
-        if value.trim().eq_ignore_ascii_case("sweep") {
+        // Same truthiness as the CLI's `set_aos_nix_gc_env_var` (case-sensitive).
+        if matches!(value.trim(), "sweep" | "1" | "true") {
             options.set_gc_mode(EvalGcMode::Sweep);
         }
     }
