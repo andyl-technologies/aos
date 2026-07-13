@@ -446,6 +446,32 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   the GC-stress + sweep-zero battery over live one-word stack maps with a
   non-trivial dispatch mass.
 
+  **S5 sum-fold cliff RESOLVED by increment 3a (2026-07-12).** The
+  decoded-core tier-2 emitters (`#30` increment 3a) stop declining wide
+  operator literals: `2654435761` is a plain `iconst.i64`, so the fold
+  operator lowers instead of blacklisting, and the wide `acc + i*i + K`
+  intermediate stays a decoded `i64` in-register with zero boxing. Corrected
+  post-3a compute matrix (darwin local, `AOS_NIX_JIT=1`, warm, 5-sample,
+  byte-parity; variant / baseline native mean):
+
+  | bench    | variant  | baseline | variant/baseline |
+  |----------|----------|----------|------------------|
+  | fib      | 0.0052 s | 0.0060 s | 0.86x            |
+  | sum-fold | 0.0129 s | 0.0149 s | **0.88x**        |
+  | tak      | 0.0188 s | 0.0160 s | 1.17x            |
+  | qsort    | 1.094 s  | 0.846 s  | 1.29x            |
+
+  `sum-fold` is now 0.88x — the variant is FASTER than the baseline binary and
+  byte-identical, closing the 290x cliff (the JIT'd fold runs ~8.7 ns/element).
+  **Caveat for the record:** an intermediate `sum-fold 1.74x` figure quoted
+  mid-increment was a JIT-OFF mismeasurement (nix-bench defaults
+  `native_jit=false`; without `AOS_NIX_JIT=1` the *interpreted* evaluator boxes
+  each wide intermediate — the same interpreted-boxing residual `#31` tracks
+  for non-promoted code — which is irrelevant to the JIT-on S5 acceptance). Do
+  not chase the 1.74x. The residual `tak` 1.17x / `qsort` 1.29x are outside the
+  fold (curried-closure recursion; `++`/`head`/`tail`/`filter` list ops) and
+  are triaged to the general-perf `#31`/`#32` family, not an S5 blocker.
+
   **S5 MATRIX RESULT (2026-07-12, Linux builder — NO-GO for promotion):**
   both-carrier release binaries at the same HEAD, 5-sample medians, quiet
   machine. The variant holds its memory advantage where values stay inline
