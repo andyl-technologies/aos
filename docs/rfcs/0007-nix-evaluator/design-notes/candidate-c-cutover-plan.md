@@ -445,6 +445,36 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   **Remaining (S4b phase 2):** the compressed-word alloc-cons emitter, then
   the GC-stress + sweep-zero battery over live one-word stack maps with a
   non-trivial dispatch mass.
+
+  **S5 MATRIX RESULT (2026-07-12, Linux builder — NO-GO for promotion):**
+  both-carrier release binaries at the same HEAD, 5-sample medians, quiet
+  machine. The variant holds its memory advantage where values stay inline
+  (wide-eval 208 vs 228 MiB, packages 93 vs 95 MiB) and wins `tak` (0.87x),
+  but carries a broad ~3-11% time tax (packages ~1.06x, wide 1.075x,
+  compute 1.03-1.11x) and one DISQUALIFYING cliff: `sum-fold` 290x slower
+  (11 ms -> 3.3 s, RSS 41 MB -> 1.5 GB) and `qsort` 1.26x with 3x RSS.
+
+  Attribution (measured, not guessed): `sumFold`'s operator embeds the wide
+  literal `2654435761`; the compressed emitters decline wide literals at the
+  leaf, so the tier-2 fold BLACKLISTS (stats: tier2 0 promoted / 0
+  dispatched / 7 blacklisted) and the interpreted fold then boxes a fresh
+  scalar cell for every wide intermediate (`acc + i*i + K` is wide each step
+  even though the `mod` keeps the accumulator inline): 3M thunks / 6M values
+  / 876 MB heap; hash-consing cannot help distinct accumulator streams. The
+  broad tax decomposes partially into the B1 FlatSlice/FlatBytes per-access
+  registry lookup (isolation A/B: string-builder +7.4%, wide +2%, zlib
+  neutral — B1 fails its own <=1.5% gate on the string leg and is being
+  revised); the residual ~6% package tax is carrier-native and needs its own
+  attribution pass.
+
+  The cliff is over-conservatism, not a carrier limit: operand-position
+  literals and loop intermediates never materialize as runtime values, so
+  they need no inline word (the arith-tree emitter already computes on
+  decoded i64 end-to-end). **Phase 3 = decoded-core tier-2 emitters:**
+  decoded-i64 internal representation with typed grammar, wide-literal
+  embedding as plain `iconst.i64`, decoded self-call arguments, and
+  boundary-only encode with a deopt on wide escapes (task #30). S5
+  promotion is BLOCKED on phase 3 plus the residual-tax attribution.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
