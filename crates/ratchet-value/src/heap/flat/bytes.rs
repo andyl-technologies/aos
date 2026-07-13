@@ -118,7 +118,7 @@ impl FlatBytes {
         #[cfg(feature = "candidate_c_value")]
         match &self.repr {
             FlatBytesRepr::Addressed { domain, offset } => {
-                match crate::heap::reservation_base(*domain) {
+                match crate::heap::cached_reservation_base(*domain) {
                     Some(base) => (base + offset.raw() as usize) as *const u8,
                     // The sealing contract keeps the run mapped for the witness's
                     // lifetime, so its reservation is always live and registered.

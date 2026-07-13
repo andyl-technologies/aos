@@ -38,11 +38,54 @@
 //! released, so a published `(domain, base)` always names live memory — is
 //! enforced by [`ReservedArena`](super::ReservedArena)'s constructor and `Drop`.
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use thiserror::Error;
 
 use super::ArenaDomainId;
+
+/// Process-global generation counter bumped on every `domain → base`
+/// registration change (register or unregister).
+///
+/// It is the invalidation key for the per-thread base cache below: a snapshot
+/// restore re-registers an *existing* domain at a *new* base (see
+/// `reservation::image`), so a cached `(domain, base)` from before the restore
+/// would otherwise resolve to freed memory. Every registration change bumps this
+/// epoch, and a cache entry stamped with a stale epoch is treated as a miss.
+static REGISTRY_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+/// One thread's most-recently-resolved `(domain, base)` at a given registry
+/// epoch, the fast path for the context-free hot accessor
+/// [`cached_reservation_base`].
+#[derive(Clone, Copy)]
+struct CachedReservationBase {
+    /// The cached reservation domain, or `0` when the cache is empty.
+    domain: u32,
+    /// The reservation's mapped base address for `domain`.
+    base: usize,
+    /// The [`REGISTRY_EPOCH`] value the entry was filled at.
+    epoch: u64,
+}
+
+impl CachedReservationBase {
+    /// A const-constructible empty entry (`domain == 0` never matches).
+    const EMPTY: Self = Self {
+        domain: 0,
+        base: 0,
+        epoch: 0,
+    };
+}
+
+thread_local! {
+    /// Per-thread one-entry cache of the last resolved reservation base.
+    ///
+    /// Serial evaluation resolves the same single reservation on nearly every
+    /// flat-slice access, so a one-entry cache turns the context-free base
+    /// lookup into a thread-local read plus an epoch compare instead of the
+    /// registry scan [`reservation_base`] performs.
+    static BASE_CACHE: Cell<CachedReservationBase> = const { Cell::new(CachedReservationBase::EMPTY) };
+}
 
 /// Number of reservation base slots the process-global table holds.
 ///
@@ -202,9 +245,13 @@ pub fn register_reservation_base(
     base: usize,
     capacity: usize,
 ) -> Result<(), ReservationRegistryError> {
-    RESERVATION_BASE_REGISTRY
+    let result = RESERVATION_BASE_REGISTRY
         .register(domain, base, capacity)
-        .map(|_| ())
+        .map(|_| ());
+    // Invalidate every thread's cached base: a restore rebinds an existing
+    // domain to a new base, and even a fresh domain shifts the live set.
+    bump_registry_epoch();
+    result
 }
 
 /// Withdraws `domain`'s reservation base entry.
@@ -214,6 +261,9 @@ pub fn register_reservation_base(
 /// memory. Idempotent.
 pub fn unregister_reservation_base(domain: ArenaDomainId) {
     RESERVATION_BASE_REGISTRY.unregister(domain);
+    // A dropped reservation frees its base; invalidate cached entries so no
+    // thread resolves through the withdrawn domain.
+    bump_registry_epoch();
 }
 
 /// Returns the mapped base address of `domain`'s reservation, if it is live.
@@ -225,6 +275,44 @@ pub fn unregister_reservation_base(domain: ArenaDomainId) {
 #[must_use]
 pub fn reservation_base(domain: ArenaDomainId) -> Option<usize> {
     RESERVATION_BASE_REGISTRY.base_for(domain)
+}
+
+/// Returns `domain`'s mapped base through a per-thread one-entry cache.
+///
+/// This is the hot-path form of [`reservation_base`] for context-free callers
+/// that resolve a base on nearly every access — most importantly the
+/// address-free flat-slice/flat-bytes witnesses (RFC-0007 doc 31 §1 stage B1),
+/// which resolve their run pointer as `cached_reservation_base(domain)? +
+/// offset` on every `as_slice`. Serial evaluation resolves one reservation, so
+/// the cache hits nearly always and the cost is a thread-local read plus an
+/// epoch compare rather than the registry scan. The entry is invalidated
+/// whenever any registration changes (via [`REGISTRY_EPOCH`]), so a snapshot
+/// restore that rebinds an existing domain to a new base is observed correctly.
+///
+/// The cache holds no absolute base across a registration change; it re-derives
+/// from [`reservation_base`] on a domain or epoch miss.
+#[must_use]
+pub fn cached_reservation_base(domain: ArenaDomainId) -> Option<usize> {
+    let raw = domain.raw();
+    let epoch = REGISTRY_EPOCH.load(Ordering::Acquire);
+    BASE_CACHE.with(|cache| {
+        let entry = cache.get();
+        if entry.domain == raw && entry.epoch == epoch {
+            return Some(entry.base);
+        }
+        let base = RESERVATION_BASE_REGISTRY.base_for(domain)?;
+        cache.set(CachedReservationBase {
+            domain: raw,
+            base,
+            epoch,
+        });
+        Some(base)
+    })
+}
+
+/// Bumps the registry epoch, invalidating every thread's cached base.
+fn bump_registry_epoch() {
+    REGISTRY_EPOCH.fetch_add(1, Ordering::Release);
 }
 
 /// Returns the domain and base of the live reservation containing `address`.

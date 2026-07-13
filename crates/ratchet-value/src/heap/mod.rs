@@ -74,7 +74,7 @@ pub use reservation::{
     ReservedArenaMark, ReservedArenaStats,
 };
 pub use reservation_registry::{
-    ReservationRegistryError, register_reservation_base, reservation_base,
+    ReservationRegistryError, cached_reservation_base, register_reservation_base, reservation_base,
     reservation_containing_address, unregister_reservation_base,
 };
 pub use resident::{
