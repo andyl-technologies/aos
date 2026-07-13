@@ -67,6 +67,7 @@ pub(crate) mod capture_stats {
     static SCOPED_GLOBAL_ENV_CAPTURE_SCOPES: AtomicU64 = AtomicU64::new(0);
     static ENV_FRAME_ALLOCS: AtomicU64 = AtomicU64::new(0);
     static ENV_FRAME_SLOT_BYTES: AtomicU64 = AtomicU64::new(0);
+    static ENV_FRAMES_RECYCLABLE: AtomicU64 = AtomicU64::new(0);
 
     /// A point-in-time reading of the process-wide capture counters.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,6 +92,10 @@ pub(crate) mod capture_stats {
         pub(crate) env_frame_allocs: u64,
         /// Slot-storage bytes allocated across all frame allocations.
         pub(crate) env_frame_slot_bytes: u64,
+        /// Frames popped from the active stack with no surviving capture
+        /// (`Arc` strong count 1 at pop) — the population a frame pool could
+        /// recycle without semantic risk.
+        pub(crate) env_frames_recyclable: u64,
     }
 
     impl EnvCaptureStats {
@@ -125,6 +130,9 @@ pub(crate) mod capture_stats {
                 env_frame_slot_bytes: self
                     .env_frame_slot_bytes
                     .saturating_sub(baseline.env_frame_slot_bytes),
+                env_frames_recyclable: self
+                    .env_frames_recyclable
+                    .saturating_sub(baseline.env_frames_recyclable),
             }
         }
     }
@@ -143,6 +151,7 @@ pub(crate) mod capture_stats {
                 .load(Ordering::Relaxed),
             env_frame_allocs: ENV_FRAME_ALLOCS.load(Ordering::Relaxed),
             env_frame_slot_bytes: ENV_FRAME_SLOT_BYTES.load(Ordering::Relaxed),
+            env_frames_recyclable: ENV_FRAMES_RECYCLABLE.load(Ordering::Relaxed),
         }
     }
 
@@ -174,6 +183,11 @@ pub(crate) mod capture_stats {
     pub(super) fn note_env_frame_alloc(slot_bytes: usize) {
         ENV_FRAME_ALLOCS.fetch_add(1, Ordering::Relaxed);
         ENV_FRAME_SLOT_BYTES.fetch_add(slot_bytes as u64, Ordering::Relaxed);
+    }
+
+    /// Records one frame popped with no surviving capture (pool-recyclable).
+    pub(crate) fn note_env_frame_recyclable() {
+        ENV_FRAMES_RECYCLABLE.fetch_add(1, Ordering::Relaxed);
     }
 }
 

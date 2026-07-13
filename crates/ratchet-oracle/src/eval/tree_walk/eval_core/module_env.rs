@@ -498,7 +498,14 @@ impl TreeWalk {
     /// Pops the innermost lexical frame.
     #[inline]
     pub(in crate::eval::tree_walk) fn pop_env_frame(&mut self) {
-        let _ = self.env.pop();
+        if let Some(frame) = self.env.pop() {
+            // A frame popped with no surviving capture (the stack held the only
+            // reference) is the population a frame pool could recycle; count it
+            // so the pooling lever stays measure-gated.
+            if Arc::strong_count(&frame) == 1 {
+                crate::eval::env::capture_stats::note_env_frame_recyclable();
+            }
+        }
     }
 
     /// Replaces the active frame stack and returns the previous stack.

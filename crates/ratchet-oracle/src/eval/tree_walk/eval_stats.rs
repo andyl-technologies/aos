@@ -157,6 +157,7 @@ impl TreeWalk {
             scoped_global_env_capture_scopes: env.scoped_global_env_capture_scopes,
             env_frame_allocs: env.env_frame_allocs,
             env_frame_slot_bytes: env.env_frame_slot_bytes,
+            env_frames_recyclable: env.env_frames_recyclable,
             string_payload_bytes: alloc.string_payload_bytes,
             string_store_path_payload_bytes: alloc.string_store_path_payload_bytes,
             path_payload_bytes: alloc.path_payload_bytes,

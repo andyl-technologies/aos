@@ -50,7 +50,8 @@
 //!  "flat_env_captures":0,"flat_env_capture_values":0,
 //!  "with_env_captures":0,"with_env_capture_scopes":0,
 //!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
-//!  "env_frame_allocs":0,"env_frame_slot_bytes":0,"string_payload_bytes":0,
+//!  "env_frame_allocs":0,"env_frame_slot_bytes":0,"env_frames_recyclable":0,
+//!  "string_payload_bytes":0,
 //!  "string_store_path_payload_bytes":0,"path_payload_bytes":0,
 //!  "list_payload_elements":0,"record_table_records":0,"flat_objects":0}}}
 //! ```
@@ -168,6 +169,7 @@ impl NixNative {
 \"scoped_global_env_capture_scopes\":{},\
 \"env_frame_allocs\":{},\
 \"env_frame_slot_bytes\":{},\
+\"env_frames_recyclable\":{},\
 \"string_payload_bytes\":{},\
 \"string_store_path_payload_bytes\":{},\
 \"path_payload_bytes\":{},\
@@ -264,6 +266,7 @@ impl NixNative {
             stats.campaign().scoped_global_env_capture_scopes,
             stats.campaign().env_frame_allocs,
             stats.campaign().env_frame_slot_bytes,
+            stats.campaign().env_frames_recyclable,
             stats.campaign().string_payload_bytes,
             stats.campaign().string_store_path_payload_bytes,
             stats.campaign().path_payload_bytes,

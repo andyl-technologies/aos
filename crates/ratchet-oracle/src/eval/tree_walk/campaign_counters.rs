@@ -78,6 +78,8 @@ pub struct CampaignCounters {
     pub env_frame_allocs: u64,
     /// Slot-storage bytes allocated across all frame allocations.
     pub env_frame_slot_bytes: u64,
+    /// Frames popped with no surviving capture (pool-recyclable population).
+    pub env_frames_recyclable: u64,
     /// Payload bytes of freshly allocated string values.
     pub string_payload_bytes: u64,
     /// The store-path-shaped subset of [`Self::string_payload_bytes`].
@@ -182,6 +184,9 @@ impl CampaignCounters {
             env_frame_slot_bytes: self
                 .env_frame_slot_bytes
                 .saturating_add(other.env_frame_slot_bytes),
+            env_frames_recyclable: self
+                .env_frames_recyclable
+                .saturating_add(other.env_frames_recyclable),
             string_payload_bytes: self
                 .string_payload_bytes
                 .saturating_add(other.string_payload_bytes),
