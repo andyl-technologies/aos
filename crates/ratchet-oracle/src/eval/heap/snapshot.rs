@@ -34,11 +34,13 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use ratchet_value::heap::{
-    ArenaIndex, ContextPayload, HeapImage, ListPayload, RelocationEntry, SnapshotError,
-    capture_reservation, reservation_base, restore_reservation,
+    ArenaIndex, ContextPayload, HeapImage, ListPayload, PrimopPayload, RelocationEntry,
+    SnapshotError, capture_reservation, reservation_base, restore_reservation,
 };
 
+use crate::compile::builtins::{PINNED_NIX_VERSION, lookup_builtin};
 use crate::string::{ContextElement, ContextKind, StringContext};
+use crate::syntax::{Span, Symbol};
 use crate::value::Value;
 use crate::value::compressed::CompressedValueWord;
 
@@ -56,20 +58,48 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError`] for a parallel heap, a heap holding a
-    /// kind not yet snapshottable (worker closures or record-table objects), a
-    /// flat object outside the reservation, a reservation that is not
-    /// address-free, or a failed completeness audit.
+    /// kind not yet snapshottable (worker thunks or lambdas, or record-table
+    /// objects — primops are captured), a flat object outside the reservation, a
+    /// reservation that is not address-free, or a failed completeness audit.
     pub fn capture_heap_image(&self) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
         }
-        let closures = self.flat_closures.len();
-        if closures != 0 {
-            return Err(EvalHeapSnapshotError::UnsnapshottableClosures { count: closures });
+        // Worker closures: capture primops (builtins) as registry references and
+        // refuse thunks and lambdas (steps 2-3). Retired slots hold no live
+        // payload. Count refusals before encoding so a refused heap fails fast.
+        let refused_closures = self
+            .flat_closures
+            .iter()
+            .filter(|object| {
+                matches!(
+                    object.object().payload(),
+                    FlatClosurePayload::Thunk(_) | FlatClosurePayload::Lambda(_)
+                )
+            })
+            .count();
+        if refused_closures != 0 {
+            return Err(EvalHeapSnapshotError::UnsnapshottableClosures {
+                count: refused_closures,
+            });
         }
         let records = self.record_count();
         if records != 0 {
             return Err(EvalHeapSnapshotError::UnsnapshottableRecords { count: records });
+        }
+
+        let mut primop_payloads = Vec::new();
+        for object in self.flat_closures.iter() {
+            if let FlatClosurePayload::Primop(primop) = object.object().payload() {
+                let index = self
+                    .flat_arena
+                    .index_for_pointer(object.ptr())
+                    .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+                primop_payloads.push(PrimopPayload {
+                    index: index.raw(),
+                    primop_bytes: encode_primop(primop),
+                });
+            }
         }
 
         let mut relocations = Vec::new();
@@ -119,6 +149,7 @@ impl EvalHeap {
         image.relocations = relocations;
         image.list_payloads = list_payloads;
         image.context_payloads = context_payloads;
+        image.primop_payloads = primop_payloads;
 
         if std::env::var_os(SNAPSHOT_VERIFY_ENV).is_some() {
             self.verify_relocation_completeness(&image)?;
@@ -238,7 +269,47 @@ impl EvalHeap {
             }
             heap.restore_context_payload(payload)?;
         }
+
+        // Primops are distinct flat-closure objects, so their indices share the
+        // object-record set with relocations and lists.
+        for payload in &image.primop_payloads {
+            if !seen.insert(payload.index) {
+                return Err(EvalHeapSnapshotError::DuplicateObjectIndex {
+                    index: payload.index,
+                });
+            }
+            heap.restore_primop_payload(payload)?;
+        }
         Ok(heap)
+    }
+
+    /// Rebuilds one captured builtin (primop) closure and re-attaches it to the
+    /// restored flat-closure object.
+    ///
+    /// Decodes the registry reference and applied arguments (re-resolving the
+    /// builtin, refusing on a version or name mismatch), then delegates the
+    /// in-place payload rewrite and Drop registration to
+    /// [`FlatObjectStore::restore_payload`] (the unsafe write lives in
+    /// `ratchet-value`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapSnapshotError::ObjectOutsideReservation`] when the index
+    /// does not resolve, the decode errors from [`decode_primop`], and
+    /// [`EvalHeapSnapshotError::FlatResolve`] when the object cannot be resolved
+    /// for rewriting.
+    fn restore_primop_payload(
+        &mut self,
+        payload: &PrimopPayload,
+    ) -> Result<(), EvalHeapSnapshotError> {
+        let ptr = self
+            .flat_arena
+            .pointer_for_index(ArenaIndex::new(payload.index))
+            .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+        let primop = decode_primop(&payload.primop_bytes)?;
+        self.flat_closures
+            .restore_payload(ptr, FlatObjectKind::Primop, FlatClosurePayload::Primop(primop))
+            .map_err(EvalHeapSnapshotError::FlatResolve)
     }
 
     /// Rebuilds one flat list's element `Vec` from its serialized words and
@@ -313,6 +384,7 @@ impl EvalHeap {
         self.flat.adopt_shared_regions();
         self.flat_lists.adopt_shared_regions();
         self.flat_attrs.adopt_shared_regions();
+        self.flat_closures.adopt_shared_regions();
         self.compressed_scalars.adopt_reloaded_regions();
     }
 
@@ -349,6 +421,13 @@ impl EvalHeap {
         // structural hash — can coincidentally look like an in-range pointer, so
         // cover their whole extent to keep the scan free of false positives.
         for object in self.flat_lists.iter() {
+            covered.push((self.offset_of(object.ptr(), base)?, object.size_bytes()));
+        }
+        // Flat-closure objects (captured primops, refused-but-dead retired slots)
+        // ride along in the dumped arena; their out-of-arena `Vec`/`Arc` fields
+        // point outside the reservation, but cover their extent so no header word
+        // false-positives as an interior pointer.
+        for object in self.flat_closures.iter() {
             covered.push((self.offset_of(object.ptr(), base)?, object.size_bytes()));
         }
         self.compressed_scalars
@@ -508,6 +587,108 @@ fn read_length_prefixed(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
     Some(run)
 }
 
+/// Reads a little-endian `u64` at `*cursor`, advancing it, or `None` if truncated.
+fn read_le_u64(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+    let end = cursor.checked_add(8)?;
+    let field: [u8; 8] = bytes.get(*cursor..end)?.try_into().ok()?;
+    *cursor = end;
+    Some(u64::from_le_bytes(field))
+}
+
+/// Encodes a captured primop as a stable builtin-registry reference plus its
+/// applied arguments (RFC-0007 doc 31 §1 step-2 primop capture).
+///
+/// Layout (little-endian): `version_len(u32) | version | symbol(u32) |
+/// builtin_present(u8) | [name_len(u32) | name] | arg_count(u32) | arg*`, where
+/// each arg is `module(u32) | id(u32) | span_start(u32) | span_end(u32) |
+/// value_word(u64)`. The version pins the builtin surface so restore can refuse a
+/// mismatched registry; the builtin name is the registry reference re-resolved on
+/// load. Argument values are address-free Candidate-C words.
+fn encode_primop(primop: &EvalPrimOp) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(PINNED_NIX_VERSION.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(PINNED_NIX_VERSION);
+    bytes.extend_from_slice(&primop.symbol().as_u32().to_le_bytes());
+    match primop.builtin() {
+        Some(builtin) => {
+            let name = builtin.name();
+            bytes.push(1);
+            bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(name);
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&(primop.args().len() as u32).to_le_bytes());
+    for arg in primop.args() {
+        bytes.extend_from_slice(&arg.module().as_u32().to_le_bytes());
+        bytes.extend_from_slice(&arg.id().as_u32().to_le_bytes());
+        bytes.extend_from_slice(&arg.span().start.to_le_bytes());
+        bytes.extend_from_slice(&arg.span().end.to_le_bytes());
+        bytes.extend_from_slice(&arg.value().word().raw().to_le_bytes());
+    }
+    bytes
+}
+
+/// Decodes a primop payload into an [`EvalPrimOp`], re-resolving its builtin
+/// against the registry.
+///
+/// # Errors
+///
+/// Returns [`EvalHeapSnapshotError::RegistryVersionMismatch`] when the pinned
+/// builtin-surface version differs, [`EvalHeapSnapshotError::UnknownBuiltin`]
+/// when a referenced builtin name is not in the registry, and
+/// [`EvalHeapSnapshotError::MalformedPrimopPayload`] on truncated or invalid
+/// bytes.
+fn decode_primop(bytes: &[u8]) -> Result<EvalPrimOp, EvalHeapSnapshotError> {
+    let malformed = || EvalHeapSnapshotError::MalformedPrimopPayload {
+        byte_len: bytes.len(),
+    };
+    let mut cursor = 0usize;
+    let version = read_length_prefixed(bytes, &mut cursor).ok_or_else(malformed)?;
+    if version.as_slice() != PINNED_NIX_VERSION {
+        return Err(EvalHeapSnapshotError::RegistryVersionMismatch {
+            expected: PINNED_NIX_VERSION.to_vec(),
+            found: version,
+        });
+    }
+    let symbol = Symbol::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+    let builtin = match bytes.get(cursor).copied() {
+        Some(1) => {
+            cursor += 1;
+            let name = read_length_prefixed(bytes, &mut cursor).ok_or_else(malformed)?;
+            Some(lookup_builtin(&name).ok_or(EvalHeapSnapshotError::UnknownBuiltin { name })?)
+        }
+        Some(0) => {
+            cursor += 1;
+            None
+        }
+        _ => return Err(malformed()),
+    };
+    let arg_count = read_le_u32(bytes, &mut cursor).ok_or_else(malformed)? as usize;
+    let mut args = Vec::new();
+    for _ in 0..arg_count {
+        let module = EvalModuleId::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+        let id = IrId::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+        let start = read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?;
+        let end = read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?;
+        let raw = read_le_u64(bytes, &mut cursor).ok_or_else(malformed)?;
+        let word = CompressedValueWord::from_raw(raw).map_err(|_| malformed())?;
+        args.push(EvalPrimOpArg::new_in_module(
+            module,
+            id,
+            Span::new(start, end),
+            Value::from_word(word),
+        ));
+    }
+    if cursor != bytes.len() {
+        return Err(malformed());
+    }
+    Ok(match builtin {
+        Some(builtin) => EvalPrimOp::registered_with_args(symbol, builtin, args),
+        None => EvalPrimOp::with_args(symbol, args),
+    })
+}
+
 /// Decodes a relocation-entry kind byte into a [`FlatObjectKind`].
 fn kind_from_byte(byte: u8) -> Result<FlatObjectKind, EvalHeapSnapshotError> {
     match byte {
@@ -564,6 +745,26 @@ pub enum EvalHeapSnapshotError {
     ContextForUnrelocatedString {
         /// The arena index the context payload referenced.
         index: u32,
+    },
+    /// A primop payload's bytes did not decode to a valid builtin closure.
+    #[error("primop payload has malformed bytes (length {byte_len})")]
+    MalformedPrimopPayload {
+        /// The offending payload's byte length.
+        byte_len: usize,
+    },
+    /// A primop payload was captured against a different builtin-surface version.
+    #[error("primop payload builtin version mismatch (expected {expected:?}, found {found:?})")]
+    RegistryVersionMismatch {
+        /// The builtin-surface version this build pins.
+        expected: Vec<u8>,
+        /// The version recorded in the image.
+        found: Vec<u8>,
+    },
+    /// A primop payload referenced a builtin name absent from the registry.
+    #[error("primop payload references unknown builtin {name:?}")]
+    UnknownBuiltin {
+        /// The unresolved builtin name.
+        name: Vec<u8>,
     },
     /// A flat object's pointer did not lie inside the reservation.
     #[error("flat object is outside the snapshot reservation")]

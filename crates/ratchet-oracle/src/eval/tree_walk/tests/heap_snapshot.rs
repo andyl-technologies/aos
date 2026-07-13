@@ -229,6 +229,87 @@ fn restore_rejects_malformed_context_bytes() {
     ));
 }
 
+/// Projects an image's primop payloads to a sorted `(index, bytes)` list for a
+/// representation-independent comparison across a round trip.
+fn sorted_primops(image: &HeapImage) -> Vec<(u32, Vec<u8>)> {
+    let mut payloads: Vec<(u32, Vec<u8>)> = image
+        .primop_payloads
+        .iter()
+        .map(|payload| (payload.index, payload.primop_bytes.clone()))
+        .collect();
+    payloads.sort();
+    payloads
+}
+
+#[test]
+fn heap_image_round_trips_primops() {
+    let outcome = eval_owned_with_source(b"snapshot-primop", "builtins.add 1");
+    let image = match outcome.heap().capture_heap_image() {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        // A thunk/lambda would refuse; this fixture should be primop-only.
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => return,
+        Err(other) => panic!("unexpected capture failure: {other}"),
+    };
+    assert!(
+        !image.primop_payloads.is_empty(),
+        "the fixture must capture at least one primop"
+    );
+    outcome
+        .heap()
+        .verify_relocation_completeness(&image)
+        .expect("relocation table covers every interior pointer");
+    let expected = sorted_primops(&image);
+
+    let bytes = image.to_bytes();
+    drop(outcome);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    let restored = EvalHeap::from_restored_heap_image(&reloaded).expect("image restores");
+    // Re-capturing the restored heap must reproduce each primop's registry
+    // reference and applied args byte-identically.
+    let recaptured = restored
+        .capture_heap_image()
+        .expect("the restored heap re-captures");
+    assert_eq!(sorted_primops(&recaptured), expected);
+}
+
+#[test]
+fn capture_refuses_a_lambda() {
+    let outcome = eval_owned_with_source(b"snapshot-lambda", "x: x");
+    match outcome.heap().capture_heap_image() {
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { count }) => assert!(count >= 1),
+        // A chunked fallback heap has no reservation to dump.
+        Err(EvalHeapSnapshotError::Snapshot(_)) => {}
+        other => panic!("expected a closure (lambda) refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn restore_rejects_a_primop_version_mismatch() {
+    let outcome = eval_owned_with_source(b"snapshot-primop-ver", "builtins.add 1");
+    let mut image = match outcome.heap().capture_heap_image() {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(EvalHeapSnapshotError::UnsnapshottableClosures { .. }) => return,
+        Err(other) => panic!("unexpected capture failure: {other}"),
+    };
+    if image.primop_payloads.is_empty() {
+        return;
+    }
+    // The pinned builtin-surface version is the first length-prefixed field
+    // (`version_len(u32)` then the version bytes); flip the first version byte.
+    image.primop_payloads[0].primop_bytes[4] ^= 0xff;
+    let bytes = image.to_bytes();
+    drop(outcome);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    assert!(matches!(
+        EvalHeap::from_restored_heap_image(&reloaded),
+        Err(EvalHeapSnapshotError::RegistryVersionMismatch { .. })
+    ));
+}
+
 #[test]
 fn restore_rejects_a_duplicate_list_index() {
     let outcome = eval_owned_with_source(b"snapshot-dup", "[ 1 2 3 ]");

@@ -41,8 +41,10 @@
 //! carry each flat list's out-of-arena element words (an owned `Vec<Value>` that
 //! the dumped arena bytes do not capture); the context-payload segments carry a
 //! context-bearing string's out-of-arena `Arc`-backed dependency set, keyed by
-//! that string's relocation index. All three are filled by the `EvalHeap`-level
-//! capture; their bytes are opaque to this value-agnostic layer.
+//! that string's relocation index; the primop-payload segments carry a captured
+//! builtin closure as a registry reference plus its applied arguments, keyed by
+//! its flat-closure arena index. All are filled by the `EvalHeap`-level capture;
+//! their bytes are opaque to this value-agnostic layer.
 
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -58,24 +60,24 @@ pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 /// The heap-image wire-format version. Bumped on any layout change so a stale
 /// image is a clean, loud miss rather than a silent misparse. v2 added
 /// `old_base` and the relocation table; v3 added the list-payload segments; v4
-/// adds the context-payload segments that carry a context-bearing string's
-/// out-of-arena `Arc`-backed dependency set (RFC-0007 doc 31 §1 stage B /
-/// decision 6, stage-2 context collapse).
-pub const IMAGE_VERSION: u32 = 4;
+/// added the context-payload segments; v5 adds the primop-payload segments that
+/// carry captured builtin closures as registry references (RFC-0007 doc 31 §1
+/// stage B / decision 6, step-2 primop capture).
+pub const IMAGE_VERSION: u32 = 5;
 
-/// Byte length of the fixed image header preceding the lane, relocation,
-/// list-payload, and context-payload bytes.
+/// Byte length of the fixed image header preceding the lane, relocation, and
+/// index-keyed payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
-/// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+/// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
 
 /// Wire size of an index-keyed payload segment's fixed prefix
 /// (`index(4) | byte_len(8)`), preceding its variable-length opaque bytes. Shared
-/// by the list-payload and context-payload segments.
+/// by the list-payload, context-payload, and primop-payload segments.
 const INDEXED_PAYLOAD_PREFIX_LEN: usize = 12;
 
 /// One compound flat object whose interior witness pointers must be rebased on
@@ -132,6 +134,26 @@ pub struct ContextPayload {
     pub context_bytes: Vec<u8>,
 }
 
+/// One captured builtin (primop) closure (RFC-0007 doc 31 §1 step-2 primop
+/// capture).
+///
+/// A flat primop object's arena bytes hold an owned `Vec` of applied arguments
+/// and a builtin registry declaration, neither of which survives a remap or the
+/// source heap's drop. Capture serializes the builtin as a stable registry
+/// reference (its name) plus the applied argument words; restore re-resolves the
+/// builtin against the registry — refusing on a version or name mismatch — and
+/// rebuilds the closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrimopPayload {
+    /// The primop object's flat-closure arena index — which restored object
+    /// receives the rebuilt closure.
+    pub index: u32,
+    /// The encoded builtin reference and applied arguments as opaque bytes. The
+    /// encoding is owned by the `EvalHeap`-level capture; this value-agnostic
+    /// layer only carries the bytes.
+    pub primop_bytes: Vec<u8>,
+}
+
 /// A captured Candidate-C reservation heap image.
 ///
 /// Holds the reservation identity, its two used-lane byte ranges, the base it
@@ -161,6 +183,10 @@ pub struct HeapImage {
     /// Each context-bearing string's out-of-arena dependency set; filled by the
     /// `EvalHeap`-level capture and re-installed on the restored strings on load.
     pub context_payloads: Vec<ContextPayload>,
+    /// Each captured builtin (primop) closure as a registry reference plus its
+    /// applied arguments; filled by the `EvalHeap`-level capture and rebuilt on
+    /// load against the builtin registry.
+    pub primop_payloads: Vec<PrimopPayload>,
 }
 
 impl HeapImage {
@@ -189,6 +215,13 @@ impl HeapImage {
                 .map(|p| p.context_bytes.len())
                 .collect::<Vec<_>>(),
         );
+        let primop_bytes = indexed_bytes(
+            &self
+                .primop_payloads
+                .iter()
+                .map(|p| p.primop_bytes.len())
+                .collect::<Vec<_>>(),
+        );
         let mut out = Vec::with_capacity(
             HEADER_LEN
                 + self.low.len()
@@ -196,6 +229,7 @@ impl HeapImage {
                 + reloc_bytes
                 + list_bytes
                 + context_bytes
+                + primop_bytes
                 + 8,
         );
         out.extend_from_slice(&IMAGE_MAGIC);
@@ -208,6 +242,7 @@ impl HeapImage {
         out.extend_from_slice(&(self.relocations.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.list_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.context_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.primop_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
@@ -219,6 +254,9 @@ impl HeapImage {
         }
         for payload in &self.context_payloads {
             write_indexed_payload(&mut out, payload.index, &payload.context_bytes);
+        }
+        for payload in &self.primop_payloads {
+            write_indexed_payload(&mut out, payload.index, &payload.primop_bytes);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -256,6 +294,7 @@ impl HeapImage {
         let reloc_count = u64::from_le_bytes(read8(bytes, 48)) as usize;
         let list_count = u64::from_le_bytes(read8(bytes, 56)) as usize;
         let context_count = u64::from_le_bytes(read8(bytes, 64)) as usize;
+        let primop_count = u64::from_le_bytes(read8(bytes, 72)) as usize;
 
         // Bound the fixed-width prefix (lanes + relocation table + each indexed
         // segment's fixed header) before parsing; each segment's variable bytes
@@ -265,7 +304,7 @@ impl HeapImage {
             low_len,
             high_len,
             reloc_count * RELOCATION_ENTRY_LEN,
-            (list_count + context_count) * INDEXED_PAYLOAD_PREFIX_LEN,
+            (list_count + context_count + primop_count) * INDEXED_PAYLOAD_PREFIX_LEN,
         ]
         .iter()
         .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
@@ -310,6 +349,15 @@ impl HeapImage {
             });
         }
 
+        let mut primop_payloads = Vec::with_capacity(primop_count);
+        for _ in 0..primop_count {
+            let (index, segment) = read_indexed_payload(bytes, &mut cursor)?;
+            primop_payloads.push(PrimopPayload {
+                index,
+                primop_bytes: segment,
+            });
+        }
+
         let digest_start = cursor;
         let expected = xxh3_64(&bytes[..digest_start]);
         let actual = u64::from_le_bytes(read8(bytes, digest_start));
@@ -326,6 +374,7 @@ impl HeapImage {
             relocations,
             list_payloads,
             context_payloads,
+            primop_payloads,
         })
     }
 }
@@ -366,9 +415,8 @@ fn read_indexed_payload(bytes: &[u8], cursor: &mut usize) -> Result<(u32, Vec<u8
 /// Captures a heap image of a reservation-backed serial flat arena.
 ///
 /// Records the reservation's current base as [`HeapImage::old_base`] and leaves
-/// [`HeapImage::relocations`], [`HeapImage::list_payloads`], and
-/// [`HeapImage::context_payloads`] empty; the `EvalHeap`-level capture enumerates
-/// the flat stores and fills all three before serializing.
+/// the relocation, list, context, and primop segments empty; the `EvalHeap`-level
+/// capture enumerates the flat stores and fills them before serializing.
 ///
 /// # Errors
 ///
@@ -388,6 +436,7 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         relocations: Vec::new(),
         list_payloads: Vec::new(),
         context_payloads: Vec::new(),
+        primop_payloads: Vec::new(),
     })
 }
 
@@ -618,6 +667,10 @@ mod tests {
             context_payloads: vec![ContextPayload {
                 index: 8,
                 context_bytes: vec![1, 2, 3],
+            }],
+            primop_payloads: vec![PrimopPayload {
+                index: 24,
+                primop_bytes: vec![7, 6, 5, 4],
             }],
         };
         let good = image.to_bytes();
