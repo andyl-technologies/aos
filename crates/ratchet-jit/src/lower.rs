@@ -16,8 +16,7 @@
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{
-        ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName,
-        condcodes::IntCC, types,
+        ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName, types,
     },
     settings,
     verifier::verify_function,
@@ -43,6 +42,7 @@ pub mod interp;
 mod lambda_chain;
 mod lambda_rec;
 mod stack_maps;
+mod value_words;
 pub use stack_maps::{
     AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
     clif_external_name_for_aos_jit_stack_map_enter,
@@ -413,10 +413,11 @@ fn lower_constant_thunk_body_with_name(
     name: UserFuncName,
 ) -> Result<Function, JitLowerError> {
     error::validate_embedded_constant(value)?;
+    let constant_words = value_words::embedded_constant_words(value)?;
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let entry_block = append_entry_block_params(&mut function);
-    emit_value_return(&mut function, entry_block, value);
+    emit_value_return(&mut function, entry_block, constant_words);
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -2476,14 +2477,11 @@ fn append_entry_block_params(function: &mut Function) -> cranelift_codegen::ir::
 fn emit_value_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
-    value: Value,
+    constant_words: [i64; value_words::VALUE_WORDS],
 ) {
-    let tag_word = value.tag() as u64;
-    let payload_word = value.relocation_sensitive_identity_bits();
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
-    let tag = cursor.ins().iconst(types::I64, tag_word as i64);
-    let payload = cursor.ins().iconst(types::I64, payload_word as i64);
-    cursor.ins().return_(&[tag, payload]);
+    let words = value_words::iconst_words(&mut cursor, constant_words);
+    cursor.ins().return_(&words);
 }
 fn emit_env_get_return(
     function: &mut Function,
@@ -2500,16 +2498,9 @@ fn emit_env_get_return(
     let slot = cursor.ins().iconst(types::I32, i64::from(slot));
     let call = cursor.ins().call(env_get, &[env, slot]);
     let results = cursor.func.dfg.inst_results(call).to_vec();
+    let words = value_words::expect_value_words(AOS_ENV_GET_SYMBOL, &results)?;
 
-    if results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: results.len(),
-        });
-    }
-
-    cursor.ins().return_(&results);
+    cursor.ins().return_(&words);
     Ok(())
 }
 
@@ -2530,16 +2521,9 @@ fn emit_upval_get_return(
     let slot = cursor.ins().iconst(types::I32, i64::from(slot));
     let call = cursor.ins().call(upval_get, &[env, depth, slot]);
     let results = cursor.func.dfg.inst_results(call).to_vec();
+    let words = value_words::expect_value_words(AOS_UPVAL_GET_SYMBOL, &results)?;
 
-    if results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_UPVAL_GET_SYMBOL,
-            expected: 2,
-            actual: results.len(),
-        });
-    }
-
-    cursor.ins().return_(&results);
+    cursor.ins().return_(&words);
     Ok(())
 }
 
@@ -2566,34 +2550,19 @@ fn emit_forced_upval_get_return(
     let slot = cursor.ins().iconst(types::I32, i64::from(slot));
     let upval_get_call = cursor.ins().call(upval_get, &[env, depth, slot]);
     let upval_get_results = cursor.func.dfg.inst_results(upval_get_call).to_vec();
+    let upval_get_words = value_words::expect_value_words(AOS_UPVAL_GET_SYMBOL, &upval_get_results)?;
 
-    if upval_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_UPVAL_GET_SYMBOL,
-            expected: 2,
-            actual: upval_get_results.len(),
-        });
-    }
-
-    let force_input_slot =
-        stack_maps::spill_values(&mut cursor, &[[upval_get_results[0], upval_get_results[1]]]);
+    let force_input_slot = value_words::spill(&mut cursor, &[upval_get_words]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
-    let force_call = cursor
-        .ins()
-        .call(force, &[rt, upval_get_results[0], upval_get_results[1]]);
-    stack_maps::attach(&mut cursor, force_call, force_input_slot);
+    let mut force_args = vec![rt];
+    value_words::push_words(&mut force_args, upval_get_words);
+    let force_call = cursor.ins().call(force, &force_args);
+    value_words::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
+    let force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &force_results)?;
 
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&force_results);
+    cursor.ins().return_(&force_words);
     Ok(())
 }
 
@@ -2618,16 +2587,9 @@ fn emit_primop_call_return(
     let node_id = cursor.ins().iconst(types::I32, i64::from(node_id.as_u32()));
     let call = cursor.ins().call(primop_call, &[rt, env, module_id, node_id]);
     let results = cursor.func.dfg.inst_results(call).to_vec();
+    let words = value_words::expect_value_words(AOS_PRIMOP_CALL_SYMBOL, &results)?;
 
-    if results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_PRIMOP_CALL_SYMBOL,
-            expected: 2,
-            actual: results.len(),
-        });
-    }
-
-    cursor.ins().return_(&results);
+    cursor.ins().return_(&words);
     Ok(())
 }
 
@@ -2653,35 +2615,24 @@ fn emit_string_length_inline_return(
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
     let argument = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, operand)?;
 
-    let force_input_slot = stack_maps::spill_values(&mut cursor, &[argument]);
+    let force_input_slot = value_words::spill(&mut cursor, &[argument]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
-    let force_call = cursor.ins().call(force, &[rt, argument[0], argument[1]]);
-    stack_maps::attach(&mut cursor, force_call, force_input_slot);
+    let mut force_args = vec![rt];
+    value_words::push_words(&mut force_args, argument);
+    let force_call = cursor.ins().call(force, &force_args);
+    value_words::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
+    let force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &force_results)?;
 
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
-
-    let length_call = cursor
-        .ins()
-        .call(string_length, &[rt, force_results[0], force_results[1]]);
+    let mut length_args = vec![rt];
+    value_words::push_words(&mut length_args, force_words);
+    let length_call = cursor.ins().call(string_length, &length_args);
     let length_results = cursor.func.dfg.inst_results(length_call).to_vec();
+    let length_words =
+        value_words::expect_value_words(AOS_STRING_LENGTH_SYMBOL, &length_results)?;
 
-    if length_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_STRING_LENGTH_SYMBOL,
-            expected: 2,
-            actual: length_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&length_results);
+    cursor.ins().return_(&length_words);
     Ok(())
 }
 
@@ -2728,7 +2679,7 @@ fn slot_operand_for_operand_node(node: IrNode) -> Option<Tier1SlotOperand> {
     }
 }
 
-/// Emits the runtime load of `operand`'s two `Value` words from `env`.
+/// Emits the runtime load of `operand`'s `Value` words from `env`.
 ///
 /// A [`Tier1SlotOperand::Local`] lowers to an `aos_env_get(env, slot)` call and a
 /// [`Tier1SlotOperand::Upval`] to an `aos_upval_get(env, depth, slot)` call.
@@ -2742,7 +2693,7 @@ fn emit_slot_operand_load(
     env_get: cranelift_codegen::ir::FuncRef,
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     operand: Tier1SlotOperand,
-) -> Result<[cranelift_codegen::ir::Value; 2], JitLowerError> {
+) -> Result<value_words::ValueWords, JitLowerError> {
     let (helper, symbol_name, args) = match operand {
         Tier1SlotOperand::Local { slot } => {
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
@@ -2759,16 +2710,7 @@ fn emit_slot_operand_load(
     };
     let call = cursor.ins().call(helper, &args);
     let results = cursor.func.dfg.inst_results(call).to_vec();
-
-    if results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name,
-            expected: 2,
-            actual: results.len(),
-        });
-    }
-
-    Ok([results[0], results[1]])
+    value_words::expect_value_words(symbol_name, &results)
 }
 
 fn emit_apply_local_slots_return(
@@ -2793,27 +2735,14 @@ fn emit_apply_local_slots_return(
     let function_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, function_operand)?;
     let argument_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, argument_operand)?;
 
-    let apply_call = cursor.ins().call(
-        apply,
-        &[
-            rt,
-            function_value[0],
-            function_value[1],
-            argument_value[0],
-            argument_value[1],
-        ],
-    );
+    let mut apply_args = vec![rt];
+    value_words::push_words(&mut apply_args, function_value);
+    value_words::push_words(&mut apply_args, argument_value);
+    let apply_call = cursor.ins().call(apply, &apply_args);
     let apply_results = cursor.func.dfg.inst_results(apply_call).to_vec();
+    let apply_words = value_words::expect_value_words(AOS_APPLY_SYMBOL, &apply_results)?;
 
-    if apply_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_APPLY_SYMBOL,
-            expected: 2,
-            actual: apply_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&apply_results);
+    cursor.ins().return_(&apply_words);
     Ok(())
 }
 
@@ -2841,70 +2770,40 @@ fn emit_update_local_slots_return(
 
     let left_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, left_operand)?;
 
-    let left_input_slot = stack_maps::spill_values(&mut cursor, &[left_value]);
+    let left_input_slot = value_words::spill(&mut cursor, &[left_value]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, left_input_slot, 0);
-    let left_force_call = cursor
-        .ins()
-        .call(force, &[rt, left_value[0], left_value[1]]);
-    stack_maps::attach(&mut cursor, left_force_call, left_input_slot);
+    let mut left_force_args = vec![rt];
+    value_words::push_words(&mut left_force_args, left_value);
+    let left_force_call = cursor.ins().call(force, &left_force_args);
+    value_words::attach(&mut cursor, left_force_call, left_input_slot);
     let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, left_input_slot);
-
-    if left_force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: left_force_results.len(),
-        });
-    }
+    let left_force_words =
+        value_words::expect_value_words(AOS_FORCE_SYMBOL, &left_force_results)?;
 
     let right_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, right_operand)?;
 
-    let right_force_binding = stack_maps::spill_values(
-        &mut cursor,
-        &[
-            [left_force_results[0], left_force_results[1]],
-            right_value,
-        ],
-    );
+    let right_force_binding =
+        value_words::spill(&mut cursor, &[left_force_words, right_value]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, right_force_binding, 1);
-    let right_force_call = cursor
-        .ins()
-        .call(force, &[rt, right_value[0], right_value[1]]);
-    stack_maps::attach(&mut cursor, right_force_call, right_force_binding);
+    let mut right_force_args = vec![rt];
+    value_words::push_words(&mut right_force_args, right_value);
+    let right_force_call = cursor.ins().call(force, &right_force_args);
+    value_words::attach(&mut cursor, right_force_call, right_force_binding);
     let right_force_results = cursor.func.dfg.inst_results(right_force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, right_force_binding);
+    let right_force_words =
+        value_words::expect_value_words(AOS_FORCE_SYMBOL, &right_force_results)?;
 
-    if right_force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: right_force_results.len(),
-        });
-    }
-
-    let left_force_results = stack_maps::reload(&mut cursor, right_force_binding, 0);
-    let update_call = cursor.ins().call(
-        update,
-        &[
-            rt,
-            left_force_results[0],
-            left_force_results[1],
-            right_force_results[0],
-            right_force_results[1],
-        ],
-    );
+    let left_force_words = value_words::reload(&mut cursor, right_force_binding, 0);
+    let mut update_args = vec![rt];
+    value_words::push_words(&mut update_args, left_force_words);
+    value_words::push_words(&mut update_args, right_force_words);
+    let update_call = cursor.ins().call(update, &update_args);
     let update_results = cursor.func.dfg.inst_results(update_call).to_vec();
+    let update_words = value_words::expect_value_words(AOS_UPDATE_SYMBOL, &update_results)?;
 
-    if update_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_UPDATE_SYMBOL,
-            expected: 2,
-            actual: update_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&update_results);
+    cursor.ins().return_(&update_words);
     Ok(())
 }
 
@@ -2932,22 +2831,15 @@ fn emit_attr_lookup_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
-    let force_input_slot = stack_maps::spill_values(&mut cursor, &[receiver_value]);
+    let force_input_slot = value_words::spill(&mut cursor, &[receiver_value]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
-    let force_call = cursor
-        .ins()
-        .call(force, &[rt, receiver_value[0], receiver_value[1]]);
-    stack_maps::attach(&mut cursor, force_call, force_input_slot);
+    let mut force_args = vec![rt];
+    value_words::push_words(&mut force_args, receiver_value);
+    let force_call = cursor.ins().call(force, &force_args);
+    value_words::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
-
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
+    let force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &force_results)?;
 
     let symbol = cursor
         .ins()
@@ -2955,21 +2847,15 @@ fn emit_attr_lookup_local_slot_return(
     let site = cursor
         .ins()
         .iconst(types::I32, i64::from(lookup.site.as_u32()));
-    let attr_call = cursor.ins().call(
-        attr_helper,
-        &[rt, force_results[0], force_results[1], symbol, site],
-    );
+    let mut attr_args = vec![rt];
+    value_words::push_words(&mut attr_args, force_words);
+    attr_args.push(symbol);
+    attr_args.push(site);
+    let attr_call = cursor.ins().call(attr_helper, &attr_args);
     let attr_results = cursor.func.dfg.inst_results(attr_call).to_vec();
+    let attr_words = value_words::expect_value_words(lowering.symbol_name(), &attr_results)?;
 
-    if attr_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: lowering.symbol_name(),
-            expected: 2,
-            actual: attr_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&attr_results);
+    cursor.ins().return_(&attr_words);
     Ok(())
 }
 
@@ -2986,6 +2872,7 @@ fn emit_attr_select_default_local_slot_return(
     default_value: Value,
 ) -> Result<(), JitLowerError> {
     error::validate_embedded_constant(default_value)?;
+    let default_words = value_words::embedded_constant_words(default_value)?;
     let select_block = function.dfg.make_block();
     let default_block = function.dfg.make_block();
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
@@ -3001,22 +2888,15 @@ fn emit_attr_select_default_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
-    let force_input_slot = stack_maps::spill_values(&mut cursor, &[receiver_value]);
+    let force_input_slot = value_words::spill(&mut cursor, &[receiver_value]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
-    let force_call = cursor
-        .ins()
-        .call(force, &[rt, receiver_value[0], receiver_value[1]]);
-    stack_maps::attach(&mut cursor, force_call, force_input_slot);
+    let mut force_args = vec![rt];
+    value_words::push_words(&mut force_args, receiver_value);
+    let force_call = cursor.ins().call(force, &force_args);
+    value_words::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
-
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
+    let force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &force_results)?;
 
     let symbol = cursor
         .ins()
@@ -3024,23 +2904,16 @@ fn emit_attr_select_default_local_slot_return(
     let site = cursor
         .ins()
         .iconst(types::I32, i64::from(lookup.site.as_u32()));
-    let has_attr_call = cursor.ins().call(
-        has_attr,
-        &[rt, force_results[0], force_results[1], symbol, site],
-    );
+    let mut has_attr_args = vec![rt];
+    value_words::push_words(&mut has_attr_args, force_words);
+    has_attr_args.push(symbol);
+    has_attr_args.push(site);
+    let has_attr_call = cursor.ins().call(has_attr, &has_attr_args);
     let has_attr_results = cursor.func.dfg.inst_results(has_attr_call).to_vec();
+    let has_attr_words =
+        value_words::expect_value_words(AOS_HAS_ATTR_SYMBOL, &has_attr_results)?;
 
-    if has_attr_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_HAS_ATTR_SYMBOL,
-            expected: 2,
-            actual: has_attr_results.len(),
-        });
-    }
-
-    let is_present = cursor
-        .ins()
-        .icmp_imm(IntCC::NotEqual, has_attr_results[1], 0);
+    let is_present = value_words::truthy_test(&mut cursor, has_attr_words);
     cursor
         .ins()
         .brif(is_present, select_block, &[], default_block, &[]);
@@ -3052,29 +2925,18 @@ fn emit_attr_select_default_local_slot_return(
     let site = cursor
         .ins()
         .iconst(types::I32, i64::from(lookup.site.as_u32()));
-    let select_call = cursor.ins().call(
-        select_ic,
-        &[rt, force_results[0], force_results[1], symbol, site],
-    );
+    let mut select_args = vec![rt];
+    value_words::push_words(&mut select_args, force_words);
+    select_args.push(symbol);
+    select_args.push(site);
+    let select_call = cursor.ins().call(select_ic, &select_args);
     let select_results = cursor.func.dfg.inst_results(select_call).to_vec();
-
-    if select_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_SELECT_IC_SYMBOL,
-            expected: 2,
-            actual: select_results.len(),
-        });
-    }
-    cursor.ins().return_(&select_results);
+    let select_words = value_words::expect_value_words(AOS_SELECT_IC_SYMBOL, &select_results)?;
+    cursor.ins().return_(&select_words);
 
     cursor.insert_block(default_block);
-    let tag = cursor
-        .ins()
-        .iconst(types::I64, default_value.tag() as u64 as i64);
-    let payload = cursor
-        .ins()
-        .iconst(types::I64, default_value.relocation_sensitive_identity_bits() as i64);
-    cursor.ins().return_(&[tag, payload]);
+    let default_consts = value_words::iconst_words(&mut cursor, default_words);
+    cursor.ins().return_(&default_consts);
 
     Ok(())
 }

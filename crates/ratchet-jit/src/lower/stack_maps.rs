@@ -16,7 +16,7 @@ use cranelift_codegen::{
 
 use super::{
     AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, JitLowerError,
-    import_runtime_helper_function,
+    import_runtime_helper_function, value_words,
 };
 
 /// User-external function index reserved for compiled stack-map entry.
@@ -150,25 +150,17 @@ pub(super) fn emit_forced_env_get_return(
     let slot = cursor.ins().iconst(types::I32, i64::from(slot));
     let env_get_call = cursor.ins().call(env_get, &[env, slot]);
     let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
-    if env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: env_get_results.len(),
-        });
-    }
-    let mut safepoints = ForceSafepoints {
-        runtime,
-        next_safepoint: 0,
-    };
-    let forced = safepoints.force(
-        &mut cursor,
-        force,
-        rt,
-        [env_get_results[0], env_get_results[1]],
-        &mut [],
-    )?;
-    cursor.ins().return_(&forced);
+    let env_get_words = value_words::expect_value_words(AOS_ENV_GET_SYMBOL, &env_get_results)?;
+    let force_input_slot = value_words::spill(&mut cursor, &[env_get_words]);
+    enter(&mut cursor, runtime, rt, force_input_slot, 0);
+    let mut force_args = vec![rt];
+    value_words::push_words(&mut force_args, env_get_words);
+    let force_call = cursor.ins().call(force, &force_args);
+    value_words::attach(&mut cursor, force_call, force_input_slot);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    exit(&mut cursor, runtime, rt, force_input_slot);
+    let force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &force_results)?;
+    cursor.ins().return_(&force_words);
     Ok(())
 }
 
@@ -307,6 +299,7 @@ fn value_offset(index: usize) -> i32 {
 // and both live until S4b promotes the one-word carrier's JIT.
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(not(feature = "candidate_c_value"), allow(dead_code))]
 const ONE_WORD_VALUE_STACK_SLOT_BYTES: u32 = 8;
 
 /// Spills one-word runtime values after an intrusive binding header.
@@ -314,6 +307,7 @@ const ONE_WORD_VALUE_STACK_SLOT_BYTES: u32 = 8;
 /// The Candidate-C sibling of [`spill_values`]: one `stack_store` per value at
 /// an 8-byte stride, same header and identity-anchor layout, so the runtime's
 /// enter/exit binding protocol is geometry-agnostic.
+#[cfg_attr(not(feature = "candidate_c_value"), allow(dead_code))]
 pub(super) fn spill_values_one_word(cursor: &mut FuncCursor<'_>, values: &[Value]) -> Binding {
     let value_count = values.len() as u32;
     let size = BINDING_HEADER_BYTES
@@ -339,6 +333,7 @@ pub(super) fn spill_values_one_word(cursor: &mut FuncCursor<'_>, values: &[Value
 /// The Candidate-C sibling of [`attach`]: each value contributes exactly one
 /// `I64` map entry (the compressed word itself); a collector that relocates
 /// the referenced heap object rewrites that single word in place.
+#[cfg_attr(not(feature = "candidate_c_value"), allow(dead_code))]
 pub(super) fn attach_one_word(cursor: &mut FuncCursor<'_>, call: Inst, binding: Binding) {
     cursor.func.dfg.append_user_stack_map_entry(
         call,
@@ -361,6 +356,7 @@ pub(super) fn attach_one_word(cursor: &mut FuncCursor<'_>, call: Inst, binding: 
 }
 
 /// Reloads a one-word value that may have been rewritten at a safepoint.
+#[cfg_attr(not(feature = "candidate_c_value"), allow(dead_code))]
 pub(super) fn reload_one_word(cursor: &mut FuncCursor<'_>, binding: Binding, index: usize) -> Value {
     cursor
         .ins()

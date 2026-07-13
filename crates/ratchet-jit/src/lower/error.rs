@@ -29,6 +29,11 @@ pub enum JitLowerError {
         /// The heap-backed value tag rejected before constant-word emission.
         tag: ValueTag,
     },
+    /// A constant needs evaluator-owned arena storage on the one-word carrier.
+    ArenaBackedConstant {
+        /// The value tag whose compressed word cannot be embedded in code.
+        tag: ValueTag,
+    },
     /// The generated thunk function did not have the expected entry parameter.
     MissingEntryBlockParameter {
         /// The expected entry-block parameter index.
@@ -251,6 +256,10 @@ impl fmt::Display for JitLowerError {
                 formatter,
                 "heap-backed {tag:?} values cannot be embedded as JIT constants"
             ),
+            Self::ArenaBackedConstant { tag } => write!(
+                formatter,
+                "{tag:?} constants require evaluator-owned arena storage on the one-word carrier"
+            ),
             Self::MissingEntryBlockParameter { index } => write!(
                 formatter,
                 "generated thunk function is missing entry-block parameter {index}"
@@ -458,6 +467,7 @@ impl Error for JitLowerError {
             Self::Abi(error) => Some(error),
             Self::Verifier(error) => Some(error),
             Self::UnsupportedHeapConstant { .. }
+            | Self::ArenaBackedConstant { .. }
             | Self::MissingRuntimeHelperSignature { .. }
             | Self::MissingEntryBlockParameter { .. }
             | Self::InvalidRuntimeCallResultArity { .. }

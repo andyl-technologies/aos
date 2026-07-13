@@ -16,6 +16,13 @@ use ratchet_oracle::value::Value;
 
 use crate::context::{RuntimeJitContext, with_native_jit_context};
 
+/// Byte stride of one runtime value inside a generated binding region.
+///
+/// Generated code stores complete by-value `Value`s, so the stride tracks the
+/// active carrier: 16 bytes on the two-word baseline, 8 bytes under the
+/// one-word `candidate_c_value` variant.
+const VALUE_SLOT_BYTES: usize = std::mem::size_of::<Value>();
+
 /// Header stored at the start of a generated compiled-frame binding region.
 #[repr(C)]
 pub(crate) struct RuntimeJitStackMapBindingHeader {
@@ -43,7 +50,7 @@ impl RuntimeJitContext<'_> {
             // SAFETY: Enter's ABI contract keeps every linked header and its
             // trailing Value slots live until the matching LIFO exit.
             let header = unsafe { binding.as_ref() };
-            if header.values > (i32::MAX as u32) / 16 {
+            if header.values > (i32::MAX as u32) / VALUE_SLOT_BYTES as u32 {
                 process::abort();
             }
             // SAFETY: The generated region places its first Value immediately
@@ -139,7 +146,7 @@ impl RuntimeJitContext<'_> {
             process::abort();
         }
         let header = std::mem::size_of::<RuntimeJitStackMapBindingHeader>() as u32;
-        let Some(offset) = header.checked_add(index.saturating_mul(16)) else {
+        let Some(offset) = header.checked_add(index.saturating_mul(VALUE_SLOT_BYTES as u32)) else {
             process::abort();
         };
         if offset > i32::MAX as u32 {
@@ -170,7 +177,7 @@ impl RuntimeJitContext<'_> {
                             .cast::<u8>()
                             .add(
                                 std::mem::size_of::<RuntimeJitStackMapBindingHeader>()
-                                    + index as usize * 16,
+                                    + index as usize * VALUE_SLOT_BYTES,
                             )
                             .cast::<Value>()
                     };
@@ -208,7 +215,7 @@ impl RuntimeJitContext<'_> {
                 let Some(tag_address) = binding
                     .as_ptr()
                     .addr()
-                    .checked_add(value_offset + value_index.saturating_mul(16))
+                    .checked_add(value_offset + value_index.saturating_mul(VALUE_SLOT_BYTES))
                 else {
                     process::abort();
                 };
