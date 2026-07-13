@@ -612,6 +612,10 @@ impl EvalHeap {
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
             Ok(FlatClosurePayload::SharedThunk(shared)) => Ok(Some(Arc::clone(shared))),
             Ok(payload @ FlatClosurePayload::Thunk(_)) => {
+                // Move the inline thunk out to wrap it in an `Arc`. The `Retired`
+                // tombstone is only a transient placeholder here: it is
+                // overwritten with `SharedThunk` before this `&mut` borrow ends,
+                // so no reader ever observes a retired slot at this address.
                 let FlatClosurePayload::Thunk(inner) =
                     std::mem::replace(payload, FlatClosurePayload::Retired(ValueTag::Thunk))
                 else {
