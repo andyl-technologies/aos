@@ -342,10 +342,9 @@ mod tests {
     /// identity generator — fuses, folds natively, and matches the oracle
     /// with zero deopts and zero interpreted element forces on the fused run.
     ///
-    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
-    /// it has no inline word on the one-word carrier and the fused operator
-    /// declines to lower (never promotes) there by design.
-    #[cfg(not(feature = "candidate_c_value"))]
+    /// Decoded-core: the `2654435761` seed is a plain `iconst.i64`, so the
+    /// operator lowers on both carriers, and the fold accumulator stays inline
+    /// (`mod (...) 1000000007`), so the fused run has zero deopts.
     #[test]
     fn sum_fold_over_genlist_fuses_and_matches_the_oracle() {
         let source = "let mod = a: b: a - b * (a / b); in \

@@ -492,10 +492,9 @@ mod tests {
     /// a pinned inlined callee — folds natively and matches the oracle with
     /// zero deopts.
     ///
-    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
-    /// it has no inline word on the one-word carrier and the operator declines
-    /// to lower (never promotes) there by design.
-    #[cfg(not(feature = "candidate_c_value"))]
+    /// Decoded-core: the `2654435761` seed is a plain `iconst.i64`, so the
+    /// operator lowers on both carriers, and the fold accumulator stays inline
+    /// (`mod (...) 1000000007`), so it runs fully native with zero deopts.
     #[test]
     fn sum_fold_operator_with_pinned_callee_folds_natively() {
         let source = "let mod = a: b: a - b * (a / b); in \
@@ -619,10 +618,9 @@ mod tests {
     /// becomes a virtual register and the fused genList loop still fires
     /// (the improved sum-fold shape), matching the oracle with zero deopts.
     ///
-    /// Baseline-only: the `2654435761` seed exceeds the inline `i32` range, so
-    /// it has no inline word on the one-word carrier and the operator declines
-    /// to lower (never promotes) there by design.
-    #[cfg(not(feature = "candidate_c_value"))]
+    /// Decoded-core: the `2654435761` seed is a plain `iconst.i64` and the
+    /// let-bound intermediate stays decoded, so the operator lowers on both
+    /// carriers; the `mod`-bounded accumulator keeps it deopt-free.
     #[test]
     fn let_bound_intermediate_fold_operator_folds_natively() {
         let source = "builtins.foldl'              (acc: i: let m = acc + i * i + 2654435761;               in m - 1000000007 * (m / 1000000007)) 0              (builtins.genList (i: i) 500)";

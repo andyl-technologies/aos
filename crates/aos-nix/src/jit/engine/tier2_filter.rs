@@ -638,12 +638,9 @@ mod tests {
     /// interpreter's own `max_call_depth` — a pre-existing interpreter
     /// limit, unrelated to the filter seam).
     ///
-    /// Baseline-only: the closing `acc * 31 + x` checksum fold crosses the
-    /// inline `i32` range, so on the one-word carrier that fold operator boxes
-    /// each wide result and deopts — the zero-deopt invariant is
-    /// two-word-specific. The partition predicates themselves (`x < pivot`,
-    /// `x >= pivot`) lower and dispatch on both carriers.
-    #[cfg(not(feature = "candidate_c_value"))]
+    /// Decoded-core: the closing `mod (acc * 31 + x) 1000000007` fold keeps its
+    /// accumulator inline while the wide `acc * 31 + x` intermediate stays
+    /// decoded, so the whole shape lowers and runs deopt-free on both carriers.
     #[test]
     fn quicksort_partitions_filter_natively_and_match() {
         let source = "let mod = a: b: a - b * (a / b); \

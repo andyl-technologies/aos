@@ -23,7 +23,10 @@ use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{AbiParam, Function, InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
-use ratchet_core::{IrArena, IrBinding, IrId, runtime_lambda_argv_call_signature};
+use ratchet_core::{
+    IrArena, IrBinding, IrData, IrId, IrKind, runtime_lambda_argv_call_signature,
+    syntax::{BinOpKind, UnaryOpKind},
+};
 use ratchet_value::value::compressed::CompressedValueWord;
 
 use super::super::lambda_rec::import_tier2_local_function;
@@ -49,6 +52,56 @@ const TIER2_DEOPT_SENTINEL_WORD: i64 = 0xFF << 32;
 /// compressed word, so the entry indexes the `argv` run at this stride with one
 /// load per value.
 const VALUE_STRIDE_BYTES: i32 = 8;
+
+/// The statically inferred emission class of a grammar node (decoded core).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::lower::lambda_chain::compressed) enum ExprClass {
+    /// Produces a decoded integer.
+    Int,
+    /// Produces an encoded word (booleans, dynamic reads, call results).
+    Word,
+}
+
+/// Infers the emission class of a grammar node.
+///
+/// Integer literals (ANY width), arithmetic, and unary negation are `Int`; an
+/// `if` is `Int` only when both arms are; a `let` takes its body's class;
+/// everything dynamic (parameter/env reads, self-calls, booleans, comparisons)
+/// is `Word`. Nodes outside the grammar report `Word` — the emitter rejects
+/// them later regardless.
+pub(in crate::lower::lambda_chain::compressed) fn infer_class(
+    arena: &IrArena,
+    id: IrId,
+) -> ExprClass {
+    let Some(node) = arena.node(id).copied() else {
+        return ExprClass::Word;
+    };
+    match (node.kind, node.data) {
+        (IrKind::Int, _) => ExprClass::Int,
+        (IrKind::BinOp, IrData::Binary { op, .. }) => match op {
+            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div => ExprClass::Int,
+            _ => ExprClass::Word,
+        },
+        (
+            IrKind::UnaryOp,
+            IrData::Unary {
+                op: UnaryOpKind::Neg,
+                ..
+            },
+        ) => ExprClass::Int,
+        (IrKind::If, IrData::Triple { second, third, .. }) => {
+            if infer_class(arena, second) == ExprClass::Int
+                && infer_class(arena, third) == ExprClass::Int
+            {
+                ExprClass::Int
+            } else {
+                ExprClass::Word
+            }
+        }
+        (IrKind::Let, IrData::Let { body, .. }) => infer_class(arena, body),
+        _ => ExprClass::Word,
+    }
+}
 
 /// Lowers a scanned curried chain into verified fused one-word tier-2 CLIF.
 ///

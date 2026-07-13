@@ -2,40 +2,35 @@
 //!
 //! The compressed-word sibling of [`super::super::emit`]: same grammar, same
 //! recursive walk, same forced-parameter/environment/`let` discipline, direct
-//! self-calls, pinned-callee inlining, and deopt guards — but every runtime
-//! value is one compressed word instead of a `(tag, payload)` pair.
+//! self-calls, pinned-callee inlining, and deopt guards — but on the
+//! decoded-core value model (decoded-core-tier2-spec).
 //!
-//! # Value discipline
+//! # Value discipline (decoded core)
 //!
-//! Expressions uniformly produce one encoded word. An inline integer's high
-//! half (kind, arena domain, forced bit) is all zero, so a binary operation
-//! guards both operand words with one `or`-and-compare, decodes each by
-//! sign-extending its low half, computes on wrapping `i64` (the tree walk's
-//! per-step semantics), and re-encodes the result — deopting when it exceeds
-//! the inline `i32` range, where the tree walk re-runs and boxes it.
-//! Comparisons select between the two canonical boolean words. A parameter or
-//! environment read is forced at its first strict use on each dominating path,
-//! exactly like the two-word emitter and the tree walk (a force can record
-//! impure observations, so its timing is load-bearing for trace parity); the
-//! fast path skips the `aos_force` call when the raw word is already an inline
-//! integer, which the recursion's own self-call arguments always are.
+//! Each emitted expression carries one of two `i64` SSA classes: a statically
+//! integer-typed node (a literal of ANY width, an arithmetic result, or an
+//! `if`/`let` whose value is integer-typed) lives as a plain decoded `i64`
+//! with no inline-range constraint (wrapping ops are the tree walk's per-step
+//! semantics; intermediates never materialize); everything else is an encoded
+//! compressed word. Guards happen only at word-to-int coercions (an inline
+//! integer's high half is all zero) and encodes only at materialization points
+//! (the body return and self-call arguments), where a wide value deopts so the
+//! tree walk re-runs and boxes it. A wide operator literal (`2654435761`) is
+//! therefore a plain `iconst.i64`, so the operator lowers instead of declining.
 //!
 //! # Live values across forces
 //!
-//! An operand already emitted while a later operand is still being computed is
-//! *live* across any force the later operand triggers. Such a word may be a
-//! heap reference the collector relocates at the force safepoint, so it is
-//! spilled into the one-word stack-map slot alongside the force input and
-//! reloaded afterwards, and threaded through the fast/slow join so both paths
-//! agree on its post-force SSA value — the same plumbing as the two-word
-//! emitter, one word wide.
+//! Only **word-class** live values (potential heap references the collector
+//! relocates) are spilled into the one-word stack-map slot and reloaded across
+//! a force safepoint, threaded through the fast/slow join so both paths agree.
+//! Decoded integers are not heap references, so they survive a force in SSA
+//! with no spill and no join threading.
 //!
 //! # Sentinel
 //!
-//! The internal deopt-unwind sentinel is a word whose kind byte is `0xFF` — no
-//! valid compressed kind uses it — propagated by every self-call site and
-//! translated to the canonical null word at the boundary before it could
-//! materialize as a Rust `Value`.
+//! The internal deopt-unwind sentinel is a word whose kind byte is `0xFF` —
+//! propagated by every self-call site and translated to the canonical null
+//! word at the boundary before it could materialize as a Rust `Value`.
 
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
@@ -53,14 +48,25 @@ use super::super::super::{
 };
 use super::super::super::lambda_rec::import_tier2_local_function;
 use super::super::scan::{flatten_apply_chain, require_static_bool_condition, unwrap_thunk_alloc};
-use super::super::{
-    JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee,
-};
-use super::TIER2_DEOPT_SENTINEL_WORD;
+use super::super::{JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee};
+use super::{ExprClass, TIER2_DEOPT_SENTINEL_WORD, infer_class};
 
 /// A Cranelift SSA value, aliased to avoid confusion with the runtime `Value`.
 type ClifValue = cranelift_codegen::ir::Value;
 type Block = cranelift_codegen::ir::Block;
+
+/// The SSA class of one emitted expression (both classes are `i64` values).
+///
+/// `IntDecoded` is a plain decoded integer with no inline-range constraint;
+/// `Word` is an encoded compressed word. Coercions between them
+/// ([`to_int`]/[`to_word`]) are the only guard/encode sites.
+#[derive(Clone, Copy)]
+enum TypedVal {
+    /// A statically integer-typed value, decoded, full `i64` range.
+    IntDecoded(ClifValue),
+    /// An encoded compressed word (booleans, reads, call results).
+    Word(ClifValue),
+}
 
 /// The body shape compiled into one chain inner function.
 #[derive(Clone, Copy, Debug)]
@@ -68,8 +74,8 @@ pub(in crate::lower::lambda_chain) enum ChainInnerBody {
     /// The chain's own innermost body (the plain fold/apply-seam shape).
     Plain,
     /// A fused `builtins.genList` fold step: the generator body is emitted
-    /// over the raw index parameter first and its result is seeded as the
-    /// already-forced element parameter of the operator body.
+    /// over the raw index parameter first and its result seeds the operator's
+    /// already-forced element parameter.
     FusedGenerator(IrId),
 }
 
@@ -83,8 +89,9 @@ struct ChainCtx<'a> {
     stack_map_runtime: stack_maps::Runtime,
     /// The next force call's safepoint index.
     next_safepoint: u32,
-    /// One-word runtime values currently live across recursive emission.
-    live_values: Vec<ClifValue>,
+    /// Word-class runtime values currently live across recursive emission
+    /// (spilled and reloaded across each force; decoded ints stay in SSA).
+    live_words: Vec<ClifValue>,
     /// Imported `aos_deopt` helper called by the shared deopt block.
     deopt_fn: cranelift_codegen::ir::FuncRef,
     /// Imported `aos_upval_get` helper, present when the scan saw env reads.
@@ -106,10 +113,6 @@ struct ChainCtx<'a> {
     /// The chain arity K.
     arity: u32,
     /// The conceptual frames missing from the boundary `env` pointer.
-    ///
-    /// A body-relative read at `depth >= arity` translates to
-    /// `aos_upval_get(env, depth - env_skew, slot)`; see
-    /// [`JitTier2EnvBoundary`](super::super::JitTier2EnvBoundary).
     env_skew: u32,
     /// The self-callee upvalue coordinates, when the chain self-recurses.
     self_upval: Option<(u32, u32)>,
@@ -121,19 +124,20 @@ struct ChainCtx<'a> {
 
 /// The per-dominating-path evaluation state of the emitter.
 ///
-/// `forced_params` caches the forced word of each chain parameter along the
-/// current path, `forced_upvals` the forced word of each environment read
+/// `forced_params` caches the forced value of each chain parameter along the
+/// current path (a `Word`, except the fused generator's seeded element, which
+/// may be decoded), `forced_upvals` the forced value of each environment read
 /// (keyed by **normalized**, let-free coordinates), and `let_scopes` the
-/// virtual registers of the enclosing `let` frames (an `If` arm must not leak
-/// its forces or binding computations past the join, so arms clone and restore
-/// the whole state). `inline_params` is `Some` while emitting a pinned callee's
-/// (or fused generator's) inlined body, mapping the callee's own parameter
-/// reads to the already-evaluated argument words.
+/// virtual registers of the enclosing `let` frames (each holds a `TypedVal`, so
+/// a let-bound arithmetic result stays decoded across its uses). `inline_params`
+/// is `Some` while emitting a pinned callee's (or fused generator's) inlined
+/// body, mapping the callee's own parameter reads to the already-evaluated
+/// argument values.
 #[derive(Clone)]
 struct EmitState {
-    forced_params: Vec<Option<ClifValue>>,
-    forced_upvals: Vec<((u32, u32), ClifValue)>,
-    inline_params: Option<Vec<ClifValue>>,
+    forced_params: Vec<Option<TypedVal>>,
+    forced_upvals: Vec<((u32, u32), TypedVal)>,
+    inline_params: Option<Vec<TypedVal>>,
     let_scopes: Vec<LetScope>,
 }
 
@@ -154,16 +158,11 @@ enum LetSlot {
     /// Currently being computed: a read here is a (scan-rejected) letrec
     /// reference, surfaced as a lowering error rather than a hang.
     InProgress,
-    /// Computed on this path; reads reuse the register word.
-    Ready(ClifValue),
+    /// Computed on this path; reads reuse the typed register.
+    Ready(TypedVal),
 }
 
 /// Builds the compiled chain body and returns it with its self-call count.
-///
-/// `body` selects between the plain innermost-body emission and the fused
-/// `genList` fold-step emission; `env_boundary` fixes the compile-time depth
-/// translation for environment reads. The one-word sibling of
-/// [`super::super::emit::build_inner_function`].
 pub(in crate::lower::lambda_chain) fn build_inner_function(
     arena: &IrArena,
     bindings: &[IrBinding],
@@ -229,7 +228,7 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
         force,
         stack_map_runtime,
         next_safepoint: 0,
-        live_values: Vec::new(),
+        live_words: Vec::new(),
         deopt_fn,
         upval_get,
         self_ref,
@@ -254,27 +253,29 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
 
     if let ChainInnerBody::FusedGenerator(generator_body) = body {
         // The generator body is call-free arithmetic over the raw index
-        // parameter (always an inline integer supplied by the native loop),
-        // so it is emitted eagerly with the index as its sole inline
-        // parameter. This is sound even when the operator never demands its
-        // element: the emission is pure and side-effect-free — its only exits
-        // are a value or the shared deopt block, never a force or a call.
+        // parameter (always an inline integer supplied by the native loop). It
+        // is emitted eagerly with the index fed **decoded** (a known integer by
+        // construction) as its sole inline parameter; the emission is pure and
+        // its only exits are a value or the shared deopt block.
         let index_word = ctx.raw_params[1];
+        let index_low = cursor.ins().ireduce(types::I32, index_word);
+        let index = cursor.ins().sextend(types::I64, index_low);
         let mut generator_state = EmitState {
             forced_params: vec![None; arity as usize],
             forced_upvals: Vec::new(),
-            inline_params: Some(vec![index_word]),
+            inline_params: Some(vec![TypedVal::IntDecoded(index)]),
             let_scopes: Vec::new(),
         };
         let element = emit_expr(&mut cursor, arena, &mut ctx, generator_body, &mut generator_state)?;
         // The generated element replaces the raw element parameter: it is by
         // construction already in weak head normal form, so the operator body
-        // sees it as forced and never round-trips through `aos_force`.
+        // sees it forced and never round-trips through `aos_force`.
         state.forced_params[1] = Some(element);
     }
 
-    let word = emit_expr(&mut cursor, arena, &mut ctx, scan.inner_body(), &mut state)?;
-    cursor.ins().return_(&[word]);
+    let result = emit_expr(&mut cursor, arena, &mut ctx, scan.inner_body(), &mut state)?;
+    let result_word = to_word(&mut cursor, &ctx, result);
+    cursor.ins().return_(&[result_word]);
 
     // Shared guard-failure block: record the deopt trap, unwind with the sentinel.
     cursor.insert_block(deopt);
@@ -293,31 +294,67 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
     Ok((function, self_call_count))
 }
 
-/// Emits one grammar expression, returning its encoded word.
+/// Coerces a typed value to a decoded `i64` integer (a guard site).
+///
+/// A `Word` gets the inline-integer guard (all-zero high half; anything else —
+/// bools, boxed scalars, heap words, the sentinel — deopts) and a
+/// sign-extending decode; an `IntDecoded` is already the integer.
+fn to_int(cursor: &mut FuncCursor, ctx: &ChainCtx<'_>, value: TypedVal) -> ClifValue {
+    match value {
+        TypedVal::IntDecoded(int) => int,
+        TypedVal::Word(word) => {
+            let high = cursor.ins().ushr_imm(word, 32);
+            let is_inline_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
+            let decode = cursor.func.dfg.make_block();
+            cursor.ins().brif(is_inline_int, decode, &[], ctx.deopt, &[]);
+            cursor.insert_block(decode);
+            let low = cursor.ins().ireduce(types::I32, word);
+            cursor.ins().sextend(types::I64, low)
+        }
+    }
+}
+
+/// Coerces a typed value to an encoded word (a materialization point).
+///
+/// An `IntDecoded` re-encodes with the inline-range check, deopting when wide
+/// so the tree walk re-runs and boxes it; a `Word` is already encoded.
+fn to_word(cursor: &mut FuncCursor, ctx: &ChainCtx<'_>, value: TypedVal) -> ClifValue {
+    match value {
+        TypedVal::Word(word) => word,
+        TypedVal::IntDecoded(int) => {
+            let low = cursor.ins().ireduce(types::I32, int);
+            let round_trip = cursor.ins().sextend(types::I64, low);
+            let fits = cursor.ins().icmp(IntCC::Equal, round_trip, int);
+            let encode = cursor.func.dfg.make_block();
+            cursor.ins().brif(fits, encode, &[], ctx.deopt, &[]);
+            cursor.insert_block(encode);
+            cursor.ins().band_imm(int, 0xFFFF_FFFF)
+        }
+    }
+}
+
+/// Emits one grammar expression, returning its typed value.
 fn emit_expr(
     cursor: &mut FuncCursor,
     arena: &IrArena,
     ctx: &mut ChainCtx<'_>,
     id: IrId,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let node = arena
         .node(id)
         .copied()
         .ok_or(JitLowerError::MissingIrBody { body: id })?;
     match (node.kind, node.data) {
+        // Any-width literal: operand position never materializes a word.
         (IrKind::Int, IrData::Int(value)) => {
-            let word = CompressedValueWord::inline_int(value).map_err(|_| {
-                JitLowerError::UnsupportedArithOperand {
-                    operand: id,
-                    kind: IrKind::Int,
-                }
-            })?;
-            Ok(cursor.ins().iconst(types::I64, word.raw() as i64))
+            Ok(TypedVal::IntDecoded(cursor.ins().iconst(types::I64, value)))
         }
-        (IrKind::Bool, IrData::Bool(value)) => Ok(cursor
-            .ins()
-            .iconst(types::I64, CompressedValueWord::boolean(value).raw() as i64)),
+        (IrKind::Bool, IrData::Bool(value)) => Ok(TypedVal::Word(
+            cursor
+                .ins()
+                .iconst(types::I64, CompressedValueWord::boolean(value).raw() as i64),
+        )),
         (IrKind::LocalVar, IrData::Local { slot: 0 }) if state.inline_params.is_some() => {
             let inline = state
                 .inline_params
@@ -329,14 +366,10 @@ fn emit_expr(
         (IrKind::LocalVar, IrData::Local { slot }) if state.inline_params.is_none() => {
             emit_frame_read(cursor, arena, ctx, id, 0, slot, state)
         }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot })
-            if state.inline_params.is_none() =>
-        {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) if state.inline_params.is_none() => {
             emit_frame_read(cursor, arena, ctx, id, depth, slot, state)
         }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
-            if state.inline_params.is_some() =>
-        {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 }) if state.inline_params.is_some() => {
             let inline = state
                 .inline_params
                 .as_ref()
@@ -359,8 +392,6 @@ fn emit_expr(
                 ..
             },
         ) => {
-            // A pinned callee (or fused generator) body is let-free by
-            // validation; a let here means the classification drifted.
             if state.inline_params.is_some() {
                 return Err(JitLowerError::UnsupportedArithOperand {
                     operand: id,
@@ -410,13 +441,8 @@ fn emit_expr(
     }
 }
 
-/// Emits one frame read (`LocalVar` is distance 0, `UpvalVar { depth }`
-/// distance `depth`) under the current let context.
-///
-/// Mirrors the scan's coordinate model: a distance below the let depth is a
-/// `let`-binding virtual register, the next `arity` distances are chain
-/// parameters, and everything deeper is an environment read at the normalized
-/// (let-free) depth.
+/// Emits one frame read (`LocalVar` distance 0, `UpvalVar { depth }` distance
+/// `depth`) under the current let context.
 fn emit_frame_read(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -425,7 +451,7 @@ fn emit_frame_read(
     distance: u32,
     slot: u32,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let let_depth = state.let_scopes.len() as u32;
     if distance < let_depth {
         let scope_index = (let_depth - 1 - distance) as usize;
@@ -439,7 +465,6 @@ fn emit_frame_read(
                 kind: IrKind::UpvalVar,
             });
         }
-        // Chain parameter j at normalized depth K-1-j: index = K-1-depth.
         return emit_forced_param(cursor, ctx, (ctx.arity - 1 - normalized) as usize, state);
     }
     emit_forced_upval(cursor, ctx, normalized, slot, state)
@@ -447,13 +472,10 @@ fn emit_frame_read(
 
 /// Emits a `let`-binding read as a compute-at-first-use virtual register.
 ///
-/// The binding value expression is emitted — in the context of its own let
-/// frame, with the inner scopes temporarily set aside — at the first read on
-/// each dominating path, exactly where the interpreter would force the binding
-/// thunk, and the resulting register word is cached in the path state for
-/// later reads. The scan's letrec restriction guarantees the value reads no
-/// slot of its own frame, so the recursion terminates; the `InProgress` marker
-/// turns any drift into a lowering error rather than a hang.
+/// The binding value is emitted at its first read on each dominating path and
+/// its typed register cached; a let-bound arithmetic result therefore stays
+/// decoded across every later use. The `InProgress` marker turns a
+/// scan-rejected own-frame read into a lowering error rather than a hang.
 fn emit_let_binding(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -462,7 +484,7 @@ fn emit_let_binding(
     scope_index: usize,
     slot: usize,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let reject = JitLowerError::UnsupportedArithOperand {
         operand: at,
         kind: IrKind::UpvalVar,
@@ -471,19 +493,17 @@ fn emit_let_binding(
         return Err(reject);
     };
     let value = match scope.computed.get(slot).copied() {
-        Some(LetSlot::Ready(word)) => return Ok(word),
+        Some(LetSlot::Ready(typed)) => return Ok(typed),
         Some(LetSlot::InProgress) | None => return Err(reject),
         Some(LetSlot::Unevaluated) => scope.values[slot],
     };
     state.let_scopes[scope_index].computed[slot] = LetSlot::InProgress;
-    // The binding value's coordinates count its own frame as innermost:
-    // emit it with the inner scopes set aside, then restore them.
     let inner_scopes = state.let_scopes.split_off(scope_index + 1);
     let emitted = emit_expr(cursor, arena, ctx, value, state);
     state.let_scopes.extend(inner_scopes);
-    let word = emitted?;
-    state.let_scopes[scope_index].computed[slot] = LetSlot::Ready(word);
-    Ok(word)
+    let typed = emitted?;
+    state.let_scopes[scope_index].computed[slot] = LetSlot::Ready(typed);
+    Ok(typed)
 }
 
 /// Emits a chain-parameter read, forcing it at first strict use on this path.
@@ -492,32 +512,25 @@ fn emit_forced_param(
     ctx: &mut ChainCtx<'_>,
     index: usize,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     if let Some(cached) = state.forced_params[index] {
         return Ok(cached);
     }
     let raw = ctx.raw_params[index];
     let word = emit_force_int_fast_path(cursor, ctx, raw)?;
-    state.forced_params[index] = Some(word);
-    Ok(word)
+    let typed = TypedVal::Word(word);
+    state.forced_params[index] = Some(typed);
+    Ok(typed)
 }
 
-/// Emits an environment read beyond the chain parameters.
-///
-/// `depth` is the **normalized** (let-free) body-relative depth; it is
-/// translated onto the boundary `env` pointer by subtracting the seam's frame
-/// skew (see [`ChainCtx::env_skew`]), read through `aos_upval_get`, and forced
-/// at first strict use on this dominating path — the same discipline as chain
-/// parameters, with the forced word cached per normalized `(depth, slot)`
-/// coordinate so reads of one slot from different let depths share the
-/// register.
+/// Emits an environment read beyond the chain parameters, forced at first use.
 fn emit_forced_upval(
     cursor: &mut FuncCursor,
     ctx: &mut ChainCtx<'_>,
     depth: u32,
     slot: u32,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     if let Some((_, cached)) = state
         .forced_upvals
         .iter()
@@ -526,8 +539,6 @@ fn emit_forced_upval(
         return Ok(*cached);
     }
     let Some(upval_get) = ctx.upval_get else {
-        // The scan promised no env reads; drifting here is a lowering bug
-        // surfaced as an unsupported operand rather than bad code.
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: IrId::new(0),
             kind: IrKind::UpvalVar,
@@ -549,17 +560,17 @@ fn emit_forced_upval(
         });
     };
     let word = emit_force_int_fast_path(cursor, ctx, raw)?;
-    state.forced_upvals.push(((depth, slot), word));
-    Ok(word)
+    let typed = TypedVal::Word(word);
+    state.forced_upvals.push(((depth, slot), typed));
+    Ok(typed)
 }
 
 /// Emits the shared inline-int-or-force join for a raw value word.
 ///
 /// An inline integer (high half zero) skips the call; anything else
-/// round-trips through `aos_force`, which either returns the forced word or
-/// transfers an evaluator error as a trap the boundary converts to a deopt.
-/// Values live across the force are threaded through the fast/slow join so
-/// both paths agree on their post-force SSA words.
+/// round-trips through `aos_force`. Word-class values live across the force
+/// are threaded through the fast/slow join and reloaded from the stack-map
+/// slot; decoded integers survive in SSA and are untouched.
 fn emit_force_int_fast_path(
     cursor: &mut FuncCursor,
     ctx: &mut ChainCtx<'_>,
@@ -570,7 +581,7 @@ fn emit_force_int_fast_path(
     let slow = cursor.func.dfg.make_block();
     let join = cursor.func.dfg.make_block();
     cursor.func.dfg.append_block_param(join, types::I64);
-    let live_before = ctx.live_values.clone();
+    let live_before = ctx.live_words.clone();
     for _ in &live_before {
         cursor.func.dfg.append_block_param(join, types::I64);
     }
@@ -587,28 +598,22 @@ fn emit_force_int_fast_path(
         ctx.rt,
         &mut ctx.next_safepoint,
         raw,
-        &mut ctx.live_values,
+        &mut ctx.live_words,
     )?;
     let mut slow_args = vec![forced.into()];
-    for value in &ctx.live_values {
+    for value in &ctx.live_words {
         slow_args.push((*value).into());
     }
     cursor.ins().jump(join, &slow_args);
     cursor.insert_block(join);
     let joined = cursor.func.dfg.block_params(join).to_vec();
-    for (index, value) in ctx.live_values.iter_mut().enumerate() {
+    for (index, value) in ctx.live_words.iter_mut().enumerate() {
         *value = joined[1 + index];
     }
     Ok(joined[0])
 }
 
-/// Emits one mapped `aos_force` call, spilling the input and every live value.
-///
-/// The one-word sibling of
-/// [`ForceSafepoints::force`](super::super::super::stack_maps): the input and
-/// the caller's live words are spilled after the intrusive binding header at an
-/// 8-byte stride, the enter/exit helpers bracket the call, and the live words
-/// are reloaded after the runtime has had an opportunity to rewrite the frame.
+/// Emits one mapped `aos_force` call, spilling the input and every live word.
 fn emit_force(
     cursor: &mut FuncCursor,
     stack_map_runtime: stack_maps::Runtime,
@@ -647,13 +652,50 @@ fn emit_force(
     Ok(word)
 }
 
+/// A value tracked live across a following (possibly forcing) emission.
+///
+/// A `Word` may be a heap reference the collector relocates, so it is pushed
+/// onto the live-word stack (spilled at the next force) and named by a stack
+/// index; a decoded integer survives in SSA untouched and is carried verbatim.
+enum LiveSlot {
+    /// A live word at this index of [`ChainCtx::live_words`].
+    Word(usize),
+    /// A decoded integer that survives in SSA.
+    Int(ClifValue),
+}
+
+/// Pushes a value onto the live-word stack when it needs relocation tracking.
+fn track_live(ctx: &mut ChainCtx<'_>, value: TypedVal) -> LiveSlot {
+    match value {
+        TypedVal::Word(word) => {
+            let index = ctx.live_words.len();
+            ctx.live_words.push(word);
+            LiveSlot::Word(index)
+        }
+        TypedVal::IntDecoded(int) => LiveSlot::Int(int),
+    }
+}
+
+/// Reads back a tracked value after the following emission, popping the stack.
+fn untrack_live(ctx: &mut ChainCtx<'_>, slot: LiveSlot) -> TypedVal {
+    match slot {
+        LiveSlot::Word(index) => {
+            let word = ctx.live_words[index];
+            ctx.live_words.truncate(index);
+            TypedVal::Word(word)
+        }
+        LiveSlot::Int(int) => TypedVal::IntDecoded(int),
+    }
+}
+
 /// Emits one binary operation, mirroring the tree walk's operand order.
 ///
-/// Both operand words are guarded to be inline integers with one combined
-/// high-half check, decoded, computed on wrapping `i64`, and the result
-/// re-encoded (or, for comparisons, selected between the two canonical boolean
-/// words). An arithmetic result outside the inline range deopts so the tree
-/// walk re-runs and boxes it.
+/// Operands coerce to decoded integers (a `Word` operand gets the inline guard
+/// exactly once; a decoded operand joins directly), the operation runs on
+/// wrapping `i64` — intermediates carry no inline-range constraint — arithmetic
+/// stays decoded, and comparisons select between the two canonical boolean
+/// words. The first operand is tracked live across the second's emission so a
+/// heap-word operand survives any force the second operand triggers.
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -662,54 +704,26 @@ fn emit_binop(
     lhs: IrId,
     rhs: IrId,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let rhs_first = matches!(op, BinOpKind::Gt | BinOpKind::Le);
-    let (lhs_word, rhs_word) = if rhs_first {
-        let rhs_word = emit_expr(cursor, arena, ctx, rhs, state)?;
-        let live_index = ctx.live_values.len();
-        ctx.live_values.push(rhs_word);
-        let lhs_word = emit_expr(cursor, arena, ctx, lhs, state)?;
-        let rhs_word = ctx.live_values[live_index];
-        ctx.live_values.truncate(live_index);
-        (lhs_word, rhs_word)
+    let (lhs_val, rhs_val) = if rhs_first {
+        let rhs_val = emit_expr(cursor, arena, ctx, rhs, state)?;
+        let tracked = track_live(ctx, rhs_val);
+        let lhs_val = emit_expr(cursor, arena, ctx, lhs, state)?;
+        (lhs_val, untrack_live(ctx, tracked))
     } else {
-        let lhs_word = emit_expr(cursor, arena, ctx, lhs, state)?;
-        let live_index = ctx.live_values.len();
-        ctx.live_values.push(lhs_word);
-        let rhs_word = emit_expr(cursor, arena, ctx, rhs, state)?;
-        let lhs_word = ctx.live_values[live_index];
-        ctx.live_values.truncate(live_index);
-        (lhs_word, rhs_word)
+        let lhs_val = emit_expr(cursor, arena, ctx, lhs, state)?;
+        let tracked = track_live(ctx, lhs_val);
+        let rhs_val = emit_expr(cursor, arena, ctx, rhs, state)?;
+        (untrack_live(ctx, tracked), rhs_val)
     };
-
-    // Both operands must be inline integers (all-zero high halves) for the
-    // inline path; anything else (bools, boxed scalars, heap words, the
-    // sentinel) deopts.
-    let combined = cursor.ins().bor(lhs_word, rhs_word);
-    let combined_high = cursor.ins().ushr_imm(combined, 32);
-    let both_int = cursor.ins().icmp_imm(IntCC::Equal, combined_high, 0);
-    let compute = cursor.func.dfg.make_block();
-    cursor.ins().brif(both_int, compute, &[], ctx.deopt, &[]);
-    cursor.insert_block(compute);
-
-    let lhs_low = cursor.ins().ireduce(types::I32, lhs_word);
-    let lhs_int = cursor.ins().sextend(types::I64, lhs_low);
-    let rhs_low = cursor.ins().ireduce(types::I32, rhs_word);
-    let rhs_int = cursor.ins().sextend(types::I64, rhs_low);
+    let lhs_int = to_int(cursor, ctx, lhs_val);
+    let rhs_int = to_int(cursor, ctx, rhs_val);
 
     match op {
-        BinOpKind::Add => {
-            let result = cursor.ins().iadd(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
-        BinOpKind::Sub => {
-            let result = cursor.ins().isub(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
-        BinOpKind::Mul => {
-            let result = cursor.ins().imul(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
-        }
+        BinOpKind::Add => Ok(TypedVal::IntDecoded(cursor.ins().iadd(lhs_int, rhs_int))),
+        BinOpKind::Sub => Ok(TypedVal::IntDecoded(cursor.ins().isub(lhs_int, rhs_int))),
+        BinOpKind::Mul => Ok(TypedVal::IntDecoded(cursor.ins().imul(lhs_int, rhs_int))),
         BinOpKind::Div => {
             let nonzero = cursor.ins().icmp_imm(IntCC::NotEqual, rhs_int, 0);
             let lhs_is_min = cursor.ins().icmp_imm(IntCC::Equal, lhs_int, i64::MIN);
@@ -720,69 +734,59 @@ fn emit_binop(
             let divide = cursor.func.dfg.make_block();
             cursor.ins().brif(safe, divide, &[], ctx.deopt, &[]);
             cursor.insert_block(divide);
-            let result = cursor.ins().sdiv(lhs_int, rhs_int);
-            Ok(emit_inline_int_encode(cursor, ctx, result))
+            Ok(TypedVal::IntDecoded(cursor.ins().sdiv(lhs_int, rhs_int)))
         }
-        BinOpKind::Lt => Ok(bool_word(cursor, IntCC::SignedLessThan, lhs_int, rhs_int)),
-        BinOpKind::Gt => Ok(bool_word(cursor, IntCC::SignedGreaterThan, lhs_int, rhs_int)),
-        BinOpKind::Le => Ok(bool_word(
+        BinOpKind::Lt => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::SignedLessThan,
+            lhs_int,
+            rhs_int,
+        ))),
+        BinOpKind::Gt => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::SignedGreaterThan,
+            lhs_int,
+            rhs_int,
+        ))),
+        BinOpKind::Le => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::SignedLessThanOrEqual,
             lhs_int,
             rhs_int,
-        )),
-        BinOpKind::Ge => Ok(bool_word(
+        ))),
+        BinOpKind::Ge => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::SignedGreaterThanOrEqual,
             lhs_int,
             rhs_int,
-        )),
-        BinOpKind::Eq => Ok(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int)),
-        BinOpKind::Ne => Ok(bool_word(cursor, IntCC::NotEqual, lhs_int, rhs_int)),
+        ))),
+        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int))),
+        BinOpKind::Ne => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::NotEqual,
+            lhs_int,
+            rhs_int,
+        ))),
         op => Err(JitLowerError::UnsupportedArithOp { op }),
     }
 }
 
 /// Emits an integer unary negation with the tree walk's wrapping semantics.
 ///
-/// The operand is guarded as an inline integer (a float operand deopts and the
-/// interpreted re-run produces the tree walk's float negation), decoded, and
-/// negated as `0 - x`; the result re-encodes as an inline word or deopts when
-/// it leaves the inline range (`-i32::MIN` does), exactly like the tree walk
-/// boxing a wide result.
+/// The operand coerces to a decoded integer (a float operand deopts) and is
+/// negated as `0 - x` on wrapping `i64`; the decoded result never re-encodes
+/// until it materializes.
 fn emit_neg(
     cursor: &mut FuncCursor,
     arena: &IrArena,
     ctx: &mut ChainCtx<'_>,
     operand: IrId,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
-    let word = emit_expr(cursor, arena, ctx, operand, state)?;
-    let high = cursor.ins().ushr_imm(word, 32);
-    let is_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
-    let compute = cursor.func.dfg.make_block();
-    cursor.ins().brif(is_int, compute, &[], ctx.deopt, &[]);
-    cursor.insert_block(compute);
-    let low = cursor.ins().ireduce(types::I32, word);
-    let int = cursor.ins().sextend(types::I64, low);
+) -> Result<TypedVal, JitLowerError> {
+    let value = emit_expr(cursor, arena, ctx, operand, state)?;
+    let int = to_int(cursor, ctx, value);
     let zero = cursor.ins().iconst(types::I64, 0);
-    let result = cursor.ins().isub(zero, int);
-    Ok(emit_inline_int_encode(cursor, ctx, result))
-}
-
-/// Re-encodes a computed integer as an inline word, deopting when too wide.
-fn emit_inline_int_encode(
-    cursor: &mut FuncCursor,
-    ctx: &ChainCtx<'_>,
-    computed: ClifValue,
-) -> ClifValue {
-    let low = cursor.ins().ireduce(types::I32, computed);
-    let round_trip = cursor.ins().sextend(types::I64, low);
-    let fits = cursor.ins().icmp(IntCC::Equal, round_trip, computed);
-    let encode = cursor.func.dfg.make_block();
-    cursor.ins().brif(fits, encode, &[], ctx.deopt, &[]);
-    cursor.insert_block(encode);
-    cursor.ins().band_imm(computed, 0xFFFF_FFFF)
+    Ok(TypedVal::IntDecoded(cursor.ins().isub(zero, int)))
 }
 
 /// Materializes a boolean word from an integer comparison.
@@ -802,11 +806,12 @@ fn bool_word(
     cursor.ins().select(compared, true_word, false_word)
 }
 
-/// Emits an `if`/`then`/`else`, joining both arms on a one-word block param.
+/// Emits an `if`/`then`/`else`, joining both arms on one `i64` block param.
 ///
-/// The condition must be statically boolean (a comparison `BinOp` or a boolean
-/// literal); its truth is the word's low bit, which is `1` exactly for the
-/// canonical `true` word.
+/// The join carries the unified class: an Int/Int join stays decoded across
+/// the branch (the common fold pattern `if p then acc * 31 + x else acc`),
+/// everything else joins as encoded words. The join parameter type is `i64`
+/// in both cases; only the wrapper class changes.
 fn emit_if(
     cursor: &mut FuncCursor,
     arena: &IrArena,
@@ -815,10 +820,19 @@ fn emit_if(
     then_id: IrId,
     else_id: IrId,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     require_static_bool_condition(arena, cond)?;
-    let cond_word = emit_expr(cursor, arena, ctx, cond, state)?;
+    let cond_val = emit_expr(cursor, arena, ctx, cond, state)?;
+    let cond_word = to_word(cursor, ctx, cond_val);
     let truth = cursor.ins().band_imm(cond_word, 1);
+
+    let join_class = if infer_class(arena, then_id) == ExprClass::Int
+        && infer_class(arena, else_id) == ExprClass::Int
+    {
+        ExprClass::Int
+    } else {
+        ExprClass::Word
+    };
 
     let then_block = cursor.func.dfg.make_block();
     let else_block = cursor.func.dfg.make_block();
@@ -829,35 +843,40 @@ fn emit_if(
     let before_branch = state.clone();
     cursor.insert_block(then_block);
     let mut then_state = before_branch.clone();
-    let then_word = emit_expr(cursor, arena, ctx, then_id, &mut then_state)?;
-    cursor.ins().jump(join, &[then_word.into()]);
+    let then_val = emit_expr(cursor, arena, ctx, then_id, &mut then_state)?;
+    let then_carried = match join_class {
+        ExprClass::Int => to_int(cursor, ctx, then_val),
+        ExprClass::Word => to_word(cursor, ctx, then_val),
+    };
+    cursor.ins().jump(join, &[then_carried.into()]);
 
     cursor.insert_block(else_block);
     let mut else_state = before_branch.clone();
-    let else_word = emit_expr(cursor, arena, ctx, else_id, &mut else_state)?;
-    cursor.ins().jump(join, &[else_word.into()]);
+    let else_val = emit_expr(cursor, arena, ctx, else_id, &mut else_state)?;
+    let else_carried = match join_class {
+        ExprClass::Int => to_int(cursor, ctx, else_val),
+        ExprClass::Word => to_word(cursor, ctx, else_val),
+    };
+    cursor.ins().jump(join, &[else_carried.into()]);
 
     cursor.insert_block(join);
     *state = before_branch;
     let joined = cursor.func.dfg.block_params(join).to_vec();
-    Ok(joined[0])
+    Ok(match join_class {
+        ExprClass::Int => TypedVal::IntDecoded(joined[0]),
+        ExprClass::Word => TypedVal::Word(joined[0]),
+    })
 }
 
 /// Emits one full application chain: a direct self-call or a pinned inline.
-///
-/// The chain's head upvalue selects the classification recorded at lowering
-/// time; argument expressions are evaluated eagerly, in call order, before the
-/// self-call or the inlined callee body.
 fn emit_call_chain(
     cursor: &mut FuncCursor,
     arena: &IrArena,
     ctx: &mut ChainCtx<'_>,
     id: IrId,
     state: &mut EmitState,
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     if state.inline_params.is_some() {
-        // A pinned callee body is call-free by validation; a chain here means
-        // the classification drifted from the scan.
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: id,
             kind: IrKind::Apply,
@@ -865,8 +884,6 @@ fn emit_call_chain(
     }
     let let_depth = state.let_scopes.len() as u32;
     let (raw_upval, arguments) = flatten_apply_chain(arena, id, ctx.arity + let_depth)?;
-    // Callee classifications are recorded in normalized (let-free) coords;
-    // strip the enclosing let depth before matching.
     let upval = (raw_upval.0 - let_depth, raw_upval.1);
 
     if ctx.self_upval == Some(upval) {
@@ -878,7 +895,10 @@ fn emit_call_chain(
         }
         let mut argument_words = Vec::with_capacity(arguments.len());
         for argument in &arguments {
-            argument_words.push(emit_expr(cursor, arena, ctx, *argument, state)?);
+            let value = emit_expr(cursor, arena, ctx, *argument, state)?;
+            // Materialization point: the inner ABI takes encoded words, so a
+            // wide decoded argument deopts here.
+            argument_words.push(to_word(cursor, ctx, value));
         }
         return emit_self_call(cursor, ctx, &argument_words);
     }
@@ -895,19 +915,16 @@ fn emit_call_chain(
             kind: IrKind::Apply,
         });
     }
-    let mut argument_words = Vec::with_capacity(arguments.len());
+    let mut argument_values = Vec::with_capacity(arguments.len());
     for argument in &arguments {
-        argument_words.push(emit_expr(cursor, arena, ctx, *argument, state)?);
+        argument_values.push(emit_expr(cursor, arena, ctx, *argument, state)?);
     }
-    // Inline the pinned callee body over the evaluated arguments. The inlined
-    // body reads only its own parameters (validated call-free), so the outer
-    // forced-parameter caches pass through unchanged.
+    // Inline the pinned callee body over the evaluated arguments (kept typed,
+    // so a decoded argument stays decoded through the inlined arithmetic).
     let mut inline_state = EmitState {
         forced_params: state.forced_params.clone(),
         forced_upvals: state.forced_upvals.clone(),
-        inline_params: Some(argument_words),
-        // Pinned bodies are let-free by validation; argument emission above
-        // already ran in the caller's let context.
+        inline_params: Some(argument_values),
         let_scopes: Vec::new(),
     };
     let result = emit_expr(cursor, arena, ctx, pinned.body, &mut inline_state)?;
@@ -921,7 +938,7 @@ fn emit_self_call(
     cursor: &mut FuncCursor,
     ctx: &mut ChainCtx<'_>,
     argument_words: &[ClifValue],
-) -> Result<ClifValue, JitLowerError> {
+) -> Result<TypedVal, JitLowerError> {
     let has_budget = cursor
         .ins()
         .icmp_imm(IntCC::SignedGreaterThan, ctx.budget, 1);
@@ -952,5 +969,5 @@ fn emit_self_call(
         .brif(is_sentinel, ctx.sentinel, &[], continue_block, &[]);
     cursor.insert_block(continue_block);
     ctx.self_call_count = ctx.self_call_count.saturating_add(1);
-    Ok(word)
+    Ok(TypedVal::Word(word))
 }
