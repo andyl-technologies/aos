@@ -397,10 +397,31 @@ Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
   genuinely two-word test bodies still baseline-gated. Gate results: byte
   parity x4 (zlib/openssl/bash/coreutils) green on the variant release binary
   with `AOS_NIX_JIT=1`, tier-1/tier-2 counters identical to baseline.
-  **Remaining (S4b phase 2):** compressed-word emitters for arith trees
-  (inline-int decode/re-encode + deopt), alloc-cons, and the tier-2 bodies;
-  then the GC-stress + sweep-zero battery over live one-word stack maps with
-  a non-trivial dispatch mass.
+  **Phase 2 progress (2026-07-12, same day):** the compressed arith-tree
+  emitter (`lower/arith_tree_compressed.rs` — decode at guarded leaves,
+  wrapping-i64 tree compute, single root re-encode with inline-range deopt)
+  and the tier-2 unary self-recursive-lambda emitter
+  (`lower/lambda_rec/compressed.rs` — one word per value, `0xFF`-kind deopt
+  sentinel, first-strict-use force discipline preserved) are LIVE under the
+  variant: fib promotes and dispatches natively, the six arith differentials
+  and the tier-2 engine tests run on both carriers, and the persistent
+  compiled-body cache schema is carrier-discriminated so cross-carrier
+  records read as schema mismatches. The curried-chain + fold-genlist port
+  is in flight (same conventions).
+
+  **Deliberately deferred:** the alloc-cons (singleton-list) shape stays
+  declined on the one-word carrier. Its helper returns a raw allocation
+  pointer that the two-word lowering composes into a `[List tag, ptr]` pair;
+  the one-word carrier needs a helper that returns a composed `Value`
+  (domain + index), i.e. a new frozen helper signature across the
+  ratchet-core metadata / runtime-ffi wrapper + safety scan / symbol
+  manifest / candidate registration chain. That is the P8 alloc-family
+  work's natural first customer, and the shape covers only literal
+  singleton-list bodies that the STEP-0 profit gate holds back anyway.
+
+  **Remaining (S4b phase 2):** the chain/fold-genlist port (in flight), then
+  the GC-stress + sweep-zero battery over live one-word stack maps with a
+  non-trivial dispatch mass, and the variant full-corpus Linux parity run.
 - **S5 — Container narrowing + variant promotion (follow-on).** Narrow list
   spines and post-shape attr slots to 4-byte where they hold only heap references
   (doc 30 §3.5), the additional memory win. Then, once the variant wins the full
