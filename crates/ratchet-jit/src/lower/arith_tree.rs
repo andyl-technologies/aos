@@ -161,6 +161,10 @@ pub(super) fn lower_binop_ir_thunk_body_artifact(
     if op == BinOpKind::Update {
         return super::lower_update_local_slots_ir_thunk_body_artifact(arena, root);
     }
+    // Update routes to the delegating aos_update lowerer above; everything
+    // below decodes integer payloads inline, which is two-word-carrier
+    // codegen, so the one-word carrier declines here (S4b phase 2).
+    super::value_words::require_two_word_carrier("arith-tree")?;
     if classify(op).is_none() {
         return Err(JitLowerError::UnsupportedArithOp { op });
     }

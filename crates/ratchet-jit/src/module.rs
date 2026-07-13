@@ -519,8 +519,7 @@ fn safe_external_name_display(function: &Function, name: &ExternalName) -> Strin
     }
 }
 
-// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use cranelift_codegen::ir::{ExtFuncData, SigRef, UserExternalNameRef};
     use ratchet_core::{

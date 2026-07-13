@@ -2099,13 +2099,11 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
             }
         },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
-        // Arithmetic trees decode integer payloads and cons cells compose a
-        // heap value from a raw allocation pointer; both are two-word-carrier
-        // codegen, so the one-word carrier declines them (S4b phase 2).
-        IrKind::BinOp => {
-            value_words::require_two_word_carrier("arith-tree")?;
-            arith_tree::lower_binop_ir_thunk_body_artifact(arena, root)
-        }
+        // The arith lowerer declines non-Update ops on the one-word carrier
+        // itself (Update routes to the delegating aos_update path); cons
+        // cells compose a heap value from a raw allocation pointer, which is
+        // two-word-carrier codegen, so the one-word carrier declines them.
+        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(arena, root),
         IrKind::List => {
             value_words::require_two_word_carrier("alloc-cons")?;
             alloc_cons::lower_singleton_list_ir_thunk_body_artifact(arena, root)
@@ -2125,11 +2123,9 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind_with_ir(
     match kind {
         IrKind::HasAttr => lower_has_attr_local_slot_ir_thunk_body_artifact(ir, root),
         IrKind::Select => lower_select_local_slot_ir_thunk_body_artifact(ir, root),
-        // See the arena-only selector: arith trees stay two-word codegen.
-        IrKind::BinOp => {
-            value_words::require_two_word_carrier("arith-tree")?;
-            arith_tree::lower_binop_ir_thunk_body_artifact(&ir.arena, root)
-        }
+        // The arith lowerer declines non-Update ops on the one-word carrier
+        // itself; Update routes to the delegating aos_update path.
+        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(&ir.arena, root),
         _ => lower_tier1_ir_thunk_body_artifact_for_kind(
             &ir.arena,
             root,

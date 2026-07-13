@@ -221,7 +221,9 @@ fn verify(
     })
 }
 
-// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+// Every test here lowers a tier-2 lambda body, and tier-2 emitters decline on
+// the one-word carrier (their inline (tag, payload) codegen is two-word), so
+// the module runs on the baseline only until the S4b phase-2 emitters land.
 #[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use ratchet_core::{lower, resolve};

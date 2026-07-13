@@ -418,6 +418,5 @@ pub fn nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_
     )?)
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests;

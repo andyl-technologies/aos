@@ -912,6 +912,5 @@ fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_roo
     )
 }
 
-// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests;

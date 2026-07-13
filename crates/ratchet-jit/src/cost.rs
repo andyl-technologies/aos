@@ -126,8 +126,7 @@ pub fn estimate_tier1_body_cost(function: &Function) -> Tier1BodyCost {
     }
 }
 
-// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
-#[cfg(all(test, not(feature = "candidate_c_value")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -187,6 +186,10 @@ mod tests {
 
     /// A nested arithmetic tree lowers to inline native ops, so its native
     /// instruction count exceeds a small trampoline's and clears a low threshold.
+    ///
+    /// Arith trees decline on the one-word carrier (their inline payload
+    /// decode is two-word codegen), so this runs on the baseline only.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn arithmetic_tree_body_has_more_native_compute_than_a_trampoline() {
         // `(1 + 2) * 3`: two nested integer BinOps over literals, lowering fully
