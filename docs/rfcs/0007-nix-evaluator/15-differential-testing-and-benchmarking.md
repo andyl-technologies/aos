@@ -761,6 +761,16 @@ loop intermediates never materialize as runtime values and therefore need
 no inline word — the decoded-core emitters remove both the decline and the
 boxing for natively-run bodies.
 
+**RE-RUN (2026-07-13, after decoded-core #30 + the decode-accessor inline
+pass #31 + the incremental HAMT insert): CLEAN SWEEP.** Cold var/base
+medians: sum-fold **0.948x** (was 290x; qsort RSS 412 vs 484 MiB), qsort
+0.985x, tak 0.908x, string-builder 0.978x, lambda-interp 0.983x, packages
+1.007-1.013x, wide 1.017x at 208 vs 220 MiB; the attr-fixpoint cold
+outlier re-measures 0.91x at 8 samples. The variant wins or ties every leg
+within noise while holding the memory advantage — the S5 kill-date
+criterion's performance clause is met (promotion ruling pending the fuzz
+matrix + the full-corpus re-anchor; see the cutover plan §S4b/S5).
+
 ---
 
 ## 6. The measure-first principle in practice
