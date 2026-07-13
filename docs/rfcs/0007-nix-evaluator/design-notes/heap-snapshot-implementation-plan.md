@@ -826,6 +826,45 @@ the decision text supersedes it.
      cannot survive the dump. The B-shaped work is independently valuable to a
      future moving/compacting GC and cross-process value sharing, both of which
      also want address-free payloads.
+6. **REVERSED (2026-07-13) — option B fails its own perf gate; go
+   serialize-and-patch (was option C / the C-lite contingency, now the plan).**
+   Decision 5's option B (make `FlatSlice`/`FlatBytes` address-free) was built and
+   measured on the builder, twice, and both variants blew the ≤1.5% gate on the
+   hot path:
+   - **B1 offset+registry-scan** (`8d3949dc6`): string-builder **+7.4%** cold.
+   - **B1 offset+per-thread cached base** (`d380107c0`): string-builder **+15.7%**
+     cold (the thread-local read + epoch atomic costs *more* than the ~1-slot
+     registry scan it replaced on that access-dense leg).
+
+   Root cause: `as_slice` is called deep inside `NixString`/`FlatAttrs` value
+   methods (`eq`/`hash`/`concat`/`entries`) that hold only `&self` — no object
+   base in scope — so the base lookup cannot be hoisted to the resolution site
+   and is paid per element access. Both are reverted (`f01f5102a`).
+
+   **New plan (stage B, subsumes B2).** `FlatSlice`/`FlatBytes`/`NixList` stay as
+   they are — **absolute pointers and an owned `Vec`, zero hot-path cost by
+   construction.** The image format, reservation round-trip, and registry rebind
+   (§3, §7.1) stay exactly as landed; only the payload-interior handling changes,
+   entirely on the **cold** capture/restore path:
+   - **Strings / paths / attrs (interior pointer into the dumped arena).** The
+     run bytes are already in the arena dump; only the `FlatBytes`/`FlatSlice`
+     absolute pointer word is stale after a remap. Capture records a
+     **relocation table** — the arena offset of each interior pointer word;
+     restore adds `(new_base − old_base)` to each. A targeted delta rebase of the
+     recorded compound objects, not a whole-graph scan.
+   - **Lists (owned out-of-arena `Vec`).** The `Vec` backing is not in the dump.
+     Capture serializes the element `Value` run into a list-payload segment keyed
+     by the list object's `ArenaIndex`; restore rebuilds each `Vec`, writes the
+     flat list object's `Vec` header (ptr/len/cap) in place, and **registers the
+     list object in the restored store's entry table** so its `Drop` frees the
+     rebuilt `Vec` (no leak).
+   - **One serializer, three payloads, one restore pass.** The relocation table +
+     list-payload segment are new image segments; restore runs one patch pass
+     after the arena copy + registry rebind.
+   - The remap-survival test returns, re-targeted at the serialize-and-patch path
+     (a compound value dumped/reloaded resolves value-equal). §10's B2 inline
+     spine is **subsumed** — lists serialize the same way, so the FV-4 revisit is
+     moot. Stage-2 thunk collapse proceeds on top of this.
 
 **Task-board effect.** Task #6 was gated `blockedBy` task #12 (Candidate-C
 cutover) and task #13 (the S0 prelude-wall-share measurement). **Task #13 is now
@@ -834,6 +873,14 @@ the Candidate-C cutover) is the **sole remaining blocker**; #6 begins
 implementation from §7 once #12 lands.
 
 ## 10. Stage B2 plan — inline `NixList` spine (+ C-lite contingency)
+
+> **SUPERSEDED by §9 decision 6 (2026-07-13).** Stage B1 (make the payloads
+> address-free) failed its perf gate twice, so the plan flipped to
+> serialize-and-patch for **all three** compound payloads on the cold path.
+> Lists now serialize their `Vec` the same way strings/attrs are handled, so the
+> B2 inline-spine question below is moot. This section is retained as the
+> costed rejected alternative (the FV-4-revisit reasoning and the `sort`/`qsort`
+> tax analysis remain the evidence for why the address-free route was abandoned).
 
 Concrete plan for §9 decision 5's stage B2, written after the stage-B1
 address-free `FlatSlice`/`FlatBytes` landing. B2 makes the last non-address-free
