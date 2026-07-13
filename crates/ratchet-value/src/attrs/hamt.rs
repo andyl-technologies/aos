@@ -190,7 +190,11 @@ impl HamtAttrs {
                     .ok_or(HamtError::TooManyEntries { len: usize::MAX })?;
                 u32::try_from(len).map_err(|_| HamtError::TooManyEntries { len })?;
                 let keys_by_symbol = insert_symbol_key(&self.keys_by_symbol, entry.key)?;
-                let iteration_order = lexicographic_order(&keys_by_symbol, symbols)?;
+                // Splice the one new key into the existing lexicographic order
+                // (O(n)) rather than re-ranking and re-sorting all keys
+                // (O(n log n)) on every insert.
+                let iteration_order =
+                    insert_lexicographic(&self.iteration_order, entry.key, symbols)?;
                 (len, keys_by_symbol, iteration_order, HamtUpdate::Inserted)
             }
             HamtMutation::Replaced { previous } => (
@@ -870,6 +874,64 @@ fn lexicographic_order(
         ordered.push(keys_by_symbol[slot]);
     }
     Ok(ordered.into_boxed_slice())
+}
+
+/// Splices one new key into an already lexicographically-ordered key list.
+///
+/// `order` is a key list already sorted under [`lexicographic_order`]'s
+/// `(lexicographic_rank, symbol)` comparator, and `key` is a symbol not already
+/// present. Returns `order` with `key` inserted at its sorted position, doing a
+/// binary search (O(log n) rank lookups) plus one O(n) copy instead of
+/// re-ranking and re-sorting every key on each insert.
+///
+/// This is order-identical to recomputing [`lexicographic_order`] from scratch:
+/// a symbol's [`SymbolTable::lexicographic_rank`] is the position of its byte
+/// string in the byte-sorted interning table, so `rank(a) < rank(b)` iff
+/// `bytes(a) < bytes(b)` at *every* table snapshot. Later interning can
+/// renumber the absolute ranks but never the relative order, so `order` stays
+/// validly sorted under the current ranks and the spliced result matches a full
+/// re-sort exactly (the byte-identical iteration view every consumer depends on).
+///
+/// # Errors
+///
+/// Returns [`HamtError::UnknownSymbol`] if `key` or a probed key has no rank in
+/// `symbols`, or [`HamtError::AllocationFailed`] on reservation failure.
+fn insert_lexicographic(
+    order: &[Symbol],
+    key: Symbol,
+    symbols: &SymbolTable,
+) -> Result<Box<[Symbol]>, HamtError> {
+    let key_rank = symbols
+        .lexicographic_rank(key)
+        .ok_or(HamtError::UnknownSymbol { key })?;
+
+    // Binary search for the insertion point under the (rank, symbol) order.
+    let mut lo = 0;
+    let mut hi = order.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let probe = order[mid];
+        let probe_rank = symbols
+            .lexicographic_rank(probe)
+            .ok_or(HamtError::UnknownSymbol { key: probe })?;
+        if (probe_rank, probe) < (key_rank, key) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    let len = order
+        .len()
+        .checked_add(1)
+        .ok_or(HamtError::TooManyEntries { len: usize::MAX })?;
+    let mut next = Vec::new();
+    next.try_reserve_exact(len)
+        .map_err(|_| HamtError::AllocationFailed { entries: len })?;
+    next.extend_from_slice(&order[..lo]);
+    next.push(key);
+    next.extend_from_slice(&order[lo..]);
+    Ok(next.into_boxed_slice())
 }
 
 fn bit_for(key: Symbol, shift: u32) -> u32 {

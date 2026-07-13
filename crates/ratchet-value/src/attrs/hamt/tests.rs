@@ -200,6 +200,47 @@ fn insert_new_key_preserves_old_root_and_updates_cached_orders() {
 }
 
 #[test]
+fn incremental_insert_order_matches_batch_across_rank_renumbering() {
+    // Interning a lexicographically-earlier key after `base` is built renumbers
+    // every rank; the incremental splice must still produce the byte-order
+    // identical to a batch rebuild (the guarantee the O(n) insert relies on).
+    let mut table = SymbolTable::new();
+    let m = table.intern(b"m").expect("m interns");
+    let base =
+        HamtAttrs::new(vec![AttrEntry::new(m, Value::int(1))], &table).expect("base builds");
+
+    // These intern AFTER `base`; "a" sorts before "m", so all ranks renumber.
+    let a = table.intern(b"a").expect("a interns");
+    let z = table.intern(b"z").expect("z interns");
+    let (step, _) = base
+        .insert(AttrEntry::new(a, Value::int(2)), &table)
+        .expect("insert a");
+    let (incremental, _) = step
+        .insert(AttrEntry::new(z, Value::int(3)), &table)
+        .expect("insert z");
+
+    let batch = HamtAttrs::new(
+        vec![
+            AttrEntry::new(m, Value::int(1)),
+            AttrEntry::new(a, Value::int(2)),
+            AttrEntry::new(z, Value::int(3)),
+        ],
+        &table,
+    )
+    .expect("batch builds");
+
+    assert_eq!(incremental.iteration_order(), batch.iteration_order());
+    let names: Vec<&[u8]> = incremental
+        .iter_lexicographic()
+        .map(|entry| table.resolve(entry.key).expect("symbol resolves"))
+        .collect();
+    assert_eq!(
+        names,
+        vec![b"a".as_slice(), b"m".as_slice(), b"z".as_slice()]
+    );
+}
+
+#[test]
 fn insert_existing_key_replaces_value_without_changing_old_root() {
     let (symbols, ids) = symbols(&[b"a", b"b"]);
     let base = HamtAttrs::new(
