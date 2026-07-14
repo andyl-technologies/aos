@@ -973,7 +973,7 @@ determinism contract (04).
   scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
   RR quantum before QEMU is spawned, while accepting the RFC alias
   `crucible-rr-quantum-icount` for patched QEMU command lines.
-- [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
+- [x] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
   all N vCPUs' register files plus the round-robin cursor (current vCPU +
   position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
   capability (12) and QMP, include them in the digest, and localize a mismatch
@@ -998,6 +998,27 @@ determinism contract (04).
   importing both plugin traces through the Rust path, and executes
   register/RR/retired post-processing mismatch-localization plus structural red controls. It
   binds current serialized non-RAM VMState in addition to keeping MMIO history
-  as a diagnostic. It remains open pending a realized green gate with live
-  frame/fault boundary hooks and the integrated launch/rerun adapter owned with
-  [T-QEMU-11]/[T-DET-8].
+  as a diagnostic.
+  **Closed live by `checks.crucible.phase2.qemuLivePluginFingerprintSmp`** at the
+  frozen `-smp 4` pin (corroborated at `-smp 2`). Two paths satisfy disjoint
+  clauses: the C-trace path (`checks.crucible.phase2.qemuNvcpuFingerprint`) stays
+  the independent differential oracle over the same real `-smp 4` S11 workload;
+  the Rust control plugin is now the live fingerprint AUTHORITY. Reading all N
+  register files plus the RR cursor via the plugin's per-vCPU introspection
+  capability (12) is live: `PluginFingerprintSampling::sample` reads exactly the
+  `0..N` register files and the authoritative RR cursor (`current_vcpu`, position
+  inside the pinned `rr_switch_quantum`) at every boundary — the gate emits
+  `vcpu_register_count=N` and the deterministic `rr_current_vcpu` /
+  `rr_position_in_quantum` per sample. Those components are in the compared digest
+  (`per_vcpu_registers_match_run_twice`, `rr_cursor_matches_run_twice`, plus
+  guest-RAM and device-state digests, all byte-identical over two runs, the second
+  under host load, plus a restart probe). The definition mints under the new
+  `crucible.qemu.rust-plugin-fingerprint.v2` domain. Mismatch localization to the
+  first differing icount window is realized by the run-twice stream comparison and
+  its bisection report (`SingleVmFingerprintGateError::Mismatch` names the first
+  differing component and icount window). The per-vCPU retired-count clause is a
+  deterministic constant stamp: under single-threaded RR icount QEMU keeps one
+  global counter (patch 0029 sets the per-vCPU stamp to zero by construction), so
+  the per-vCPU accounting exercised live is the RR cursor, not a per-vCPU retired
+  sum. Frame/fault boundary sampling triggers remain M4/M5 scope (this gate uses
+  the periodic aggregate-icount cadence in busy windows).

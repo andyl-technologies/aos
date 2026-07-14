@@ -53,8 +53,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-26 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-26**";
+        label = "T-PLUG-26 closed live; this gate covers its introspection model";
+        needle = "- [x] **T-PLUG-26**";
       }
       {
         label = "per-vCPU register wording";

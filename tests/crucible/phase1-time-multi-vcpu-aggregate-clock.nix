@@ -223,8 +223,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-9 remains open";
-        needle = "- [ ] **T-TIME-9**";
+        label = "T-TIME-9 closed; this gate provides its aggregate-deadline model";
+        needle = "- [x] **T-TIME-9**";
       }
       {
         label = "TIME-24 multi-vCPU deadline minimum";
