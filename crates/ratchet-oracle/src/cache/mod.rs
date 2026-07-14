@@ -5,6 +5,7 @@
 //! in-process import/file memo keyed by canonical realpath and file-content
 //! hash.
 
+pub mod boundary_identity;
 pub mod cutoff;
 pub mod dcg;
 pub mod hashing;
