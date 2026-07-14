@@ -47,6 +47,7 @@
 //! guards against.
 
 use std::fs;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,6 +94,9 @@ const HOST_LOAD_WORKERS: usize = 4;
 /// Bound on how many times one ceiling may be re-issued before the runner treats
 /// a stalled step as a wake defect rather than looping indefinitely.
 const MAX_REISSUES_PER_CEILING: u32 = 64;
+/// Cadence at which the QMP-connect primer pulses the plugin wake eventfd to keep
+/// the QEMU main loop iterating so it can service the capabilities handshake.
+const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The busy-window ceiling schedule that drives one node-step scenario.
 ///
@@ -421,10 +425,17 @@ fn run_one_scenario(
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
 
-    let qmp = crate::QemuQmpVmStateControlChannel::connect_unix_socket(
-        qmp_config.socket_path(&run_directory),
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+    // Connect QMP while priming the QEMU main loop. Right after the plugin setup
+    // handshake the guest is parked at the boot barrier with no ceiling published,
+    // so the plugin holds time control with nothing to advance and QEMU's main
+    // loop parks with no host timeout (idle warp is suppressed under time
+    // control). A parked main loop never services the QMP `qmp_capabilities`
+    // command, so a plain connect times out. Pulsing the plugin wake eventfd (the
+    // same signal the M1 scheduler raises each quantum) cycles the main loop
+    // without advancing the guest -- no ceiling is published, so the guest icount
+    // stays at the boot barrier -- which lets QMP negotiate capabilities.
+    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(&run_directory))
+        .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
 
     let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
         .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
@@ -550,6 +561,41 @@ fn assert_runs_match(
         });
     }
     Ok(())
+}
+
+/// Connects the typed QMP VMState channel while pulsing the plugin wake eventfd.
+///
+/// Right after the setup handshake the QEMU main loop parks with no host timeout
+/// (the plugin holds time control and no ceiling is published), so it never
+/// services the QMP `qmp_capabilities` command and a plain connect times out. A
+/// short-lived primer thread pulses the plugin wake -- the same eventfd signal
+/// the M1 scheduler raises each quantum -- to cycle the main loop until the
+/// capabilities handshake completes. No ceiling is published, so the guest never
+/// advances past the boot barrier while priming.
+///
+/// # Errors
+///
+/// Returns [`QmpError`] when the QMP capabilities handshake still cannot complete
+/// (for example if QEMU never opens the socket or exits during priming).
+fn connect_qmp_priming_main_loop(
+    setup: &crate::QemuHostPluginSetup,
+    socket_path: &Path,
+) -> Result<crate::QemuQmpVmStateControlChannel<UnixStream>, QmpError> {
+    let stop = AtomicBool::new(false);
+    thread::scope(|scope| {
+        let primer = scope.spawn(|| {
+            while !stop.load(Ordering::Relaxed) {
+                // Transient wake failures are ignored: the QMP connect result is
+                // the authority on whether the main loop became reachable.
+                let _ = setup.signal_plugin_wake();
+                thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
+            }
+        });
+        let result = crate::QemuQmpVmStateControlChannel::connect_unix_socket(socket_path);
+        stop.store(true, Ordering::Relaxed);
+        let _ = primer.join();
+        result
+    })
 }
 
 /// Builds the diskless-firmware VM launch config for the node-step run.
