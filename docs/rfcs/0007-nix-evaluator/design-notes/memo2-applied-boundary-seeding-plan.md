@@ -225,7 +225,27 @@ process statics, a `note_*` at the apply choke point gated on
 > (which carries no eval stats). The campaign counters are stranded on the
 > unrouted tracing target; do not add the boundary counter there.
 
-The probe must answer three numbers, which together bound the win:
+The probe must answer four numbers. The **first is a gating precondition** that
+can kill or redirect the design more cheaply than the economics can, so it is
+measured first:
+
+0. **Argument-hash availability — the decline rate under MEMO-1 rules.** The
+   boundary key needs ordered durable `ValueHash`es of the whole argument set,
+   but a durable `ValueHash` exists **only for forced, non-closure values**
+   (`cache/cutoff.rs`; MEMO-1 explicitly declines thunk-capturing envs, doc 29
+   §3.2 thunk rule). At boundary-record time a package's argument set
+   (`auto // overrides`) almost certainly still holds **unforced thunks** — deps
+   the package never demanded. We **cannot force them to hash them**: forcing to
+   hash perturbs force order and breaks byte-parity, the supreme gate. So per
+   MEMO-1's unhashable-memo precedent, any boundary whose argument set contains
+   an unforced member must **decline admission**. Therefore the probe measures,
+   per boundary application at result-record time, the fraction of the argument
+   set that is **forced-and-hashable vs unforced**, and reports the resulting
+   **decline rate** across boundaries. If most package argument sets contain an
+   unforced member, the decline rate approaches 100% and the whole design caps
+   out **regardless of the economics** — this number gates everything below.
+   (Outs if the decline rate is high are in §8; they are not built now, but the
+   probe's per-member forced/unforced breakdown is exactly what sizes them.)
 
 1. **How many package-boundary applications does one cold toplevel perform?**
    Count applications whose applied-lambda def-site is a package-file root
@@ -250,15 +270,19 @@ The probe must answer three numbers, which together bound the win:
    large; if the dependency cone fans out so an edit perturbs most keys, it is
    small.
 
-**Kill criterion (explicit, per MEMO-1):** if `boundary-count × mean-recompute
-× stable-fraction` does not clear the probe+key+revalidate tax with margin, the
-increment ships **counters-only** with a recorded negative result and the effort
-returns to the durable-unification / L2 levers — exactly the doc 29 §10.1 exit
-ramp. We measure before we build.
+**Kill criterion (explicit, per MEMO-1):** the design proceeds only if **both**
+(a) the decline rate (#0) leaves a workable admissible fraction *and*
+(b) `admissible-boundary-count × mean-recompute × stable-fraction` clears the
+probe+key+revalidate tax with margin. A high decline rate (#0) alone is a
+redirect signal (toward the §8 lazy-safe-identity outs) even if the economics
+look good; failing (b) ships **counters-only** with a recorded negative result
+and the effort returns to the durable-unification / L2 levers — exactly the doc
+29 §10.1 exit ramp. We measure before we build.
 
 **Scope of the first increment (what I'll actually write after review):**
 probe module + statics + `note_pkg_boundary_apply()` at the apply choke point
-(gated on `eval_stats_dump()`, `CacheExprIdentity`-keyed) + wall accumulation +
+(gated on `eval_stats_dump()`, `CacheExprIdentity`-keyed) + per-boundary
+**forced/unforced argument-member tally (#0)** + wall accumulation (#2) +
 `emit_pkg_boundary_report()` on the stderr stats path + an e2e wiring test
 (mirroring `tests/options/part_11.rs:824`). No record store, no replay, no key
 persistence. One commit, both feature configs green, ≤1000-line files, no new
@@ -266,17 +290,42 @@ unsafe, local-only.
 
 ## 8. Risks and open questions
 
+- **Argument-hash availability — the design-capping risk (measured first, §7
+  #0).** The boundary key wants durable `ValueHash`es of the argument set, but
+  those exist only for **forced, non-closure** values, and a package's argument
+  set almost certainly still holds **unforced thunks** (deps it never demanded)
+  at record time. Forcing them to hash them perturbs force order and breaks
+  byte-parity, so those boundaries must **decline** under MEMO-1 rules — and if
+  most argument sets contain an unforced member, the decline rate approaches
+  100% and the design caps out *regardless of the economics numbers*. This is
+  why §7 measures the decline rate before anything else. **Outs (to evaluate
+  later, not built now):**
+  1. **Key on argument *thunk identity*, not value.** An unforced thunk is
+     itself `(code_id, env)` — a lazy-safe identity that changes when its source
+     or captured environment changes, derivable **without forcing** (doc 29 §3.2
+     records exactly this Adapton-style extension as a measured follow-up). It is
+     sound for invalidation-by-content (two thunks with equal recursive identity
+     denote the same computation in the same world) but weaker: it misses the
+     case where two *different* thunks would force to the *same* value. Cost:
+     key derivation recurses through the captured-environment graph.
+  2. **Hybrid.** Value hash when the argument member is already forced, thunk
+     identity when not — the widest admission, and the natural target if #0 says
+     the pure-value decline rate is high but the forced fraction is non-trivial.
+  The probe's per-member forced/unforced tally (§7 #0) is exactly what sizes
+  which out, if any, is worth building.
 - **Ceiling may be low.** The wave-1 residual-cold profile is a flat long tail
   with no dominator; package applications may not own enough wall to repay
   replay. This is precisely why increment #1 is measurement, not code. (Primary
-  risk; mitigated by the kill criterion.)
+  economic risk; mitigated by the kill criterion.)
 - **Argument-hash cost.** Keying a boundary hashes its whole dependency argument
   set. Large dep attrsets hashed once but hit rarely could be blake3-dominated
   (doc 29 §11 headline risk). The hash-once cold side table
   (`heap/record_table.rs` cold value hash) amortizes it; the measurement must
-  decompose key time (doc 29 §8 rule 3). Note the parallel campaign to move
-  durable-cache keying blake3→xxh128 — if that lands, boundary keying inherits
-  the cheaper hash.
+  decompose key time (doc 29 §8 rule 3). The parallel durable-cache
+  blake3→xxh128 experiment (measuring now) directly changes this note's cost
+  basis: if xxh128 lands as the durable record hash, boundary keying inherits
+  the cheaper hash and the argument-hash tax in the kill criterion drops
+  accordingly — fold the measured result in before pricing the record store.
 - **Non-drv selects cap the projection.** §3 disposition 1 loses mass whenever
   downstream forces `.override`/sub-outputs/`passthru`. Measurement #2 should
   also record *what attrs* the toplevel forces off a package to size this.
