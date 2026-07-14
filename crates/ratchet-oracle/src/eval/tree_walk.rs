@@ -312,6 +312,17 @@ pub struct TreeWalk {
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     find_file_cache_hits: usize,
     find_file_cache_misses: usize,
+    /// Store paths already computed for coerced source paths, keyed by
+    /// `(path bytes, recursive)` — the C++ Nix `EvalState::srcToStore`
+    /// equivalent. Computing a source store path NAR-serializes and
+    /// SHA-256-hashes the entire tree, so re-coercing the same path (the
+    /// module system coerces shared source directories many times) must not
+    /// re-hash it. Only plain coercions participate (no expected hash, no
+    /// source filter — a filter changes the archived content, so filtered
+    /// coercions always recompute). Like [`import_cache`](Self::import_cache),
+    /// this assumes the filesystem is stable for the duration of one
+    /// evaluation, the same assumption C++ Nix's process-wide map makes.
+    source_store_string_cache: BTreeMap<(Vec<u8>, bool), Vec<u8>>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     /// Cross-worker shared state for one parallel evaluation (L2-P3b).
     ///

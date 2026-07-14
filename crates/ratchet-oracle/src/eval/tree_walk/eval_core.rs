@@ -192,6 +192,7 @@ impl TreeWalk {
             find_file_cache: BTreeMap::new(),
             find_file_cache_hits: 0,
             find_file_cache_misses: 0,
+            source_store_string_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
             shared: None,
             shared_known_derivations_cursor: 0,

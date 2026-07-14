@@ -232,6 +232,26 @@ impl TreeWalk {
         expected_sha256: Option<NixSha256Digest>,
         filter: Option<&SourcePathFilter>,
     ) -> Result<NixString, TreeWalkError> {
+        // Plain coercions (no expected hash to verify, no content filter) are
+        // memoized per evaluation: the NAR hash of an unchanged tree is
+        // deterministic, so re-coercing the same path must not re-serialize
+        // and re-hash it (`source_store_string_cache`, the C++ `srcToStore`
+        // equivalent). Filtered or hash-checked coercions always recompute.
+        let cacheable = expected_sha256.is_none() && filter.is_none();
+        if cacheable
+            && let Some(store_path) = self
+                .source_store_string_cache
+                .get(&(bytes.to_vec(), recursive))
+        {
+            let store_path = store_path.clone();
+            let context = StringContext::singleton(
+                ContextElement::opaque_path(store_path.clone()).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?,
+            )
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+            return Ok(NixString::new(store_path, context));
+        }
         let source_path = Path::new(OsStr::from_bytes(bytes));
         let digest = if recursive {
             self.source_path_nar_sha256(id, span, source_path, filter)?
