@@ -336,7 +336,7 @@ fn scheduler_owned_link_uses_declared_rng_stream_and_resolves_on_the_live_path()
 fn both_link_directions_consume_one_uninterrupted_declared_rng_stream() {
     let (world, store) = runtime_world_and_store();
     let link = canonical_link_id("vm-a", "vm-b");
-    let seed = Seed::from_u64(0x51_aa_0010);
+    let seed = Seed::from_u64(0x51aa_0010);
     let mut alternating = SingleScheduler::from_world(
         scheduler_scenario(&world),
         &world,

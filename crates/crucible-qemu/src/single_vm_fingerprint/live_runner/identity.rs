@@ -853,7 +853,8 @@ mod tests {
     #[test]
     fn raw_non_utf8_and_argv0_bytes_are_bound() -> Result<(), Box<dyn Error>> {
         let non_utf8 = OsString::from_vec(vec![0xff]);
-        let first = RawUnixArgvIdentity::new(OsStr::new("/qemu-a"), &[non_utf8.clone()])?;
+        let first =
+            RawUnixArgvIdentity::new(OsStr::new("/qemu-a"), std::slice::from_ref(&non_utf8))?;
         let second = RawUnixArgvIdentity::new(OsStr::new("/qemu-b"), &[non_utf8])?;
         assert_ne!(first.digest(), second.digest());
         assert_eq!(first.argv0(), OsStr::new("/qemu-a"));

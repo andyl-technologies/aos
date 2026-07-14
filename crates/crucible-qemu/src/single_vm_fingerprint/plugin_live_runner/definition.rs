@@ -209,6 +209,18 @@ mod tests {
         core::iter::repeat_n(format!("{seed:02x}"), 32).collect()
     }
 
+    /// Unwraps a definition construction, panicking with `context` on error
+    /// (the workspace denies `expect_used`, so tests funnel through this).
+    fn must(
+        result: Result<RustPluginFingerprintDefinition, SingleVmFingerprintGateError>,
+        context: &str,
+    ) -> RustPluginFingerprintDefinition {
+        match result {
+            Ok(definition) => definition,
+            Err(error) => panic!("{context}: {error}"),
+        }
+    }
+
     #[test]
     fn targets_are_ascending_and_below_idle_onset() {
         let mut previous = 0;
@@ -224,30 +236,41 @@ mod tests {
 
     #[test]
     fn distinct_plugin_builds_mint_distinct_digests() {
-        let base = RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22))
-            .expect("base definition");
-        let other_plugin =
-            RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x33))
-                .expect("other-plugin definition");
+        let base = must(
+            RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22)),
+            "base definition",
+        );
+        let other_plugin = must(
+            RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x33)),
+            "other-plugin definition",
+        );
         assert_ne!(base.definition_digest(), other_plugin.definition_digest());
     }
 
     #[test]
     fn same_inputs_are_content_stable() {
-        let first = RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22))
-            .expect("first definition");
-        let second = RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22))
-            .expect("second definition");
+        let first = must(
+            RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22)),
+            "first definition",
+        );
+        let second = must(
+            RustPluginFingerprintDefinition::new(4096, 2, digest(0x11), digest(0x22)),
+            "second definition",
+        );
         assert_eq!(first.definition_digest(), second.definition_digest());
         assert_eq!(first.run_horizon_icount(), 12_000_000);
     }
 
     #[test]
     fn vcpu_count_selects_the_content_addressing_domain() {
-        let single = RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22))
-            .expect("single-vCPU definition");
-        let multi = RustPluginFingerprintDefinition::new(4096, 4, digest(0x11), digest(0x22))
-            .expect("multi-vCPU definition");
+        let single = must(
+            RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22)),
+            "single-vCPU definition",
+        );
+        let multi = must(
+            RustPluginFingerprintDefinition::new(4096, 4, digest(0x11), digest(0x22)),
+            "multi-vCPU definition",
+        );
         assert_eq!(single.domain(), RUST_PLUGIN_FINGERPRINT_DOMAIN);
         assert_eq!(multi.domain(), RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN);
         // The domain plus the vcpu_count both differ, so the digests are disjoint.
@@ -258,8 +281,10 @@ mod tests {
     fn single_vcpu_digest_is_frozen_under_v1() {
         // The single-vCPU definition must keep minting the exact frozen v1 digest
         // that the M1 gate pins, unchanged by the multi-vCPU domain split.
-        let single = RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22))
-            .expect("single-vCPU definition");
+        let single = must(
+            RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22)),
+            "single-vCPU definition",
+        );
         let expected = ContentHash::from_canonical_material(
             RUST_PLUGIN_FINGERPRINT_DOMAIN,
             &single.canonical_material(),
