@@ -91,7 +91,7 @@ shape-line|crates/crucible-qemu/examples/crucible-qemu-live-terminal-targets.rs|
 shape-line|crates/crucible-qemu/src/async_driver.rs|882
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1557
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
-shape-line|crates/crucible-qemu/src/launch.rs|1579
+shape-line|crates/crucible-qemu/src/launch.rs|1623
 shape-line|crates/crucible-qemu/src/launch/validation.rs|863
 shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|845
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701

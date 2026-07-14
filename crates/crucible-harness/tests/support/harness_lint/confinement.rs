@@ -214,7 +214,8 @@ fn boundary_source_allows_host_nondeterminism(
                 || relative_is_under(&relative, "src/transport")
         }
         "crucible-qemu" => {
-            relative_is_under(&relative, "src/diagnostics")
+            relative_is_under(&relative, "src/block_realization_gate")
+                || relative_is_under(&relative, "src/diagnostics")
                 || relative_is_under(&relative, "src/live_coverage_gate")
                 || relative_is_under(&relative, "src/process")
                 || relative_is_under(&relative, "src/supervision")
