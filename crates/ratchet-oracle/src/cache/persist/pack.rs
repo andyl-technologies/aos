@@ -498,6 +498,18 @@ impl PersistBlobPack {
             .map_err(engine_append_error_to_persist)
     }
 
+    /// Content-addressed blob append without the verify re-hash (trust contract as [`Self::append_blobs_batch`]).
+    pub(crate) fn append_blob_trusted(
+        &self,
+        hash: DurableBlake3Hash,
+        payload: &[u8],
+    ) -> Result<PersistBlobLocation, PersistBlobPackError> {
+        open_engine_blob_pack_appender(&self.path)?
+            .append_payload_trusted(durable_hash_to_engine(hash), payload)
+            .map(engine_location_to_persist)
+            .map_err(engine_append_error_to_persist)
+    }
+
     /// Appends many content-addressed blobs in one open/lock/flush cycle.
     ///
     /// This is the write-behind flush primitive: it opens the packfile once,

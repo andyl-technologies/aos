@@ -114,6 +114,33 @@ impl PersistCache {
         let location = self
             .append_blob_unlocked(key, payload)
             .map_err(|source| PersistBlobIndexedWriteError::Append { source })?;
+        self.index_appended_blob(key, location)
+    }
+
+    /// Appends a content-addressed blob and indexes it without the verify re-hash.
+    ///
+    /// Used by [`Self::ensure_blob_indexed`], the default write-through populate
+    /// path: `key.hash()` is the BLAKE3 of `payload` just computed for the index
+    /// lookup, so re-hashing it here is the redundant cold-populate BLAKE3 tax.
+    /// [`Self::append_blob_indexed`] keeps the verifying path for callers that do
+    /// not supply a caller-computed content address.
+    fn append_blob_indexed_unlocked_trusted(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        let location = self
+            .append_blob_unlocked_trusted(key, payload)
+            .map_err(|source| PersistBlobIndexedWriteError::Append { source })?;
+        self.index_appended_blob(key, location)
+    }
+
+    /// Records the sidecar index entry for a freshly appended blob.
+    fn index_appended_blob(
+        &self,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+    ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
         let entry = PersistBlobIndexEntry::new(key, location);
         self.blob_index(key.store())
             .append_entry(entry)
@@ -234,7 +261,13 @@ impl PersistCache {
                 return Ok(PersistBlobIndexEntry::new(key, location));
             }
         }
-        self.append_blob_indexed_unlocked(key, payload)
+        // The record's key is its content address (BLAKE3 of `payload`), just
+        // computed for the dedup lookup above, so the fresh append trusts that
+        // pairing and skips re-hashing the payload — this is the default
+        // write-through populate path where the verify re-hash is the
+        // cold-populate BLAKE3 tax. The verifying `append_blob_indexed` remains
+        // for callers that do not supply a caller-computed content address.
+        self.append_blob_indexed_unlocked_trusted(key, payload)
     }
 
     /// Ensures many blobs are present in `store`'s pack and sidecar in one

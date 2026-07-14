@@ -110,6 +110,38 @@ fn blob_pack_appender_rejects_payload_hash_mismatch_without_appending() {
 }
 
 #[test]
+fn blob_pack_appender_trusted_single_matches_verified_single() {
+    let payload = b"trusted single payload".as_slice();
+    let hash = BlobPackHash::for_bytes(payload);
+
+    let verified_path = temp_path("appender-trusted-single-verified");
+    let verified = BlobPackAppender::open(verified_path.clone()).expect("verified appender opens");
+    let verified_location = verified
+        .append_payload(hash, payload)
+        .expect("verified payload appends");
+
+    let trusted_path = temp_path("appender-trusted-single");
+    let trusted = BlobPackAppender::open(trusted_path.clone()).expect("trusted appender opens");
+    let trusted_location = trusted
+        .append_payload_trusted(hash, payload)
+        .expect("trusted payload appends");
+
+    assert_eq!(verified_location, trusted_location);
+    assert_eq!(
+        fs::read(&verified_path).expect("verified pack reads"),
+        fs::read(&trusted_path).expect("trusted pack reads"),
+    );
+    let reader = BlobPackReader::open(trusted_path.clone()).expect("reader opens trusted pack");
+    assert_eq!(
+        reader.records().expect("trusted records scan"),
+        [BlobPackRecord::new(hash, trusted_location)]
+    );
+
+    let _ = fs::remove_file(verified_path);
+    let _ = fs::remove_file(trusted_path);
+}
+
+#[test]
 fn blob_pack_appender_trusted_batch_matches_verified_batch() {
     let first = b"first payload".as_slice();
     let second = b"second payload".as_slice();

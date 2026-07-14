@@ -93,7 +93,46 @@ impl BlobPackAppender {
                 actual,
             });
         }
+        self.write_payload(expected_hash, payload)
+    }
 
+    /// Appends one payload without re-hashing it to verify its hash.
+    ///
+    /// The single-record analog of [`Self::append_payloads_batch_trusted`]: the
+    /// content-addressed write-through populate path (a fresh cache record whose
+    /// `expected_hash` is the store key it was just looked up under) uses this to
+    /// skip the digest that dominates the cold populate profile.
+    ///
+    /// # Contract
+    ///
+    /// The caller **must** guarantee `expected_hash == BlobPackHash::for_bytes(payload)`.
+    /// A wrong hash writes a record the reader may later serve for the wrong key;
+    /// use [`Self::append_payload`] whenever the pairing is not caller-computed
+    /// from the same bytes (for example when relocating bytes read back from an
+    /// existing pack).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if the packfile cannot be opened,
+    /// validated, or written, or if `payload` is too large for the on-disk format.
+    pub fn append_payload_trusted(
+        &self,
+        expected_hash: BlobPackHash,
+        payload: &[u8],
+    ) -> Result<BlobPackLocation, BlobPackAppendError> {
+        self.write_payload(expected_hash, payload)
+    }
+
+    /// Opens, locks, and writes one record whose hash the caller owns.
+    ///
+    /// Callers verify the hash (or explicitly trust the pairing) before calling;
+    /// this helper performs the single open/lock/stat/write/flush. See
+    /// [`Self::append_payload`] for the durability contract.
+    fn write_payload(
+        &self,
+        expected_hash: BlobPackHash,
+        payload: &[u8],
+    ) -> Result<BlobPackLocation, BlobPackAppendError> {
         let payload_len =
             u64::try_from(payload.len()).map_err(|_| BlobPackAppendError::PayloadTooLarge {
                 payload_len: payload.len() as u128,

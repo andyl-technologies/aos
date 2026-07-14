@@ -446,6 +446,27 @@ impl PersistCache {
         self.blob_pack(key.store()).append_blob(key.hash(), payload)
     }
 
+    /// Appends a blob without re-hashing the payload to verify its key.
+    ///
+    /// The content-addressed populate fast path: `key.hash()` is the BLAKE3 of
+    /// `payload` the record was just looked up under, so the pack trusts the
+    /// pairing. Skipping the verify re-hash is the cold-populate BLAKE3 tax
+    /// reduction; callers without a caller-computed content address must use
+    /// [`Self::append_blob_unlocked`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected packfile cannot be
+    /// opened, validated, or written, or if `payload` is too large.
+    pub(super) fn append_blob_unlocked_trusted(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobLocation, PersistBlobPackError> {
+        self.blob_pack(key.store())
+            .append_blob_trusted(key.hash(), payload)
+    }
+
     pub(super) fn append_pending_file_artifact_blob(
         &self,
         key: PersistBlobKey,
