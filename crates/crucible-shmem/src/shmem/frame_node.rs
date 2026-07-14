@@ -87,7 +87,9 @@ pub struct NodeSlot {
     device_io_active: AtomicU8,
     _pad0: u8,
     publish_gen: AtomicU32,
-    _reserved: [u8; 84],
+    _pad1: [u8; 4],
+    device_completion_deadline_icount: AtomicU64,
+    _reserved: [u8; 72],
 }
 
 impl Clone for NodeSlot {
@@ -103,7 +105,12 @@ impl Clone for NodeSlot {
             device_io_active: AtomicU8::new(self.device_io_active.load(Ordering::Acquire)),
             _pad0: 0,
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
-            _reserved: [0; 84],
+            _pad1: [0; 4],
+            device_completion_deadline_icount: AtomicU64::new(
+                self.device_completion_deadline_icount
+                    .load(Ordering::Acquire),
+            ),
+            _reserved: [0; 72],
         }
     }
 }
@@ -131,6 +138,9 @@ pub const NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET: usize =
 pub const NODE_SLOT_PAD0_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad0);
 /// Byte offset of [`NodeSlot`]'s publish-generation field.
 pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, publish_gen);
+/// Byte offset of [`NodeSlot`]'s host-owned device-completion-deadline field.
+pub const NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, device_completion_deadline_icount);
 /// Byte offset of [`NodeSlot`]'s reserved forward-compatibility bytes.
 pub const NODE_SLOT_RESERVED_OFFSET: usize = core::mem::offset_of!(NodeSlot, _reserved);
 /// Wire size of one [`NodeSlot`].
@@ -148,7 +158,9 @@ pub(super) const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
 pub(super) const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
 pub(super) const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
 pub(super) const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
-pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 44);
+pub(super) const _: () = assert!(core::mem::offset_of!(NodeSlot, _pad1) == 44);
+pub(super) const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);
+pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 56);
 pub(super) const _: () = assert!(NODE_SLOT_SIZE == 128);
 pub(super) const _: () = assert!(NODE_SLOT_ALIGN == 128);
 
@@ -171,7 +183,9 @@ impl NodeSlot {
             device_io_active: AtomicU8::new(0),
             _pad0: 0,
             publish_gen: AtomicU32::new(0),
-            _reserved: [0; 84],
+            _pad1: [0; 4],
+            device_completion_deadline_icount: AtomicU64::new(0),
+            _reserved: [0; 72],
         }
     }
 
@@ -480,7 +494,31 @@ impl NodeSlot {
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._pad0 == 0 && self._reserved.iter().all(|byte| *byte == 0)
+        self._pad0 == 0
+            && self._pad1.iter().all(|byte| *byte == 0)
+            && self._reserved.iter().all(|byte| *byte == 0)
+    }
+
+    /// Publishes the host-computed device-completion deadline icount for this slot.
+    ///
+    /// This field is host-owned in the host-to-plugin direction: the host writes
+    /// the exact icount at which a pending device completion for this VM will be
+    /// delivered, and a time-owning plugin whose guest is blocked on device I/O
+    /// idle-jumps virtual time to it. A value of zero means no device completion
+    /// is pending. It is deliberately distinct from `idle_wake_icount` (which is
+    /// plugin-published in the other direction) so the two directions never share
+    /// one field.
+    pub fn store_device_completion_deadline_icount(&self, icount: u64) {
+        self.device_completion_deadline_icount
+            .store(icount, Ordering::Release);
+    }
+
+    /// Returns the host-published device-completion deadline icount, or zero when
+    /// no device completion is pending for this slot.
+    #[must_use]
+    pub fn device_completion_deadline_icount(&self) -> u64 {
+        self.device_completion_deadline_icount
+            .load(Ordering::Acquire)
     }
 
     fn publish_state(

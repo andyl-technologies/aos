@@ -64,8 +64,9 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET 39u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET 40u
-#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET 44u
-#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN 84u
+#define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET 48u
+#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET 56u
+#define CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN 72u
 
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
@@ -148,6 +149,8 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint8_t device_io_active;
     uint8_t pad0;
     _Atomic uint32_t publish_gen;
+    uint8_t pad1[4];
+    _Atomic uint64_t device_completion_deadline_icount;
     uint8_t reserved[CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN];
 } crucible_shmem_node_slot;
 
@@ -163,6 +166,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, kind) == CRUCIBL
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_io_active) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, "crucible_shmem_node_slot.device_io_active offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad0) == CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET, "crucible_shmem_node_slot.pad0 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, publish_gen) == CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET, "crucible_shmem_node_slot.publish_gen offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_completion_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.device_completion_deadline_icount offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, reserved) == CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET, "crucible_shmem_node_slot.reserved offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
