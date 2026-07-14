@@ -1,5 +1,11 @@
 # RFC-0007 — Simplifier implementation plan (design note)
 
+> **Status (2026-07-14): pass set complete and byte-parity-green; default-on
+> HELD.** The full evidence packet (16-leg parity matrix + 546/546 x 2 full
+> gates, perf-neutral A/B, local-suite triage) and the ruled flip recipe live
+> in the [default-on packet](simplifier-default-on-packet.md). The passes stay
+> `AOS_NIX_SIMPLIFY`-gated until a pass with measured profit lands.
+>
 > Design-only prep for the doc-26 simplifier (task #7 / doc 22 "Tier 4a"). This
 > note maps [26 — optimization pass catalog](../26-optimization-pass-catalog.md)'s
 > §1 fixpoint driver and first four passes onto the **actual** ratchet IR,
