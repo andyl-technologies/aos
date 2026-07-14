@@ -24,10 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use std::os::unix::net::UnixStream;
-
 use crucible::{
-    AdvanceOutcome, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
+    Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
     SchedulerSendAuthorizer,
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
@@ -37,16 +35,12 @@ use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServicer,
     QemuLiveBlockIoServicerError,
 };
-use super::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
 use crate::{
-    CrucibleShmemBlockDevice, LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy,
-    QemuCrashDetector, QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchArtifact,
-    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
-    QemuQmpChannelConfig, QemuQmpVmStateControlChannel, QemuQuantumShmemConfig,
-    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QmpError,
-    build_qemu_node_from_completed_setup, complete_qemu_host_plugin_setup,
+    CrucibleShmemBlockDevice, LaunchProfileCandidate, LaunchProfileError, QemuHostPluginSetup,
+    QemuHostPluginSetupError, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError,
+    QemuLaunchPluginConfig, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNodeChannelError, QemuNodeChild, QemuPluginIpcControlChannel, QemuQuantumShmemConfig,
+    QemuShmemHotPathChannel, QemuVmLaunchConfig, complete_qemu_host_plugin_setup,
     spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -62,18 +56,13 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the block-I/O run.
 const GATE_MEMORY_MIB: u32 = 64;
-/// QMP socket file created in the run directory for VMState control.
-const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-block-io-qmp.sock";
-/// Stable crash-detector node identifier.
-const GATE_CRASH_NODE_ID: &str = "live-block-io";
 /// Number of background threads used to stress host scheduling on the load run.
 const HOST_LOAD_WORKERS: usize = 4;
-/// Ceiling for the boot-barrier priming quantum, below the first busy ceiling.
-const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
-/// Host poll interval while waiting for the priming quantum to reach its ceiling.
+/// Host poll interval while driving and servicing the guest.
 const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
-/// Cadence at which the QMP-connect primer pulses the plugin wake eventfd.
-const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
+/// Consecutive no-progress polls (at [`PRIME_POLL_INTERVAL`]) before the drive
+/// declares the guest stalled on device I/O rather than merely executing slowly.
+const DRIVE_STALL_POLLS: u64 = 5_000;
 /// Default crucible-shmem device length: 4 MiB, a whole sector multiple.
 const DEFAULT_DEVICE_SIZE_BYTES: u64 = 4 * 1024 * 1024;
 /// Default busy-window ceiling the run advances the node toward.
@@ -115,7 +104,7 @@ impl QemuLiveBlockIoGateConfig {
             kernel_cmdline: None,
             device_size_bytes: DEFAULT_DEVICE_SIZE_BYTES,
             busy_ceiling_icount: DEFAULT_BUSY_CEILING_ICOUNT,
-            completion_timeout: Duration::from_secs(120),
+            completion_timeout: Duration::from_secs(60),
             second_run_host_load: true,
         }
     }
@@ -292,16 +281,19 @@ fn run_one_scenario(
             source,
         })?;
 
-    let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
-        .map_err(|source| QemuLiveBlockIoGateError::QmpChannelConfig { source })?;
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    // No QMP and no QemuNode here: this diagnostic drives a raw hot path so the
+    // block ring can be serviced concurrently with getting the guest off the boot
+    // barrier. With a block device attached, unserviced SLOT_BLK_IO blocks the
+    // guest in early boot, so the node-step priming quantum (which does not
+    // service block I/O) cannot even release the boot barrier -- the node bring-up
+    // is infeasible until this device-horizon behaviour is understood.
     let command = QemuLaunchCommandBuilder::new(
         profile,
         vm_launch_config(config),
         path_text(&config.qemu_executable),
         plugin,
     )
-    .with_qmp(qmp_config.clone())
     .build()
     .map_err(|source| QemuLiveBlockIoGateError::LaunchCommand { source })?;
 
@@ -314,20 +306,20 @@ fn run_one_scenario(
         allocation.layout().region_size,
     )
     .map_err(|source| QemuLiveBlockIoGateError::Spawn { source })?;
-    let (child, resources) = spawned.into_parts();
+    let (mut child, resources) = spawned.into_parts();
 
-    let setup =
+    let mut setup =
         complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
             .map_err(|source| QemuLiveBlockIoGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveBlockIoGateError::SetupAckNotReady);
     }
 
-    // The block servicer owns a separate writable mapping confined to SLOT_BLK_IO;
-    // the runtime keeps its own read-only observer view. Diagnostics is shared so
-    // the run can read the servicing observations after the node is torn down.
+    // The block servicer owns a writable mapping confined to the SLOT_BLK_IO ring
+    // pair (it never writes the guest node slot's observed fields). Diagnostics is
+    // shared so the observations survive teardown.
     let diagnostics = BlockIoDiagnostics::shared();
-    let servicer = QemuLiveBlockIoServicer::from_shmem_fd(
+    let mut servicer = QemuLiveBlockIoServicer::from_shmem_fd(
         setup.shmem_as_fd(),
         setup.region().region_len,
         GATE_SLOT,
@@ -335,47 +327,32 @@ fn run_one_scenario(
         config.device_size_bytes,
     )
     .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
-    let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
-        setup.shmem_as_fd(),
-        setup.wake_as_fd(),
-        setup.region().region_len,
-        GATE_SLOT,
-    )
-    .map_err(|source| QemuLiveBlockIoGateError::HostIoRuntime { source })?
-    .with_block_servicer(servicer, Arc::clone(&diagnostics));
 
-    // Prime the guest off the boot barrier before QMP connect (same bug as the
-    // node-step gate: the boot-barrier park holds the BQL until a real ceiling is
-    // published, starving QMP).
-    prime_guest_off_boot_barrier(&setup, config.completion_timeout)?;
-    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(&run_directory))
-        .map_err(|source| QemuLiveBlockIoGateError::QmpConnect { source })?;
-
+    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
+        .map_err(|source| QemuLiveBlockIoGateError::DriveRegionMap { source })?;
     let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
         .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
-    let factory_runtime = QemuNodeFactoryRuntime::new(
-        shmem_config,
-        GateSendAuthorizer,
-        gate_shutdown_policy(),
-        gate_async_policy(config.completion_timeout),
-        QemuCrashDetector::new(GATE_CRASH_NODE_ID),
-        runtime,
-    );
-    let mut node = build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime)
-        .map_err(|source| QemuLiveBlockIoGateError::NodeFactory { source })?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
+        .map_err(|source| QemuLiveBlockIoGateError::DriveHotPath { source })?;
 
-    // Advance once toward the busy ceiling. The block servicer runs inside the
-    // runtime's poll loop, so a guest that blocks on a probe read has its request
-    // serviced; whether it then progresses to the ceiling is the diagnostic.
-    let advance = drive_busy_advance(&mut node, config.busy_ceiling_icount);
+    let advance = drive_and_service(
+        &mut hot_path,
+        &mut servicer,
+        &diagnostics,
+        &setup,
+        &mut child,
+        config.busy_ceiling_icount,
+        config.completion_timeout,
+    )?;
 
-    let shutdown = node.shutdown_child();
-    let orderly_child_exit = shutdown
-        .as_ref()
-        .map(|report| report.reaped && !report.leaked)
-        .unwrap_or(false);
+    // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
+    // if it is still alive, so no QEMU is orphaned on an early return.
+    let _ = QemuPluginIpcControlChannel::send_quit(&mut setup);
+    let orderly_child_exit = reap_child(&mut child, config.completion_timeout);
 
-    drop(node);
+    drop(hot_path);
+    drop(setup);
+    drop(child);
     drop(host_load);
 
     Ok(BlockIoRunOutcome {
@@ -385,27 +362,101 @@ fn run_one_scenario(
     })
 }
 
-/// Advances the node once toward `ceiling`, classifying the terminal state.
+/// Drives the guest toward `ceiling` on a raw hot path while servicing block I/O.
 ///
-/// A failed advance (timeout or crash) is captured rather than propagated: the
-/// diagnostic value is observing that a guest blocked on device I/O did not reach
-/// the ceiling, which must be reported, not hidden behind an error.
-fn drive_busy_advance(node: &mut QemuNode, ceiling: u64) -> BlockIoAdvanceOutcome {
-    match node.advance_to_ceiling(Icount { retired: ceiling }) {
-        Ok(AdvanceOutcome::ReachedHorizon) => {
-            let icount = node
-                .current_icount()
-                .map(|icount| icount.retired)
-                .unwrap_or(ceiling);
-            BlockIoAdvanceOutcome::ReachedCeiling { icount }
-        }
-        Ok(AdvanceOutcome::Paused { at }) => {
-            BlockIoAdvanceOutcome::PausedBelowCeiling { icount: at.retired }
-        }
-        Err(error) => BlockIoAdvanceOutcome::Failed {
-            detail: error.to_string(),
+/// Publishes the ceiling (releasing the boot barrier via the shared-memory futex
+/// wake), then each poll pulses the plugin wake, reads the guest slot, services
+/// `SLOT_BLK_IO` at the observed icount, and records the observation. It
+/// terminates when the guest reaches the ceiling, stalls (no icount progress for
+/// [`DRIVE_STALL_POLLS`] polls, i.e. blocked on device I/O the plugin never
+/// advances past), the child exits, or the poll budget lapses. A stall is
+/// returned as an outcome, never an error -- observing it IS the diagnostic.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveBlockIoGateError`] only when the quantum cannot be published
+/// or the guest slot cannot be read; a stalled guest is a normal outcome.
+fn drive_and_service(
+    hot_path: &mut QemuMappedQuantumShmemHotPath,
+    servicer: &mut QemuLiveBlockIoServicer,
+    diagnostics: &BlockIoDiagnostics,
+    setup: &QemuHostPluginSetup,
+    child: &mut QemuNodeChild,
+    ceiling: u64,
+    timeout: Duration,
+) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
+    let pending = QemuShmemHotPathChannel::start_quantum(
+        hot_path,
+        crucible::ExecutionHorizon {
+            icount: Icount { retired: ceiling },
         },
+    )
+    .map_err(|source| QemuLiveBlockIoGateError::drive("start block-io drive quantum", source))?;
+
+    let max_polls = bounded_drive_polls(timeout);
+    let mut last_icount = 0_u64;
+    let mut stall_polls = 0_u64;
+    let mut outcome = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
+    for _ in 0..max_polls {
+        let _ = setup.signal_plugin_wake();
+        let snapshot = servicer
+            .vm_node_snapshot()
+            .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+        let serviced = servicer
+            .service(snapshot.current_icount)
+            .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+        diagnostics.record(
+            snapshot.current_icount,
+            snapshot.device_io_active != 0,
+            snapshot.idle_wake_icount,
+            &serviced,
+        );
+
+        if snapshot.current_icount >= ceiling {
+            outcome = BlockIoAdvanceOutcome::ReachedCeiling {
+                icount: snapshot.current_icount,
+            };
+            break;
+        }
+        if let Some(status) = child
+            .try_wait_natural_exit()
+            .map_err(|source| QemuLiveBlockIoGateError::ChildWait { source })?
+        {
+            outcome = BlockIoAdvanceOutcome::Failed {
+                detail: format!("child exited during drive: {status}"),
+            };
+            break;
+        }
+        if snapshot.current_icount > last_icount {
+            last_icount = snapshot.current_icount;
+            stall_polls = 0;
+        } else {
+            stall_polls += 1;
+            if stall_polls >= DRIVE_STALL_POLLS {
+                outcome = BlockIoAdvanceOutcome::PausedBelowCeiling {
+                    icount: snapshot.current_icount,
+                };
+                break;
+            }
+        }
+        thread::sleep(PRIME_POLL_INTERVAL);
     }
+
+    let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
+    Ok(outcome)
+}
+
+/// Reaps the child within a bounded poll budget, force-killing on drop otherwise.
+fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
+    let max_polls = bounded_drive_polls(timeout);
+    for _ in 0..max_polls {
+        match child.try_wait_natural_exit() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => thread::sleep(PRIME_POLL_INTERVAL),
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// Requires the load run to reproduce the reference run's block observations.
@@ -432,74 +483,11 @@ fn assert_runs_match(
     Ok(())
 }
 
-/// Drives one bounded priming quantum to move the guest off the boot barrier.
-fn prime_guest_off_boot_barrier(
-    setup: &QemuHostPluginSetup,
-    timeout: Duration,
-) -> Result<(), QemuLiveBlockIoGateError> {
-    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
-        .map_err(|source| QemuLiveBlockIoGateError::PrimeRegionMap { source })?;
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
-        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
-    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
-        .map_err(|source| QemuLiveBlockIoGateError::PrimeHotPath { source })?;
-
-    let horizon = crucible::ExecutionHorizon {
-        icount: Icount {
-            retired: PRIME_CEILING_ICOUNT,
-        },
-    };
-    let pending = QemuShmemHotPathChannel::start_quantum(&mut hot_path, horizon)
-        .map_err(|source| QemuLiveBlockIoGateError::prime("start priming quantum", source))?;
-
-    let max_polls = bounded_prime_polls(timeout);
-    let mut reached = false;
-    for _ in 0..max_polls {
-        let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
-            .map_err(|source| QemuLiveBlockIoGateError::prime("poll priming icount", source))?
-            .retired;
-        if current >= PRIME_CEILING_ICOUNT {
-            reached = true;
-            break;
-        }
-        thread::sleep(PRIME_POLL_INTERVAL);
-    }
-
-    if !reached {
-        return Err(QemuLiveBlockIoGateError::PrimeStalled {
-            ceiling_icount: PRIME_CEILING_ICOUNT,
-        });
-    }
-    QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
-        .map_err(|source| QemuLiveBlockIoGateError::prime("finish priming quantum", source))?;
-    Ok(())
-}
-
-/// Returns the number of priming polls that fit within `timeout`, at least one.
-fn bounded_prime_polls(timeout: Duration) -> u64 {
+/// Returns the number of drive polls that fit within `timeout`, at least one.
+fn bounded_drive_polls(timeout: Duration) -> u64 {
     let interval = PRIME_POLL_INTERVAL.as_micros().max(1);
     let budget = timeout.as_micros();
     u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
-}
-
-/// Connects the QMP VMState channel while pulsing the plugin wake eventfd.
-fn connect_qmp_priming_main_loop(
-    setup: &QemuHostPluginSetup,
-    socket_path: &Path,
-) -> Result<QemuQmpVmStateControlChannel<UnixStream>, QmpError> {
-    let stop = AtomicBool::new(false);
-    thread::scope(|scope| {
-        let primer = scope.spawn(|| {
-            while !stop.load(Ordering::Relaxed) {
-                let _ = setup.signal_plugin_wake();
-                thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
-            }
-        });
-        let result = QemuQmpVmStateControlChannel::connect_unix_socket(socket_path);
-        stop.store(true, Ordering::Relaxed);
-        let _ = primer.join();
-        result
-    })
 }
 
 /// Builds the diskless-firmware VM launch config with a crucible-shmem block device.
@@ -515,27 +503,6 @@ fn vm_launch_config(config: &QemuLiveBlockIoGateConfig) -> QemuVmLaunchConfig {
         Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
         None => vm,
     }
-}
-
-/// Returns a shutdown policy with real bounded waits for a gate teardown.
-fn gate_shutdown_policy() -> QemuShutdownPolicy {
-    QemuShutdownPolicy {
-        control_quit_wait: Duration::from_secs(2),
-        qmp_quit_wait: Duration::from_secs(5),
-        sigterm_wait: Duration::from_secs(5),
-        sigkill_wait: Duration::from_secs(5),
-        reap_wait: Duration::from_secs(5),
-    }
-}
-
-/// Returns an async-driver policy whose advance budget is the completion timeout.
-fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriverPolicy {
-    QemuAsyncDriverPolicy::new(
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        completion_timeout,
-    )
 }
 
 fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
@@ -638,12 +605,6 @@ pub enum QemuLiveBlockIoGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
-    /// The QMP channel configuration was rejected.
-    #[error("build QMP channel config failed")]
-    QmpChannelConfig {
-        /// Underlying launch-command error.
-        source: QemuLaunchCommandError,
-    },
     /// The QEMU launch command could not be built.
     #[error("build QEMU launch command failed")]
     LaunchCommand {
@@ -677,55 +638,31 @@ pub enum QemuLiveBlockIoGateError {
         /// Underlying block-servicer error.
         source: QemuLiveBlockIoServicerError,
     },
-    /// The production host-I/O runtime could not map the shared-memory region.
-    #[error("build live host-I/O runtime failed")]
-    HostIoRuntime {
-        /// Underlying host-I/O runtime error.
-        source: QemuLiveHostIoRuntimeError,
-    },
-    /// The priming hot path could not map the shared-memory region.
-    #[error("map priming shared-memory region failed")]
-    PrimeRegionMap {
+    /// The drive hot path could not map the shared-memory region.
+    #[error("map drive shared-memory region failed")]
+    DriveRegionMap {
         /// Underlying setup-region mapping error.
         source: crucible_shmem::SetupRegionMapError,
     },
-    /// The priming mapped hot-path adapter could not bind the region.
-    #[error("bind priming mapped hot path failed")]
-    PrimeHotPath {
+    /// The drive mapped hot-path adapter could not bind the region.
+    #[error("bind drive mapped hot path failed")]
+    DriveHotPath {
         /// Underlying mapped hot-path binding error.
         source: QemuMappedQuantumShmemHotPathError,
     },
-    /// A priming quantum boundary could not be published or read.
+    /// A drive quantum boundary could not be published.
     #[error("{operation} failed")]
-    Prime {
-        /// Priming operation that failed.
+    Drive {
+        /// Drive operation that failed.
         operation: &'static str,
         /// Underlying shared-memory channel error.
         source: QemuNodeChannelError,
     },
-    /// The guest never reached the priming ceiling off the boot barrier.
-    #[error("priming quantum did not reach ceiling {ceiling_icount} off the boot barrier")]
-    PrimeStalled {
-        /// Priming ceiling the guest failed to reach.
-        ceiling_icount: u64,
-    },
-    /// The typed QMP VMState channel could not connect.
-    #[error("connect QMP VMState channel failed")]
-    QmpConnect {
-        /// Underlying QMP error.
-        source: QmpError,
-    },
-    /// The scheduler-facing node could not be assembled.
-    #[error("assemble live QEMU node failed")]
-    NodeFactory {
-        /// Underlying node-factory error.
-        source: QemuNodeFactoryError,
-    },
-    /// Node shutdown escalation failed.
-    #[error("shut down live QEMU node failed")]
-    Shutdown {
-        /// Underlying node error.
-        source: QemuNodeError,
+    /// Waiting on the child's natural exit failed during the drive.
+    #[error("wait on QEMU child exit failed")]
+    ChildWait {
+        /// Underlying child-wait error.
+        source: crate::QemuShutdownTargetError,
     },
     /// The second run diverged from the reference run.
     #[error("second run diverged from the reference run: {reason}")]
@@ -736,8 +673,8 @@ pub enum QemuLiveBlockIoGateError {
 }
 
 impl QemuLiveBlockIoGateError {
-    /// Builds a [`QemuLiveBlockIoGateError::Prime`] for a priming operation.
-    fn prime(operation: &'static str, source: QemuNodeChannelError) -> Self {
-        Self::Prime { operation, source }
+    /// Builds a [`QemuLiveBlockIoGateError::Drive`] for a drive operation.
+    fn drive(operation: &'static str, source: QemuNodeChannelError) -> Self {
+        Self::Drive { operation, source }
     }
 }

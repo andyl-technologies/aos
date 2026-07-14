@@ -61,7 +61,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, DeviceError, IoCore};
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    SLOT_BLK_IO, SetupRegionMapError, mmap_setup_region,
+    NodeSlotSnapshot, SLOT_BLK_IO, SetupRegionMapError, mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -203,6 +203,24 @@ impl QemuLiveBlockIoServicer {
     #[must_use]
     pub fn next_completion_icount(&self) -> Option<u64> {
         self.device.core().next_exact_local_event()
+    }
+
+    /// Reads the guest VM node slot's published state from the servicer's mapping.
+    ///
+    /// A caller driving the guest can read `current_icount`, `device_io_active`,
+    /// and `idle_wake_icount` here to observe whether the guest is progressing or
+    /// blocked on device I/O, without a second mapping of the region.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] when the guest node
+    /// slot cannot be borrowed from the mapped region.
+    pub fn vm_node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuLiveBlockIoServicerError> {
+        Ok(self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?
+            .snapshot())
     }
 }
 
