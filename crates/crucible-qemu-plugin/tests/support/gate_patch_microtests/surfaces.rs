@@ -5,7 +5,7 @@
 use std::error::Error;
 use std::fs;
 
-use super::common::{EXPECTED_PATCHES, assert_contains, workspace_root};
+use super::common::{EXPECTED_PATCHES, assert_contains, required, workspace_root};
 
 /// Asserts the plugin ABI, per-patch nix fixtures, `qemu.nix`, and the
 /// aggregate result-line contract for every carried patch.
@@ -177,42 +177,54 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &qemu_raw_state_export,
         "vCPU execution rejected after terminal Crucible VMState export",
     );
-    let incoming_setup_hunk = qemu_raw_state_export
-        .split_once(
+    let incoming_setup_tail = required(
+        qemu_raw_state_export.split_once(
             "@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)",
-        )
-        .expect("raw-state patch must modify incoming migration state setup")
-        .1
-        .split_once("\n@@")
-        .expect("incoming migration setup patch hunk must have a bounded body")
-        .0;
-    let incoming_state_read = incoming_setup_hunk
-        .find("MigrationStatus current = mis->state;")
-        .expect("incoming migration setup must retain its initial state read");
-    let incoming_seal_guard = incoming_setup_hunk
-        .find("migration_crucible_raw_state_export_sealed()")
-        .expect("incoming migration setup must reject work after terminal sealing");
-    let incoming_first_setup_branch = incoming_setup_hunk
-        .find("if (current == MIGRATION_STATUS_POSTCOPY_PAUSED)")
-        .expect("incoming migration setup must retain its first pre-existing branch");
+        ),
+        "raw-state patch must modify incoming migration state setup",
+    )
+    .1;
+    let incoming_setup_hunk = required(
+        incoming_setup_tail.split_once("\n@@"),
+        "incoming migration setup patch hunk must have a bounded body",
+    )
+    .0;
+    let incoming_state_read = required(
+        incoming_setup_hunk.find("MigrationStatus current = mis->state;"),
+        "incoming migration setup must retain its initial state read",
+    );
+    let incoming_seal_guard = required(
+        incoming_setup_hunk.find("migration_crucible_raw_state_export_sealed()"),
+        "incoming migration setup must reject work after terminal sealing",
+    );
+    let incoming_first_setup_branch = required(
+        incoming_setup_hunk.find("if (current == MIGRATION_STATUS_POSTCOPY_PAUSED)"),
+        "incoming migration setup must retain its first pre-existing branch",
+    );
     assert!(
         incoming_state_read < incoming_seal_guard
             && incoming_seal_guard < incoming_first_setup_branch,
         "terminal sealing must be checked inside incoming migration setup before any incoming state mutation or transport setup"
     );
-    let loadvm_main = qemu_raw_state_export
-        .split_once("int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)")
-        .expect("raw-state patch must modify the central VMState load loop")
-        .1
-        .split_once("int qemu_loadvm_state(QEMUFile *f)")
-        .expect("central VMState load-loop patch hunk must have a bounded body")
-        .0;
-    let load_admission = loadvm_main
-        .find("migration_crucible_load_begin()")
-        .expect("central VMState load loop must enter migration admission");
-    let load_retry = loadvm_main
-        .find("retry:")
-        .expect("central VMState load loop must retain its retry boundary");
+    let loadvm_main_tail = required(
+        qemu_raw_state_export
+            .split_once("int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)"),
+        "raw-state patch must modify the central VMState load loop",
+    )
+    .1;
+    let loadvm_main = required(
+        loadvm_main_tail.split_once("int qemu_loadvm_state(QEMUFile *f)"),
+        "central VMState load-loop patch hunk must have a bounded body",
+    )
+    .0;
+    let load_admission = required(
+        loadvm_main.find("migration_crucible_load_begin()"),
+        "central VMState load loop must enter migration admission",
+    );
+    let load_retry = required(
+        loadvm_main.find("retry:"),
+        "central VMState load loop must retain its retry boundary",
+    );
     assert!(
         load_admission < load_retry,
         "migration admission must be entered before central VMState loading"

@@ -100,6 +100,20 @@ pub(super) fn assert_contains(haystack: &str, needle: &str) {
     );
 }
 
+/// Unwraps an extraction from checked source, panicking with `context` when
+/// the extraction found nothing (the workspace denies `expect_used`, so test
+/// support code funnels fallible extractions through this assertion instead).
+///
+/// # Panics
+///
+/// Panics with `context` when `value` is `None`.
+pub(super) fn required<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(inner) => inner,
+        None => panic!("{context}"),
+    }
+}
+
 /// Locates the workspace root by walking upward until the crate manifest and
 /// the crucible test tree are both present.
 ///
