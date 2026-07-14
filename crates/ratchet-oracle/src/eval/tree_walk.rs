@@ -545,6 +545,7 @@ mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
 mod flat_capture;
+mod force_shape_census;
 mod formal_set_layout_cache;
 mod gc_sweep;
 mod import_persist_locations;

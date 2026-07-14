@@ -222,6 +222,11 @@ impl TreeWalk {
         // and boundary counts that gate the boundary-record design, on the same
         // stderr dump path for the same benchmark-capture reason.
         super::pkg_boundary_probe::emit_pkg_boundary_report();
+        // Force-shape wall census (RFC-0007 JIT fuse-shapes): the dynamic
+        // per-force self-time by IR shape class that ranks which body shapes a
+        // fused tier-2 grammar could remove wall from, on the same stderr dump
+        // path. A no-op unless a force was recorded this process.
+        super::force_shape_census::emit_force_shape_census_report();
         tracing::debug!(
             target: "aos_nix::eval::stats",
             thunks_forced = stats.thunks_forced(),
@@ -591,12 +596,17 @@ impl TreeWalk {
     /// Begins per-force prelude accounting (a `None` no-op unless
     /// `AOS_NIX_EVAL_STATS`). When enabled it classifies the thunk's
     /// [code module](EvalThunk::code_module) (builtins count as non-prelude),
-    /// counts a prelude force, and returns the start instant plus that
-    /// classification for [`Self::end_force_accounting`].
+    /// counts a prelude force, opens the force-shape census self-time frame, and
+    /// returns the start instant, prelude flag, force-shape class, and the census
+    /// frame's saved child-nanos for [`Self::end_force_accounting`].
+    ///
+    /// The single [`Instant`](std::time::Instant) captured here drives both the
+    /// prelude-share timer and the [force-shape census](super::force_shape_census)
+    /// self-time, so the census adds no extra clock reads.
     pub(super) fn begin_force_accounting(
         &mut self,
         thunk: &EvalThunk,
-    ) -> Option<(bool, std::time::Instant)> {
+    ) -> Option<ForceAccounting> {
         if !self.options.eval_stats_dump() {
             return None;
         }
@@ -606,20 +616,84 @@ impl TreeWalk {
         if is_prelude {
             self.stats.prelude_thunks_forced = self.stats.prelude_thunks_forced.saturating_add(1);
         }
-        Some((is_prelude, std::time::Instant::now()))
+        let shape = self.force_shape_class(thunk);
+        let saved_children = force_shape_census::open_force();
+        Some(ForceAccounting {
+            is_prelude,
+            start: std::time::Instant::now(),
+            shape,
+            saved_children,
+        })
     }
 
     /// Closes the inclusive body timer opened by [`Self::begin_force_accounting`],
     /// adding the span to `all_force_nanos` (and `prelude_force_nanos` when
-    /// prelude). Inclusive of nested forces, so only the ratio is meaningful.
-    pub(super) fn end_force_accounting(&mut self, timing: Option<(bool, std::time::Instant)>) {
-        let Some((is_prelude, start)) = timing else {
+    /// prelude) and recording the force's exclusive self-time against its shape
+    /// class in the [force-shape census](super::force_shape_census). Inclusive of
+    /// nested forces for the prelude timer, so only its ratio is meaningful; the
+    /// census subtracts nested child forces to attribute exclusive self-time.
+    pub(super) fn end_force_accounting(&mut self, timing: Option<ForceAccounting>) {
+        let Some(ForceAccounting {
+            is_prelude,
+            start,
+            shape,
+            saved_children,
+        }) = timing
+        else {
             return;
         };
         let nanos = start.elapsed().as_nanos() as u64;
         self.stats.all_force_nanos = self.stats.all_force_nanos.saturating_add(nanos);
         if is_prelude {
             self.stats.prelude_force_nanos = self.stats.prelude_force_nanos.saturating_add(nanos);
+        }
+        force_shape_census::close_force(shape, nanos, saved_children);
+    }
+
+    /// Classifies a forced thunk into a force-shape census class.
+    ///
+    /// A [`Node`](EvalThunkKind::Node) thunk is classified by its body's IR kind
+    /// (through at most one [`ThunkAlloc`](IrKind::ThunkAlloc)), with binary
+    /// operators qualified by operator (`"BinOp:Update"`), matching the JIT
+    /// engine's gated-histogram taxonomy so the dynamic census and the static
+    /// def-site census share shape names. The remaining deferred-work kinds map
+    /// to their own classes (`"apply"`, `"apply2"`, `"select-thunk"`,
+    /// `"builtin-attr"`, `"released"`).
+    fn force_shape_class(&self, thunk: &EvalThunk) -> &'static str {
+        match thunk.kind() {
+            EvalThunkKind::Node { .. } => thunk
+                .body_ref()
+                .map_or("node", |body| self.node_shape_class(body)),
+            EvalThunkKind::Apply { .. } => "apply",
+            EvalThunkKind::Apply2 { .. } => "apply2",
+            EvalThunkKind::Select { .. } => "select-thunk",
+            EvalThunkKind::BuiltinAttr { .. } => "builtin-attr",
+            EvalThunkKind::Released => "released",
+        }
+    }
+
+    /// Returns the force-shape class of a `Node` thunk body by its IR kind.
+    ///
+    /// Unwraps a single [`ThunkAlloc`](IrKind::ThunkAlloc) wrapper (the shape the
+    /// tier-1 lowerer also matches through), qualifies a [`BinOp`](IrKind::BinOp)
+    /// by operator, and resolves absent IR to `"unknown"`.
+    fn node_shape_class(&self, body: EvalNodeRef) -> &'static str {
+        let Some(ir) = self.tier1_module_ir(body.module()) else {
+            return "unknown";
+        };
+        let Some(node) = ir.arena.node(body.id()).copied() else {
+            return "unknown";
+        };
+        let (kind, data) = match (node.kind, node.data) {
+            (IrKind::ThunkAlloc, IrData::Node(inner)) => match ir.arena.node(inner).copied() {
+                Some(inner_node) => (inner_node.kind, inner_node.data),
+                None => (node.kind, node.data),
+            },
+            _ => (node.kind, node.data),
+        };
+        match (kind, data) {
+            (IrKind::BinOp, IrData::Binary { op, .. }) => binop_shape_class(op),
+            _ => irkind_shape_class(kind),
         }
     }
 
@@ -645,5 +719,91 @@ impl TreeWalk {
             .stats
             .derivation_text_path_calculations
             .saturating_add(1);
+    }
+}
+
+/// The per-force accounting frame opened by
+/// [`TreeWalk::begin_force_accounting`] and consumed by
+/// [`TreeWalk::end_force_accounting`].
+///
+/// `None` unless `AOS_NIX_EVAL_STATS` is set; the fields carry the single wall
+/// clock plus the metadata needed to close both the prelude-share timer and the
+/// [force-shape census](super::force_shape_census) self-time frame.
+pub(super) struct ForceAccounting {
+    /// Whether the forced body is prelude (`lib`/`stdenv`) code.
+    is_prelude: bool,
+    /// The inclusive-force wall clock, started after classification.
+    start: std::time::Instant,
+    /// The forced body's force-shape census class.
+    shape: &'static str,
+    /// The census child-nanos accumulator saved on frame open.
+    saved_children: u64,
+}
+
+/// Maps an [`IrKind`] to its stable force-shape census class name.
+///
+/// The returned `&'static str` matches the JIT engine's gated-histogram
+/// signature vocabulary (`"AttrSet"`, `"Select"`, `"Interp"`, `"LocalVar"`,
+/// `"PrimOp"`, …) so the dynamic wall census and the static def-site census can
+/// be joined by shape name.
+const fn irkind_shape_class(kind: IrKind) -> &'static str {
+    match kind {
+        IrKind::Int => "Int",
+        IrKind::Float => "Float",
+        IrKind::Bool => "Bool",
+        IrKind::Null => "Null",
+        IrKind::Str => "Str",
+        IrKind::Path => "Path",
+        IrKind::SearchPath => "SearchPath",
+        IrKind::Uri => "Uri",
+        IrKind::LocalVar => "LocalVar",
+        IrKind::UpvalVar => "UpvalVar",
+        IrKind::GlobalVar => "GlobalVar",
+        IrKind::BuiltinAttr => "BuiltinAttr",
+        IrKind::List => "List",
+        IrKind::AttrSet => "AttrSet",
+        IrKind::Lambda => "Lambda",
+        IrKind::FormalSet => "FormalSet",
+        IrKind::Formal => "Formal",
+        IrKind::Apply => "Apply",
+        IrKind::Select => "Select",
+        IrKind::HasAttr => "HasAttr",
+        IrKind::Let => "Let",
+        IrKind::With => "With",
+        IrKind::Assert => "Assert",
+        IrKind::If => "If",
+        IrKind::BinOp => "BinOp",
+        IrKind::UnaryOp => "UnaryOp",
+        IrKind::Interp => "Interp",
+        IrKind::ThunkAlloc => "ThunkAlloc",
+        IrKind::PrimOp => "PrimOp",
+    }
+}
+
+/// Maps a [`BinOpKind`] to its qualified force-shape census class name.
+///
+/// Qualifying binary operators (`"BinOp:Update"`, `"BinOp:Add"`, …) separates
+/// the attrset-`//` update-merge mass — a prime fuse-shapes candidate — from
+/// arithmetic and comparison operators, matching the JIT engine's
+/// `body_kind_signature` qualification.
+const fn binop_shape_class(op: BinOpKind) -> &'static str {
+    match op {
+        BinOpKind::Add => "BinOp:Add",
+        BinOpKind::Sub => "BinOp:Sub",
+        BinOpKind::Mul => "BinOp:Mul",
+        BinOpKind::Div => "BinOp:Div",
+        BinOpKind::Concat => "BinOp:Concat",
+        BinOpKind::Update => "BinOp:Update",
+        BinOpKind::Lt => "BinOp:Lt",
+        BinOpKind::Gt => "BinOp:Gt",
+        BinOpKind::Le => "BinOp:Le",
+        BinOpKind::Ge => "BinOp:Ge",
+        BinOpKind::Eq => "BinOp:Eq",
+        BinOpKind::Ne => "BinOp:Ne",
+        BinOpKind::And => "BinOp:And",
+        BinOpKind::Or => "BinOp:Or",
+        BinOpKind::Impl => "BinOp:Impl",
+        BinOpKind::PipeRight => "BinOp:PipeRight",
+        BinOpKind::PipeLeft => "BinOp:PipeLeft",
     }
 }

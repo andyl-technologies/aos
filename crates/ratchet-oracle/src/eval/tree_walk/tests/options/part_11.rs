@@ -878,3 +878,39 @@ fn pkg_boundary_probe_records_formal_set_application_under_stats_dump() {
         after.arg_members,
     );
 }
+
+/// The force-shape census classifies forced *thunk* bodies into their IR shape
+/// classes only when stats collection is active.
+///
+/// A lazily-bound `let` binding whose body is a `//` update-merge is forced as
+/// one `BinOp:Update` thunk (its inline attrset operands fold into that force's
+/// self-time rather than being separately forced — the census measures the
+/// forced-thunk population, not every evaluated node). The strict `+` arg is a
+/// `BinOp:Add` force. Cumulative process statics mean each assertion is a lower
+/// bound on the delta — concurrent tests can only inflate it.
+#[test]
+fn force_shape_census_classifies_forced_body_shapes_under_stats_dump() {
+    use crate::eval::tree_walk::force_shape_census::recorded_forces;
+
+    let before_update = recorded_forces("BinOp:Update");
+    let before_add = recorded_forces("BinOp:Add");
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_stats_dump(true);
+    // `m` is a lazily-bound `BinOp:Update` thunk; `m.x + m.y` forces a
+    // `BinOp:Add` whose `Select` operands evaluate inline within it.
+    let bytes = eval_string_bytes_with_options(
+        r#"let m = { x = 1; } // { y = 2; }; in toString (m.x + m.y)"#,
+        options,
+    );
+    assert_eq!(bytes, b"3");
+
+    assert!(
+        recorded_forces("BinOp:Update") > before_update,
+        "expected a new BinOp:Update thunk force to be classified",
+    );
+    assert!(
+        recorded_forces("BinOp:Add") > before_add,
+        "expected a new BinOp:Add thunk force to be classified",
+    );
+}
