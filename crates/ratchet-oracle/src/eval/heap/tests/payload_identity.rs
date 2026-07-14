@@ -86,7 +86,10 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "diagnostic mismatch payloads only; no repair",
     },
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/alloc_intern.rs",
+        // The force-protocol cluster (and this lazy-identity unmark read) moved
+        // from `alloc_intern.rs` into this child module in the §2 file-size
+        // split; the call site is verbatim-unchanged.
+        path: "ratchet-oracle/src/eval/tree_walk/alloc_intern/force_thunk.rs",
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 1,
