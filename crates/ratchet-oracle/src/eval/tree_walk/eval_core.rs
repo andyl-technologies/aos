@@ -179,6 +179,7 @@ impl TreeWalk {
             static_literal_shapes: SelectCacheMap::default(),
             hamt_select_caches: SelectCacheMap::default(),
             primop_builtin_cache: primop_builtin_cache::PrimopBuiltinCache::default(),
+            formal_set_layout_cache: formal_set_layout_cache::FormalSetLayoutCache::default(),
             attr_update_node_states: BTreeMap::new(),
             attr_update_telemetry_enabled: Self::attr_update_telemetry_default(),
             trace_output: Vec::new(),

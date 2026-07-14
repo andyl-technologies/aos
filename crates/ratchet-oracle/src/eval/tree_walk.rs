@@ -292,6 +292,13 @@ pub struct TreeWalk {
     /// same builtin; memoizing the resolution replaces a per-call name hash with
     /// an array index. See [`primop_builtin_cache`](self::primop_builtin_cache).
     primop_builtin_cache: primop_builtin_cache::PrimopBuiltinCache,
+    /// Resolved layout per formal-set lambda pattern (module + pattern node id).
+    ///
+    /// A formal-set pattern's shape (formal names, defaults, alias slot, total
+    /// slots) is fixed by its immutable IR node, so it is derived once and reused
+    /// across every application of the lambda. See
+    /// [`formal_set_layout_cache`](self::formal_set_layout_cache).
+    formal_set_layout_cache: formal_set_layout_cache::FormalSetLayoutCache,
     /// Per-site resolved shapes for static attrset literals
     /// ([`AttrShapeMode::Record`] only): a static site's key sequence is
     /// fixed, so its transition-tree walk resolves once and later
@@ -541,6 +548,7 @@ mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
 mod flat_capture;
+mod formal_set_layout_cache;
 mod gc_sweep;
 mod import_persist_locations;
 mod json_float;

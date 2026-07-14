@@ -1,5 +1,6 @@
 //! Strict primop binding, `select`, `foldl`, and replacement helpers.
 
+use super::formal_set_layout_cache::{FormalSetLayout, FormalSlot};
 use super::*;
 
 mod select;
@@ -515,6 +516,131 @@ impl TreeWalk {
         argument: Value,
         span: Span,
     ) -> Result<(), TreeWalkError> {
+        // The pattern's shape (formal names, defaults, alias slot, total slots) is
+        // fixed by its immutable IR node, so it is derived and validated once and
+        // reused on every application. The per-argument work below runs identically
+        // whether the layout was just built or served from the cache.
+        let layout = self.formal_set_layout(pattern, pattern_node)?;
+
+        if slot_count != layout.pattern_slots() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::LambdaFrameSlotMismatch {
+                    id,
+                    frame_slots: slot_count,
+                    pattern_slots: layout.pattern_slots(),
+                },
+                span,
+            ));
+        }
+
+        let attrs_value = self.force_value(argument_id, argument_span, argument)?;
+        let attrs_value =
+            self.force_lazy_foldl_initial_value(argument_id, argument_span, attrs_value)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        if !layout.ellipsis() {
+            let unexpected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs
+                    .iter_lexicographic()
+                    .find(|entry| !layout.contains_name(entry.key))
+                    .map(|entry| entry.key)
+            };
+            if let Some(symbol) = unexpected {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnexpectedFormalAttribute { id, symbol },
+                    span,
+                ));
+            }
+        }
+
+        for (slot, formal) in layout.entries().iter().enumerate() {
+            let selected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(formal.name)
+            };
+            let value = match (selected, formal.default) {
+                (Some(value), _) => value,
+                (None, Some(default)) => self.eval_lazy_node(default)?,
+                (None, None) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::MissingFormalAttribute {
+                            id,
+                            symbol: formal.name,
+                        },
+                        span,
+                    ));
+                }
+            };
+            frame.set(slot as u32, value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+            })?;
+        }
+
+        if layout.alias_has_own_slot() {
+            frame
+                .set(layout.entries().len() as u32, attrs_value)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the resolved layout for a formal-set pattern, deriving it on first use.
+    ///
+    /// A hit clones the cached [`Arc`], so the returned layout outlives the borrow
+    /// of the cache while the binder calls back into the evaluator.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`Self::build_formal_set_layout`]. Failed
+    /// derivations are not cached, so the diagnostic re-surfaces on every call.
+    fn formal_set_layout(
+        &mut self,
+        pattern: IrId,
+        pattern_node: &IrNode,
+    ) -> Result<Arc<FormalSetLayout>, TreeWalkError> {
+        let module = self.current_module;
+        if let Some(entry) = self.formal_set_layout_cache.get(module, pattern) {
+            let layout = Arc::clone(entry);
+            self.formal_set_layout_cache.record_hit();
+            return Ok(layout);
+        }
+        let layout = Arc::new(self.build_formal_set_layout(pattern, pattern_node)?);
+        self.formal_set_layout_cache.record_miss();
+        self.formal_set_layout_cache
+            .insert(module, pattern, Arc::clone(&layout));
+        Ok(layout)
+    }
+
+    /// Derives the resolved layout of a formal-set pattern from its IR node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluator error, in the same order an uncached bind reports it,
+    /// if the pattern payload is not a formal set, the formal child slice is
+    /// invalid, a formal payload is malformed, or a formal or alias name does not
+    /// resolve in the symbol table.
+    fn build_formal_set_layout(
+        &self,
+        pattern: IrId,
+        pattern_node: &IrNode,
+    ) -> Result<FormalSetLayout, TreeWalkError> {
         let IrData::FormalSet {
             formals,
             ellipsis,
@@ -536,33 +662,19 @@ impl TreeWalk {
                     pattern_node.span,
                 )
             })?;
-        let mut formal_ids = Vec::new();
-        formal_ids
-            .try_reserve_exact(formal_slice.len())
-            .map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed {
-                        id: pattern,
-                        len: formal_slice.len(),
-                    },
-                    pattern_node.span,
-                )
-            })?;
-        formal_ids.extend_from_slice(formal_slice);
-
-        let mut names = Vec::new();
-        names.try_reserve_exact(formal_ids.len()).map_err(|_| {
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(formal_slice.len()).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ListAllocationFailed {
                     id: pattern,
-                    len: formal_ids.len(),
+                    len: formal_slice.len(),
                 },
                 pattern_node.span,
             )
         })?;
-        for formal in &formal_ids {
+        for formal in formal_slice {
             let formal_node = *self.node(*formal)?;
-            let IrData::Formal { name, .. } = formal_node.data else {
+            let IrData::Formal { name, default } = formal_node.data else {
                 return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
             };
             if self.symbols.resolve(name).is_none() {
@@ -574,7 +686,7 @@ impl TreeWalk {
                     formal_node.span,
                 ));
             }
-            names.push(name);
+            entries.push(FormalSlot { name, default });
         }
         if let Some(alias) = alias
             && self.symbols.resolve(alias).is_none()
@@ -587,86 +699,15 @@ impl TreeWalk {
                 pattern_node.span,
             ));
         }
-        let alias_slot = alias.filter(|alias| !names.contains(alias));
-        let pattern_slots = names.len() + usize::from(alias_slot.is_some());
-        if slot_count != pattern_slots {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::LambdaFrameSlotMismatch {
-                    id,
-                    frame_slots: slot_count,
-                    pattern_slots,
-                },
-                span,
-            ));
-        }
-
-        let attrs_value = self.force_value(argument_id, argument_span, argument)?;
-        let attrs_value =
-            self.force_lazy_foldl_initial_value(argument_id, argument_span, attrs_value)?;
-        if attrs_value.tag() != ValueTag::Attrs {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: argument_id,
-                    expected: "attrs",
-                    actual: attrs_value.tag(),
-                },
-                argument_span,
-            ));
-        }
-
-        if !ellipsis {
-            let unexpected = {
-                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
-                attrs
-                    .iter_lexicographic()
-                    .find(|entry| !names.contains(&entry.key))
-                    .map(|entry| entry.key)
-            };
-            if let Some(symbol) = unexpected {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnexpectedFormalAttribute { id, symbol },
-                    span,
-                ));
-            }
-        }
-
-        for (slot, formal) in formal_ids.into_iter().enumerate() {
-            let formal_node = *self.node(formal)?;
-            let IrData::Formal { name, default } = formal_node.data else {
-                return Err(self.invalid_payload(formal, &formal_node, "formal payload"));
-            };
-            let selected = {
-                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
-                attrs.get(name)
-            };
-            let value = match (selected, default) {
-                (Some(value), _) => value,
-                (None, Some(default)) => self.eval_lazy_node(default)?,
-                (None, None) => {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::MissingFormalAttribute { id, symbol: name },
-                        span,
-                    ));
-                }
-            };
-            frame.set(slot as u32, value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
-            })?;
-        }
-
-        if alias_slot.is_some() {
-            frame
-                .set(names.len() as u32, attrs_value)
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
-                })?;
-        }
-
-        Ok(())
+        let alias_has_own_slot =
+            alias.is_some_and(|alias| !entries.iter().any(|entry| entry.name == alias));
+        let pattern_slots = entries.len() + usize::from(alias_has_own_slot);
+        Ok(FormalSetLayout::new(
+            entries.into_boxed_slice(),
+            ellipsis,
+            alias_has_own_slot,
+            pattern_slots,
+        ))
     }
 }
 

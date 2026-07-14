@@ -262,6 +262,7 @@ mod fetchurl;
 mod filesystem_1;
 mod filesystem_2;
 mod flake;
+mod formal_set_binding;
 mod gc;
 mod hash;
 mod hash_file_surface;
