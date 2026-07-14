@@ -33,6 +33,11 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
+mod env_frames;
+
+#[allow(unused_imports)] // Closure payload capture (step-3 increment 3) is the consumer.
+pub(crate) use env_frames::{CapturedFrameTable, RestoredFrameTable};
+
 use ratchet_value::heap::{
     ArenaIndex, ContextPayload, HeapImage, ListPayload, PrimopPayload, RelocationEntry,
     SnapshotError, capture_reservation, reservation_base, restore_reservation,
@@ -199,6 +204,14 @@ impl EvalHeap {
     /// not decode, and [`EvalHeapSnapshotError::FlatResolve`] when a recorded
     /// object cannot be resolved for rewriting.
     pub fn from_restored_heap_image(image: &HeapImage) -> Result<Self, EvalHeapSnapshotError> {
+        // Closure payload restore (step-3 increment 3) is the frame-table
+        // consumer; until it lands, silently dropping a populated frame table
+        // would restore closures without their captured environments.
+        if !image.frame_payloads.is_empty() {
+            return Err(EvalHeapSnapshotError::UnexpectedFramePayloads {
+                count: image.frame_payloads.len(),
+            });
+        }
         let arena = restore_reservation(image).map_err(EvalHeapSnapshotError::Snapshot)?;
         let new_base = arena
             .arena_domain_id()
@@ -310,7 +323,11 @@ impl EvalHeap {
             .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
         let primop = decode_primop(&payload.primop_bytes)?;
         self.flat_closures
-            .restore_payload(ptr, FlatObjectKind::Primop, FlatClosurePayload::Primop(primop))
+            .restore_payload(
+                ptr,
+                FlatObjectKind::Primop,
+                FlatClosurePayload::Primop(primop),
+            )
             .map_err(EvalHeapSnapshotError::FlatResolve)
     }
 
@@ -783,6 +800,26 @@ pub enum EvalHeapSnapshotError {
     DuplicateObjectIndex {
         /// The arena index that appeared more than once.
         index: u32,
+    },
+    /// A captured environment frame's slots could not be read at capture, or a
+    /// rebuilt frame's slot storage could not be allocated or written.
+    #[error("captured environment frame is unreadable: {0}")]
+    EnvFrameUnreadable(#[source] crate::eval::env::EvalEnvError),
+    /// An env-frame-table segment is out of dense order, truncated, carries
+    /// trailing bytes, names a parent at or above its own id, or holds an
+    /// invalid slot value word.
+    #[error("env frame payload {index} is malformed")]
+    MalformedFramePayload {
+        /// The offending frame payload's table index.
+        index: u32,
+    },
+    /// The image carries env-frame-table segments, but this restore path does
+    /// not consume them yet (closure payload restore is step-3 increment 3);
+    /// ignoring them would silently drop captured environments.
+    #[error("image carries {count} env frame payload(s), which restore does not consume yet")]
+    UnexpectedFramePayloads {
+        /// The number of unconsumed frame payload segments.
+        count: usize,
     },
     /// A recorded relocation object could not be resolved for rebasing.
     #[error("relocation object resolution failed: {0}")]

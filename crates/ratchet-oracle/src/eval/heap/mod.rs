@@ -24,9 +24,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::env::{
-    EvalEnv, EvalEnvError, EvalFlatCaptureBuffer, EvalScopedGlobalEnv, EvalWithEnv,
-};
+use super::env::{EvalEnv, EvalEnvError, EvalFlatCaptureBuffer, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
@@ -75,18 +73,21 @@ pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;
 pub(crate) use flat_values::attrs::FlatAttrsPayload;
-pub(crate) use flat_values::closures::{FlatClosurePayload, serial_flat_closure_store};
 pub use flat_values::closures::WorkerClosurePlacement;
+pub(crate) use flat_values::closures::{FlatClosurePayload, serial_flat_closure_store};
 
 use crate::heap::flat::{
     FlatKindSet, FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark,
     SharedFlatStoreArena,
 };
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
-#[cfg(feature = "candidate_c_value")]
-pub use snapshot::EvalHeapSnapshotError;
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
+#[cfg(feature = "candidate_c_value")]
+pub use snapshot::EvalHeapSnapshotError;
+#[cfg(feature = "candidate_c_value")]
+#[allow(unused_imports)] // Closure payload capture (step-3 increment 3) is the consumer.
+pub(crate) use snapshot::{CapturedFrameTable, RestoredFrameTable};
 
 pub use shared_arena::{SharedHeapArena, SharedHeapError, SharedHeapShard};
 

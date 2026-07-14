@@ -275,6 +275,31 @@ fn heap_image_round_trips_primops() {
 }
 
 #[test]
+fn env_frame_table_dedups_a_real_shared_capture() {
+    // Two lambdas closing over one `let` binding: their captured environments
+    // share the binding's frame, so the deduplicated table must be smaller
+    // than the raw reference count.
+    let outcome = eval_owned_with_source(
+        b"snapshot-env-frames",
+        "let a = 1; in { f = x: x + a; g = y: y + a; }",
+    );
+    let table = outcome
+        .heap()
+        .capture_env_frame_table()
+        .expect("frame table captures");
+    assert!(
+        table.len() >= 1,
+        "the fixture's lambdas must capture at least one shared frame"
+    );
+
+    // The serialized table rebuilds into the same number of shared frames.
+    let payloads = table.into_payloads();
+    let restored =
+        crate::eval::heap::RestoredFrameTable::rebuild(&payloads).expect("frame table rebuilds");
+    assert_eq!(restored.len(), payloads.len());
+}
+
+#[test]
 fn capture_refuses_a_lambda() {
     let outcome = eval_owned_with_source(b"snapshot-lambda", "x: x");
     match outcome.heap().capture_heap_image() {

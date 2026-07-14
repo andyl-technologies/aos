@@ -17,7 +17,7 @@
 //! # Wire format (little-endian)
 //!
 //! ```text
-//! heap-image v4:
+//! heap-image v6:
 //!   magic:        8 bytes  = IMAGE_MAGIC ("AOSNIXH1")
 //!   version:      u32      = IMAGE_VERSION
 //!   domain:       u32      = the reservation's 23-bit Candidate-C domain
@@ -28,11 +28,15 @@
 //!   reloc_count:  u64      = number of relocation-table entries
 //!   list_count:   u64      = number of list-payload segments
 //!   ctx_count:    u64      = number of context-payload segments
+//!   primop_count: u64      = number of primop-payload segments
+//!   frame_count:  u64      = number of env-frame-table segments
 //!   low:          low_len bytes   (the permanent lane, offset 0)
 //!   high:         high_len bytes  (the rewindable lane, ending at `capacity`)
 //!   relocs:       reloc_count * (index:u32 | kind:u8)
 //!   lists:        list_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   contexts:     ctx_count  * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   primops:      primop_count * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   frames:       frame_count  * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   digest:       u64      = xxh3-64 of every preceding byte (integrity guard)
 //! ```
 //!
@@ -60,17 +64,20 @@ pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 /// The heap-image wire-format version. Bumped on any layout change so a stale
 /// image is a clean, loud miss rather than a silent misparse. v2 added
 /// `old_base` and the relocation table; v3 added the list-payload segments; v4
-/// added the context-payload segments; v5 adds the primop-payload segments that
+/// added the context-payload segments; v5 added the primop-payload segments that
 /// carry captured builtin closures as registry references (RFC-0007 doc 31 §1
-/// stage B / decision 6, step-2 primop capture).
-pub const IMAGE_VERSION: u32 = 5;
+/// stage B / decision 6, step-2 primop capture); v6 adds the env-frame-table
+/// segments that carry the closure serializer's deduplicated captured
+/// environment frames (doc 31 §1 step-3 increment 2).
+pub const IMAGE_VERSION: u32 = 6;
 
 /// Byte length of the fixed image header preceding the lane, relocation, and
 /// index-keyed payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
-/// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+/// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8) |
+/// frame_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
@@ -154,6 +161,30 @@ pub struct PrimopPayload {
     pub primop_bytes: Vec<u8>,
 }
 
+/// One deduplicated captured-environment frame (RFC-0007 doc 31 §1 step-3
+/// increment 2, the env-frame DAG serializer).
+///
+/// A closure's captured environment frames are `Arc`-shared slot arrays
+/// allocated outside the reservation, so the dumped lanes do not carry them.
+/// The `EvalHeap`-level capture deduplicates frames by `Arc` identity into a
+/// dense, parent-before-child table; each entry's bytes carry the frame's
+/// parent link and its address-free slot value words. Restore rebuilds the
+/// shared `Arc` frame graph bottom-up and closure payloads reference frames by
+/// table index.
+///
+/// `EvalEnv` is an evaluator concept; this value-agnostic layer only carries
+/// the bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FramePayload {
+    /// The frame's dense table index (its frame id). Unlike the other
+    /// index-keyed segments this is *not* an arena byte offset: frames live
+    /// outside the reservation and exist only in this table.
+    pub index: u32,
+    /// The encoded parent link and slot words as opaque bytes. The encoding is
+    /// owned by the `EvalHeap`-level capture.
+    pub frame_bytes: Vec<u8>,
+}
+
 /// A captured Candidate-C reservation heap image.
 ///
 /// Holds the reservation identity, its two used-lane byte ranges, the base it
@@ -187,6 +218,10 @@ pub struct HeapImage {
     /// applied arguments; filled by the `EvalHeap`-level capture and rebuilt on
     /// load against the builtin registry.
     pub primop_payloads: Vec<PrimopPayload>,
+    /// The deduplicated captured-environment frame table, keyed by dense frame
+    /// id; filled by the `EvalHeap`-level closure capture and rebuilt into the
+    /// shared `Arc` frame graph on load.
+    pub frame_payloads: Vec<FramePayload>,
 }
 
 impl HeapImage {
@@ -222,6 +257,13 @@ impl HeapImage {
                 .map(|p| p.primop_bytes.len())
                 .collect::<Vec<_>>(),
         );
+        let frame_bytes = indexed_bytes(
+            &self
+                .frame_payloads
+                .iter()
+                .map(|p| p.frame_bytes.len())
+                .collect::<Vec<_>>(),
+        );
         let mut out = Vec::with_capacity(
             HEADER_LEN
                 + self.low.len()
@@ -230,6 +272,7 @@ impl HeapImage {
                 + list_bytes
                 + context_bytes
                 + primop_bytes
+                + frame_bytes
                 + 8,
         );
         out.extend_from_slice(&IMAGE_MAGIC);
@@ -243,6 +286,7 @@ impl HeapImage {
         out.extend_from_slice(&(self.list_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.context_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.primop_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.frame_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
@@ -257,6 +301,9 @@ impl HeapImage {
         }
         for payload in &self.primop_payloads {
             write_indexed_payload(&mut out, payload.index, &payload.primop_bytes);
+        }
+        for payload in &self.frame_payloads {
+            write_indexed_payload(&mut out, payload.index, &payload.frame_bytes);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -295,6 +342,7 @@ impl HeapImage {
         let list_count = u64::from_le_bytes(read8(bytes, 56)) as usize;
         let context_count = u64::from_le_bytes(read8(bytes, 64)) as usize;
         let primop_count = u64::from_le_bytes(read8(bytes, 72)) as usize;
+        let frame_count = u64::from_le_bytes(read8(bytes, 80)) as usize;
 
         // Bound the fixed-width prefix (lanes + relocation table + each indexed
         // segment's fixed header) before parsing; each segment's variable bytes
@@ -304,7 +352,7 @@ impl HeapImage {
             low_len,
             high_len,
             reloc_count * RELOCATION_ENTRY_LEN,
-            (list_count + context_count + primop_count) * INDEXED_PAYLOAD_PREFIX_LEN,
+            (list_count + context_count + primop_count + frame_count) * INDEXED_PAYLOAD_PREFIX_LEN,
         ]
         .iter()
         .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
@@ -358,6 +406,15 @@ impl HeapImage {
             });
         }
 
+        let mut frame_payloads = Vec::with_capacity(frame_count);
+        for _ in 0..frame_count {
+            let (index, segment) = read_indexed_payload(bytes, &mut cursor)?;
+            frame_payloads.push(FramePayload {
+                index,
+                frame_bytes: segment,
+            });
+        }
+
         let digest_start = cursor;
         let expected = xxh3_64(&bytes[..digest_start]);
         let actual = u64::from_le_bytes(read8(bytes, digest_start));
@@ -375,6 +432,7 @@ impl HeapImage {
             list_payloads,
             context_payloads,
             primop_payloads,
+            frame_payloads,
         })
     }
 }
@@ -397,10 +455,12 @@ fn read_indexed_payload(bytes: &[u8], cursor: &mut usize) -> Result<(u32, Vec<u8
     let index = u32::from_le_bytes(read4(bytes, *cursor));
     let byte_len = u64::from_le_bytes(read8(bytes, *cursor + 4)) as usize;
     let start = *cursor + INDEXED_PAYLOAD_PREFIX_LEN;
-    let end = start.checked_add(byte_len).ok_or(SnapshotError::Truncated {
-        needed: usize::MAX,
-        got: bytes.len(),
-    })?;
+    let end = start
+        .checked_add(byte_len)
+        .ok_or(SnapshotError::Truncated {
+            needed: usize::MAX,
+            got: bytes.len(),
+        })?;
     // The variable segment must fit before the trailing digest.
     if bytes.len() < end + 8 {
         return Err(SnapshotError::Truncated {
@@ -437,6 +497,7 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         list_payloads: Vec::new(),
         context_payloads: Vec::new(),
         primop_payloads: Vec::new(),
+        frame_payloads: Vec::new(),
     })
 }
 
@@ -672,6 +733,10 @@ mod tests {
                 index: 24,
                 primop_bytes: vec![7, 6, 5, 4],
             }],
+            frame_payloads: vec![FramePayload {
+                index: 0,
+                frame_bytes: vec![0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0],
+            }],
         };
         let good = image.to_bytes();
 
@@ -691,6 +756,42 @@ mod tests {
             HeapImage::from_bytes(&bad_version),
             Err(SnapshotError::UnsupportedVersion { .. })
         ));
+    }
+
+    #[test]
+    fn wire_round_trip_preserves_every_payload_segment() {
+        let image = HeapImage {
+            domain: 3,
+            capacity: 0x2000,
+            old_base: 0x8000,
+            low: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            high: vec![9, 10],
+            relocations: vec![RelocationEntry { index: 8, kind: 4 }],
+            list_payloads: vec![ListPayload {
+                index: 16,
+                element_bytes: vec![1; 16],
+            }],
+            context_payloads: vec![ContextPayload {
+                index: 8,
+                context_bytes: vec![2; 5],
+            }],
+            primop_payloads: vec![PrimopPayload {
+                index: 24,
+                primop_bytes: vec![3; 7],
+            }],
+            frame_payloads: vec![
+                FramePayload {
+                    index: 0,
+                    frame_bytes: vec![4; 12],
+                },
+                FramePayload {
+                    index: 1,
+                    frame_bytes: vec![5; 20],
+                },
+            ],
+        };
+        let parsed = HeapImage::from_bytes(&image.to_bytes()).expect("wire image parses");
+        assert_eq!(parsed, image);
     }
 
     /// Recomputes the trailing digest so a header-field mutation is exercised in
