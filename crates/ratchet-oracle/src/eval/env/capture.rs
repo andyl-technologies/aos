@@ -2,12 +2,34 @@
 
 use std::ops::Index;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{EvalEnvError, EvalFrame, capture_stats};
 use crate::compile::FLAT_CAPTURE_MAX_SLOTS;
 use crate::eval::module::EvalNodeRef;
 use crate::heap::flat::FlatValueTailHandle;
 use crate::value::Value;
+
+/// Number of [`EvalEnv::flattened_base`] calls that reused an already-memoized
+/// shared base (RFC-0007 §P1 stage B).
+static FLAT_BASE_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
+/// Number of [`EvalEnv::flattened_base`] calls that performed the one-time
+/// `O(depth)` flatten before memoizing the shared base.
+static FLAT_BASE_MEMO_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Returns `(hits, misses)` for the flattened-base memo.
+///
+/// A *hit* reuses a previously flattened shared base with a single refcount
+/// bump; a *miss* performs the one-time `O(depth)` windowed flatten that
+/// populates the memo. The counters are process-wide and read with relaxed
+/// ordering — they exist for performance attribution, not control flow.
+pub(crate) fn flat_base_memo_counts() -> (u64, u64) {
+    (
+        FLAT_BASE_MEMO_HITS.load(Ordering::Relaxed),
+        FLAT_BASE_MEMO_MISSES.load(Ordering::Relaxed),
+    )
+}
 
 /// A compact handle to values named by one flat capture plan.
 #[derive(Clone, Debug)]
@@ -256,9 +278,28 @@ fn frames_are_linked(frames: &[Arc<EvalFrame>]) -> bool {
 pub struct EvalEnv {
     storage: EvalEnvStorage,
     flat_base: Option<EvalFlatCapture>,
+    /// Memoized flattened conservative suffix (RFC-0007 §P1 stage B).
+    ///
+    /// The first [`EvalEnv::flattened_base`] call walks `storage`'s windowed
+    /// frame view once into a shared `Arc<[_]>`; later calls — one per lambda
+    /// apply or thunk force of the same captured environment — reuse it with a
+    /// single refcount bump instead of recopying every frame. The cache is a
+    /// pure function of `storage` (never mutated after construction), so it is
+    /// excluded from [`EvalEnv::raw_eq`] and safely shared or cloned.
+    flattened: OnceLock<Arc<[Arc<EvalFrame>]>>,
 }
 
 impl EvalEnv {
+    /// Assembles an environment from its storage and optional flat base with an
+    /// empty flattened-base memo.
+    fn from_parts(storage: EvalEnvStorage, flat_base: Option<EvalFlatCapture>) -> Self {
+        Self {
+            storage,
+            flat_base,
+            flattened: OnceLock::new(),
+        }
+    }
+
     /// Returns whether two snapshots share the same lexical and flat backing.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
         self.storage.raw_eq(&other.storage)
@@ -276,10 +317,7 @@ impl EvalEnv {
     /// Returns [`EvalEnvError::CaptureAllocationFailed`] only for the
     /// compatibility array fallback.
     pub fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
-        Ok(Self {
-            storage: EvalEnvStorage::capture(frames)?,
-            flat_base: None,
-        })
+        Ok(Self::from_parts(EvalEnvStorage::capture(frames)?, None))
     }
 
     /// Rebuilds a captured environment from restored shared frames and an
@@ -298,22 +336,39 @@ impl EvalEnv {
         frames: &[Arc<EvalFrame>],
         flat_base: Option<EvalFlatCapture>,
     ) -> Result<Self, EvalEnvError> {
-        Ok(Self {
-            storage: EvalEnvStorage::capture(frames)?,
+        Ok(Self::from_parts(
+            EvalEnvStorage::capture(frames)?,
             flat_base,
-        })
+        ))
     }
 
-    /// Captures the evaluator-owned linked active stack without rescanning its
-    /// parent-pointer invariant at every closure allocation.
+    /// Captures a linked frame slice with an inherited flat base.
+    ///
+    /// The production active stack now captures through
+    /// [`EvalEnv::capture_linked_head_with_flat_base`]; this slice-based form is
+    /// retained for tests that build a contiguous frame slice directly.
+    #[cfg(test)]
     pub(crate) fn capture_linked_with_flat_base(
         frames: &[Arc<EvalFrame>],
         flat_base: Option<EvalFlatCapture>,
     ) -> Self {
-        Self {
-            storage: EvalEnvStorage::capture_linked(frames),
-            flat_base,
-        }
+        Self::from_parts(EvalEnvStorage::capture_linked(frames), flat_base)
+    }
+
+    /// Captures a linked active stack from its innermost head and conceptual
+    /// length, without requiring the frames to be contiguous in memory.
+    ///
+    /// The active frame stack is stored split across a shared immutable base
+    /// and a mutable tail (see `ActiveFrameStack`), so it cannot present a
+    /// single slice. Because every production frame carries an immutable parent
+    /// link, the innermost `head` plus the total `frames` count fully describe
+    /// the windowed chain — capture clones only the head pointer.
+    pub(crate) fn capture_linked_head_with_flat_base(
+        head: Option<Arc<EvalFrame>>,
+        frames: usize,
+        flat_base: Option<EvalFlatCapture>,
+    ) -> Self {
+        Self::from_parts(EvalEnvStorage::Chain { head, frames }, flat_base)
     }
 
     /// Creates an environment referring to values in its owning flat object.
@@ -323,20 +378,57 @@ impl EvalEnv {
         owner: Value,
         tail: FlatValueTailHandle,
     ) -> Self {
-        Self {
-            storage: EvalEnvStorage::default(),
-            flat_base: Some(EvalFlatCapture::inline(
+        Self::from_parts(
+            EvalEnvStorage::default(),
+            Some(EvalFlatCapture::inline(
                 allocation_site,
                 frame_count,
                 owner,
                 tail,
             )),
-        }
+        )
     }
 
     /// Returns the captured shared frames, ordered outermost to innermost.
     pub fn frames(&self) -> EvalEnvFrames<'_> {
         self.storage.frames()
+    }
+
+    /// Returns the memoized flattened conservative suffix, outermost-first.
+    ///
+    /// The first call walks the windowed frame view once into a shared
+    /// `Arc<[_]>` (an `O(depth)` miss); every later call for the same captured
+    /// environment reuses that base with a single refcount bump (an `O(1)`
+    /// hit). The returned slice excludes out-of-view ancestors past the
+    /// captured window, matching [`EvalEnvFrames::iter`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::CaptureAllocationFailed`] if the one-time flatten
+    /// cannot reserve its backing buffer.
+    pub(crate) fn flattened_base(&self) -> Result<Arc<[Arc<EvalFrame>]>, EvalEnvError> {
+        if let Some(base) = self.flattened.get() {
+            FLAT_BASE_MEMO_HITS.fetch_add(1, Ordering::Relaxed);
+            return Ok(Arc::clone(base));
+        }
+        let frames = self.storage.frames();
+        let mut collected = Vec::new();
+        collected.try_reserve_exact(frames.len()).map_err(|_| {
+            EvalEnvError::CaptureAllocationFailed {
+                frames: frames.len(),
+            }
+        })?;
+        frames.clone_into(&mut collected);
+        let base: Arc<[Arc<EvalFrame>]> = Arc::from(collected);
+        FLAT_BASE_MEMO_MISSES.fetch_add(1, Ordering::Relaxed);
+        // Publish race-tolerantly: a concurrent flatten of the same environment
+        // may win the `set`, in which case every caller returns that identical
+        // shared base. Both racers flatten identical frames, so the loser's
+        // buffer is simply dropped.
+        match self.flattened.set(Arc::clone(&base)) {
+            Ok(()) => Ok(base),
+            Err(_) => Ok(self.flattened.get().map_or(base, Arc::clone)),
+        }
     }
 
     /// Returns the inherited flat captured-value base, when present.
@@ -674,5 +766,38 @@ mod tests {
         assert!(Arc::ptr_eq(view.get(0).expect("in view"), &full[2]));
         assert!(Arc::ptr_eq(view.get(1).expect("in view"), &full[3]));
         assert!(view.get(2).is_none());
+    }
+
+    /// `flattened_base` returns the frames outermost-first and memoizes a single
+    /// shared `Arc` reused by later calls (RFC-0007 §P1 stage B).
+    #[test]
+    fn flattened_base_matches_frames_and_memoizes() {
+        let frames = linked_chain(64);
+        let env = EvalEnv::capture(&frames).expect("capture");
+
+        let first = env.flattened_base().expect("first flatten");
+        assert_eq!(first.len(), frames.len());
+        for (flat, expected) in first.iter().zip(frames.iter()) {
+            assert!(Arc::ptr_eq(flat, expected));
+        }
+
+        // A second call reuses the identical shared base (a memo hit): the
+        // returned `Arc<[_]>` points at the same allocation.
+        let second = env.flattened_base().expect("second flatten");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// `flattened_base` excludes out-of-view ancestors past the captured window,
+    /// matching the windowed frame view.
+    #[test]
+    fn flattened_base_windows_out_of_view_ancestors() {
+        let full = linked_chain(4);
+        let head = full.last().expect("innermost frame");
+        let env = EvalEnv::capture_linked_head_with_flat_base(Some(Arc::clone(head)), 2, None);
+
+        let base = env.flattened_base().expect("flatten window");
+        assert_eq!(base.len(), 2, "only the captured window is flattened");
+        assert!(Arc::ptr_eq(&base[0], &full[2]));
+        assert!(Arc::ptr_eq(&base[1], &full[3]));
     }
 }

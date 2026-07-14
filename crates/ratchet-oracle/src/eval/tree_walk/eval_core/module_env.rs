@@ -290,7 +290,11 @@ impl TreeWalk {
                 return Ok((EvalEnv::default(), None));
             }
             if slots.len() > FLAT_CAPTURE_MAX_SLOTS {
-                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let env = EvalEnv::capture_linked_head_with_flat_base(
+                    self.env.innermost().cloned(),
+                    self.env.len(),
+                    self.flat_env.clone(),
+                );
                 return Ok((env, None));
             }
             let mut capture_slots = [Upvalue { depth: 0, slot: 0 }; FLAT_CAPTURE_MAX_SLOTS];
@@ -299,7 +303,11 @@ impl TreeWalk {
             let allocation_site = EvalNodeRef::new(self.current_module, id);
             let frame_count = self.active_env_frame_count();
             if self.order_sensitive_binding_depth != 0 {
-                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let env = EvalEnv::capture_linked_head_with_flat_base(
+                    self.env.innermost().cloned(),
+                    self.env.len(),
+                    self.flat_env.clone(),
+                );
                 let buffer =
                     EvalFlatCaptureBuffer::pending(allocation_site, frame_count, capture_len)
                         .map_err(|source| {
@@ -324,7 +332,11 @@ impl TreeWalk {
             return Ok((EvalEnv::default(), Some(buffer.finish())));
         }
 
-        let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+        let env = EvalEnv::capture_linked_head_with_flat_base(
+            self.env.innermost().cloned(),
+            self.env.len(),
+            self.flat_env.clone(),
+        );
         Ok((env, None))
     }
 
@@ -341,7 +353,10 @@ impl TreeWalk {
     /// Returns a borrowed view over the active composed environment.
     pub(super) fn active_env_ref(&self) -> EvalEnvRef<'_> {
         EvalEnvRef {
-            frames: EvalEnvFramesRef::Active(&self.env),
+            frames: EvalEnvFramesRef::Active {
+                base: self.env.base_slice(),
+                tail: self.env.tail_slice(),
+            },
             flat_base: self.flat_env.as_ref(),
         }
     }
@@ -360,8 +375,8 @@ impl TreeWalk {
         depth: usize,
         slot: u32,
     ) -> Result<Value, EvalEnvError> {
-        if depth < self.env.len() {
-            return self.env[self.env.len() - 1 - depth].get(slot);
+        if let Some(frame) = self.env.get_from_inner(depth) {
+            return frame.get(slot);
         }
         let Some(flat) = self.flat_env.as_ref() else {
             return Err(EvalEnvError::SlotOutOfBounds {
@@ -552,26 +567,15 @@ impl TreeWalk {
         env: &EvalEnv,
         span: Span,
     ) -> Result<ActiveEvalEnv, TreeWalkError> {
-        let frames = env.frames();
-        let mut cloned = Vec::new();
-        cloned.try_reserve_exact(frames.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Env {
-                    id,
-                    source: EvalEnvError::CaptureAllocationFailed {
-                        frames: frames.len(),
-                    },
-                },
-                span,
-            )
-        })?;
-        // Single-pass `O(depth)` clone into the pre-reserved buffer, walking
-        // the capture chain's parent links exactly once. Routing through
-        // `frames.iter().cloned()` here would reintroduce the `O(depth^2)`
-        // per-index chain walk on the hottest apply/force path.
-        frames.clone_into(&mut cloned);
+        // Share the captured environment's flattened frames as an immutable
+        // base: the first apply/force of this environment flattens once, and
+        // every later one is a single refcount bump (RFC-0007 §P1 stage B).
+        // Body frames pushed during the call land in the fresh empty tail.
+        let base = env
+            .flattened_base()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
         Ok(ActiveEvalEnv {
-            frames: cloned,
+            frames: ActiveFrameStack::from_base(base),
             flat_base: env.flat_base().cloned(),
         })
     }
