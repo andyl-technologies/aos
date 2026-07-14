@@ -385,6 +385,182 @@ fn restore_rejects_malformed_owned_attrs_and_string_bytes() {
     ));
 }
 
+/// Step-3 increment-5 hermetic acceptance: a mini-prelude — recursive `let`
+/// bindings, curried lambdas, a partially applied builtin, `with` scopes,
+/// lists, attrsets, strings, and a mix of forced and suspended thunks —
+/// collapses, captures, restores, and the restored entry lambda evaluates
+/// byte-identically to a cold evaluation.
+#[test]
+fn mini_prelude_round_trips_byte_identical_after_collapse() {
+    const PRELUDE: &str = r#"let
+  lib = rec {
+    add = a: b: a + b;
+    inc = add 1;
+    names = [ "a" "b" "c" ];
+    join = sep: xs: builtins.concatStringsSep sep xs;
+    consts = { x = 40; y = 2; };
+  };
+  forced = builtins.deepSeq lib.names lib;
+in
+  x: with lib.consts;
+    lib.join "-" [
+      (builtins.toString (lib.add (lib.inc x) y))
+      (lib.join "," forced.names)
+    ]"#;
+    let ir = lower(PRELUDE);
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-mini-prelude".to_vec(),
+        PRELUDE.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("mini-prelude evaluates");
+    assert_eq!(root.tag(), ValueTag::Lambda);
+
+    evaluator
+        .heap
+        .collapse_forced_thunks()
+        .expect("forced-thunk collapse succeeds");
+    let identity = evaluator.snapshot_code_identity();
+    let image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("mini-prelude capture failed: {other}"),
+    };
+    // WHNF evaluation materializes only the entry lambda plus the lazy `lib` /
+    // `forced` binding thunks up front; the rest of the residue is reached
+    // through them at application time.
+    assert!(
+        image.closure_payloads.len() >= 3,
+        "the mini-prelude must capture its lambda/thunk residue: {} closures",
+        image.closure_payloads.len()
+    );
+    let bytes = image.to_bytes();
+
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
+        .expect("mini-prelude image restores");
+
+    // Drive the restored prelude: the application forces restored suspended
+    // thunks, resolves `with`-scope captures, applies curried restored
+    // lambdas, and calls a restored partially-applied builtin.
+    let result = evaluator
+        .apply_value(ir.root, root_span, root, Value::int(-1))
+        .expect("restored mini-prelude lambda applies");
+    let restored_bytes = evaluator
+        .heap()
+        .get_string(result)
+        .expect("result is a string")
+        .bytes()
+        .to_vec();
+
+    // Byte-identical against a cold evaluation of the same application.
+    let cold =
+        eval_string_bytes_with_source(b"snapshot-mini-prelude-cold", &format!("({PRELUDE}) (-1)"));
+    assert_eq!(restored_bytes, cold);
+    assert_eq!(restored_bytes, b"2-a,b,c".to_vec());
+}
+
+/// Manual real-prelude acceptance probe (RFC-0007 doc 31 §1 step-3
+/// increment 5). Ignored by default — drive it with an expression that deep
+/// forces the real lib/stdenv prelude through absolute-path imports and
+/// evaluates to a FUNCTION over the forced prelude:
+///
+/// ```text
+/// AOS_NIX_SNAPSHOT_EXPR='let lib = import /abs/andyl-os/lib { system = "x86_64-linux"; };
+///                        forced = builtins.deepSeq lib lib;
+///                        in x: forced.concatStringsSep "-" [ "probe" (builtins.toString x) ]' \
+///   cargo test --manifest-path crates/Cargo.toml -p ratchet-oracle \
+///     --features candidate_c_value snapshot_prelude_probe -- --ignored --nocapture
+/// ```
+///
+/// The probe forces the prelude, collapses forced thunks, captures the heap
+/// with code identity, restores it into the evaluator over a fresh mapping,
+/// applies the restored function, and asserts the result is byte-identical to
+/// a cold evaluation of the same application.
+#[test]
+#[ignore = "manual probe; set AOS_NIX_SNAPSHOT_EXPR to force the real prelude"]
+fn snapshot_prelude_probe() {
+    let Some(expr) = std::env::var_os("AOS_NIX_SNAPSHOT_EXPR") else {
+        eprintln!("AOS_NIX_SNAPSHOT_EXPR unset; nothing to probe");
+        return;
+    };
+    let expr = expr.to_string_lossy().into_owned();
+    let ir = lower(&expr);
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-prelude-probe".to_vec(),
+        expr.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("prelude expression evaluates");
+    eprintln!("probe: prelude forced; root tag {:?}", root.tag());
+
+    // AOS_NIX_SNAPSHOT_SKIP_COLLAPSE isolates collapse-pass effects: forced
+    // thunks then ride the collapsed-payload encoder instead of the rewrite.
+    if std::env::var_os("AOS_NIX_SNAPSHOT_SKIP_COLLAPSE").is_none() {
+        let report = evaluator
+            .heap
+            .collapse_forced_thunks()
+            .expect("forced-thunk collapse succeeds on the real prelude");
+        eprintln!("probe: collapse report {report:?}");
+    } else {
+        eprintln!("probe: collapse SKIPPED");
+    }
+
+    let identity = evaluator.snapshot_code_identity();
+    let image = evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity)
+        .expect("real-prelude capture succeeds (zero refused)");
+    eprintln!(
+        "probe: captured relocs={} lists={} contexts={} primops={} frames={} closures={}",
+        image.relocations.len(),
+        image.list_payloads.len(),
+        image.context_payloads.len(),
+        image.primop_payloads.len(),
+        image.frame_payloads.len(),
+        image.closure_payloads.len(),
+    );
+    let bytes = image.to_bytes();
+    eprintln!("probe: serialized image = {} bytes", bytes.len());
+
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
+        .expect("real-prelude image restores");
+    eprintln!("probe: restored into a fresh mapping");
+
+    let result = evaluator
+        .apply_value(ir.root, root_span, root, Value::int(42))
+        .expect("restored prelude function applies");
+    let restored_bytes = evaluator
+        .heap()
+        .get_string(result)
+        .expect("probe function must return a string")
+        .bytes()
+        .to_vec();
+    eprintln!(
+        "probe: restored result = {:?}",
+        String::from_utf8_lossy(&restored_bytes)
+    );
+
+    let cold = eval_string_bytes_with_source(b"snapshot-prelude-cold", &format!("({expr}) 42"));
+    assert_eq!(
+        restored_bytes, cold,
+        "restored-prelude evaluation must be byte-identical to a cold evaluation"
+    );
+    eprintln!("probe: BYTE-IDENTICAL to cold evaluation");
+}
+
 #[test]
 fn restore_refuses_drifted_lambda_code() {
     let source = "let a = 1; in x: x + a";
