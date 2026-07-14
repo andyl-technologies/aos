@@ -288,6 +288,7 @@ fn warm_restore_launch_requires_qmp_channel_before_spawn() -> Result<(), Box<dyn
         0,
         QemuNodeRestorePlan::baked_genesis(admission),
         node_factory_runtime(),
+        |_current_icount| {},
     )
     .err()
     .ok_or("warm restore launch should reject commands without QMP before spawn")?;
