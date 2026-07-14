@@ -215,10 +215,21 @@ mod tests {
             .join("heap");
         let mut findings = Vec::new();
 
-        for source_path in rust_sources(&heap_root) {
+        // `src/attrs.rs` hosts one reviewed unsafe call site outside the heap
+        // tree (the flat-storage entry-run rewrite of the forced-thunk
+        // collapse, doc 31 §1 step 3); scan it under the same discipline so
+        // its boundary cannot grow silently.
+        let mut sources = rust_sources(&heap_root);
+        sources.push(
+            heap_root
+                .parent()
+                .expect("heap root is below src")
+                .join("attrs.rs"),
+        );
+        for source_path in sources {
             let relative_path = source_path
                 .strip_prefix(&heap_root)
-                .expect("heap source is below heap root");
+                .unwrap_or(Path::new("../attrs.rs"));
             let source = fs::read_to_string(&source_path).expect("source file is readable");
             for (line_number, line) in source.lines().enumerate() {
                 let code = code_without_line_comments_or_ordinary_strings(line);
@@ -380,7 +391,20 @@ mod tests {
         // under `FlatObjectPayloadAccess`. No unsafe operation was added or
         // changed; the value-tail door adds only safe extent validation and
         // registry metadata around it.
+        // flat/slice.rs count 5 -> 7 + ../attrs.rs count 0 -> 1 (doc 31 §1
+        // step-3 forced-thunk collapse): `FlatSlice::as_mut_slice` is a new
+        // unsafe fn (one `unsafe fn` line with `# Safety` docs, one interior
+        // `from_raw_parts_mut` block) exposing the witnessed run for exclusive
+        // in-place rewriting — the mutation door the collapse pass uses to
+        // rewrite forced-thunk words inside an attrset's inline entry run.
+        // Its single caller, `FlatAttrs::rewrite_entry_values` in
+        // `src/attrs.rs`, discharges the contract through the flat store's
+        // `&mut self` payload resolution on a quiesced serial heap; that call
+        // site is the one reviewed unsafe operation outside `src/heap`, so
+        // the scan above covers `attrs.rs` explicitly. All under
+        // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
+            ("../attrs.rs", 1usize),
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
             ("flat.rs", 6usize),
@@ -388,7 +412,7 @@ mod tests {
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/region_ops.rs", 3usize),
-            ("flat/slice.rs", 5usize),
+            ("flat/slice.rs", 7usize),
             ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
@@ -457,7 +481,8 @@ mod tests {
         matches!(
             relative_path.to_str(),
             Some(
-                "advice.rs"
+                "../attrs.rs"
+                    | "advice.rs"
                     | "arena.rs"
                     | "flat.rs"
                     | "flat/restore.rs"
@@ -559,7 +584,9 @@ mod tests {
                 }
                 continue;
             }
-            if trimmed.is_empty() {
+            // Attributes (e.g. `#[cfg(...)]`) may sit between the doc block
+            // and the item, mirroring `preceding_safety_comment_binds`.
+            if trimmed.is_empty() || trimmed.starts_with("#[") {
                 continue;
             }
             break;

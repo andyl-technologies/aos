@@ -235,6 +235,45 @@ impl FlatAttrs {
         }
     }
 
+    /// Rewrites entry values in place through `map`, returning how many entries
+    /// changed (RFC-0007 doc 31 §1 step-3 forced-thunk collapse).
+    ///
+    /// `map` returns `Some(replacement)` for a value to rewrite and `None` to
+    /// leave an entry unchanged. Keys, positions, and both order permutations
+    /// are untouched, so every selection invariant is preserved; the
+    /// structural hash the entry values feed goes stale and the caller must
+    /// recompute it (the collapse pass reuses the writeback hash repair).
+    ///
+    /// Owned storage rewrites through the entry `Vec`. Flat storage rewrites
+    /// the object's inline entry run in place, which is only sound while the
+    /// caller holds the payload exclusively: reach this method through the
+    /// flat store's `&mut self` payload resolution on a quiesced serial heap
+    /// (the heap-image collapse pre-pass), never from a shared borrow.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn rewrite_entry_values(&mut self, map: &mut dyn FnMut(Value) -> Option<Value>) -> usize {
+        let entries: &mut [AttrEntry] = match &mut self.storage {
+            AttrsStorage::Owned { entries, .. } => entries.as_mut_slice(),
+            AttrsStorage::Flat { entries, .. } => {
+                // SAFETY: this `&mut self` is derived from the flat store's
+                // exclusive payload resolution (the documented calling
+                // contract above), so no aliasing reference into the inline
+                // run exists for the borrow's duration, and the collapse
+                // pre-pass runs on a quiesced serial heap with no concurrent
+                // reader. The witness's construction contract covers the
+                // initialized, aligned, mapped run.
+                unsafe { entries.as_mut_slice() }
+            }
+        };
+        let mut rewritten = 0;
+        for entry in entries {
+            if let Some(replacement) = map(entry.value) {
+                entry.value = replacement;
+                rewritten += 1;
+            }
+        }
+        rewritten
+    }
+
     /// Creates a flat attrset from unsorted entries.
     ///
     /// Entries are sorted by interned symbol id for binary-search selection. The
@@ -327,7 +366,11 @@ impl FlatAttrs {
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 
-        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
+        Ok(Self::from_owned_parts(
+            entries,
+            source_order,
+            iteration_order,
+        ))
     }
 
     /// Builds a one- or two-entry attrset without symbol-table rank reads.
@@ -374,7 +417,11 @@ impl FlatAttrs {
                 iteration_order.extend(if byte_swap { [1, 0] } else { [0, 1] });
             }
         }
-        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
+        Ok(Self::from_owned_parts(
+            entries,
+            source_order,
+            iteration_order,
+        ))
     }
 
     /// Returns the number of bindings.
@@ -921,8 +968,10 @@ mod tests {
                 .iter_lexicographic()
                 .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
                 .collect();
-            let mut expected_lex =
-                vec![symbols.resolve(ids[left]).unwrap(), symbols.resolve(ids[right]).unwrap()];
+            let mut expected_lex = vec![
+                symbols.resolve(ids[left]).unwrap(),
+                symbols.resolve(ids[right]).unwrap(),
+            ];
             expected_lex.sort();
             assert_eq!(lex, expected_lex);
         }

@@ -39,6 +39,7 @@
 //!            | path(u32)
 //! kind 5    := builtin-attr thunk: single_entry(u8) | symbol(u32)
 //!            | version_len(u32) | version | name_len(u32) | name
+//! kind 6    := collapsed forced thunk: value_word(8)
 //! env_group := frame_count(u32) | frame_id(u32)*
 //!            | flat_flag(u8)
 //!              [ site code_node | plan_frames(u32) | owner_word(8) | tail_len(u32) ]
@@ -82,6 +83,7 @@ const KIND_APPLY_THUNK: u8 = 2;
 const KIND_APPLY2_THUNK: u8 = 3;
 const KIND_SELECT_THUNK: u8 = 4;
 const KIND_BUILTIN_ATTR_THUNK: u8 = 5;
+const KIND_COLLAPSED_THUNK: u8 = 6;
 
 /// A deferred flat-environment reattachment for one restored closure.
 ///
@@ -363,6 +365,17 @@ impl EvalHeap {
                     None,
                 )
             }
+            KIND_COLLAPSED_THUNK => {
+                // A collapsed forced thunk restores as a released forced
+                // wrapper: forcing it replays the cached value, and its shed
+                // deferred work and captures are gone by construction.
+                let value = read_word(bytes, &mut cursor).ok_or_else(malformed)?;
+                (
+                    FlatClosurePayload::Thunk(EvalThunk::released_forced(value)),
+                    FlatObjectKind::Thunk,
+                    None,
+                )
+            }
             KIND_BUILTIN_ATTR_THUNK => {
                 let single_entry = read_bool(bytes, &mut cursor).ok_or_else(malformed)?;
                 let symbol = Symbol::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
@@ -513,14 +526,34 @@ fn encode_thunk(
     frames: &CapturedFrameTable,
     code: &dyn LambdaCodeFingerprints,
 ) -> Result<Vec<u8>, EvalHeapSnapshotError> {
-    // Only a suspended serial thunk is capturable here: a forced thunk
-    // collapses in increment 4, an in-flight or poisoned cell is not a
-    // stable value, and parallel force storage is shared across workers.
-    if thunk.cell().state() != Ok(ThunkState::Suspended) {
-        return Err(EvalHeapSnapshotError::UnsnapshottableThunkState { index });
-    }
     if !thunk.has_serial_only_force_storage() && !thunk.is_single_entry_force_storage() {
         return Err(EvalHeapSnapshotError::UnsnapshottableClosures { count: 1 });
+    }
+    match thunk.cell().state() {
+        Ok(ThunkState::Suspended) => {}
+        // A forced thunk *is* its cached value: serialize the value word alone
+        // (the collapsed-thunk payload, increment 4) and restore a released
+        // forced wrapper. A cached value that is itself a thunk is a collapse
+        // chain and refuses — the census's 0-chain measurement is empirical,
+        // not an invariant.
+        Ok(ThunkState::Forced) => {
+            return match thunk.cell().cached_value() {
+                Ok(Some(value)) if value.tag() == crate::value::ValueTag::Thunk => {
+                    Err(EvalHeapSnapshotError::ForcedThunkChain { index })
+                }
+                Ok(Some(value)) => {
+                    let mut out = Vec::with_capacity(9);
+                    out.push(KIND_COLLAPSED_THUNK);
+                    encode_word(&mut out, value);
+                    Ok(out)
+                }
+                _ => Err(EvalHeapSnapshotError::UnsnapshottableThunkState { index }),
+            };
+        }
+        // An in-flight or poisoned cell is not a stable value.
+        Ok(ThunkState::Blackhole) | Err(_) => {
+            return Err(EvalHeapSnapshotError::UnsnapshottableThunkState { index });
+        }
     }
     let single_entry = u8::from(thunk.is_single_entry_force_storage());
     let mut out = Vec::new();

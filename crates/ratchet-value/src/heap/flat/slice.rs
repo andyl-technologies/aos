@@ -95,6 +95,33 @@ impl<T> FlatSlice<T> {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
+    /// Returns the inline elements for exclusive in-place rewriting (RFC-0007
+    /// doc 31 §1 step-3 forced-thunk collapse).
+    ///
+    /// This is the collapse pass's mutation door: rewriting a forced-thunk
+    /// word to its cached value inside an attrset's inline entry run. It
+    /// deliberately suspends the construction contract's "never written while
+    /// the witness lives" clause for the duration of the returned borrow.
+    ///
+    /// # Safety
+    ///
+    /// The caller must (1) hold exclusive access to the flat object owning
+    /// this witness's run for the whole returned borrow — in practice through
+    /// the flat store's `&mut self` payload resolution, which excludes every
+    /// shared resolution path — with no other live reference into the run,
+    /// and (2) be on a quiesced serial heap (no concurrent reader may observe
+    /// the write). The remaining construction contract (an initialized,
+    /// aligned, mapped run of `self.len` elements at `self.ptr`) must still
+    /// hold, as for [`FlatSlice::as_slice`].
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) unsafe fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: the sealed construction site guarantees an initialized,
+        // aligned, mapped run of `self.len` elements at `self.ptr`; the
+        // caller's exclusivity contract (see `# Safety`) rules out every
+        // aliasing reference while the returned borrow lives.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+
     /// Returns the number of inline elements.
     #[inline]
     pub const fn len(&self) -> usize {

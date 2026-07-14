@@ -34,8 +34,11 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 mod closures;
+mod collapse;
 mod env_frames;
 
+#[allow(unused_imports)] // Consumed by the tree-walk heap-snapshot tests.
+pub(crate) use collapse::ForcedThunkCollapseReport;
 pub(crate) use env_frames::{CapturedFrameTable, RestoredFrameTable};
 
 use super::closure_code_ref::{LambdaCodeFingerprints, LambdaCodeResolver};
@@ -903,12 +906,19 @@ pub enum EvalHeapSnapshotError {
         /// The number of unconsumed frame and closure payload segments.
         count: usize,
     },
-    /// A thunk's force state is not plainly suspended (forced, in flight,
-    /// poisoned, or released); the mutating forced-thunk collapse is step-3
-    /// increment 4.
+    /// A thunk's force state is not capturable: the cell is in flight
+    /// (blackhole), poisoned, or forced without a classifiable cached value.
     #[error("closure at arena index {index} has an unsnapshottable thunk force state")]
     UnsnapshottableThunkState {
         /// The thunk object's arena index.
+        index: u32,
+    },
+    /// A forced thunk's cached value is itself a thunk — a collapse chain the
+    /// census measured as absent; the collapse refuses rather than
+    /// mis-collapsing one step of an unmeasured chain.
+    #[error("forced thunk at arena index {index} caches another thunk (collapse chain)")]
+    ForcedThunkChain {
+        /// The chained thunk object's arena index.
         index: u32,
     },
     /// A referenced module could not be fingerprinted, so its code cannot be

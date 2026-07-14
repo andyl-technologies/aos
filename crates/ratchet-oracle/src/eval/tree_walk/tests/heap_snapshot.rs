@@ -354,6 +354,143 @@ fn restored_lambda_is_callable_through_code_identity() {
     assert_eq!(eval("(let a = 2 + 3; in x: x + a) 41").as_int(), Ok(46));
 }
 
+/// The increment-4 mutating collapse: force a captured thunk, collapse the
+/// heap, and round-trip — the collapsed wrapper sheds its captures, the
+/// lambda's captured word is rewritten to the cached value, and the restored
+/// lambda still applies to the byte-identical result.
+#[test]
+fn collapse_then_capture_round_trips_a_forced_capture() {
+    let source = "let a = 2 + 3; in builtins.deepSeq a (x: x + a)";
+    let ir = lower(source);
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-collapse".to_vec(),
+        source.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("source evaluates");
+    assert_eq!(root.tag(), ValueTag::Lambda);
+
+    let report = evaluator
+        .heap
+        .collapse_forced_thunks()
+        .expect("forced-thunk collapse succeeds");
+    assert!(
+        report.thunks_collapsed >= 1,
+        "deepSeq must have forced (and the pass collapsed) the captured thunk: {report:?}"
+    );
+
+    let identity = evaluator.snapshot_code_identity();
+    let image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("post-collapse capture failed: {other}"),
+    };
+    let bytes = image.to_bytes();
+
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
+        .expect("collapsed image restores");
+
+    let result = evaluator
+        .apply_value(ir.root, root_span, root, Value::int(41))
+        .expect("restored lambda applies after collapse");
+    assert_eq!(result.as_int(), Ok(46));
+    assert_eq!(
+        eval("(let a = 2 + 3; in builtins.deepSeq a (x: x + a)) 41").as_int(),
+        Ok(46)
+    );
+}
+
+/// Without the mutating pre-pass, a forced thunk still captures: it serializes
+/// as its cached value (the collapsed-thunk payload) and restores as a
+/// released forced wrapper that replays the value on force.
+#[test]
+fn forced_thunk_captures_as_collapsed_payload_without_prepass() {
+    let source = "let a = 2 + 3; in builtins.deepSeq a (x: x + a)";
+    let ir = lower(source);
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-forced-direct".to_vec(),
+        source.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("source evaluates");
+
+    let identity = evaluator.snapshot_code_identity();
+    let image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("forced-thunk capture failed: {other}"),
+    };
+    let bytes = image.to_bytes();
+
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
+        .expect("forced-thunk image restores");
+
+    let result = evaluator
+        .apply_value(ir.root, root_span, root, Value::int(41))
+        .expect("restored lambda applies through the released wrapper");
+    assert_eq!(result.as_int(), Ok(46));
+}
+
+#[test]
+fn restore_rejects_truncated_collapsed_thunk_bytes() {
+    let source = "let a = 2 + 3; in builtins.deepSeq a (x: x + a)";
+    let ir = lower(source);
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-collapsed-bad".to_vec(),
+        source.as_bytes().to_vec(),
+    );
+    evaluator.eval_root().expect("source evaluates");
+    evaluator
+        .heap
+        .collapse_forced_thunks()
+        .expect("forced-thunk collapse succeeds");
+    let identity = evaluator.snapshot_code_identity();
+    let mut image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("post-collapse capture failed: {other}"),
+    };
+    // Truncate a collapsed-thunk payload (kind byte 6 after the 4-byte
+    // own-tail word) below its value word.
+    let Some(payload) = image
+        .closure_payloads
+        .iter_mut()
+        .find(|payload| payload.closure_bytes.get(4) == Some(&6))
+    else {
+        panic!("the collapsed fixture must emit a collapsed-thunk payload");
+    };
+    payload.closure_bytes.truncate(6);
+    let bytes = image.to_bytes();
+    drop(evaluator);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    assert!(matches!(
+        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity),
+        Err(EvalHeapSnapshotError::MalformedClosurePayload { .. })
+    ));
+}
+
 #[test]
 fn restore_refuses_drifted_lambda_code() {
     let source = "let a = 1; in x: x + a";
