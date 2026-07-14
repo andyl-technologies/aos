@@ -645,6 +645,50 @@ pub(crate) enum AtomicValueCellError {
     },
 }
 
+/// The number of slots an [`EvalFrame`] stores inline before spilling to the
+/// heap.
+///
+/// Capture statistics show lexical frames average roughly one slot, so the
+/// fixed cost of a separate slot allocation dominates the payload. Storing up
+/// to this many slots inline in the frame struct removes the second heap
+/// allocation (the boxed slot slice) for that dominant class; only larger
+/// frames pay for a heap spill. The inline array widens every `EvalFrame` by
+/// one `[AtomicValueCell; INLINE_SLOT_CAPACITY]` even when heap-backed, which
+/// trades a few struct bytes for eliminating an allocation on the common path.
+const INLINE_SLOT_CAPACITY: usize = 2;
+
+/// Backing storage for one frame's runtime slots.
+///
+/// Small frames (at most [`INLINE_SLOT_CAPACITY`] slots) keep their cells
+/// inline in the frame struct; larger frames spill to a boxed slice. Both
+/// variants expose their live cells through [`FrameSlots::as_slice`], so slot
+/// access above this type is representation-agnostic.
+#[derive(Debug)]
+enum FrameSlots {
+    /// Up to [`INLINE_SLOT_CAPACITY`] cells stored inline. `len` names how many
+    /// leading cells are live; any trailing cells are inert null padding that
+    /// [`FrameSlots::as_slice`] never exposes.
+    Inline {
+        /// The inline cell array; only the first `len` entries are live.
+        cells: [AtomicValueCell; INLINE_SLOT_CAPACITY],
+        /// The number of live leading cells (at most [`INLINE_SLOT_CAPACITY`]).
+        len: u8,
+    },
+    /// Slot counts above [`INLINE_SLOT_CAPACITY`] spill to a boxed slice.
+    Heap(Box<[AtomicValueCell]>),
+}
+
+impl FrameSlots {
+    /// Borrows the frame's live slot cells as a slice.
+    #[inline]
+    fn as_slice(&self) -> &[AtomicValueCell] {
+        match self {
+            FrameSlots::Inline { cells, len } => &cells[..*len as usize],
+            FrameSlots::Heap(slots) => slots,
+        }
+    }
+}
+
 /// One lexical frame's runtime slots.
 ///
 /// Slots are initialized to `null` and rewritten through [`EvalFrame::set`]
@@ -653,7 +697,7 @@ pub(crate) enum AtomicValueCellError {
 /// publication discipline described in the module docs.
 #[derive(Debug)]
 pub struct EvalFrame {
-    slots: Box<[AtomicValueCell]>,
+    slots: FrameSlots,
     /// The next outer shared frame in the persistent capture chain.
     parent: Option<Arc<EvalFrame>>,
     /// Emulates the historical `RefCell` shared-borrow guard for tests that
@@ -680,18 +724,32 @@ impl EvalFrame {
         slot_count: usize,
         parent: Option<Arc<EvalFrame>>,
     ) -> Result<Arc<Self>, EvalEnvError> {
+        // The gauge measures logical slot payload bytes regardless of inline
+        // or heap placement: an inline frame still holds these bytes, just
+        // within the frame struct rather than a separate allocation.
         capture_stats::note_env_frame_alloc(
             slot_count.saturating_mul(std::mem::size_of::<AtomicValueCell>()),
         );
-        let mut slots = Vec::new();
-        slots
-            .try_reserve_exact(slot_count)
-            .map_err(|_| EvalEnvError::FrameAllocationFailed { slots: slot_count })?;
-        for _ in 0..slot_count {
-            slots.push(AtomicValueCell::filled(Value::null()));
-        }
+        let slots = if slot_count <= INLINE_SLOT_CAPACITY {
+            // Small frames — the dominant class — store their cells inline; the
+            // trailing cells past `slot_count` are inert null padding.
+            let cells = std::array::from_fn(|_| AtomicValueCell::filled(Value::null()));
+            FrameSlots::Inline {
+                cells,
+                len: slot_count as u8,
+            }
+        } else {
+            let mut slots = Vec::new();
+            slots
+                .try_reserve_exact(slot_count)
+                .map_err(|_| EvalEnvError::FrameAllocationFailed { slots: slot_count })?;
+            for _ in 0..slot_count {
+                slots.push(AtomicValueCell::filled(Value::null()));
+            }
+            FrameSlots::Heap(slots.into_boxed_slice())
+        };
         Ok(Arc::new(Self {
-            slots: slots.into_boxed_slice(),
+            slots,
             parent,
             #[cfg(test)]
             test_borrows: std::sync::atomic::AtomicUsize::new(0),
@@ -712,10 +770,10 @@ impl EvalFrame {
     /// atomic words do not decode into a runtime value, which is unreachable
     /// through [`EvalFrame::set`].
     pub fn get(&self, slot: u32) -> Result<Value, EvalEnvError> {
-        let Some(cell) = self.slots.get(slot as usize) else {
+        let Some(cell) = self.slots.as_slice().get(slot as usize) else {
             return Err(EvalEnvError::SlotOutOfBounds {
                 slot,
-                slots: self.slots.len(),
+                slots: self.slots.as_slice().len(),
             });
         };
         match cell.load() {
@@ -735,10 +793,10 @@ impl EvalFrame {
     /// [`EvalEnvError::SlotOutOfBounds`] if `slot` is outside this frame.
     pub fn set(&self, slot: u32, value: Value) -> Result<(), EvalEnvError> {
         self.check_test_borrow()?;
-        let Some(cell) = self.slots.get(slot as usize) else {
+        let Some(cell) = self.slots.as_slice().get(slot as usize) else {
             return Err(EvalEnvError::SlotOutOfBounds {
                 slot,
-                slots: self.slots.len(),
+                slots: self.slots.as_slice().len(),
             });
         };
         cell.store(value);
@@ -754,10 +812,10 @@ impl EvalFrame {
     /// [`EvalEnvError::SlotOutOfBounds`] if `slot` is outside this frame.
     pub(crate) fn validate_set(&self, slot: u32) -> Result<(), EvalEnvError> {
         self.check_test_borrow()?;
-        if slot as usize >= self.slots.len() {
+        if slot as usize >= self.slots.as_slice().len() {
             return Err(EvalEnvError::SlotOutOfBounds {
                 slot,
-                slots: self.slots.len(),
+                slots: self.slots.as_slice().len(),
             });
         }
         Ok(())
@@ -773,13 +831,12 @@ impl EvalFrame {
     /// [`EvalEnvError::FrameSnapshotAllocationFailed`] if the copied slot
     /// vector cannot reserve storage.
     pub fn slot_values(&self) -> Result<Vec<Value>, EvalEnvError> {
+        let slots = self.slots.as_slice();
         let mut snapshot = Vec::new();
         snapshot
-            .try_reserve_exact(self.slots.len())
-            .map_err(|_| EvalEnvError::FrameSnapshotAllocationFailed {
-                slots: self.slots.len(),
-            })?;
-        for (slot, cell) in self.slots.iter().enumerate() {
+            .try_reserve_exact(slots.len())
+            .map_err(|_| EvalEnvError::FrameSnapshotAllocationFailed { slots: slots.len() })?;
+        for (slot, cell) in slots.iter().enumerate() {
             match cell.load() {
                 Ok(Some(value)) => snapshot.push(value),
                 Ok(None) | Err(AtomicValueCellError::InvalidEncoding { .. }) => {
