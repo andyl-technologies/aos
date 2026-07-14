@@ -830,6 +830,18 @@ impl PluginIdleHotLoop {
 /// Computes the idle wake target from virtual timers, inbound delivery, the
 /// host-published device-I/O completion deadline, and the scheduler ceiling.
 ///
+/// # Which live path uses this
+///
+/// The production live TCG sim loop does **not** drive its advance through this
+/// function: it bounds a running guest via the `register_sim_shmem_dispatch`
+/// max-advance callback (`max_advance_icount`) and never reaches an idle-plan
+/// merge for a device-I/O-blocked guest. This function is retained for the
+/// idle-hot-loop path used by non-sim-loop callers and reachable configurations
+/// (`PluginIdleHotLoop::begin_idle`); the device-deadline arm below exists so
+/// that if that path ever executes it honors device completions with the exact
+/// same merge rule the max-advance seam uses, rather than silently diverging.
+/// Keep the two in lockstep.
+///
 /// # Merge rule
 ///
 /// The timer deadline lives in QEMU's own virtual-clock domain (converted to
