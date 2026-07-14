@@ -53,6 +53,8 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0034-crucible-safe-fingerprint-boundary.patch",
     "0035-crucible-process-argv-attestation.patch",
     "0036-crucible-raw-state-export.patch",
+    "0037-crucible-sim-freeze-warp-at-observation-boundary.patch",
+    "0038-crucible-sim-gate-rr-kick.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

@@ -60,17 +60,20 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            gate=gate:patch-microtests
-            patch=${patchName}
-            freeze_gate_in_warp_timer=true
-            freeze_gate_sim_only=true
-            freeze_gate_clamped_at_observer_boundary=true
-            freeze_gate_notifies_virtual_clock=true
-            observer_helpers_in_scope=true
-            qemu_package=${qemuPackage}
-            RESULT
+            {
+              echo PASS
+              echo gate=gate:patch-microtests
+              echo patch=${patchName}
+              echo patched_fixture_exercised=true
+              echo stock_negative_control=true
+              echo qemu_package=${qemuPackage}
+              echo qemu_package_version=${qemuPackage.version}
+              echo freeze_gate_in_warp_timer=true
+              echo freeze_gate_sim_only=true
+              echo freeze_gate_clamped_at_observer_boundary=true
+              echo freeze_gate_notifies_virtual_clock=true
+              echo observer_helpers_in_scope=true
+            } > "$out/result"
           '';
         }
       ];
