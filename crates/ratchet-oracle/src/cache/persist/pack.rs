@@ -503,15 +503,20 @@ impl PersistBlobPack {
     /// This is the write-behind flush primitive: it opens the packfile once,
     /// exclusively locks it once, and writes every record with a single buffered
     /// `write_all`, amortizing the per-record open/flock/flush of
-    /// [`Self::append_blob`]. Each payload is verified against its hash before any
-    /// bytes are written, and the returned [`PersistBlobLocation`] values record
+    /// [`Self::append_blob`]. The returned [`PersistBlobLocation`] values record
     /// the offsets in input order. An empty batch is a no-op.
+    ///
+    /// Every record is content-addressed: `hash` is the caller-computed BLAKE3 of
+    /// its payload (the store key the record was just looked up under), so this
+    /// path trusts that pairing and does not re-hash each payload — re-hashing
+    /// would repeat the digest that dominates the cold populate profile. A torn
+    /// tail from a crash mid-flush is a hash-invalid record the reader discards as
+    /// a miss.
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// exclusively locked, stat'd, or written, or if any `hash` does not match
-    /// its payload.
+    /// exclusively locked, stat'd, or written.
     pub fn append_blobs_batch(
         &self,
         records: &[(DurableBlake3Hash, &[u8])],
@@ -525,7 +530,7 @@ impl PersistBlobPack {
             .collect();
         let appender = open_engine_blob_pack_appender(&self.path)?;
         appender
-            .append_payloads_batch(&engine_records)
+            .append_payloads_batch_trusted(&engine_records)
             .map(|locations| locations.into_iter().map(engine_location_to_persist).collect())
             .map_err(engine_append_error_to_persist)
     }

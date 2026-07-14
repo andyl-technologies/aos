@@ -162,9 +162,8 @@ impl BlobPackAppender {
         if records.is_empty() {
             return Ok(Vec::new());
         }
-        // Verify every hash and size the buffer before touching the file, so a
-        // bad record aborts the whole batch without a partial write.
-        let mut total = 0usize;
+        // Verify every hash before touching the file, so a bad record aborts the
+        // whole batch without a partial write.
         for (expected_hash, payload) in records {
             let actual = BlobPackHash::for_bytes(payload);
             if actual != *expected_hash {
@@ -173,6 +172,56 @@ impl BlobPackAppender {
                     actual,
                 });
             }
+        }
+        self.write_payloads_batch(records)
+    }
+
+    /// Appends many payloads without re-hashing them to verify their hashes.
+    ///
+    /// This is the content-addressed write-behind fast path: the caller has
+    /// already computed each `expected_hash` as the BLAKE3 of its paired payload
+    /// bytes (that hash is the store key it just looked the record up under), so
+    /// re-hashing here would repeat the digest that dominates the cold populate
+    /// profile. Every other guarantee of [`Self::append_payloads_batch`] holds —
+    /// one open/lock/stat/write/flush cycle, input-order locations, whole-batch
+    /// abort on a length overflow.
+    ///
+    /// # Contract
+    ///
+    /// The caller **must** guarantee that every `expected_hash` equals
+    /// `BlobPackHash::for_bytes(payload)` for its paired bytes. A wrong hash
+    /// writes a record the reader may later serve for the wrong key; use
+    /// [`Self::append_payloads_batch`] whenever the pairing is not caller-computed
+    /// from the same bytes (for example when relocating bytes read back from an
+    /// existing pack).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if a payload length overflows `u64` or the
+    /// packfile cannot be opened, exclusively locked, stat'd, or written.
+    pub fn append_payloads_batch_trusted(
+        &self,
+        records: &[(BlobPackHash, &[u8])],
+    ) -> Result<Vec<BlobPackLocation>, BlobPackAppendError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.write_payloads_batch(records)
+    }
+
+    /// Sizes, opens, locks, and writes a verified batch of records.
+    ///
+    /// Callers own hash verification (or explicitly trust the pairing); this
+    /// helper only validates payload lengths and performs the single buffered
+    /// append. See [`Self::append_payloads_batch`] for the durability contract.
+    fn write_payloads_batch(
+        &self,
+        records: &[(BlobPackHash, &[u8])],
+    ) -> Result<Vec<BlobPackLocation>, BlobPackAppendError> {
+        // Size the buffer before touching the file so a length overflow aborts
+        // the whole batch without a partial write.
+        let mut total = 0usize;
+        for (_expected_hash, payload) in records {
             u64::try_from(payload.len()).map_err(|_| BlobPackAppendError::PayloadTooLarge {
                 payload_len: payload.len() as u128,
             })?;

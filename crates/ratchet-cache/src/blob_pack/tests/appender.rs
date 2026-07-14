@@ -110,6 +110,48 @@ fn blob_pack_appender_rejects_payload_hash_mismatch_without_appending() {
 }
 
 #[test]
+fn blob_pack_appender_trusted_batch_matches_verified_batch() {
+    let first = b"first payload".as_slice();
+    let second = b"second payload".as_slice();
+    let records = [
+        (BlobPackHash::for_bytes(first), first),
+        (BlobPackHash::for_bytes(second), second),
+    ];
+
+    let verified_path = temp_path("appender-trusted-verified");
+    let verified = BlobPackAppender::open(verified_path.clone()).expect("verified appender opens");
+    let verified_locations = verified
+        .append_payloads_batch(&records)
+        .expect("verified batch appends");
+
+    let trusted_path = temp_path("appender-trusted-batch");
+    let trusted = BlobPackAppender::open(trusted_path.clone()).expect("trusted appender opens");
+    let trusted_locations = trusted
+        .append_payloads_batch_trusted(&records)
+        .expect("trusted batch appends");
+
+    // The trusted path skips only the pre-write hash verification; the on-disk
+    // record bytes and returned locations must be identical to the verified path.
+    assert_eq!(verified_locations, trusted_locations);
+    assert_eq!(
+        fs::read(&verified_path).expect("verified pack reads"),
+        fs::read(&trusted_path).expect("trusted pack reads"),
+    );
+
+    let reader = BlobPackReader::open(trusted_path.clone()).expect("reader opens trusted pack");
+    assert_eq!(
+        reader.records().expect("trusted records scan"),
+        [
+            BlobPackRecord::new(records[0].0, trusted_locations[0]),
+            BlobPackRecord::new(records[1].0, trusted_locations[1]),
+        ]
+    );
+
+    let _ = fs::remove_file(verified_path);
+    let _ = fs::remove_file(trusted_path);
+}
+
+#[test]
 fn blob_pack_appender_trim_tail_removes_unneeded_records() {
     let path = temp_path("appender-trim-tail");
     let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
