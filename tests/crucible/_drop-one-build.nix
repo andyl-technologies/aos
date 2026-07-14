@@ -150,7 +150,12 @@ in
           mkdir -p include/aos/crucible
           cp ${qemuPackage.passthru.shmemGeneratedHeader} \
             include/aos/crucible/crucible_shmem_abi.h
-          find . -type f -name '*.py' | while IFS= read -r f; do
+          # Prune .git: the reconstructed commit chain leaves a live object
+          # store whose loose objects git repacks asynchronously, so traversing
+          # it races ("find: './.git/objects/XX': No such file or directory")
+          # and fails the phase under pipefail. The QEMU python scripts we
+          # rewrite never live under .git.
+          find . -path ./.git -prune -o -type f -name '*.py' -print | while IFS= read -r f; do
             sed -i "1s|#!/usr/bin/env python3|#!${pkgs.python3}/bin/python3|" "$f"
             sed -i "1s|#!/usr/bin/python3|#!${pkgs.python3}/bin/python3|" "$f"
           done
