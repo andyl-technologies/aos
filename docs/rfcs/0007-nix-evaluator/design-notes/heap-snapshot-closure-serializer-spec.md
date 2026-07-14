@@ -1,7 +1,12 @@
 # Heap-image snapshot: lambda/env serializer spec (doc 31 §1 step 3)
 
-**Status: SPEC. Increment map for the closure serializer; implementation lands
-per this map, gated by the lead's ruling on step 3 (already GO).**
+**Status: IMPLEMENTED. All five increments landed (increments 1-3:
+74845a66b/95d2bdac8/f947a0d24, increment 4: 435bc4e87, acceptance-surfaced
+restore fixes: ae2edfaca, increment 5 acceptance: 90763e2d6). The real forced
+stdenv prelude captures with zero refused objects, restores into a fresh
+mapping, and re-derives the stdenv `.drv` path byte-identical to a cold
+evaluation. See the implementation-outcome section at the end for the probe
+numbers, the three acceptance-surfaced bugs, and the recorded boundaries.**
 
 Step 2 landed primop capture as builtin-registry references. Step 3 captures the
 genuine closure residual the refusal census bounded: **980 lambdas + 1,667
@@ -134,3 +139,84 @@ Grows from v5: add a code-ref-keyed lambda-payload segment, a frame table, and a
 provenance/fingerprint block. Each new segment reuses the index-keyed
 `write_indexed_payload`/`read_indexed_payload` helpers where the shape fits;
 opaque bytes keep `ratchet-value` value-agnostic, as for lists/contexts/primops.
+
+## Implementation outcome (increments 1-5, 2026-07-13/14)
+
+All five increments landed per the map; the wire format ended at **v8**
+(v6 frame table, v7 closure payloads, v8 owned-data payloads — see below).
+The mutating collapse landed with one reviewed unsafe surface
+(`FlatSlice::as_mut_slice` + its single `FlatAttrs::rewrite_entry_values`
+caller, pin-mapped in `heap/safety.rs`, second-reviewer-approved before push).
+
+### Acceptance numbers (real prelude, darwin-via-cargo, candidate_c_value)
+
+Driven by the ignored `snapshot_prelude_probe` harness
+(`AOS_NIX_SNAPSHOT_EXPR`, usage in its doc comment; `heap_snapshot/closures.rs`):
+
+- **stdenv prelude** (`pkgs.stdenv.stdenv.drvPath` forced — the census
+  target): collapse shed **6,389 forced thunks** (census measured 6,386 —
+  the distribution held) and rewrote 146 frame slots / 1,270 list elements /
+  6,286 attrs entries / 294 closure fields / 5,809 tail values; capture
+  emitted 6,877 relocations, 544 lists, 862 contexts, 497 primops, 54
+  distinct frames, 9,037 closures; serialized image **4,829,364 bytes**;
+  the restored function **re-derived the stdenv `.drv` path byte-identical**
+  to a cold evaluation.
+- **lib prelude** (deep-forced `import ./lib`): 423 thunks collapsed; image
+  190,192 bytes; all 190 lib attrs enumerable post-restore; byte-identical.
+- Hermetic CI acceptance: the mini-prelude round trip
+  (`mini_prelude_round_trips_byte_identical_after_collapse`) drives restored
+  curried lambdas, `with` scopes, a restored partially-applied builtin, and
+  suspended-thunk forcing through a restored heap on both carriers.
+
+### Acceptance-surfaced bugs (why the real-prelude gate was specified)
+
+The increment-5 run found three restore bugs invisible to every small
+fixture:
+
+1. **Owned-storage data restored dangling** (the serious one). Attrsets above
+   the flat-inline element threshold (~128 entries) and strings above the
+   4096-byte threshold keep their *moved owned `Vec`s* behind the arena
+   payload (the doc 30 FV-4 churn-workload decision), so the dumped lanes
+   carry only `Vec` headers pointing at process-heap memory freed with the
+   source heap. Symptom on the real lib prelude: the restored 190-entry lib
+   attrset read as **empty** through its dangling permutation arrays
+   (`attrNames = []`) while selects appeared to work — silent wrong answers
+   over reads of freed memory. Fixed by the v8 **owned-attrs / owned-string
+   payload segments** (entries + both permutations with positions; byte
+   buffer + context), with untrusted-input validation (permutation bounds,
+   strict entry sort order) and no-drop payload overwrite. **The
+   `AOS_NIX_SNAPSHOT_VERIFY` completeness audit is structurally blind to
+   this class**: it scans dumped words for uncovered pointers *into* the
+   reservation, and owned `Vec` pointers point *out* of it. The default-deny
+   storage-kind guard (below) is the standing defense.
+2. **Tail sanity check ran before the registry finalize.** The dumped-header
+   /declared-extent agreement check binary-searches the flat-closure
+   registry, which is only address-sorted after
+   `finalize_restored_registry`; with primop and closure segments
+   interleaved (any real heap) the pre-sort search missed and refused
+   well-formed images. The checks now queue and run after the sort,
+   alongside flat-capture handle re-signing.
+3. **Duplicate module fingerprints over-refused.** The same file loaded
+   again (e.g. under a scoped import) yields two live modules with one
+   identity hash; marking those ambiguous made restore refuse with
+   `ClosureCodeDrift` on the stdenv prelude. Ruling (lead-endorsed):
+   an equal content-keyed identity hash *is* the parse-cache key domain —
+   equal source identity implies equal deterministic lowered IR, so binding
+   the first such module is never a rebind to different code. **First-wins
+   resolution; refusal remains for absent fingerprints (genuine drift), which
+   is the case the constraint exists for.**
+
+### Deliberate boundaries that remain (recorded, not latent)
+
+- **In-process symbol ids** across all segments (attrs keys, primop symbols,
+  builtin-attr symbols, lambda env scopes): the cross-process / durable L3
+  image needs the serialized symbol-name table + re-intern pass described in
+  the symbols section above — the recorded follow-on workstream.
+- **Primop-arg and attr-position module ids are raw** (`EvalModuleId` words):
+  these predate step 3's code-ref keying and share the same in-process
+  boundary; upgrading them to `CodeNodeRef`s is mechanical when the
+  cross-process workstream lands.
+- **Post-collapse heaps are capture-only**: the mutating pass leaves
+  hash-cons buckets keyed by pre-collapse hashes (raw-equality confirmation
+  keeps them correct; dedup may miss) and sheds the collapsed wrappers'
+  deferred work.
