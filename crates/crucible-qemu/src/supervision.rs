@@ -6,5 +6,10 @@
 //! time, but never fold host timing into virtual-time ordering state.
 
 mod host_io_runtime;
+mod node_step_gate;
 
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use node_step_gate::{
+    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
+    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
+};

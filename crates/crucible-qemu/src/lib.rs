@@ -255,4 +255,8 @@ pub use spawn::{
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
 #[cfg(target_os = "linux")]
-pub use supervision::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use supervision::{
+    QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError, QemuLiveNodeStepGateConfig,
+    QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
+    QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
+};
