@@ -167,6 +167,20 @@ impl TreeWalk {
         let (env, capture) = self.capture_env(id, node.span)?;
         let with_env = self.capture_with_env(id, node.span)?;
         let scoped_globals = self.capture_scoped_global_env(id, node.span)?;
+        // Capture-on-demand attribution (RFC-0007 §P1): keyed on the lambda's
+        // body subtree; a no-op unless `AOS_NIX_EVAL_STATS` collection is active.
+        if self.options.eval_stats_dump() {
+            let module_index = self.current_module.index();
+            let with_ambient_empty = self.with_scopes.is_empty();
+            let global_ambient_empty = self.scoped_globals.is_empty();
+            super::capture_probe::note_capture(
+                self.current_ir(),
+                module_index,
+                body,
+                with_ambient_empty,
+                global_ambient_empty,
+            );
+        }
         self.alloc_tree_walk_lambda_with_flat_capture(
             id,
             node.span,

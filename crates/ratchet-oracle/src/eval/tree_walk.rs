@@ -140,6 +140,7 @@ mod runtime_values;
 // re-exported here so siblings (and the public path) keep resolving them.
 mod api;
 mod campaign_counters;
+mod capture_probe;
 #[cfg(test)]
 mod capture_validation;
 mod constants;

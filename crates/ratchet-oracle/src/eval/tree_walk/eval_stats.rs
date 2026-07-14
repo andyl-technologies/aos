@@ -218,6 +218,10 @@ impl TreeWalk {
         // totals on the same `AOS_NIX_EVAL_STATS` stderr path. A no-op unless a
         // key was finalized this process (cache-on evals only).
         crate::cache::key_hash_probe::emit_demand_key_hash_report();
+        // Capture-on-demand attribution (RFC-0007 §P1 dynamic-env lever): the
+        // per-allocation with/scoped-global skip conditions, on the same stderr
+        // dump path. A no-op unless a capture was recorded this process.
+        super::capture_probe::emit_capture_on_demand_report();
         // Applied-package boundary economics (RFC-0007 MEMO-2): the decline rate
         // and boundary counts that gate the boundary-record design, on the same
         // stderr dump path for the same benchmark-capture reason.

@@ -358,6 +358,20 @@ fn shift_children(ir: &Ir, node: &IrNode) -> (Vec<IrId>, Vec<IrId>) {
     (same, deeper)
 }
 
+/// Returns every child node id of `node`, descending through frame binders.
+///
+/// This is the union of [`shift_children`]'s same-depth and one-deeper child
+/// sets: the complete set of lowered subexpression nodes reachable in one step,
+/// including a `Lambda`/`Let` body and a recursive attrset's binding values.
+/// It is the exhaustive per-node child enumeration used by the dynamic-scope
+/// reachability analysis; being derived from `shift_children` it stays complete
+/// as `IrData` grows (that match is exhaustive).
+pub(crate) fn all_child_ids(ir: &Ir, node: &IrNode) -> Vec<IrId> {
+    let (mut children, deeper) = shift_children(ir, node);
+    children.extend(deeper);
+    children
+}
+
 /// The dynamic (`${...}`) segment nodes of an attribute path.
 fn dynamic_path_segments(ir: &Ir, path: super::IrAttrPathId) -> Vec<IrId> {
     match ir.attr_paths.get(path.index()) {

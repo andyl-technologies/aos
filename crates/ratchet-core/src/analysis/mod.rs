@@ -7,6 +7,7 @@
 pub mod capture;
 pub mod cardinality;
 pub mod dead_binding;
+pub mod dynamic_scope;
 pub mod escape;
 pub mod escape_signature;
 pub mod full_laziness;
