@@ -9,7 +9,24 @@
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  previousPatchFiles = builtins.filter (patch: patch != patchName) series.patchFiles;
+  # The prerequisite stack is the series PREFIX before patchName, not every
+  # other patch: filtering only patchName out left the suffix (0031+) in the
+  # list, so the positive-control replay tried to apply later patches before
+  # their own prerequisite (this patch) and rejected on the shared
+  # accel/tcg/tcg-accel-ops-rr.c region. Take patches up to patchName, in
+  # series order, so `patch --fuzz=0` replays the exact prefix qemu.nix applies.
+  previousPatchFiles =
+    (builtins.foldl' (
+      acc: patch:
+        if acc.done || patch == patchName
+        then acc // {done = true;}
+        else acc // {list = acc.list ++ [patch];}
+    ) {
+      list = [];
+      done = false;
+    }
+    series.patchFiles)
+    .list;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginPackage = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
