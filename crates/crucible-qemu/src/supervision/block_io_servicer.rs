@@ -176,10 +176,17 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         *frames_delivered += delivery.delivered;
 
+        // Publish the next device-completion deadline to the guest node slot so a
+        // time-owning plugin whose guest is blocked on device I/O can idle-jump to
+        // it. Zero when nothing is in flight (the pending completion was just
+        // delivered), which retracts any stale deadline.
+        let next_completion_icount = device.core().next_exact_local_event();
+        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+
         Ok(QemuLiveBlockIoServiceStep {
             processed: inbox.processed,
             delivered: delivery.delivered,
-            next_completion_icount: device.core().next_exact_local_event(),
+            next_completion_icount,
         })
     }
 
