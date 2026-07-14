@@ -52,19 +52,42 @@ pub enum CacheHashFamily {
     Xxh128,
 }
 
+impl CacheHashFamily {
+    /// Returns the stable manifest spelling of this family (`blake3`/`xxh128`).
+    ///
+    /// This is the identity written into a cache root's self-describing manifest
+    /// so a later open reads the root's own family rather than the process env.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Blake3 => "blake3",
+            Self::Xxh128 => "xxh128",
+        }
+    }
+
+    /// Parses a manifest family spelling, accepting the `xxh3-128` alias.
+    ///
+    /// Returns `None` for an unrecognized spelling so a malformed manifest is a
+    /// caller-handled error rather than a silent misread.
+    pub fn from_str(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("blake3") {
+            Some(Self::Blake3)
+        } else if value.eq_ignore_ascii_case("xxh128") || value.eq_ignore_ascii_case("xxh3-128") {
+            Some(Self::Xxh128)
+        } else {
+            None
+        }
+    }
+}
+
 /// High 16 bytes stamped into every xxh128 cache digest to domain-separate it
 /// from a BLAKE3 digest (32 random bytes), so the two key spaces cannot collide.
 const XXH128_FAMILY_TAG: [u8; 16] = *b"aos-nix-xxh128\0\0";
 
 fn read_cache_hash_family() -> CacheHashFamily {
-    match std::env::var("AOS_NIX_CACHE_HASH") {
-        Ok(value)
-            if value.eq_ignore_ascii_case("xxh128") || value.eq_ignore_ascii_case("xxh3-128") =>
-        {
-            CacheHashFamily::Xxh128
-        }
-        _ => CacheHashFamily::Blake3,
-    }
+    std::env::var("AOS_NIX_CACHE_HASH")
+        .ok()
+        .and_then(|value| CacheHashFamily::from_str(&value))
+        .unwrap_or(CacheHashFamily::Blake3)
 }
 
 /// Returns the process-wide cache hash family, read once from `AOS_NIX_CACHE_HASH`.
@@ -709,6 +732,19 @@ impl From<[u8; 32]> for NixSha256Digest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_hash_family_manifest_spelling_round_trips() {
+        for family in [CacheHashFamily::Blake3, CacheHashFamily::Xxh128] {
+            assert_eq!(CacheHashFamily::from_str(family.as_str()), Some(family));
+        }
+        assert_eq!(
+            CacheHashFamily::from_str("xxh3-128"),
+            Some(CacheHashFamily::Xxh128),
+            "the xxh3-128 alias parses to the xxh128 family",
+        );
+        assert_eq!(CacheHashFamily::from_str("sha256"), None);
+    }
 
     #[test]
     fn cache_digest_blake3_matches_blake3_hash() {

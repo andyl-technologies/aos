@@ -637,6 +637,12 @@ pub enum PersistError {
         /// The unsupported schema version.
         version: i64,
     },
+    /// Schema metadata contained a non-string `hash_family`.
+    #[error("persistent cache schema {path} has a non-string hash_family")]
+    InvalidHashFamily {
+        /// The schema file path.
+        path: PathBuf,
+    },
     /// Schema metadata could not be written.
     #[error("failed to write persistent cache schema {path}")]
     WriteSchema {

@@ -43,6 +43,7 @@ fn engine_schema_error_to_persist(error: CacheSchemaError) -> PersistError {
         CacheSchemaError::InvalidSchemaVersion { path, version } => {
             PersistError::InvalidSchemaVersion { path, version }
         }
+        CacheSchemaError::InvalidHashFamily { path } => PersistError::InvalidHashFamily { path },
         CacheSchemaError::Write { path, source } => PersistError::WriteSchema { path, source },
     }
 }

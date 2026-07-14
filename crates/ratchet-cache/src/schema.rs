@@ -1,12 +1,17 @@
 //! Schema-version sidecars for cache-engine roots.
 //!
-//! The sidecar is a small TOML file that identifies a cache format and schema
-//! version before callers open larger packfiles and sidecars.
+//! The sidecar is a small self-describing TOML manifest that identifies a cache
+//! root's format, schema version, and (once written) its content-hash family,
+//! read before callers open larger packfiles and sidecars.
 //!
 //! ```toml
 //! format = "aos-nix-eval-cache"
 //! schema_version = 5
+//! hash_family = "xxh128"
 //! ```
+//!
+//! `hash_family` is optional: a sidecar written before per-layer hash families
+//! omits it, and readers treat its absence as the historical default family.
 
 use std::fs;
 use std::io;
@@ -17,7 +22,19 @@ use thiserror::Error;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
-/// A TOML schema-version sidecar.
+/// A parsed schema-manifest record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheSchemaRecord {
+    /// The `schema_version` declared by the sidecar.
+    pub schema_version: u32,
+    /// The `hash_family` spelling declared by the sidecar, if any.
+    ///
+    /// `None` for a sidecar written before per-layer hash families; the caller
+    /// resolves the absent case to its historical default family.
+    pub hash_family: Option<String>,
+}
+
+/// A TOML schema-manifest sidecar.
 #[derive(Clone, Debug)]
 pub struct CacheSchema {
     path: PathBuf,
@@ -45,6 +62,25 @@ impl CacheSchema {
     /// Returns [`CacheSchemaError`] if the sidecar cannot be read, parsed, or
     /// validated.
     pub fn read_version(&self, expected_format: &str) -> Result<Option<u32>, CacheSchemaError> {
+        Ok(self
+            .read_record(expected_format)?
+            .map(|record| record.schema_version))
+    }
+
+    /// Reads the full schema-manifest record when a sidecar exists.
+    ///
+    /// Missing sidecars return `Ok(None)`. An existing sidecar must carry a
+    /// string `format` matching `expected_format` and an integer `schema_version`
+    /// that fits in `u32`; `hash_family`, if present, must be a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheSchemaError`] if the sidecar cannot be read, parsed, or
+    /// validated.
+    pub fn read_record(
+        &self,
+        expected_format: &str,
+    ) -> Result<Option<CacheSchemaRecord>, CacheSchemaError> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -79,15 +115,29 @@ impl CacheSchema {
             .ok_or_else(|| CacheSchemaError::MissingSchemaVersion {
                 path: self.path.clone(),
             })?;
-        let version =
+        let schema_version =
             u32::try_from(version).map_err(|_| CacheSchemaError::InvalidSchemaVersion {
                 path: self.path.clone(),
                 version,
             })?;
-        Ok(Some(version))
+        let hash_family = match value.get("hash_family") {
+            None => None,
+            Some(family) => Some(
+                family
+                    .as_str()
+                    .ok_or_else(|| CacheSchemaError::InvalidHashFamily {
+                        path: self.path.clone(),
+                    })?
+                    .to_owned(),
+            ),
+        };
+        Ok(Some(CacheSchemaRecord {
+            schema_version,
+            hash_family,
+        }))
     }
 
-    /// Replaces the sidecar with `format` and `version`.
+    /// Replaces the sidecar with `format` and `version` (no hash family).
     ///
     /// The sidecar is staged through a sibling temporary path and then renamed
     /// into place. Parent directories are not created by this method.
@@ -97,9 +147,30 @@ impl CacheSchema {
     /// Returns [`CacheSchemaError::Write`] if the temporary file cannot be
     /// written or renamed over the sidecar.
     pub fn write_version(&self, format: &str, version: u32) -> Result<(), CacheSchemaError> {
+        self.write_record(format, version, None)
+    }
+
+    /// Replaces the sidecar with `format`, `version`, and an optional hash family.
+    ///
+    /// The sidecar is staged through a sibling temporary path and then renamed
+    /// into place. Parent directories are not created by this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheSchemaError::Write`] if the temporary file cannot be
+    /// written or renamed over the sidecar.
+    pub fn write_record(
+        &self,
+        format: &str,
+        version: u32,
+        hash_family: Option<&str>,
+    ) -> Result<(), CacheSchemaError> {
         let write_id = SCHEMA_WRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = schema_temp_path(&self.path, write_id);
-        let text = format!("format = {format:?}\nschema_version = {version}\n");
+        let mut text = format!("format = {format:?}\nschema_version = {version}\n");
+        if let Some(hash_family) = hash_family {
+            text.push_str(&format!("hash_family = {hash_family:?}\n"));
+        }
         fs::write(&tmp_path, text).map_err(|source| CacheSchemaError::Write {
             path: tmp_path.clone(),
             source,
@@ -162,6 +233,12 @@ pub enum CacheSchemaError {
         path: PathBuf,
         /// The unsupported schema version.
         version: i64,
+    },
+    /// Schema metadata contained a non-string `hash_family`.
+    #[error("cache schema {path:?} has a non-string hash_family")]
+    InvalidHashFamily {
+        /// The schema file path.
+        path: PathBuf,
     },
     /// Schema metadata could not be written.
     #[error("failed to write cache schema {path:?}")]
@@ -235,6 +312,77 @@ mod tests {
                 .expect("schema reads"),
             Some(5)
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn schema_write_record_round_trips_hash_family() {
+        let path = temp_path("record-round-trip");
+        let schema = CacheSchema::new(path.clone());
+
+        schema
+            .write_record("aos-nix-eval-cache", 8, Some("xxh128"))
+            .expect("schema record writes");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("schema text reads"),
+            "format = \"aos-nix-eval-cache\"\nschema_version = 8\nhash_family = \"xxh128\"\n"
+        );
+        assert_eq!(
+            schema
+                .read_record("aos-nix-eval-cache")
+                .expect("schema record reads"),
+            Some(CacheSchemaRecord {
+                schema_version: 8,
+                hash_family: Some("xxh128".to_owned()),
+            })
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn schema_version_only_sidecar_reads_no_hash_family() {
+        // A sidecar written before per-layer families omits `hash_family`, and
+        // `write_version` keeps producing that exact family-less form.
+        let path = temp_path("record-no-family");
+        let schema = CacheSchema::new(path.clone());
+        schema
+            .write_version("aos-nix-eval-cache", 8)
+            .expect("schema writes");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("schema text reads"),
+            "format = \"aos-nix-eval-cache\"\nschema_version = 8\n"
+        );
+        assert_eq!(
+            schema
+                .read_record("aos-nix-eval-cache")
+                .expect("schema record reads"),
+            Some(CacheSchemaRecord {
+                schema_version: 8,
+                hash_family: None,
+            })
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn schema_read_record_rejects_non_string_hash_family() {
+        let path = temp_path("record-bad-family");
+        fs::write(
+            &path,
+            "format = \"aos-nix-eval-cache\"\nschema_version = 8\nhash_family = 7\n",
+        )
+        .expect("schema writes");
+        let schema = CacheSchema::new(path.clone());
+
+        let error = schema
+            .read_record("aos-nix-eval-cache")
+            .expect_err("non-string hash_family errors");
+        assert!(matches!(error, CacheSchemaError::InvalidHashFamily { .. }));
 
         let _ = fs::remove_file(path);
     }
