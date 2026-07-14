@@ -411,6 +411,7 @@ in rec {
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLivePluginQuantum = import ./phase2-qemu-live-plugin-quantum.nix {inherit pkgs lib;};
     qemuLivePluginFingerprint = import ./phase2-qemu-live-plugin-fingerprint.nix {inherit pkgs lib;};
+    qemuLivePluginFingerprintSmp = import ./phase2-qemu-live-plugin-fingerprint-smp.nix {inherit pkgs lib;};
     qemuLiveTerminalHorizon = import ./phase2-qemu-live-terminal-horizon.nix {inherit pkgs lib;};
     qemuLiveTerminalTargets = import ./phase2-qemu-live-terminal-targets.nix {inherit pkgs lib;};
     qemuShutdownEscalation = import ./phase2-qemu-shutdown-escalation.nix {inherit pkgs lib;};

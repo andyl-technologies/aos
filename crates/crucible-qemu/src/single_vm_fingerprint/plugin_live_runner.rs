@@ -65,14 +65,19 @@ const RUNNER_ROUTER: &str = "rust-plugin-fingerprint-router";
 const RUNNER_SLOT: u32 = 0;
 /// Fixed inbound/outbound ring capacity for the single-node run.
 const RUNNER_QUEUE_CAPACITY: u32 = 4;
-/// Conservative guest memory size for the run.
-const RUNNER_MEMORY_MIB: u32 = 64;
-/// vCPU count fixed by this runner's launch contract.
+/// Default guest memory size for the run.
 ///
-/// The single-vCPU path is what the loaded-QEMU quantum gate proves live, so
-/// this fingerprint runner stays on it; multi-vCPU fingerprinting extends this
-/// once M3 lands the multi-vCPU time-authority aggregation.
-const RUNNER_SMP_VCPUS: u16 = 1;
+/// The diskless single-vCPU idle guest boots comfortably in 64 MiB. A busy
+/// multi-vCPU SMP guest needs more headroom; raise it with
+/// [`PluginFingerprintRunnerConfig::with_memory_mib`].
+const DEFAULT_RUNNER_MEMORY_MIB: u32 = 64;
+/// Default vCPU count for the runner's launch contract.
+///
+/// The single-vCPU path is what the loaded-QEMU quantum gate proves live, so a
+/// runner built without [`PluginFingerprintRunnerConfig::with_smp_vcpus`] stays
+/// on it. M3 raises the count to drive the multi-vCPU aggregate-icount clock and
+/// sample every vCPU's register file into the N-vCPU fingerprint.
+const DEFAULT_RUNNER_SMP_VCPUS: u16 = 1;
 /// Number of background threads used to stress host scheduling on the load run.
 const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while waiting on the plugin-owned boundary or teardown.
@@ -97,6 +102,8 @@ pub struct PluginFingerprintRunnerConfig {
     qemu_build_digest: String,
     rust_plugin_build_digest: String,
     rr_switch_quantum: u64,
+    smp_vcpus: u16,
+    memory_mib: u32,
 }
 
 impl PluginFingerprintRunnerConfig {
@@ -133,7 +140,37 @@ impl PluginFingerprintRunnerConfig {
             qemu_build_digest,
             rust_plugin_build_digest,
             rr_switch_quantum: 0,
+            smp_vcpus: DEFAULT_RUNNER_SMP_VCPUS,
+            memory_mib: DEFAULT_RUNNER_MEMORY_MIB,
         })
+    }
+
+    /// Returns this configuration with a fixed guest memory size in MiB.
+    ///
+    /// Guest memory is a launch parameter only; it is not part of the
+    /// fingerprint definition digest.
+    #[must_use]
+    pub const fn with_memory_mib(mut self, memory_mib: u32) -> Self {
+        self.memory_mib = memory_mib;
+        self
+    }
+
+    /// Returns this configuration with a fixed vCPU count for the launch.
+    ///
+    /// The count is bound into both the launch `-smp` flag and the fingerprint
+    /// definition digest (via [`RustPluginFingerprintDefinition`]), so a run at a
+    /// different topology can never compare as equal. It must equal the vCPU
+    /// count the scenario's N-vCPU contract declares.
+    #[must_use]
+    pub const fn with_smp_vcpus(mut self, smp_vcpus: u16) -> Self {
+        self.smp_vcpus = smp_vcpus;
+        self
+    }
+
+    /// Returns the launch-pinned vCPU count.
+    #[must_use]
+    pub const fn smp_vcpus(&self) -> u16 {
+        self.smp_vcpus
     }
 
     /// Returns this configuration with a content-addressed initrd.
@@ -206,7 +243,7 @@ impl PluginFingerprintRunner {
         config.rr_switch_quantum = rr_switch_quantum;
         let definition = RustPluginFingerprintDefinition::new(
             rr_switch_quantum,
-            u32::from(RUNNER_SMP_VCPUS),
+            u32::from(config.smp_vcpus),
             config.qemu_build_digest.clone(),
             config.rust_plugin_build_digest.clone(),
         )
@@ -257,8 +294,8 @@ impl PluginFingerprintRunner {
         let host_load = HostLoad::start_if(role.applies_host_load());
 
         let mut candidate = LaunchProfileCandidate::default()
-            .with_memory_mib(RUNNER_MEMORY_MIB)
-            .with_smp_vcpus(RUNNER_SMP_VCPUS);
+            .with_memory_mib(self.config.memory_mib)
+            .with_smp_vcpus(self.config.smp_vcpus);
         if let Some(cmdline) = &self.config.kernel_cmdline {
             candidate = candidate.with_kernel_cmdline(cmdline.clone());
         }
