@@ -2,7 +2,40 @@
 
 use super::*;
 
+/// The per-evaluation "K-tax" work counters surfaced on the parallel-demand
+/// stats line (RFC-0007 L2), so a single `AOS_NIX_EVAL_STATS=1` benchmark pass
+/// captures the coordination cost alongside the scheduler counters.
+///
+/// The `Arc`-clone fields are the main worker's heap only (helper-worker heaps
+/// fold into [`EvalStats`] but not here); `env_frame_allocs` is process-wide, so
+/// at `K >= 2` it also counts helper allocations. The intent is an
+/// apples-to-apples comparison of the main spine's `Arc`-clone traffic across
+/// `K` and against serial.
+pub(in crate::eval::tree_walk) struct ParallelKtaxCounters {
+    /// Thunk force-state sidecar `Arc` clones on the main worker's heap.
+    pub(in crate::eval::tree_walk) thunk_state_arc_clones: u64,
+    /// Payload-handle `Arc` clones on the main worker's heap.
+    pub(in crate::eval::tree_walk) payload_arc_clones: u64,
+    /// Lexical frames allocated this evaluation (process-wide delta).
+    pub(in crate::eval::tree_walk) env_frame_allocs: u64,
+}
+
 impl TreeWalk {
+    /// Snapshots the [`ParallelKtaxCounters`] for this evaluation, sourced like
+    /// the campaign counters: `Arc`-clone counts from the heap dereference
+    /// counters and frame allocations from the process-wide capture-stats
+    /// atomics as a delta from the construction baseline.
+    pub(in crate::eval::tree_walk) fn parallel_ktax_snapshot(&self) -> ParallelKtaxCounters {
+        let deref = self.heap.deref_counters_snapshot();
+        let env =
+            crate::eval::env::capture_stats::snapshot().delta_since(self.campaign_env_baseline);
+        ParallelKtaxCounters {
+            thunk_state_arc_clones: deref.thunk_state_arc_clones,
+            payload_arc_clones: deref.payload_arc_clones,
+            env_frame_allocs: env.env_frame_allocs,
+        }
+    }
+
     pub(super) fn stats_snapshot(&self) -> EvalStats {
         let arena = self.heap.arena_stats();
         let permanent_arena = self.heap.permanent_arena_stats();

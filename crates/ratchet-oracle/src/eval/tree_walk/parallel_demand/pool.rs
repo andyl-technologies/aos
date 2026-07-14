@@ -300,6 +300,14 @@ impl ParallelDemandPool {
         if main.options.eval_stats_dump() {
             // Mirrors the `AOS_NIX_EVAL_STATS=1` JSON stats convention so
             // scheduler behavior is observable next to the eval work counters.
+            // The `*_arc_clones` / `env_frame_allocs` "K-tax" counters ride here
+            // (see `ParallelKtaxCounters`) so one benchmark pass captures the
+            // per-thunk-cell coordination cost the L2 ceiling verdict named;
+            // they are otherwise struct-only and invisible to a bench run.
+            let ktax = main.parallel_ktax_snapshot();
+            let thunk_state_arc_clones = ktax.thunk_state_arc_clones;
+            let payload_arc_clones = ktax.payload_arc_clones;
+            let env_frame_allocs = ktax.env_frame_allocs;
             eprintln!(
                 "{{\"aos_nix_parallel_demand\":{{\
 \"tasks_published\":{published},\
@@ -313,7 +321,10 @@ impl ParallelDemandPool {
 \"claim_waits\":{claim_waits},\
 \"queue_peak\":{queue_peak},\
 \"speculated\":{speculated},\
-\"speculation_hits\":{speculation_hits}\
+\"speculation_hits\":{speculation_hits},\
+\"thunk_state_arc_clones\":{thunk_state_arc_clones},\
+\"payload_arc_clones\":{payload_arc_clones},\
+\"env_frame_allocs\":{env_frame_allocs}\
 }}}}"
             );
         }
