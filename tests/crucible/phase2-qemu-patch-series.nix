@@ -272,6 +272,20 @@
       enforces = "DET-29,PLUG-47";
       capability = "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot";
     }
+    {
+      file = "0037-crucible-sim-freeze-warp-at-observation-boundary.patch";
+      catalogName = "crucible-sim-freeze-warp-at-observation-boundary";
+      class = "D";
+      enforces = "DET-8,DET-29";
+      capability = "sim freezes the virtual clock at the observation boundary so terminal fingerprint capture is deterministic";
+    }
+    {
+      file = "0038-crucible-sim-gate-rr-kick.patch";
+      catalogName = "crucible-sim-gate-rr-kick";
+      class = "D";
+      enforces = "DET-30";
+      capability = "sim omits the redundant stock round-robin vCPU-kick timer for deterministic quantum switching";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

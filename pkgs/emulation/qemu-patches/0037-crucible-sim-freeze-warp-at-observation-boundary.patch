@@ -1,0 +1,32 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -32,6 +32,7 @@
+ #include "system/qtest.h"
+ #include "qemu/accel.h"
+ #include "qemu/plugin.h"
++#include "tcg-accel-ops-sim-shmem.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/option.h"
+ #include "qemu/seqlock.h"
+@@ -419,6 +420,20 @@ void icount_start_warp_timer(void)
+         return;
+     }
+ 
++    if (strcmp(current_accel_name(), "sim") == 0 &&
++        crucible_sim_observer_registered() &&
++        icount_get_raw() >= crucible_sim_observer_max_advance_icount()) {
++        /*
++         * The sim guest is clamped at the observer's max-advance boundary
++         * (the terminal target icount): it cannot retire instructions, so
++         * it is not genuinely idle -- it is held for fingerprint capture.
++         * Advancing qemu_icount_bias here races the asynchronous terminal
++         * snapshot, so freeze virtual time until the boundary is released.
++         */
++        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++        return;
++    }
++
+     /* We want to use the earliest deadline from ALL vm_clocks */
+     clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
+     deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
