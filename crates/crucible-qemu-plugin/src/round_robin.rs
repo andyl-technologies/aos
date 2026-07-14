@@ -440,6 +440,7 @@ impl VcpuHaltTracker {
 /// Returns [`RoundRobinError`] when a per-vCPU deadline set is malformed, the
 /// deadline cannot be converted to icount units, or the scheduler ceiling is
 /// behind the current node icount.
+// crucible-lint: allow rust-allow -- forwards the full idle wake input set (tracker, per-vCPU deadlines, inbound, ceiling, device-hold, device deadline) to `compute_idle_wake_plan`; bundling would only shuffle the same fields.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_all_halted_idle_wake_plan(
     tracker: &VcpuHaltTracker,

@@ -873,6 +873,7 @@ impl PluginIdleHotLoop {
 ///
 /// Returns [`IdleHotLoopError`] when the timer deadline cannot be converted to
 /// an aggregate icount or the observed ceiling is behind the current icount.
+// crucible-lint: allow rust-allow -- the idle wake merge takes the full set of independent wake inputs (current icount, shift, timer deadline, inbound, ceiling, device-hold, device deadline); bundling them would obscure the merge.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_idle_wake_plan(
     current_icount: u64,
