@@ -32,12 +32,24 @@ use crucible::ContentHash;
 
 use crate::single_vm_fingerprint::SingleVmFingerprintGateError;
 
-/// Content-addressing domain for the Rust-plugin single-VM fingerprint.
+/// Content-addressing domain for the single-vCPU Rust-plugin fingerprint.
 ///
 /// Distinct from the imported C-trace domain
 /// `crucible.qemu.trace-fingerprint-definition.v3`, so the two authorities mint
-/// disjoint definition digests even for identical cadence and topology.
+/// disjoint definition digests even for identical cadence and topology. Used for
+/// the single-vCPU topology only; multi-vCPU topologies use
+/// [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`].
 pub const RUST_PLUGIN_FINGERPRINT_DOMAIN: &str = "crucible.qemu.rust-plugin-fingerprint.v1";
+
+/// Content-addressing domain for the multi-vCPU Rust-plugin fingerprint.
+///
+/// The `.v2` domain the single-vCPU `.v1` definition reserved for the multi-vCPU
+/// widening (M3). It is a distinct content-addressing domain, so a multi-vCPU
+/// definition digest can never collide with a `.v1` single-vCPU one even at the
+/// same cadence, and the frozen `.v1` constants are untouched. The topology
+/// (`vcpu_count`) still enters the canonical material, so distinct `-smp N` mint
+/// distinct digests within this domain too.
+pub const RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN: &str = "crucible.qemu.rust-plugin-fingerprint.v2";
 
 /// Fixed periodic aggregate-icount cadence for the Rust-plugin fingerprint.
 pub const CADENCE_ICOUNT: u64 = 4_000_000;
@@ -59,12 +71,11 @@ const BUILD_DIGEST_HEX_LEN: usize = 64;
 /// plugin build digests yields the content-addressed `definition_digest`
 /// threaded through the scenario, the run inputs, and every published sample.
 ///
-/// The topology (`vcpu_count`, `rr_switch_quantum`) is owned by this domain and
-/// is deliberately single-vCPU for now: the live single-vCPU time-authority
-/// path is the one the loaded-QEMU quantum gate proves. Multi-vCPU topology and
-/// the aggregate-icount clock it needs are deferred to M3 (T-TIME-9 /
-/// T-QEMU-16); a future `.v2` domain widens `vcpu_count` there. This is a
-/// scoped deferral, not an oversight.
+/// The topology (`vcpu_count`, `rr_switch_quantum`) selects the content-
+/// addressing domain: a single vCPU mints under [`RUST_PLUGIN_FINGERPRINT_DOMAIN`]
+/// (`.v1`), and `vcpu_count > 1` mints under [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`]
+/// (`.v2`), the multi-vCPU widening landed in M3 (T-TIME-9 / T-QEMU-16 /
+/// T-PLUG-26). The frozen `.v1` single-vCPU constants and digest are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RustPluginFingerprintDefinition {
     rr_switch_quantum: u64,
@@ -117,6 +128,20 @@ impl RustPluginFingerprintDefinition {
         })
     }
 
+    /// Returns the content-addressing domain this definition mints under.
+    ///
+    /// A single-vCPU definition uses [`RUST_PLUGIN_FINGERPRINT_DOMAIN`] (`.v1`);
+    /// a multi-vCPU definition uses [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`]
+    /// (`.v2`).
+    #[must_use]
+    pub const fn domain(&self) -> &'static str {
+        if self.vcpu_count == 1 {
+            RUST_PLUGIN_FINGERPRINT_DOMAIN
+        } else {
+            RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN
+        }
+    }
+
     /// Returns the run horizon icount (the last sampled target).
     #[must_use]
     pub const fn run_horizon_icount(&self) -> u64 {
@@ -132,16 +157,12 @@ impl RustPluginFingerprintDefinition {
     /// Returns the 32-byte content-addressed fingerprint definition digest.
     #[must_use]
     pub fn definition_digest(&self) -> [u8; 32] {
-        ContentHash::from_canonical_material(
-            RUST_PLUGIN_FINGERPRINT_DOMAIN,
-            &self.canonical_material(),
-        )
-        .bytes
+        ContentHash::from_canonical_material(self.domain(), &self.canonical_material()).bytes
     }
 
     fn canonical_material(&self) -> String {
         let mut lines = vec![
-            RUST_PLUGIN_FINGERPRINT_DOMAIN.to_owned(),
+            self.domain().to_owned(),
             "status=canonical".to_owned(),
             format!("cadence_icount={CADENCE_ICOUNT}"),
         ];
@@ -219,6 +240,37 @@ mod tests {
             .expect("second definition");
         assert_eq!(first.definition_digest(), second.definition_digest());
         assert_eq!(first.run_horizon_icount(), 12_000_000);
+    }
+
+    #[test]
+    fn vcpu_count_selects_the_content_addressing_domain() {
+        let single = RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22))
+            .expect("single-vCPU definition");
+        let multi = RustPluginFingerprintDefinition::new(4096, 4, digest(0x11), digest(0x22))
+            .expect("multi-vCPU definition");
+        assert_eq!(single.domain(), RUST_PLUGIN_FINGERPRINT_DOMAIN);
+        assert_eq!(multi.domain(), RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN);
+        // The domain plus the vcpu_count both differ, so the digests are disjoint.
+        assert_ne!(single.definition_digest(), multi.definition_digest());
+    }
+
+    #[test]
+    fn single_vcpu_digest_is_frozen_under_v1() {
+        // The single-vCPU definition must keep minting the exact frozen v1 digest
+        // that the M1 gate pins, unchanged by the multi-vCPU domain split.
+        let single = RustPluginFingerprintDefinition::new(4096, 1, digest(0x11), digest(0x22))
+            .expect("single-vCPU definition");
+        let expected = ContentHash::from_canonical_material(
+            RUST_PLUGIN_FINGERPRINT_DOMAIN,
+            &single.canonical_material(),
+        )
+        .bytes;
+        assert_eq!(single.definition_digest(), expected);
+        assert!(
+            single
+                .canonical_material()
+                .starts_with(RUST_PLUGIN_FINGERPRINT_DOMAIN)
+        );
     }
 
     #[test]

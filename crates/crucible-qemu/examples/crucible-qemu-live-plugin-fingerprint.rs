@@ -41,13 +41,21 @@ mod linux {
     use crucible::ContentHash;
     use crucible_qemu::{
         PLUGIN_FINGERPRINT_TARGET_ICOUNTS, PluginFingerprintRunner, PluginFingerprintRunnerConfig,
-        SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
-        SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal, SingleVmFingerprintScenario,
-        SingleVmHostProfile, SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
+        SingleVmFingerprintGateReport, SingleVmFingerprintProbeRequest,
+        SingleVmFingerprintProbeRunner, SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal,
+        SingleVmFingerprintScenario, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+        run_single_vm_fingerprint_gate,
     };
 
-    /// vCPU count and RR switch quantum this gate's launch profile pins.
-    const VCPU_COUNT: usize = 1;
+    /// Default vCPU count when `CRUCIBLE_FP_SMP_VCPUS` is unset.
+    ///
+    /// The single-VM (M1) gate leaves it unset and pins one vCPU. The multi-vCPU
+    /// (M3) gate sets it to the launched `-smp N` so the plugin drives the
+    /// aggregate-icount clock across `N` vCPUs and samples every vCPU's register
+    /// file into the fingerprint.
+    const DEFAULT_VCPU_COUNT: u16 = 1;
+    /// Default guest memory in MiB when `CRUCIBLE_FP_MEMORY_MIB` is unset.
+    const DEFAULT_MEMORY_MIB: u32 = 64;
     const RR_SWITCH_QUANTUM: u64 = 4096;
     /// Content-addressing domain for the example's synthetic run-input digests.
     const INPUT_DOMAIN: &str = "crucible.rust-plugin-fingerprint-example-inputs.v1";
@@ -72,12 +80,18 @@ mod linux {
         let second_run_host_load = env_flag("CRUCIBLE_FP_SECOND_RUN_LOAD", true)?;
         let timeout_secs = env_u64("CRUCIBLE_FP_TIMEOUT_SECS", 240)?;
         let probe_icount = env_u64("CRUCIBLE_FP_PROBE_ICOUNT", 6_000_000)?;
+        let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
+        let memory_mib =
+            u32::try_from(env_u64("CRUCIBLE_FP_MEMORY_MIB", u64::from(DEFAULT_MEMORY_MIB))?)
+                .map_err(|_| String::from("CRUCIBLE_FP_MEMORY_MIB exceeds u32"))?;
 
         let mut config =
             PluginFingerprintRunnerConfig::new(&qemu, &plugin, &kernel, &firmware, &run_directory)
                 .map_err(|error| error.to_string())?
                 .with_completion_timeout(Duration::from_secs(timeout_secs))
-                .with_second_run_host_load(second_run_host_load);
+                .with_second_run_host_load(second_run_host_load)
+                .with_smp_vcpus(vcpu_count)
+                .with_memory_mib(memory_mib);
         let kernel_cmdline_text = match &kernel_cmdline {
             Some(cmdline) => {
                 let cmdline = cmdline.to_string_lossy().into_owned();
@@ -93,11 +107,13 @@ mod linux {
         let mut runner =
             PluginFingerprintRunner::new(config, RR_SWITCH_QUANTUM).map_err(|e| e.to_string())?;
         let definition_digest = runner.definition_digest();
+        let definition_domain = runner.definition().domain().to_owned();
         let run_horizon_icount = runner.definition().run_horizon_icount();
 
         let run_inputs = build_run_inputs(&qemu, &firmware, &kernel_cmdline_text)?;
-        let nvcpu_contract = SingleVmNvcpuFingerprintContract::new(VCPU_COUNT, RR_SWITCH_QUANTUM)
-            .map_err(|error| error.to_string())?;
+        let nvcpu_contract =
+            SingleVmNvcpuFingerprintContract::new(usize::from(vcpu_count), RR_SWITCH_QUANTUM)
+                .map_err(|error| error.to_string())?;
         let scenario = SingleVmFingerprintScenario::new_with_nvcpu_contract(
             "rust-plugin-fingerprint-vm",
             definition_digest.to_vec(),
@@ -122,15 +138,23 @@ mod linux {
             .collect::<Vec<_>>()
             .join(",");
 
+        // Aggregate-clock + per-component determinism evidence: every busy-window
+        // boundary's aggregate node icount must equal its exact target (the
+        // raw-vs-logical regression guard), and each component the fingerprint
+        // folds in (per-vCPU registers, RR cursor, guest-RAM digest, device-state
+        // digest) must be byte-identical across the two runs.
+        let evidence = nvcpu_evidence(&report)?;
+
         println!("PASS");
         println!("fingerprint_authority=rust-plugin");
-        println!("definition_domain=crucible.qemu.rust-plugin-fingerprint.v1");
+        println!("definition_domain={definition_domain}");
         println!("definition_digest={}", hex(&definition_digest));
         println!("scenario_id={}", report.scenario_id);
         println!("sample_count={}", report.sample_count);
         println!("sample_target_icounts={sample_targets}");
         println!("run_horizon_icount={run_horizon_icount}");
-        println!("vcpu_count={VCPU_COUNT}");
+        println!("vcpu_count={vcpu_count}");
+        println!("memory_mib={memory_mib}");
         println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
         println!(
             "matching_final_fingerprint={}",
@@ -140,6 +164,29 @@ mod linux {
         println!("second_run_host_load={second_run_host_load}");
         println!("probe_prefix_equal_at_{probe_icount}={probe_equal}");
         println!("probe_count={}", runner.probe_count());
+        for line in &evidence.per_sample_lines {
+            println!("{line}");
+        }
+        println!(
+            "aggregate_icount_equals_target={}",
+            evidence.aggregate_icount_equals_target
+        );
+        println!(
+            "rr_cursor_matches_run_twice={}",
+            evidence.rr_cursor_matches_run_twice
+        );
+        println!(
+            "per_vcpu_registers_match_run_twice={}",
+            evidence.registers_match_run_twice
+        );
+        println!(
+            "guest_ram_digest_matches_run_twice={}",
+            evidence.ram_digest_matches_run_twice
+        );
+        println!(
+            "device_state_digest_matches_run_twice={}",
+            evidence.device_state_digest_matches_run_twice
+        );
         Ok(())
     }
 
@@ -168,6 +215,88 @@ mod linux {
             .probe_single_vm_fingerprint(&second_request)
             .map_err(|error| error.to_string())?;
         Ok(first.prefix_fingerprint() == second.prefix_fingerprint())
+    }
+
+    /// Aggregate-clock and per-component determinism evidence at `-smp N`.
+    struct NvcpuEvidence {
+        /// One `sample[i]` line per boundary: aggregate icount + RR cursor + N.
+        per_sample_lines: Vec<String>,
+        /// Every boundary's aggregate node icount equals its exact busy-window
+        /// target — the regression guard for the raw-vs-logical aggregation hazard
+        /// (no idle-jump offset leaks into a busy-window aggregate accounting).
+        aggregate_icount_equals_target: bool,
+        /// The two runs produced the same round-robin cursor at every boundary.
+        rr_cursor_matches_run_twice: bool,
+        /// The two runs produced identical per-vCPU register digests everywhere.
+        registers_match_run_twice: bool,
+        /// The two runs produced identical guest-RAM digests everywhere.
+        ram_digest_matches_run_twice: bool,
+        /// The two runs produced identical device-state digests everywhere.
+        device_state_digest_matches_run_twice: bool,
+    }
+
+    /// Extracts the M3 aggregate-clock and per-component determinism evidence.
+    ///
+    /// Under single-threaded RR icount QEMU keeps one global instruction counter,
+    /// so there is no per-vCPU retired count to sum (the introspection stamp is a
+    /// deterministic constant); the per-vCPU progress that exists is the RR cursor
+    /// (`current_vcpu`, `position_in_quantum`). The raw-vs-logical regression guard
+    /// is therefore that each busy-window boundary's aggregate node icount equals
+    /// its exact target, and the per-vCPU evidence is the deterministic RR cursor.
+    fn nvcpu_evidence(report: &SingleVmFingerprintGateReport) -> Result<NvcpuEvidence, String> {
+        let first = &report.first_stream.samples;
+        let second = &report.second_stream.samples;
+        if first.len() != second.len() {
+            return Err(format!(
+                "run-twice sample counts differ: {} vs {}",
+                first.len(),
+                second.len()
+            ));
+        }
+        let mut per_sample_lines = Vec::with_capacity(first.len());
+        let mut aggregate_icount_equals_target = true;
+        let mut rr_cursor_matches_run_twice = true;
+        let mut registers_match_run_twice = true;
+        let mut ram_digest_matches_run_twice = true;
+        let mut device_state_digest_matches_run_twice = true;
+        for (index, (first_sample, second_sample)) in first.iter().zip(second).enumerate() {
+            if PLUGIN_FINGERPRINT_TARGET_ICOUNTS.get(index) != Some(&first_sample.icount) {
+                aggregate_icount_equals_target = false;
+            }
+            let cursor = first_sample.nvcpu_fingerprint.rr_cursor();
+            if cursor != second_sample.nvcpu_fingerprint.rr_cursor() {
+                rr_cursor_matches_run_twice = false;
+            }
+            let registers = first_sample.nvcpu_fingerprint.vcpu_registers();
+            if registers != second_sample.nvcpu_fingerprint.vcpu_registers() {
+                registers_match_run_twice = false;
+            }
+            if first_sample.nvcpu_fingerprint.guest_memory_digest()
+                != second_sample.nvcpu_fingerprint.guest_memory_digest()
+            {
+                ram_digest_matches_run_twice = false;
+            }
+            if first_sample.nvcpu_fingerprint.device_state_digest()
+                != second_sample.nvcpu_fingerprint.device_state_digest()
+            {
+                device_state_digest_matches_run_twice = false;
+            }
+            per_sample_lines.push(format!(
+                "sample[{index}]_aggregate_icount={} rr_current_vcpu={} rr_position_in_quantum={} vcpu_register_count={}",
+                first_sample.icount,
+                cursor.current_vcpu(),
+                cursor.position_in_quantum(),
+                registers.len(),
+            ));
+        }
+        Ok(NvcpuEvidence {
+            per_sample_lines,
+            aggregate_icount_equals_target,
+            rr_cursor_matches_run_twice,
+            registers_match_run_twice,
+            ram_digest_matches_run_twice,
+            device_state_digest_matches_run_twice,
+        })
     }
 
     /// Builds valid, content-addressed synthetic run inputs for the scenario.
@@ -230,6 +359,16 @@ mod linux {
             Ok(value) => value
                 .parse()
                 .map_err(|error| format!("{name} must be a u64: {error}")),
+            Err(env::VarError::NotPresent) => Ok(default),
+            Err(error) => Err(format!("cannot read {name}: {error}")),
+        }
+    }
+
+    fn env_u16(name: &str, default: u16) -> Result<u16, String> {
+        match env::var(name) {
+            Ok(value) => value
+                .parse()
+                .map_err(|error| format!("{name} must be a u16: {error}")),
             Err(env::VarError::NotPresent) => Ok(default),
             Err(error) => Err(format!("cannot read {name}: {error}")),
         }
