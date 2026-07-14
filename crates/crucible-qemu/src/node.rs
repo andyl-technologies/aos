@@ -314,13 +314,29 @@ impl QemuNodeChild {
     }
 }
 
+/// Bounded deadline for reaping a force-killed child in [`QemuNodeChild::drop`].
+///
+/// A wedged QEMU (for example blocked in uninterruptible kernel sleep on a stuck
+/// host ioctl) can outlive a `SIGKILL` until the kernel operation completes, so
+/// the destructor bounds its reap to this deadline and abandons the process
+/// rather than blocking the dropping thread forever.
+const DROP_REAP_DEADLINE: Duration = Duration::from_secs(5);
+
 impl Drop for QemuNodeChild {
     fn drop(&mut self) {
         if self.reaped {
             return;
         }
+        // Force-kill (SIGKILL) and reap within a hard deadline. A blocking
+        // `wait()` here would hang teardown indefinitely on a wedged child;
+        // `wait_child` polls non-blockingly up to `DROP_REAP_DEADLINE` and then
+        // abandons. `reaped` stays false on abandonment so the wrapper never
+        // claims a reap it did not observe; the process was already SIGKILL'd,
+        // so the OS reaps the zombie once it leaves any uninterruptible section.
+        // The destructor has no error channel and this crate's lint bans direct
+        // stderr diagnostics, so an abandonment is intentionally silent.
         let _ = self.child.kill();
-        if self.child.wait().is_ok() {
+        if let Ok(QemuChildWait::Exited) = wait_child(&mut self.child, DROP_REAP_DEADLINE) {
             self.reaped = true;
         }
     }
