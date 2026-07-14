@@ -283,6 +283,12 @@ pub struct TreeWalk {
     shaped_select_caches: SelectCacheMap<(u32, u32, usize), ShapedSelectCache>,
     record_select_caches: SelectCacheMap<(u32, u32, usize), RecordSelectCache>,
     hamt_select_caches: SelectCacheMap<(u32, u32, usize), HamtSelectCache>,
+    /// Resolved builtin per direct primop call site (module + IR node id).
+    ///
+    /// The lowered IR is immutable, so a `(module, node)` pair always names the
+    /// same builtin; memoizing the resolution replaces a per-call name hash with
+    /// an array index. See [`primop_builtin_cache`](self::primop_builtin_cache).
+    primop_builtin_cache: primop_builtin_cache::PrimopBuiltinCache,
     /// Per-site resolved shapes for static attrset literals
     /// ([`AttrShapeMode::Record`] only): a static site's key sequence is
     /// fixed, so its transition-tree walk resolves once and later
@@ -539,6 +545,7 @@ mod memo;
 mod parallel_demand;
 mod parallel_import;
 mod parallel_shape;
+mod primop_builtin_cache;
 mod region;
 mod relocation_identity;
 mod runtime_alloc;

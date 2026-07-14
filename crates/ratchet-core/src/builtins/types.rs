@@ -586,6 +586,16 @@ impl Builtin {
         self.name
     }
 
+    /// Returns the discriminant identifying this builtin declaration.
+    ///
+    /// The kind is a stable, `Copy` handle to the declaration: every field of a
+    /// [`Builtin`] is a compile-time constant of its kind, so [`Builtin::from_kind`]
+    /// reconstructs the identical declaration. Call-site resolution caches store
+    /// the kind rather than the wider record.
+    pub const fn kind(&self) -> BuiltinKind {
+        self.kind
+    }
+
     /// Returns the stable runtime/JIT symbol name view for this builtin.
     pub const fn runtime_symbol(&self) -> BuiltinRuntimeSymbol {
         BuiltinRuntimeSymbol::new(self.name)

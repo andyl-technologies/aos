@@ -276,6 +276,7 @@ mod parallel_demand_pool;
 mod parallel_shared_heap;
 mod parse;
 mod path_store;
+mod primop_dispatch_cache;
 mod properties;
 mod regex;
 mod regex_ere;

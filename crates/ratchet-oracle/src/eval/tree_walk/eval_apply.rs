@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Largest argument count any direct-lowered builtin call site can have.
+///
+/// The widest [`BuiltinDirect`] shape is `StrictTernary` (three arguments), so a
+/// child slice no longer than this fits in the stack buffer used by
+/// [`TreeWalk::eval_primop`]. A longer slice cannot be a valid direct call and is
+/// routed to the allocating path, where the arity check rejects it.
+const MAX_DIRECT_PRIMOP_ARITY: usize = 3;
+
 impl TreeWalk {
     pub(super) fn eval_let(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Let {
@@ -242,27 +250,68 @@ impl TreeWalk {
             }
             _ => return Err(self.invalid_payload(id, node, "primop payload")),
         };
-        let name = self.symbols.resolve(symbol).ok_or_else(|| {
-            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        let module = self.current_module;
+        // Resolve the builtin for this call site. The lowered IR is immutable, so
+        // a `(module, node)` pair always names the same builtin; only successful
+        // resolutions are cached, and unknown-symbol / unsupported-primop sites
+        // fall through to the registry on every call so their diagnostics are
+        // byte-identical across repeats.
+        let builtin = match self.primop_builtin_cache.get(module, id) {
+            Some(kind) => {
+                self.primop_builtin_cache.record_hit();
+                Builtin::from_kind(kind)
+            }
+            None => {
+                let name = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+                })?;
+                // Preserve the original diagnostic order: an invalid child slice is
+                // reported before an unsupported primop.
+                if self.current_ir().arena.child_slice(args).is_none() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                        node.span,
+                    ));
+                }
+                let Some(builtin) = lookup_builtin(name) else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                        node.span,
+                    ));
+                };
+                self.primop_builtin_cache.record_miss();
+                self.primop_builtin_cache.insert(module, id, builtin.kind());
+                builtin
+            }
+        };
+
+        // Fetch the argument node ids without a per-call heap allocation. Direct
+        // primops have bounded arity, so the common case copies the ids into a
+        // fixed stack buffer; a slice longer than any direct arity cannot be a
+        // valid direct call and is routed to the (allocating) arity-check path.
+        let call = BuiltinCall::new(id, node.span, symbol);
+        let child = self.current_ir().arena.child_slice(args).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                node.span,
+            )
         })?;
-        let args = self
-            .current_ir()
-            .arena
-            .child_slice(args)
-            .ok_or_else(|| {
+        let len = child.len();
+        if len <= MAX_DIRECT_PRIMOP_ARITY {
+            let mut buffer = [IrId::new(0); MAX_DIRECT_PRIMOP_ARITY];
+            buffer[..len].copy_from_slice(child);
+            builtin.apply_direct(self, call, node, &buffer[..len])
+        } else {
+            let mut buffer = Vec::new();
+            buffer.try_reserve_exact(len).map_err(|_| {
                 TreeWalkError::new(
-                    TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                    TreeWalkErrorKind::ListAllocationFailed { id, len },
                     node.span,
                 )
-            })?
-            .to_vec();
-        let Some(builtin) = lookup_builtin(name) else {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
-                node.span,
-            ));
-        };
-        builtin.apply_direct(self, BuiltinCall::new(id, node.span, symbol), node, &args)
+            })?;
+            buffer.extend_from_slice(child);
+            builtin.apply_direct(self, call, node, &buffer)
+        }
     }
 
     pub(super) fn eval_strict_unary_primop_value(

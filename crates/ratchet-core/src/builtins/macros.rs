@@ -50,6 +50,20 @@ macro_rules! define_builtins {
         )*
 
         impl Builtin {
+            /// Reconstructs the declaration for a builtin kind.
+            ///
+            /// Every field of a [`Builtin`] is a compile-time constant of its
+            /// [`BuiltinKind`], so this is the exact inverse of [`Builtin::kind`]:
+            /// `Builtin::from_kind(b.kind()) == b` for every declaration. Resolution
+            /// caches that store only the kind use this to recover the full record.
+            pub const fn from_kind(kind: BuiltinKind) -> Self {
+                match kind {
+                    $(
+                        BuiltinKind::$ty => <$ty as BuiltinDefinition>::DECLARATION,
+                    )*
+                }
+            }
+
             /// Returns whether this builtin is visible in the current evaluator options.
             pub fn is_available<E>(self, eval: &E) -> bool
             where
