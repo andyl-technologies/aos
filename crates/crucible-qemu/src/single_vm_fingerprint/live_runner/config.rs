@@ -905,7 +905,11 @@ mod tests {
             .map(|pair| pair[1].to_string_lossy().into_owned())
             .ok_or("missing plugin argument")?;
         assert!(plugin.contains("cadence=100000,stop_at=1000000"));
-        assert!(plugin.contains("extended=on,mem_events=on,rr_switch_events=on,vcpus=4"));
+        assert!(
+            plugin.contains(
+                "extended=on,mem_events=on,rr_switch_events=on,terminal_horizon=on,vcpus=4"
+            )
+        );
         assert!(plugin.contains(&format!(
             "launch_digest={}",
             lower_hex(&config.verified_run_inputs().launch_definition_digest())
