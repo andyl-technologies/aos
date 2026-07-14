@@ -736,10 +736,6 @@ fn scripted_qmp_with_written<const N: usize>(
     )
 }
 
-fn written_json_lines(stream: &ScriptedQmpStream) -> Result<Vec<Value>, serde_json::Error> {
-    written_json_lines_from_shared(&stream.written)
-}
-
 fn written_json_lines_from_shared(
     written: &SharedQmpWritten,
 ) -> Result<Vec<Value>, serde_json::Error> {

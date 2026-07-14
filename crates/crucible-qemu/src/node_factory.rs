@@ -38,11 +38,6 @@ impl<S> QemuQmpShutdownOnlyControlChannel<S> {
     pub const fn new(vmstate: QemuQmpVmStateControlChannel<S>) -> Self {
         Self { vmstate }
     }
-
-    #[cfg(test)]
-    fn into_inner(self) -> QemuQmpVmStateControlChannel<S> {
-        self.vmstate
-    }
 }
 
 impl<S> QemuQmpMachineControlChannel for QemuQmpShutdownOnlyControlChannel<S>

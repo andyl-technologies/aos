@@ -42,9 +42,9 @@ mod linux {
     use crucible_qemu::{
         PLUGIN_FINGERPRINT_TARGET_ICOUNTS, PluginFingerprintRunner, PluginFingerprintRunnerConfig,
         SingleVmFingerprintGateReport, SingleVmFingerprintProbeRequest,
-        SingleVmFingerprintProbeRunner, SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal,
-        SingleVmFingerprintScenario, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
-        run_single_vm_fingerprint_gate,
+        SingleVmFingerprintProbeRunner, SingleVmFingerprintRunInputs,
+        SingleVmFingerprintRunOrdinal, SingleVmFingerprintScenario, SingleVmHostProfile,
+        SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
     };
 
     /// Default vCPU count when `CRUCIBLE_FP_SMP_VCPUS` is unset.
@@ -81,9 +81,11 @@ mod linux {
         let timeout_secs = env_u64("CRUCIBLE_FP_TIMEOUT_SECS", 240)?;
         let probe_icount = env_u64("CRUCIBLE_FP_PROBE_ICOUNT", 6_000_000)?;
         let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
-        let memory_mib =
-            u32::try_from(env_u64("CRUCIBLE_FP_MEMORY_MIB", u64::from(DEFAULT_MEMORY_MIB))?)
-                .map_err(|_| String::from("CRUCIBLE_FP_MEMORY_MIB exceeds u32"))?;
+        let memory_mib = u32::try_from(env_u64(
+            "CRUCIBLE_FP_MEMORY_MIB",
+            u64::from(DEFAULT_MEMORY_MIB),
+        )?)
+        .map_err(|_| String::from("CRUCIBLE_FP_MEMORY_MIB exceeds u32"))?;
 
         let mut config =
             PluginFingerprintRunnerConfig::new(&qemu, &plugin, &kernel, &firmware, &run_directory)
