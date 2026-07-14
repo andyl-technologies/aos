@@ -75,13 +75,16 @@ in
             PASS
             gate=gate:patch-microtests
             patch=${patchName}
+            patched_fixture_exercised=true
+            stock_negative_control=true
+            qemu_package=${qemuPackage}
+            qemu_package_version=${qemuPackage.version}
             observer_budget_clamped=true
             observer_callback_bql_held=true
             instruction_callback_vmstate_serialization=false
             exact_horizon_boundary=true
             non_cadence_live_horizon=true
             exact_final_observed_icount_required=true
-            qemu_package=${qemuPackage}
             RESULT
           '';
         }

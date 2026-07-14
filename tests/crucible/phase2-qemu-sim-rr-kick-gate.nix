@@ -53,14 +53,17 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            gate=gate:patch-microtests
-            patch=${patchName}
-            rr_kick_timer_sim_gated=true
-            rr_kick_timer_early_return=true
-            qemu_package=${qemuPackage}
-            RESULT
+            {
+              echo PASS
+              echo gate=gate:patch-microtests
+              echo patch=${patchName}
+              echo patched_fixture_exercised=true
+              echo stock_negative_control=true
+              echo qemu_package=${qemuPackage}
+              echo qemu_package_version=${qemuPackage.version}
+              echo rr_kick_timer_sim_gated=true
+              echo rr_kick_timer_early_return=true
+            } > "$out/result"
           '';
         }
       ];
