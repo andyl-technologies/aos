@@ -1,0 +1,116 @@
+# Heap-image snapshot: production wiring spec (doc 31 §1 step 4)
+
+**Status: SPEC, with a STOP-CONDITION FINDING. The storage tier, flag gate,
+and capture seam are cleanly codeable today. The restore seam — the part that
+banks the cold-start win — does NOT fit cleanly into the evaluator init path:
+it is blocked on four evaluator-identity gaps enumerated below, the largest of
+which is the cross-evaluator symbol re-intern workstream the step-3 spec
+already recorded as a deliberate boundary. Per the lead's ruling ("stop and
+report the shape rather than forcing it"), increments W3+ do not land until
+W1/W2 are ruled and built.**
+
+## Goal
+
+The step-3 serializer proves capture→restore: the real forced stdenv prelude
+captures zero-refused and re-derives its `.drv` byte-identical through a heap
+swap **in the same evaluator**. The production prize is the cold-start
+prelude-force wall (measured 39-85% of cold depending on corpus): a cold
+evaluator should *restore* a persisted prelude image instead of re-forcing.
+
+Wiring surface (the lead's step-4 scope):
+
+1. image storage under `AOS_NIX_CACHE` (`snapshots/` tier);
+2. capture seam: persist post-eval, off the hot path;
+3. restore seam: at evaluator init, restore instead of re-forcing;
+4. flag gate `AOS_NIX_SNAPSHOT=1`, default OFF (the doc-14 opt-in pattern);
+5. paired cold A/B measurement + byte-parity battery with the flag ON.
+
+## The stop-condition finding: what a fresh evaluator does not share
+
+Step 3's acceptance restores into the *same* `TreeWalk` that captured (heap
+swapped under it). A production restore target is a **fresh evaluator in a
+fresh process**, and four pieces of identity the restored values depend on are
+per-evaluator state, not heap state:
+
+1. **Module table.** `TreeWalk.modules` starts with only the root expression's
+   module. Every closure code ref then fails fingerprint resolution and
+   restore refuses with `ClosureCodeDrift` — safe, loud, and total. Restore
+   must first *reload* the captured modules (parse/lower each manifest entry,
+   parse-cache-backed) so the resolver can re-link fingerprints to live ids.
+2. **Symbol table.** `TreeWalk.symbols = ir.symbols.clone()`
+   (`eval_core.rs`): interning history is per-evaluator and depends on the
+   root expression, so a fresh evaluator assigns different ids to the same
+   names. Raw symbol ids ride in attrs entry keys (arena-inline and
+   owned-attrs segments), primop payload symbols, and builtin-attr thunk
+   symbols. Restoring them un-rewritten **silently rebinds attribute names** —
+   the exact hazard the step-3 spec's cross-process section documented and
+   deferred. This is the prerequisite workstream, not an integration detail.
+3. **Import cache.** `TreeWalk.import_cache` maps import paths to evaluated
+   values. Even with a perfectly restored heap, a fresh eval of
+   `import ./lib` re-forces from scratch unless the restore seam seeds the
+   import cache with the captured prelude entry values. The image must
+   therefore carry `(import path identity, root value word)` seeds.
+4. **Shape table.** The default `AttrShapeMode::Transient` gives every
+   evaluator a live `ShapeTable`, and heap attrs metadata carries projected
+   `ShapeId`s. Shape ids are assigned per-evaluator by transition-tree walk
+   order, so restored metadata ids are foreign in a fresh table: shaped select
+   paths would resolve against the wrong (or absent) shapes. Options: a
+   serialized shape-log replica adoption (the parallel-mode prefix-replica
+   mechanism is precedent), a shape-id rewrite pass alongside symbols, or
+   restoring with shape projection off for restored objects (metadata reset to
+   unshaped, falling back to flat selects — semantically safe, costs the
+   shaped-select optimization on restored attrs).
+
+Gap 1 fails loud today (the drift-refusal tests prove it). Gaps 2 and 4 fail
+*silently* if forced — which is why the seam is not forced.
+
+## Increment map
+
+1. **W1 — symbol identity across evaluators.** Serialize the capture-time
+   symbol table (names in id order; a `symbols` segment or manifest field).
+   Restore builds `old id -> new id` by interning each name into the fresh
+   table, then rewrites every symbol-carrying location: arena-inline attrs
+   entry keys (a keys-variant of the reviewed
+   `FlatAttrs::rewrite_entry_values` door — same exclusivity contract, same
+   pin-map treatment), owned-attrs segment keys (plain data, rewritten at
+   decode), primop payload symbols, and builtin-attr thunk symbols (rewritten
+   at decode). Lexicographic iteration permutations are byte-order over
+   *names* and names are unchanged, so permutations survive; entry arrays are
+   sorted by symbol *id*, so rewritten entries must be re-sorted and the
+   inverse source permutation recomputed at decode (bounded, restore-only
+   cost). Acceptance: capture in evaluator A, restore into a fresh evaluator
+   B with a different root expression; attribute selection and `attrNames`
+   over the restored prelude are byte-identical to B's cold eval.
+2. **W2 — module manifest + import seeding.** The snapshot file wraps the
+   heap image with a manifest: `(source name, path, fingerprint)` per
+   captured module (capture-time `snapshot_code_identity` already holds the
+   fingerprints) and `(import path identity, root value word)` per prelude
+   import entry. Restore-at-init parses/lowers each manifest module
+   (parse-cache-backed — this is the S0-optimized share, not the force wall),
+   builds the resolver from the *fresh* module table, restores the heap, and
+   seeds the import cache. Shape metadata: v1 restores with the safe fallback
+   (unshaped metadata reset) unless the shape-log adoption is ruled in.
+3. **W3 — storage tier + flag + capture seam.** `AOS_NIX_CACHE`-rooted
+   `snapshots/v<IMAGE_VERSION>/<key>.aosimg`, keyed by
+   `(prelude entry fingerprint domain, eval-system, carrier)`; the key only
+   *locates* a candidate — staleness is enforced by refuse-on-drift at
+   restore, never by trusting the key. Capture runs post-eval (write-behind
+   worker or post-outcome hook — never the hot path) in a dedicated
+   prelude-warmer flow first (the probe flow productized: force prelude,
+   collapse, capture), gated by `AOS_NIX_SNAPSHOT=1` (default OFF).
+4. **W4 — restore seam at init.** Flag-gated: locate candidate image, run W2
+   restore; any refusal (drift, malformed, version) falls back to the normal
+   cold path with a counter, never an error. Byte-parity battery runs with
+   the flag ON both legs.
+5. **W5 — the measurement.** Paired cold A/B (flag off vs on, warm image) on
+   `systems.server.build.toplevel` and a package attr; report honest numbers
+   either way against the 39-85% prelude-force share. This is the ROI gate
+   for keeping the tier.
+
+## Non-goals (recorded)
+
+- Restoring arbitrary (non-prelude) heaps across evaluators.
+- Trusting the storage key for validity: refuse-on-drift stays the only
+  staleness authority.
+- Cross-machine image portability beyond what W1's re-intern already grants
+  (endianness/layout are pinned by the wire format; carrier is in the key).
