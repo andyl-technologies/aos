@@ -355,3 +355,23 @@ fn lexicographic_order_uses_current_symbol_rank_snapshot() {
         ]
     );
 }
+
+/// The default-deny storage classifier: owned arrays classify as `Owned`
+/// (must ride an owned-attrs payload segment at heap-image capture) and the
+/// classifier match is wildcard-free, so a new `AttrsStorage` variant fails
+/// to compile in `storage_kind` before it can silently restore dangling.
+#[cfg(feature = "candidate_c_value")]
+#[test]
+fn storage_kind_classifies_owned_arrays_for_capture() {
+    let entries = vec![
+        AttrEntry::new(Symbol::new(1), Value::int(1)),
+        AttrEntry::new(Symbol::new(2), Value::int(2)),
+    ];
+    let attrs = FlatAttrs::from_restored_parts(entries, vec![0, 1], vec![0, 1]);
+    assert_eq!(attrs.storage_kind(), super::AttrsStorageKind::Owned);
+    assert_eq!(
+        FlatAttrs::empty().storage_kind(),
+        super::AttrsStorageKind::Owned,
+        "an empty attrset is owned-storage (empty Vecs; trivially safe either way)"
+    );
+}

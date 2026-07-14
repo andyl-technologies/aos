@@ -105,6 +105,26 @@ enum AttrsStorage {
     },
 }
 
+/// The storage class behind one attrset's arrays, as heap-image capture must
+/// treat it (RFC-0007 doc 31 §1).
+///
+/// Every variant of [`AttrsStorage`] (private) maps to exactly one capture
+/// strategy here, through a wildcard-free match in
+/// [`FlatAttrs::storage_kind`]; snapshot capture then matches this enum
+/// wildcard-free again. A future storage class therefore cannot reach capture
+/// without an explicit decision at both sites.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttrsStorageKind {
+    /// Arrays owned by process-allocator `Vec`s: the dumped headers dangle
+    /// after restore, so capture must serialize an owned-attrs payload
+    /// segment.
+    Owned,
+    /// Arrays inlined in the flat allocation: the bytes ride the dumped
+    /// lanes and a relocation-entry witness rebase suffices.
+    FlatWitness,
+}
+
 /// A flat immutable attribute set.
 ///
 /// The attrset stores only [`Symbol`] ids. Selection APIs compare those ids
@@ -206,15 +226,19 @@ impl FlatAttrs {
         }
     }
 
-    /// Returns whether this attrset's arrays use owned (`Vec`) storage.
+    /// Classifies this attrset's array storage for heap-image capture.
     ///
-    /// Over-threshold attrsets interned into the flat store keep their moved
-    /// owned arrays (a measured churn-workload decision), so heap-image
-    /// capture must serialize them as payload segments — the dumped `Vec`
-    /// headers would otherwise restore dangling.
+    /// The match is deliberately wildcard-free: adding an [`AttrsStorage`]
+    /// variant fails to compile here, forcing an explicit capture-strategy
+    /// decision (the default-deny guard against a new owned-storage class
+    /// silently restoring dangling — the `AOS_NIX_SNAPSHOT_VERIFY` audit
+    /// cannot see out-pointing storage).
     #[cfg(feature = "candidate_c_value")]
-    pub fn has_owned_storage(&self) -> bool {
-        matches!(&self.storage, AttrsStorage::Owned { .. })
+    pub fn storage_kind(&self) -> AttrsStorageKind {
+        match &self.storage {
+            AttrsStorage::Owned { .. } => AttrsStorageKind::Owned,
+            AttrsStorage::Flat { .. } => AttrsStorageKind::FlatWitness,
+        }
     }
 
     /// Rebuilds an attrset from restored owned arrays (RFC-0007 doc 31 §1

@@ -56,8 +56,9 @@ use ratchet_value::heap::{
     restore_reservation,
 };
 
+use crate::attrs::AttrsStorageKind;
 use crate::compile::builtins::{PINNED_NIX_VERSION, lookup_builtin};
-use crate::string::{ContextElement, ContextKind, StringContext};
+use crate::string::{ContextElement, ContextKind, StringBytesStorageKind, StringContext};
 use crate::syntax::{Span, Symbol};
 use crate::value::Value;
 use crate::value::compressed::CompressedValueWord;
@@ -158,48 +159,63 @@ impl EvalHeap {
         let mut context_payloads = Vec::new();
         let mut string_payloads = Vec::new();
         for object in self.flat.iter() {
-            // An over-threshold string keeps a moved owned `Vec<u8>` behind the
-            // payload; its dumped header would restore dangling, so the bytes
-            // (and context) ride a payload segment instead of a relocation.
-            if object.object().payload().has_owned_bytes() {
-                let index = self
-                    .flat_arena
-                    .index_for_pointer(object.ptr())
-                    .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
-                string_payloads.push(OwnedStringPayload {
-                    index: index.raw(),
-                    string_bytes: owned_data::encode_owned_string(object.object().payload()),
-                });
-                continue;
+            // Default-deny storage routing (no wildcard arm): a new string
+            // storage class must pick a capture strategy here or fail to
+            // compile — the completeness audit cannot see out-pointing
+            // storage, so this match is the standing guard.
+            match object.object().payload().bytes_storage_kind() {
+                // An over-threshold string keeps a moved owned `Vec<u8>`
+                // behind the payload; its dumped header would restore
+                // dangling, so the bytes (and context) ride a payload segment
+                // instead of a relocation.
+                StringBytesStorageKind::Owned => {
+                    let index = self
+                        .flat_arena
+                        .index_for_pointer(object.ptr())
+                        .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+                    string_payloads.push(OwnedStringPayload {
+                        index: index.raw(),
+                        string_bytes: owned_data::encode_owned_string(object.object().payload()),
+                    });
+                }
+                StringBytesStorageKind::FlatWitness => {
+                    let entry = self.relocation_entry_for(object.ptr(), object.object().kind())?;
+                    // A non-empty string context is an out-of-arena
+                    // `Arc`-backed set; the relocation entry rebases the
+                    // inline bytes, and this supplemental payload (keyed by
+                    // the same index) carries the context to rebuild.
+                    let context = object.object().payload().context();
+                    if !context.is_empty() {
+                        context_payloads.push(ContextPayload {
+                            index: entry.index,
+                            context_bytes: encode_context(context),
+                        });
+                    }
+                    relocations.push(entry);
+                }
             }
-            let entry = self.relocation_entry_for(object.ptr(), object.object().kind())?;
-            // A non-empty string context is an out-of-arena `Arc`-backed set; the
-            // relocation entry rebases the inline bytes, and this supplemental
-            // payload (keyed by the same index) carries the context to rebuild.
-            let context = object.object().payload().context();
-            if !context.is_empty() {
-                context_payloads.push(ContextPayload {
-                    index: entry.index,
-                    context_bytes: encode_context(context),
-                });
-            }
-            relocations.push(entry);
         }
         let mut attrs_payloads = Vec::new();
         for object in self.flat_attrs.iter() {
-            // Over-threshold attrsets keep moved owned arrays; same discipline.
-            if object.object().payload().attrs.has_owned_storage() {
-                let index = self
-                    .flat_arena
-                    .index_for_pointer(object.ptr())
-                    .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
-                attrs_payloads.push(OwnedAttrsPayload {
-                    index: index.raw(),
-                    attrs_bytes: owned_data::encode_owned_attrs(&object.object().payload().attrs),
-                });
-                continue;
+            // Same default-deny routing for attrset array storage.
+            match object.object().payload().attrs.storage_kind() {
+                AttrsStorageKind::Owned => {
+                    let index = self
+                        .flat_arena
+                        .index_for_pointer(object.ptr())
+                        .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+                    attrs_payloads.push(OwnedAttrsPayload {
+                        index: index.raw(),
+                        attrs_bytes: owned_data::encode_owned_attrs(
+                            &object.object().payload().attrs,
+                        ),
+                    });
+                }
+                AttrsStorageKind::FlatWitness => {
+                    relocations
+                        .push(self.relocation_entry_for(object.ptr(), FlatObjectKind::Attrs)?);
+                }
             }
-            relocations.push(self.relocation_entry_for(object.ptr(), FlatObjectKind::Attrs)?);
         }
 
         // Each flat list's element `Vec` lives outside the reservation, so the

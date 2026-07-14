@@ -49,6 +49,26 @@ impl NixStringBytes {
     }
 }
 
+/// The storage class behind one string's bytes, as heap-image capture must
+/// treat it (RFC-0007 doc 31 §1).
+///
+/// Every variant of [`NixStringBytes`] (private) maps to exactly one capture
+/// strategy here, through a wildcard-free match in
+/// [`NixString::bytes_storage_kind`]; snapshot capture then matches this enum
+/// wildcard-free again. A future storage class therefore cannot reach capture
+/// without an explicit decision at both sites.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StringBytesStorageKind {
+    /// Bytes owned by a process-allocator `Vec`: the dumped header dangles
+    /// after restore, so capture must serialize an owned-string payload
+    /// segment.
+    Owned,
+    /// Bytes inlined in the flat allocation: a relocation-entry witness
+    /// rebase suffices.
+    FlatWitness,
+}
+
 /// A Nix byte string with its dependency context.
 ///
 /// Equality and hashing include both the raw bytes and the full context, and
@@ -138,13 +158,19 @@ impl NixString {
     }
 
     /// Returns the string's raw bytes.
-    /// Returns whether the byte storage is an owned `Vec` (RFC-0007 doc 31
-    /// §1 heap-image capture: over-threshold strings keep their moved owned
-    /// buffer, which must serialize as a payload segment — the dumped `Vec`
-    /// header would otherwise restore dangling).
+    /// Classifies this string's byte storage for heap-image capture.
+    ///
+    /// The match is deliberately wildcard-free: adding a [`NixStringBytes`]
+    /// variant fails to compile here, forcing an explicit capture-strategy
+    /// decision (the default-deny guard against a new owned-storage class
+    /// silently restoring dangling — the `AOS_NIX_SNAPSHOT_VERIFY` audit
+    /// cannot see out-pointing storage).
     #[cfg(feature = "candidate_c_value")]
-    pub(crate) fn has_owned_bytes(&self) -> bool {
-        matches!(&self.bytes, NixStringBytes::Owned(_))
+    pub(crate) fn bytes_storage_kind(&self) -> StringBytesStorageKind {
+        match &self.bytes {
+            NixStringBytes::Owned(_) => StringBytesStorageKind::Owned,
+            NixStringBytes::Flat(_) => StringBytesStorageKind::FlatWitness,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -383,6 +409,18 @@ impl From<Vec<u8>> for NixString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default-deny storage classifier: `Vec`-owned bytes classify as
+    /// `Owned` (must ride an owned-string payload segment at heap-image
+    /// capture) and the classifier match is wildcard-free, so a new
+    /// `NixStringBytes` variant fails to compile in `bytes_storage_kind`
+    /// before it can silently restore dangling.
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn bytes_storage_kind_classifies_owned_bytes_for_capture() {
+        let owned = NixString::from_bytes(b"hello".to_vec());
+        assert_eq!(owned.bytes_storage_kind(), StringBytesStorageKind::Owned);
+    }
 
     fn opaque(path: &[u8]) -> ContextElement {
         ContextElement::opaque_path(path.to_vec()).expect("opaque context builds")

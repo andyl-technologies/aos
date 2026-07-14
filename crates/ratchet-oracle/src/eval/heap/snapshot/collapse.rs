@@ -104,10 +104,14 @@ impl EvalHeap {
             bool,
         )> = Vec::new();
         for object in self.flat_closures.iter() {
+            // No wildcard arm: a new closure payload class must decide its
+            // collapse treatment explicitly (the default-deny discipline).
             let thunk = match object.object().payload() {
                 FlatClosurePayload::Thunk(thunk) => thunk,
                 FlatClosurePayload::SharedThunk(thunk) => &**thunk,
-                _ => continue,
+                FlatClosurePayload::Lambda(_)
+                | FlatClosurePayload::Primop(_)
+                | FlatClosurePayload::Retired(_) => continue,
             };
             let index = self
                 .flat_arena
