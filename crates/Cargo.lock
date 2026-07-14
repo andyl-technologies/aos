@@ -1648,6 +1648,7 @@ name = "crucible-qemu"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "crucible-device",
  "crucible-protocol",
  "crucible-shmem",
  "libc",

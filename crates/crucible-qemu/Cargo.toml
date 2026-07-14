@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 crucible = { path = "../crucible" }
+crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
