@@ -210,6 +210,10 @@ impl TreeWalk {
         // the tracing target below because a benchmark run captures this
         // evaluator's stderr, not the `aos_nix::eval::stats` trace subscriber.
         crate::eval::env::emit_env_apply_histogram_report();
+        // FV-6 frame-arena ceiling probe (RFC-0007): dump the per-frame
+        // alloc-cost line on the same `AOS_NIX_EVAL_STATS` stderr path. A no-op
+        // unless `AOS_NIX_FRAME_PROBE=1` recorded allocations this run.
+        crate::eval::env::emit_frame_probe_report();
         // Cache-tax attribution (RFC-0007 §P4): dump the demand-node key-finalize
         // totals on the same `AOS_NIX_EVAL_STATS` stderr path. A no-op unless a
         // key was finalized this process (cache-on evals only).

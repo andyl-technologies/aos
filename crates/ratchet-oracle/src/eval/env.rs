@@ -41,12 +41,14 @@ use crate::value::{HeapObject, Value, ValueTag};
 
 mod apply_probe;
 mod capture;
+mod frame_probe;
 
 #[cfg(test)]
 pub(crate) use apply_probe::env_apply_histogram;
 pub(crate) use apply_probe::{emit_env_apply_histogram_report, note_env_install};
 pub use capture::{EvalEnv, EvalEnvFrames};
 pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer};
+pub(crate) use frame_probe::emit_frame_probe_report;
 
 /// Process-wide environment capture/allocation counters (RFC-0007 doc 30 FV-0).
 ///
@@ -734,6 +736,25 @@ impl EvalFrame {
         capture_stats::note_env_frame_alloc(
             slot_count.saturating_mul(std::mem::size_of::<AtomicValueCell>()),
         );
+        // FV-6 frame-arena ceiling probe (RFC-0007): time the allocation in
+        // context only when `AOS_NIX_FRAME_PROBE=1`, so a normal eval pays
+        // nothing.
+        if frame_probe::should_time() {
+            let start = std::time::Instant::now();
+            let frame = Self::alloc(slot_count, parent);
+            frame_probe::note_alloc(start.elapsed().as_nanos() as u64, slot_count);
+            return frame;
+        }
+        Self::alloc(slot_count, parent)
+    }
+
+    /// Allocates a linked frame with `slot_count` null-initialized slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::FrameAllocationFailed`] if a heap-backed slot
+    /// vector cannot be reserved.
+    fn alloc(slot_count: usize, parent: Option<Arc<EvalFrame>>) -> Result<Arc<Self>, EvalEnvError> {
         let slots = if slot_count <= INLINE_SLOT_CAPACITY {
             // Small frames — the dominant class — store their cells inline; the
             // trailing cells past `slot_count` are inert null padding.
