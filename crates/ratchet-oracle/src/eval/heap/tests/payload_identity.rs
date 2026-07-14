@@ -79,7 +79,10 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "rebuild container structural hashes and hash-cons buckets",
     },
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/heap/roots.rs",
+        // The two diagnostic reads moved with `root_value_writeback_slot_mismatch`
+        // from `roots.rs` into this child module in the §2 file-size split; the
+        // call sites are verbatim-unchanged.
+        path: "ratchet-oracle/src/eval/heap/roots/root_writeback_types.rs",
         raw_representation: 2,
         address_identity_only: 0,
         relocation_sensitive: 0,
