@@ -170,6 +170,13 @@ impl TreeWalk {
     }
 
     pub(super) fn emit_stats_trace(stats: &EvalStats) {
+        // Env-flatten lever diagnostic (RFC-0007 §P1): dump the captured-env
+        // apply-count histogram to stderr on the `AOS_NIX_EVAL_STATS` path. A
+        // no-op unless the probe recorded installs (stats collection active),
+        // so it never fires on a normal eval. Emitted here rather than through
+        // the tracing target below because a benchmark run captures this
+        // evaluator's stderr, not the `aos_nix::eval::stats` trace subscriber.
+        crate::eval::env::emit_env_apply_histogram_report();
         tracing::debug!(
             target: "aos_nix::eval::stats",
             thunks_forced = stats.thunks_forced(),

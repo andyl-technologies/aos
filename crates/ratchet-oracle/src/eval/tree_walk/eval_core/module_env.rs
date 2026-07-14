@@ -553,6 +553,12 @@ impl TreeWalk {
         span: Span,
     ) -> Result<ActiveEvalEnv, TreeWalkError> {
         let frames = env.frames();
+        // Env-flatten lever diagnostic (RFC-0007 §P1): record this install
+        // against the captured environment's identity, only while stats
+        // collection is active so a normal eval pays nothing.
+        if self.options.eval_stats_dump() {
+            crate::eval::env::note_env_install(frames.last());
+        }
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(frames.len()).map_err(|_| {
             TreeWalkError::new(

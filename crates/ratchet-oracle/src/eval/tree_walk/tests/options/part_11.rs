@@ -810,3 +810,34 @@ fn builtin_surface_matches_pinned_flakes_golden_fixture() {
     assert_eq!(stats.matched, 1);
     assert_eq!(stats.mismatched, 0);
 }
+
+/// End-to-end wiring for the captured-environment apply-count probe (RFC-0007
+/// §P1 env-flatten lever): with stats collection enabled, evaluating an
+/// expression that applies a lambda several times records at least that many
+/// installs against the probe.
+///
+/// The probe is a process-wide cumulative counter, so this asserts a lower
+/// bound on the install delta rather than an absolute total — concurrent tests
+/// can only inflate it.
+#[test]
+fn env_apply_probe_records_installs_under_stats_dump() {
+    use crate::eval::env::env_apply_histogram;
+
+    let before = env_apply_histogram().map_or(0, |histogram| histogram.installs);
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_stats_dump(true);
+    // `f` captures the enclosing `let` frame and is applied three times, so a
+    // correctly wired probe records at least three installs of that captured
+    // environment.
+    let bytes =
+        eval_string_bytes_with_options(r#"let f = x: x; in "${f "a"}${f "b"}${f "c"}""#, options);
+    assert_eq!(bytes, b"abc");
+
+    let after = env_apply_histogram().expect("probe recorded installs under stats dump");
+    assert!(
+        after.installs >= before + 3,
+        "expected at least 3 new installs, before={before} after={}",
+        after.installs,
+    );
+}

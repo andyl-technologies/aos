@@ -30,8 +30,8 @@
 
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
 
@@ -39,8 +39,12 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use crate::compile::IrId;
 use crate::value::{HeapObject, Value, ValueTag};
 
+mod apply_probe;
 mod capture;
 
+#[cfg(test)]
+pub(crate) use apply_probe::env_apply_histogram;
+pub(crate) use apply_probe::{emit_env_apply_histogram_report, note_env_install};
 pub use capture::{EvalEnv, EvalEnvFrames};
 pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer};
 
