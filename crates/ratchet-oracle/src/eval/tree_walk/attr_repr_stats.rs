@@ -53,6 +53,22 @@ impl TreeWalk {
         span: Span,
         attrs: &FlatAttrs,
     ) -> Option<(ShapeHandle, u64)> {
+        // Bail before touching the per-entry key buffer when no shape table is
+        // active (`AttrShapeMode::Off`, or a demand-pool worker that never
+        // adopted one): the projection has no consumer, so the key copy and
+        // transition walk below would be pure dead work.
+        let Some(shape_table) = self.shape_table.as_ref() else {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                "skipping flat attr shape-census telemetry because no shape table is active"
+            );
+            return None;
+        };
+        let mut shape = shape_table.empty();
+
         let mut keys = Vec::new();
         if keys.try_reserve_exact(attrs.len()).is_err() {
             tracing::debug!(
@@ -66,18 +82,6 @@ impl TreeWalk {
             return None;
         }
         keys.extend(attrs.iter_source_order().map(|entry| entry.key));
-
-        let Some(shape_table) = self.shape_table.as_ref() else {
-            tracing::debug!(
-                target: "aos_nix::eval::attr_telemetry",
-                node = id.as_u32(),
-                span_start = span.start,
-                span_end = span.end,
-                "skipping flat attr shape-census telemetry because no shape table is active"
-            );
-            return None;
-        };
-        let mut shape = shape_table.empty();
         let mut transitions = 0u64;
         for key in keys {
             // Transitions route through the parallel-aware choke point: local
@@ -158,11 +162,32 @@ impl TreeWalk {
             projected_shape,
             attrs,
         )?;
-        if let Some((census_shape, transitions)) = shape_telemetry {
-            self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);
-        }
-        if let Some(decision) = decision {
-            self.record_classified_attr_repr_decision_telemetry(id, span, construction, decision);
+        // The projected shape and representation kind above are load-bearing:
+        // both are stored in the value's metadata and route later selects
+        // (`select_static_attr_with_cache`). Only the census and
+        // representation-decision *recording* below feed telemetry with no
+        // consumer in production binaries, so gate them behind the per-merge
+        // telemetry toggle exactly as
+        // [`Self::alloc_flat_attrs_record_shape_mode`] does — while still
+        // folding the transition count into `stats` so that counter stays
+        // identical whether or not telemetry is recorded.
+        if self.attr_update_telemetry_enabled {
+            if let Some((census_shape, transitions)) = shape_telemetry {
+                self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);
+            }
+            if let Some(decision) = decision {
+                self.record_classified_attr_repr_decision_telemetry(
+                    id,
+                    span,
+                    construction,
+                    decision,
+                );
+            }
+        } else if let Some((_, transitions)) = shape_telemetry {
+            if transitions > 0 {
+                self.stats.shape_transitions =
+                    self.stats.shape_transitions.saturating_add(transitions);
+            }
         }
         Ok(value)
     }
