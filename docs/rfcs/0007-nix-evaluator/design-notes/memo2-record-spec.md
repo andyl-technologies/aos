@@ -86,13 +86,16 @@ BoundaryIdentity(P) =
         ‖ LoweredIrFingerprint(P.nix)
         ‖ for f in formals(P) in canonical (sorted) order:
             dep_component(f)
+        ‖ frameworkIdentity                         # global; see §2.4 (soundness)
         ‖ options_identity )                        # validity context folded in, per root cutoff
 
 dep_component(f) =
   | BoundaryIdentity(Q)     if formal f resolves to package Q (Q.nix exists)
   | builtin_id(f)           if f is a framework reference (mkDerivation, fetchurl,
-  |                           stdenv pass-throughs …) — a stable per-name constant
-  |                           salted by the crate version, NOT a package cone edge
+  |                           stdenv pass-throughs …) — a per-name SALT only, to
+  |                           distinguish *which* framework a formal names. It does
+  |                           NOT carry framework-edit invalidation; frameworkIdentity
+  |                           (§2.4) does, folded once into every key.
   | override_source_id(f)   if f is a shared-source override arg (linuxSource, …) —
   |                           the fixed-output fetch identity (its output hash)
   | ⟂ DECLINE the boundary  otherwise (e.g. linux `extraConfig`, a dynamic arg)
@@ -101,7 +104,7 @@ dep_component(f) =
 `LoweredIrFingerprint` is the per-file post-remap blake3 the parse cache already
 persists (doc 29 §3.1; `cache/parse/mod.rs`). The key is a Merkle over the
 package's own dependency cone — `O(edges)`, cycle-safe, memoized once per
-package.
+package — plus the global `frameworkIdentity` that §2.4 proves is required.
 
 ### 2.2 Where the Merkle memo lives and when it invalidates
 
@@ -139,6 +142,59 @@ Not in the v1 key. In-file scalars (version strings, flags) are already covered
 by `LoweredIrFingerprint(P.nix)`. The forced-value dedup index is an optional,
 separately-versioned layer (M2-widen), never a substitute for the source
 identity, and only if a later measurement shows cross-package value-dedup mass.
+
+### 2.4 Framework-source soundness — VERIFIED, and why the slice does not cover it
+
+The review flagged the exact silent-wrong-drv class we refuse: a boundary's key
+components for framework formals (`mkDerivation`, `fetchurl`, stdenv
+pass-throughs) are static per-name salts, so a **stdenv/mkDerivation source edit
+does not change them**. That is sound *only if* the framework source edit is
+caught elsewhere — either the boundary's revalidated impure slice covers those
+`.nix` reads, or a framework fingerprint is in the key. I verified the slice does
+**not** cover them, so the key must:
+
+**Verification (against `pkgs/default.nix`).** The framework functions are
+constructed **once, at the top of `pkgs/default.nix`'s `let`**, and captured in
+`self`:
+`mkDerivation = args: rawMkDerivation (…)` where `rawMkDerivation = stdenv.mkDerivation`;
+`fetchurl = lib.fetchurl`; `bootstrapTools = stdenv.cc`; and `stdenv` / `lib`
+arrive as the `{ lib, stdenv }` arguments (built *outside* `pkgs`). Calling
+`mkDerivation {…}` per package **invokes a captured closure — it imports no
+framework `.nix` file.** Therefore, during a package boundary's evaluation, the
+impure trace captures **no** framework source `Import`/`ReadFile` beneath the
+boundary. Worse than "not captured": any framework code imported *lazily* lands
+in whichever boundary happens to force it first, so even a stray framework read
+is **mis-attributed** to one boundary's slice and absent from all the others.
+Either way the slice cannot carry framework-edit invalidation.
+
+**Consequence (the required fix).** Per the review's fallback, fold a global
+**`frameworkIdentity`** into every boundary key (§2.1). It is a source Merkle
+over the framework closure — the `.nix` sources of `lib/`, `stdenv/`, and
+`pkgs/build-support/` (the `mkDerivation`/`fetchurl`/`lib`/nuke-references/
+trivial-builder implementations and the toolchain the stdenv arg is built from,
+including `stdenv/bootstrap-tools.nix`). Any edit there changes
+`frameworkIdentity` → **every** boundary key changes → the whole set
+invalidates. That is the *correct* behaviour: a stdenv/mkDerivation change alters
+nearly every drv, so a global invalidation is right, and it is no worse than root
+cutoff for that (rare) case. `frameworkIdentity` is computed once per eval and
+folded into every key, so its cost is a single Merkle, not per-boundary.
+
+**Soundness statement (for §5's parity argument).** A boundary key now covers:
+(a) `P`'s own source (`LoweredIrFingerprint(P.nix)`); (b) `P`'s dependency cone
+(recursive `dep_component`); (c) the framework source, globally
+(`frameworkIdentity`); (d) `P`'s observed impure world (the revalidated
+`impure_slice`); (e) resolution config (`options_identity`). A package's drv is a
+pure function of exactly (a)–(e), so equal key + revalidated slice ⇒ identical
+drv. No framework read rides on an unverified slice-coverage assumption — (c)
+carries it explicitly.
+
+**Over-approximation note.** `frameworkIdentity` as a source hash is conservative
+(some `lib/` edits do not change any drv, yet flip every key — a false
+invalidation, the safe direction). A tighter identity would be `stdenv`'s own
+`drvPath`, but that requires a bounded `stdenv` evaluation rather than a pure
+source read; deferred as an M2-widen refinement (fewer false invalidations, at
+the cost of a small eval in the key builder). v1 stays pure-source and
+conservative.
 
 ---
 
@@ -208,12 +264,15 @@ full-attrset payloads (M2-widen) is what raises non-drv-select coverage.
   a recorded `.drv` projection in place of evaluating the package. Byte parity
   holds iff that projection is byte-identical to what evaluation would produce.
   It is, *because* (a) the source-Merkle identity matches only when the whole
-  source cone is byte-identical (§11.3 soundness), (b) the impure slice
-  revalidates the observed world, and (c) the payload IS the canonical
-  derivation bytes — there is no re-derivation step that could drift. Equal
-  identity + revalidated slice ⇒ identical drv, by construction. This is the
-  §11.5 argument at record granularity: false invalidations only, never a false
-  hit.
+  source cone AND the framework source (`frameworkIdentity`, §2.4) are
+  byte-identical, (b) the impure slice revalidates the observed world, and (c)
+  the payload IS the canonical derivation bytes — there is no re-derivation step
+  that could drift. Equal identity + revalidated slice ⇒ identical drv, by the
+  §2.4 soundness statement (a)–(e). This is the §11.5 argument at record
+  granularity: false invalidations only, never a false hit. Note in particular
+  that a framework/stdenv edit flips `frameworkIdentity` and invalidates every
+  boundary — the class the review flagged is closed by the key, not by an
+  assumed slice coverage.
 - **CHECK mode.** Extend `AOS_NIX_MEMO_CHECK` to the boundary tier: every hit is
   shadowed by a real package evaluation and the drv projections compared
   byte-for-byte, exactly as `verify_root_cutoff_closure` (`root_cutoff.rs:341`)
@@ -310,9 +369,15 @@ M2-durable proceeds.
 2. **Select-outside-projection:** v1 demote-to-eval (simplest, correct) vs.
    recording a richer eligible projection up front. I recommend demote-to-eval
    for v1 and let the §7 demo size whether M2-widen is worth it.
-3. **Identity granularity for framework refs:** `builtin_id(f)` as a
-   crate-version-salted per-name constant is enough for soundness (framework
-   edits bump the crate/stdenv identity globally, correctly). Confirm we do not
-   need to fold stdenv's own source fingerprint into `builtin_id` — I think we do
-   *not* for v1 (stdenv changes are a global rebuild anyway, root-cutoff
-   territory), but flag it.
+3. **Identity granularity for framework refs — RESOLVED (review, §2.4).** My
+   original "per-name constant is enough" was **wrong** and is retracted: the
+   impure slice does **not** cover framework source reads (verified against
+   `pkgs/default.nix` — framework functions are captured once at top-level, not
+   re-imported per boundary, and lazy reads mis-attribute to one boundary). So a
+   static per-name id would silently miss a stdenv/mkDerivation edit — the exact
+   wrong-drv class we refuse. Fixed by folding a global `frameworkIdentity`
+   (source Merkle over `lib/` + `stdenv/` + `pkgs/build-support/`) into every
+   boundary key; `builtin_id(f)` is now only a per-name salt to distinguish which
+   framework a formal names. Open sub-question kept for M2-widen: tighten
+   `frameworkIdentity` from a pure source hash to `stdenv`'s `drvPath` (fewer
+   false invalidations, at the cost of a bounded stdenv eval in the key builder).
