@@ -118,15 +118,18 @@ pub use inertness::{
     assert_qemu_control_plane_inert,
 };
 pub use launch::{
-    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
-    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
-    GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
-    LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
-    NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
-    QemuGdbstubChannelConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
-    QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
+    CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, CrucibleShmemBlockDevice,
+    DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID,
+    DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID,
+    DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID, DeterministicLaunchProfile, DiskImageMode,
+    GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed, GuestEntropySeedFile,
+    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+    NodeClockSkewDeclaration, NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD,
+    QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidation,
+    QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuVmLaunchConfig,
+    validate_pre_spawn_qemu_launch_args,
 };
 #[cfg(target_os = "linux")]
 pub use live_coverage_gate::{
@@ -257,10 +260,10 @@ pub use spawn::{
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,
-    QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError, QemuLiveBlockIoReport,
-    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
     NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
-    QemuLive9pIoServicerError, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
+    QemuLive9pIoServicerError, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
+    QemuLiveBlockIoReport, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
+    QemuLiveBlockIoServicerError, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
     QemuLiveBlockNodeReport, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
     QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, run_qemu_live_block_io_gate,
