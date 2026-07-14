@@ -43,10 +43,17 @@
   src = builtins.path {
     path = ../../../crates;
     name = "aos-crates-src";
+    # Exclude every cargo target dir, not just the literal `target`: dev
+    # workflows create `target-variant`, `target-debugsym`, etc., and a
+    # basename-equality filter silently NAR-hashes those multi-GB build
+    # trees into the "source" — making `aos-crates-src` (and every .drv
+    # downstream) differ between checkouts and costing seconds of SHA-256
+    # per evaluation of any system toplevel.
     filter = path: type: let
       base = baseNameOf path;
     in
-      base != "target" && base != ".git";
+      !(type == "directory" && builtins.substring 0 6 base == "target")
+      && base != ".git";
   };
 in
   mkCargoPackage {
