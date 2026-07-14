@@ -391,6 +391,12 @@ mod tests {
         // under `FlatObjectPayloadAccess`. No unsafe operation was added or
         // changed; the value-tail door adds only safe extent validation and
         // registry metadata around it.
+        // arena.rs count 13 -> 10 + arena/tests.rs count 0 -> 3 (§2 file-size
+        // split): arena.rs's inline test mod moved verbatim to a child file;
+        // the three relocated operations are the region-pop `unsafe` call
+        // sites exercising the reviewed `RegionPopHandoff` operation from
+        // tests, with their SAFETY comments intact. No unsafe operation was
+        // added or changed.
         // flat/slice.rs count 5 -> 7 + ../attrs.rs count 0 -> 1 (doc 31 §1
         // step-3 forced-thunk collapse): `FlatSlice::as_mut_slice` is a new
         // unsafe fn (one `unsafe fn` line with `# Safety` docs, one interior
@@ -406,7 +412,8 @@ mod tests {
         for (file_name, expected_count) in [
             ("../attrs.rs", 1usize),
             ("advice.rs", 13usize),
-            ("arena.rs", 13usize),
+            ("arena.rs", 10usize),
+            ("arena/tests.rs", 3usize),
             ("flat.rs", 6usize),
             ("flat/restore.rs", 1usize),
             ("flat/alloc.rs", 4usize),
@@ -484,6 +491,7 @@ mod tests {
                 "../attrs.rs"
                     | "advice.rs"
                     | "arena.rs"
+                    | "arena/tests.rs"
                     | "flat.rs"
                     | "flat/restore.rs"
                     | "flat/alloc.rs"
