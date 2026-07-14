@@ -204,4 +204,3 @@ fn source_less_forced_inline_thunks_include_eval_mode_in_cache_identity() {
         "same lowered IR under different eval modes must not reuse one demand node"
     );
 }
-

@@ -905,7 +905,6 @@ impl TreeWalkOptions {
     pub fn current_system(&self) -> Option<&[u8]> {
         self.current_system.as_deref()
     }
-
 }
 
 /// Errors raised while configuring a tree-walk evaluator.

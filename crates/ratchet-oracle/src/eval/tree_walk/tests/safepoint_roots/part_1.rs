@@ -749,4 +749,3 @@ fn reference_writebacks_to_safepoint_buffers_reject_stale_live_heap_field() {
         child,
     );
 }
-

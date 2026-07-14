@@ -810,4 +810,3 @@ fn builtin_surface_matches_pinned_flakes_golden_fixture() {
     assert_eq!(stats.matched, 1);
     assert_eq!(stats.mismatched, 0);
 }
-

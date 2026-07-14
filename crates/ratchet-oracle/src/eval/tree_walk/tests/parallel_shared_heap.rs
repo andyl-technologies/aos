@@ -56,7 +56,10 @@ fn parallel_workers_option_builds_shared_heap_and_evaluates() {
             .bytes(),
         b"shared-heap"
     );
-    assert!(arena.published_len() > 0, "evaluation allocated into shard 0");
+    assert!(
+        arena.published_len() > 0,
+        "evaluation allocated into shard 0"
+    );
 }
 
 /// K production `TreeWalk`s over one shared arena: every worker evaluates real
@@ -78,9 +81,8 @@ fn k_tree_walks_share_one_arena_and_resolve_each_others_values() {
             scope.spawn(move || {
                 // Concatenations force real allocation work per worker; the
                 // second element is typically a lazily allocated thunk.
-                let source = format!(
-                    r#"[ ("worker-" + "{worker}-payload") ("lazy-" + "{worker}") ]"#
-                );
+                let source =
+                    format!(r#"[ ("worker-" + "{worker}-payload") ("lazy-" + "{worker}") ]"#);
                 let ir = lower(&source);
                 let mut walk = TreeWalk::with_options(&ir, parallel_options(WORKERS));
                 let shard =

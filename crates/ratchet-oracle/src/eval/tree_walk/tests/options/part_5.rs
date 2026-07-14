@@ -798,4 +798,3 @@ fn gc_stress_eval_root_codec_empty_attrset_results_skip_argument_node_dispatch()
         assert!(evaluator.thunk_resolve_card_table().is_empty());
     }
 }
-

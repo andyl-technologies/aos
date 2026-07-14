@@ -93,7 +93,6 @@ const BOUNDARY_MINOR_GC_LIVE_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
 mod tier_b_transition;
 pub use tier_b_transition::*;
 
-
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryScans {
@@ -13495,7 +13494,9 @@ impl EvalStats {
             net_errors,
             net_reval_failures,
         } = *events;
-        self.memo_l2_secondary_hits = self.memo_l2_secondary_hits.saturating_add(l2_secondary_hits);
+        self.memo_l2_secondary_hits = self
+            .memo_l2_secondary_hits
+            .saturating_add(l2_secondary_hits);
         self.memo_l2_secondary_misses = self
             .memo_l2_secondary_misses
             .saturating_add(l2_secondary_misses);

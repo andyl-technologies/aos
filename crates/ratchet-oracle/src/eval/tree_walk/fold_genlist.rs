@@ -169,9 +169,15 @@ impl TreeWalk {
                     break;
                 }
                 fold_consults += 1;
-                match self
-                    .try_tier2_foldl_genlist(id, span, op, generator, accumulator, index, length)
-                {
+                match self.try_tier2_foldl_genlist(
+                    id,
+                    span,
+                    op,
+                    generator,
+                    accumulator,
+                    index,
+                    length,
+                ) {
                     Tier2FoldGenConsult::Ran {
                         consumed,
                         accumulator: folded,

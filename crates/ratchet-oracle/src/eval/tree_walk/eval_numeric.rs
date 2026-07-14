@@ -513,14 +513,13 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         match (left.tag(), right.tag()) {
-            (ValueTag::Int, ValueTag::Int) => Ok(self
-                .runtime_int_payload(id, node.span, left)?
+            (ValueTag::Int, ValueTag::Int) => Ok(self.runtime_int_payload(id, node.span, left)?
                 == self.runtime_int_payload(id, node.span, right)?),
             (ValueTag::Float, ValueTag::Float) => Ok(self
                 .runtime_float_payload(id, node.span, left)?
                 == self.runtime_float_payload(id, node.span, right)?),
-            (ValueTag::Int, ValueTag::Float) => Ok((self
-                .runtime_int_payload(id, node.span, left)? as f64)
+            (ValueTag::Int, ValueTag::Float) => Ok((self.runtime_int_payload(id, node.span, left)?
+                as f64)
                 == self.runtime_float_payload(id, node.span, right)?),
             (ValueTag::Float, ValueTag::Int) => Ok(self
                 .runtime_float_payload(id, node.span, left)?
@@ -655,11 +654,7 @@ impl TreeWalk {
         self.reserve_suspended_env_root_frame(id, span)?;
         let saved_env = self.swap_env_frames(thunk_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-        self.push_suspended_env_roots(
-            saved_env,
-            saved_with_scopes,
-            EvalScopedGlobalEnv::default(),
-        );
+        self.push_suspended_env_roots(saved_env, saved_with_scopes, EvalScopedGlobalEnv::default());
         let result = self.with_current_module(body.module(), |eval| {
             eval.eval_nested_equality_operand(body.id())
         });

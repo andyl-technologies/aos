@@ -285,9 +285,7 @@ impl SharedTextStoreLog {
         }
         let log = recover(self.log.lock());
         for (path, entry) in &log[*cursor..] {
-            local
-                .entry(path.clone())
-                .or_insert_with(|| entry.clone());
+            local.entry(path.clone()).or_insert_with(|| entry.clone());
         }
         *cursor = log.len();
     }
@@ -552,9 +550,10 @@ impl SharedEvalContext {
     /// the accumulated wait time separates "helpers busy" from "helpers
     /// blocked on contended claims" in the drained-pool diagnostics.
     pub(super) fn record_claim_wait(&self, elapsed: std::time::Duration) {
-        self.counters
-            .claim_wait_nanos
-            .fetch_add(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.counters.claim_wait_nanos.fetch_add(
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         self.counters.claim_waits.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -649,9 +648,9 @@ impl ParallelDemandPool {
         let realizer = main.ifd_realizer.clone();
         let mut handles = Vec::with_capacity(workers - 1);
         for worker_index in 1..workers {
-            let Some(worker_id) =
-                ParallelThunkWorkerId::new(ParallelThunkWorkerId::FIRST.get() + worker_index as u64)
-            else {
+            let Some(worker_id) = ParallelThunkWorkerId::new(
+                ParallelThunkWorkerId::FIRST.get() + worker_index as u64,
+            ) else {
                 tracing::warn!(
                     target: "aos_nix::eval::parallel",
                     worker_index,
@@ -699,7 +698,8 @@ impl ParallelDemandPool {
                         ),
                         None => TreeWalk::with_options_and_eval_cache(&ir, options, eval_cache),
                     };
-                    walk.heap.set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
+                    walk.heap
+                        .set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
                     walk.adopt_shared_heap_shard(arena, shard);
                     walk.set_parallel_force_registry(registry);
                     walk.memo_economics = memo_economics;
@@ -811,7 +811,11 @@ impl ParallelDemandPool {
         let executed_values = self.shared.counters.executed_values.load(Ordering::Relaxed);
         let task_nanos = self.shared.counters.task_nanos.load(Ordering::Relaxed);
         let loop_nanos = self.shared.counters.loop_nanos.load(Ordering::Relaxed);
-        let claim_wait_nanos = self.shared.counters.claim_wait_nanos.load(Ordering::Relaxed);
+        let claim_wait_nanos = self
+            .shared
+            .counters
+            .claim_wait_nanos
+            .load(Ordering::Relaxed);
         let claim_waits = self.shared.counters.claim_waits.load(Ordering::Relaxed);
         let queue_peak = self.shared.queue.peak.load(Ordering::Relaxed);
         let speculated = self.shared.speculation.len();
@@ -883,9 +887,10 @@ impl TreeWalk {
         }
         shared.modules.sync_into(&mut self.modules);
         shared.symbols.sync_into(&mut self.symbols);
-        shared
-            .known_derivations
-            .sync_into(&mut self.shared_known_derivations_cursor, &mut self.known_derivations);
+        shared.known_derivations.sync_into(
+            &mut self.shared_known_derivations_cursor,
+            &mut self.known_derivations,
+        );
         shared
             .text_store
             .sync_into(&mut self.shared_text_store_cursor, &mut self.text_store);

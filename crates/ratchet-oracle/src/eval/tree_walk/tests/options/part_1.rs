@@ -767,4 +767,3 @@ fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
         report.generation_rewrites() as u64
     );
 }
-

@@ -840,4 +840,3 @@ fn fetch_tree_forge_refs_reroot_dir_with_test_url_responses() {
     fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
-

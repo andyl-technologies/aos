@@ -763,4 +763,3 @@ fn find_file_first_class_explicit_list_records_exact_force_cache_graph_edges() {
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
-

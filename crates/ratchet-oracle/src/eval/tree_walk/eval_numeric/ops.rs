@@ -181,8 +181,7 @@ impl TreeWalk {
     /// nothing consumes it. Setting `AOS_NIX_ATTR_TELEMETRY` to anything but
     /// `0` re-enables it for release-binary measurement runs.
     pub(in crate::eval::tree_walk) fn attr_update_telemetry_default() -> bool {
-        cfg!(test)
-            || std::env::var_os("AOS_NIX_ATTR_TELEMETRY").is_some_and(|value| value != "0")
+        cfg!(test) || std::env::var_os("AOS_NIX_ATTR_TELEMETRY").is_some_and(|value| value != "0")
     }
 
     /// Overrides the per-merge attrset telemetry toggle for tests.
@@ -249,20 +248,17 @@ impl TreeWalk {
                     // Propagate it only in record mode: the transient shaped
                     // select path is a measured net loss, so the baseline
                     // keeps merge results on the flat select path.
-                    let projected_shape =
-                        if self.options.attr_shape_mode() == AttrShapeMode::Record {
-                            self.heap
-                                .get_attrs_metadata(left)
-                                .map_err(|source| {
-                                    TreeWalkError::new(
-                                        TreeWalkErrorKind::Heap { id, source },
-                                        lhs_span,
-                                    )
-                                })?
-                                .projected_shape()
-                        } else {
-                            None
-                        };
+                    let projected_shape = if self.options.attr_shape_mode() == AttrShapeMode::Record
+                    {
+                        self.heap
+                            .get_attrs_metadata(left)
+                            .map_err(|source| {
+                                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
+                            })?
+                            .projected_shape()
+                    } else {
+                        None
+                    };
                     (merged, projected_shape)
                 }
                 None => {
@@ -313,7 +309,8 @@ impl TreeWalk {
         right: Value,
     ) -> Result<Value, TreeWalkError> {
         if !self.attr_update_telemetry_enabled {
-            return self.merge_attr_update_fast(id, span, lhs, lhs_span, left, rhs, rhs_span, right);
+            return self
+                .merge_attr_update_fast(id, span, lhs, lhs_span, left, rhs, rhs_span, right);
         }
         let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
         let right_operand = self.attr_entries_for_update(id, rhs, rhs_span, right)?;

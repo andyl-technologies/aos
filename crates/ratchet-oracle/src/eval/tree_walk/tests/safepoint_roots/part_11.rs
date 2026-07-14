@@ -788,4 +788,3 @@ fn live_reference_writebacks_bind_once_and_rewrite_root_and_direct_field() {
     assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
     assert_eq!(outcome.thunk_resolve_card_table().len(), 1);
 }
-

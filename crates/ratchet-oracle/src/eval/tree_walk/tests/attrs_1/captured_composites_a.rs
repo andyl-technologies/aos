@@ -25,4 +25,3 @@ fn captured_has_attr_subject(
         .expect("hasAttr is a node thunk");
     evaluator.force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
 }
-

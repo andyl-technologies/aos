@@ -822,4 +822,3 @@ fn strict_inherited_select_binding_facts_stay_lazy_during_attrset_assembly() {
     assert_eq!(attr_value.tag(), ValueTag::Thunk);
     assert_eq!(outcome.stats().thunks_elided(), 0);
 }
-

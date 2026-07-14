@@ -12,6 +12,14 @@
 //! list/attrset equality to weak head normal form, establishing the arena access
 //! and diagnostic surface used by later slices for full string coercion,
 //! first-class primitive operations, and derivation boundaries.
+use base64::Engine as _;
+use bzip2::read::BzDecoder;
+use flate2::read::GzDecoder;
+use md5::{Digest as _, Md5};
+use regex::bytes::{Regex, RegexBuilder};
+use serde_json::Value as JsonValue;
+use sha1::{Digest as _, Sha1};
+use sha2::Sha512;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsStr,
@@ -27,14 +35,6 @@ use std::{
     },
     time::UNIX_EPOCH,
 };
-use base64::Engine as _;
-use bzip2::read::BzDecoder;
-use flate2::read::GzDecoder;
-use md5::{Digest as _, Md5};
-use regex::bytes::{Regex, RegexBuilder};
-use serde_json::Value as JsonValue;
-use sha1::{Digest as _, Sha1};
-use sha2::Sha512;
 use thiserror::Error;
 use toml::{Value as TomlValue, value::Datetime as TomlDatetime};
 use url::Url;
@@ -57,10 +57,10 @@ use super::heap::{
     AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
     AllocationCollectorPollScan, EvalGcMode, EvalHeap, EvalHeapAttrsMetadata,
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
-    EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode,
-    EvalHeapSweepReport, EvalHeapTierBAdmissionReport, EvalHeapWorkerRegionPopReport, EvalLambda,
-    EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, HeapAllocationDomain,
-    HeapEdgeSource, PreciseHeapScan,
+    EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapSweepReport,
+    EvalHeapTierBAdmissionReport, EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp,
+    EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, HeapAllocationDomain, HeapEdgeSource,
+    PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -99,18 +99,18 @@ use crate::cache::{
     ImpureInputIdentity, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
     ImpureInputTraceSource, InputFingerprintError, MaterializationCostObservation,
     MaterializationCosts, MaterializationDecision, MemoizationDecision, MemoizationSubject,
-    NixSha256Digest, ParseCache, ParseCacheError, ParseFileKey, PersistCache,
-    PersistDiskLocation, PersistLatencyClass, PersistMaterialization, PersistNodeMetadataKey,
-    PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
+    NixSha256Digest, ParseCache, ParseCacheError, ParseFileKey, PersistCache, PersistDiskLocation,
+    PersistLatencyClass, PersistMaterialization, PersistNodeMetadataKey, PersistNodeTracePayload,
+    ValueHash, lowered_ir_fingerprint,
 };
+#[cfg(test)]
+use crate::compile::Strictness;
 use crate::compile::{
     CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
     IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, annotate_import_ir,
     dead_binding_elimination_plan, resolve,
 };
-#[cfg(test)]
-use crate::compile::Strictness;
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
     GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget, MinorGcCommitReport,
@@ -135,199 +135,6 @@ use aos_nix_compat::drv_materialize::materialize_drv;
 use aos_nix_dialect::{nix_lower, nix_lower_with_options};
 mod builtins;
 mod runtime_values;
-const TO_STRING_ATTR: &[u8] = b"__toString";
-const OUT_PATH_ATTR: &[u8] = b"outPath";
-const DRV_PATH_ATTR: &[u8] = b"drvPath";
-const TYPE_ATTR: &[u8] = b"type";
-const NAME_ATTR: &[u8] = b"name";
-const ID_ATTR: &[u8] = b"id";
-const OWNER_ATTR: &[u8] = b"owner";
-const REPO_ATTR: &[u8] = b"repo";
-const HOST_ATTR: &[u8] = b"host";
-const DIR_ATTR: &[u8] = b"dir";
-const BUILDER_ATTR: &[u8] = b"builder";
-const SYSTEM_ATTR: &[u8] = b"system";
-const ARGS_ATTR: &[u8] = b"args";
-const OUTPUTS_ATTR: &[u8] = b"outputs";
-const OVERRIDES_ATTR: &[u8] = b"__overrides";
-const STRUCTURED_ATTRS_ATTR: &[u8] = b"__structuredAttrs";
-const IGNORE_NULLS_ATTR: &[u8] = b"__ignoreNulls";
-const OUTPUT_HASH_ATTR: &[u8] = b"outputHash";
-const OUTPUT_HASH_ALGO_ATTR: &[u8] = b"outputHashAlgo";
-const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
-const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
-const IMPURE_ATTR: &[u8] = b"__impure";
-const PATH_ATTR: &[u8] = b"path";
-const URL_ATTR: &[u8] = b"url";
-const FILTER_ATTR: &[u8] = b"filter";
-const RECURSIVE_ATTR: &[u8] = b"recursive";
-const SHA256_ATTR: &[u8] = b"sha256";
-const REV_ATTR: &[u8] = b"rev";
-const REF_ATTR: &[u8] = b"ref";
-const SUBMODULES_ATTR: &[u8] = b"submodules";
-const SHALLOW_ATTR: &[u8] = b"shallow";
-const ALL_REFS_ATTR: &[u8] = b"allRefs";
-const EXPORT_IGNORE_ATTR: &[u8] = b"exportIgnore";
-const UNPACK_ATTR: &[u8] = b"unpack";
-const VERIFY_COMMIT_ATTR: &[u8] = b"verifyCommit";
-const KEYTYPE_ATTR: &[u8] = b"keytype";
-const PUBLIC_KEY_ATTR: &[u8] = b"publicKey";
-const PUBLIC_KEYS_ATTR: &[u8] = b"publicKeys";
-const SHORT_REV_ATTR: &[u8] = b"shortRev";
-const DIRTY_REV_ATTR: &[u8] = b"dirtyRev";
-const DIRTY_SHORT_REV_ATTR: &[u8] = b"dirtyShortRev";
-const REV_COUNT_ATTR: &[u8] = b"revCount";
-const LAST_MODIFIED_ATTR: &[u8] = b"lastModified";
-const LAST_MODIFIED_DATE_ATTR: &[u8] = b"lastModifiedDate";
-const NAR_HASH_ATTR: &[u8] = b"narHash";
-const PREFIX_ATTR: &[u8] = b"prefix";
-const VALUE_ATTR: &[u8] = b"value";
-const TOML_TIMESTAMP_TYPE_ATTR: &[u8] = b"_type";
-const TOML_TIMESTAMP_TYPE_VALUE: &[u8] = b"timestamp";
-const KEY_ATTR: &[u8] = b"key";
-const FILE_ATTR: &[u8] = b"file";
-const LINE_ATTR: &[u8] = b"line";
-const COLUMN_ATTR: &[u8] = b"column";
-const CUR_POS_ATTR: &[u8] = b"__curPos";
-const NIX_PATH_ATTR: &[u8] = b"__nixPath";
-const OPERATOR_ATTR: &[u8] = b"operator";
-const START_SET_ATTR: &[u8] = b"startSet";
-const HASH_ATTR: &[u8] = b"hash";
-const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
-const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
-const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
-const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
-const MAX_FLAKE_REF_RESOLUTION_DEPTH: usize = 16;
-const DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS: MaterializationCosts =
-    MaterializationCosts::new(4, 1, 1, 1);
-const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
-const UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-upstream-output:";
-const DERIVATION_EXTENSION: &str = ".drv";
-const DERIVATION_NAME_MAX_LEN: usize = 211;
-const TRACE_PREFIX: &[u8] = b"trace: ";
-const WARNING_PREFIX: &[u8] = b"evaluation warning:";
-const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
-const EMPTY_FETCHURL_SHA256_WARNING: &[u8] =
-    b"found empty hash, assuming 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='";
-const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
-    b"while evaluating the error message passed to builtins.addErrorContext";
-const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
-const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
-const DERIVATION_INTERNAL_PATH: &[u8] = b"<nix/derivation-internal.nix>";
-static FETCH_TARBALL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-static FETCH_GIT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-const DERIVATION_INTERNAL_SOURCE: &str = r#"
-# This is the implementation of the ‘derivation’ builtin function.
-# It's actually a wrapper around the ‘derivationStrict’ primop.
-# Note that the following comment will be shown in :doc in the repl, but not in the manual.
-
-/**
-  Create a derivation.
-
-  # Inputs
-
-  The single argument is an attribute set that describes what to build and how to build it.
-  See https://nix.dev/manual/nix/2.23/language/derivations
-
-  # Output
-
-  The result is an attribute set that describes the derivation.
-  Notably it contains the outputs, which in the context of the Nix language are special strings that refer to the output paths, which may not yet exist.
-  The realisation of these outputs only occurs when needed; for example
-
-    * When `nix-build` or a similar command is run, it realises the outputs that were requested on its command line.
-      See https://nix.dev/manual/nix/2.23/command-ref/nix-build
-
-    * When `import`, `readFile`, `readDir` or some other functions are called, they have to realise the outputs they depend on.
-      This is referred to as "import from derivation".
-      See https://nix.dev/manual/nix/2.23/language/import-from-derivation
-
-  Note that `derivation` is very bare-bones, and provides almost no commands during the build.
-  Most likely, you'll want to use functions like `stdenv.mkDerivation` in Nixpkgs to set up a basic environment.
-*/
-drvAttrs @ { outputs ? [ "out" ], ... }:
-
-let
-
-  strict = derivationStrict drvAttrs;
-
-  commonAttrs = drvAttrs // (builtins.listToAttrs outputsList) //
-    { all = map (x: x.value) outputsList;
-      inherit drvAttrs;
-    };
-
-  outputToAttrListElement = outputName:
-    { name = outputName;
-      value = commonAttrs // {
-        outPath = builtins.getAttr outputName strict;
-        drvPath = strict.drvPath;
-        type = "derivation";
-        inherit outputName;
-      };
-    };
-
-  outputsList = map outputToAttrListElement outputs;
-
-in (builtins.head outputsList).value
-"#;
-
-#[derive(Debug)]
-struct RegexCaptureMatch {
-    range: std::ops::Range<usize>,
-    groups: Vec<Option<std::ops::Range<usize>>>,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ResolvedSearchPathEntry {
-    prefix: Vec<u8>,
-    path: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct FindFileCacheKey {
-    search_path_base: Vec<u8>,
-    corepkgs_path: Option<Vec<u8>>,
-    entries: Vec<ResolvedSearchPathEntry>,
-    lookup: Vec<u8>,
-    origin: FindFileLookupOrigin,
-}
-
-impl FindFileCacheKey {
-    fn new(
-        search_path_base: &[u8],
-        corepkgs_path: Option<&[u8]>,
-        entries: &[ResolvedSearchPathEntry],
-        lookup: &[u8],
-        origin: FindFileLookupOrigin,
-    ) -> Self {
-        Self {
-            search_path_base: search_path_base.to_vec(),
-            corepkgs_path: corepkgs_path.map(<[u8]>::to_vec),
-            entries: entries.to_vec(),
-            lookup: lookup.to_vec(),
-            origin,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum FindFileCacheEntry {
-    Hit {
-        path: Vec<u8>,
-        trace: Vec<ImpureInputFingerprint>,
-    },
-    Miss {
-        trace: Vec<ImpureInputFingerprint>,
-    },
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum FindFileLookupOrigin {
-    AmbientSearchPath,
-    LexicalSearchPath,
-    ExplicitSearchPath,
-}
 
 // Type, helper, and error-enum definitions split into concern modules below;
 // re-exported here so siblings (and the public path) keep resolving them.
@@ -335,6 +142,7 @@ mod api;
 mod campaign_counters;
 #[cfg(test)]
 mod capture_validation;
+mod constants;
 mod error_kind;
 mod errors;
 mod op_types;
@@ -342,6 +150,16 @@ mod options;
 mod outcome;
 mod toml_normalize;
 mod version;
+pub(crate) use constants::*;
+mod config_types;
+pub use config_types::*;
+mod module_types;
+pub(crate) use module_types::*;
+mod fetch_types;
+pub(crate) use fetch_types::*;
+mod env_types;
+pub(crate) use env_types::*;
+mod derivation_types;
 pub(crate) use api::{
     attr_path_segment_is_list_index, parse_attr_path_list_index,
     parse_attr_path_list_index_diagnostic,
@@ -362,10 +180,13 @@ pub use api::{
     eval_whnf_owned_with_options_realizer_eval_cache_and_engine, eval_whnf_with_options,
 };
 pub use campaign_counters::CampaignCounters;
+pub use derivation_types::*;
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;
 pub use errors::EvalErrorContext;
 pub use errors::{EvalErrorLabel, EvalErrorSource, TreeWalkError};
+pub(crate) use eval_regex_ere::{bracket_expression_end, translate_posix_ere};
+pub(crate) use json_float::nlohmann_json_float_bytes;
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
 pub use options::{MemoNetMode, MemoNetOptions, MemoOptions};
@@ -418,782 +239,17 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcRootWritebackWrite,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlanReport, EvalGcStressBoundaryScans,
-    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionApplyError, MemoTierEvents,
+    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionApplyError,
     EvalTierBTransitionAdmissionPlan, EvalTierBTransitionAdmissionPlanError,
     EvalTierBTransitionDomain, EvalTierBTransitionDomainPreflight, EvalTierBTransitionPreflight,
     EvalTierBTransitionPreflightError, EvalTierBTransitionRequest, EvalTraceKind, EvalTraceOutput,
     EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
+    MemoTierEvents,
 };
-pub(crate) use eval_regex_ere::{bracket_expression_end, translate_posix_ere};
-pub(crate) use json_float::nlohmann_json_float_bytes;
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{
     SplitVersionRanges, base_name_range, compare_version_bytes, parse_drv_name_split,
 };
-
-/// Default worker-record growth between Tier-B quiescent sweeps.
-///
-/// A sweep is considered at an evaluator quiescent point only after at least
-/// this many thunks were allocated since the previous sweep. The default is
-/// sized so sub-second evaluations (a package instantiate, `bench.wide` at
-/// ~250k thunks) never pay for marking, while multi-million-thunk evaluations
-/// (system toplevels, long-lived embedders) sweep a bounded number of times
-/// with each cycle amortized against seconds of evaluation. Measured on
-/// `bench.wide`: one sweep costs roughly 60-70ms and retires ~137k worker
-/// records; capture shedding itself is time-neutral. Set
-/// `AOS_NIX_GC_THRESHOLD=0` to sweep at every quiescent opportunity (the
-/// stress cadence).
-pub const DEFAULT_GC_SWEEP_THRESHOLD: u64 = 1_048_576;
-
-/// Runtime options used by the tree-walk evaluator.
-///
-/// These options carry interpreter settings that C++ Nix normally reads from
-/// its process configuration, while keeping the Phase-1 oracle deterministic
-/// and independent from ambient host state.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeWalkOptions {
-    store_dir: Vec<u8>,
-    search_path_base: Vec<u8>,
-    path_literal_base: Option<Vec<u8>>,
-    home_dir: Option<Vec<u8>>,
-    eval_mode: EvalMode,
-    allowed_paths: Vec<Vec<u8>>,
-    allowed_uris: Vec<Vec<u8>>,
-    current_system: Option<Vec<u8>>,
-    current_time: Option<i64>,
-    trace_verbose: bool,
-    abort_on_warn: bool,
-    max_call_depth: usize,
-    parse_toml_timestamps: bool,
-    env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
-    nix_path: Vec<NixSearchPathEntry>,
-    corepkgs_path: Option<Vec<u8>>,
-    reject_ambient_search_path: bool,
-    reject_unconfigured_impure_builtin_constants: bool,
-    parse_cache_root: Option<PathBuf>,
-    persist_cache_root: Option<PathBuf>,
-    eval_cache_enabled: bool,
-    persist_cache_verify: bool,
-    root_cutoff_enabled: bool,
-    root_cutoff_check: bool,
-    eval_stats_dump: bool,
-    force_cache_materialization_costs: MaterializationCosts,
-    heap_memory_budget: Option<HeapMemoryBudget>,
-    heap_tier_b_transition_admission_enabled: bool,
-    record_worker_closures_for_gc_scaffolding: bool,
-    heap_thread_local_tier_a_enabled: bool,
-    gc_stress_policy: GcStressPolicy,
-    gc_mode: EvalGcMode,
-    gc_sweep_threshold: u64,
-    thunk_resolve_barrier_tier: GenerationalGcTier,
-    parallel_thunk_payloads_enabled: bool,
-    parallel_workers: Option<std::num::NonZeroUsize>,
-    parallel_shape_projection: bool,
-    attr_shape_mode: AttrShapeMode,
-    jit_tier1_publish_enabled: bool,
-    parallel_thunk_worker_id: ParallelThunkWorkerId,
-    heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
-    flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
-    memo: MemoOptions,
-    memo_disk_locations: Vec<PersistDiskLocation>,
-    memo_net: Option<MemoNetOptions>,
-    #[cfg(test)]
-    fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
-}
-
-impl Default for TreeWalkOptions {
-    fn default() -> Self {
-        Self {
-            store_dir: DEFAULT_STORE_DIR.to_vec(),
-            search_path_base: b"/".to_vec(),
-            path_literal_base: None,
-            home_dir: None,
-            eval_mode: EvalMode::default(),
-            allowed_paths: Vec::new(),
-            allowed_uris: Vec::new(),
-            current_system: None,
-            current_time: None,
-            trace_verbose: false,
-            abort_on_warn: false,
-            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
-            parse_toml_timestamps: false,
-            env_vars: BTreeMap::new(),
-            nix_path: Vec::new(),
-            corepkgs_path: None,
-            reject_ambient_search_path: false,
-            reject_unconfigured_impure_builtin_constants: false,
-            parse_cache_root: None,
-            persist_cache_root: None,
-            eval_cache_enabled: false,
-            persist_cache_verify: false,
-            root_cutoff_enabled: false,
-            root_cutoff_check: false,
-            eval_stats_dump: false,
-            force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
-            heap_memory_budget: None,
-            heap_tier_b_transition_admission_enabled: false,
-            record_worker_closures_for_gc_scaffolding: false,
-            heap_thread_local_tier_a_enabled: false,
-            gc_stress_policy: GcStressPolicy::disabled(),
-            gc_mode: EvalGcMode::Off,
-            gc_sweep_threshold: DEFAULT_GC_SWEEP_THRESHOLD,
-            thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
-            parallel_thunk_payloads_enabled: false,
-            parallel_workers: None,
-            parallel_shape_projection: false,
-            attr_shape_mode: AttrShapeMode::default(),
-            jit_tier1_publish_enabled: false,
-            parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
-            heap_cheap_memory_advice_min_idle_epochs: None,
-            flake_ref_resolutions: BTreeMap::new(),
-            memo: MemoOptions::default(),
-            memo_disk_locations: Vec::new(),
-            memo_net: None,
-            #[cfg(test)]
-            fetch_tree_url_responses: BTreeMap::new(),
-        }
-    }
-}
-
-/// Hidden-class shape strategy for heap attrset records (RFC-0007 §09).
-///
-/// Selected through `AOS_NIX_SHAPES` (`off` / `transient` / `record`).
-/// Every mode produces byte-identical evaluation results; the mode changes
-/// only how attrset selects are served.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum AttrShapeMode {
-    /// No shape projection: attrset records carry no projected shape id and
-    /// every select uses the flat key-validated slot cache or binary search.
-    Off,
-    /// The L2-P4 baseline: allocations project shapes through the transition
-    /// tree and shaped selects rebuild a transient [`ShapedAttrs`] view per
-    /// lookup. Measured a net loss on the package corpus, retained as the
-    /// comparison baseline while the record mode is calibrated.
-    #[default]
-    Transient,
-    /// Heap-resident shaped layout: the projected shape id stored in the
-    /// record at construction is the select guard, and the flat symbol-order
-    /// payload is the slot layout itself - a shaped select is a shape-id
-    /// compare plus a constant-offset entry load, with no transient view.
-    /// Static literal sites resolve their shape once and reuse the handle,
-    /// and same-key-set `//` results keep the left operand's shape id.
-    Record,
-}
-
-/// Filesystem and impurity policy used by the tree-walk evaluator.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum EvalMode {
-    /// Allows evaluator-time filesystem access without an allow-list.
-    #[default]
-    Impure,
-    /// Restricts evaluator-time filesystem access to explicitly allowed paths.
-    Restricted,
-    /// Models pure evaluation by allowing only explicitly allowed paths.
-    Pure,
-}
-
-/// A configured entry in the Nix search path used by `<...>` and `findFile`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NixSearchPathEntry {
-    prefix: Vec<u8>,
-    path: Vec<u8>,
-}
-
-impl NixSearchPathEntry {
-    /// Creates a search-path entry from a lookup prefix and path.
-    ///
-    /// The empty prefix models bare search-path roots. The path text is kept
-    /// as provided so `builtins.nixPath` reflects configured entries without
-    /// normalizing their spelling.
-    ///
-    /// # Errors
-    ///
-    /// This constructor currently accepts all byte strings and does not fail.
-    pub fn new(
-        prefix: impl Into<Vec<u8>>,
-        path: impl Into<Vec<u8>>,
-    ) -> Result<Self, TreeWalkOptionsError> {
-        Ok(Self {
-            prefix: prefix.into(),
-            path: path.into(),
-        })
-    }
-
-    /// Returns the search-path prefix matched against lookup paths.
-    pub fn prefix(&self) -> &[u8] {
-        &self.prefix
-    }
-
-    /// Returns the configured filesystem path for this search-path entry.
-    pub fn path(&self) -> &[u8] {
-        &self.path
-    }
-}
-
-#[derive(Debug, Default)]
-enum EvalStderr {
-    #[default]
-    Process,
-    #[cfg(test)]
-    Buffer(Vec<u8>),
-}
-
-impl EvalStderr {
-    fn write_trace_line(&mut self, message: &[u8]) {
-        match self {
-            Self::Process => {
-                let mut stderr = io::stderr().lock();
-                let _ = stderr.write_all(TRACE_PREFIX);
-                let _ = stderr.write_all(message);
-                let _ = stderr.write_all(b"\n");
-            }
-            #[cfg(test)]
-            Self::Buffer(buffer) => {
-                buffer.extend_from_slice(TRACE_PREFIX);
-                buffer.extend_from_slice(message);
-                buffer.extend_from_slice(b"\n");
-            }
-        }
-    }
-
-    fn write_all(&mut self, bytes: &[u8]) {
-        match self {
-            Self::Process => {
-                let mut stderr = io::stderr().lock();
-                let _ = stderr.write_all(bytes);
-            }
-            #[cfg(test)]
-            Self::Buffer(buffer) => buffer.extend_from_slice(bytes),
-        }
-    }
-
-    #[cfg(test)]
-    fn capture(&mut self) {
-        *self = Self::Buffer(Vec::new());
-    }
-
-    #[cfg(test)]
-    fn captured(&self) -> &[u8] {
-        match self {
-            Self::Process => &[],
-            Self::Buffer(buffer) => buffer,
-        }
-    }
-}
-
-/// One lowered IR module loaded into a tree-walk evaluator.
-#[derive(Clone, Debug)]
-struct TreeWalkModule {
-    ir: Ir,
-    path_literal_base: Option<Vec<u8>>,
-    force_cache_options: ForceCacheOptionsIdentity,
-    source: Option<ModuleSource>,
-    dead_binding_eliminations: TreeWalkDeadBindingEliminations,
-    /// Whether this module's source file is prelude scaffolding (`lib`/`stdenv`),
-    /// classified once at construction from [`ModuleSource::name`]. Read per force
-    /// (under `AOS_NIX_EVAL_STATS`) to attribute the prelude-force-share counters
-    /// without re-scanning the path. Computed from the `source` passed to
-    /// [`Self::new`]; the source-less root module keeps `false`, which is correct
-    /// (the evaluation entry point is package-specific, never prelude).
-    is_prelude: bool,
-}
-
-impl TreeWalkModule {
-    fn new(
-        ir: Ir,
-        path_literal_base: Option<Vec<u8>>,
-        force_cache_options: ForceCacheOptionsIdentity,
-        source: Option<ModuleSource>,
-    ) -> Self {
-        let dead_binding_eliminations = TreeWalkDeadBindingEliminations::from_ir(&ir);
-        let is_prelude = module_source_is_prelude(source.as_ref());
-        Self {
-            ir,
-            path_literal_base,
-            force_cache_options,
-            source,
-            dead_binding_eliminations,
-            is_prelude,
-        }
-    }
-}
-
-/// Returns whether a module source path is prelude scaffolding.
-///
-/// Prelude is the `lib` and `stdenv` graph shared identically across every
-/// package (the subject of the heap-snapshot payoff, RFC-0007 task #6): a source
-/// path is prelude when it contains a `lib` or `stdenv` path component. Used only
-/// to seed [`TreeWalkModule::is_prelude`] at module construction.
-fn module_source_is_prelude(source: Option<&ModuleSource>) -> bool {
-    let Some(source) = source else {
-        return false;
-    };
-    Path::new(OsStr::from_bytes(&source.name))
-        .components()
-        .any(|component| {
-            matches!(
-                component,
-                Component::Normal(part) if part == OsStr::new("lib") || part == OsStr::new("stdenv")
-            )
-        })
-}
-
-#[derive(Clone, Debug)]
-struct ForceCacheOptionsIdentity {
-    store_dir: Vec<u8>,
-    search_path_base: Vec<u8>,
-    nix_path: Vec<NixSearchPathEntry>,
-    corepkgs_path: Option<Vec<u8>>,
-    allowed_paths: Vec<Vec<u8>>,
-    allowed_uris: Vec<Vec<u8>>,
-    home_dir: Option<Vec<u8>>,
-    current_system: Option<Vec<u8>>,
-    current_time: Option<i64>,
-    eval_mode: EvalMode,
-    reject_ambient_search_path: bool,
-    reject_unconfigured_impure_builtin_constants: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ForceCacheMemoizationAdmission {
-    ConditionalThunk,
-    SelectedSubstrate,
-}
-
-impl ForceCacheMemoizationAdmission {
-    const fn admits_on_first_demand(self) -> bool {
-        matches!(self, Self::SelectedSubstrate)
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ForceCacheSubject {
-    lookup_identity: Option<CacheExprIdentity>,
-    pure_observation_identity: Option<CacheExprIdentity>,
-    impure_observation_identity: Option<CacheExprIdentity>,
-    metadata_identity: Option<CacheExprIdentity>,
-    persistent_clear_identity: Option<CacheExprIdentity>,
-    free_var_value_hashes: Vec<ValueHash>,
-    replay_position_module: Option<EvalModuleId>,
-    replay_allocation_node: Option<EvalNodeRef>,
-    memoization_admission: ForceCacheMemoizationAdmission,
-}
-
-#[derive(Debug)]
-struct ActiveMemoReadNode {
-    node: DemandNodeId,
-    memo_reads: BTreeSet<DemandNodeId>,
-}
-
-impl ActiveMemoReadNode {
-    fn new(node: DemandNodeId) -> Self {
-        Self {
-            node,
-            memo_reads: BTreeSet::new(),
-        }
-    }
-
-    const fn node(&self) -> DemandNodeId {
-        self.node
-    }
-
-    fn into_parts(self) -> (DemandNodeId, BTreeSet<DemandNodeId>) {
-        (self.node, self.memo_reads)
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ModuleSource {
-    name: Vec<u8>,
-    bytes: Vec<u8>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct TreeWalkDeadBindingKey {
-    let_node: u32,
-    binding_index: usize,
-}
-
-impl TreeWalkDeadBindingKey {
-    const fn new(let_node: IrId, binding_index: usize) -> Self {
-        Self {
-            let_node: let_node.as_u32(),
-            binding_index,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct TreeWalkDeadBindingEliminations {
-    bindings: BTreeSet<TreeWalkDeadBindingKey>,
-}
-
-impl TreeWalkDeadBindingEliminations {
-    fn from_ir(ir: &Ir) -> Self {
-        let Ok(plan) = dead_binding_elimination_plan(ir) else {
-            return Self::default();
-        };
-        let bindings = plan
-            .eliminations()
-            .iter()
-            .filter(|elimination| {
-                elimination.replacement() == DeadBindingReplacement::DummyFrameSlot
-                    && ir
-                        .arena
-                        .node(elimination.value())
-                        .is_some_and(|node| node.kind == IrKind::ThunkAlloc)
-            })
-            .map(|elimination| {
-                TreeWalkDeadBindingKey::new(elimination.let_node(), elimination.binding_index())
-            })
-            .collect();
-        Self { bindings }
-    }
-
-    fn contains(&self, let_node: IrId, binding_index: usize) -> bool {
-        self.bindings
-            .contains(&TreeWalkDeadBindingKey::new(let_node, binding_index))
-    }
-}
-
-/// In-process import cache state.
-#[derive(Clone, Debug)]
-enum ImportCacheEntry {
-    Evaluating,
-    Ready {
-        value: Value,
-        trace: Option<Vec<ImpureInputFingerprint>>,
-        force_cache_trace_complete: bool,
-    },
-}
-
-/// The runtime global scope used while evaluating an imported file.
-#[derive(Clone, Copy, Debug)]
-enum ImportGlobalScope {
-    Fresh,
-    Scoped(Value),
-}
-
-impl ImportGlobalScope {
-    const fn is_scoped(self) -> bool {
-        matches!(self, Self::Scoped(_))
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TextStoreEntry {
-    contents: Vec<u8>,
-    references: StringContext,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ImpureInputTraceCursor {
-    len: usize,
-    complete: bool,
-    force_cache_epoch: u64,
-}
-
-#[derive(Clone, Debug)]
-struct ImpureInputTraceSegment {
-    trace: Vec<ImpureInputFingerprint>,
-    complete: bool,
-}
-
-impl ImpureInputTraceSegment {
-    fn is_empty_complete(&self) -> bool {
-        self.complete && self.trace.is_empty()
-    }
-}
-
-impl ImpureInputTraceSource for ImpureInputTraceSegment {
-    fn impure_input_trace(&self) -> &[ImpureInputFingerprint] {
-        &self.trace
-    }
-
-    fn impure_input_trace_complete(&self) -> bool {
-        self.complete
-    }
-}
-
-struct TreeWalkImpureInputRevalidator<'a> {
-    options: &'a TreeWalkOptions,
-    trace: Vec<ImpureInputFingerprint>,
-}
-
-#[derive(Clone, Debug)]
-struct FetchUrlArguments {
-    url: Vec<u8>,
-    name: String,
-    expected_sha256: Option<NixSha256Digest>,
-}
-
-#[derive(Clone, Debug)]
-struct FetchTarballArguments {
-    url: Vec<u8>,
-    name: String,
-    expected_sha256: Option<NixSha256Digest>,
-}
-
-#[derive(Clone, Debug)]
-struct FetchGitArguments {
-    url: Vec<u8>,
-    transport_url: Option<Vec<u8>>,
-    name: String,
-    rev: Option<Vec<u8>>,
-    reference: Option<Vec<u8>>,
-    submodules: bool,
-    shallow: bool,
-    all_refs: bool,
-    export_ignore: bool,
-    extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-struct FetchMercurialArguments {
-    url: Vec<u8>,
-    rev: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-struct GitPublicKeyEntry {
-    keytype: Vec<u8>,
-    key: Vec<u8>,
-}
-
-#[derive(Clone, Debug)]
-struct FetchGitResult {
-    out_path: Vec<u8>,
-    rev: String,
-    dirty_rev: Option<String>,
-    dirty_short_rev: Option<String>,
-    rev_count: usize,
-    last_modified: i64,
-    last_modified_date: Vec<u8>,
-    nar_hash: Vec<u8>,
-    submodules: bool,
-}
-
-type FlakeRefAttrs = BTreeMap<Vec<u8>, FlakeRefAttrValue>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum FlakeRefAttrValue {
-    String(Vec<u8>),
-    Int(u64),
-    Bool(bool),
-}
-
-#[derive(Clone, Debug)]
-enum FetchTreeArguments {
-    Path {
-        path: Vec<u8>,
-        expected_nar_hash: Option<NixSha256Digest>,
-        expected_last_modified: Option<i64>,
-        rev: Option<Vec<u8>>,
-        rev_count: Option<usize>,
-    },
-    File {
-        url: Vec<u8>,
-        expected_nar_hash: Option<NixSha256Digest>,
-        expected_last_modified: Option<i64>,
-        rev: Option<Vec<u8>>,
-        rev_count: Option<usize>,
-    },
-    Tarball {
-        url: Vec<u8>,
-        transport_url: Vec<u8>,
-        dir: Option<Vec<u8>>,
-        expected_nar_hash: Option<NixSha256Digest>,
-        expected_last_modified: Option<i64>,
-        last_modified_from_lock: bool,
-        rev: Option<Vec<u8>>,
-        rev_count: Option<usize>,
-    },
-    Forge {
-        canonical_uri: Vec<u8>,
-        archive_url: Vec<u8>,
-        dir: Option<Vec<u8>>,
-        check_archive_url_access: bool,
-        expected_nar_hash: Option<NixSha256Digest>,
-        expected_last_modified: Option<i64>,
-        rev: Vec<u8>,
-    },
-    Git {
-        args: FetchGitArguments,
-        dir: Option<Vec<u8>>,
-        expected_nar_hash: Option<NixSha256Digest>,
-        expected_last_modified: Option<i64>,
-        expected_rev_count: Option<usize>,
-        dirty_rev: Option<Vec<u8>>,
-        dirty_short_rev: Option<Vec<u8>>,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct FetchTreeResult {
-    out_path: Vec<u8>,
-    nar_hash: Vec<u8>,
-    last_modified: Option<i64>,
-    last_modified_date: Option<Vec<u8>>,
-    rev: Option<Vec<u8>>,
-    dirty_rev: Option<Vec<u8>>,
-    dirty_short_rev: Option<Vec<u8>>,
-    rev_count: Option<usize>,
-    submodules: Option<bool>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FetchTarballCompression {
-    Tar,
-    Gzip,
-    Bzip2,
-    Xz,
-    Zstd,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AttrUpdateTelemetryState {
-    override_chain_depth: usize,
-    // Active update projection reads the left heap value metadata; this field is
-    // still used by the test-only telemetry wrapper that synthesizes chains.
-    #[allow(dead_code)]
-    projected_repr: AttrSetReprKind,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct AttrUpdateMergeProjection {
-    left_repr: AttrSetReprKind,
-    override_chain_depth: usize,
-    decision: AttrSetReprDecision,
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(super) enum AttrUpdateTelemetryDispatchError {
-    #[error("flat attrset operand normalization failed: {0}")]
-    Flat(#[from] AttrError),
-    #[error("HAMT operand normalization failed: {0}")]
-    Hamt(#[from] HamtError),
-    #[error("representation-dispatched update failed: {0}")]
-    Repr(#[from] AttrSetReprValueError),
-}
-
-type AttrUpdateTelemetryNodeKey = (u32, u32);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ActivePrimopArgFrame {
-    start: usize,
-    len: usize,
-}
-
-#[derive(Debug)]
-struct SuspendedTreeWalkEnv {
-    env: ActiveEvalEnv,
-    with_scopes: EvalWithEnv,
-    scoped_globals: EvalScopedGlobalEnv,
-}
-
-impl SuspendedTreeWalkEnv {
-    fn new(
-        env: ActiveEvalEnv,
-        with_scopes: EvalWithEnv,
-        scoped_globals: EvalScopedGlobalEnv,
-    ) -> Self {
-        Self {
-            env,
-            with_scopes,
-            scoped_globals,
-        }
-    }
-}
-
-/// The active lexical environment split at an optional flat captured prefix.
-///
-/// `frames` contains only the live shared-frame suffix introduced inside the
-/// flat prefix (or the complete stack when `flat_base` is absent). Lowered IR
-/// still sees `flat_base.frame_count() + frames.len()` conceptual frames.
-#[derive(Clone, Debug, Default)]
-struct ActiveEvalEnv {
-    frames: Vec<Arc<EvalFrame>>,
-    flat_base: Option<EvalFlatCapture>,
-}
-
-impl ActiveEvalEnv {
-    fn from_frames(frames: Vec<Arc<EvalFrame>>) -> Self {
-        Self {
-            frames,
-            flat_base: None,
-        }
-    }
-
-    fn frame_count(&self) -> usize {
-        self.flat_base
-            .as_ref()
-            .map_or(0, EvalFlatCapture::frame_count)
-            .saturating_add(self.frames.len())
-    }
-}
-
-impl From<Vec<Arc<EvalFrame>>> for ActiveEvalEnv {
-    fn from(frames: Vec<Arc<EvalFrame>>) -> Self {
-        Self::from_frames(frames)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Index<usize> for ActiveEvalEnv {
-    type Output = Arc<EvalFrame>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.frames[index]
-    }
-}
-
-/// A borrowed view of either an active or captured composed lexical env.
-#[derive(Clone, Copy, Debug)]
-struct EvalEnvRef<'a> {
-    frames: EvalEnvFramesRef<'a>,
-    flat_base: Option<&'a EvalFlatCapture>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum EvalEnvFramesRef<'a> {
-    Active(&'a [Arc<EvalFrame>]),
-    Captured(EvalEnvFrames<'a>),
-}
-
-impl<'a> EvalEnvFramesRef<'a> {
-    fn len(self) -> usize {
-        match self {
-            Self::Active(frames) => frames.len(),
-            Self::Captured(frames) => frames.len(),
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.len() == 0
-    }
-
-    fn get(self, index: usize) -> Option<&'a Arc<EvalFrame>> {
-        match self {
-            Self::Active(frames) => frames.get(index),
-            Self::Captured(frames) => frames.get(index),
-        }
-    }
-}
-
-impl EvalEnvRef<'_> {
-    fn frame_count(self) -> usize {
-        self.flat_base
-            .map_or(0, EvalFlatCapture::frame_count)
-            .saturating_add(self.frames.len())
-    }
-
-    fn is_empty(self) -> bool {
-        self.frames.is_empty()
-            && self
-                .flat_base
-                .is_none_or(EvalFlatCapture::is_empty)
-    }
-}
 
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
@@ -1419,200 +475,8 @@ pub struct TreeWalk {
     // Test-mode FV-5 capture-plan validation state. `None` (the default)
     // keeps every hook a no-op; see `capture_validation`.
     #[cfg(test)]
-    capture_plan_validation: Option<Box<std::cell::RefCell<capture_validation::CaptureValidationState>>>,
-}
-
-/// Reports cold hash-consed values ensured in the indexed persistent value pack.
-///
-/// This is an explicit out-of-core spill precursor report. It describes cold
-/// permanent values that were captured as replayable force-cache payloads and
-/// made addressable in the persistent cache's indexed `values/` pack. It does
-/// not imply that evaluator heap records were evicted or replaced with
-/// content-hash handles.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ColdHashConsedValueMaterializationReport {
-    candidates: usize,
-    candidate_bytes: usize,
-    captured: usize,
-    uncapturable: usize,
-    materialized: usize,
-    skipped: usize,
-    errors: usize,
-    cache_unavailable: usize,
-    persistent_payload_bytes: u128,
-    materialized_hashes: Vec<ValueHash>,
-}
-
-impl ColdHashConsedValueMaterializationReport {
-    fn record_candidates(&mut self, values: &[EvalHeapColdHashConsedValue]) {
-        self.candidates = values.len();
-        self.candidate_bytes = values.iter().fold(0usize, |bytes, value| {
-            bytes.saturating_add(value.size_bytes())
-        });
-    }
-
-    fn record_captured(&mut self, payload: &CachedExpressionValue) {
-        self.captured = self.captured.saturating_add(1);
-        self.persistent_payload_bytes = self
-            .persistent_payload_bytes
-            .saturating_add(payload.persistent_payload_len());
-    }
-
-    fn record_materialized(&mut self, value_hash: ValueHash) {
-        self.materialized = self.materialized.saturating_add(1);
-        self.materialized_hashes.push(value_hash);
-    }
-
-    /// Returns the number of cold hash-consed records selected before capture.
-    pub const fn candidates(&self) -> usize {
-        self.candidates
-    }
-
-    /// Returns the logical allocation bytes covered by selected candidates.
-    pub const fn candidate_bytes(&self) -> usize {
-        self.candidate_bytes
-    }
-
-    /// Returns the number of candidates captured as replayable value payloads.
-    pub const fn captured(&self) -> usize {
-        self.captured
-    }
-
-    /// Returns the number of candidates that could not be captured.
-    pub const fn uncapturable(&self) -> usize {
-        self.uncapturable
-    }
-
-    /// Returns the number of captured payloads ensured in the indexed value pack.
-    pub const fn materialized(&self) -> usize {
-        self.materialized
-    }
-
-    /// Returns the number of captured payloads skipped by the materializer.
-    pub const fn skipped(&self) -> usize {
-        self.skipped
-    }
-
-    /// Returns the number of snapshot, hashing, or write errors observed.
-    pub const fn errors(&self) -> usize {
-        self.errors
-    }
-
-    /// Returns the number of candidates skipped because no persistent cache opened.
-    pub const fn cache_unavailable(&self) -> usize {
-        self.cache_unavailable
-    }
-
-    /// Returns the replayable payload bytes represented by captured candidates.
-    pub const fn persistent_payload_bytes(&self) -> u128 {
-        self.persistent_payload_bytes
-    }
-
-    /// Returns the value hashes ensured in the indexed value pack.
-    pub fn materialized_hashes(&self) -> &[ValueHash] {
-        &self.materialized_hashes
-    }
-}
-
-/// The *derivation hash modulo* (`hashDerivationModulo`) of a derivation.
-///
-/// Nix derivation/store identity rests on three distinct SHA-256 values that are
-/// easy to conflate when all are bare `[u8; 32]`: the derivation-hash-modulo (the
-/// recursive ATerm-with-input-substitution hash that seeds input-addressed output
-/// paths), the raw `.drv` ATerm hash, and an output/content-address digest. This
-/// newtype carries only a [`NixSha256Digest`] and exposes named accessors at the
-/// serialization/output-path boundary so internal BLAKE3 cache hashes cannot be
-/// passed as derivation modulo hashes without an explicit domain conversion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DerivationHashModulo(NixSha256Digest);
-
-impl DerivationHashModulo {
-    fn from_nix_sha256_digest(digest: NixSha256Digest) -> Self {
-        Self(digest)
-    }
-
-    #[cfg(test)]
-    fn from_sha256_bytes(bytes: [u8; 32]) -> Self {
-        Self::from_nix_sha256_digest(NixSha256Digest::from_bytes(bytes))
-    }
-
-    const fn nix_sha256_digest(self) -> NixSha256Digest {
-        self.0
-    }
-}
-
-#[derive(Clone, Debug)]
-struct KnownDerivation {
-    id: IrId,
-    span: Span,
-    derivation: nix_compat::derivation::Derivation,
-    hash_derivation_modulo: DerivationHashModulo,
-    output_names: BTreeSet<String>,
-    output_resolution: DerivationOutputResolution,
-    aterm_bytes: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-struct KnownDerivationInputHashes {
-    hashes: BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
-    has_deferred: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DerivationOutputResolution {
-    StaticPaths,
-    FloatingCa(FloatingCaOutput),
-    Impure(FloatingCaOutput),
-    DeferredPlaceholders,
-}
-
-impl DerivationOutputResolution {
-    fn has_deferred_outputs(self) -> bool {
-        !matches!(self, Self::StaticPaths)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FloatingCaOutput {
-    method: FloatingCaMethod,
-    hash_algo: nix_compat::nixhash::HashAlgo,
-}
-
-impl FloatingCaOutput {
-    fn aterm_hash_algo(self) -> String {
-        let mut algo = String::new();
-        if matches!(self.method, FloatingCaMethod::Recursive) {
-            algo.push_str("r:");
-        }
-        algo.push_str(&self.hash_algo.to_string());
-        algo
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FloatingCaMethod {
-    Flat,
-    Recursive,
-}
-
-#[derive(Debug)]
-struct StructuredAttrsJson {
-    bytes: Vec<u8>,
-    has_fields: bool,
-}
-
-impl StructuredAttrsJson {
-    fn new() -> Self {
-        Self {
-            bytes: b"{".to_vec(),
-            has_fields: false,
-        }
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        self.bytes.push(b'}');
-        self.bytes
-    }
+    capture_plan_validation:
+        Option<Box<std::cell::RefCell<capture_validation::CaptureValidationState>>>,
 }
 
 // The `impl TreeWalk` body is split across concern-focused submodules below.
@@ -1620,7 +484,6 @@ impl StructuredAttrsJson {
 mod alloc_intern;
 mod call_summary;
 mod coerce_paths;
-mod tier1_dispatch;
 mod derivation_build;
 mod derivation_serialize;
 mod eval_apply;
@@ -1632,26 +495,18 @@ mod eval_hash;
 mod eval_import;
 mod eval_import_root_cache;
 mod eval_impure_inputs;
-mod import_persist_locations;
 mod eval_list_filter;
 mod eval_list_group;
 mod eval_list_map;
 mod eval_load;
-mod flat_capture;
 mod eval_numeric;
 mod eval_path_ops;
 mod eval_primop_apply;
-mod memo;
-mod parallel_demand;
-mod parallel_import;
-mod parallel_shape;
-mod speculation;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;
 mod eval_regex_ere;
 mod eval_session;
-mod json_float;
 mod eval_sort;
 mod eval_source;
 mod eval_stats;
@@ -1664,12 +519,21 @@ mod fetch_tree_args;
 mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
+mod flat_capture;
 mod gc_sweep;
+mod import_persist_locations;
+mod json_float;
+mod memo;
+mod parallel_demand;
+mod parallel_import;
+mod parallel_shape;
 mod region;
 mod relocation_identity;
 mod runtime_alloc;
 mod safepoint_roots;
 mod select_cache_hash;
+mod speculation;
+mod tier1_dispatch;
 use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
 mod store_validity;

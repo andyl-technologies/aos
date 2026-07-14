@@ -792,4 +792,3 @@ fn missing_static_select_reports_attribute() {
             .span
     );
 }
-

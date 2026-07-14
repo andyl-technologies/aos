@@ -677,4 +677,3 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
     );
     assert_eq!(outcome.thunk_resolve_card_table().len(), 0);
 }
-

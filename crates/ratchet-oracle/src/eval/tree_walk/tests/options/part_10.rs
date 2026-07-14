@@ -808,4 +808,3 @@ fn gc_stress_lambda_default_binding_assembly_preserves_registered_roots() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

@@ -270,7 +270,14 @@ fn find_largest_pow10(n: u32) -> (i32, u32) {
 
 /// Decrements the generated digits toward `w` while the result stays inside
 /// `[M-, M+]` (nlohmann `grisu2_round`).
-fn grisu2_round(buffer: &mut [u8], length: usize, dist: u64, delta: u64, mut rest: u64, ten_k: u64) {
+fn grisu2_round(
+    buffer: &mut [u8],
+    length: usize,
+    dist: u64,
+    delta: u64,
+    mut rest: u64,
+    ten_k: u64,
+) {
     debug_assert!(length >= 1);
     debug_assert!(dist <= delta && rest <= delta && ten_k > 0);
     while rest < dist

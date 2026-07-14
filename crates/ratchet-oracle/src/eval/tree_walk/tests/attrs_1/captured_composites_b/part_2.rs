@@ -830,4 +830,3 @@ fn captured_nested_let_body_thunks_skip_dead_binding_free_variables() {
 
     assert_eq!(forced.as_int(), Ok(6));
 }
-

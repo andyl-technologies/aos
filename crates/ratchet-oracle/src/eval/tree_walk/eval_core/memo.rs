@@ -39,8 +39,8 @@
 
 use std::time::Instant;
 
-use super::*;
 use super::force_identity::CapturedFreeVariableDependency;
+use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoEntry, SharedMemoTable,
@@ -137,20 +137,17 @@ impl TreeWalk {
         let tiers_active = self.memo_l0.is_some() || self.shared_memo_table().is_some();
         let stats_enabled = self.options.memo_options().stats_enabled;
         if !tiers_active && !stats_enabled {
-            return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
+            return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         let key_started = stats_enabled.then(Instant::now);
         let candidate = self.memo_candidate_for_thunk(thunk);
         self.record_memo_key_timing(key_started);
         let Some(candidate) = candidate else {
-            return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
+            return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         };
         self.observe_memo_potential_hit(&candidate);
         if !tiers_active {
-            return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
+            return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         if let Some(value) = self.memo_probe(id, span, thunk, &candidate)? {
             let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
@@ -335,12 +332,8 @@ impl TreeWalk {
             Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())?
         };
         let mut unhashable = std::mem::take(&mut self.memo_unhashable_values);
-        let hashes = self.memo_free_var_hashes_with_memo(
-            module_id,
-            env,
-            &dependencies,
-            &mut unhashable,
-        );
+        let hashes =
+            self.memo_free_var_hashes_with_memo(module_id, env, &dependencies, &mut unhashable);
         self.memo_unhashable_values = unhashable;
         hashes
     }
@@ -376,7 +369,9 @@ impl TreeWalk {
                         None => self.memo_hash_captured_value(receiver, unhashable)?,
                     }
                 }
-                CapturedFreeVariableDependency::StaticSelect { default: Some(_), .. } => {
+                CapturedFreeVariableDependency::StaticSelect {
+                    default: Some(_), ..
+                } => {
                     return None;
                 }
                 CapturedFreeVariableDependency::StaticSelect {
@@ -431,10 +426,8 @@ impl TreeWalk {
             return state.decision;
         }
         let (decision, static_cost_units) = self.compute_memo_def_site_decision(def_site);
-        self.memo_def_sites.insert(
-            def_site,
-            MemoDefSiteState::new(decision, static_cost_units),
-        );
+        self.memo_def_sites
+            .insert(def_site, MemoDefSiteState::new(decision, static_cost_units));
         decision
     }
 
@@ -444,10 +437,7 @@ impl TreeWalk {
     /// configured floor; the expression identity (a full subtree safety walk
     /// plus a module content hash) is derived lazily on the first force whose
     /// environment hashes successfully.
-    fn compute_memo_def_site_decision(
-        &self,
-        def_site: EvalNodeRef,
-    ) -> (MemoDefSiteDecision, u32) {
+    fn compute_memo_def_site_decision(&self, def_site: EvalNodeRef) -> (MemoDefSiteDecision, u32) {
         let floor = self.options.memo_options().min_cost;
         if self.options.memo_options().stats_enabled {
             let Some(cost) = self.memo_static_cost(def_site) else {
@@ -564,8 +554,7 @@ impl TreeWalk {
                             if let Some(table) = self.memo_l0.as_mut() {
                                 table.remove(&candidate.key);
                             }
-                            self.stats.memo_l0_misses =
-                                self.stats.memo_l0_misses.saturating_add(1);
+                            self.stats.memo_l0_misses = self.stats.memo_l0_misses.saturating_add(1);
                         }
                     }
                 }
@@ -596,8 +585,7 @@ impl TreeWalk {
                         }
                         None => {
                             table.remove(&candidate.key);
-                            self.stats.memo_l1_misses =
-                                self.stats.memo_l1_misses.saturating_add(1);
+                            self.stats.memo_l1_misses = self.stats.memo_l1_misses.saturating_add(1);
                         }
                     }
                 }
@@ -728,7 +716,11 @@ impl TreeWalk {
 
     /// Captures `value` through the admission payload pipeline and returns
     /// its canonical hash, for CHECK comparisons.
-    fn memo_check_value_hash(&mut self, value: Value, candidate: &MemoCandidate) -> Option<ValueHash> {
+    fn memo_check_value_hash(
+        &mut self,
+        value: Value,
+        candidate: &MemoCandidate,
+    ) -> Option<ValueHash> {
         let payload = self.force_cache_payload_for_value(value)?;
         let payload = self.prepare_observable_payload_for_subject(payload, &candidate.subject)?;
         payload.value_hash().ok()
@@ -740,7 +732,12 @@ impl TreeWalk {
     /// observation slice is incomplete or conflicted, when any observation is
     /// not cacheable, or when the value has no closed replayable payload
     /// (closures and thunk-bearing composites in MEMO-1).
-    fn memo_admit(&mut self, candidate: &MemoCandidate, value: Value, cursor: ImpureInputTraceCursor) {
+    fn memo_admit(
+        &mut self,
+        candidate: &MemoCandidate,
+        value: Value,
+        cursor: ImpureInputTraceCursor,
+    ) {
         let l0_active = self.memo_l0.is_some();
         let shared = self.shared_memo_table();
         if !l0_active && shared.is_none() {
@@ -755,7 +752,8 @@ impl TreeWalk {
             self.increment_memo_declines();
             return;
         };
-        let Some(payload) = self.prepare_observable_payload_for_subject(payload, &candidate.subject)
+        let Some(payload) =
+            self.prepare_observable_payload_for_subject(payload, &candidate.subject)
         else {
             self.increment_memo_declines();
             return;

@@ -767,4 +767,3 @@ fn gc_stress_cat_attrs_list_result_skips_active_argument_roots() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

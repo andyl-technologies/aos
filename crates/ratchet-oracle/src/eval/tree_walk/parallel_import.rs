@@ -25,8 +25,8 @@
 //! ([`ImportCacheEntry::Evaluating`]) are deliberately never published or
 //! overwritten: recursion detection stays a per-worker stack property.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 

@@ -138,7 +138,9 @@ impl TreeWalk {
     /// budget no larger than this headroom is one the interpreter would also
     /// have completed without a max-call-depth error.
     pub fn tier2_call_depth_headroom(&self) -> usize {
-        self.options.max_call_depth().saturating_sub(self.call_depth)
+        self.options
+            .max_call_depth()
+            .saturating_sub(self.call_depth)
     }
 
     /// Returns the memoized WHNF value behind `value` without forcing anything.
@@ -168,12 +170,7 @@ impl TreeWalk {
     /// `depth` includes the lambda call frame, matching lowered `UpvalVar`
     /// coordinates: depth one names the innermost captured frame. Both linked
     /// frame chains and FV-5 flat capture payloads are supported.
-    pub fn tier2_captured_upvalue(
-        &self,
-        env: &EvalEnv,
-        depth: u32,
-        slot: u32,
-    ) -> Option<Value> {
+    pub fn tier2_captured_upvalue(&self, env: &EvalEnv, depth: u32, slot: u32) -> Option<Value> {
         let captured_depth = usize::try_from(depth.checked_sub(1)?).ok()?;
         self.captured_env_value_at_depth(env, captured_depth, slot)
     }
@@ -445,9 +442,10 @@ impl TreeWalk {
         let Some(engine) = self.tier1_engine.clone() else {
             return Tier2FoldGenConsult::Declined { permanent: true };
         };
-        let (Ok(op_lambda), Ok(generator_lambda)) =
-            (self.heap.clone_lambda(op), self.heap.clone_lambda(generator))
-        else {
+        let (Ok(op_lambda), Ok(generator_lambda)) = (
+            self.heap.clone_lambda(op),
+            self.heap.clone_lambda(generator),
+        ) else {
             return Tier2FoldGenConsult::Declined { permanent: true };
         };
         match engine.on_foldl_strict_genlist(

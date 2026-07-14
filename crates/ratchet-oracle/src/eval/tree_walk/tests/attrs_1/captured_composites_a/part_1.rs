@@ -745,4 +745,3 @@ fn captured_source_order_attrset_values_build_force_cache_subjects() {
         "captured source-order attrsets should create one demand node"
     );
 }
-

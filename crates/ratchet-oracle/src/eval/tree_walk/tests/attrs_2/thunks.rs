@@ -76,4 +76,3 @@ fn mark_all_thunk_allocs_strict(ir: &mut Ir) {
         };
     }
 }
-

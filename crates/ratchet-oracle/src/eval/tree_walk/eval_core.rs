@@ -349,13 +349,12 @@ impl TreeWalk {
         // per-worker/concurrent collector is Phase 8. This is an explicit
         // quiescence pin, not a default: a parallel evaluation with a
         // configured sweep mode runs byte-identically to gc-off.
-        let gc_mode = if options.parallel_workers().is_some()
-            || options.parallel_thunk_payloads_enabled()
-        {
-            EvalGcMode::Off
-        } else {
-            options.gc_mode()
-        };
+        let gc_mode =
+            if options.parallel_workers().is_some() || options.parallel_thunk_payloads_enabled() {
+                EvalGcMode::Off
+            } else {
+                options.gc_mode()
+            };
         if let Some(heap_memory_budget) = options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(
@@ -828,7 +827,11 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<bool, TreeWalkError> {
-        if !value.is_thunk() || !self.lazy_identity_thunks.contains(&value.relocation_sensitive_identity_bits()) {
+        if !value.is_thunk()
+            || !self
+                .lazy_identity_thunks
+                .contains(&value.relocation_sensitive_identity_bits())
+        {
             return Ok(false);
         }
         let thunk = self
@@ -844,7 +847,8 @@ impl TreeWalk {
 
     pub(super) fn mark_lazy_identity_thunk(&mut self, value: Value) {
         if value.is_thunk() {
-            self.lazy_identity_thunks.insert(value.relocation_sensitive_identity_bits());
+            self.lazy_identity_thunks
+                .insert(value.relocation_sensitive_identity_bits());
         }
     }
 
@@ -866,7 +870,8 @@ impl TreeWalk {
     pub(super) fn mark_lazy_foldl_initial_thunk(&mut self, value: Value) {
         self.mark_lazy_identity_thunk(value);
         if value.is_thunk() {
-            self.lazy_foldl_initial_thunks.insert(value.relocation_sensitive_identity_bits());
+            self.lazy_foldl_initial_thunks
+                .insert(value.relocation_sensitive_identity_bits());
         }
     }
 

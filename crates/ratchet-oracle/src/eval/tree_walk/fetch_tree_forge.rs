@@ -872,7 +872,6 @@ impl TreeWalk {
             rev_count,
         })
     }
-
 }
 
 mod forge_git;

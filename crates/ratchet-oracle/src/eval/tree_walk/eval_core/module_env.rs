@@ -284,8 +284,7 @@ impl TreeWalk {
                 return Ok((EvalEnv::default(), None));
             }
             if slots.len() > FLAT_CAPTURE_MAX_SLOTS {
-                let env =
-                    EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
                 return Ok((env, None));
             }
             let mut capture_slots = [Upvalue { depth: 0, slot: 0 }; FLAT_CAPTURE_MAX_SLOTS];
@@ -295,20 +294,14 @@ impl TreeWalk {
             let frame_count = self.active_env_frame_count();
             if self.order_sensitive_binding_depth != 0 {
                 let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
-                let buffer = EvalFlatCaptureBuffer::pending(
-                    allocation_site,
-                    frame_count,
-                    capture_len,
-                )
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
-                })?;
+                let buffer =
+                    EvalFlatCaptureBuffer::pending(allocation_site, frame_count, capture_len)
+                        .map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                        })?;
                 return Ok((env, Some(buffer)));
             }
-            let mut buffer = EvalFlatCaptureBuffer::new(
-                allocation_site,
-                frame_count,
-            );
+            let mut buffer = EvalFlatCaptureBuffer::new(allocation_site, frame_count);
             for capture_slot in &capture_slots[..capture_len] {
                 let value = self
                     .active_env_value_at_depth(
@@ -466,11 +459,7 @@ impl TreeWalk {
         index: usize,
     ) -> Option<Value> {
         self.heap
-            .flat_closure_capture_value_at(
-                capture.inline_owner(),
-                capture.tail_handle(),
-                index,
-            )
+            .flat_closure_capture_value_at(capture.inline_owner(), capture.tail_handle(), index)
             .ok()
             .flatten()
     }

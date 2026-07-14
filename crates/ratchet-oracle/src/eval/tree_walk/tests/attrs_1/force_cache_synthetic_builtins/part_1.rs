@@ -838,4 +838,3 @@ fn synthetic_builtin_attr_store_dir_ignores_unrelated_option_identity_salts() {
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
-

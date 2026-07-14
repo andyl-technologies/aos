@@ -820,4 +820,3 @@ fn boundary_owned_commit_buffers_publish_dirty_permanent_field_rescan_edges() {
     assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 1);
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
-

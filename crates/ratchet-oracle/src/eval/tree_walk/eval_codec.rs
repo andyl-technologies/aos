@@ -385,15 +385,17 @@ impl TreeWalk {
                     )
                 })?;
                 for (key, value) in values {
-                    let symbol = self.intern_symbol_for_eval(key.as_bytes()).map_err(|source| {
-                        TreeWalkError::new(
-                            TreeWalkErrorKind::SymbolIntern {
-                                id,
-                                source: source.kind().clone(),
-                            },
-                            span,
-                        )
-                    })?;
+                    let symbol = self
+                        .intern_symbol_for_eval(key.as_bytes())
+                        .map_err(|source| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SymbolIntern {
+                                    id,
+                                    source: source.kind().clone(),
+                                },
+                                span,
+                            )
+                        })?;
                     let value = self.value_from_json(id, span, value)?;
                     entries.push(AttrEntry::new(symbol, value));
                 }
@@ -459,15 +461,17 @@ impl TreeWalk {
                     )
                 })?;
                 for (key, value) in values {
-                    let symbol = self.intern_symbol_for_eval(key.as_bytes()).map_err(|source| {
-                        TreeWalkError::new(
-                            TreeWalkErrorKind::SymbolIntern {
-                                id,
-                                source: source.kind().clone(),
-                            },
-                            span,
-                        )
-                    })?;
+                    let symbol = self
+                        .intern_symbol_for_eval(key.as_bytes())
+                        .map_err(|source| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SymbolIntern {
+                                    id,
+                                    source: source.kind().clone(),
+                                },
+                                span,
+                            )
+                        })?;
                     let value = self.value_from_toml(id, span, value)?;
                     entries.push(AttrEntry::new(symbol, value));
                 }
@@ -770,14 +774,26 @@ impl TreeWalk {
                 self.heap
                     .decode_int_value(value)
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: value_id,
+                                source,
+                            },
+                            value_span,
+                        )
                     })?
                     .to_string()
                     .into_bytes(),
             )),
             ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
                 self.heap.decode_float_value(value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: value_id,
+                            source,
+                        },
+                        value_span,
+                    )
                 })?,
             ))),
             ValueTag::Bool => {

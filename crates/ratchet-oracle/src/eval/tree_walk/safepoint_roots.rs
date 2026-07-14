@@ -1118,10 +1118,8 @@ impl TreeWalk {
                 }
             }
             if let Some(flat) = &suspended.env.flat_base {
-                roots.try_push_suspended_tree_walk_flat_capture_owner(
-                    depth,
-                    flat.inline_owner(),
-                )?;
+                roots
+                    .try_push_suspended_tree_walk_flat_capture_owner(depth, flat.inline_owner())?;
             }
             for (scope_depth, scope) in suspended.with_scopes.iter().enumerate() {
                 roots.try_push_suspended_with_scope(depth, scope_depth, scope.value())?;
@@ -2552,7 +2550,8 @@ impl TreeWalk {
                 plan.object_body_plan(),
                 plan.writebacks().heap_field_writebacks(),
             )?;
-        let planned_live_heap_field_writebacks = copied_writes.len().saturating_add(direct_writes.len());
+        let planned_live_heap_field_writebacks =
+            copied_writes.len().saturating_add(direct_writes.len());
         validate_live_heap_field_writeback_count(
             planned_live_heap_field_writebacks,
             application.applied_heap_field_writebacks(),
@@ -2567,7 +2566,8 @@ impl TreeWalk {
                 &self.thunk_resolve_card_table,
             )?;
         let live_heap_field_writebacks = staged_live_heap_field_writes.live_heap_field_writebacks();
-        let relocation_identity_repair = self.stage_relocation_identity_repair(plan.forwarding_slots())?;
+        let relocation_identity_repair =
+            self.stage_relocation_identity_repair(plan.forwarding_slots())?;
         debug_assert_eq!(
             live_heap_field_writebacks,
             preflight_live_heap_field_writebacks
@@ -3313,17 +3313,15 @@ impl TreeWalk {
                     .set(root_writeback_frame_slot(source, *slot)?, value)
                     .map_err(TreeWalkSafepointRootWritebackError::Environment)
             }
-            EvalRootSource::WithScope { depth } => {
-                self.with_scopes
-                    .replace_value(*depth, value)
-                    .then_some(())
-                    .ok_or_else(|| root_writeback_source_unavailable(source))
-            }
+            EvalRootSource::WithScope { depth } => self
+                .with_scopes
+                .replace_value(*depth, value)
+                .then_some(())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
             EvalRootSource::SuspendedWithScope { depth, scope_depth } => {
                 let suspended_index =
                     suspended_root_index(self.suspended_env_roots.len(), *depth, source)?;
-                self
-                    .suspended_env_roots
+                self.suspended_env_roots
                     .get_mut(suspended_index)
                     .is_some_and(|suspended| {
                         suspended.with_scopes.replace_value(*scope_depth, value)
@@ -3331,17 +3329,15 @@ impl TreeWalk {
                     .then_some(())
                     .ok_or_else(|| root_writeback_source_unavailable(source))
             }
-            EvalRootSource::ScopedGlobal { depth } => {
-                self.scoped_globals
-                    .replace_value(*depth, value)
-                    .then_some(())
-                    .ok_or_else(|| root_writeback_source_unavailable(source))
-            }
+            EvalRootSource::ScopedGlobal { depth } => self
+                .scoped_globals
+                .replace_value(*depth, value)
+                .then_some(())
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
             EvalRootSource::SuspendedScopedGlobal { depth, scope_depth } => {
                 let suspended_index =
                     suspended_root_index(self.suspended_env_roots.len(), *depth, source)?;
-                self
-                    .suspended_env_roots
+                self.suspended_env_roots
                     .get_mut(suspended_index)
                     .is_some_and(|suspended| {
                         suspended.scoped_globals.replace_value(*scope_depth, value)

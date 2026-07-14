@@ -3,7 +3,11 @@
 use super::*;
 
 impl TreeWalk {
-    pub(in crate::eval::tree_walk) fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+    pub(in crate::eval::tree_walk) fn eval_attrset(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+    ) -> Result<Value, TreeWalkError> {
         let IrData::AttrSet {
             shape,
             bindings,

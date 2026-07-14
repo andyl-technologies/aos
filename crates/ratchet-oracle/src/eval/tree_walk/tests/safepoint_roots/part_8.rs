@@ -801,4 +801,3 @@ fn live_object_bodies_bind_existing_copied_destination_record_body() {
     );
     assert!(outcome.value().raw_eq(original_value));
 }
-

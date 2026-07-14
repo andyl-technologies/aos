@@ -832,4 +832,3 @@ fn root_value_writebacks_preserve_reverse_depth_and_ready_import_indexes() {
         replacement_for_source(&plan, EvalRootSource::ImportCache { index: 1 }),
     );
 }
-

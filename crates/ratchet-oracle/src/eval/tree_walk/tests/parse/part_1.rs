@@ -800,4 +800,3 @@ fn ordinary_filesystem_import_does_not_open_persist_cache_without_parse_cache() 
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }
-

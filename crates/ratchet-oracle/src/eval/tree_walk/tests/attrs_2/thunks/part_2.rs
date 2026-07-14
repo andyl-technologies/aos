@@ -785,4 +785,3 @@ fn polymorphic_static_has_attr_keeps_shaped_cache_after_missing_receivers() {
     assert_eq!(counts.shaped_hits, 2);
     assert_eq!(counts.shaped_misses, 2);
 }
-

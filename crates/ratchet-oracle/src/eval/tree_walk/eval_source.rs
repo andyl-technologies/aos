@@ -18,14 +18,26 @@ impl TreeWalk {
                 self.heap
                     .decode_int_value(value)
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: value_id,
+                                source,
+                            },
+                            value_span,
+                        )
                     })?
                     .to_string()
                     .into_bytes(),
             )),
             ValueTag::Float => Ok(NixString::from_bytes(Self::to_string_float_bytes(
                 self.heap.decode_float_value(value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: value_id,
+                            source,
+                        },
+                        value_span,
+                    )
                 })?,
             ))),
             ValueTag::Bool => {

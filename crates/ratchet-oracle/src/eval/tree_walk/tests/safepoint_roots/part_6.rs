@@ -294,4 +294,3 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
     );
     assert!(aggregate_owned_storage_application.card_table().is_empty());
 }
-

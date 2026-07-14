@@ -7,6 +7,9 @@
 
 use super::*;
 mod part_1;
+mod part_10;
+mod part_11;
+mod part_12;
 mod part_2;
 mod part_3;
 mod part_4;
@@ -15,12 +18,8 @@ mod part_6;
 mod part_7;
 mod part_8;
 mod part_9;
-mod part_10;
-mod part_11;
-mod part_12;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::eval::heap::EvalThunkForceStorageMode;
-use serde_json::Number as JsonNumber;
 use crate::eval::heap::{
     EvalHeap, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
@@ -32,6 +31,7 @@ use crate::heap::{GcHeapAddress, HeapGeneration, HeapMemoryBudgetResponse, Memor
 use crate::runtime::alloc::{
     AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint, RuntimeAllocator,
 };
+use serde_json::Number as JsonNumber;
 
 fn attr_thunk_storage_mode(
     source: &str,
@@ -457,4 +457,3 @@ fn heap_record_forwarding_slot_count(heap: &EvalHeap, values: &[Value]) -> usize
         })
         .count()
 }
-

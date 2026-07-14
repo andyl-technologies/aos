@@ -51,4 +51,3 @@ fn assert_replay_permanent_allocation_shape(
         "{label} recorded an unexpected permanent dispatch suffix"
     );
 }
-

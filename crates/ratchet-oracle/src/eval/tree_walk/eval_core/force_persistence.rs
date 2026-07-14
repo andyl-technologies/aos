@@ -781,7 +781,10 @@ impl TreeWalk {
         }
     }
 
-    pub(in crate::eval::tree_walk) fn force_cache_has_prior_persistent_demand(&mut self, subject: &ForceCacheSubject) -> bool {
+    pub(in crate::eval::tree_walk) fn force_cache_has_prior_persistent_demand(
+        &mut self,
+        subject: &ForceCacheSubject,
+    ) -> bool {
         if !self.options.eval_cache_enabled() {
             return false;
         }

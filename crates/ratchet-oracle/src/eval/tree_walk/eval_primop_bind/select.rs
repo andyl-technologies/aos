@@ -408,7 +408,14 @@ impl TreeWalk {
         // an unresolved id falls back to the flat select path instead of
         // failing the evaluation.
         let Ok(shape) = self.shaped_handle_for_projected_shape(projected_shape) else {
-            return self.select_flat_attr_with_cache(id, span, attrs_value, symbol, site, path_index);
+            return self.select_flat_attr_with_cache(
+                id,
+                span,
+                attrs_value,
+                symbol,
+                site,
+                path_index,
+            );
         };
         let shaped =
             self.transient_shaped_attrs_for_projected_shape(id, span, attrs_value, shape)?;

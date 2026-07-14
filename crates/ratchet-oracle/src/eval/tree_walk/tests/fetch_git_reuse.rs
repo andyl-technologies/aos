@@ -65,7 +65,11 @@ fn locked_fetch_git_reuses_record_without_the_source_repo() {
         .expect("reuse record directory exists after the first evaluation")
         .map(|entry| entry.expect("reuse record entry reads").path())
         .collect();
-    assert_eq!(records.len(), 1, "one locked input, one record: {records:?}");
+    assert_eq!(
+        records.len(),
+        1,
+        "one locked input, one record: {records:?}"
+    );
     assert_eq!(
         records[0].extension().and_then(|ext| ext.to_str()),
         Some("json")
@@ -137,8 +141,9 @@ fn unlocked_fetch_git_never_reuses_records() {
         "(builtins.fetchGit {{ url = {url}; }}).rev",
         url = nix_string_literal(&url),
     );
-    let error = eval_whnf_owned_with_options(&lower(&unlocked), reuse_options(&store_dir, &cache_dir))
-        .expect_err("unlocked fetch must attempt the clone and fail");
+    let error =
+        eval_whnf_owned_with_options(&lower(&unlocked), reuse_options(&store_dir, &cache_dir))
+            .expect_err("unlocked fetch must attempt the clone and fail");
     assert!(
         matches!(error.kind(), TreeWalkErrorKind::FetchGit { .. }),
         "unlocked fetch fails as a fetchGit error: {error:?}"

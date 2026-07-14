@@ -832,4 +832,3 @@ fn gc_stress_eval_root_thunk_allocation_dispatches_reserved_forwarding_bridge() 
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
 }
-

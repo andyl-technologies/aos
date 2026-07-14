@@ -777,4 +777,3 @@ fn source_backed_position_bearing_attrset_literals_hit_force_cache_payloads() {
         "source-backed position-bearing attrset literals should use one in-memory payload"
     );
 }
-

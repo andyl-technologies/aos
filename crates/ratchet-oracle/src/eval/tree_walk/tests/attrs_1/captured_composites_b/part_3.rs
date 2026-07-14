@@ -820,4 +820,3 @@ fn closed_composite_literal_thunks_admit_on_first_raw_force() {
         "first raw force should allocate the closed composite expression node"
     );
 }
-

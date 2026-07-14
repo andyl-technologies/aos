@@ -184,4 +184,3 @@ fn evaluate_effectful_derivation_surface_with_cache(
         persist_force_cache_hit_keys: outcome.persist_force_cache_hit_keys().to_vec(),
     }
 }
-

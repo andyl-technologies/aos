@@ -796,4 +796,3 @@ fn search_path_literal_thunks_hit_from_persistent_cache_after_revalidation() {
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
     fs::remove_dir_all(root).expect("temp tree removed");
 }
-

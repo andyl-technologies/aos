@@ -40,12 +40,12 @@ impl TreeWalk {
                 entries: forwarding_slots.len(),
             })?;
         for (index, slot) in forwarding_slots.iter().copied().enumerate() {
-            let forwarded = slot.forwarded_value().ok_or(
-                EvalHeapError::CollectorPollForwardingSlotEmpty {
-                    index,
-                    address: slot.source(),
-                },
-            )?;
+            let forwarded =
+                slot.forwarded_value()
+                    .ok_or(EvalHeapError::CollectorPollForwardingSlotEmpty {
+                        index,
+                        address: slot.source(),
+                    })?;
             let ResolvedValueGeneration::Heap { address, .. } = forwarded else {
                 debug_assert!(false, "minor-GC forwarding values are heap-backed");
                 continue;
@@ -57,9 +57,7 @@ impl TreeWalk {
         }
         relocations.sort_unstable_by_key(|(source, _)| *source);
         debug_assert!(
-            relocations
-                .windows(2)
-                .all(|pair| pair[0].0 != pair[1].0),
+            relocations.windows(2).all(|pair| pair[0].0 != pair[1].0),
             "minor-GC forwarding sources are unique"
         );
 
@@ -185,10 +183,8 @@ mod tests {
     use crate::syntax::parse_str;
 
     fn lower(source: &str) -> Ir {
-        nix_lower(
-            resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"),
-        )
-        .expect("source lowers")
+        nix_lower(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("source lowers")
     }
 
     #[test]
@@ -216,18 +212,18 @@ mod tests {
             GcHeapAddress::new(survivor_key as usize).expect("source is aligned"),
             ResolvedValueGeneration::young(destination),
         );
-        evaluator.lazy_identity_thunks.extend([survivor_key, dead_key]);
+        evaluator
+            .lazy_identity_thunks
+            .extend([survivor_key, dead_key]);
         evaluator
             .lazy_foldl_initial_thunks
             .extend([survivor_key, dead_key]);
-        evaluator.tier1_publish_slots.insert(
-            survivor_key,
-            OpaqueTier1Slot::new(1, Box::new("survivor")),
-        );
-        evaluator.tier1_publish_slots.insert(
-            dead_key,
-            OpaqueTier1Slot::new(2, Box::new("dead")),
-        );
+        evaluator
+            .tier1_publish_slots
+            .insert(survivor_key, OpaqueTier1Slot::new(1, Box::new("survivor")));
+        evaluator
+            .tier1_publish_slots
+            .insert(dead_key, OpaqueTier1Slot::new(2, Box::new("dead")));
         evaluator.memo_unhashable_values.insert(survivor_key);
 
         let plan = evaluator
@@ -236,7 +232,10 @@ mod tests {
         evaluator.commit_relocation_identity_repair(plan);
 
         let destination_key = destination.address_bits() as u64;
-        assert_eq!(evaluator.lazy_identity_thunks, HashSet::from([destination_key]));
+        assert_eq!(
+            evaluator.lazy_identity_thunks,
+            HashSet::from([destination_key])
+        );
         assert_eq!(
             evaluator.lazy_foldl_initial_thunks,
             HashSet::from([destination_key])
@@ -262,10 +261,7 @@ mod tests {
 
         prune_and_rekey_map(&mut identities, &[(0x10, 0x110)], &[0x20]);
 
-        assert_eq!(
-            identities,
-            HashMap::from([(0x30, "old"), (0x110, "live")])
-        );
+        assert_eq!(identities, HashMap::from([(0x30, "old"), (0x110, "live")]));
     }
 
     #[test]

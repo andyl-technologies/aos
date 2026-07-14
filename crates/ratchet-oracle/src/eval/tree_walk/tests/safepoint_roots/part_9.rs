@@ -830,4 +830,3 @@ fn outcome_root_writebacks_reject_stale_value_without_mutation() {
     ));
     assert!(outcome.value().raw_eq(stale_value));
 }
-

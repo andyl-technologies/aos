@@ -812,4 +812,3 @@ fn fetch_git_primop_honors_ref_and_submodules() {
     fs::remove_dir_all(sub_dir).expect("sub repo temp directory removes");
     fs::remove_dir_all(sub_store_dir).expect("sub store temp directory removes");
 }
-

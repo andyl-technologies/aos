@@ -824,4 +824,3 @@ fn reference_writebacks_forwarding_slots_reject_occupied_before_live_mutation() 
         original_dirty_cards.as_slice()
     );
 }
-

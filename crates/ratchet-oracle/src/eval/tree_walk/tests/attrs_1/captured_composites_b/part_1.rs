@@ -820,4 +820,3 @@ fn captured_static_selects_miss_when_selected_binding_position_changes() {
         );
     }
 }
-

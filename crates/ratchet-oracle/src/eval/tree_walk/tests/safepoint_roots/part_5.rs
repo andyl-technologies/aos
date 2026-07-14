@@ -744,4 +744,3 @@ fn owned_eval_plans_gc_stress_boundary_permanent_commit_metadata() {
             .is_empty()
     );
 }
-

@@ -334,8 +334,7 @@ impl TreeWalk {
         // Copy maximal runs of ordinary bytes in bulk; scanning for the next
         // byte that needs an escape is much cheaper than pushing bytes one at
         // a time through per-byte capacity checks.
-        let needs_escape =
-            |byte: u8| matches!(byte, b'\\' | b'\n' | b'\r' | b'\t' | b'"');
+        let needs_escape = |byte: u8| matches!(byte, b'\\' | b'\n' | b'\r' | b'\t' | b'"');
         let mut rest = bytes;
         while let Some(index) = rest.iter().position(|&byte| needs_escape(byte)) {
             out.extend_from_slice(&rest[..index]);

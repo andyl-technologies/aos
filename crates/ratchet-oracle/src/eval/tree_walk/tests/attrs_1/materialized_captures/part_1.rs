@@ -769,4 +769,3 @@ fn materialized_capture_hashes_are_cached_on_heap_records() {
         "hashing a list containing a closed literal thunk must not force it"
     );
 }
-

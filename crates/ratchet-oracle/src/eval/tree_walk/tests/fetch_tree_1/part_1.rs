@@ -834,4 +834,3 @@ fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
     fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
-

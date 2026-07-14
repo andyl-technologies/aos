@@ -677,7 +677,10 @@ fn observe_payload_memo_serves_repeated_heap_aggregate_encodes() {
     let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
     // The memo is opt-in (default off); activate it without touching the
     // process-global environment, which would race concurrent tests.
-    evaluator.force_payload_memo.borrow_mut().set_active_for_test();
+    evaluator
+        .force_payload_memo
+        .borrow_mut()
+        .set_active_for_test();
     let list = evaluator
         .heap
         .alloc_list(NixList::new(vec![

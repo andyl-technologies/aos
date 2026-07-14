@@ -278,14 +278,13 @@ fn daemon_force_cache_replay_runs_barrier_without_remembered_edge_for_permanent_
 /// the call frame once the result is strict. (Bindings must be conditionally
 /// used - a never-used binding would be removed by dead-binding elimination,
 /// and values stored into attrsets are immortal via permanent hash-consing.)
-const SWEEP_FIXTURE: &str =
-    "let\n  pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy;\nin pick 1 + pick 2 + pick 3";
+const SWEEP_FIXTURE: &str = "let\n  pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy;\nin pick 1 + pick 2 + pick 3";
 
 #[test]
 fn sweep_mode_evaluation_is_byte_identical_and_sheds_captures() {
     let ir = lower(SWEEP_FIXTURE);
-    let baseline = eval_raw_bytes_with_options(&ir, TreeWalkOptions::default())
-        .expect("baseline evaluates");
+    let baseline =
+        eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("baseline evaluates");
 
     let mut options = TreeWalkOptions::default();
     options.set_gc_mode(EvalGcMode::Sweep);
@@ -414,12 +413,7 @@ fn compiled_safepoint_sweep_marks_finalized_stack_map_roots() {
         .expect("kept exists");
     let mut compiled_roots = EvalRootSet::new();
     compiled_roots
-        .try_push_stack_map(
-            0x7000,
-            2,
-            StackMapSlot::Stack { offset: 48 },
-            kept,
-        )
+        .try_push_stack_map(0x7000, 2, StackMapSlot::Stack { offset: 48 }, kept)
         .expect("compiled root records");
 
     let mut outer_compiled_roots = [root];

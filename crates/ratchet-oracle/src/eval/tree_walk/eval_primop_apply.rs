@@ -896,7 +896,6 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
     }
-
 }
 
 mod apply_helpers;

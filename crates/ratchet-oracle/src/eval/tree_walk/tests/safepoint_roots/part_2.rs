@@ -809,4 +809,3 @@ fn reference_writebacks_reserved_destination_rejects_stale_worker_poll_before_re
         permanent_safepoints_before
     );
 }
-

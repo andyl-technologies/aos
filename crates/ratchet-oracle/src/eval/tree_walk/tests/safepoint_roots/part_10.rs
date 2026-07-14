@@ -774,4 +774,3 @@ fn live_existing_destination_commit_validate_headers_and_references_without_muta
         original_dirty_cards.as_slice()
     );
 }
-

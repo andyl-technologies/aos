@@ -26,9 +26,13 @@ use crate::runtime::alloc::{
 };
 use std::path::PathBuf;
 
-
-mod support;
 mod part_1;
+mod part_10;
+mod part_11;
+mod part_12;
+mod part_13;
+mod part_14;
+mod part_15;
 mod part_2;
 mod part_3;
 mod part_4;
@@ -37,12 +41,7 @@ mod part_6;
 mod part_7;
 mod part_8;
 mod part_9;
-mod part_10;
-mod part_11;
-mod part_12;
-mod part_13;
-mod part_14;
-mod part_15;
+mod support;
 pub(crate) use support::*;
 
 fn tree_walk_with_periodic_poll_before_single_young_reservation()
@@ -150,4 +149,3 @@ fn assert_periodic_poll_reserved_application_without_reservation_poll(
         HeapGeneration::Young
     );
 }
-

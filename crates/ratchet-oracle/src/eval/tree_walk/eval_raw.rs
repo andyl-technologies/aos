@@ -206,7 +206,10 @@ impl TreeWalk {
         let seen_end = seen.len();
         let active_end = seen_end.checked_add(active.len()).ok_or_else(|| {
             TreeWalkError::new(
-                TreeWalkErrorKind::ListAllocationFailed { id, len: usize::MAX },
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
                 span,
             )
         })?;
@@ -214,7 +217,10 @@ impl TreeWalk {
             .checked_add(expanded_active_lists.len())
             .ok_or_else(|| {
                 TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed { id, len: usize::MAX },
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
                     span,
                 )
             })?;

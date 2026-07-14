@@ -659,8 +659,7 @@ impl TreeWalk {
         args: &FetchGitArguments,
         rev: &str,
     ) -> bool {
-        record.get("version").and_then(JsonValue::as_u64)
-            == Some(FETCH_GIT_REUSE_RECORD_VERSION)
+        record.get("version").and_then(JsonValue::as_u64) == Some(FETCH_GIT_REUSE_RECORD_VERSION)
             && record
                 .get("storeDir")
                 .and_then(JsonValue::as_str)

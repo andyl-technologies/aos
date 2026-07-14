@@ -63,7 +63,10 @@ fn observe_memo_enabled() -> bool {
 /// Reads the configured retained-bytes budget from the environment once.
 fn configured_budget_bytes() -> u64 {
     match std::env::var("AOS_NIX_OBSERVE_MEMO_BYTES") {
-        Ok(raw) => raw.trim().parse().unwrap_or(DEFAULT_OBSERVE_MEMO_BUDGET_BYTES),
+        Ok(raw) => raw
+            .trim()
+            .parse()
+            .unwrap_or(DEFAULT_OBSERVE_MEMO_BUDGET_BYTES),
         Err(_) => DEFAULT_OBSERVE_MEMO_BUDGET_BYTES,
     }
 }

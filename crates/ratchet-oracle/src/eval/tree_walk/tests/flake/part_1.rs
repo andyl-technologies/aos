@@ -782,4 +782,3 @@ fn get_flake_evaluates_local_inputless_flakes() {
     fs::remove_dir_all(root).expect("flake temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
-

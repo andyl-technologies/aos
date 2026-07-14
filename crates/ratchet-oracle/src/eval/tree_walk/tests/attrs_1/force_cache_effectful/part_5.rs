@@ -831,4 +831,3 @@ fn changed_effectful_forced_inline_thunks_miss_persistent_cache_after_revalidati
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
     fs::remove_dir_all(root).expect("temp tree removed");
 }
-

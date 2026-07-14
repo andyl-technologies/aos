@@ -26,7 +26,8 @@ impl TreeWalk {
                 _free_var_value_hashes,
                 dependency,
                 early_cutoff,
-            )) = self.lookup_static_derivation_output_paths_for_current_node(id, pre_output_aterm)
+            )) =
+                self.lookup_static_derivation_output_paths_for_current_node(id, pre_output_aterm)
             && let Some(known_hash) =
                 self.apply_static_derivation_output_paths_from_cache(id, name, derivation, &cached)
         {

@@ -383,8 +383,7 @@ mod canonicalize_tests {
         let mut shuffled_input = sample_observations();
         shuffled_input.reverse();
         shuffled_input.swap(0, 2);
-        let shuffled =
-            canonicalize_cacheable_input_trace(shuffled_input).expect("no conflicts");
+        let shuffled = canonicalize_cacheable_input_trace(shuffled_input).expect("no conflicts");
         assert_eq!(forward, shuffled);
     }
 
@@ -394,8 +393,7 @@ mod canonicalize_tests {
             canonicalize_cacheable_input_trace(sample_observations()).expect("no conflicts");
         let mut reversed_input = sample_observations();
         reversed_input.reverse();
-        let reversed =
-            canonicalize_cacheable_input_trace(reversed_input).expect("no conflicts");
+        let reversed = canonicalize_cacheable_input_trace(reversed_input).expect("no conflicts");
 
         let record = |inputs| {
             RootInstantiationRecord::new(b"/nix/store/root.drv".to_vec(), Vec::new(), inputs, 7)
@@ -407,9 +405,8 @@ mod canonicalize_tests {
 
     #[test]
     fn identical_duplicate_observations_collapse() {
-        let repeated = cacheable(
-            ImpureInputFingerprint::read_file(b"/src/data", b"payload").expect("hashes"),
-        );
+        let repeated =
+            cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"payload").expect("hashes"));
         let canonical =
             canonicalize_cacheable_input_trace(vec![repeated.clone(), repeated.clone()])
                 .expect("no conflicts");
@@ -422,7 +419,10 @@ mod canonicalize_tests {
             cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"before").expect("hashes"));
         let after =
             cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"after").expect("hashes"));
-        assert_eq!(canonicalize_cacheable_input_trace(vec![before, after]), None);
+        assert_eq!(
+            canonicalize_cacheable_input_trace(vec![before, after]),
+            None
+        );
     }
 
     #[test]
@@ -437,9 +437,8 @@ mod canonicalize_tests {
             )
             .expect("hashes"),
         );
-        let canonical =
-            canonicalize_cacheable_input_trace(vec![directory_probe, default_probe])
-                .expect("no conflicts");
+        let canonical = canonicalize_cacheable_input_trace(vec![directory_probe, default_probe])
+            .expect("no conflicts");
         assert_eq!(canonical.len(), 2);
     }
 }

@@ -770,4 +770,3 @@ fn gc_stress_generic_closure_result_routes_through_list_wrapper() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

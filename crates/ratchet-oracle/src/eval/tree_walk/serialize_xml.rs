@@ -59,7 +59,13 @@ impl TreeWalk {
                     .heap
                     .decode_int_value(value)
                     .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: value_id,
+                                source,
+                            },
+                            value_span,
+                        )
                     })?
                     .to_string()
                     .into_bytes();
@@ -74,7 +80,13 @@ impl TreeWalk {
             }
             ValueTag::Float => {
                 let scalar = self.heap.decode_float_value(value).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id: value_id, source }, value_span)
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: value_id,
+                            source,
+                        },
+                        value_span,
+                    )
                 })?;
                 let value = Self::xml_float_bytes(scalar);
                 Self::write_xml_empty_element(

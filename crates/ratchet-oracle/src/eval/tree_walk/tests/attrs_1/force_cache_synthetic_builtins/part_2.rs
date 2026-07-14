@@ -521,4 +521,3 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
         "uncacheable currentTime observation should invalidate the stale payload"
     );
 }
-

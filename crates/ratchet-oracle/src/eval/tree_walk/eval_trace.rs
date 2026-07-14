@@ -929,7 +929,6 @@ impl TreeWalk {
             context_value,
         )
     }
-
 }
 
 mod trace_helpers;

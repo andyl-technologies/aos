@@ -821,4 +821,3 @@ fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

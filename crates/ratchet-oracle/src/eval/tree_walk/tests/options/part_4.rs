@@ -787,4 +787,3 @@ fn gc_stress_eval_root_try_eval_result_skips_primop_composite_dispatch() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

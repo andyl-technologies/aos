@@ -95,25 +95,22 @@ fn json_parity_source_strategy() -> impl Strategy<Value = String> {
         prop::collection::vec(-20_i64..=20, 0..6)
             .prop_map(|values| { format!("builtins.all (x: x < 0) {}", nix_int_list(&values)) }),
         // Apply through a let-bound lambda (slot chase + parameter summary).
-        (-100_i64..=100).prop_map(|value| {
-            format!("let f = x: x + 1; in f {}", nix_int(value))
-        }),
+        (-100_i64..=100).prop_map(|value| { format!("let f = x: x + 1; in f {}", nix_int(value)) }),
         // Apply through a select-resolved lambda on a static attrset literal.
         (-100_i64..=100).prop_map(|value| {
-            format!("let lib = {{ inc = x: x + 1; }}; in lib.inc {}", nix_int(value))
+            format!(
+                "let lib = {{ inc = x: x + 1; }}; in lib.inc {}",
+                nix_int(value)
+            )
         }),
         // Identity result spine: the argument is forced by the caller.
         (-100_i64..=100).prop_map(|value| format!("(x: x) {}", nix_int(value))),
         // Recursive let forward references (intra-frame demand fixpoint).
-        (-100_i64..=100).prop_map(|value| {
-            format!("let a = b + 1; b = {}; in a", nix_int(value))
-        }),
+        (-100_i64..=100)
+            .prop_map(|value| { format!("let a = b + 1; b = {}; in a", nix_int(value)) }),
         // Branch meet: demanded in both branches of a total condition.
         ((-100_i64..=100), proptest::bool::ANY).prop_map(|(value, flag)| {
-            format!(
-                "(x: if {flag} then x + 1 else x - 1) {}",
-                nix_int(value)
-            )
+            format!("(x: if {flag} then x + 1 else x - 1) {}", nix_int(value))
         }),
         // tryEval barrier (S4): no demand through the catch.
         (-100_i64..=100).prop_map(|value| {
@@ -123,22 +120,19 @@ fn json_parity_source_strategy() -> impl Strategy<Value = String> {
             )
         }),
         // Effect-rank cap: a trace between body start and the forced use.
-        (-100_i64..=100).prop_map(|value| {
-            format!("(x: builtins.trace \"m\" (x + 1)) {}", nix_int(value))
-        }),
+        (-100_i64..=100)
+            .prop_map(|value| { format!("(x: builtins.trace \"m\" (x + 1)) {}", nix_int(value)) }),
         // Derivation-boundary seeding: total binding values assemble
         // eagerly, `name` is first-forced, everything else stays lazy.
-        (prop::collection::vec(-20_i64..=20, 0..5), -100_i64..=100).prop_map(
-            |(deps, value)| {
-                format!(
-                    "(builtins.derivationStrict {{ name = \"d\" + \"x\"; \
+        (prop::collection::vec(-20_i64..=20, 0..5), -100_i64..=100).prop_map(|(deps, value)| {
+            format!(
+                "(builtins.derivationStrict {{ name = \"d\" + \"x\"; \
                      builder = \"b\"; system = \"s\"; \
                      deps = {}; value = {}; }}).drvPath",
-                    nix_int_list(&deps),
-                    nix_int(value),
-                )
-            }
-        ),
+                nix_int_list(&deps),
+                nix_int(value),
+            )
+        }),
     ]
 }
 
@@ -405,32 +399,58 @@ fn consumed_signature_source_strategy() -> impl Strategy<Value = String> {
         (-100_i64..=100).prop_map(|n| format!("let x = {} + 1; in builtins.isInt x", nix_int(n))),
         prop::collection::vec(-20_i64..=20, 0..6)
             .prop_map(|v| format!("let x = {}; in builtins.length x", nix_int_list(&v))),
-        ("[a-z]{0,12}").prop_map(|s| {
-            format!(r#"let x = "v" + "{s}"; in builtins.stringLength x"#)
-        }),
+        ("[a-z]{0,12}")
+            .prop_map(|s| { format!(r#"let x = "v" + "{s}"; in builtins.stringLength x"#) }),
         (-100_i64..=100, -100_i64..=100).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.sub x {}", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.sub x {}",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         (-20_i64..=20, -20_i64..=20).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.mul {} x", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.mul {} x",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         (-100_i64..=100, 1_i64..=20).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.div x {}", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.div x {}",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         (0_i64..=255, 0_i64..=255).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.bitAnd x {}", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.bitAnd x {}",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         (0_i64..=255, 0_i64..=255).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.bitXor {} x", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.bitXor {} x",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         (-100_i64..=100, -100_i64..=100).prop_map(|(a, b)| {
-            format!("let x = {} + 0; in builtins.lessThan x {}", nix_int(a), nix_int(b))
+            format!(
+                "let x = {} + 0; in builtins.lessThan x {}",
+                nix_int(a),
+                nix_int(b)
+            )
         }),
         ("[0-9]{1,3}", "[0-9]{1,3}").prop_map(|(a, b)| {
             format!(r#"let x = "1." + "{a}"; in builtins.compareVersions x "1.{b}""#)
         }),
         prop::collection::vec(-20_i64..=20, 0..6).prop_map(|v| {
-            format!("let x = {}; in builtins.any (e: e == 3) x", nix_int_list(&v))
+            format!(
+                "let x = {}; in builtins.any (e: e == 3) x",
+                nix_int_list(&v)
+            )
         }),
         prop::collection::vec(-20_i64..=20, 0..6).prop_map(|v| {
             format!("let x = {}; in builtins.all (e: e < 0) x", nix_int_list(&v))
@@ -449,12 +469,10 @@ fn consumed_signature_source_strategy() -> impl Strategy<Value = String> {
             )
         }),
         // Consumed-position ceil/floor over a float-typed binding.
-        (-100_i64..=100).prop_map(|n| {
-            format!("let x = 0.5 + {}; in builtins.ceil x", nix_int(n))
-        }),
-        (-100_i64..=100).prop_map(|n| {
-            format!("let x = 0.5 + {}; in builtins.floor x", nix_int(n))
-        }),
+        (-100_i64..=100)
+            .prop_map(|n| { format!("let x = 0.5 + {}; in builtins.ceil x", nix_int(n)) }),
+        (-100_i64..=100)
+            .prop_map(|n| { format!("let x = 0.5 + {}; in builtins.floor x", nix_int(n)) }),
     ]
 }
 
@@ -514,8 +532,11 @@ fn single_entry_storage_preserves_observables_and_is_exercised() {
     let mut annotated_ir = lower(&json_source);
     crate::compile::annotate_ir(&mut annotated_ir).expect("analysis succeeds");
 
-    let mut conservative_eval = TreeWalk::with_options(&conservative_ir, TreeWalkOptions::default());
-    let conservative_value = conservative_eval.eval_root().expect("conservative evaluates");
+    let mut conservative_eval =
+        TreeWalk::with_options(&conservative_ir, TreeWalkOptions::default());
+    let conservative_value = conservative_eval
+        .eval_root()
+        .expect("conservative evaluates");
     let mut annotated_eval = TreeWalk::with_options(&annotated_ir, TreeWalkOptions::default());
     let annotated_value = annotated_eval.eval_root().expect("annotated evaluates");
 
@@ -680,10 +701,8 @@ fn capture_plan_validation_detects_understated_plans() {
         if let Some(crate::compile::CapturePlan::Flat(slots)) = ir.facts.capture_plan(id)
             && !slots.is_empty()
         {
-            ir.facts.set_capture_plan(
-                id,
-                Some(crate::compile::CapturePlan::Flat(Box::new([]))),
-            );
+            ir.facts
+                .set_capture_plan(id, Some(crate::compile::CapturePlan::Flat(Box::new([]))));
             corrupted += 1;
         }
     }
@@ -709,8 +728,8 @@ fn capture_plan_validation_detects_understated_plans() {
 #[ignore = "measurement probe; needs AOS_NIX_CAPTURE_HISTOGRAM_DIR"]
 fn capture_plan_free_var_histogram_over_corpus() {
     use crate::compile::analysis::{
-        FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans, annotate_cardinality,
-        annotate_escape, annotate_strictness,
+        FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans, annotate_cardinality, annotate_escape,
+        annotate_strictness,
     };
     let Ok(root) = std::env::var("AOS_NIX_CAPTURE_HISTOGRAM_DIR") else {
         panic!("set AOS_NIX_CAPTURE_HISTOGRAM_DIR to the corpus root");

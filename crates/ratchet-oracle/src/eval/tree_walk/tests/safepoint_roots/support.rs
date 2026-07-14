@@ -29,7 +29,9 @@ pub(crate) fn test_lambda_record() -> EvalLambda {
     )
 }
 
-pub(crate) fn resolved_heap_destination_address(value: ResolvedValueGeneration) -> Option<GcHeapAddress> {
+pub(crate) fn resolved_heap_destination_address(
+    value: ResolvedValueGeneration,
+) -> Option<GcHeapAddress> {
     let ResolvedValueGeneration::Heap { address, .. } = value else {
         return None;
     };
@@ -52,7 +54,10 @@ pub(crate) fn has_forwarding_destination(heap: &EvalHeap, destination: Value) ->
     })
 }
 
-pub(crate) fn remembered_set_with_only_edge(source: &RememberedSet, edge: RememberedEdge) -> RememberedSet {
+pub(crate) fn remembered_set_with_only_edge(
+    source: &RememberedSet,
+    edge: RememberedEdge,
+) -> RememberedSet {
     let mut remembered_set = RememberedSet::with_epoch(source.epoch());
     remembered_set
         .record(edge)
@@ -60,7 +65,10 @@ pub(crate) fn remembered_set_with_only_edge(source: &RememberedSet, edge: Rememb
     remembered_set
 }
 
-pub(crate) fn retain_only_thunk_resolve_edge(outcome: &mut EvalOutcome, thunk_value: Value) -> RememberedEdge {
+pub(crate) fn retain_only_thunk_resolve_edge(
+    outcome: &mut EvalOutcome,
+    thunk_value: Value,
+) -> RememberedEdge {
     let retained_edge = RememberedEdge::new(gc_address(thunk_value), gc_address(outcome.value()));
     assert!(
         outcome
@@ -375,8 +383,8 @@ pub(crate) fn boundary_root_and_permanent_lambda_field_outcome_with_existing_des
     )
 }
 
-pub(crate) fn boundary_distinct_root_and_permanent_lambda_field_outcome() -> (EvalOutcome, Value, Value, Value)
-{
+pub(crate) fn boundary_distinct_root_and_permanent_lambda_field_outcome()
+-> (EvalOutcome, Value, Value, Value) {
     let ir = lower("x: x");
     let mut evaluator = TreeWalk::with_options(
         &ir,
@@ -839,7 +847,11 @@ pub(crate) fn tree_walk_with_mixed_root_and_heap_field_writebacks_existing_desti
     (evaluator, child, parent, destination, poll, vec![child])
 }
 
-pub(crate) fn assert_supported_mutable_roots_eq(evaluator: &TreeWalk, value_stack: &[Value], expected: Value) {
+pub(crate) fn assert_supported_mutable_roots_eq(
+    evaluator: &TreeWalk,
+    value_stack: &[Value],
+    expected: Value,
+) {
     assert!(value_stack[0].raw_eq(expected));
     assert_supported_tree_walk_roots_eq(evaluator, expected);
 }
@@ -904,4 +916,3 @@ pub(crate) fn assert_raw_eq(actual: Value, expected: Value) {
         actual.payload_bits()
     );
 }
-

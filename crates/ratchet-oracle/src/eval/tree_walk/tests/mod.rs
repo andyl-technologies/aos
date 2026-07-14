@@ -221,10 +221,6 @@ use support::lower;
 
 mod analysis_soundness;
 mod attr_shape_modes;
-#[cfg(feature = "candidate_c_value")]
-mod heap_census;
-#[cfg(feature = "candidate_c_value")]
-mod heap_snapshot;
 mod attrs_1;
 mod attrs_2;
 mod attrs_3;
@@ -269,6 +265,10 @@ mod flake;
 mod gc;
 mod hash;
 mod hash_file_surface;
+#[cfg(feature = "candidate_c_value")]
+mod heap_census;
+#[cfg(feature = "candidate_c_value")]
+mod heap_snapshot;
 mod memo_l0;
 mod numeric;
 mod options;

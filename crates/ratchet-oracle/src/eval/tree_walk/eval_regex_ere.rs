@@ -381,22 +381,16 @@ fn translate_bracket_expression(
                     }
                     Some(&next) => match last {
                         LastTerm::Class => {
-                            return Err(
-                                "invalid start of range in bracket expression".to_owned()
-                            );
+                            return Err("invalid start of range in bracket expression".to_owned());
                         }
                         LastTerm::None => {
-                            return Err(
-                                "invalid location of '-' in bracket expression".to_owned()
-                            );
+                            return Err("invalid location of '-' in bracket expression".to_owned());
                         }
                         LastTerm::Char(low) => {
                             if next == b'['
                                 && matches!(pattern.get(index + 2), Some(b'.' | b':' | b'='))
                             {
-                                return Err(
-                                    "invalid end of range in bracket expression".to_owned()
-                                );
+                                return Err("invalid end of range in bracket expression".to_owned());
                             }
                             // `x--` is the range `x`..`-`; any other byte
                             // (including `\` and a bare `[`) is an ordinary

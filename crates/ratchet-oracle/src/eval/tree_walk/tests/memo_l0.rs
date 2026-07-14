@@ -29,8 +29,8 @@ const DUPLICATED_SUBTREE: &str = r#"
 #[test]
 fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {
     let ir = lower(DUPLICATED_SUBTREE);
-    let baseline = eval_whnf_owned_with_options(&ir, TreeWalkOptions::default())
-        .expect("baseline evaluates");
+    let baseline =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::default()).expect("baseline evaluates");
     let memo = eval_whnf_owned_with_options(&ir, memo_options(1)).expect("memo run evaluates");
 
     assert_eq!(baseline.value.as_int(), Ok(90));
@@ -99,8 +99,7 @@ fn admission_floor_gates_probes_entirely() {
     let ir = lower(DUPLICATED_SUBTREE);
     // The duplicated subtree is far below this floor, so no def-site is
     // admitted and the memo performs zero probes.
-    let outcome =
-        eval_whnf_owned_with_options(&ir, memo_options(1_000_000)).expect("evaluates");
+    let outcome = eval_whnf_owned_with_options(&ir, memo_options(1_000_000)).expect("evaluates");
     assert_eq!(outcome.value.as_int(), Ok(90));
     assert_eq!(outcome.stats.memo_l0_hits(), 0);
     assert_eq!(outcome.stats.memo_l0_misses(), 0);
@@ -190,7 +189,9 @@ fn memo_keys_are_stable_across_evaluator_instances_and_env_sensitive() {
     let root = evaluator.eval_root().expect("root evaluates");
     let one = {
         let attrs = evaluator.heap().get_attrs(root).expect("root is attrs");
-        attrs.get(symbol_for(&other_ir, b"one")).expect("one exists")
+        attrs
+            .get(symbol_for(&other_ir, b"one"))
+            .expect("one exists")
     };
     let forced = evaluator
         .force_value(other_ir.root, Span::new(0, 0), one)
@@ -204,7 +205,10 @@ fn memo_keys_are_stable_across_evaluator_instances_and_env_sensitive() {
     let other_key = evaluator
         .test_memo_candidate_key(big_thunk)
         .expect("big thunk derives a memo key");
-    assert_ne!(first[0], other_key, "changed source content changes the key");
+    assert_ne!(
+        first[0], other_key,
+        "changed source content changes the key"
+    );
 }
 
 #[test]
@@ -238,12 +242,8 @@ fn check_mode_reports_poisoned_hits_as_divergence() {
         check_l0: true,
         ..MemoOptions::default()
     });
-    let mut evaluator = TreeWalk::with_options_and_source(
-        &ir,
-        options,
-        "expr.nix",
-        SOURCE.as_bytes().to_vec(),
-    );
+    let mut evaluator =
+        TreeWalk::with_options_and_source(&ir, options, "expr.nix", SOURCE.as_bytes().to_vec());
     let root = evaluator.eval_root().expect("root evaluates");
     let member = |evaluator: &TreeWalk, name: &[u8]| {
         let attrs = evaluator.heap().get_attrs(root).expect("root is attrs");
@@ -273,10 +273,7 @@ fn check_mode_reports_poisoned_hits_as_divergence() {
         .force_value(ir.root, Span::new(0, 0), second)
         .expect_err("poisoned hit fails CHECK");
     assert!(
-        matches!(
-            error.kind(),
-            TreeWalkErrorKind::MemoCheckDivergence { .. }
-        ),
+        matches!(error.kind(), TreeWalkErrorKind::MemoCheckDivergence { .. }),
         "unexpected error: {error:?}"
     );
 }

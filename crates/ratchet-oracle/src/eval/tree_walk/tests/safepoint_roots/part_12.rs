@@ -675,4 +675,3 @@ fn live_metadata_empty_boundary_accepts_preinstalled_forwarding_destination_meta
         1
     );
 }
-

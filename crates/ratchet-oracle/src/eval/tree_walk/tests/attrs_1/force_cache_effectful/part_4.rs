@@ -767,4 +767,3 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
-

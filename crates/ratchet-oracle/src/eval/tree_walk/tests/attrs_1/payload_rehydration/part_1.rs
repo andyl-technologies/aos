@@ -770,4 +770,3 @@ fn gc_stress_payload_replay_attrs_skip_non_attrset_origin_dispatch() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

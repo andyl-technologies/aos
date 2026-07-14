@@ -798,4 +798,3 @@ fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

@@ -668,7 +668,6 @@ impl TreeWalk {
 
         Ok(())
     }
-
 }
 
 mod bind_helpers;

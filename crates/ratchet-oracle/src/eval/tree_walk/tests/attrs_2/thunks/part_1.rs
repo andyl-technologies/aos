@@ -801,4 +801,3 @@ fn list_to_attrs_records_dynamic_repr_decision() {
     key_counts.sort_unstable();
     assert_eq!(key_counts, vec![(2, 1), (2, 2)]);
 }
-

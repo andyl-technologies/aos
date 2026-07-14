@@ -155,7 +155,11 @@ impl TreeWalk {
         if let Some(transition) = local.transition_insert_key_cached(shape, key)? {
             return Ok(transition);
         }
-        let shared = match self.shared.as_ref().and_then(|shared| shared.shapes.as_ref()) {
+        let shared = match self
+            .shared
+            .as_ref()
+            .and_then(|shared| shared.shapes.as_ref())
+        {
             None => return local.transition_insert_key(shape, key, &self.symbols),
             Some(shared) => shared,
         };

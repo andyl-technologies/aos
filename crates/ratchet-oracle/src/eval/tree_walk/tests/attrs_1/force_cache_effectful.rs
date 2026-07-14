@@ -288,4 +288,3 @@ fn expected_cacheable_trace(
         })
         .collect()
 }
-

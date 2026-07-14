@@ -811,4 +811,3 @@ fn source_less_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() {
         "the same lowered IR fingerprint and node should reuse one demand node"
     );
 }
-

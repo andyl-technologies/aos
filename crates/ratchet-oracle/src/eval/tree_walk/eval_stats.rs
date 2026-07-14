@@ -128,7 +128,8 @@ impl TreeWalk {
     fn campaign_counters_snapshot(&self) -> CampaignCounters {
         let deref = self.heap.deref_counters_snapshot();
         let alloc = self.heap.allocation_counters();
-        let env = crate::eval::env::capture_stats::snapshot().delta_since(self.campaign_env_baseline);
+        let env =
+            crate::eval::env::capture_stats::snapshot().delta_since(self.campaign_env_baseline);
         CampaignCounters {
             record_probes_string: deref.record_probes_string,
             record_probes_path: deref.record_probes_path,

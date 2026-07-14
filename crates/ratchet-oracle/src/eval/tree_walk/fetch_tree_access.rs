@@ -438,10 +438,7 @@ impl TreeWalk {
 
         if let Some(last_modified) = result.last_modified {
             let last_modified = self.runtime_int_value(id, span, last_modified)?;
-            entries.push(AttrEntry::new(
-                last_modified_symbol,
-                last_modified,
-            ));
+            entries.push(AttrEntry::new(last_modified_symbol, last_modified));
         }
         if let Some(last_modified_date) = result.last_modified_date {
             let last_modified_date = self.alloc_static_string_with_attr_entry_roots(

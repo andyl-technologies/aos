@@ -773,4 +773,3 @@ fn gc_stress_parse_drv_name_result_strings_dispatch_before_attrset_skip() {
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
-

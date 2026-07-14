@@ -33,7 +33,10 @@ const WIDE_DERIVATION_GRAPH: &str = r#"
 /// Evaluates `source` to its owned outcome with `workers` parallel workers
 /// (`None` = serial), returning the root value rendering and the recorded
 /// derivation surfaces.
-fn eval_derivation_surfaces(source: &str, workers: Option<usize>) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+fn eval_derivation_surfaces(
+    source: &str,
+    workers: Option<usize>,
+) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
     let ir = lower(source);
     let options = match workers {
         Some(workers) => TreeWalkOptions::with_parallel_workers(NonZeroUsize::new(workers)),
@@ -257,8 +260,7 @@ fn parallel_pool_shares_import_results_across_workers() {
         // file it demanded. Allow the racy overlap but reject wholesale
         // duplication.
         assert!(
-            parallel_stats.imports_evaluated()
-                <= serial_stats.imports_evaluated() + workers as u64,
+            parallel_stats.imports_evaluated() <= serial_stats.imports_evaluated() + workers as u64,
             "parallel workers re-evaluated imports wholesale: {} vs serial {}",
             parallel_stats.imports_evaluated(),
             serial_stats.imports_evaluated(),
@@ -346,7 +348,8 @@ fn parallel_pool_structured_attrs_matches_serial() {
     "#;
     let (serial_root, serial_surfaces) = eval_derivation_surfaces(STRUCTURED_GRAPH, None);
     for _ in 0..3 {
-        let (parallel_root, parallel_surfaces) = eval_derivation_surfaces(STRUCTURED_GRAPH, Some(4));
+        let (parallel_root, parallel_surfaces) =
+            eval_derivation_surfaces(STRUCTURED_GRAPH, Some(4));
         assert_eq!(serial_root, parallel_root);
         assert_eq!(serial_surfaces, parallel_surfaces);
     }
@@ -406,7 +409,10 @@ fn parallel_pool_shape_projection_matches_serial() {
             })
             .collect();
         surfaces.sort();
-        assert_eq!(serial_root, root, "shape projection diverged at K={workers}");
+        assert_eq!(
+            serial_root, root,
+            "shape projection diverged at K={workers}"
+        );
         assert_eq!(serial_surfaces, surfaces);
     }
 }

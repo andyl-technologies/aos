@@ -626,4 +626,3 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     );
     assert!(copied_write.writeback_object_request().is_some());
 }
-
