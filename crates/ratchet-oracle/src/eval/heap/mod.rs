@@ -86,7 +86,9 @@ use shared_backend::SharedHeapBackend;
 #[cfg(feature = "candidate_c_value")]
 pub use snapshot::EvalHeapSnapshotError;
 #[cfg(feature = "candidate_c_value")]
-#[allow(unused_imports)] // Closure payload capture (step-3 increment 3) is the consumer.
+pub(crate) use closure_code_ref::{LambdaCodeFingerprints, LambdaCodeResolver};
+#[cfg(feature = "candidate_c_value")]
+#[allow(unused_imports)] // Consumed by the tree-walk heap-snapshot tests.
 pub(crate) use snapshot::{CapturedFrameTable, RestoredFrameTable};
 
 pub use shared_arena::{SharedHeapArena, SharedHeapError, SharedHeapShard};

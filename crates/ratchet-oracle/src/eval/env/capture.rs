@@ -4,8 +4,8 @@ use std::ops::Index;
 use std::sync::Arc;
 
 use super::{EvalEnvError, EvalFrame, capture_stats};
-use crate::eval::module::EvalNodeRef;
 use crate::compile::FLAT_CAPTURE_MAX_SLOTS;
+use crate::eval::module::EvalNodeRef;
 use crate::heap::flat::FlatValueTailHandle;
 use crate::value::Value;
 
@@ -279,6 +279,28 @@ impl EvalEnv {
         Ok(Self {
             storage: EvalEnvStorage::capture(frames)?,
             flat_base: None,
+        })
+    }
+
+    /// Rebuilds a captured environment from restored shared frames and an
+    /// optional flat capture (RFC-0007 doc 31 §1 heap-image closure restore).
+    ///
+    /// Storage selection mirrors [`EvalEnv::capture`]: frames whose rebuilt
+    /// parent links form the production chain re-capture as a chain head;
+    /// unlinked frames fall back to the compatibility array.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::CaptureAllocationFailed`] only for the
+    /// compatibility array fallback.
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) fn restore_parts(
+        frames: &[Arc<EvalFrame>],
+        flat_base: Option<EvalFlatCapture>,
+    ) -> Result<Self, EvalEnvError> {
+        Ok(Self {
+            storage: EvalEnvStorage::capture(frames)?,
+            flat_base,
         })
     }
 

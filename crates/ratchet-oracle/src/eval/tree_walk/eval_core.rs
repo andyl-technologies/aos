@@ -10,6 +10,8 @@ pub(in crate::eval::tree_walk) use force_payload_memo::ForcePayloadMemo;
 mod cache_identity;
 mod force_persistence;
 mod force_subject;
+#[cfg(feature = "candidate_c_value")]
+mod heap_image;
 mod memo;
 mod module_env;
 mod stack;

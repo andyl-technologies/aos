@@ -84,6 +84,6 @@ pub use resident::{
 };
 #[cfg(feature = "candidate_c_value")]
 pub use snapshot::{
-    ContextPayload, FramePayload, HeapImage, ListPayload, PrimopPayload, RelocationEntry,
-    SnapshotError, capture_reservation, restore_reservation,
+    ClosurePayload, ContextPayload, FramePayload, HeapImage, ListPayload, PrimopPayload,
+    RelocationEntry, SnapshotError, capture_reservation, restore_reservation,
 };

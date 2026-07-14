@@ -103,11 +103,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
+use super::advice::MemoryAdviceKind;
 use super::arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
     ArenaStats, BumpArena,
 };
-use super::advice::MemoryAdviceKind;
 use super::reservation::ReservedArenaHighMark;
 use crate::value::HeapObject;
 
@@ -115,6 +115,8 @@ mod alloc;
 mod backing;
 mod bytes;
 mod region_ops;
+#[cfg(feature = "candidate_c_value")]
+mod restore;
 pub mod shared;
 mod slice;
 mod value_tail;
@@ -744,8 +746,7 @@ impl<T> FlatObjectStore<T> {
         // live mapping; anonymous-mmap bytes are readable and act as
         // initialized (zero-filled) from the abstract machine's view.
         let kind_word = unsafe { (ptr.as_ptr() as *const u64).read() };
-        FlatObjectKind::from_kind_word(kind_word)
-            .ok_or(FlatObjectError::UnknownAddress { address })
+        FlatObjectKind::from_kind_word(kind_word).ok_or(FlatObjectError::UnknownAddress { address })
     }
 
     /// Returns whether `address` lies inside one of the arena's chunk regions.
@@ -758,80 +759,6 @@ impl<T> FlatObjectStore<T> {
             .checked_sub(1)
             .and_then(|index| self.regions.get(index))
             .is_some_and(|&(_start, end)| address < end)
-    }
-
-    /// Primes the shared-arena membership index for a store constructed over an
-    /// already-populated reloaded reservation (RFC-0007 doc 31 §1 heap-image
-    /// restore).
-    ///
-    /// A freshly built store has an empty region index and only refreshes it on
-    /// allocation, so a store that never allocated cannot resolve objects the
-    /// arena already holds from a restored image. This adopts the backing arena's
-    /// current regions once, after which [`FlatObjectStore::resolve`] resolves
-    /// restored objects by header witness exactly as for freshly allocated ones.
-    #[cfg(feature = "candidate_c_value")]
-    pub fn adopt_shared_regions(&mut self) {
-        self.refresh_regions();
-    }
-
-    /// Registers a restored flat object at `ptr` so the store's [`Drop`] runs its
-    /// payload drop glue (RFC-0007 doc 31 §1 list increment).
-    ///
-    /// Heap-image restore rebuilds out-of-arena payloads — a list's element
-    /// `Vec`, whose backing buffer the dumped arena bytes do not carry — and
-    /// writes them into objects the reloaded arena already holds.
-    /// [`FlatObjectStore::adopt_shared_regions`] primes only the membership
-    /// index, so those objects are absent from the registry that drives `Drop`;
-    /// without this call their rebuilt buffers would leak. The recorded size is
-    /// the payload-inclusive object size and feeds only store accounting, never
-    /// drop correctness (which needs the pointer alone).
-    ///
-    /// The caller must first have installed a valid payload at `ptr` (see
-    /// [`FlatObjectStore::restore_payload`]); registering an object whose payload
-    /// is still the stale dumped bytes would drop a dangling handle.
-    #[cfg(feature = "candidate_c_value")]
-    pub fn adopt_restored_object(&mut self, ptr: NonNull<HeapObject>) {
-        self.entries
-            .push(FlatStoreEntry::plain(ptr, core::mem::size_of::<FlatObject<T>>()));
-    }
-
-    /// Installs `payload` into the restored flat object at `ptr`, overwriting the
-    /// stale dumped bytes without dropping them, and registers the object so its
-    /// [`Drop`] runs (RFC-0007 doc 31 §1 list increment).
-    ///
-    /// Heap-image restore reloads an object's arena bytes verbatim, so its
-    /// payload is the source process's stale value — for a list, a `Vec` header
-    /// pointing at a freed buffer that must never be read or dropped. This
-    /// resolves the object, overwrites that payload in place with the
-    /// freshly-owned `payload` without running the stale value's drop glue, then
-    /// records the object in the registry so the store's `Drop` frees the new
-    /// payload exactly once. It exists in this crate because
-    /// [`crate::heap::snapshot`]'s consumer forbids `unsafe`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlatObjectError`] when `ptr` is not a `kind` object of this
-    /// store (an unknown address or a kind mismatch).
-    #[cfg(feature = "candidate_c_value")]
-    pub fn restore_payload(
-        &mut self,
-        ptr: NonNull<HeapObject>,
-        kind: FlatObjectKind,
-        payload: T,
-    ) -> Result<(), FlatObjectError> {
-        let slot = self.resolve_mut(ptr, kind)?;
-        // SAFETY: `resolve_mut` proved `slot` names a live `FlatObject<T>`
-        // payload in this store's arena. Its current bytes are the dumped
-        // payload — for a restored object, a stale owning value (e.g. a `Vec`
-        // header pointing at a freed buffer) that must not be read or dropped.
-        // `ptr::write` overwrites all payload bytes with `payload` without
-        // running the stale value's drop glue, so no dangling resource is freed;
-        // `slot` is a unique `&mut` derived from `ptr`, so the write cannot race
-        // or alias. The `adopt_restored_object` call then makes the store own the
-        // freshly-installed payload for `Drop`.
-        unsafe { std::ptr::write(slot as *mut T, payload) };
-        self.adopt_restored_object(ptr);
-        Ok(())
     }
 
     /// Rebuilds the sorted chunk-region membership index when chunks change.

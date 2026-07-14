@@ -33,10 +33,12 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
+mod closures;
 mod env_frames;
 
-#[allow(unused_imports)] // Closure payload capture (step-3 increment 3) is the consumer.
 pub(crate) use env_frames::{CapturedFrameTable, RestoredFrameTable};
+
+use super::closure_code_ref::{LambdaCodeFingerprints, LambdaCodeResolver};
 
 use ratchet_value::heap::{
     ArenaIndex, ContextPayload, HeapImage, ListPayload, PrimopPayload, RelocationEntry,
@@ -67,28 +69,60 @@ impl EvalHeap {
     /// objects — primops are captured), a flat object outside the reservation, a
     /// reservation that is not address-free, or a failed completeness audit.
     pub fn capture_heap_image(&self) -> Result<HeapImage, EvalHeapSnapshotError> {
+        self.capture_heap_image_inner(None)
+    }
+
+    /// Captures a heap image including lambdas and suspended thunks, keying
+    /// their code by content through the supplied fingerprint context
+    /// (RFC-0007 doc 31 §1 step-3 increment 3).
+    ///
+    /// The context is supplied by the `TreeWalk` that owns the module table;
+    /// the heap itself holds no code identity. Restore requires the matching
+    /// [`LambdaCodeResolver`] through
+    /// [`EvalHeap::from_restored_heap_image_with_code_identity`].
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`EvalHeap::capture_heap_image`] error except the closure
+    /// refusal, plus the closure-serializer refusals: an unfingerprintable
+    /// module, an unreadable captured frame, or a thunk whose force state is
+    /// not plainly suspended (forced-thunk collapse is increment 4).
+    pub(crate) fn capture_heap_image_with_code_identity(
+        &self,
+        code: &dyn LambdaCodeFingerprints,
+    ) -> Result<HeapImage, EvalHeapSnapshotError> {
+        self.capture_heap_image_inner(Some(code))
+    }
+
+    /// Shared capture core; `code` enables the closure serializer.
+    fn capture_heap_image_inner(
+        &self,
+        code: Option<&dyn LambdaCodeFingerprints>,
+    ) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
         }
-        // Worker closures: capture primops (builtins) as registry references and
-        // refuse thunks and lambdas (steps 2-3). Retired slots hold no live
-        // payload. Count refusals before encoding so a refused heap fails fast.
-        let refused_closures = self
-            .flat_closures
-            .iter()
-            .filter(|object| {
-                matches!(
-                    object.object().payload(),
-                    FlatClosurePayload::Thunk(_)
-                        | FlatClosurePayload::SharedThunk(_)
-                        | FlatClosurePayload::Lambda(_)
-                )
-            })
-            .count();
-        if refused_closures != 0 {
-            return Err(EvalHeapSnapshotError::UnsnapshottableClosures {
-                count: refused_closures,
-            });
+        // Without a code-identity context, worker closures other than primops
+        // refuse (their code cannot be content-keyed). Count refusals before
+        // encoding so a refused heap fails fast.
+        if code.is_none() {
+            let refused_closures = self
+                .flat_closures
+                .iter()
+                .filter(|object| {
+                    matches!(
+                        object.object().payload(),
+                        FlatClosurePayload::Thunk(_)
+                            | FlatClosurePayload::SharedThunk(_)
+                            | FlatClosurePayload::Lambda(_)
+                    )
+                })
+                .count();
+            if refused_closures != 0 {
+                return Err(EvalHeapSnapshotError::UnsnapshottableClosures {
+                    count: refused_closures,
+                });
+            }
         }
         let records = self.record_count();
         if records != 0 {
@@ -151,12 +185,19 @@ impl EvalHeap {
             });
         }
 
+        let (frame_payloads, closure_payloads) = match code {
+            Some(code) => self.capture_closure_payloads(code)?,
+            None => (Vec::new(), Vec::new()),
+        };
+
         let mut image =
             capture_reservation(&self.flat_arena).map_err(EvalHeapSnapshotError::Snapshot)?;
         image.relocations = relocations;
         image.list_payloads = list_payloads;
         image.context_payloads = context_payloads;
         image.primop_payloads = primop_payloads;
+        image.frame_payloads = frame_payloads;
+        image.closure_payloads = closure_payloads;
 
         if std::env::var_os(SNAPSHOT_VERIFY_ENV).is_some() {
             self.verify_relocation_completeness(&image)?;
@@ -204,12 +245,41 @@ impl EvalHeap {
     /// not decode, and [`EvalHeapSnapshotError::FlatResolve`] when a recorded
     /// object cannot be resolved for rewriting.
     pub fn from_restored_heap_image(image: &HeapImage) -> Result<Self, EvalHeapSnapshotError> {
-        // Closure payload restore (step-3 increment 3) is the frame-table
-        // consumer; until it lands, silently dropping a populated frame table
-        // would restore closures without their captured environments.
-        if !image.frame_payloads.is_empty() {
+        Self::from_restored_heap_image_inner(image, None)
+    }
+
+    /// Restores a heap image whose closures were captured with a code-identity
+    /// context, re-resolving every content-keyed code reference through
+    /// `resolver` (RFC-0007 doc 31 §1 step-3 increment 3).
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`EvalHeap::from_restored_heap_image`] error, plus the
+    /// closure-restore refusals: [`EvalHeapSnapshotError::ClosureCodeDrift`]
+    /// when a code fingerprint is absent from `resolver` (never a silent
+    /// rebind), [`EvalHeapSnapshotError::MalformedClosurePayload`] and
+    /// [`EvalHeapSnapshotError::MalformedFramePayload`] for segments that do
+    /// not decode, and the builtin-registry refusals for builtin-attr thunks.
+    pub(crate) fn from_restored_heap_image_with_code_identity(
+        image: &HeapImage,
+        resolver: &dyn LambdaCodeResolver,
+    ) -> Result<Self, EvalHeapSnapshotError> {
+        Self::from_restored_heap_image_inner(image, Some(resolver))
+    }
+
+    /// Shared restore core; `resolver` enables the closure restore path.
+    fn from_restored_heap_image_inner(
+        image: &HeapImage,
+        resolver: Option<&dyn LambdaCodeResolver>,
+    ) -> Result<Self, EvalHeapSnapshotError> {
+        // Without a resolver the frame table and closure payloads have no
+        // consumer; silently dropping them would restore closures without
+        // their captured environments (or leave stale dumped payloads live).
+        if resolver.is_none()
+            && !(image.frame_payloads.is_empty() && image.closure_payloads.is_empty())
+        {
             return Err(EvalHeapSnapshotError::UnexpectedFramePayloads {
-                count: image.frame_payloads.len(),
+                count: image.frame_payloads.len() + image.closure_payloads.len(),
             });
         }
         let arena = restore_reservation(image).map_err(EvalHeapSnapshotError::Snapshot)?;
@@ -294,6 +364,18 @@ impl EvalHeap {
                 });
             }
             heap.restore_primop_payload(payload)?;
+        }
+
+        // Lambdas and suspended thunks restore over the rebuilt frame table;
+        // their indices share the object-record set with every other segment.
+        if let Some(resolver) = resolver {
+            let frame_table = RestoredFrameTable::rebuild(&image.frame_payloads)?;
+            heap.restore_closure_payloads(
+                &image.closure_payloads,
+                &frame_table,
+                resolver,
+                &mut seen,
+            )?;
         }
         Ok(heap)
     }
@@ -590,7 +672,7 @@ fn context_kind_byte(kind: ContextKind) -> u8 {
 }
 
 /// Reads a little-endian `u32` at `*cursor`, advancing it, or `None` if truncated.
-fn read_le_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+pub(super) fn read_le_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     let end = cursor.checked_add(4)?;
     let field: [u8; 4] = bytes.get(*cursor..end)?.try_into().ok()?;
     *cursor = end;
@@ -598,7 +680,7 @@ fn read_le_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
 }
 
 /// Reads a `u32`-length-prefixed byte run at `*cursor`, advancing past it.
-fn read_length_prefixed(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
+pub(super) fn read_length_prefixed(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
     let len = read_le_u32(bytes, cursor)? as usize;
     let end = cursor.checked_add(len)?;
     let run = bytes.get(*cursor..end)?.to_vec();
@@ -607,7 +689,7 @@ fn read_length_prefixed(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
 }
 
 /// Reads a little-endian `u64` at `*cursor`, advancing it, or `None` if truncated.
-fn read_le_u64(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+pub(super) fn read_le_u64(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     let end = cursor.checked_add(8)?;
     let field: [u8; 8] = bytes.get(*cursor..end)?.try_into().ok()?;
     *cursor = end;
@@ -813,13 +895,44 @@ pub enum EvalHeapSnapshotError {
         /// The offending frame payload's table index.
         index: u32,
     },
-    /// The image carries env-frame-table segments, but this restore path does
-    /// not consume them yet (closure payload restore is step-3 increment 3);
-    /// ignoring them would silently drop captured environments.
-    #[error("image carries {count} env frame payload(s), which restore does not consume yet")]
+    /// The image carries env-frame-table or closure segments, but restore was
+    /// invoked without a code-identity resolver to consume them; ignoring them
+    /// would silently drop captured environments and closures.
+    #[error("image carries {count} closure/frame payload(s) but no code-identity resolver")]
     UnexpectedFramePayloads {
-        /// The number of unconsumed frame payload segments.
+        /// The number of unconsumed frame and closure payload segments.
         count: usize,
+    },
+    /// A thunk's force state is not plainly suspended (forced, in flight,
+    /// poisoned, or released); the mutating forced-thunk collapse is step-3
+    /// increment 4.
+    #[error("closure at arena index {index} has an unsnapshottable thunk force state")]
+    UnsnapshottableThunkState {
+        /// The thunk object's arena index.
+        index: u32,
+    },
+    /// A referenced module could not be fingerprinted, so its code cannot be
+    /// content-keyed; capture refuses rather than emitting an unkeyed
+    /// reference.
+    #[error("module {module} has no code fingerprint; cannot content-key its closures")]
+    CodeFingerprintUnavailable {
+        /// The raw unfingerprintable module id.
+        module: u32,
+    },
+    /// A closure payload's bytes did not decode, referenced an out-of-table
+    /// frame, carried a trailing run, or failed its flat-capture re-signing.
+    #[error("closure payload {index} is malformed")]
+    MalformedClosurePayload {
+        /// The offending closure payload's arena index.
+        index: u32,
+    },
+    /// A closure payload's code fingerprint is absent from the current
+    /// evaluator's module table — the IR drifted, and restore refuses to
+    /// rebind rather than silently evaluating different code.
+    #[error("closure payload {index} references drifted code (fingerprint unresolved)")]
+    ClosureCodeDrift {
+        /// The offending closure payload's arena index.
+        index: u32,
     },
     /// A recorded relocation object could not be resolved for rebasing.
     #[error("relocation object resolution failed: {0}")]

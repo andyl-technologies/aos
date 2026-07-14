@@ -30,6 +30,7 @@
 //!   ctx_count:    u64      = number of context-payload segments
 //!   primop_count: u64      = number of primop-payload segments
 //!   frame_count:  u64      = number of env-frame-table segments
+//!   closure_count: u64     = number of closure-payload segments
 //!   low:          low_len bytes   (the permanent lane, offset 0)
 //!   high:         high_len bytes  (the rewindable lane, ending at `capacity`)
 //!   relocs:       reloc_count * (index:u32 | kind:u8)
@@ -37,6 +38,7 @@
 //!   contexts:     ctx_count  * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   primops:      primop_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   frames:       frame_count  * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   closures:     closure_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   digest:       u64      = xxh3-64 of every preceding byte (integrity guard)
 //! ```
 //!
@@ -66,18 +68,21 @@ pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 /// `old_base` and the relocation table; v3 added the list-payload segments; v4
 /// added the context-payload segments; v5 added the primop-payload segments that
 /// carry captured builtin closures as registry references (RFC-0007 doc 31 §1
-/// stage B / decision 6, step-2 primop capture); v6 adds the env-frame-table
+/// stage B / decision 6, step-2 primop capture); v6 added the env-frame-table
 /// segments that carry the closure serializer's deduplicated captured
-/// environment frames (doc 31 §1 step-3 increment 2).
-pub const IMAGE_VERSION: u32 = 6;
+/// environment frames (doc 31 §1 step-3 increment 2); v7 adds the
+/// closure-payload segments that carry captured lambdas and suspended thunks
+/// as content-keyed code references plus frame-table environment references
+/// (step-3 increment 3).
+pub const IMAGE_VERSION: u32 = 7;
 
 /// Byte length of the fixed image header preceding the lane, relocation, and
 /// index-keyed payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
 /// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8) |
-/// frame_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+/// frame_count(8) | closure_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
@@ -185,6 +190,27 @@ pub struct FramePayload {
     pub frame_bytes: Vec<u8>,
 }
 
+/// One captured worker closure — a lambda or a suspended thunk (RFC-0007 doc 31
+/// §1 step-3 increment 3, the closure serializer).
+///
+/// A flat closure object's arena bytes hold per-process module ids and
+/// `Arc`-shared captured environments, neither of which survives a remap or the
+/// source heap's drop. Capture serializes the closure as a content-keyed code
+/// reference (module source fingerprint plus IR node ids, refuse-on-drift) and
+/// environment references into the deduplicated frame table; restore
+/// re-resolves the code against a live module table and rebuilds the closure
+/// over the shared frame graph. The encoding is owned by the `EvalHeap`-level
+/// capture; this value-agnostic layer only carries the bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClosurePayload {
+    /// The closure object's flat-closure arena index — which restored object
+    /// receives the rebuilt closure.
+    pub index: u32,
+    /// The encoded code reference, force-storage metadata, and environment
+    /// references as opaque bytes.
+    pub closure_bytes: Vec<u8>,
+}
+
 /// A captured Candidate-C reservation heap image.
 ///
 /// Holds the reservation identity, its two used-lane byte ranges, the base it
@@ -222,6 +248,11 @@ pub struct HeapImage {
     /// id; filled by the `EvalHeap`-level closure capture and rebuilt into the
     /// shared `Arc` frame graph on load.
     pub frame_payloads: Vec<FramePayload>,
+    /// Each captured lambda and suspended thunk as a content-keyed code
+    /// reference plus environment references into the frame table; filled by
+    /// the `EvalHeap`-level closure capture and rebuilt on load against a
+    /// code-identity resolver.
+    pub closure_payloads: Vec<ClosurePayload>,
 }
 
 impl HeapImage {
@@ -264,6 +295,13 @@ impl HeapImage {
                 .map(|p| p.frame_bytes.len())
                 .collect::<Vec<_>>(),
         );
+        let closure_bytes = indexed_bytes(
+            &self
+                .closure_payloads
+                .iter()
+                .map(|p| p.closure_bytes.len())
+                .collect::<Vec<_>>(),
+        );
         let mut out = Vec::with_capacity(
             HEADER_LEN
                 + self.low.len()
@@ -273,6 +311,7 @@ impl HeapImage {
                 + context_bytes
                 + primop_bytes
                 + frame_bytes
+                + closure_bytes
                 + 8,
         );
         out.extend_from_slice(&IMAGE_MAGIC);
@@ -287,6 +326,7 @@ impl HeapImage {
         out.extend_from_slice(&(self.context_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.primop_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.frame_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.closure_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
@@ -304,6 +344,9 @@ impl HeapImage {
         }
         for payload in &self.frame_payloads {
             write_indexed_payload(&mut out, payload.index, &payload.frame_bytes);
+        }
+        for payload in &self.closure_payloads {
+            write_indexed_payload(&mut out, payload.index, &payload.closure_bytes);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -343,6 +386,7 @@ impl HeapImage {
         let context_count = u64::from_le_bytes(read8(bytes, 64)) as usize;
         let primop_count = u64::from_le_bytes(read8(bytes, 72)) as usize;
         let frame_count = u64::from_le_bytes(read8(bytes, 80)) as usize;
+        let closure_count = u64::from_le_bytes(read8(bytes, 88)) as usize;
 
         // Bound the fixed-width prefix (lanes + relocation table + each indexed
         // segment's fixed header) before parsing; each segment's variable bytes
@@ -352,7 +396,8 @@ impl HeapImage {
             low_len,
             high_len,
             reloc_count * RELOCATION_ENTRY_LEN,
-            (list_count + context_count + primop_count + frame_count) * INDEXED_PAYLOAD_PREFIX_LEN,
+            (list_count + context_count + primop_count + frame_count + closure_count)
+                * INDEXED_PAYLOAD_PREFIX_LEN,
         ]
         .iter()
         .try_fold(lanes_start, |acc, len| acc.checked_add(*len))
@@ -415,6 +460,15 @@ impl HeapImage {
             });
         }
 
+        let mut closure_payloads = Vec::with_capacity(closure_count);
+        for _ in 0..closure_count {
+            let (index, segment) = read_indexed_payload(bytes, &mut cursor)?;
+            closure_payloads.push(ClosurePayload {
+                index,
+                closure_bytes: segment,
+            });
+        }
+
         let digest_start = cursor;
         let expected = xxh3_64(&bytes[..digest_start]);
         let actual = u64::from_le_bytes(read8(bytes, digest_start));
@@ -433,6 +487,7 @@ impl HeapImage {
             context_payloads,
             primop_payloads,
             frame_payloads,
+            closure_payloads,
         })
     }
 }
@@ -498,6 +553,7 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         context_payloads: Vec::new(),
         primop_payloads: Vec::new(),
         frame_payloads: Vec::new(),
+        closure_payloads: Vec::new(),
     })
 }
 
@@ -737,6 +793,10 @@ mod tests {
                 index: 0,
                 frame_bytes: vec![0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0],
             }],
+            closure_payloads: vec![ClosurePayload {
+                index: 32,
+                closure_bytes: vec![9, 8, 7],
+            }],
         };
         let good = image.to_bytes();
 
@@ -789,6 +849,10 @@ mod tests {
                     frame_bytes: vec![5; 20],
                 },
             ],
+            closure_payloads: vec![ClosurePayload {
+                index: 40,
+                closure_bytes: vec![6; 9],
+            }],
         };
         let parsed = HeapImage::from_bytes(&image.to_bytes()).expect("wire image parses");
         assert_eq!(parsed, image);

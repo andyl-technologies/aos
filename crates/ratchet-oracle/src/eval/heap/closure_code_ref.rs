@@ -17,14 +17,12 @@
 //! lambda-code-ref: fingerprint(32) | pattern(u32) | body(u32)   // 40 bytes
 //! ```
 //!
-//! This is increment 1: the reference type, its serialization, and the
-//! refuse-on-mismatch resolve. The capture/restore call sites that supply a
-//! resolver and fingerprint each referenced module land with the lambda-capture
-//! path (increment 3), which consumes this module.
-
-// The lambda-capture path (increment 3) is the consumer; until it lands these
-// items have no in-crate caller outside the tests below.
-#![allow(dead_code)]
+//! Alongside the lambda reference, [`CodeNodeRef`] keys a single
+//! module-qualified IR node ([`EvalNodeRef`](crate::eval::module::EvalNodeRef)
+//! equivalents inside thunk kinds, `with`-scope scrutinees, and flat-capture
+//! allocation sites) by the same fingerprint discipline, and the
+//! [`LambdaCodeFingerprints`] / [`LambdaCodeResolver`] trait pair carries the
+//! module table's code-identity context across the capture/restore boundary.
 
 use thiserror::Error;
 
@@ -64,10 +62,96 @@ pub(crate) struct ResolvedLambdaCode {
 /// Re-resolves a module source fingerprint to a live [`EvalModuleId`].
 ///
 /// Returns `None` when no loaded module carries that fingerprint — the drift
-/// signal that makes restore refuse rather than rebind.
+/// signal that makes restore refuse rather than rebind. An ambiguous
+/// fingerprint (two live modules with identical identity, which the module
+/// table should never produce) must also return `None`: refusing beats
+/// guessing between candidates.
 pub(crate) trait LambdaCodeResolver {
     /// Resolves `source_hash` to a live module id, or `None` on drift.
     fn resolve(&self, source_hash: CacheExprSourceHash) -> Option<EvalModuleId>;
+}
+
+/// Fingerprints live modules for closure capture — the inverse of
+/// [`LambdaCodeResolver`].
+///
+/// Supplied by the `TreeWalk` (which owns the module table) at the capture
+/// call site; the `EvalHeap` itself holds no code identity. Returns `None`
+/// when a module's identity cannot be fingerprinted, which makes capture
+/// refuse the closure rather than emit an unkeyed code reference.
+pub(crate) trait LambdaCodeFingerprints {
+    /// Returns the content fingerprint of a live module, or `None` when the
+    /// module is unknown or unfingerprintable.
+    fn fingerprint(&self, module: EvalModuleId) -> Option<CacheExprSourceHash>;
+}
+
+/// Byte length of a serialized [`CodeNodeRef`]: `fingerprint(32) | node(4)`.
+pub(crate) const CODE_NODE_REF_LEN: usize = 32 + 4;
+
+/// A durable, drift-checked reference to one module-qualified IR node.
+///
+/// The single-node analog of [`LambdaCodeRef`], used for thunk bodies,
+/// applied-function and argument nodes, `with`-scope scrutinees, and
+/// flat-capture allocation sites.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CodeNodeRef {
+    /// The parse-cache source fingerprint of the module owning the node.
+    pub source_hash: CacheExprSourceHash,
+    /// The referenced IR node.
+    pub node: IrId,
+}
+
+impl CodeNodeRef {
+    /// Serializes the reference to its fixed-width little-endian wire form.
+    pub(crate) fn to_bytes(self) -> [u8; CODE_NODE_REF_LEN] {
+        let mut out = [0u8; CODE_NODE_REF_LEN];
+        out[0..32].copy_from_slice(&self.source_hash.as_durable_hash().as_bytes());
+        out[32..36].copy_from_slice(&self.node.as_u32().to_le_bytes());
+        out
+    }
+
+    /// Parses a reference at `*cursor`, advancing it past the fixed-width record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LambdaCodeDrift::Malformed`] when fewer than
+    /// [`CODE_NODE_REF_LEN`] bytes remain at `*cursor`.
+    pub(crate) fn read(bytes: &[u8], cursor: &mut usize) -> Result<Self, LambdaCodeDrift> {
+        let end = cursor
+            .checked_add(CODE_NODE_REF_LEN)
+            .ok_or(LambdaCodeDrift::Malformed)?;
+        let slice = bytes.get(*cursor..end).ok_or(LambdaCodeDrift::Malformed)?;
+        let fingerprint: [u8; 32] = slice[0..32]
+            .try_into()
+            .map_err(|_| LambdaCodeDrift::Malformed)?;
+        let node = IrId::new(u32::from_le_bytes(
+            slice[32..36]
+                .try_into()
+                .map_err(|_| LambdaCodeDrift::Malformed)?,
+        ));
+        *cursor = end;
+        Ok(Self {
+            source_hash: CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::from_bytes(
+                fingerprint,
+            )),
+            node,
+        })
+    }
+
+    /// Resolves the reference against `resolver`, refusing on source drift.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LambdaCodeDrift::SourceMissing`] when the fingerprint is absent
+    /// from the current evaluator.
+    pub(crate) fn resolve(
+        self,
+        resolver: &dyn LambdaCodeResolver,
+    ) -> Result<(EvalModuleId, IrId), LambdaCodeDrift> {
+        let module = resolver
+            .resolve(self.source_hash)
+            .ok_or(LambdaCodeDrift::SourceMissing)?;
+        Ok((module, self.node))
+    }
 }
 
 impl LambdaCodeRef {
@@ -91,12 +175,18 @@ impl LambdaCodeRef {
             .checked_add(LAMBDA_CODE_REF_LEN)
             .ok_or(LambdaCodeDrift::Malformed)?;
         let slice = bytes.get(*cursor..end).ok_or(LambdaCodeDrift::Malformed)?;
-        let fingerprint: [u8; 32] = slice[0..32].try_into().map_err(|_| LambdaCodeDrift::Malformed)?;
+        let fingerprint: [u8; 32] = slice[0..32]
+            .try_into()
+            .map_err(|_| LambdaCodeDrift::Malformed)?;
         let pattern = IrId::new(u32::from_le_bytes(
-            slice[32..36].try_into().map_err(|_| LambdaCodeDrift::Malformed)?,
+            slice[32..36]
+                .try_into()
+                .map_err(|_| LambdaCodeDrift::Malformed)?,
         ));
         let body = IrId::new(u32::from_le_bytes(
-            slice[36..40].try_into().map_err(|_| LambdaCodeDrift::Malformed)?,
+            slice[36..40]
+                .try_into()
+                .map_err(|_| LambdaCodeDrift::Malformed)?,
         ));
         *cursor = end;
         Ok(Self {
@@ -116,7 +206,7 @@ impl LambdaCodeRef {
     /// from the current evaluator (the module's IR changed or is not loaded).
     pub(crate) fn resolve(
         self,
-        resolver: &impl LambdaCodeResolver,
+        resolver: &dyn LambdaCodeResolver,
     ) -> Result<ResolvedLambdaCode, LambdaCodeDrift> {
         let module = resolver
             .resolve(self.source_hash)

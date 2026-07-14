@@ -370,10 +370,21 @@ mod tests {
         // stale dumped `Vec` header with a freshly-owned payload without dropping
         // the dangling one, behind `resolve_mut`'s `&mut self` proof, under
         // `FlatObjectPayloadAccess`.
+        // flat.rs count 7 -> 6 + flat/restore.rs count 0 -> 1 (doc 31 §1 step-3
+        // closure restore, §2 file-size split): the heap-image restore doors
+        // moved verbatim into `flat/restore.rs`; the single reviewed operation
+        // is the same exclusive `ptr::write` (now in `write_restored_payload`,
+        // shared by the plain and value-tail registration doors) that installs
+        // a freshly-owned payload over a restored object's stale dumped bytes
+        // without dropping them, behind `resolve_mut`'s `&mut self` proof,
+        // under `FlatObjectPayloadAccess`. No unsafe operation was added or
+        // changed; the value-tail door adds only safe extent validation and
+        // registry metadata around it.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
-            ("flat.rs", 7usize),
+            ("flat.rs", 6usize),
+            ("flat/restore.rs", 1usize),
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/region_ops.rs", 3usize),
@@ -449,6 +460,7 @@ mod tests {
                 "advice.rs"
                     | "arena.rs"
                     | "flat.rs"
+                    | "flat/restore.rs"
                     | "flat/alloc.rs"
                     | "flat/bytes.rs"
                     | "flat/region_ops.rs"
