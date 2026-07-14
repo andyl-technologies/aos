@@ -58,17 +58,18 @@ use crucible::{
     AdvanceOutcome, ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER};
+use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 use thiserror::Error;
 
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuHostPluginSetupError, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError,
-    QemuLaunchPluginConfig, QemuNode, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
-    QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuShutdownPolicy, QemuVmLaunchConfig, QmpError,
-    build_qemu_node_from_completed_setup, complete_qemu_host_plugin_setup,
-    spawn_qemu_child_with_fds_in_directory,
+    QemuLaunchPluginConfig, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuShutdownPolicy,
+    QemuVmLaunchConfig, QmpError, build_qemu_node_from_completed_setup,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
 use super::QemuLiveHostIoRuntimeError;
@@ -97,6 +98,13 @@ const MAX_REISSUES_PER_CEILING: u32 = 64;
 /// Cadence at which the QMP-connect primer pulses the plugin wake eventfd to keep
 /// the QEMU main loop iterating so it can service the capabilities handshake.
 const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
+/// Ceiling for the boot-barrier priming quantum. Small relative to the first busy
+/// ceiling so the node's first real advance is a normal forward step, but nonzero
+/// so the guest actually executes off the boot barrier and parks between quanta
+/// (which releases the BQL and lets QEMU's main loop service QMP).
+const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
+/// Host poll interval while waiting for the priming quantum to reach its ceiling.
+const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// The busy-window ceiling schedule that drives one node-step scenario.
 ///
@@ -425,15 +433,19 @@ fn run_one_scenario(
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
 
-    // Connect QMP while priming the QEMU main loop. Right after the plugin setup
-    // handshake the guest is parked at the boot barrier with no ceiling published,
-    // so the plugin holds time control with nothing to advance and QEMU's main
-    // loop parks with no host timeout (idle warp is suppressed under time
-    // control). A parked main loop never services the QMP `qmp_capabilities`
-    // command, so a plain connect times out. Pulsing the plugin wake eventfd (the
-    // same signal the M1 scheduler raises each quantum) cycles the main loop
-    // without advancing the guest -- no ceiling is published, so the guest icount
-    // stays at the boot barrier -- which lets QMP negotiate capabilities.
+    // Drive one priming quantum off the boot barrier BEFORE connecting QMP. Right
+    // after the setup handshake the guest is parked at the boot barrier holding
+    // the BQL while the plugin waits for the first ceiling; QEMU's main loop
+    // cannot acquire the BQL, so it never services the QMP `qmp_capabilities`
+    // command and a plain connect times out. Publishing a first ceiling (exactly
+    // as the M1 install gate releases the boot barrier -- via `start_quantum`
+    // alone, no eventfd) makes the guest execute and then park BETWEEN quanta,
+    // where the patch-0025 `rr_wait_io_event` wait releases the BQL. With the BQL
+    // free the main loop runs and QMP negotiates capabilities.
+    prime_guest_off_boot_barrier(&setup, config.completion_timeout)?;
+
+    // Belt-and-suspenders: keep pulsing the plugin wake while connecting so the
+    // main loop keeps iterating even if it briefly re-parks between quanta.
     let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(&run_directory))
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
 
@@ -561,6 +573,70 @@ fn assert_runs_match(
         });
     }
     Ok(())
+}
+
+/// Drives one bounded priming quantum to move the guest off the boot barrier.
+///
+/// The node's own hot path does not exist yet -- it is built only after QMP
+/// connects -- so this maps a temporary hot path over the same shared-memory
+/// region. Publishing the first ceiling releases the boot barrier exactly as the
+/// M1 install gate does (`start_quantum` alone, no eventfd wake); the guest
+/// executes to the ceiling and parks between quanta, releasing the BQL so QEMU's
+/// main loop can service QMP. The temporary hot path is dropped before the node
+/// maps its own view of the region.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when the region cannot be mapped, the
+/// hot path cannot bind, a quantum boundary cannot be published or read, or the
+/// guest never reaches the priming ceiling within `timeout`.
+fn prime_guest_off_boot_barrier(
+    setup: &crate::QemuHostPluginSetup,
+    timeout: Duration,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
+        .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
+    let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
+        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
+        .map_err(|source| QemuLiveNodeStepGateError::PrimeHotPath { source })?;
+
+    let horizon = crucible::ExecutionHorizon {
+        icount: Icount {
+            retired: PRIME_CEILING_ICOUNT,
+        },
+    };
+    let pending = QemuShmemHotPathChannel::start_quantum(&mut hot_path, horizon)
+        .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
+
+    let max_polls = bounded_prime_polls(timeout);
+    let mut reached = false;
+    for _ in 0..max_polls {
+        let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
+            .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
+            .retired;
+        if current >= PRIME_CEILING_ICOUNT {
+            reached = true;
+            break;
+        }
+        thread::sleep(PRIME_POLL_INTERVAL);
+    }
+
+    if !reached {
+        return Err(QemuLiveNodeStepGateError::PrimeStalled {
+            ceiling_icount: PRIME_CEILING_ICOUNT,
+        });
+    }
+    QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
+        .map_err(|source| QemuLiveNodeStepGateError::prime("finish priming quantum", source))?;
+    Ok(())
+}
+
+/// Returns the number of priming polls that fit within `timeout`, at least one.
+fn bounded_prime_polls(timeout: Duration) -> u64 {
+    let interval = PRIME_POLL_INTERVAL.as_micros().max(1);
+    let budget = timeout.as_micros();
+    u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
 }
 
 /// Connects the typed QMP VMState channel while pulsing the plugin wake eventfd.
@@ -786,6 +862,32 @@ pub enum QemuLiveNodeStepGateError {
     /// The plugin setup acknowledgement did not permit scheduling.
     #[error("plugin setup acknowledgement did not permit scheduling")]
     SetupAckNotReady,
+    /// The priming hot path could not map the shared-memory region.
+    #[error("map priming shared-memory region failed")]
+    PrimeRegionMap {
+        /// Underlying setup-region mapping error.
+        source: crucible_shmem::SetupRegionMapError,
+    },
+    /// The priming mapped hot-path adapter could not bind the region.
+    #[error("bind priming mapped hot path failed")]
+    PrimeHotPath {
+        /// Underlying mapped hot-path binding error.
+        source: QemuMappedQuantumShmemHotPathError,
+    },
+    /// A priming quantum boundary could not be published or read.
+    #[error("{operation} failed")]
+    Prime {
+        /// Priming operation that failed.
+        operation: &'static str,
+        /// Underlying shared-memory channel error.
+        source: QemuNodeChannelError,
+    },
+    /// The guest never reached the priming ceiling off the boot barrier.
+    #[error("priming quantum did not reach ceiling {ceiling_icount} off the boot barrier")]
+    PrimeStalled {
+        /// Priming ceiling the guest failed to reach.
+        ceiling_icount: u64,
+    },
     /// The production host-I/O runtime could not map the shared-memory region.
     #[error("build live host-I/O runtime failed")]
     HostIoRuntime {
@@ -852,5 +954,10 @@ impl QemuLiveNodeStepGateError {
     /// Builds a [`QemuLiveNodeStepGateError::Step`] for a node operation.
     fn node_op(operation: &'static str, source: QemuNodeError) -> Self {
         Self::Step { operation, source }
+    }
+
+    /// Builds a [`QemuLiveNodeStepGateError::Prime`] for a priming operation.
+    fn prime(operation: &'static str, source: QemuNodeChannelError) -> Self {
+        Self::Prime { operation, source }
     }
 }
