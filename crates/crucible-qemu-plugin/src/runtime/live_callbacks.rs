@@ -1146,10 +1146,35 @@ impl LiveVcpuTimeCallbackState {
     /// this is the ceiling unchanged; after an idle jump advanced virtual time
     /// without retiring instructions, the offset is positive and this stops the
     /// guest from retiring instructions past its logical authorization.
+    /// Returns how far QEMU's sim loop may advance the guest, in raw icount.
+    ///
+    /// This is the callback the live TCG sim loop actually queries to bound a
+    /// running guest (registered via `register_sim_shmem_dispatch`); it is the
+    /// live advance seam, not [`compute_idle_wake_plan`], which the sim loop
+    /// never calls. The budget is the scheduler ceiling minus this node's
+    /// logical icount offset.
+    ///
+    /// When a device-I/O request is in flight and the host has published a
+    /// completion deadline, the budget is additionally capped at that deadline
+    /// (same merge rule as [`compute_idle_wake_plan`]: a zero/retracted deadline
+    /// imposes no cap; a past deadline saturates the budget to zero). This stops
+    /// a *busy* guest from running past a mid-quantum completion, which would
+    /// deliver it late and nondeterministically. The distinct case of a guest
+    /// *halted* on device I/O (where the sim loop stops querying this callback
+    /// altogether) is closed separately by the device-wait callback of the
+    /// SCHED-8 delivery patch, not here.
     fn max_advance_icount(&self) -> u64 {
         let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
-        ceiling.saturating_sub(offset)
+        let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
+            match PluginShmemOrdering::device_completion_deadline_icount(self.slot.get()) {
+                0 => ceiling,
+                deadline => ceiling.min(deadline),
+            }
+        } else {
+            ceiling
+        };
+        effective_ceiling.saturating_sub(offset)
     }
 
     fn vcpu_flag(&self, vcpu_index: u32) -> Result<&AtomicBool, LiveVcpuTimeCallbackError> {
