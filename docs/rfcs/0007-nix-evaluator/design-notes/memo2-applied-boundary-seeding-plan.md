@@ -351,3 +351,220 @@ unsafe, local-only.
 
 Steps 2–4 are **not** authorized by this doc; they are the map the measurement
 either opens or closes.
+
+---
+
+## 10. Probe verdict (2026-07-14): pure-value keying is dead
+
+The §7 economics probe ran on the builder toplevel (cache-off, stats-on):
+
+| Metric | Value |
+| --- | --- |
+| Boundary applications | 19,698 |
+| Distinct def-sites | 1,274 |
+| **Declined applications** | **19,467 (98.8%)** |
+| Distinct declined def-sites | 1,233 / 1,274 |
+| Argument members inspected | 137,535 |
+| Hashable (forced) members | 51,240 (37%) |
+| Top-level boundary wall | 1.43e9 ns (stats-inflated run) |
+
+The cache-on run agreed (12,978 / 13,132 declined; fewer applications because
+the parse/persist path absorbs some). The verdict is unambiguous:
+
+- **Pure-value keying (§2–§3) is dead.** 98.8% of package-boundary argument sets
+  contain at least one unforced-thunk (or closure) member at record time, so
+  under MEMO-1 rules 98.8% of boundaries decline — exactly the availability cap
+  §8 predicted. Keying a boundary on ordered durable value hashes of its
+  argument set is not viable.
+- **The design survives if — and only if — keying pivots.** The boundary wall
+  share is substantial (1,274 distinct package applications owning real cold
+  wall), so the *lever* is real; only the *key* is wrong. 37% of members are
+  hashable, which sizes a hybrid but does not carry it alone.
+
+The rest of this document (§11) works out the replacement key to the same rigor
+as §2–§3 and states honestly where it does or does not beat root cutoff.
+
+---
+
+## 11. Keying redirect: source-Merkle boundary identity
+
+### 11.1 Why generic thunk-identity degenerates (the honest failure)
+
+Doc 29 §3.2 records the Adapton-style out for an unforced free variable: key it
+by *its own* `(code_id, env)` memo key, derived without forcing. Applied
+naively to a package-boundary argument member, this **degenerates to the whole-
+set fingerprint**, i.e. it is no better than root cutoff:
+
+An argument member `self.<dep>` is a thunk whose forcing runs
+`fn (auto // overrides)`. To build `auto` it calls
+`intersectAttrs (functionArgs fn) (self // { … })`, so the thunk's **captured
+environment references the fixpoint `self` in its entirety**. A generic
+recursive identity `code_id(thunk) ‖ identity(captured env)` therefore recurses
+through `self` — every package in the set — for *every* boundary. The result is
+one identity that changes whenever *any* package changes: root cutoff with extra
+steps. **We reject generic thunk-env identity.**
+
+### 11.2 The bounded construction: follow static formal edges, not raw capture
+
+The fix is to identify a boundary by the **static dependency edges its formal
+set declares**, not by hashing its raw captured environment. A package file is
+`{ mkDerivation, fetchurl, <dep₁>, … , <depₙ> }: mkDerivation { … }`; the
+formal names are exactly the fixpoint keys it depends on (that is what
+`intersectAttrs (functionArgs fn) self` computes). Those names are **static in
+the lowered IR** (the `FormalSet` node lists them), so the dependency set is
+known from the parse artifact without evaluating or forcing anything.
+
+Define, over the package dependency DAG:
+
+```text
+boundary_identity(P) =
+    blake3( DOMAIN ‖ FORMAT_VERSION ‖ crate_version
+          ‖ LoweredIrFingerprint(P.nix)
+          ‖ for f in formals(P) in canonical order:
+              dep_component(f) )
+
+dep_component(f) =
+    | boundary_identity(Q)        if self.f resolves to a package Q
+    | builtin_id(f)               if f is a framework closure
+    |                               (mkDerivation, fetchurl) — its def-site code_id
+    | DECLINE the whole boundary  if f cannot be statically resolved to either
+```
+
+This is a **Merkle hash over each package's own transitive dependency cone**,
+keyed on static formal names, memoized once per package (content-addressed), so
+computing all identities is `O(edges in the dep DAG)` — linear in the package
+graph, no forcing, no eval, derived entirely from parse-cache fingerprints and
+`FormalSet` formals. It replaces the dead value-hash environment component of
+§3.2 with a **source-identity environment component**.
+
+### 11.3 Soundness — a dep edit flips the identity without forcing (design Q2)
+
+Claim: `boundary_identity(P)` changes whenever `P`'s `.drv` could change,
+**and** the change is observable without forcing any argument.
+
+`P`'s derivation is a pure function of (a) `P.nix`'s code, (b) the derivations /
+values of `P`'s declared dependencies, and (c) impure inputs. Take each:
+
+- **(a) P's own source.** Any edit to `P.nix` changes
+  `LoweredIrFingerprint(P.nix)` (the parse cache is content-hash-keyed since
+  `ab7289106`) → a different Merkle preimage → a different identity. ✓
+- **(b) A dependency.** By structural induction over the dep DAG: editing a
+  dependency `D` changes `LoweredIrFingerprint(D.nix)` (base) or, transitively,
+  some deeper dep's identity (step); either way `boundary_identity(D)` changes,
+  and `D`'s identity is a Merkle child of every package that declares `D` as a
+  formal, so their identities change too. The base case is a leaf package whose
+  formals are all framework closures / in-file literals, fully covered by its
+  own fingerprint. ✓ The recursion follows **only declared formals**, never the
+  ambient `self`, so it terminates on the cone and never touches unrelated
+  packages.
+- **(c) Impure inputs.** Unchanged from doc 29 §2.3: the boundary record still
+  carries its `[CacheableInputFingerprint]` slice and revalidates it on every
+  hit. Source identity covers code; the slice covers observed world.
+
+Crucially, every input to the identity — file fingerprints and static formal
+names — is available from the parse artifact, so the identity is computed with
+**zero forcing**: the 98.8% decline that killed value keying does not arise,
+because we never ask for a value hash of an argument at all.
+
+### 11.4 It does NOT degenerate to root cutoff (the load-bearing distinction)
+
+Root cutoff hashes the entire entry closure into **one** fingerprint: any edit
+anywhere misses the whole eval. Source-Merkle boundary identity hashes **each
+package's own cone separately**: editing leaf package `L` changes
+`boundary_identity(L)` and the identities of packages in `L`'s reverse-dependency
+cone, and **nothing else**. Every package outside that cone keeps its identity
+and replays. This is strictly finer than root cutoff — it is exactly the
+partial-warm behaviour the whole effort is for — provided the dep DAG is not a
+single giant fan-in where every package transitively depends on the edited one.
+For the AOS set the common edit (a leaf tool, a version bump on a mid-tree
+package) has a bounded reverse-dep cone, so the lever survives; a change to
+`stdenv`/`mkDerivation` itself invalidates nearly everything, which is **correct**
+(it does affect nearly every drv) and no worse than root cutoff for that case.
+
+### 11.5 Precision lost vs value keying (design Q4) — the safe direction
+
+Source-identity keying is **coarser** than value keying and loses exactly one
+kind of reuse: a source change in the cone that does **not** change the drv
+(a comment, a formatting change, a dependency's runtime-only field that never
+reaches the derivation) flips the identity and forces a re-eval that value
+keying would have elided by observing the drv is byte-identical. The loss is
+**false invalidations only**:
+
+- A false invalidation costs one package re-evaluation — a correct, slightly
+  slower result.
+- A false **hit** would be a wrong `.drv`. Source-Merkle identity cannot produce
+  one: equal identity ⇒ identical source cone ⇒ (given the revalidated impure
+  slice) identical derivation, by the soundness argument in §11.3.
+
+So the error is entirely in the safe direction, matching doc 29's advisory-tier
+invariant (§7.7): a mis-key degrades to a miss, never to a wrong output. This is
+the same trade root cutoff already makes (it re-evals on any no-op edit too),
+applied at finer granularity.
+
+### 11.6 Hybrid with the 37% forced members (design Q3) — a refinement, not the carry
+
+The 37% of members that *are* forced-and-hashable at record time (typically
+in-file scalars a package forces early — version strings, feature flags, and
+already-realised shared attrsets) can additionally contribute a durable
+`ValueHash` component, giving cross-package dedup that source identity misses
+(two textually-different packages that force the *same* value would share the
+value component). But the hybrid must not make the key depend on evaluation
+dynamics: whether a given member is forced at record time is itself a function
+of the eval, so "value-hash if forced else identity" would change the key when
+the force pattern shifts — a false miss (safe) but a needless one. Disposition:
+
+- **Carry the key on source identity (§11.2) for every member**, uniformly and
+  deterministically. In-file scalars are already covered by
+  `LoweredIrFingerprint(P.nix)`, so a version bump flips the identity through
+  the file hash regardless.
+- Treat the forced-value component as an **optional, separately-versioned dedup
+  index** layered on top — never as a substitute for the source identity — and
+  only if a later measurement shows the cross-package value-dedup mass is worth
+  the added key surface. It is not part of the v1 record key.
+
+### 11.7 Economics re-estimate under source-Merkle keys (design Q5)
+
+- **Key derivation tax:** a blake3 over `(file fingerprint ‖ dep identities)`
+  per package, memoized once per boundary → `O(dep DAG edges)` total, all from
+  parse-cache data already resident. This is far below the value-hash tax that
+  §8 worried about (no large-attrset blake3, no forcing) and is dominated by the
+  fingerprints the parse cache computes anyway.
+- **Warm benefit:** on a one-file edit, only the edited package's reverse-dep
+  cone re-evaluates; the remaining boundaries replay their recorded drv
+  projection (a hit is an identity match + slice revalidation, not a
+  `mkDerivation` eval). With 1,274 distinct boundaries owning substantial cold
+  wall, a leaf edit that leaves most cones intact converts most of the
+  package-application wall into replays. The realizable fraction is the
+  reverse-dep-cone size distribution — the **next measurement** (§11.8).
+- The blake3→xxh128 experiment (measuring now) lowers the per-identity hash cost
+  further if it lands; fold its result into the record-store pricing.
+
+### 11.8 What the measurement must now answer (before M2-record)
+
+The keying pivot re-opens a *stability* question the §7 probe did not answer,
+and it is the new gate:
+
+1. **Reverse-dep-cone size distribution.** For each package boundary, how many
+   boundaries are in its reverse-dependency cone (i.e. would be invalidated if
+   it changed)? A median small cone ⇒ a leaf edit replays ~everything ⇒ the
+   lever is large. A fat fan-in (most packages transitively depend on a few
+   hubs) ⇒ edits near a hub invalidate most of the set ⇒ smaller lever.
+2. **Static-resolution coverage.** What fraction of the 1,274 def-sites have
+   *all* formals statically resolvable to a package or a framework closure
+   (`dep_component` never hits the DECLINE arm)? Boundaries with a dynamically
+   computed dependency decline (safe) and cap coverage; this number sizes it.
+
+Both are derivable from the parse artifacts + the fixpoint attr names by a
+probe analogous to §7 (a static walk of `FormalSet` formals against the package
+set), **no eval**. That is the M2-measure-2 increment, gated the same way: if
+the reverse-dep cones are fat or resolution coverage is low, we close
+MEMO-2-seeding with §10 + §11.8 as the evidence; if they are favourable, M2-record
+proceeds with source-Merkle keys.
+
+**Honest bottom line.** Value keying is dead (§10). Generic thunk-identity is
+dead (§11.1, degenerates to root cutoff). Source-Merkle boundary identity
+(§11.2) is sound (§11.3), strictly finer than root cutoff (§11.4), safe in its
+imprecision (§11.5), and cheap to key (§11.7) — but whether it delivers a
+*product-level* win rather than a marginal one now rests entirely on the
+reverse-dep-cone distribution (§11.8), which is one more no-eval measurement
+away. I recommend building M2-measure-2 before any record store.
