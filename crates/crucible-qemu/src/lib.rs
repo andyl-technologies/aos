@@ -256,6 +256,7 @@ pub use spawn::{
 };
 #[cfg(target_os = "linux")]
 pub use supervision::{
+    QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
     QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError, QemuLiveNodeStepGateConfig,
     QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
     QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
