@@ -6,6 +6,7 @@
 //! later supervision code will pass to the child process.
 
 mod control_channels;
+mod crucible_shmem_9p;
 mod crucible_shmem_block;
 mod entropy;
 mod validation;
@@ -14,6 +15,10 @@ use std::fmt;
 
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, NodeClockSkew};
+pub use crucible_shmem_9p::{
+    CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
+    DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
+};
 pub use crucible_shmem_block::{
     CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
 };
@@ -602,6 +607,7 @@ pub struct QemuVmLaunchConfig {
     initrd: Option<QemuLaunchArtifact>,
     root_overlay_file_name: String,
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
+    crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
 }
 
 impl QemuVmLaunchConfig {
@@ -620,6 +626,7 @@ impl QemuVmLaunchConfig {
             initrd: None,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
+            crucible_shmem_9p: None,
         }
     }
 
@@ -642,6 +649,7 @@ impl QemuVmLaunchConfig {
             initrd: None,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
+            crucible_shmem_9p: None,
         }
     }
 
@@ -681,6 +689,23 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub const fn crucible_shmem_block(&self) -> Option<&CrucibleShmemBlockDevice> {
         self.crucible_shmem_block.as_ref()
+    }
+
+    /// Returns a config that attaches a crucible-shmem virtio-9p device.
+    ///
+    /// The device is a stock virtio-9p front-end whose PDUs the carried QEMU
+    /// patch forwards to the host 9p servicer over the `SLOT_9P_IO` shared-memory
+    /// rings. A config without one emits byte-identical argv.
+    #[must_use]
+    pub fn with_crucible_shmem_9p(mut self, device: CrucibleShmem9pDevice) -> Self {
+        self.crucible_shmem_9p = Some(device);
+        self
+    }
+
+    /// Returns the attached crucible-shmem 9p device, if any.
+    #[must_use]
+    pub const fn crucible_shmem_9p(&self) -> Option<&CrucibleShmem9pDevice> {
+        self.crucible_shmem_9p.as_ref()
     }
 
     /// Returns the static scenario node identifier.
@@ -759,6 +784,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_block {
             device.append_hash_material(&mut lines);
         }
+        if let Some(device) = &self.crucible_shmem_9p {
+            device.append_hash_material(&mut lines);
+        }
         lines.join("\n")
     }
 
@@ -785,6 +813,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_block {
             device.append_qemu_args(&mut args);
         }
+        if let Some(device) = &self.crucible_shmem_9p {
+            device.append_qemu_args(&mut args);
+        }
         args
     }
 
@@ -802,6 +833,9 @@ impl QemuVmLaunchConfig {
             initrd.validate("initrd_path")?;
         }
         if let Some(device) = &self.crucible_shmem_block {
+            device.validate()?;
+        }
+        if let Some(device) = &self.crucible_shmem_9p {
             device.validate()?;
         }
         Ok(())
