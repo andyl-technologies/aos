@@ -401,6 +401,13 @@ impl<'a> EvalEnvFrames<'a> {
     }
 
     /// Returns the outermost-indexed frame, when present.
+    ///
+    /// For an [`EvalEnvFramesSource::Chain`] view this walks parent links from
+    /// the innermost head, so it is `O(len - index)` in the distance from the
+    /// innermost frame. Prefer [`EvalEnvFrames::iter`] or
+    /// [`EvalEnvFrames::clone_into`] when a full traversal is needed — both are
+    /// single-pass `O(len)` rather than the `O(len^2)` incurred by repeated
+    /// `get` calls across every index.
     pub fn get(self, index: usize) -> Option<&'a Arc<EvalFrame>> {
         if index >= self.len {
             return None;
@@ -417,15 +424,109 @@ impl<'a> EvalEnvFrames<'a> {
     }
 
     /// Returns the innermost shared frame, when present.
+    ///
+    /// This is `O(1)` for both storage sources: the chain head is already the
+    /// innermost frame, so no parent links are walked.
     pub fn last(self) -> Option<&'a Arc<EvalFrame>> {
         self.len.checked_sub(1).and_then(|index| self.get(index))
     }
 
     /// Iterates from the outermost frame to the innermost frame.
-    pub fn iter(self) -> impl Iterator<Item = &'a Arc<EvalFrame>> {
-        (0..self.len).filter_map(move |index| self.get(index))
+    ///
+    /// The traversal is single-pass `O(len)`. A chain-backed view cannot yield
+    /// outermost-first lazily — parent links run innermost-first — so it walks
+    /// the chain once into a temporary buffer and drains it in reverse. An
+    /// array-backed view borrows its slice directly with no allocation.
+    ///
+    /// The chain walk is bounded to exactly `len` frames from the innermost
+    /// head. The head's chain may extend past the captured window to
+    /// out-of-view ancestors; those are never yielded, matching the windowed
+    /// semantics of [`EvalEnvFrames::get`].
+    pub fn iter(self) -> EvalEnvFramesIter<'a> {
+        match self.source {
+            EvalEnvFramesSource::Array(frames) => EvalEnvFramesIter {
+                inner: EvalEnvFramesIterInner::Array(frames.iter()),
+            },
+            EvalEnvFramesSource::Chain(head) => {
+                let mut collected: Vec<&'a Arc<EvalFrame>> = Vec::with_capacity(self.len);
+                let mut node = head;
+                for _ in 0..self.len {
+                    let Some(frame) = node else { break };
+                    collected.push(frame);
+                    node = frame.parent();
+                }
+                collected.reverse();
+                EvalEnvFramesIter {
+                    inner: EvalEnvFramesIterInner::Chain(collected.into_iter()),
+                }
+            }
+        }
+    }
+
+    /// Clones every frame outermost-first, appending onto `out` in a single
+    /// `O(len)` pass.
+    ///
+    /// `out` must already reserve capacity for `self.len()` additional frames;
+    /// this method performs no allocation of its own, so the caller keeps the
+    /// fallible [`Vec::try_reserve_exact`] reservation that drives the
+    /// capture-allocation error path. A chain-backed view is walked once from
+    /// the innermost head — pushing innermost-first, bounded to exactly `len`
+    /// frames so out-of-view ancestors past the captured window are excluded —
+    /// then the freshly appended suffix is reversed in place so the final order
+    /// is outermost-first, matching [`EvalEnvFrames::iter`]. An array-backed
+    /// view is copied directly.
+    pub fn clone_into(self, out: &mut Vec<Arc<EvalFrame>>) {
+        match self.source {
+            EvalEnvFramesSource::Array(frames) => out.extend_from_slice(frames),
+            EvalEnvFramesSource::Chain(head) => {
+                let start = out.len();
+                let mut node = head;
+                for _ in 0..self.len {
+                    let Some(frame) = node else { break };
+                    out.push(Arc::clone(frame));
+                    node = frame.parent();
+                }
+                out[start..].reverse();
+            }
+        }
     }
 }
+
+/// Outermost-to-innermost iterator over an [`EvalEnvFrames`] view.
+///
+/// Yielded by [`EvalEnvFrames::iter`]. Construction is single-pass `O(len)`:
+/// an array-backed view borrows its slice, while a chain-backed view walks its
+/// parent links once into a temporary buffer that is then drained in reverse.
+#[derive(Debug)]
+pub struct EvalEnvFramesIter<'a> {
+    inner: EvalEnvFramesIterInner<'a>,
+}
+
+#[derive(Debug)]
+enum EvalEnvFramesIterInner<'a> {
+    Array(std::slice::Iter<'a, Arc<EvalFrame>>),
+    Chain(std::vec::IntoIter<&'a Arc<EvalFrame>>),
+}
+
+impl<'a> Iterator for EvalEnvFramesIter<'a> {
+    type Item = &'a Arc<EvalFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            EvalEnvFramesIterInner::Array(frames) => frames.next(),
+            EvalEnvFramesIterInner::Chain(frames) => frames.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.inner {
+            EvalEnvFramesIterInner::Array(frames) => frames.size_hint(),
+            EvalEnvFramesIterInner::Chain(frames) => frames.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for EvalEnvFramesIter<'_> {}
 
 impl Index<usize> for EvalEnvFrames<'_> {
     type Output = Arc<EvalFrame>;
@@ -435,5 +536,143 @@ impl Index<usize> for EvalEnvFrames<'_> {
             Some(frame) => frame,
             None => panic!("captured environment frame index {index} is out of bounds"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds `depth` production frames linked innermost-to-outermost via
+    /// parent pointers, returned outermost-first (the capture-slice order).
+    fn linked_chain(depth: usize) -> Vec<Arc<EvalFrame>> {
+        let mut frames: Vec<Arc<EvalFrame>> = Vec::with_capacity(depth);
+        let mut parent: Option<Arc<EvalFrame>> = None;
+        for _ in 0..depth {
+            let frame = EvalFrame::new_linked(1, parent.clone()).expect("frame allocation");
+            parent = Some(Arc::clone(&frame));
+            frames.push(frame);
+        }
+        frames
+    }
+
+    /// A deep chain-backed view must iterate identically, element-for-element,
+    /// to the equivalent array-backed view over the same outermost-first slice.
+    #[test]
+    fn deep_chain_iter_matches_array_view_order() {
+        let frames = linked_chain(64);
+        assert!(frames_are_linked(&frames));
+
+        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain_view = chain.frames();
+        let array_view = EvalEnvFrames::array(&frames);
+
+        assert!(matches!(chain_view.source, EvalEnvFramesSource::Chain(_)));
+        assert_eq!(chain_view.len(), array_view.len());
+
+        let chain_iter: Vec<&Arc<EvalFrame>> = chain_view.iter().collect();
+        let array_iter: Vec<&Arc<EvalFrame>> = array_view.iter().collect();
+        assert_eq!(chain_iter.len(), frames.len());
+        for (from_chain, expected) in chain_iter.iter().zip(frames.iter()) {
+            assert!(Arc::ptr_eq(from_chain, expected));
+        }
+        for (from_chain, from_array) in chain_iter.iter().zip(array_iter.iter()) {
+            assert!(Arc::ptr_eq(from_chain, from_array));
+        }
+    }
+
+    /// `clone_into` (the single-pass helper behind `clone_env_frames`) must
+    /// clone a deep chain outermost-first, matching both the source slice and
+    /// the array-backed clone element-for-element by `Arc` identity.
+    #[test]
+    fn deep_chain_clone_into_matches_array_view_order() {
+        let frames = linked_chain(64);
+
+        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain_view = chain.frames();
+        let array_view = EvalEnvFrames::array(&frames);
+
+        let mut from_chain = Vec::new();
+        from_chain
+            .try_reserve_exact(chain_view.len())
+            .expect("reserve chain clone");
+        chain_view.clone_into(&mut from_chain);
+
+        let mut from_array = Vec::new();
+        from_array
+            .try_reserve_exact(array_view.len())
+            .expect("reserve array clone");
+        array_view.clone_into(&mut from_array);
+
+        assert_eq!(from_chain.len(), frames.len());
+        assert_eq!(from_array.len(), frames.len());
+        for (cloned, expected) in from_chain.iter().zip(frames.iter()) {
+            assert!(Arc::ptr_eq(cloned, expected));
+        }
+        for (cloned, expected) in from_array.iter().zip(frames.iter()) {
+            assert!(Arc::ptr_eq(cloned, expected));
+        }
+    }
+
+    /// `get` and `Index` on a chain view resolve every position to the same
+    /// frame the array view resolves, across the full depth.
+    #[test]
+    fn deep_chain_indexed_access_matches_array_view() {
+        let frames = linked_chain(64);
+        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain_view = chain.frames();
+        let array_view = EvalEnvFrames::array(&frames);
+
+        for index in 0..frames.len() {
+            let chained = chain_view.get(index).expect("chain frame present");
+            let arrayed = array_view.get(index).expect("array frame present");
+            assert!(Arc::ptr_eq(chained, arrayed));
+            assert!(Arc::ptr_eq(&chain_view[index], &frames[index]));
+        }
+        assert!(chain_view.get(frames.len()).is_none());
+        assert!(Arc::ptr_eq(
+            chain_view.last().expect("innermost present"),
+            frames.last().expect("innermost source"),
+        ));
+    }
+
+    /// A chain head may extend past the captured window to out-of-view
+    /// ancestors; `iter`, `clone_into`, and `get` must all honor `len` and
+    /// never surface those ancestors.
+    #[test]
+    fn chain_window_excludes_out_of_view_ancestors() {
+        // Build a depth-4 chain but capture only the innermost two frames, so
+        // the head's parent links reach two ancestors outside the window.
+        let full = linked_chain(4);
+        let head = full.last().expect("innermost frame");
+        let chain = EvalEnvStorage::Chain {
+            head: Some(Arc::clone(head)),
+            frames: 2,
+        };
+        let view = chain.frames();
+        assert_eq!(view.len(), 2);
+
+        let window: Vec<&Arc<EvalFrame>> = view.iter().collect();
+        assert_eq!(window.len(), 2, "iter yields only the captured window");
+        // Outermost-first: the window is [full[2], full[3]].
+        assert!(Arc::ptr_eq(window[0], &full[2]));
+        assert!(Arc::ptr_eq(window[1], &full[3]));
+
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(view.len()).expect("reserve");
+        view.clone_into(&mut cloned);
+        assert_eq!(
+            cloned.len(),
+            2,
+            "clone_into yields only the captured window"
+        );
+        assert!(Arc::ptr_eq(&cloned[0], &full[2]));
+        assert!(Arc::ptr_eq(&cloned[1], &full[3]));
+
+        // `get` is likewise windowed: index 0 is the outermost in-view frame,
+        // and out-of-view ancestors are unreachable.
+        assert!(Arc::ptr_eq(view.get(0).expect("in view"), &full[2]));
+        assert!(Arc::ptr_eq(view.get(1).expect("in view"), &full[3]));
+        assert!(view.get(2).is_none());
     }
 }

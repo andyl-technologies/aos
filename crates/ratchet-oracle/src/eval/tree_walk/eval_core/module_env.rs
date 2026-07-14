@@ -559,7 +559,11 @@ impl TreeWalk {
                 span,
             )
         })?;
-        cloned.extend(frames.iter().cloned());
+        // Single-pass `O(depth)` clone into the pre-reserved buffer, walking
+        // the capture chain's parent links exactly once. Routing through
+        // `frames.iter().cloned()` here would reintroduce the `O(depth^2)`
+        // per-index chain walk on the hottest apply/force path.
+        frames.clone_into(&mut cloned);
         Ok(ActiveEvalEnv {
             frames: cloned,
             flat_base: env.flat_base().cloned(),
