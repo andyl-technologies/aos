@@ -257,6 +257,18 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0037-crucible-sim-freeze-warp-at-observation-boundary.patch";
+      check = import ./phase2-qemu-sim-warp-freeze.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0038-crucible-sim-gate-rr-kick.patch";
+      check = import ./phase2-qemu-sim-rr-kick-gate.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

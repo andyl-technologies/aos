@@ -1,0 +1,67 @@
+{
+  pkgs,
+  lib,
+  qemuPackage ? pkgs.qemu-crucible,
+}: let
+  patchName = "0038-crucible-sim-gate-rr-kick.patch";
+  patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  # Source-inspection micro-test for the sim round-robin kick-timer cleanup:
+  # assert that 0038 sim-gates rr_start_kick_timer with an early return before the
+  # stock virtual-timer arm, so sim mode (which rotates vCPUs deterministically
+  # via rr_switch_quantum) never arms the host-timed kick. The needles are absent
+  # on stock QEMU.
+  failures =
+    lib.optionals (!(hasInfix "static void rr_start_kick_timer(void)" patchSource)) [
+      "${patchName}: sim gate is not installed in rr_start_kick_timer"
+    ]
+    ++ lib.optionals (!(hasInfix ''strcmp(current_accel_name(), "sim") == 0'' patchSource)) [
+      "${patchName}: rr kick timer is not gated on the sim accelerator"
+    ]
+    ++ lib.optionals (!(hasInfix "rr_switch_quantum" patchSource)) [
+      "${patchName}: gate rationale does not reference the deterministic sim rotation"
+    ]
+    ++ lib.optionals (!(hasInfix "return;" patchSource)) [
+      "${patchName}: sim gate does not early-return before arming the kick timer"
+    ];
+in
+  if failures != []
+  then throw "crucible phase2 sim rr-kick gate check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase2-qemu-sim-rr-kick-gate";
+      version = "0";
+      src = null;
+      phases = [
+        {
+          name = "verify-sim-rr-kick-gate";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            gate=gate:patch-microtests
+            patch=${patchName}
+            rr_kick_timer_sim_gated=true
+            rr_kick_timer_early_return=true
+            qemu_package=${qemuPackage}
+            RESULT
+          '';
+        }
+      ];
+    }
