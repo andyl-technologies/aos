@@ -66,7 +66,8 @@ Gap 1 fails loud today (the drift-refusal tests prove it). Gaps 2 and 4 fail
 
 ## Increment map
 
-1. **W1 — symbol identity across evaluators.** Serialize the capture-time
+1. **W1 — symbol identity across evaluators.** *(LANDED 0be22f15d; the
+   unsafe call site and the position ruling below are lead-approved.)* Serialize the capture-time
    symbol table (names in id order; a `symbols` segment or manifest field).
    Restore builds `old id -> new id` by interning each name into the fresh
    table, then rewrites every symbol-carrying location: arena-inline attrs
@@ -81,6 +82,17 @@ Gap 1 fails loud today (the drift-refusal tests prove it). Gaps 2 and 4 fail
    cost). Acceptance: capture in evaluator A, restore into a fresh evaluator
    B with a different root expression; attribute selection and `attrNames`
    over the restored prelude are byte-identical to B's cold eval.
+   **Position degradation (v1, lead-accepted with a condition):** an attr
+   position whose module has no counterpart in the consuming evaluator
+   degrades to *no position* instead of refusing (provenance of a module
+   that no longer exists); keys and primop-arg provenance refuse hard.
+   Positions are observable through `unsafeGetAttrPos`, so the W2/W5 parity
+   battery MUST include a position-observability probe: over the restored
+   prelude, no *reachable* attr entry may carry a degraded position —
+   degradation must stay confined to warmer-internal attrs user evals never
+   read. A reachable degraded position is a stop-and-revisit (candidate
+   fixes: manifest-pin the warmer root as a real module, or capture-time
+   refusal keyed on position-module escape into user-reachable attrs).
 2. **W2 — module manifest + import seeding.** The snapshot file wraps the
    heap image with a manifest: `(source name, path, fingerprint)` per
    captured module (capture-time `snapshot_code_identity` already holds the
