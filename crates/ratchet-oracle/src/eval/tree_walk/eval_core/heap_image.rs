@@ -90,3 +90,201 @@ impl TreeWalk {
         }
     }
 }
+
+use std::path::PathBuf;
+
+use thiserror::Error;
+
+use super::super::{
+    ForceCacheOptionsIdentity, ImportCacheEntry, ModuleSource, TreeWalkModule, annotate_import_ir,
+    nix_lower, parse_bytes_with_symbols, resolve,
+};
+use crate::eval::heap::{EvalHeap, EvalHeapSnapshotError};
+use crate::value::Value;
+use crate::value::compressed::CompressedValueWord;
+use ratchet_value::heap::HeapImage;
+
+/// One reloadable module of a heap-snapshot manifest (step-4 W2).
+///
+/// Carries exactly the inputs [`TreeWalk`]'s import path feeds a fresh module
+/// — the source name and bytes plus the path-literal base — so the consuming
+/// evaluator can rebuild the module and reproduce its content fingerprint.
+/// Modules are reloaded with the fresh (non-scoped) lowering; a module
+/// originally loaded under `scopedImport` shares its source identity with the
+/// fresh flavor (the fingerprint domain does not distinguish them — a
+/// recorded hardening candidate in the step-4 spec).
+#[derive(Clone, Debug)]
+pub(crate) struct SnapshotManifestModule {
+    /// The module's source name (its import path bytes).
+    pub(crate) name: Vec<u8>,
+    /// The module's path-literal base, when it was loaded with one.
+    pub(crate) path_literal_base: Option<Vec<u8>>,
+    /// The module's source bytes.
+    pub(crate) source: Vec<u8>,
+}
+
+/// The evaluator-state manifest wrapped around a heap image (step-4 W2).
+///
+/// A heap image carries values; this manifest carries the per-evaluator state
+/// those values depend on: the modules to reload (so content fingerprints
+/// re-resolve) and the import-cache seeds (so `import` returns the restored
+/// values instead of re-forcing). The W3 storage tier serializes it alongside
+/// the image; in-process it is handed across as a struct.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct HeapSnapshotManifest {
+    /// Source-backed modules in capture-time id order.
+    pub(crate) modules: Vec<SnapshotManifestModule>,
+    /// `(import path, root value word)` seeds for the consuming import cache.
+    pub(crate) import_seeds: Vec<(PathBuf, u64)>,
+}
+
+/// Adopting a heap snapshot into a fresh evaluator failed.
+#[derive(Debug, Error)]
+pub(crate) enum HeapSnapshotAdoptError {
+    /// Snapshot adoption is serial-only (parallel workers share state the
+    /// adopted heap does not carry).
+    #[error("heap snapshots cannot be adopted by a parallel evaluator")]
+    ParallelMode,
+    /// A manifest module failed to parse, resolve, or lower.
+    #[error("manifest module {name:?} failed to reload: {message}")]
+    ModuleReload {
+        /// The failing module's source name.
+        name: String,
+        /// The front-end failure rendered for diagnostics.
+        message: String,
+    },
+    /// An import seed's value word did not decode.
+    #[error("import seed for {path:?} holds an invalid value word")]
+    MalformedImportSeed {
+        /// The seed's import path.
+        path: PathBuf,
+    },
+    /// The heap-image restore itself refused.
+    #[error(transparent)]
+    Restore(#[from] EvalHeapSnapshotError),
+}
+
+impl TreeWalk {
+    /// Captures the evaluator-state manifest for a heap snapshot (step-4 W2):
+    /// every source-backed module and every ready import-cache entry.
+    pub(crate) fn snapshot_manifest(&self) -> HeapSnapshotManifest {
+        let modules = self
+            .modules
+            .iter()
+            .filter_map(|module| {
+                module.source.as_ref().map(|source| SnapshotManifestModule {
+                    name: source.name.clone(),
+                    path_literal_base: module.path_literal_base.clone(),
+                    source: source.bytes.clone(),
+                })
+            })
+            .collect();
+        let import_seeds = self
+            .import_cache
+            .iter()
+            .filter_map(|(path, entry)| match entry {
+                ImportCacheEntry::Ready { value, .. } => Some((path.clone(), value.word().raw())),
+                ImportCacheEntry::Evaluating => None,
+            })
+            .collect();
+        HeapSnapshotManifest {
+            modules,
+            import_seeds,
+        }
+    }
+
+    /// Adopts a heap snapshot into this (fresh, serial) evaluator: reloads the
+    /// manifest modules, restores the image over the reloaded identity, swaps
+    /// the heap in, and seeds the import cache (step-4 W2 — the restore seam).
+    ///
+    /// Call before any evaluation: the current heap is replaced, so values it
+    /// already handed out would dangle. Import seeds insert with an incomplete
+    /// impure-input trace (`trace: None`), which conservatively disables
+    /// downstream force-cache trace completeness for evaluations that hit
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HeapSnapshotAdoptError::ParallelMode`] for a parallel
+    /// evaluator, [`HeapSnapshotAdoptError::ModuleReload`] when a manifest
+    /// module fails the front end, every [`EvalHeapSnapshotError`] restore
+    /// refusal (drift, malformed segments, re-intern failures), and
+    /// [`HeapSnapshotAdoptError::MalformedImportSeed`] for an invalid seed
+    /// word.
+    pub(crate) fn adopt_heap_snapshot(
+        &mut self,
+        manifest: &HeapSnapshotManifest,
+        image: &HeapImage,
+    ) -> Result<(), HeapSnapshotAdoptError> {
+        if self.shared.is_some() {
+            return Err(HeapSnapshotAdoptError::ParallelMode);
+        }
+        for module in &manifest.modules {
+            self.reload_snapshot_module(module)?;
+        }
+        // The resolver must see the RELOADED module table; symbols advanced
+        // during reloading, and the restore re-intern advances them further.
+        let identity = self.snapshot_code_identity();
+        let restored = EvalHeap::from_restored_heap_image_with_code_identity(
+            image,
+            &identity,
+            &mut self.symbols,
+        )?;
+        let old_heap = std::mem::replace(&mut self.heap, restored);
+        drop(old_heap);
+        for (path, word) in &manifest.import_seeds {
+            let word = CompressedValueWord::from_raw(*word)
+                .map_err(|_| HeapSnapshotAdoptError::MalformedImportSeed { path: path.clone() })?;
+            self.import_cache.insert(
+                path.clone(),
+                ImportCacheEntry::Ready {
+                    value: Value::from_word(word),
+                    trace: None,
+                    force_cache_trace_complete: false,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Reloads one manifest module through the fresh-import front end
+    /// (parse into the live symbol table, resolve, lower, annotate) without
+    /// evaluating it, skipping modules whose exact source is already loaded.
+    fn reload_snapshot_module(
+        &mut self,
+        module: &SnapshotManifestModule,
+    ) -> Result<(), HeapSnapshotAdoptError> {
+        let already_loaded =
+            self.modules.iter().any(|loaded| {
+                loaded.source.as_ref().is_some_and(|source| {
+                    source.name == module.name && source.bytes == module.source
+                }) && loaded.path_literal_base == module.path_literal_base
+            });
+        if already_loaded {
+            return Ok(());
+        }
+        let reload_error = |message: String| HeapSnapshotAdoptError::ModuleReload {
+            name: String::from_utf8_lossy(&module.name).into_owned(),
+            message,
+        };
+        // The serial fresh-import fast path (eval_load): move the live table
+        // into the parser and adopt the grown superset back afterwards.
+        let live_symbols = std::mem::take(&mut self.symbols);
+        let parsed = parse_bytes_with_symbols(&module.source, live_symbols)
+            .map_err(|error| reload_error(error.to_string()))?;
+        let resolved = resolve(parsed).map_err(|error| reload_error(error.to_string()))?;
+        let mut ir = nix_lower(resolved).map_err(|error| reload_error(error.to_string()))?;
+        let _ = annotate_import_ir(&mut ir);
+        self.symbols = std::mem::take(&mut ir.symbols);
+        self.modules.push(TreeWalkModule::new(
+            ir,
+            module.path_literal_base.clone(),
+            ForceCacheOptionsIdentity::new(&self.options),
+            Some(ModuleSource {
+                name: module.name.clone(),
+                bytes: module.source.clone(),
+            }),
+        ));
+        Ok(())
+    }
+}

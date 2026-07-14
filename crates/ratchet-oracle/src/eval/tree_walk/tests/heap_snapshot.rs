@@ -13,6 +13,7 @@ use crate::string::ContextKind;
 use crate::value::ValueTag;
 
 mod closures;
+mod production;
 
 /// A flattened, comparable projection of one string context element.
 type CtxElement = (ContextKind, Vec<u8>, Option<Vec<u8>>);
