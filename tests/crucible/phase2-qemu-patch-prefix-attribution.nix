@@ -218,6 +218,14 @@
       kind = "recorded";
       symbols = [];
     };
+    "0037-crucible-sim-freeze-warp-at-observation-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0038-crucible-sim-gate-rr-kick.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
