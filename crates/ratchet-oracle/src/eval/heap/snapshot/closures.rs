@@ -199,6 +199,7 @@ impl EvalHeap {
         payloads: &[ClosurePayload],
         frame_table: &RestoredFrameTable,
         resolver: &dyn LambdaCodeResolver,
+        remap: Option<&super::reintern::IdentityRemap>,
         seen: &mut HashSet<u32>,
     ) -> Result<(), EvalHeapSnapshotError> {
         let mut fixups: Vec<FlatEnvFixup> = Vec::new();
@@ -213,6 +214,7 @@ impl EvalHeap {
                 payload,
                 frame_table,
                 resolver,
+                remap,
                 &mut fixups,
                 &mut tail_checks,
             )?;
@@ -249,6 +251,7 @@ impl EvalHeap {
         payload: &ClosurePayload,
         frame_table: &RestoredFrameTable,
         resolver: &dyn LambdaCodeResolver,
+        remap: Option<&super::reintern::IdentityRemap>,
         fixups: &mut Vec<FlatEnvFixup>,
         tail_checks: &mut Vec<(ArenaIndex, FlatObjectKind, u32)>,
     ) -> Result<(), EvalHeapSnapshotError> {
@@ -401,6 +404,11 @@ impl EvalHeap {
             KIND_BUILTIN_ATTR_THUNK => {
                 let single_entry = read_bool(bytes, &mut cursor).ok_or_else(malformed)?;
                 let symbol = Symbol::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+                // W1 cross-evaluator re-intern of the raw diagnostic symbol.
+                let symbol = match remap.filter(|remap| !remap.is_identity()) {
+                    Some(remap) => remap.symbol(symbol).ok_or_else(malformed)?,
+                    None => symbol,
+                };
                 let version = read_length_prefixed(bytes, &mut cursor).ok_or_else(malformed)?;
                 if version.as_slice() != PINNED_NIX_VERSION {
                     return Err(EvalHeapSnapshotError::RegistryVersionMismatch {

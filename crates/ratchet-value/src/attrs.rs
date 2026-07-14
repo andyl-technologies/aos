@@ -326,6 +326,123 @@ impl FlatAttrs {
         rewritten
     }
 
+    /// Rewrites entry keys and position provenance through the supplied maps,
+    /// re-sorting the entry array and remapping both order permutations
+    /// (RFC-0007 doc 31 §1 step-4 W1 cross-evaluator re-interning).
+    ///
+    /// `map_symbol` rewrites an interned key id into the consuming
+    /// evaluator's symbol universe; returning `None` (an id outside the
+    /// captured table) aborts with `Err(())` and the attrset is left
+    /// untouched — the caller refuses the payload. `map_position_module`
+    /// rewrites a position's raw module id; returning `None` *degrades that
+    /// position to absent* instead of refusing: positions are diagnostic
+    /// provenance, and a module with no counterpart in the consuming
+    /// evaluator (the capturing evaluation's own root, for example) has no
+    /// honest position to report.
+    ///
+    /// Names are unchanged by re-interning, so the lexicographic iteration
+    /// ORDER of entries is preserved; but entries are stored sorted by
+    /// interned id and both permutations index storage slots, so the array is
+    /// re-sorted by the new ids and the permutations are composed with the
+    /// induced slot movement. Duplicate or non-strictly-increasing new ids
+    /// (only producible by a forged table with repeated names) also abort.
+    ///
+    /// The structural hash over this attrset is id-derived (it hashes entry
+    /// key ids, position module ids, and both permutations), so the caller
+    /// must recompute it through the safe header-update door afterwards.
+    ///
+    /// Owned storage rewrites through the `Vec`s. Flat storage rewrites the
+    /// object's inline runs in place, which is only sound while the caller
+    /// holds the payload exclusively: reach this method through the flat
+    /// store's `&mut self` payload resolution on a quiesced serial heap (the
+    /// heap-image restore pass), never from a shared borrow.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn reintern_entries(
+        &mut self,
+        map_symbol: &mut dyn FnMut(Symbol) -> Option<Symbol>,
+        map_position_module: &mut dyn FnMut(u32) -> Option<u32>,
+    ) -> Result<(), ()> {
+        let len = self.len();
+        // Stage the rewritten arrays in full before any in-place write, so a
+        // refusal leaves the attrset untouched.
+        let mut remapped: Vec<AttrEntry> = Vec::with_capacity(len);
+        for entry in self.entries() {
+            let key = map_symbol(entry.key).ok_or(())?;
+            let position = match &entry.position {
+                Some(position) => map_position_module(position.module).map(|module| AttrPosition {
+                    module,
+                    span: position.span,
+                }),
+                None => None,
+            };
+            remapped.push(AttrEntry {
+                key,
+                value: entry.value,
+                position,
+            });
+        }
+        // Slot permutation induced by re-sorting on the new ids:
+        // `order[new_slot] = old_slot`.
+        let mut order: Vec<u32> = (0..len as u32).collect();
+        order.sort_unstable_by_key(|&slot| remapped[slot as usize].key);
+        // Strictly increasing new ids (duplicates = forged repeated names).
+        for pair in order.windows(2) {
+            if remapped[pair[0] as usize].key >= remapped[pair[1] as usize].key {
+                return Err(());
+            }
+        }
+        let mut inverse = vec![0u32; len];
+        for (new_slot, &old_slot) in order.iter().enumerate() {
+            inverse[old_slot as usize] = new_slot as u32;
+        }
+        let sorted: Vec<AttrEntry> = order
+            .iter()
+            .map(|&old_slot| remapped[old_slot as usize].clone())
+            .collect();
+        let mut new_source: Vec<u32> = Vec::with_capacity(len);
+        for &slot in self.source_order() {
+            new_source.push(*inverse.get(slot as usize).ok_or(())?);
+        }
+        let mut new_iteration: Vec<u32> = Vec::with_capacity(len);
+        for &slot in self.iteration_order() {
+            new_iteration.push(*inverse.get(slot as usize).ok_or(())?);
+        }
+
+        match &mut self.storage {
+            AttrsStorage::Owned {
+                entries,
+                source_order,
+                iteration_order,
+            } => {
+                *entries = sorted;
+                *source_order = new_source;
+                *iteration_order = new_iteration;
+            }
+            AttrsStorage::Flat {
+                entries,
+                source_order,
+                iteration_order,
+            } => {
+                // SAFETY: this `&mut self` is derived from the flat store's
+                // exclusive payload resolution (the documented calling
+                // contract above), so no aliasing reference into any of the
+                // three inline runs exists for the borrow's duration, and the
+                // restore pass runs on a quiesced serial heap with no
+                // concurrent reader. The witnesses' construction contract
+                // covers the initialized, aligned, mapped runs, and every
+                // staged array has exactly the run's length.
+                unsafe {
+                    entries.as_mut_slice().clone_from_slice(&sorted);
+                    source_order.as_mut_slice().copy_from_slice(&new_source);
+                    iteration_order
+                        .as_mut_slice()
+                        .copy_from_slice(&new_iteration);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Creates a flat attrset from unsorted entries.
     ///
     /// Entries are sorted by interned symbol id for binary-search selection. The

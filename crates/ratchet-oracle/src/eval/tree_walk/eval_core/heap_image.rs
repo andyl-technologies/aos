@@ -45,6 +45,10 @@ impl LambdaCodeFingerprints for TreeWalkCodeIdentity {
     fn fingerprint(&self, module: EvalModuleId) -> Option<CacheExprSourceHash> {
         self.fingerprints.get(module.index()).copied().flatten()
     }
+
+    fn module_count(&self) -> usize {
+        self.fingerprints.len()
+    }
 }
 
 impl LambdaCodeResolver for TreeWalkCodeIdentity {

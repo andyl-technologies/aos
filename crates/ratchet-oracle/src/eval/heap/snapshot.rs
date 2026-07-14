@@ -37,6 +37,7 @@ mod closures;
 mod collapse;
 mod env_frames;
 mod owned_data;
+mod reintern;
 mod wire;
 
 use wire::{
@@ -49,6 +50,8 @@ pub(crate) use collapse::ForcedThunkCollapseReport;
 pub(crate) use env_frames::{CapturedFrameTable, RestoredFrameTable};
 
 use super::closure_code_ref::{LambdaCodeFingerprints, LambdaCodeResolver};
+use crate::syntax::SymbolTable;
+use reintern::IdentityRemap;
 
 use ratchet_value::heap::{
     ArenaIndex, ContextPayload, HeapImage, ListPayload, OwnedAttrsPayload, OwnedStringPayload,
@@ -102,14 +105,16 @@ impl EvalHeap {
     pub(crate) fn capture_heap_image_with_code_identity(
         &self,
         code: &dyn LambdaCodeFingerprints,
+        symbols: &SymbolTable,
     ) -> Result<HeapImage, EvalHeapSnapshotError> {
-        self.capture_heap_image_inner(Some(code))
+        self.capture_heap_image_inner(Some((code, symbols)))
     }
 
-    /// Shared capture core; `code` enables the closure serializer.
+    /// Shared capture core; `code` enables the closure serializer and carries
+    /// the capture-time symbol table for the v9 identity tables.
     fn capture_heap_image_inner(
         &self,
-        code: Option<&dyn LambdaCodeFingerprints>,
+        code: Option<(&dyn LambdaCodeFingerprints, &SymbolTable)>,
     ) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
@@ -241,7 +246,23 @@ impl EvalHeap {
         }
 
         let (frame_payloads, closure_payloads) = match code {
-            Some(code) => self.capture_closure_payloads(code)?,
+            Some((code, _)) => self.capture_closure_payloads(code)?,
+            None => (Vec::new(), Vec::new()),
+        };
+        // The v9 identity tables: raw symbol and module ids in the payloads
+        // above re-intern / re-resolve through these at restore (step-4 W1).
+        let (symbol_names, module_fingerprints) = match code {
+            Some((code, symbols)) => {
+                let names: Vec<Vec<u8>> = symbols.symbols().to_vec();
+                let fingerprints: Vec<[u8; 32]> = (0..code.module_count())
+                    .map(|index| {
+                        code.fingerprint(EvalModuleId::new(index as u32))
+                            .map(|hash| hash.as_durable_hash().as_bytes())
+                            .unwrap_or([0u8; 32])
+                    })
+                    .collect();
+                (names, fingerprints)
+            }
             None => (Vec::new(), Vec::new()),
         };
 
@@ -255,6 +276,8 @@ impl EvalHeap {
         image.closure_payloads = closure_payloads;
         image.attrs_payloads = attrs_payloads;
         image.string_payloads = string_payloads;
+        image.symbol_names = symbol_names;
+        image.module_fingerprints = module_fingerprints;
 
         if std::env::var_os(SNAPSHOT_VERIFY_ENV).is_some() {
             self.verify_relocation_completeness(&image)?;
@@ -320,25 +343,50 @@ impl EvalHeap {
     pub(crate) fn from_restored_heap_image_with_code_identity(
         image: &HeapImage,
         resolver: &dyn LambdaCodeResolver,
+        symbols: &mut SymbolTable,
     ) -> Result<Self, EvalHeapSnapshotError> {
-        Self::from_restored_heap_image_inner(image, Some(resolver))
+        Self::from_restored_heap_image_inner(image, Some((resolver, symbols)))
     }
 
-    /// Shared restore core; `resolver` enables the closure restore path.
+    /// Shared restore core; `resolver` enables the closure restore path and
+    /// carries the consuming evaluator's symbol table for the step-4 W1
+    /// cross-evaluator re-intern.
     fn from_restored_heap_image_inner(
         image: &HeapImage,
-        resolver: Option<&dyn LambdaCodeResolver>,
+        resolver: Option<(&dyn LambdaCodeResolver, &mut SymbolTable)>,
     ) -> Result<Self, EvalHeapSnapshotError> {
-        // Without a resolver the frame table and closure payloads have no
-        // consumer; silently dropping them would restore closures without
-        // their captured environments (or leave stale dumped payloads live).
+        // Without a resolver the frame table, closure payloads, and identity
+        // tables have no consumer; silently dropping them would restore
+        // closures without their captured environments, or leave raw symbol
+        // ids unrewritten in the consuming evaluator.
         if resolver.is_none()
-            && !(image.frame_payloads.is_empty() && image.closure_payloads.is_empty())
+            && !(image.frame_payloads.is_empty()
+                && image.closure_payloads.is_empty()
+                && image.symbol_names.is_empty())
         {
             return Err(EvalHeapSnapshotError::UnexpectedFramePayloads {
-                count: image.frame_payloads.len() + image.closure_payloads.len(),
+                count: image.frame_payloads.len()
+                    + image.closure_payloads.len()
+                    + image.symbol_names.len(),
             });
         }
+        // Build the W1 identity rewrite maps up front: symbol names re-intern
+        // into the consuming table, and module fingerprints re-resolve
+        // through the code-identity resolver (refuse-on-drift when
+        // referenced). The `&mut SymbolTable` borrow ends here; the resolver
+        // reference stays live for the closure restore below.
+        let (resolver, remap) = match resolver {
+            Some((resolver, symbols)) => {
+                let remap = IdentityRemap::build(
+                    &image.symbol_names,
+                    &image.module_fingerprints,
+                    resolver,
+                    symbols,
+                )?;
+                (Some(resolver), Some(remap))
+            }
+            None => (None, None),
+        };
         let arena = restore_reservation(image).map_err(EvalHeapSnapshotError::Snapshot)?;
         let new_base = arena
             .arena_domain_id()
@@ -359,6 +407,9 @@ impl EvalHeap {
         // Indices of the strings/paths whose inline byte witness was rebased —
         // exactly the objects a context payload may re-key against.
         let mut relocated_strings: HashSet<u32> = HashSet::new();
+        // Arena-inline attrsets rebased below; the W1 re-intern pass rewrites
+        // their entry keys/positions once the rewrite maps prove non-identity.
+        let mut relocated_attrs: Vec<NonNull<HeapObject>> = Vec::new();
 
         for entry in &image.relocations {
             if !seen.insert(entry.index) {
@@ -376,14 +427,24 @@ impl EvalHeap {
                         .rebase_witnesses(delta);
                     relocated_strings.insert(entry.index);
                 }
-                FlatObjectKind::Attrs => heap
-                    .flat_attrs
-                    .resolve_mut(ptr, FlatObjectKind::Attrs)
-                    .map_err(EvalHeapSnapshotError::FlatResolve)?
-                    .attrs
-                    .rebase_witnesses(delta),
+                FlatObjectKind::Attrs => {
+                    heap.flat_attrs
+                        .resolve_mut(ptr, FlatObjectKind::Attrs)
+                        .map_err(EvalHeapSnapshotError::FlatResolve)?
+                        .attrs
+                        .rebase_witnesses(delta);
+                    relocated_attrs.push(ptr);
+                }
                 kind => return Err(EvalHeapSnapshotError::UnknownKind { kind: kind as u8 }),
             }
+        }
+
+        // W1 cross-evaluator re-intern of arena-inline attrsets: rewrite
+        // entry keys and position provenance into the consuming evaluator's
+        // id spaces, reset foreign shape projections, and recompute the
+        // id-derived structural hashes (see `reintern_relocated_attrs`).
+        if let Some(remap) = remap.as_ref().filter(|remap| !remap.is_identity()) {
+            heap.reintern_relocated_attrs(&relocated_attrs, remap)?;
         }
 
         for payload in &image.list_payloads {
@@ -420,7 +481,7 @@ impl EvalHeap {
                     index: payload.index,
                 });
             }
-            heap.restore_primop_payload(payload)?;
+            heap.restore_primop_payload(payload, remap.as_ref())?;
         }
 
         // Over-threshold attrsets and strings carry owned arrays the dumped
@@ -431,7 +492,7 @@ impl EvalHeap {
                     index: payload.index,
                 });
             }
-            heap.restore_owned_attrs_payload(payload)?;
+            heap.restore_owned_attrs_payload(payload, remap.as_ref())?;
         }
         for payload in &image.string_payloads {
             if !seen.insert(payload.index) {
@@ -450,6 +511,7 @@ impl EvalHeap {
                 &image.closure_payloads,
                 &frame_table,
                 resolver,
+                remap.as_ref(),
                 &mut seen,
             )?;
         }
@@ -474,12 +536,13 @@ impl EvalHeap {
     fn restore_primop_payload(
         &mut self,
         payload: &PrimopPayload,
+        remap: Option<&IdentityRemap>,
     ) -> Result<(), EvalHeapSnapshotError> {
         let ptr = self
             .flat_arena
             .pointer_for_index(ArenaIndex::new(payload.index))
             .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
-        let primop = decode_primop(&payload.primop_bytes)?;
+        let primop = decode_primop(&payload.primop_bytes, remap)?;
         self.flat_closures
             .restore_payload(
                 ptr,
@@ -760,6 +823,13 @@ pub enum EvalHeapSnapshotError {
     CodeFingerprintUnavailable {
         /// The raw unfingerprintable module id.
         module: u32,
+    },
+    /// A symbol name from the image's identity table could not be interned
+    /// into the consuming evaluator's symbol table.
+    #[error("image symbol {symbol} failed to re-intern into the consuming table")]
+    SymbolInternFailed {
+        /// The capture-time symbol id whose name failed to intern.
+        symbol: u32,
     },
     /// A closure payload's bytes did not decode, referenced an out-of-table
     /// frame, carried a trailing run, or failed its flat-capture re-signing.

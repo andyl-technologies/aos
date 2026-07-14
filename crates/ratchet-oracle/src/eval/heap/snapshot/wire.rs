@@ -188,7 +188,10 @@ pub(super) fn encode_primop(primop: &EvalPrimOp) -> Vec<u8> {
 /// when a referenced builtin name is not in the registry, and
 /// [`EvalHeapSnapshotError::MalformedPrimopPayload`] on truncated or invalid
 /// bytes.
-pub(super) fn decode_primop(bytes: &[u8]) -> Result<EvalPrimOp, EvalHeapSnapshotError> {
+pub(super) fn decode_primop(
+    bytes: &[u8],
+    remap: Option<&super::reintern::IdentityRemap>,
+) -> Result<EvalPrimOp, EvalHeapSnapshotError> {
     let malformed = || EvalHeapSnapshotError::MalformedPrimopPayload {
         byte_len: bytes.len(),
     };
@@ -201,6 +204,13 @@ pub(super) fn decode_primop(bytes: &[u8]) -> Result<EvalPrimOp, EvalHeapSnapshot
         });
     }
     let symbol = Symbol::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+    // W1 cross-evaluator re-intern: the diagnostic symbol and each applied
+    // argument's module provenance are raw capture-time ids; a non-identity
+    // remap rewrites them (out-of-table or drifted ids refuse).
+    let symbol = match remap.filter(|remap| !remap.is_identity()) {
+        Some(remap) => remap.symbol(symbol).ok_or_else(malformed)?,
+        None => symbol,
+    };
     let builtin = match bytes.get(cursor).copied() {
         Some(1) => {
             cursor += 1;
@@ -217,6 +227,10 @@ pub(super) fn decode_primop(bytes: &[u8]) -> Result<EvalPrimOp, EvalHeapSnapshot
     let mut args = Vec::new();
     for _ in 0..arg_count {
         let module = EvalModuleId::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
+        let module = match remap.filter(|remap| !remap.is_identity()) {
+            Some(remap) => remap.module(module).ok_or_else(malformed)?,
+            None => module,
+        };
         let id = IrId::new(read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?);
         let start = read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?;
         let end = read_le_u32(bytes, &mut cursor).ok_or_else(malformed)?;

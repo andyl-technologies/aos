@@ -82,6 +82,12 @@ pub(crate) trait LambdaCodeFingerprints {
     /// Returns the content fingerprint of a live module, or `None` when the
     /// module is unknown or unfingerprintable.
     fn fingerprint(&self, module: EvalModuleId) -> Option<CacheExprSourceHash>;
+
+    /// Returns the number of live modules the context fingerprints, so
+    /// capture can dump the whole `module id -> fingerprint` table (step-4
+    /// W1: raw module ids in attr positions and primop provenance re-resolve
+    /// through it at restore).
+    fn module_count(&self) -> usize;
 }
 
 /// Byte length of a serialized [`CodeNodeRef`]: `fingerprint(32) | node(4)`.

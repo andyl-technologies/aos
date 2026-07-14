@@ -53,7 +53,7 @@ fn restored_lambda_is_callable_through_code_identity() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         // Chunked fallback (no reservation) is not snapshottable here.
@@ -72,8 +72,12 @@ fn restored_lambda_is_callable_through_code_identity() {
     drop(old_heap);
 
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("closure image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("closure image restores");
 
     // Apply the RESTORED lambda: the call resolves its code by fingerprint,
     // reads its captured environment, and forces the suspended `a` thunk
@@ -117,7 +121,7 @@ fn collapse_then_capture_round_trips_a_forced_capture() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -128,8 +132,12 @@ fn collapse_then_capture_round_trips_a_forced_capture() {
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("collapsed image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("collapsed image restores");
 
     let result = evaluator
         .apply_value(ir.root, root_span, root, Value::int(41))
@@ -160,7 +168,7 @@ fn forced_thunk_captures_as_collapsed_payload_without_prepass() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -171,8 +179,12 @@ fn forced_thunk_captures_as_collapsed_payload_without_prepass() {
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("forced-thunk image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("forced-thunk image restores");
 
     let result = evaluator
         .apply_value(ir.root, root_span, root, Value::int(41))
@@ -198,7 +210,7 @@ fn restore_rejects_truncated_collapsed_thunk_bytes() {
     let identity = evaluator.snapshot_code_identity();
     let mut image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -215,11 +227,16 @@ fn restore_rejects_truncated_collapsed_thunk_bytes() {
     };
     payload.closure_bytes.truncate(6);
     let bytes = image.to_bytes();
-    drop(evaluator);
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
 
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
     assert!(matches!(
-        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity),
+        EvalHeap::from_restored_heap_image_with_code_identity(
+            &reloaded,
+            &identity,
+            &mut evaluator.symbols
+        ),
         Err(EvalHeapSnapshotError::MalformedClosurePayload { .. })
     ));
 }
@@ -248,7 +265,7 @@ fn owned_storage_attrs_round_trip_via_payload() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -263,8 +280,12 @@ fn owned_storage_attrs_round_trip_via_payload() {
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("owned-attrs image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("owned-attrs image restores");
 
     let result = evaluator
         .apply_value(ir.root, root_span, root, Value::int(1))
@@ -303,7 +324,7 @@ fn owned_storage_string_round_trips_via_payload() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -318,8 +339,12 @@ fn owned_storage_string_round_trips_via_payload() {
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("owned-string image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("owned-string image restores");
 
     let result = evaluator
         .apply_value(ir.root, root_span, root, Value::int(0))
@@ -355,7 +380,7 @@ fn restore_rejects_malformed_owned_attrs_and_string_bytes() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -363,7 +388,8 @@ fn restore_rejects_malformed_owned_attrs_and_string_bytes() {
     };
     assert!(!image.attrs_payloads.is_empty());
     assert!(!image.string_payloads.is_empty());
-    drop(evaluator);
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
 
     // A permutation slot at or above the entry count refuses (bounds lie).
     let mut bad_attrs = image.clone();
@@ -371,7 +397,11 @@ fn restore_rejects_malformed_owned_attrs_and_string_bytes() {
     bad_attrs.attrs_payloads[0].attrs_bytes[len - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
     let reloaded = HeapImage::from_bytes(&bad_attrs.to_bytes()).expect("image parses");
     assert!(matches!(
-        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity),
+        EvalHeap::from_restored_heap_image_with_code_identity(
+            &reloaded,
+            &identity,
+            &mut evaluator.symbols
+        ),
         Err(EvalHeapSnapshotError::MalformedAttrsPayload { .. })
     ));
 
@@ -380,7 +410,11 @@ fn restore_rejects_malformed_owned_attrs_and_string_bytes() {
     bad_string.string_payloads[0].string_bytes.truncate(3);
     let reloaded = HeapImage::from_bytes(&bad_string.to_bytes()).expect("image parses");
     assert!(matches!(
-        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity),
+        EvalHeap::from_restored_heap_image_with_code_identity(
+            &reloaded,
+            &identity,
+            &mut evaluator.symbols
+        ),
         Err(EvalHeapSnapshotError::MalformedStringPayload { .. })
     ));
 }
@@ -425,7 +459,7 @@ in
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -444,8 +478,12 @@ in
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("mini-prelude image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("mini-prelude image restores");
 
     // Drive the restored prelude: the application forces restored suspended
     // thunks, resolves `with`-scope captures, applies curried restored
@@ -518,7 +556,7 @@ fn snapshot_prelude_probe() {
     let identity = evaluator.snapshot_code_identity();
     let image = evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
         .expect("real-prelude capture succeeds (zero refused)");
     eprintln!(
         "probe: captured relocs={} lists={} contexts={} primops={} frames={} closures={}",
@@ -535,8 +573,12 @@ fn snapshot_prelude_probe() {
     let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
     drop(old_heap);
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
-    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity)
-        .expect("real-prelude image restores");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("real-prelude image restores");
     eprintln!("probe: restored into a fresh mapping");
 
     let result = evaluator
@@ -575,7 +617,7 @@ fn restore_refuses_drifted_lambda_code() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -588,7 +630,7 @@ fn restore_refuses_drifted_lambda_code() {
     // must refuse to rebind the lambda to drifted IR, never resolve it.
     let drifted_source = "let a = 2; in x: x * a";
     let drifted_ir = lower(drifted_source);
-    let drifted = TreeWalk::with_options_and_source(
+    let mut drifted = TreeWalk::with_options_and_source(
         &drifted_ir,
         TreeWalkOptions::default(),
         b"snapshot-drift-b".to_vec(),
@@ -598,7 +640,11 @@ fn restore_refuses_drifted_lambda_code() {
 
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
     assert!(matches!(
-        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &drifted_identity),
+        EvalHeap::from_restored_heap_image_with_code_identity(
+            &reloaded,
+            &drifted_identity,
+            &mut drifted.symbols
+        ),
         Err(EvalHeapSnapshotError::ClosureCodeDrift { .. })
     ));
 }
@@ -617,7 +663,7 @@ fn restore_rejects_malformed_closure_bytes() {
     let identity = evaluator.snapshot_code_identity();
     let mut image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -628,11 +674,16 @@ fn restore_rejects_malformed_closure_bytes() {
     // An unknown closure kind tag refuses (byte 4 follows the own-tail word).
     image.closure_payloads[0].closure_bytes[4] = 0xfe;
     let bytes = image.to_bytes();
-    drop(evaluator);
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
 
     let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
     assert!(matches!(
-        EvalHeap::from_restored_heap_image_with_code_identity(&reloaded, &identity),
+        EvalHeap::from_restored_heap_image_with_code_identity(
+            &reloaded,
+            &identity,
+            &mut evaluator.symbols
+        ),
         Err(EvalHeapSnapshotError::MalformedClosurePayload { .. })
     ));
 }
@@ -651,7 +702,7 @@ fn plain_restore_refuses_an_image_with_closures() {
     let identity = evaluator.snapshot_code_identity();
     let image = match evaluator
         .heap()
-        .capture_heap_image_with_code_identity(&identity)
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
     {
         Ok(image) => image,
         Err(EvalHeapSnapshotError::Snapshot(_)) => return,
@@ -667,4 +718,122 @@ fn plain_restore_refuses_an_image_with_closures() {
         EvalHeap::from_restored_heap_image(&reloaded),
         Err(EvalHeapSnapshotError::UnexpectedFramePayloads { .. })
     ));
+}
+
+/// Step-4 W1 acceptance: cross-evaluator symbol re-interning. Evaluator A
+/// captures a forced, collapsed (closure-free) attrset; a FRESH evaluator B —
+/// whose root expression interns a *different* symbol population first, so
+/// the two id spaces provably diverge — restores it. Selection by name and
+/// `attrNames` through B's own symbol table must match A's byte-for-byte:
+/// only the W1 re-intern of entry keys (and the induced entry re-sort and
+/// permutation recompose) can make that true.
+#[test]
+fn reinterned_attrs_resolve_in_a_fresh_evaluator() {
+    const CAPTURE_SOURCE: &str =
+        "let s = { mango = 1; alpha = 2; zebra = 3; }; in builtins.deepSeq s s";
+    let ir = lower(CAPTURE_SOURCE);
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-reintern-a".to_vec(),
+        CAPTURE_SOURCE.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("capture source evaluates");
+    assert_eq!(root.tag(), ValueTag::Attrs);
+    // Collapse the forced binding thunk so the image is closure-free: W1's
+    // acceptance isolates symbol identity from module identity (W2).
+    evaluator
+        .heap
+        .collapse_forced_thunks()
+        .expect("forced-thunk collapse succeeds");
+    let identity = evaluator.snapshot_code_identity();
+    let image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("reintern capture failed: {other}"),
+    };
+    assert!(
+        !image.symbol_names.is_empty(),
+        "the v9 image must carry the capture-time symbol table"
+    );
+    let bytes = image.to_bytes();
+    let expected_names: Vec<Vec<u8>> = {
+        let attrs = evaluator.heap().get_attrs(root).expect("root is attrs");
+        attrs
+            .iter_lexicographic()
+            .map(|entry| {
+                evaluator
+                    .symbols
+                    .resolve(entry.key)
+                    .expect("capture symbol resolves")
+                    .to_vec()
+            })
+            .collect()
+    };
+    drop(evaluator);
+
+    // A fresh evaluator whose root interns a disjoint symbol population
+    // first, forcing the id spaces apart before the restore.
+    const FRESH_SOURCE: &str = "let qq = 1; rr = 2; ss = 3; tt = 4; uu = 5; in qq";
+    let fresh_ir = lower(FRESH_SOURCE);
+    let mut fresh = TreeWalk::with_options_and_source(
+        &fresh_ir,
+        TreeWalkOptions::default(),
+        b"snapshot-reintern-b".to_vec(),
+        FRESH_SOURCE.as_bytes().to_vec(),
+    );
+    fresh.eval_root().expect("fresh source evaluates");
+    let fresh_identity = fresh.snapshot_code_identity();
+    let old_heap = std::mem::replace(&mut fresh.heap, EvalHeap::new());
+    drop(old_heap);
+
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    fresh.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &fresh_identity,
+        &mut fresh.symbols,
+    )
+    .expect("cross-evaluator restore succeeds");
+
+    // Selection by NAME through the fresh evaluator's own symbol table: the
+    // key ids in the restored entries must be the fresh table's ids.
+    let attrs = fresh
+        .heap()
+        .get_attrs(root)
+        .expect("restored root is attrs");
+    for (name, want) in [
+        (&b"mango"[..], 1i64),
+        (&b"alpha"[..], 2),
+        (&b"zebra"[..], 3),
+    ] {
+        let symbol = fresh
+            .symbols
+            .lookup(name)
+            .expect("restored name is interned in the fresh table");
+        let entry = attrs
+            .entries_by_symbol()
+            .binary_search_by(|entry| entry.key.cmp(&symbol))
+            .map(|slot| &attrs.entries_by_symbol()[slot])
+            .unwrap_or_else(|_| panic!("selection by fresh id finds {:?}", name));
+        assert_eq!(entry.value.as_int(), Ok(want));
+    }
+    // attrNames order (lexicographic by NAME) is byte-identical to A's.
+    let restored_names: Vec<Vec<u8>> = attrs
+        .iter_lexicographic()
+        .map(|entry| {
+            fresh
+                .symbols
+                .resolve(entry.key)
+                .expect("restored symbol resolves in the fresh table")
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(restored_names, expected_names);
+    assert_eq!(
+        restored_names,
+        vec![b"alpha".to_vec(), b"mango".to_vec(), b"zebra".to_vec()]
+    );
 }

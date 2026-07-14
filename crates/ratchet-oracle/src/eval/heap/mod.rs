@@ -661,6 +661,19 @@ impl EvalHeapAttrsMetadata {
         self.projected_shape
     }
 
+    /// Returns this metadata with the process-local projected shape cleared
+    /// (RFC-0007 doc 31 §1 step-4 cross-evaluator restore: shape ids are
+    /// per-evaluator, so a foreign image's projections reset to unshaped and
+    /// selects fall back to the flat path).
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) const fn without_projected_shape(self) -> Self {
+        Self {
+            shape: self.shape,
+            projected_shape: None,
+            repr: self.repr,
+        }
+    }
+
     /// Returns the projected backing representation for the attrset.
     pub const fn repr(self) -> AttrSetReprKind {
         self.repr

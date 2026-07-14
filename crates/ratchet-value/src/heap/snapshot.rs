@@ -33,6 +33,8 @@
 //!   closure_count: u64     = number of closure-payload segments
 //!   attrs_count:  u64      = number of owned-attrs payload segments
 //!   string_count: u64      = number of owned-string payload segments
+//!   symbol_count: u64      = number of symbol-name entries
+//!   module_count: u64      = number of module-fingerprint entries
 //!   low:          low_len bytes   (the permanent lane, offset 0)
 //!   high:         high_len bytes  (the rewindable lane, ending at `capacity`)
 //!   relocs:       reloc_count * (index:u32 | kind:u8)
@@ -43,6 +45,9 @@
 //!   closures:     closure_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   attrs:        attrs_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   strings:      string_count * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   symbols:      symbol_count * (len:u32 | name bytes), in symbol-id order
+//!   modules:      module_count * (fingerprint:32), in module-id order
+//!                 (all-zero bytes = the module has no content fingerprint)
 //!   digest:       u64      = xxh3-64 of every preceding byte (integrity guard)
 //! ```
 //!
@@ -80,16 +85,20 @@ pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 /// (step-3 increment 3); v8 adds the owned-attrs and owned-string payload
 /// segments that carry over-threshold attrsets' owned entry/permutation
 /// arrays and over-threshold strings' owned byte buffers, which live outside
-/// the reservation and would otherwise restore dangling (step-3 increment 5).
-pub const IMAGE_VERSION: u32 = 8;
+/// the reservation and would otherwise restore dangling (step-3 increment 5);
+/// v9 adds the symbol-name table and the module-fingerprint table that key
+/// the image's raw symbol and module ids for cross-evaluator re-interning
+/// (step-4 W1).
+pub const IMAGE_VERSION: u32 = 9;
 
 /// Byte length of the fixed image header preceding the lane, relocation, and
 /// index-keyed payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
 /// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8) |
-/// frame_count(8) | closure_count(8) | attrs_count(8) | string_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+/// frame_count(8) | closure_count(8) | attrs_count(8) | string_count(8) |
+/// symbol_count(8) | module_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
@@ -300,6 +309,17 @@ pub struct HeapImage {
     /// Each over-threshold string's owned byte buffer (plus context); filled
     /// by the `EvalHeap`-level capture and rebuilt as an owned string on load.
     pub string_payloads: Vec<OwnedStringPayload>,
+    /// The capture-time symbol-name table in id order (step-4 W1): raw symbol
+    /// ids in the image (attrs entry keys, primop and builtin-attr symbols)
+    /// index this table, and restore re-interns each name into the consuming
+    /// evaluator's table to build the id rewrite map.
+    pub symbol_names: Vec<Vec<u8>>,
+    /// The capture-time module content-fingerprint table in module-id order
+    /// (step-4 W1): raw module ids in the image (attr positions, primop
+    /// applied-argument provenance) index this table, and restore re-resolves
+    /// each fingerprint against the consuming evaluator's module table. An
+    /// all-zero fingerprint records a module with no content identity.
+    pub module_fingerprints: Vec<[u8; 32]>,
 }
 
 impl HeapImage {
@@ -363,6 +383,8 @@ impl HeapImage {
                 .map(|p| p.string_bytes.len())
                 .collect::<Vec<_>>(),
         );
+        let symbol_bytes: usize = self.symbol_names.iter().map(|name| 4 + name.len()).sum();
+        let module_bytes = self.module_fingerprints.len() * 32;
         let mut out = Vec::with_capacity(
             HEADER_LEN
                 + self.low.len()
@@ -375,6 +397,8 @@ impl HeapImage {
                 + closure_bytes
                 + attrs_bytes
                 + string_bytes
+                + symbol_bytes
+                + module_bytes
                 + 8,
         );
         out.extend_from_slice(&IMAGE_MAGIC);
@@ -392,6 +416,8 @@ impl HeapImage {
         out.extend_from_slice(&(self.closure_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.attrs_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.string_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.symbol_names.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.module_fingerprints.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
@@ -418,6 +444,13 @@ impl HeapImage {
         }
         for payload in &self.string_payloads {
             write_indexed_payload(&mut out, payload.index, &payload.string_bytes);
+        }
+        for name in &self.symbol_names {
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name);
+        }
+        for fingerprint in &self.module_fingerprints {
+            out.extend_from_slice(fingerprint);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -460,6 +493,8 @@ impl HeapImage {
         let closure_count = u64::from_le_bytes(read8(bytes, 88)) as usize;
         let attrs_count = u64::from_le_bytes(read8(bytes, 96)) as usize;
         let string_count = u64::from_le_bytes(read8(bytes, 104)) as usize;
+        let symbol_count = u64::from_le_bytes(read8(bytes, 112)) as usize;
+        let module_count = u64::from_le_bytes(read8(bytes, 120)) as usize;
 
         // Bound the fixed-width prefix (lanes + relocation table + each indexed
         // segment's fixed header) before parsing; each segment's variable bytes
@@ -566,6 +601,48 @@ impl HeapImage {
             });
         }
 
+        // Symbol names: each is length-prefixed; the count-derived fixed part
+        // (4 bytes per entry) was bounded above, and each name's variable
+        // bytes are checked as the cursor advances.
+        let mut symbol_names = Vec::with_capacity(symbol_count.min(bytes.len() / 4));
+        for _ in 0..symbol_count {
+            if cursor + 4 > bytes.len() {
+                return Err(SnapshotError::Truncated {
+                    needed: cursor + 4,
+                    got: bytes.len(),
+                });
+            }
+            let len = u32::from_le_bytes(read4(bytes, cursor)) as usize;
+            cursor += 4;
+            let end = cursor.checked_add(len).ok_or(SnapshotError::Truncated {
+                needed: usize::MAX,
+                got: bytes.len(),
+            })?;
+            if bytes.len() < end + 8 {
+                return Err(SnapshotError::Truncated {
+                    needed: end + 8,
+                    got: bytes.len(),
+                });
+            }
+            symbol_names.push(bytes[cursor..end].to_vec());
+            cursor = end;
+        }
+
+        let mut module_fingerprints = Vec::with_capacity(module_count.min(bytes.len() / 32));
+        for _ in 0..module_count {
+            let end = cursor + 32;
+            if bytes.len() < end + 8 {
+                return Err(SnapshotError::Truncated {
+                    needed: end + 8,
+                    got: bytes.len(),
+                });
+            }
+            let mut fingerprint = [0u8; 32];
+            fingerprint.copy_from_slice(&bytes[cursor..end]);
+            module_fingerprints.push(fingerprint);
+            cursor = end;
+        }
+
         let digest_start = cursor;
         let expected = xxh3_64(&bytes[..digest_start]);
         let actual = u64::from_le_bytes(read8(bytes, digest_start));
@@ -587,6 +664,8 @@ impl HeapImage {
             closure_payloads,
             attrs_payloads,
             string_payloads,
+            symbol_names,
+            module_fingerprints,
         })
     }
 }
@@ -655,6 +734,8 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         closure_payloads: Vec::new(),
         attrs_payloads: Vec::new(),
         string_payloads: Vec::new(),
+        symbol_names: Vec::new(),
+        module_fingerprints: Vec::new(),
     })
 }
 
@@ -906,6 +987,8 @@ mod tests {
                 index: 56,
                 string_bytes: vec![3, 4, 5],
             }],
+            symbol_names: vec![b"alpha".to_vec()],
+            module_fingerprints: vec![[7u8; 32]],
         };
         let good = image.to_bytes();
 
@@ -970,6 +1053,8 @@ mod tests {
                 index: 56,
                 string_bytes: vec![8; 4],
             }],
+            symbol_names: vec![b"alpha".to_vec(), b"".to_vec(), b"zeta".to_vec()],
+            module_fingerprints: vec![[0u8; 32], [9u8; 32]],
         };
         let parsed = HeapImage::from_bytes(&image.to_bytes()).expect("wire image parses");
         assert_eq!(parsed, image);

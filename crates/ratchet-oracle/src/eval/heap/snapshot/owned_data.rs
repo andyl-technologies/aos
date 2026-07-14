@@ -101,6 +101,7 @@ impl EvalHeap {
     pub(super) fn restore_owned_attrs_payload(
         &mut self,
         payload: &OwnedAttrsPayload,
+        remap: Option<&super::reintern::IdentityRemap>,
     ) -> Result<(), EvalHeapSnapshotError> {
         let index = payload.index;
         let malformed = || EvalHeapSnapshotError::MalformedAttrsPayload { index };
@@ -172,13 +173,36 @@ impl EvalHeap {
             .map_err(EvalHeapSnapshotError::FlatResolve)?
             .payload()
             .metadata;
-        let attrs = FlatAttrs::from_restored_parts(entries, source_order, iteration_order);
+        let mut attrs = FlatAttrs::from_restored_parts(entries, source_order, iteration_order);
+        // W1 cross-evaluator re-intern: owned-storage attrsets take the same
+        // key/position rewrite as arena-inline entries (the dangling-owned-
+        // storage lesson: every storage class gets the explicit decision),
+        // followed by the same foreign-shape reset and structural-hash
+        // recompute — the hash is id-derived over keys, position modules,
+        // metadata, and both permutations.
+        let metadata = match remap.filter(|remap| !remap.is_identity()) {
+            Some(remap) => {
+                attrs
+                    .reintern_entries(&mut |symbol| remap.symbol(symbol), &mut |module| {
+                        remap
+                            .module(crate::eval::module::EvalModuleId::new(module))
+                            .map(|new| new.as_u32())
+                    })
+                    .map_err(|()| EvalHeapSnapshotError::MalformedAttrsPayload { index })?;
+                metadata.without_projected_shape()
+            }
+            None => metadata,
+        };
+        let hash = super::super::arena::attrs_structural_hash(metadata, &attrs);
         self.flat_attrs
             .restore_payload(
                 ptr,
                 FlatObjectKind::Attrs,
                 super::super::FlatAttrsPayload { metadata, attrs },
             )
+            .map_err(EvalHeapSnapshotError::FlatResolve)?;
+        self.flat_attrs
+            .update_structural_hash(ptr, FlatObjectKind::Attrs, hash.raw())
             .map_err(EvalHeapSnapshotError::FlatResolve)
     }
 

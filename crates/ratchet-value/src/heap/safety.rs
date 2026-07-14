@@ -397,6 +397,14 @@ mod tests {
         // sites exercising the reviewed `RegionPopHandoff` operation from
         // tests, with their SAFETY comments intact. No unsafe operation was
         // added or changed.
+        // ../attrs.rs count 1 -> 2 (doc 31 §1 step-4 W1 re-intern): a second
+        // reviewed call site of `FlatSlice::as_mut_slice` in
+        // `FlatAttrs::reintern_entries` — one multi-line unsafe block writing
+        // the staged re-sorted entry array and both recomposed permutations
+        // back into the attrset's three inline runs, under the same
+        // exclusive-payload-resolution contract as `rewrite_entry_values`.
+        // All staged arrays are validated to the runs' exact lengths before
+        // the block; under `FlatObjectPayloadAccess`.
         // flat/slice.rs count 5 -> 7 + ../attrs.rs count 0 -> 1 (doc 31 §1
         // step-3 forced-thunk collapse): `FlatSlice::as_mut_slice` is a new
         // unsafe fn (one `unsafe fn` line with `# Safety` docs, one interior
@@ -410,7 +418,7 @@ mod tests {
         // the scan above covers `attrs.rs` explicitly. All under
         // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
-            ("../attrs.rs", 1usize),
+            ("../attrs.rs", 2usize),
             ("advice.rs", 13usize),
             ("arena.rs", 10usize),
             ("arena/tests.rs", 3usize),
