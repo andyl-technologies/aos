@@ -6,6 +6,7 @@
 //! later supervision code will pass to the child process.
 
 mod control_channels;
+mod crucible_shmem_block;
 mod entropy;
 mod validation;
 
@@ -13,6 +14,9 @@ use std::fmt;
 
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, NodeClockSkew};
+pub use crucible_shmem_block::{
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
+};
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
 use thiserror::Error;
@@ -597,6 +601,7 @@ pub struct QemuVmLaunchConfig {
     firmware: Option<QemuLaunchArtifact>,
     initrd: Option<QemuLaunchArtifact>,
     root_overlay_file_name: String,
+    crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
 }
 
 impl QemuVmLaunchConfig {
@@ -614,6 +619,7 @@ impl QemuVmLaunchConfig {
             firmware: None,
             initrd: None,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            crucible_shmem_block: None,
         }
     }
 
@@ -635,6 +641,7 @@ impl QemuVmLaunchConfig {
             firmware: Some(firmware),
             initrd: None,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            crucible_shmem_block: None,
         }
     }
 
@@ -657,6 +664,23 @@ impl QemuVmLaunchConfig {
     pub fn with_root_overlay_file_name(mut self, file_name: impl Into<String>) -> Self {
         self.root_overlay_file_name = file_name.into();
         self
+    }
+
+    /// Returns a config that attaches a crucible-shmem virtio-blk device.
+    ///
+    /// The device is opened through the legacy `-drive driver=crucible-shmem`
+    /// interface and backed by the host I/O sub-node over the `SLOT_BLK_IO`
+    /// shared-memory rings. A config without one emits byte-identical argv.
+    #[must_use]
+    pub fn with_crucible_shmem_block(mut self, device: CrucibleShmemBlockDevice) -> Self {
+        self.crucible_shmem_block = Some(device);
+        self
+    }
+
+    /// Returns the attached crucible-shmem block device, if any.
+    #[must_use]
+    pub const fn crucible_shmem_block(&self) -> Option<&CrucibleShmemBlockDevice> {
+        self.crucible_shmem_block.as_ref()
     }
 
     /// Returns the static scenario node identifier.
@@ -729,6 +753,12 @@ impl QemuVmLaunchConfig {
         } else {
             lines.push("initrd=none".to_owned());
         }
+        // Emitted only when a device is attached: a launch without one keeps a
+        // byte-identical identity string, so the frozen fingerprint gates that
+        // never attach a crucible-shmem device do not drift.
+        if let Some(device) = &self.crucible_shmem_block {
+            device.append_hash_material(&mut lines);
+        }
         lines.join("\n")
     }
 
@@ -752,6 +782,9 @@ impl QemuVmLaunchConfig {
         if let Some(initrd) = &self.initrd {
             args.extend(["-initrd".to_owned(), initrd.path.clone()]);
         }
+        if let Some(device) = &self.crucible_shmem_block {
+            device.append_qemu_args(&mut args);
+        }
         args
     }
 
@@ -767,6 +800,9 @@ impl QemuVmLaunchConfig {
         }
         if let Some(initrd) = &self.initrd {
             initrd.validate("initrd_path")?;
+        }
+        if let Some(device) = &self.crucible_shmem_block {
+            device.validate()?;
         }
         Ok(())
     }
@@ -967,6 +1003,14 @@ pub enum QemuLaunchCommandError {
     InvalidQmpSocketFileName {
         /// Invalid socket file name.
         file_name: String,
+    },
+    /// A crucible-shmem device length was zero, not a sector multiple, or too large.
+    #[error(
+        "crucible-shmem block size must be a nonzero sector multiple within bounds, got {size}"
+    )]
+    InvalidCrucibleShmemBlockSize {
+        /// Rejected device length in bytes.
+        size: u64,
     },
     /// A plugin path contained a comma, which would be ambiguous in QEMU's plugin option.
     #[error("plugin path must not contain a comma")]

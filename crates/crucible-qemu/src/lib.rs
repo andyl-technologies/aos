@@ -39,6 +39,8 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod async_driver;
+#[cfg(target_os = "linux")]
+mod block_realization_gate;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;
@@ -77,6 +79,11 @@ pub use async_driver::{
     QemuAsyncWaitOutcome, QemuHostIoRuntime, assert_async_driver_quantum_hot_path_is_shmem_only,
     await_bounded_lifecycle_event, run_bounded_qemu_node_step,
 };
+#[cfg(target_os = "linux")]
+pub use block_realization_gate::{
+    BlockRealizationGateConfig, BlockRealizationGateError, BlockRealizationReport,
+    run_block_realization_gate,
+};
 pub use coverage::{
     QemuBasicBlockCoverageBridge, QemuCoverageError, QemuCoverageFingerprintReport,
     QemuCoverageFingerprintRun, compare_coverage_opt_in_fingerprint_streams,
@@ -108,6 +115,7 @@ pub use inertness::{
     assert_qemu_control_plane_inert,
 };
 pub use launch::{
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,

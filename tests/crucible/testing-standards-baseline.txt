@@ -5,6 +5,7 @@
 # package<TAB>test target<TAB>pattern<TAB>count
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-qemu	src/async_driver	retry	1
+crucible-qemu	src/block_realization_gate	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/gdbstub_proxy	thread::sleep	1
 crucible-qemu	src/live_coverage_gate	thread::sleep	1
