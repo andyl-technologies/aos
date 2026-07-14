@@ -69,9 +69,14 @@ pass defects.
 injected corruption via `entry.facts_path()` — a legacy per-file path the v12
 single-bundle read path (`bundle.bin`,
 `crates/ratchet-oracle/src/cache/parse/entry.rs` `decode_ir_with_facts`)
-never consults — so they passed flag-off **vacuously**. Restored to corrupt
-the bundle's facts section (the surface actually read) in the commit
-accompanying this note; they are now flag-agnostic and out of the 14.
+never consults — so they passed flag-off **vacuously**. Restored in the
+follow-up commit to corrupt the bundle's facts section (the surface actually
+read); the third is renamed
+`read_ir_serves_mandatory_artifacts_despite_corrupt_bundle_fact_section`
+because its pre-v12 vector (a blocked separate `facts.bin` write) is
+unrepresentable under the atomic single-bundle commit. All three are now
+flag-agnostic and out of the flip worklist, which drops to **11 tests**
+(4 of §2.1 + the remaining 7 of §2.2).
 
 ### 2.3 Pre-existing, flag-independent (not simplifier findings)
 
@@ -116,7 +121,7 @@ When a pass with measured profit lands, the flip is exactly:
 1. `PASS_SET_VERSION` `0 -> 1` (`crates/ratchet-core/src/ir/simplify.rs`) —
    folds into the lowered-IR fingerprint domain, cleanly superseding all
    simplify-off artifacts.
-2. Update the 14 tests of §2.1/§2.2 to the flag-on contract (mode-aware or
-   rewritten against the new lifecycle; never weakened).
+2. Update the remaining 11 tests of §2.1/§2.2 to the flag-on contract
+   (mode-aware or rewritten against the new lifecycle; never weakened).
 3. Re-run this packet's batteries as the gate: local suites both carriers,
    16-leg parity matrix, full 546-corpus byte gate on both carriers.

@@ -126,15 +126,40 @@ fn chunk_e_parse_entry_ignores_structurally_invalid_fact_sidecar() {
         formals: Box::new([]),
         attr_values: Box::new([]),
     }]);
+    // Inject the invalid facts into the bundle's fact section — the surface
+    // `read_ir` actually consults (the legacy `facts.bin` path is never read
+    // since the v12 single-bundle layout). The fingerprint and version are the
+    // *real* ones, so the decode succeeds and only structural validation can
+    // reject the payload.
+    let bundle = ParseArtifactBundle::decode(&fs::read(entry.bundle_path()).expect("bundle reads"))
+        .expect("bundle decodes");
     let encoded = encode_ir_facts(
         &facts,
-        lowered_ir_fingerprint(&base_ir).expect("IR fingerprint computes"),
+        lowered_ir_artifact_fingerprint(bundle.ir_bytes(), bundle.symbols_bytes()),
         crate::compile::IR_ANALYSIS_VERSION,
     )
     .expect("invalid structural facts still encode");
-    fs::write(entry.facts_path(), encoded).expect("fact sidecar writes");
+    let invalid_bundle = ParseArtifactBundle::new_with_facts(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+        encoded.as_slice(),
+    );
+    fs::write(
+        entry.bundle_path(),
+        invalid_bundle.encode().expect("invalid-fact bundle encodes"),
+    )
+    .expect("invalid-fact bundle writes");
+    assert_eq!(
+        ParseArtifactBundle::decode(&fs::read(entry.bundle_path()).expect("bundle re-reads"))
+            .expect("tampered bundle decodes")
+            .facts_bytes(),
+        Some(encoded.as_slice()),
+        "the injected fact section is on the read surface"
+    );
 
-    let (loaded, facts_current) = entry.read_ir().expect("IR with sidecar reads");
+    let (loaded, facts_current) = entry.read_ir().expect("IR with invalid fact section reads");
 
     assert!(!facts_current);
     assert!(loaded.facts.lambda_call_summaries().is_empty());

@@ -427,7 +427,12 @@ fn write_resolved_cleans_temporary_files_after_artifact_commit_failure() {
 }
 
 #[test]
-fn write_resolved_commits_mandatory_artifacts_when_fact_sidecar_write_fails() {
+fn read_ir_serves_mandatory_artifacts_despite_corrupt_bundle_fact_section() {
+    // The pre-v12 vector (a blocked separate `facts.bin` write) is
+    // unrepresentable in the single-bundle layout — the whole entry commits in
+    // one atomic write. The surviving contract at the same seam is read-side:
+    // the fact section is best-effort, so a corrupt one must not take the
+    // mandatory artifacts down with it.
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
     let source = "let x = 1; in x";
@@ -439,16 +444,32 @@ fn write_resolved_commits_mandatory_artifacts_when_fact_sidecar_write_fails() {
         resolved.arena.len() as u32,
         resolved.symbols.len() as u32,
     );
-    entry.ensure_dir().expect("entry dir creates");
-    fs::create_dir(entry.facts_path()).expect("blocking fact sidecar directory creates");
-
     entry
         .write_resolved(&resolved, &meta)
-        .expect("mandatory artifacts still write");
+        .expect("resolved artifact writes");
+    let bundle = ParseArtifactBundle::decode(&fs::read(entry.bundle_path()).expect("bundle reads"))
+        .expect("bundle decodes");
+    let corrupt = ParseArtifactBundle::new_with_facts(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+        b"not a fact artifact".as_slice(),
+    );
+    fs::write(
+        entry.bundle_path(),
+        corrupt.encode().expect("corrupt bundle encodes"),
+    )
+    .expect("corrupt bundle writes");
 
     assert!(entry.is_complete());
-    assert!(entry.facts_path().is_dir());
-    let (loaded, _) = entry.read_ir().expect("IR reads without fact sidecar");
+    let (loaded, facts_current) = entry
+        .read_ir()
+        .expect("mandatory artifacts read despite corrupt fact section");
+    assert!(
+        !facts_current,
+        "corrupt fact bytes are never analysis-current"
+    );
     assert!(
         loaded
             .facts
@@ -596,7 +617,24 @@ fn load_cached_bytes_ignores_corrupt_fact_sidecars() {
     let parsed = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    fs::write(parsed.entry.facts_path(), b"not a fact artifact").expect("corrupt facts write");
+    // Corrupt the bundle's fact section — the surface the read path actually
+    // consults (the legacy `facts.bin` path is never read since the v12
+    // single-bundle layout).
+    let bundle =
+        ParseArtifactBundle::decode(&fs::read(parsed.entry.bundle_path()).expect("bundle reads"))
+            .expect("bundle decodes");
+    let corrupt = ParseArtifactBundle::new_with_facts(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        bundle.meta_toml_bytes(),
+        b"not a fact artifact".as_slice(),
+    );
+    fs::write(
+        parsed.entry.bundle_path(),
+        corrupt.encode().expect("corrupt bundle encodes"),
+    )
+    .expect("corrupt bundle writes");
 
     let cached = cache
         .load_cached_bytes(source)
@@ -604,6 +642,10 @@ fn load_cached_bytes_ignores_corrupt_fact_sidecars() {
         .expect("cached entry remains usable");
 
     assert!(cached.hit);
+    assert!(
+        !cached.facts_current,
+        "corrupt fact bytes are never analysis-current"
+    );
     assert!(
         cached
             .ir
