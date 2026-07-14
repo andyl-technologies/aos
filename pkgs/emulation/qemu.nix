@@ -193,6 +193,8 @@
   # patch -p1 < ${./qemu-patches/0034-crucible-safe-fingerprint-boundary.patch}
   # patch -p1 < ${./qemu-patches/0035-crucible-process-argv-attestation.patch}
   # patch -p1 < ${./qemu-patches/0036-crucible-raw-state-export.patch}
+  # patch -p1 < ${./qemu-patches/0037-crucible-sim-freeze-warp-at-observation-boundary.patch}
+  # patch -p1 < ${./qemu-patches/0038-crucible-sim-gate-rr-kick.patch}
 in
   mkDerivation {
     inherit pname;

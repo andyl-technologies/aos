@@ -216,6 +216,8 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-batch-tcg-exec ... batch TCG exec calls        F    PATCH-35, DET-1, INV-10, PERF
   crucible-sim-idle-callbacks ... idle/resume cb wiring       D    PATCH-34, TIME-24, INV-8
   crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    PATCH-34, SHM-1
+  crucible-sim-freeze-warp-at-observation-boundary  freeze vclock at obs boundary  D    DET-8, DET-29
+  crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1164,6 +1166,47 @@ patches are dev-only and **not shipped**.
   (compiled out or behind an explicit `diag=` plugin arg) and MUST NOT alter
   guest-visible icount when off. *Gate:* `gate:qemu-inert`, forward-ref 24, 26.
   *Spec:* §11.8; satisfies [INV-7], [INV-10].
+
+### crucible-sim-freeze-warp-at-observation-boundary — freeze virtual time at the capture boundary (D)
+
+- Once the sim guest is clamped at the observer's max-advance boundary (the
+  terminal target icount) it cannot retire instructions, so QEMU treats it as
+  idle and `icount_start_warp_timer` advances `qemu_icount_bias` to the next
+  virtual-timer deadline in multiple steps — a large warp plus a 1 ns tail warp
+  to the PIT deadline. The terminal snapshot is *requested* at the boundary but
+  *captured* asynchronously after the pause, so it lands after a **variable**
+  number of tail warps: `qemu_icount_bias` (carried in the timer/icount VMState)
+  differs by ~1 ns run-to-run and the device-state fingerprint flaked ~11-28%.
+  Evidence: per-warp logs showed one ordinal doing two warps at icount=50001
+  (deadline 27412699 then deadline 1) while another did one.
+- The patch adds a sim-only clamp gate at the top of `icount_start_warp_timer`
+  (guarded by patch 0004's sim/time-control predicate): when the sim observer is
+  registered and the raw icount has reached the observer max-advance, it notifies
+  the virtual clock and returns without advancing the bias. This **redefines the
+  terminal capture point**: virtual time is *frozen* at the boundary. The choice
+  is freeze-at-boundary, **not** drain-to-quiescence — a clamped guest's idle
+  warps never terminate (they step through timer period after timer period), so
+  they are artifacts of the observation clamp, not genuine waits; freeze is the
+  only well-defined semantics and it captures the genuine execution-derived bias.
+- Latent-leak note: the registers happened to be equal in today's runs, but a
+  guest clock read could capture the stray 1 ns — this is a real determinism bug,
+  not gate pedantry. Confirmed: 15/15 cache-busted runs at zero divergence versus
+  the 11-28% baseline. **Depends on `crucible-safe-fingerprint-boundary` (0034)**,
+  which introduces the `crucible_sim_observer_*` helpers this gate reads; note the
+  cross-patch dependency for drop-one attribution. *Gate:* `gate:qemu-inert`,
+  forward-ref phase-2 fingerprint gates. *Spec:* §11.8; enforces [DET-8], [DET-29].
+
+### crucible-sim-gate-rr-kick — omit the stock round-robin kick timer in sim (D)
+
+- The stock TCG round-robin kick timer (`rr_start_kick_timer` / `rr_kick_thread`,
+  a 100 ms `TCG_KICK_PERIOD`, created only for ≥2 vCPUs) is redundant in sim mode,
+  which rotates vCPUs deterministically via `rr_switch_quantum`. The patch
+  sim-gates `rr_start_kick_timer` with an early return so the virtual-timer arm
+  set is deterministic (evidence: with it gated, per-arm logs are byte-identical
+  across ordinals). This alone did **not** fix the terminal fingerprint —
+  `crucible-sim-freeze-warp-at-observation-boundary` (0037) is the root fix; this
+  held cleanup is bundled with it. *Gate:* `gate:qemu-inert`. *Spec:* §11.8;
+  enforces [DET-30].
 
 ## 11.9 The regeneration / rebase pipeline and CI gates
 

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "f490f2a0ca7a763ba475994575d0c8b0cb68c57dff7cc0c5d8f8d15e2d57b0fe";
+  patchBranchBundleSha256 = "4afb57eb92cc058b3f0f4721be488afe6bef087ae2a5376d337fd9b495bffff6";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "afe0fe0be52a54b9dfb2d5f2edfd8bf809260a41";
+  patchBranchHeadCommit = "3ea2f4afd7def3f7216af4f350eba59651331d69";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -339,6 +339,24 @@ let
       class = "F";
       enforces = "DET-29,PLUG-47";
       capability = "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot";
+    }
+    {
+      file = "0037-crucible-sim-freeze-warp-at-observation-boundary.patch";
+      branchCommit = "3b00b68888ab9bb2e2c0ecbbcba32b19bc4bd520";
+      branchTree = "2a9115d1b66638024931dfdf0300e626efab747f";
+      catalogName = "crucible-sim-freeze-warp-at-observation-boundary";
+      class = "D";
+      enforces = "DET-8,DET-29";
+      capability = "sim freezes the virtual clock at the observation boundary so terminal fingerprint capture is deterministic";
+    }
+    {
+      file = "0038-crucible-sim-gate-rr-kick.patch";
+      branchCommit = "3ea2f4afd7def3f7216af4f350eba59651331d69";
+      branchTree = "69f8f0ac9801e3644eb22b776f1ff328f07983ef";
+      catalogName = "crucible-sim-gate-rr-kick";
+      class = "D";
+      enforces = "DET-30";
+      capability = "sim omits the redundant stock round-robin vCPU-kick timer for deterministic quantum switching";
     }
   ];
   catalogOnlyCapabilities = [
