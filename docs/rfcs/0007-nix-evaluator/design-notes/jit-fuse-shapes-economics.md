@@ -1,9 +1,14 @@
 # JIT Fuse-Shapes Economics: Shape Census, Grammar Gap, and Ceiling
 
-Status: MEASUREMENT-FIRST. Instrumentation landed; the ceiling verdict is gated
-on one builder run of the toplevel census (§6). Instrumentation-only — no
-compiler code. Both feature configs green; byte-parity unaffected (diagnostic
-records to stderr, never perturbs evaluation).
+Status: **RESOLVED — KILL CRITERION FIRED. JIT-for-toplevel-parity is CLOSED.**
+The census ran on the builder (tip `6fd6cce70`, cache-off cold toplevel, serial +
+JIT legs); §7 is the formal verdict. Increment-0's kill criterion
+(`F_addressable < 0.68`) fired even under a pro-JIT measurement bias, and the
+genuinely-fusible anchor population caps the JIT at ≤1.5x — nowhere near the 3.14x
+target. **Tier-2 compute-shape wins (fold/filter/all/any, 20-25x) are unaffected;
+this ruling is only about compiling the system-toplevel shape.** Instrumentation
+was the only code (no compiler changes); both feature configs green; byte-parity
+unaffected (diagnostic records to stderr, never perturbs evaluation).
 
 Context: RFC-0007's current top target is **parity-or-faster on cache-off cold
 system-toplevel eval vs C++ Nix** (pinned 2.24.12). Today native is **2.53 s vs
@@ -47,16 +52,23 @@ tier2_blacklisted=492`.
 self-time exceeds the per-force dispatch break-even threshold**. Call it
 `F_addressable`.
 
+**RESOLVED (§7): the census ran and `F_addressable` is below the line.** The
+genuinely-fusible (`w ≫ τ`) mass is ≤40.5% *even under a pro-JIT measurement
+bias* — below the 0.68 floor — and the anchor honest-ceiling caps the JIT at
+≤1.7x at `s = ∞`. JIT-for-toplevel-parity is **CLOSED**; tier-2 compute-shape
+wins are unaffected. The original decision rule and its two branches, preserved:
+
 - If `F_addressable` is small (long tail below the tax) → **JIT cannot reach
-  ~3x at any coverage** (§4 proves `s < 1` for the mass). The program must
-  **pivot** off "JIT the toplevel" and Dylan needs to know. My prediction, from
-  the existing evidence, is that this is the outcome.
+  ~3x at any coverage** (§4 proves `s < 1` for the mass). **← this is the
+  measured outcome.**
 - If `F_addressable` is large **and concentrated in few, large boundary bodies**
   (high self-ns/force `AttrSet`/`Let` forces — the `callPackage` /
   module-fixpoint bodies) → there is exactly one viable increment: compile
   **those** (few, large, high-amortization), not the tail (§5, Increment 1).
+  **← not the measured outcome; the large-body mass is mostly overhead artifact
+  (§7.1).**
 
-Either way the census is the falsifiable test, and it is a one-command builder
+Either way the census was the falsifiable test, and it was a one-command builder
 run. The rest of this note is the framework that turns its output into a
 go/no-go.
 
@@ -325,3 +337,88 @@ dispatched vs interpreted forces of the same body pins `τ1`, which sets the tru
 break-even bucket. Until measured, use `τ = 1 µs` as a conservative upper bound
 (it makes the ceiling *optimistic* to lower τ, so `τ = 1 µs` is the charitable
 assumption for the JIT).
+
+---
+
+## 7. Formal verdict — census ran, kill criterion fired
+
+Census executed on the builder (tip `6fd6cce70`, cache-off cold system-toplevel,
+serial + JIT legs; JIT leg within ~3% of serial everywhere, so the shape
+distribution is engine-independent). Serial-leg essentials:
+
+- `total_forces = 8,827,365`, `total_self_ns = 9.053e9` ns.
+- Top shapes by self-ns (mean = self_ns / forces): `apply` 4.02M forces / 3.167e9
+  (787 ns), `PrimOp` 1.29M / 1.864e9 (1445 ns), `Let` 220,890 / 1.648e9
+  (**7462 ns**), `Apply` 170,877 / 1.028e9 (**6019 ns**), `AttrSet` 104,883 /
+  2.525e8, `BinOp:Concat` 283,077 / 2.322e8, `Select` 579,531 / 2.040e8,
+  `LocalVar` 1.07M / 1.676e8.
+- Self-ns bucket masses (verified to sum to `total_self_ns`): ≥τ (1024 ns) =
+  6.514e9 = **72.0%**; ≥2τ (2048 ns) = 5.593e9 = **61.8%**; ≥16τ (16 µs) =
+  3.669e9 = **40.5%**; ≥16 ms = 1.310e9 = **14.5%** (a handful of giant forces —
+  the module fixpoint itself).
+
+### 7.1 The measurement is contaminated, and the bias is pro-JIT
+
+`total_self_ns = 9.053e9` against the **clean stats-off wall of 2.50e9** — the
+census adds **6.55e9 ns of overhead**, i.e. **742 ns/force** across 8.83M forces
+(this independently confirms the ~0.7 µs/force estimate). That overhead is the
+census's own per-force cost (begin-classify's IR-arena lookup + close's lock and
+map update), and it lands in **ancestor self-time**: each force's timed region
+encloses its direct children's begin-classify and close-bookkeeping, which occur
+inside the parent's clock but outside any child's measured `elapsed`, so they are
+never subtracted as child time. The overhead therefore piles onto exactly the
+large **driver** bodies (`apply`, `Let`, `Apply`, the fixpoint root) — the same
+bodies that constitute the "addressable" large-`w` population.
+
+**Consequence: the census overstates the fusible large-body mass.** Concretely,
+`apply`'s 787 ns nominal mean is dominated by the overhead of the children it
+drives; its true self-time is ~50-100 ns, so **~85-90% of `apply`'s 3.167e9 (≈35%
+of all nominal self-time) is measurement artifact, not addressable work.** A
+negative result obtained under a pro-JIT bias is therefore **robust**: the true
+numbers are worse than the nominal ones below.
+
+### 7.2 Two independent kill conditions, both fire
+
+**(A) Coverage at break-even.** Reaching the required 3.14x needs `f ≥ 0.68` of
+wall in bodies whose per-covered speedup `s` is large, and `s ≥ 5` requires
+`w ≫ τ` (§4). The mass with `w ≫ τ` (≥16τ = 16 µs) is **40.5% nominal < 0.68**.
+The broader `w > τ` mass (72.0%) nominally clears 0.68, but those marginal bodies
+sit at `w ≈ τ`, where `s = w/(τ + w/g) ≈ 1` — **no speedup** — so they do not
+count toward coverage. The kill line fires on nominal, pro-JIT-biased numbers;
+true coverage is lower still.
+
+**(B) Anchor honest-ceiling.** Compile the *entire* genuinely-large population
+(≤40.5% nominal) at an unattainable `s = ∞`: `speedup = 1/(1 − 0.405) = 1.68x`.
+On the lead's tighter anchor cut (`Let` + the ≥16 ms tail, ~33%): `1.49x`. At a
+realistic `s = 5`: `1.48x`. **Every honest cut caps the JIT at ≤1.7x — nowhere
+near the 3.14x it must supply**, and each of these is an over-estimate because the
+large-body mass is inflated by §7.1's overhead.
+
+The two conditions are independent (one is a coverage floor, one is a ceiling on
+the achievable multiple) and both reject the target by a wide margin. There is no
+`(f, s)` combination consistent with this census that reaches 3.14x.
+
+### 7.3 Program disposition
+
+- **JIT-for-toplevel-parity is CLOSED.** No fuse-shapes compiler increment
+  (attrs-alloc FFI, update-chain fusion, select-path lowering, interp-concat) can
+  move the toplevel to parity: the wall is a flat long tail of sub-τ thunk forces
+  with no fusible concentration, and the interpreter's own per-force cost is the
+  same order as a JIT dispatch. Increments 1-3 of §5 are **not started and should
+  not be**.
+- **Tier-2 compute-shape wins are UNAFFECTED.** The strict-iteration seams
+  (`foldl'`/`filter`/`all`/`any`/genlist-fold, curried chains) still beat C++
+  20-25x on compute shapes — they amortize `τ` over N elements, a structure the
+  toplevel lacks. This ruling narrows, and does not retract, the JIT's role.
+- **The 4.4x toplevel gap is a per-op interpreter constant**, distributed over
+  ~3.2M sub-microsecond operations with no hot concentration — confirmed by the
+  flat-long-tail profile *and* now by the self-ns bucket distribution. It is not
+  a compilable-body-coverage problem, so it is not a JIT problem.
+- **Re-entry conditions (Dylan's call, not a JIT increment):** (1) a *changed
+  workload shape* — a future toplevel dominated by compute or wide strict
+  iteration rather than module-fixpoint attrs-building would move mass into the
+  tier-2-favorable regime; or (2) an *AOT / persistent-compiled-code posture* that
+  pays the compile cost once, out of band, and amortizes native bodies across many
+  evaluations — this changes the cost model entirely (no per-eval dispatch tax on
+  the hot path) and is an architecture decision, not a tier-2 promotion tweak.
+  Neither is actionable as an incremental JIT change today.
