@@ -77,6 +77,17 @@ impl QemuHostPluginSetup {
         self.wake_fd.as_raw_fd()
     }
 
+    /// Borrows the retained host wake event descriptor.
+    ///
+    /// A live host-I/O runtime clones this to signal the plugin wake eventfd once
+    /// per quantum, which the node's shared-memory `start_quantum` futex wake
+    /// alone does not do (it is required to rouse a vCPU parked in its
+    /// between-quanta idle wait, exactly as the M1 scheduler does).
+    #[must_use]
+    pub fn wake_as_fd(&self) -> BorrowedFd<'_> {
+        self.wake_fd.as_fd()
+    }
+
     /// Signals QEMU's registered plugin wake eventfd.
     ///
     /// # Errors

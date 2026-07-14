@@ -3,16 +3,26 @@
 //! [`QemuLiveHostIoRuntime`] is the first non-test [`QemuHostIoRuntime`]. It maps
 //! the plugin's shared-memory region read-only (an independent `MAP_SHARED` view
 //! of the same descriptor the node's hot-path channel writes) and, on an
-//! `AdvanceCompletion` await, polls the node slot for the quantum boundary using
-//! the shared [`classify_quantum_boundary`] decision -- the same classification
-//! the M1 quantum-gate scheduler uses, so the runtime and the channel agree
-//! bit-for-bit on when a quantum has completed.
+//! `AdvanceCompletion` await, signals QEMU's plugin wake eventfd once and then
+//! polls the node slot for the quantum boundary using the shared
+//! [`classify_quantum_boundary`] decision -- the same classification the M1
+//! quantum-gate scheduler uses, so the runtime and the channel agree bit-for-bit
+//! on when a quantum has completed.
+//!
+//! The single wake signal per advance is load-bearing: the node's shared-memory
+//! `start_quantum` futex wake alone releases the boot barrier, but a vCPU parked
+//! in its between-quanta idle wait re-parks on the inherited wake eventfd, which
+//! only an eventfd signal rouses. The runtime signals it exactly once per advance
+//! (never per poll, which would destabilise the plugin's published idle state),
+//! mirroring how the M1 scheduler wakes the plugin once per quantum.
 //!
 //! The runtime observes only the shared-memory advance boundary. Lifecycle
 //! awaits (handshake, QMP, process-exit) are not gated here: the node driver
 //! observes those directly on its control-socket, QMP, and child handles, so
 //! this runtime treats a non-advance await as an immediate host-liveness yield.
 
+use std::fs::File;
+use std::io::Write;
 use std::os::fd::BorrowedFd;
 use std::thread;
 use std::time::Duration;
@@ -37,27 +47,40 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// A production host-I/O runtime backed by a read-only shared-memory view.
 pub struct QemuLiveHostIoRuntime {
     region: MappedSetupRegion,
+    wake: File,
     vm_slot: u32,
     poll_interval: Duration,
 }
 
 impl QemuLiveHostIoRuntime {
-    /// Maps `shmem_fd` read-only and binds the runtime to `vm_slot`.
+    /// Maps `shmem_fd` read-only, clones `wake_fd`, and binds the runtime to `vm_slot`.
     ///
-    /// The descriptor is the same shared-memory region the node's hot-path
-    /// channel writes; this independent mapping observes the plugin's published
-    /// node slot without taking a second owning handle to the channel's mapping.
+    /// The shmem descriptor is the same region the node's hot-path channel writes;
+    /// this independent mapping observes the plugin's published node slot without
+    /// taking a second owning handle to the channel's mapping. The wake descriptor
+    /// is QEMU's plugin wake eventfd: the runtime clones it and signals it once at
+    /// the start of each advance await, which is required to rouse a vCPU parked in
+    /// its between-quanta idle wait (the node's shared-memory `start_quantum` futex
+    /// wake alone does not, exactly as the M1 scheduler signals it per quantum).
     ///
     /// # Errors
     ///
     /// Returns [`QemuLiveHostIoRuntimeError::MapRegion`] when the shared-memory
-    /// region cannot be mapped.
+    /// region cannot be mapped, or [`QemuLiveHostIoRuntimeError::CloneWakeFd`] when
+    /// the wake descriptor cannot be cloned.
     pub fn from_shmem_fd(
         shmem_fd: BorrowedFd<'_>,
+        wake_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
     ) -> Result<Self, QemuLiveHostIoRuntimeError> {
-        Self::from_shmem_fd_with_poll_interval(shmem_fd, region_len, vm_slot, DEFAULT_POLL_INTERVAL)
+        Self::from_shmem_fd_with_poll_interval(
+            shmem_fd,
+            wake_fd,
+            region_len,
+            vm_slot,
+            DEFAULT_POLL_INTERVAL,
+        )
     }
 
     /// Maps the region with an explicit poll interval for the advance await.
@@ -65,10 +88,12 @@ impl QemuLiveHostIoRuntime {
     /// # Errors
     ///
     /// Returns [`QemuLiveHostIoRuntimeError::MapRegion`] when the shared-memory
-    /// region cannot be mapped, or [`QemuLiveHostIoRuntimeError::ZeroPollInterval`]
-    /// when `poll_interval` is zero.
+    /// region cannot be mapped, [`QemuLiveHostIoRuntimeError::CloneWakeFd`] when the
+    /// wake descriptor cannot be cloned, or
+    /// [`QemuLiveHostIoRuntimeError::ZeroPollInterval`] when `poll_interval` is zero.
     pub fn from_shmem_fd_with_poll_interval(
         shmem_fd: BorrowedFd<'_>,
+        wake_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
         poll_interval: Duration,
@@ -78,18 +103,35 @@ impl QemuLiveHostIoRuntime {
         }
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveHostIoRuntimeError::MapRegion { source })?;
+        let wake = wake_fd
+            .try_clone_to_owned()
+            .map(File::from)
+            .map_err(|source| QemuLiveHostIoRuntimeError::CloneWakeFd { source })?;
         Ok(Self {
             region,
+            wake,
             vm_slot,
             poll_interval,
         })
     }
 
+    /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
+    fn signal_wake(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let mut wake = &self.wake;
+        wake.write_all(&1_u64.to_ne_bytes()).map_err(|error| {
+            QemuAsyncDriverRuntimeError::new("signal plugin wake", error.to_string())
+        })
+    }
+
     /// Polls the node slot for a quantum boundary within a bounded attempt count.
+    ///
+    /// Signals the plugin wake eventfd once before polling so a vCPU parked in its
+    /// between-quanta idle wait observes the ceiling the node just published.
     fn poll_advance_completion(
         &self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        self.signal_wake()?;
         let attempts = bounded_poll_attempts(timeout, self.poll_interval);
         for attempt in 0..attempts {
             let snapshot = self
@@ -155,6 +197,12 @@ pub enum QemuLiveHostIoRuntimeError {
     MapRegion {
         /// Underlying mapping error.
         source: SetupRegionMapError,
+    },
+    /// The plugin wake eventfd could not be cloned.
+    #[error("clone plugin wake eventfd failed: {source}")]
+    CloneWakeFd {
+        /// Underlying descriptor clone error.
+        source: std::io::Error,
     },
     /// The configured poll interval was zero.
     #[error("host-I/O runtime poll interval must be nonzero")]
