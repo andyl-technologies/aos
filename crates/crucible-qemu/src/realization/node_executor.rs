@@ -113,6 +113,9 @@ where
             self.slot_index,
             restore,
             runtime,
+            // Diskless warm restore issues no host-serviced device I/O during
+            // priming; a block-capable caller supplies a servicing closure here.
+            |_current_icount| {},
         )
         .map_err(warm_restore_error)
     }
