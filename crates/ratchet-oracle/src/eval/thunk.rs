@@ -195,6 +195,30 @@ impl Default for ThunkCell {
     }
 }
 
+impl Clone for ThunkCell {
+    /// Produces an independent, state-faithful copy of this cell.
+    ///
+    /// Copies the current force-state word and, when the cell is `Forced`, its
+    /// published result into a fresh cell with its own atomics. This is the
+    /// independent-record copy used by the inline serial-cell deep clone
+    /// (never-shared flat thunks) and by moving-GC relocation. Cells whose force
+    /// state must stay identity-linked across record clones are shared through
+    /// `Arc<ThunkCell>` and never route through here, so copying a mid-force
+    /// `Blackhole` cell is unreachable in practice; were it to occur it would
+    /// yield an independent blackholed cell rather than corrupt shared state.
+    fn clone(&self) -> Self {
+        let state = self.state.load(Ordering::Acquire);
+        let result = match self.result.load() {
+            Ok(Some(value)) => AtomicValueCell::filled(value),
+            Ok(None) | Err(_) => AtomicValueCell::empty(),
+        };
+        Self {
+            state: AtomicU64::new(state),
+            result,
+        }
+    }
+}
+
 impl ThunkCell {
     /// Creates a suspended thunk cell with no cached result.
     pub const fn new() -> Self {

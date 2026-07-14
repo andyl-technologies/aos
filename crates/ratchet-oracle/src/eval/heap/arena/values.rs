@@ -267,6 +267,13 @@ impl EvalHeap {
         if self.worker_closure_placement == WorkerClosurePlacement::Flat {
             return self.flat_alloc_thunk(thunk, capture);
         }
+        // Record-table placement (the GC-stress proving ground) detaches force
+        // handles by deep-cloning the whole record on every share/clone, so the
+        // serial cell must be `Arc`-shared for those clones to observe one
+        // another's force state. Flat placement (the early return above) keeps
+        // the cell inline and shares it through the record `Arc` instead.
+        let mut thunk = thunk;
+        thunk.share_cell();
         self.reserve_record_slot()?;
         let allocation = self
             .allocator

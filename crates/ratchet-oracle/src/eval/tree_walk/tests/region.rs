@@ -303,12 +303,15 @@ fn discard_worker_region_scope_retires_mark_after_retained_edge_error() {
                     EvalEnv::default(),
                 ))
                 .expect("worker lambda allocates above marker");
-            let retained_thunk = eval
+            // Publish through the record's own serial cell: inline
+            // `ThunkCellSlot` storage makes `clone_thunk` deep-copy the cell, so
+            // forcing a clone would leave the heap record suspended and hide the
+            // cached-result edge this region-pop rejection depends on.
+            let retained_cell = eval
                 .heap
-                .clone_thunk(retained)
+                .test_share_thunk_cell(retained)
                 .expect("retained thunk exists");
-            let crate::eval::ForceClaim::Claimed(guard) = retained_thunk
-                .cell()
+            let crate::eval::ForceClaim::Claimed(guard) = retained_cell
                 .begin_force()
                 .expect("retained thunk claim succeeds")
             else {

@@ -34,7 +34,7 @@ impl EvalThunk {
                 with_env,
                 scoped_globals,
             },
-            cell: Arc::new(ThunkCell::new()),
+            cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -52,7 +52,7 @@ impl EvalThunk {
     pub(crate) fn released_forced(result: Value) -> Self {
         Self {
             kind: EvalThunkKind::Released,
-            cell: Arc::new(ThunkCell::forced(result)),
+            cell: ThunkCellSlot::inline_forced(result),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -88,7 +88,7 @@ impl EvalThunk {
                 argument: EvalNodeRef::new(argument_module, argument_id),
                 argument_value,
             },
-            cell: Arc::new(ThunkCell::new()),
+            cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -122,7 +122,7 @@ impl EvalThunk {
                 second_argument_span,
                 second_argument_value,
             },
-            cell: Arc::new(ThunkCell::new()),
+            cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -141,7 +141,7 @@ impl EvalThunk {
                 receiver,
                 path,
             },
-            cell: Arc::new(ThunkCell::new()),
+            cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -151,7 +151,7 @@ impl EvalThunk {
     pub(crate) fn builtin_attr(symbol: Symbol, builtin: Builtin) -> Self {
         Self {
             kind: EvalThunkKind::BuiltinAttr { symbol, builtin },
-            cell: Arc::new(ThunkCell::new()),
+            cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -161,7 +161,7 @@ impl EvalThunk {
     pub(crate) fn with_forced_cached_result_from(thunk: &Self, value: Value) -> Self {
         Self {
             kind: thunk.kind.clone(),
-            cell: Arc::new(ThunkCell::forced(value)),
+            cell: ThunkCellSlot::inline_forced(value),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -233,8 +233,9 @@ impl EvalThunk {
     pub const fn code_module(&self) -> Option<EvalModuleId> {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(body.module()),
-            EvalThunkKind::Apply { function, .. }
-            | EvalThunkKind::Apply2 { function, .. } => Some(function.module()),
+            EvalThunkKind::Apply { function, .. } | EvalThunkKind::Apply2 { function, .. } => {
+                Some(function.module())
+            }
             EvalThunkKind::Select { select, .. } => Some(select.module()),
             EvalThunkKind::BuiltinAttr { .. } | EvalThunkKind::Released => None,
         }
@@ -289,13 +290,28 @@ impl EvalThunk {
 
     /// Returns the serial state/result cell for this thunk.
     pub fn cell(&self) -> &ThunkCell {
-        &self.cell
+        self.cell.cell()
+    }
+
+    /// Promotes this thunk's serial cell to a shared `Arc`, returning the handle.
+    ///
+    /// Record-table and shared-backend placements call this at allocation so the
+    /// deep-clones their force paths take share one cell; flat thunks stay inline
+    /// and share through the record `Arc` instead. Idempotent on an already
+    /// shared cell. See [`ThunkCellSlot`].
+    pub(crate) fn share_cell(&mut self) -> Arc<ThunkCell> {
+        self.cell.share()
     }
 
     /// Returns whether two payload snapshots share the same force-state
     /// identity and storage sidecars.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.cell, &other.cell)
+        // Force-state identity is the cell's address: two records share force
+        // state iff they resolve to the same `ThunkCell` — the same `Arc`
+        // allocation for shared cells, or literally the same inline cell for a
+        // record compared with itself. `std::ptr::eq` captures both uniformly
+        // and matches the previous `Arc::ptr_eq` on the shared path.
+        std::ptr::eq(self.cell.cell(), other.cell.cell())
             && self.force_storage_mode == other.force_storage_mode
             && match (&self.parallel_cell, &other.parallel_cell) {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -305,14 +321,14 @@ impl EvalThunk {
     }
 
     /// Returns the force-state sidecar `Arc` clones made by [`Clone`].
+    ///
+    /// A shared serial cell and an attached parallel payload cell each cost one
+    /// `Arc::clone` per record clone; an inline serial cell is deep-copied and
+    /// costs none.
     pub(crate) const fn state_arc_clone_count(&self) -> u64 {
-        if self.parallel_cell.is_some() { 2 } else { 1 }
-    }
-
-    /// Clones the serial force-state sidecar for reclamation tests.
-    #[cfg(test)]
-    pub(crate) fn test_clone_state_cell(&self) -> Arc<ThunkCell> {
-        Arc::clone(&self.cell)
+        let serial = if self.cell.is_shared() { 1 } else { 0 };
+        let parallel = if self.parallel_cell.is_some() { 1 } else { 0 };
+        serial + parallel
     }
 
     /// Returns the currently attached force-storage mode.
@@ -438,7 +454,8 @@ mod tests {
 
     #[test]
     fn eval_thunk_forced_cached_result_remains_serial_storage() {
-        let thunk = EvalThunk::new(IrId::new(7)).with_parallel_payload_cell(tree_walk_error(99), None);
+        let thunk =
+            EvalThunk::new(IrId::new(7)).with_parallel_payload_cell(tree_walk_error(99), None);
         let forced = EvalThunk::with_forced_cached_result_from(&thunk, Value::int(42));
 
         assert_eq!(

@@ -225,6 +225,38 @@ impl EvalHeap {
         Ok(true)
     }
 
+    /// Promotes a flat thunk's serial cell to a shared `Arc` and returns a clone.
+    ///
+    /// Test-only bridge for exercising serial-cell lifetime under the inline
+    /// [`ThunkCellSlot`](super::ThunkCellSlot) storage: resolves the flat thunk
+    /// mutably, promotes its inline cell to `Shared`, and returns an
+    /// `Arc<ThunkCell>` sharing the record's now-promoted cell so a test can
+    /// force the record itself (a `clone_thunk` deep-copies the inline cell).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `value` is not a live flat thunk of this heap.
+    #[cfg(test)]
+    pub(crate) fn test_share_thunk_cell(
+        &mut self,
+        value: Value,
+    ) -> Result<std::sync::Arc<crate::eval::ThunkCell>, EvalHeapError> {
+        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        let payload = self
+            .flat_closures
+            .resolve_mut(ptr, crate::heap::flat::FlatObjectKind::Thunk)
+            .map_err(|_| EvalHeapError::unknown(ValueTag::Thunk, ptr))?;
+        let tag = payload.tag();
+        match payload.as_thunk_mut() {
+            Some(thunk) => Ok(thunk.share_cell()),
+            None => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Thunk,
+                tag,
+                ptr,
+            )),
+        }
+    }
+
     /// Retires every worker-domain record unreachable from `roots`.
     ///
     /// This is the Tier-B non-moving minor collection. Marking is precise: it
@@ -470,9 +502,7 @@ fn thunk_kind_has_reclaimable_captures(kind: &EvalThunkKind) -> bool {
             scoped_globals,
             ..
         } => {
-            !env.is_empty()
-                || !with_env.scopes().is_empty()
-                || !scoped_globals.scopes().is_empty()
+            !env.is_empty() || !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty()
         }
         EvalThunkKind::Apply { .. }
         | EvalThunkKind::Apply2 { .. }

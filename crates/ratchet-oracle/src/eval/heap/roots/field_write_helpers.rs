@@ -412,7 +412,7 @@ pub(super) fn record_owned_heap_field_write_object(
             }
             Ok(HeapObjectValue::Thunk(EvalThunk {
                 kind: thunk.kind().clone(),
-                cell: Arc::new(ThunkCell::forced(replacement)),
+                cell: ThunkCellSlot::Shared(Arc::new(ThunkCell::forced(replacement))),
                 force_storage_mode: thunk.force_storage_mode(),
                 parallel_cell,
             }))
@@ -433,10 +433,10 @@ pub(super) fn record_owned_heap_field_write_object(
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
             Ok(HeapObjectValue::Thunk(EvalThunk {
                 kind: thunk.kind().clone(),
-                cell: Arc::new(
+                cell: ThunkCellSlot::Shared(Arc::new(
                     clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                         .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
-                ),
+                )),
                 force_storage_mode: thunk.force_storage_mode(),
                 parallel_cell: Some(Arc::new(parallel_cell)),
             }))
@@ -518,10 +518,10 @@ pub(super) fn rebuild_thunk_for_heap_field_write(
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
     Ok(HeapObjectValue::Thunk(EvalThunk {
         kind,
-        cell: Arc::new(
+        cell: ThunkCellSlot::Shared(Arc::new(
             clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
-        ),
+        )),
         force_storage_mode: thunk.force_storage_mode(),
         parallel_cell: clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
     }))

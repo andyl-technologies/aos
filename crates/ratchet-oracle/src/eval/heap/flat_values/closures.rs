@@ -124,6 +124,21 @@ impl FlatClosurePayload {
             Self::Lambda(_) | Self::Primop(_) | Self::Retired(_) => None,
         }
     }
+
+    /// Mutably borrows the inline thunk, if this payload holds one that is not
+    /// yet promoted to a shared `Arc`.
+    ///
+    /// Returns `None` for a [`SharedThunk`](Self::SharedThunk): once a thunk has
+    /// been shared behind an `Arc<EvalThunk>` its record is immutable through
+    /// this handle. Only the still-inline [`Thunk`](Self::Thunk) variant grants
+    /// mutable access (used by the test-only serial-cell promotion helper).
+    #[cfg(test)]
+    pub(in crate::eval::heap) fn as_thunk_mut(&mut self) -> Option<&mut EvalThunk> {
+        match self {
+            Self::Thunk(thunk) => Some(thunk),
+            Self::SharedThunk(_) | Self::Lambda(_) | Self::Primop(_) | Self::Retired(_) => None,
+        }
+    }
 }
 
 /// Outcome of publishing a deferred flat capture into a pending closure.

@@ -592,9 +592,14 @@ fn worker_region_pop_rejects_retained_edge_into_suffix() {
             EvalEnv::default(),
         ))
         .expect("forced value allocates above marker");
-    let retained_thunk = heap.clone_thunk(retained).expect("retained thunk exists");
+    // Publish through the record's own serial cell: inline `ThunkCellSlot`
+    // storage makes `clone_thunk` deep-copy the cell, so forcing a clone would
+    // leave the heap record suspended and hide the cached-result edge under test.
+    let retained_cell = heap
+        .test_share_thunk_cell(retained)
+        .expect("retained thunk exists");
     let crate::eval::ForceClaim::Claimed(guard) =
-        retained_thunk.cell().begin_force().expect("claim succeeds")
+        retained_cell.begin_force().expect("claim succeeds")
     else {
         panic!("retained thunk should be claimable");
     };

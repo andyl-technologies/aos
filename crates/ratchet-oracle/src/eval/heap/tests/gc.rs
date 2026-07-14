@@ -19,10 +19,13 @@ fn alloc_capturing_thunk(heap: &mut EvalHeap) -> (Value, Arc<EvalFrame>) {
 }
 
 /// Forces `thunk` to `result` through the serial claim protocol.
-fn force_thunk_to(heap: &EvalHeap, thunk: Value, result: Value) {
-    let shared = heap.clone_thunk(thunk).expect("thunk resolves");
-    let crate::eval::ForceClaim::Claimed(guard) =
-        shared.cell().begin_force().expect("claim succeeds")
+fn force_thunk_to(heap: &mut EvalHeap, thunk: Value, result: Value) {
+    // Publish through the heap record's own serial cell. Under the inline
+    // `ThunkCellSlot` storage a `clone_thunk` deep-copies the cell, so forcing a
+    // clone would leave the heap record suspended; promoting the flat cell to a
+    // shared `Arc` and forcing that handle publishes back into the record.
+    let cell = heap.test_share_thunk_cell(thunk).expect("thunk resolves");
+    let crate::eval::ForceClaim::Claimed(guard) = cell.begin_force().expect("claim succeeds")
     else {
         panic!("thunk should be claimable");
     };
@@ -40,7 +43,7 @@ fn gc_mode_default_is_off() {
 fn shed_forced_thunk_drops_captured_env_and_preserves_result() {
     let mut heap = EvalHeap::new();
     let (thunk, frame) = alloc_capturing_thunk(&mut heap);
-    force_thunk_to(&heap, thunk, Value::int(42));
+    force_thunk_to(&mut heap, thunk, Value::int(42));
     // The heap record still holds the capturing kind, keeping the frame alive.
     assert!(Arc::strong_count(&frame) >= 2);
 
@@ -100,11 +103,8 @@ fn shed_flat_thunk_retains_tail_inherited_by_conservative_descendant() {
         ))
         .expect("conservative descendant allocates");
 
-    force_thunk_to(&heap, owner, Value::int(9));
-    assert!(
-        heap.shed_forced_thunk_captures(owner)
-            .expect("owner sheds")
-    );
+    force_thunk_to(&mut heap, owner, Value::int(9));
+    assert!(heap.shed_forced_thunk_captures(owner).expect("owner sheds"));
     let values = heap
         .flat_closure_capture_values(owner)
         .expect("owner lookup succeeds")
@@ -143,10 +143,13 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
     let mut heap = EvalHeap::new();
     let (reachable, _frame_a) = alloc_capturing_thunk(&mut heap);
     let (unreachable, frame_b) = alloc_capturing_thunk(&mut heap);
+    // Promote the inline serial cell to a shared `Arc` and hold a clone: the
+    // record and this handle now share one cell (strong count 2). Under the
+    // inline-cell storage the record owns the cell directly, so exercising the
+    // sweep's sidecar-drop requires this explicit promotion.
     let unreachable_state = heap
-        .get_thunk(unreachable)
-        .expect("unreachable thunk resolves before sweep")
-        .test_clone_state_cell();
+        .test_share_thunk_cell(unreachable)
+        .expect("unreachable thunk resolves before sweep");
     assert_eq!(Arc::strong_count(&unreachable_state), 2);
     let records_before = heap.len();
 
@@ -248,7 +251,7 @@ fn sweep_drops_forced_thunk_captures_from_reachability() {
     let outer = heap
         .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(2), env))
         .expect("outer thunk allocates");
-    force_thunk_to(&heap, outer, Value::int(7));
+    force_thunk_to(&mut heap, outer, Value::int(7));
 
     let mut roots = EvalRootSet::new();
     roots.try_push_value_stack(0, outer).expect("root records");
@@ -264,9 +267,12 @@ fn sweep_drops_forced_thunk_captures_from_reachability() {
 fn sweep_rejects_unreachable_blackholed_thunk() {
     let mut heap = EvalHeap::new();
     let (thunk, _frame) = alloc_capturing_thunk(&mut heap);
-    let shared = heap.clone_thunk(thunk).expect("thunk resolves");
-    let crate::eval::ForceClaim::Claimed(guard) =
-        shared.cell().begin_force().expect("claim succeeds")
+    // Blackhole the heap record's own serial cell: inline `ThunkCellSlot`
+    // storage makes `clone_thunk` deep-copy the cell, so blackholing a clone
+    // would leave the record suspended and the sweep would not see the
+    // in-flight force it must reject.
+    let cell = heap.test_share_thunk_cell(thunk).expect("thunk resolves");
+    let crate::eval::ForceClaim::Claimed(guard) = cell.begin_force().expect("claim succeeds")
     else {
         panic!("thunk should be claimable");
     };
@@ -321,8 +327,8 @@ fn shed_then_sweep_reports_cycle_counters() {
     let mut heap = EvalHeap::new();
     let (kept, _frame_a) = alloc_capturing_thunk(&mut heap);
     let (dead, _frame_b) = alloc_capturing_thunk(&mut heap);
-    force_thunk_to(&heap, kept, Value::int(1));
-    force_thunk_to(&heap, dead, Value::int(2));
+    force_thunk_to(&mut heap, kept, Value::int(1));
+    force_thunk_to(&mut heap, dead, Value::int(2));
     assert!(heap.shed_forced_thunk_captures(kept).expect("shed kept"));
     assert!(heap.shed_forced_thunk_captures(dead).expect("shed dead"));
 
@@ -355,7 +361,7 @@ fn flat_closure_region_pop_rejects_retained_closure_edge_into_suffix() {
         .expect("suffix lambda allocates");
     // Force the retained thunk to the suffix lambda: its cached-result edge
     // now points into the reclaimed region.
-    force_thunk_to(&heap, retained, above);
+    force_thunk_to(&mut heap, retained, above);
 
     let error = heap
         .pop_worker_region_if_disconnected(mark)
@@ -385,12 +391,14 @@ fn flat_closure_resolution_keeps_mismatch_and_retired_fidelity() {
     let thunk_ptr_bits = thunk.payload_bits();
 
     let error = heap
-        .get_lambda(Value::heap(
-            ValueTag::Lambda,
-            std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
-                .expect("thunk address is non-null"),
+        .get_lambda(
+            Value::heap(
+                ValueTag::Lambda,
+                std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
+                    .expect("thunk address is non-null"),
+            )
+            .expect("lambda-tagged handle rebuilds"),
         )
-        .expect("lambda-tagged handle rebuilds"))
         .expect_err("live thunk under a lambda getter is a type mismatch");
     assert!(matches!(
         error,
@@ -402,7 +410,7 @@ fn flat_closure_resolution_keeps_mismatch_and_retired_fidelity() {
     ));
 
     // Retire the thunk through a sweep; every getter then reports unknown.
-    force_thunk_to(&heap, thunk, Value::int(1));
+    force_thunk_to(&mut heap, thunk, Value::int(1));
     let roots = EvalRootSet::new();
     let report = heap
         .sweep_unreachable_worker_records(&roots)
@@ -413,12 +421,14 @@ fn flat_closure_resolution_keeps_mismatch_and_retired_fidelity() {
         EvalHeapError::UnknownPointer { .. }
     ));
     let error = heap
-        .get_lambda(Value::heap(
-            ValueTag::Lambda,
-            std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
-                .expect("thunk address is non-null"),
+        .get_lambda(
+            Value::heap(
+                ValueTag::Lambda,
+                std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
+                    .expect("thunk address is non-null"),
+            )
+            .expect("lambda-tagged handle rebuilds"),
         )
-        .expect("lambda-tagged handle rebuilds"))
         .expect_err("retired closure is unknown under every kind");
     assert!(matches!(error, EvalHeapError::UnknownPointer { .. }));
 }

@@ -966,7 +966,8 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
-    pub(super) fn shared_alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+    pub(super) fn shared_alloc_thunk(&mut self, mut thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+        thunk.share_cell(); // each worker's deep clone must share the serial cell
         self.shared_alloc_flat_closure(
             FlatObjectKind::Thunk,
             FlatClosurePayload::Thunk(thunk),
