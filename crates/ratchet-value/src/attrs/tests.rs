@@ -2,8 +2,6 @@
 
 use super::*;
 
-use super::*;
-
 fn symbols(names: &[&[u8]]) -> (SymbolTable, Vec<Symbol>) {
     let mut table = SymbolTable::new();
     let mut ids = Vec::new();
