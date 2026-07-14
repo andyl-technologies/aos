@@ -7,12 +7,17 @@
 
 mod block_io_gate;
 mod block_io_servicer;
+mod block_node_gate;
 mod host_io_runtime;
 mod node_step_gate;
 
 pub use block_io_gate::{
     BlockIoAdvanceOutcome, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
     QemuLiveBlockIoReport, run_qemu_live_block_io_gate,
+};
+pub use block_node_gate::{
+    BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
+    QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
 };
 pub use block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
