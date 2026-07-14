@@ -74,6 +74,7 @@ pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;
 pub(crate) use flat_values::attrs::FlatAttrsPayload;
+pub(in crate::eval) use flat_values::closures::FlatCapturePublication;
 pub use flat_values::closures::WorkerClosurePlacement;
 pub(crate) use flat_values::closures::{FlatClosurePayload, serial_flat_closure_store};
 

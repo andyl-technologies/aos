@@ -499,3 +499,48 @@ fn analysis_annotations_drive_binding_assembly_elision() {
         conservative.stats().thunks_allocated(),
     );
 }
+
+#[test]
+fn dynamic_attr_name_may_force_pending_flat_captures() {
+    // Regression coverage for the FV-5 publication boundary (RFC-0007
+    // task #8): a dynamic attribute *name* evaluates inside the enclosing
+    // attrset's order-sensitive assembly window, so a flat-planned record
+    // allocated by the name expression is deferred to the outermost
+    // publication boundary — and then legitimately forced (here via `seq`
+    // on its fields) before that boundary is reached. The I1 force path
+    // promotes the forced thunk to a shared payload, so publication must
+    // treat it as `ForcedBeforePublication` rather than a lost capture.
+    // Pre-fix this tripped `flat_capture.rs`'s debug assert.
+    let source = r#"let
+      mk = c: { path = c; keep = c; };
+    in {
+      ${let d = mk 5; in builtins.seq d.path (builtins.seq d.keep "k")} = 1;
+    }"#;
+    assert_annotated_json_matches_conservative(source);
+}
+
+#[test]
+fn module_system_option_map_forces_pending_flat_captures() {
+    // The motivating shape from `lib/modules.nix`: `collectOptions` builds
+    // declaration records (`path = prefix ++ [ name ]`) inside binding
+    // assembly, and the option-map `foldl'`'s dynamic attribute name forces
+    // each record's `path` while later assembly windows are still open.
+    // Distilled evalModules-style fixture so the module-system shape class
+    // stays covered by the parity battery.
+    let source = r#"let
+      collect = prefix: decls:
+        builtins.concatLists (builtins.map (
+          name: let
+            decl = {
+              path = prefix ++ [ name ];
+              value = decls.${name};
+            };
+          in [ decl ]
+        ) (builtins.attrNames decls));
+      allDecls = collect [ "options" ] { a = 1; b = 2; };
+      optionMap = builtins.foldl' (
+        acc: decl: acc // { ${builtins.concatStringsSep "." decl.path} = decl.value; }
+      ) {} allDecls;
+    in optionMap"#;
+    assert_annotated_json_matches_conservative(source);
+}

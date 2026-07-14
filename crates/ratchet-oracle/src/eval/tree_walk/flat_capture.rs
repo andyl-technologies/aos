@@ -114,10 +114,26 @@ impl TreeWalk {
             }
         }
 
-        let replaced = self
+        let outcome = self
             .heap
             .publish_unique_flat_closure_capture(pending.value, pending.tail, buffer.finish())
-            .unwrap_or(false);
-        debug_assert!(replaced, "unique pending closure must remain replaceable");
+            .unwrap_or(crate::eval::heap::FlatCapturePublication::Inapplicable);
+        // A pending unique closure must either accept the flat environment or
+        // have been forced before the publication boundary (its cached result
+        // makes the conversion moot — see `FlatCapturePublication`). That
+        // second ending is real: a nested allocation can escape into the
+        // enclosing assembly's own order-sensitive evaluation — a dynamic
+        // attr name forcing a just-allocated record's field, the module
+        // system's `foldl'` over option declarations being the motivating
+        // shape — and the I1 force path then shares the thunk. Anything else
+        // means the publication was silently lost to a plumbing bug.
+        debug_assert!(
+            matches!(
+                outcome,
+                crate::eval::heap::FlatCapturePublication::Published
+                    | crate::eval::heap::FlatCapturePublication::ForcedBeforePublication
+            ),
+            "unique pending closure must be published or already forced"
+        );
     }
 }

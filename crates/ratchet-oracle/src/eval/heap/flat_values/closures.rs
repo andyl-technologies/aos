@@ -126,6 +126,32 @@ impl FlatClosurePayload {
     }
 }
 
+/// Outcome of publishing a deferred flat capture into a pending closure.
+///
+/// Distinguishes the two legitimate non-error endings of the FV-5
+/// post-assembly publication protocol from the inapplicable cases so the
+/// caller's invariant check keeps its teeth: a pending unique closure must
+/// either accept the flat environment or have been forced first — any other
+/// outcome means the publication was lost to a plumbing bug.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::eval) enum FlatCapturePublication {
+    /// The flat environment and capture tail were installed.
+    Published,
+    /// The closure was forced before its enclosing binding form reached the
+    /// publication boundary, so its cached result made the conversion moot.
+    ///
+    /// The I1 force path (`force_value` -> `share_thunk`) promotes every
+    /// forced thunk to an `Arc`-shared payload, which is how this state is
+    /// observed. Skipping the publication is correct: the retained chain
+    /// environment produced the cached value, and the reserved tail bytes
+    /// simply stay unreachable (a missed representation optimization, not a
+    /// wrongness class).
+    ForcedBeforePublication,
+    /// The closure kind or reserved metadata disagreed with the buffer; no
+    /// bytes were written.
+    Inapplicable,
+}
+
 /// Creates the production closure store or its chunked platform fallback.
 pub(crate) fn serial_flat_closure_store(
     arena: &SharedFlatStoreArena,
@@ -259,16 +285,26 @@ impl EvalHeap {
 
     /// Publishes final recursive-binding values into a reserved capture tail.
     ///
-    /// Returns `false` if the closure kind or its reserved metadata disagrees
-    /// with `buffer`; no bytes are written in those cases.
+    /// Returns [`FlatCapturePublication::Inapplicable`] if the closure kind or
+    /// its reserved metadata disagrees with `buffer` (no bytes are written),
+    /// and [`FlatCapturePublication::ForcedBeforePublication`] when the
+    /// pending closure was legitimately forced before its enclosing binding
+    /// form reached the publication boundary — the I1 force path promotes a
+    /// forced thunk to an `Arc`-shared handle, and a forced thunk's captured
+    /// environment is semantically inert (its result is cached; the flat
+    /// conversion is only a representation optimization), so skipping the
+    /// publication is correct. That interleaving is real in module-system
+    /// shapes: a nested allocation escapes into the enclosing assembly's
+    /// order-sensitive evaluation (a dynamic attr name forcing an option
+    /// record's field, for example) and is forced before the boundary.
     pub(in crate::eval) fn publish_unique_flat_closure_capture(
         &mut self,
         value: Value,
         handle: FlatValueTailHandle,
         buffer: EvalFlatCaptureBuffer,
-    ) -> Result<bool, EvalHeapError> {
+    ) -> Result<FlatCapturePublication, EvalHeapError> {
         if !buffer.is_ready() {
-            return Ok(false);
+            return Ok(FlatCapturePublication::Inapplicable);
         }
         let (ptr, kind) = match value.tag() {
             ValueTag::Thunk => (
@@ -279,10 +315,10 @@ impl EvalHeap {
                 value.as_lambda_ptr().map_err(EvalHeapError::Value)?,
                 FlatObjectKind::Lambda,
             ),
-            _ => return Ok(false),
+            _ => return Ok(FlatCapturePublication::Inapplicable),
         };
         if handle.len() != buffer.values().len() {
-            return Ok(false);
+            return Ok(FlatCapturePublication::Inapplicable);
         }
         let env = EvalEnv::inline_flat(
             buffer.allocation_site(),
@@ -302,19 +338,30 @@ impl EvalHeap {
         match payload {
             FlatClosurePayload::Thunk(thunk) => {
                 if !matches!(thunk.kind(), EvalThunkKind::Node { .. }) {
-                    return Ok(false);
+                    return Ok(FlatCapturePublication::Inapplicable);
                 }
                 tail.copy_from_slice(buffer.values());
-                Ok(thunk.replace_node_env(env))
+                if thunk.replace_node_env(env) {
+                    Ok(FlatCapturePublication::Published)
+                } else {
+                    Ok(FlatCapturePublication::Inapplicable)
+                }
             }
             FlatClosurePayload::Lambda(lambda) => {
                 tail.copy_from_slice(buffer.values());
                 lambda.replace_env(env);
-                Ok(true)
+                Ok(FlatCapturePublication::Published)
             }
-            FlatClosurePayload::SharedThunk(_)
-            | FlatClosurePayload::Primop(_)
-            | FlatClosurePayload::Retired(_) => Ok(false),
+            // The pending thunk was forced before the publication boundary:
+            // the I1 force path shares the handle, its result is already
+            // cached, and its retained chain environment stays semantically
+            // correct — the flat conversion window has simply passed.
+            FlatClosurePayload::SharedThunk(_) => {
+                Ok(FlatCapturePublication::ForcedBeforePublication)
+            }
+            FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => {
+                Ok(FlatCapturePublication::Inapplicable)
+            }
         }
     }
 
