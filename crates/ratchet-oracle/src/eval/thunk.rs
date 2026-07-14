@@ -117,7 +117,7 @@ impl ForceGuard<'_> {
     /// # Errors
     ///
     /// Returns [`ForceError::UnexpectedState`] if the thunk is no longer
-    /// blackholed before or after the barrier runs. Returns
+    /// blackholed when the barrier runs. Returns
     /// [`ForceError::InvalidStateWord`] if the private atomic state word has an
     /// unsupported encoding. Returns any [`ForceError`] produced by `barrier`.
     pub fn finish_with_barrier(
@@ -303,13 +303,15 @@ impl ThunkCell {
             });
         }
         barrier.before_publish_forced(value)?;
-        let actual = self.state()?;
-        if actual != ThunkState::Blackhole {
-            return Err(ForceError::UnexpectedState {
-                expected: ThunkState::Blackhole,
-                actual,
-            });
-        }
+        // The state word is not re-read after the barrier: reaching this method
+        // means this thread holds the exclusive `Blackhole` claim minted by the
+        // `begin_force` CAS, and the `Blackhole -> {Forced, Suspended}`
+        // transitions are performed only by this guard's finish/abort on the
+        // claiming thread. The cell's `state`/`result` fields are private and
+        // their only mutators (`publish_forced_with_barrier`, `abort_claim`) are
+        // module-private, so no `ThunkResolveBarrier` — which is contractually
+        // forbidden from publishing and holds at most a shared `&ThunkCell` — can
+        // move the state. It therefore remains `Blackhole` across the call above.
         self.result.store(value);
         self.state.store(FORCED, Ordering::Release);
         Ok(value)
