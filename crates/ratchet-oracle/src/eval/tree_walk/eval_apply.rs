@@ -1,14 +1,7 @@
 //! Function application, `let`/lambda evaluation, and error-context propagation.
 
+use super::primop_builtin_cache::{CachedPrimop, MAX_DIRECT_PRIMOP_ARGS};
 use super::*;
-
-/// Largest argument count any direct-lowered builtin call site can have.
-///
-/// The widest [`BuiltinDirect`] shape is `StrictTernary` (three arguments), so a
-/// child slice no longer than this fits in the stack buffer used by
-/// [`TreeWalk::eval_primop`]. A longer slice cannot be a valid direct call and is
-/// routed to the allocating path, where the arity check rejects it.
-const MAX_DIRECT_PRIMOP_ARITY: usize = 3;
 
 impl TreeWalk {
     pub(super) fn eval_let(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -251,45 +244,27 @@ impl TreeWalk {
             _ => return Err(self.invalid_payload(id, node, "primop payload")),
         };
         let module = self.current_module;
-        // Resolve the builtin for this call site. The lowered IR is immutable, so
-        // a `(module, node)` pair always names the same builtin; only successful
-        // resolutions are cached, and unknown-symbol / unsupported-primop sites
-        // fall through to the registry on every call so their diagnostics are
-        // byte-identical across repeats.
-        let builtin = match self.primop_builtin_cache.get(module, id) {
-            Some(kind) => {
-                self.primop_builtin_cache.record_hit();
-                Builtin::from_kind(kind)
-            }
-            None => {
-                let name = self.symbols.resolve(symbol).ok_or_else(|| {
-                    TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
-                })?;
-                // Preserve the original diagnostic order: an invalid child slice is
-                // reported before an unsupported primop.
-                if self.current_ir().arena.child_slice(args).is_none() {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
-                        node.span,
-                    ));
-                }
-                let Some(builtin) = lookup_builtin(name) else {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
-                        node.span,
-                    ));
-                };
-                self.primop_builtin_cache.record_miss();
-                self.primop_builtin_cache.insert(module, id, builtin.kind());
-                builtin
-            }
-        };
-
-        // Fetch the argument node ids without a per-call heap allocation. Direct
-        // primops have bounded arity, so the common case copies the ids into a
-        // fixed stack buffer; a slice longer than any direct arity cannot be a
-        // valid direct call and is routed to the (allocating) arity-check path.
         let call = BuiltinCall::new(id, node.span, symbol);
+
+        // Cache hit: the builtin and its argument ids were resolved and validated
+        // on the first evaluation of this node. Because the lowered IR is
+        // immutable, both stay valid, so a repeat needs neither a registry lookup
+        // nor an arena child-slice access — it applies the recorded ids directly.
+        if let Some(entry) = self.primop_builtin_cache.get(module, id) {
+            self.primop_builtin_cache.record_hit();
+            let builtin = Builtin::from_kind(entry.kind());
+            return builtin.apply_direct(self, call, node, entry.args());
+        }
+
+        // Miss: resolve the builtin, preserving the original diagnostic order — an
+        // invalid child slice is reported before an unsupported primop. Only
+        // successful resolutions with a cacheable (direct) arity are recorded;
+        // unknown-symbol, unsupported-primop, and over-arity sites fall through to
+        // the registry on every call so their diagnostics stay byte-identical
+        // across repeats.
+        let name = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
         let child = self.current_ir().arena.child_slice(args).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
@@ -297,20 +272,48 @@ impl TreeWalk {
             )
         })?;
         let len = child.len();
-        if len <= MAX_DIRECT_PRIMOP_ARITY {
-            let mut buffer = [IrId::new(0); MAX_DIRECT_PRIMOP_ARITY];
-            buffer[..len].copy_from_slice(child);
+        // Copy the argument ids the common (direct) arity needs into a stack
+        // buffer. This is the last use of the child-slice borrow of `self`, which
+        // must end before the cache insert and the `&mut self` apply below.
+        let inline_len = len.min(MAX_DIRECT_PRIMOP_ARGS);
+        let mut buffer = [IrId::new(0); MAX_DIRECT_PRIMOP_ARGS];
+        buffer[..inline_len].copy_from_slice(&child[..inline_len]);
+        let Some(builtin) = lookup_builtin(name) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                node.span,
+            ));
+        };
+        self.primop_builtin_cache.record_miss();
+        if len <= MAX_DIRECT_PRIMOP_ARGS {
+            // Record the builtin and its validated argument ids so later
+            // evaluations of this node skip both the registry and the arena.
+            self.primop_builtin_cache.insert(
+                module,
+                id,
+                CachedPrimop::new(builtin.kind(), &buffer[..len]),
+            );
             builtin.apply_direct(self, call, node, &buffer[..len])
         } else {
-            let mut buffer = Vec::new();
-            buffer.try_reserve_exact(len).map_err(|_| {
+            // An over-arity call cannot be a valid direct primop; leave it
+            // uncached (the arity check rejects it identically every call) and
+            // hand the full slice to the allocating path. Re-fetch the child
+            // slice since the borrow above was released.
+            let child = self.current_ir().arena.child_slice(args).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                    node.span,
+                )
+            })?;
+            let mut heap = Vec::new();
+            heap.try_reserve_exact(len).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ListAllocationFailed { id, len },
                     node.span,
                 )
             })?;
-            buffer.extend_from_slice(child);
-            builtin.apply_direct(self, call, node, &buffer)
+            heap.extend_from_slice(child);
+            builtin.apply_direct(self, call, node, &heap)
         }
     }
 
