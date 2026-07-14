@@ -916,7 +916,14 @@ mod tests {
         sample["raw_ram_digest"] = json!("61".repeat(32));
         sample["raw_ram_region_map_digest"] = json!("63".repeat(32));
         sample["raw_ram_regions"] = json!(1);
-        sample["raw_ram_bytes"] = json!(128 * 1024 * 1024_u64);
+        // FlatView-mapped RAM is a different quantity from the RAMBlock backing
+        // store: on pc-q35 it is 256 KiB short, because the legacy-BIOS PAM
+        // window (0xC0000-0xFFFFF) is ROM-shadowed once firmware has run and is
+        // not RAM-mapped at the terminal boundary. Model that gap (128 MiB
+        // RAMBlock minus the 256 KiB shadow) rather than the old raw==guest
+        // equality that terminal_trace normalization documents as false for
+        // pc-q35 and never exercised by a live run.
+        sample["raw_ram_bytes"] = json!(128 * 1024 * 1024_u64 - 256 * 1024);
         sample["raw_ram_status"] = json!(0);
         sample["vmstate_digest"] = json!("62".repeat(32));
         sample["vmstate_bytes"] = json!(4096);

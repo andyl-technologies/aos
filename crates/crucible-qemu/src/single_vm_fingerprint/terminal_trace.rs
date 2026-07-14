@@ -408,8 +408,10 @@ fn canonical_sample(
     // measurement), so carry the RAMBlock total here rather than the mapped
     // total. The mapped total, region map, and raw content are already folded
     // into `ram_digest` by fold_raw_ram_identity, so terminal RAM determinism is
-    // preserved without conflating the two measurements. (In the in-process
-    // doubles raw_ram_bytes == guest_ram_bytes, so this is transparent to them.)
+    // preserved without conflating the two measurements. (The in-process
+    // doubles model the same gap: they emit raw_ram_bytes as the RAMBlock total
+    // minus the pc-q35 PAM shadow, so this path is exercised rather than bypassed
+    // by a raw==guest equality.)
     sample.remove("raw_ram_bytes");
     sample.insert(
         "ram_bytes".to_owned(),
