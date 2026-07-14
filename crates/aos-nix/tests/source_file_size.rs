@@ -27,7 +27,14 @@ const MAX_LINES: usize = 1000;
 ///   parity-relevant error-class surface (§4 — "merging or renaming a variant
 ///   ... is a parity event"), so the §2 "a cohesive unit beats a contrived
 ///   split" exception applies: one indivisible type, one file.
-const ALLOWLIST: &[&str] = &["ratchet-oracle/src/eval/tree_walk/error_kind.rs"];
+/// - `ratchet-oracle/src/eval/heap/errors.rs` is the single exhaustive
+///   `EvalHeapError` enum (plus its constructor helpers), split out of
+///   `heap/mod.rs`. The same §4 parity-surface rationale as `error_kind.rs`
+///   applies: one indivisible type, one file.
+const ALLOWLIST: &[&str] = &[
+    "ratchet-oracle/src/eval/tree_walk/error_kind.rs",
+    "ratchet-oracle/src/eval/heap/errors.rs",
+];
 
 /// True for a workspace crate dir governed by the RFC-0007 §2 cap: the Nix
 /// dialect band (`aos-nix`, `aos-nix-*`) and the engine band (`ratchet-*`).
