@@ -568,3 +568,48 @@ imprecision (§11.5), and cheap to key (§11.7) — but whether it delivers a
 *product-level* win rather than a marginal one now rests entirely on the
 reverse-dep-cone distribution (§11.8), which is one more no-eval measurement
 away. I recommend building M2-measure-2 before any record store.
+
+### 11.9 M2-measure-2 result (2026-07-14): the gate opens
+
+The analysis (`pkgs/_memo2-cone-analysis.nix`, a pure `readDir` +
+`functionArgs` walk — no stdenv, no builds; run with
+`nix eval --impure --json --file pkgs/_memo2-cone-analysis.nix`) resolved the
+gate **favourably** across 265 package files:
+
+| Reverse-dep cone (packages invalidated per edit, of 265) | |
+| --- | --- |
+| min / **median** / p90 / p99 / max | 1 / **3** / 32 / 135 / 150 |
+| mean | 12.8 |
+| **median leaf-edit replay fraction** | **98.9%** (3 / 265 invalidated) |
+| p90 replay fraction | 88.0% (32 / 265) |
+
+| Static-resolution coverage (2,034 formals over 265 files) | |
+| --- | --- |
+| dep-edge / framework / **decline** | 1,029 / 1,004 / **1** |
+| **resolved fraction** | **99.9%** |
+| unreadable files | 0 |
+
+- **The distribution is strongly right-skewed toward small cones.** The median
+  package's edit invalidates only 3 of 265 boundaries — 98.9% of the set replays.
+  Even at p90 an edit invalidates 32 (88% replay). Only a handful of deep
+  library packages (p99 = 135, max = 150) have large cones, and those are
+  *correctly* large: editing a widely-depended-on library should rebuild its
+  dependents. The common edit — a leaf tool, a version bump on a mid-tree
+  package — sits at the median.
+- **Coverage is essentially total.** 99.9% of formals resolve to a package
+  dependency or a framework reference; the *only* decline in the whole set is
+  `linux`'s `extraConfig` formal (a kernel config arg, correctly not a package —
+  that boundary declines, safely). Every package file's formals read cleanly.
+- **The fat hubs are isolated as designed.** `fetchurl` (250), `mkDerivation`
+  (250), `gnumake` (212), `bash` (56) … are framework references, not
+  dependency-cone edges, so they do not distort the per-package distribution;
+  their (correctly global) invalidation reach is reported separately.
+
+**Verdict: the gate opens — M2-record proceeds with source-Merkle keys.** The
+lever is real (§10: 1,274 boundary applications own substantial cold wall), the
+key is sound and cheap (§11.2–11.7), and a typical partial-warm edit now replays
+~99% of package boundaries instead of falling to full cold. The one residual
+question is per-package recompute cost weighting: cone *counts* are favourable,
+but the wall win is (cone-weighted-by-recompute-cost); the drv-projection record
+store (§9 M2-record) is where that is realised and measured against the byte
+gate.
