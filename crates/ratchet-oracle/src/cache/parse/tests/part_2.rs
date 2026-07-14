@@ -751,3 +751,50 @@ fn lowered_ir_roundtrip_preserves_captured_search_path_literal() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn content_hash_key_matches_source_key_and_addresses_the_same_entry() {
+    use crate::cache::ParseFileContentHash;
+
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let content_hash = ParseFileContentHash::for_source(source);
+
+    // The source-bytes and content-hash key derivations must agree.
+    assert_eq!(cache.key_for_source(source), cache.key_for_content_hash(content_hash));
+
+    // Storing through the content-hash path is a hit through the source path and
+    // vice versa: both derivations address the same on-disk entry.
+    let stored = cache
+        .load_or_parse_bytes_with_content_hash(source, content_hash, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    assert!(!stored.hit);
+    assert!(stored.stored);
+
+    let via_source = cache
+        .load_cached_bytes(source)
+        .expect("cached load succeeds")
+        .expect("entry is present");
+    assert!(via_source.hit);
+    assert_eq!(via_source.key, stored.key);
+
+    let reparse = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("second load succeeds");
+    assert!(reparse.hit);
+    assert_eq!(reparse.key, stored.key);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn distinct_sources_produce_distinct_content_hash_keys() {
+    use crate::cache::ParseFileContentHash;
+
+    let cache = ParseCache::new(PathBuf::from("/nonexistent/parse"));
+    let first = cache.key_for_content_hash(ParseFileContentHash::for_source(b"let a = 1; in a"));
+    let second = cache.key_for_content_hash(ParseFileContentHash::for_source(b"let b = 2; in b"));
+
+    assert_ne!(first, second);
+}

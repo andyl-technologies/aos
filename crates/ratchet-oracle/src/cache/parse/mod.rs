@@ -48,7 +48,13 @@ use crate::syntax::{
 use aos_nix_dialect::nix_lower;
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 12;
+///
+/// Bumping this invalidates every existing parse-cache entry (and, because it is
+/// folded into [`lowered_ir_artifact_fingerprint`], the fact sidecar / JIT /
+/// source-less memo keys) as a clean cold miss; old entries are never misread.
+/// v13: parse-cache keys are now derived from the source's BLAKE3 content hash
+/// rather than the raw source bytes, so the source is hashed once per import.
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 13;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const LOWERED_IR_FINGERPRINT_DOMAIN: &[u8] = b"aos-nix-lowered-ir-fingerprint-v1";
@@ -110,12 +116,34 @@ pub struct ParseCacheKey(ParseCacheSourceHash);
 
 impl ParseCacheKey {
     /// Computes a parse-cache key for source bytes.
+    ///
+    /// The key is derived from the source's BLAKE3 content hash rather than the
+    /// raw source bytes, so callers that already hold that content hash (the file
+    /// memo's `(realpath, content hash)` key) reuse it instead of hashing the
+    /// whole source a second time. Keying off the content hash is collision-safe:
+    /// distinct sources have distinct BLAKE3 content hashes.
     pub fn for_source(source: &[u8], schema_version: u32, flags: ParseCacheFlags) -> Self {
+        Self::from_content_hash(
+            ParseFileContentHash::for_source(source),
+            schema_version,
+            flags,
+        )
+    }
+
+    /// Computes a parse-cache key from a source's BLAKE3 content hash.
+    ///
+    /// This is the shared derivation for [`Self::for_source`] and callers that
+    /// already computed the content hash; both address the same cache entry.
+    pub fn from_content_hash(
+        content_hash: ParseFileContentHash,
+        schema_version: u32,
+        flags: ParseCacheFlags,
+    ) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(KEY_PERSONALIZATION);
         hasher.update(&schema_version.to_le_bytes());
         flags.update_hasher(&mut hasher);
-        hasher.update(source);
+        hasher.update(&content_hash.as_durable_hash().as_bytes());
         Self(ParseCacheSourceHash::from_durable_hash(
             DurableBlake3Hash::from_hasher(hasher),
         ))
@@ -346,9 +374,11 @@ impl FileParseMemo {
             });
         }
 
-        let parsed = self
-            .cache
-            .load_or_parse_bytes(&source, Some(realpath.to_string_lossy().into_owned()))?;
+        let parsed = self.cache.load_or_parse_bytes_with_content_hash(
+            &source,
+            file_key.content_hash(),
+            Some(realpath.to_string_lossy().into_owned()),
+        )?;
         self.entries.insert(file_key.clone(), parsed.clone());
         Ok(CachedFileParse {
             file_key,
@@ -417,7 +447,15 @@ impl ParseCache {
 
     /// Computes this cache's key for source bytes.
     pub fn key_for_source(&self, source: &[u8]) -> ParseCacheKey {
-        ParseCacheKey::for_source(source, self.schema_version, self.flags)
+        self.key_for_content_hash(ParseFileContentHash::for_source(source))
+    }
+
+    /// Computes this cache's key from a source's BLAKE3 content hash.
+    ///
+    /// Callers that already hold the content hash (the file memo's
+    /// `(realpath, content hash)` key) use this to avoid re-hashing the source.
+    pub fn key_for_content_hash(&self, content_hash: ParseFileContentHash) -> ParseCacheKey {
+        ParseCacheKey::from_content_hash(content_hash, self.schema_version, self.flags)
     }
 
     /// Returns the entry directory and file paths for a cache key.
@@ -440,7 +478,23 @@ impl ParseCache {
     /// Returns [`ParseCacheError`] if a complete cache entry cannot be read or
     /// decoded.
     pub fn load_cached_bytes(&self, source: &[u8]) -> Result<Option<CachedParse>, ParseCacheError> {
-        let key = self.key_for_source(source);
+        self.load_cached_bytes_with_content_hash(ParseFileContentHash::for_source(source))
+    }
+
+    /// Loads a complete cached parse artifact addressed by a source content hash.
+    ///
+    /// Behaves exactly like [`Self::load_cached_bytes`] but takes the source's
+    /// precomputed BLAKE3 content hash so the source is not hashed again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if a complete cache entry cannot be read or
+    /// decoded.
+    pub fn load_cached_bytes_with_content_hash(
+        &self,
+        content_hash: ParseFileContentHash,
+    ) -> Result<Option<CachedParse>, ParseCacheError> {
+        let key = self.key_for_content_hash(content_hash);
         let entry = self.entry_for_key(key);
         if !entry.is_complete() {
             return Ok(None);
@@ -474,10 +528,48 @@ impl ParseCache {
         source: &[u8],
         source_hint: Option<String>,
     ) -> Result<CachedParse, ParseCacheError> {
-        let key = self.key_for_source(source);
+        self.load_or_parse_bytes_with_content_hash(
+            source,
+            ParseFileContentHash::for_source(source),
+            source_hint,
+        )
+    }
+
+    /// Loads or parses using a precomputed source content hash.
+    ///
+    /// Behaves exactly like [`Self::load_or_parse_bytes`] but takes the source's
+    /// BLAKE3 content hash so the source is hashed once per import: the file memo
+    /// computes it for its `(realpath, content hash)` key and threads it here
+    /// instead of the cache re-hashing the whole source for its own key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] when parsing or scope resolution fails. Cache
+    /// write failures are reported through [`CachedParse::stored`] rather than
+    /// returned as errors, keeping the cache performance-only for evaluator
+    /// callers.
+    pub fn load_or_parse_bytes_with_content_hash(
+        &self,
+        source: &[u8],
+        content_hash: ParseFileContentHash,
+        source_hint: Option<String>,
+    ) -> Result<CachedParse, ParseCacheError> {
+        let key = self.key_for_content_hash(content_hash);
         let entry = self.entry_for_key(key);
-        if let Ok(Some(cached)) = self.load_cached_bytes(source) {
-            return Ok(cached);
+        // Read the cached artifact through the entry computed above; a complete
+        // entry whose payload fails to decode falls through to a fresh parse.
+        if entry.is_complete()
+            && let Ok((resolved, ir, facts_current)) = entry.read_resolved_and_ir()
+        {
+            return Ok(CachedParse {
+                key,
+                entry,
+                resolved,
+                ir,
+                hit: true,
+                stored: true,
+                facts_current,
+            });
         }
 
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
