@@ -165,7 +165,7 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
 }
 
 #[test]
-fn exact_probe_bisection_refines_to_one_instruction_and_content_addresses_dump() {
+fn exact_probe_bisection_refines_to_one_instruction_and_content_addresses_dumped_state() {
     let scenario = scenario();
     let first = stream(&[1, 2, 3], 9);
     let second = stream(&[1, 7, 3], 9);
