@@ -31,9 +31,18 @@ const MAX_LINES: usize = 1000;
 ///   `EvalHeapError` enum (plus its constructor helpers), split out of
 ///   `heap/mod.rs`. The same §4 parity-surface rationale as `error_kind.rs`
 ///   applies: one indivisible type, one file.
+/// - `ratchet-runtime-ffi/src/safety.rs` is the reviewed-unsafe DISCIPLINE
+///   MANIFEST: the per-file token allowlists, boundary-count pins, and
+///   SAFETY-comment assertions that gate every unsafe line in the JIT/FFI
+///   band. Its length is proportional to the reviewed surface, and its value
+///   is the single-file audit view — a reviewer diffs one file to see every
+///   allowlisted boundary change. Splitting it would scatter exactly what it
+///   exists to concentrate, and relocating pin definitions is itself a
+///   security-sensitive re-home. Team-lead ruling: exempt as a cohesive unit.
 const ALLOWLIST: &[&str] = &[
     "ratchet-oracle/src/eval/tree_walk/error_kind.rs",
     "ratchet-oracle/src/eval/heap/errors.rs",
+    "ratchet-runtime-ffi/src/safety.rs",
 ];
 
 /// True for a workspace crate dir governed by the RFC-0007 §2 cap: the Nix
