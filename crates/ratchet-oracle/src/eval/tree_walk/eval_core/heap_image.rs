@@ -96,10 +96,12 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use super::super::{
-    ForceCacheOptionsIdentity, ImportCacheEntry, ModuleSource, TreeWalkModule, annotate_import_ir,
-    nix_lower, parse_bytes_with_symbols, resolve,
+    ForceCacheOptionsIdentity, ImportCacheEntry, ImportGlobalScope, ModuleSource, TreeWalkModule,
+    annotate_import_ir, nix_lower, parse_bytes_with_symbols, resolve,
 };
+use crate::compile::IrId;
 use crate::eval::heap::{EvalHeap, EvalHeapSnapshotError};
+use crate::syntax::Span;
 use crate::value::Value;
 use crate::value::compressed::CompressedValueWord;
 use ratchet_value::heap::HeapImage;
@@ -267,15 +269,40 @@ impl TreeWalk {
             name: String::from_utf8_lossy(&module.name).into_owned(),
             message,
         };
-        // The serial fresh-import fast path (eval_load): move the live table
-        // into the parser and adopt the grown superset back afterwards.
-        let live_symbols = std::mem::take(&mut self.symbols);
-        let parsed = parse_bytes_with_symbols(&module.source, live_symbols)
+        // Parse-cache fast path first (step-4 W3): in production every
+        // manifest module is a warm parse-cache entry, so the reload is a
+        // cached-IR load plus the symbol remap, not a fresh front-end run.
+        let synthetic = IrId::new(0);
+        let synthetic_span = Span::new(0, 0);
+        let realpath = PathBuf::from(String::from_utf8_lossy(&module.name).into_owned());
+        let cached = self
+            .load_parse_cached_import(
+                synthetic,
+                synthetic_span,
+                &realpath,
+                &module.name,
+                &module.source,
+                ImportGlobalScope::Fresh,
+            )
             .map_err(|error| reload_error(error.to_string()))?;
-        let resolved = resolve(parsed).map_err(|error| reload_error(error.to_string()))?;
-        let mut ir = nix_lower(resolved).map_err(|error| reload_error(error.to_string()))?;
-        let _ = annotate_import_ir(&mut ir);
-        self.symbols = std::mem::take(&mut ir.symbols);
+        let ir = match cached {
+            Some(cached) => self
+                .remap_cached_import_ir(synthetic, synthetic_span, &module.name, cached.ir)
+                .map_err(|error| reload_error(error.to_string()))?,
+            None => {
+                // The serial fresh-import fast path (eval_load): move the live
+                // table into the parser and adopt the grown superset back.
+                let live_symbols = std::mem::take(&mut self.symbols);
+                let parsed = parse_bytes_with_symbols(&module.source, live_symbols)
+                    .map_err(|error| reload_error(error.to_string()))?;
+                let resolved = resolve(parsed).map_err(|error| reload_error(error.to_string()))?;
+                let mut ir =
+                    nix_lower(resolved).map_err(|error| reload_error(error.to_string()))?;
+                let _ = annotate_import_ir(&mut ir);
+                self.symbols = std::mem::take(&mut ir.symbols);
+                ir
+            }
+        };
         self.modules.push(TreeWalkModule::new(
             ir,
             module.path_literal_base.clone(),

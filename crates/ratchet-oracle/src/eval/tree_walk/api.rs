@@ -142,6 +142,26 @@ pub fn eval_whnf_owned_with_options_realizer_eval_cache_and_engine(
     if let Some(engine) = engine {
         evaluator.set_tier1_engine(engine);
     }
+    // Step-4 W4 restore seam (default OFF): with AOS_NIX_SNAPSHOT=1 and a
+    // cache root, try adopting a persisted prelude snapshot before any
+    // evaluation. Every refusal falls back to the cold path.
+    #[cfg(feature = "candidate_c_value")]
+    {
+        use super::eval_core::SnapshotAdoptAttempt;
+        match evaluator.maybe_adopt_prelude_snapshot() {
+            SnapshotAdoptAttempt::Adopted => {
+                if evaluator.options.eval_stats_dump() {
+                    eprintln!("aos-nix snapshot: prelude snapshot adopted");
+                }
+            }
+            SnapshotAdoptAttempt::Refused(reason) => {
+                if evaluator.options.eval_stats_dump() {
+                    eprintln!("aos-nix snapshot: adoption refused, cold path: {reason}");
+                }
+            }
+            SnapshotAdoptAttempt::Disabled => {}
+        }
+    }
     eval_whnf_owned_with_evaluator(evaluator, ifd_realizer)
 }
 
@@ -165,6 +185,21 @@ fn eval_whnf_owned_with_evaluator(
     evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
+    // Step-4 W3 capture seam (default OFF): the prelude-warmer flow writes
+    // the post-eval snapshot when AOS_NIX_SNAPSHOT=1 + AOS_NIX_SNAPSHOT_WARM=1.
+    // Post-eval only — the capture-time collapse leaves the heap capture-only
+    // — and advisory: a write failure is reported, never an eval error.
+    #[cfg(feature = "candidate_c_value")]
+    if super::eval_core::snapshot_tier_enabled() && super::eval_core::snapshot_warm_requested() {
+        match evaluator.write_prelude_snapshot() {
+            Ok(path) => {
+                if evaluator.options.eval_stats_dump() {
+                    eprintln!("aos-nix snapshot: wrote {}", path.display());
+                }
+            }
+            Err(error) => eprintln!("aos-nix snapshot: warmer write failed: {error}"),
+        }
+    }
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);

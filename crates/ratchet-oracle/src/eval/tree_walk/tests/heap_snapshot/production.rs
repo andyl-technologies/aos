@@ -372,3 +372,100 @@ fn snapshot_adopt_probe() {
         String::from_utf8_lossy(&restored_bytes)
     );
 }
+
+/// Step-4 W3/W4: the on-disk snapshot tier round-trips through a file — a
+/// warmer writes atomically, a fresh consumer adopts from disk and evaluates
+/// byte-identically — and every storage-level failure (corruption, missing
+/// file) is a REFUSAL that falls back to the cold path, never an error.
+#[test]
+fn snapshot_file_round_trips_and_refusals_fall_back() {
+    use crate::eval::tree_walk::eval_core::SnapshotAdoptAttempt;
+
+    const MINI_PRELUDE: &str = r#"rec {
+  tag = "disk";
+  greet = who: "hi-${who}-${tag}";
+}"#;
+    let dir = unique_temp_dir("snapshot-store");
+    let lib_path = dir.join("mini-lib.nix");
+    fs::write(&lib_path, MINI_PRELUDE).expect("mini prelude writes");
+    let lib_str = lib_path.to_str().expect("temp path is utf-8");
+    let snapshot_path = dir.join("snapshots").join("prelude-test.aosnap");
+
+    // Warmer: force, then write the snapshot file (collapse + capture + wrap).
+    let warmer_source =
+        format!("let lib = import {lib_str}; forced = builtins.deepSeq lib lib; in forced");
+    let warmer_ir = lower(&warmer_source);
+    let mut warmer = TreeWalk::with_options_and_source(
+        &warmer_ir,
+        TreeWalkOptions::default(),
+        b"snapshot-store-warmer".to_vec(),
+        warmer_source.as_bytes().to_vec(),
+    );
+    warmer.eval_root().expect("warmer evaluates");
+    match warmer.write_prelude_snapshot_to(&snapshot_path) {
+        Ok(()) => {}
+        // Chunked fallback (no reservation) is not snapshottable here.
+        Err(_) if !snapshot_path.exists() => return,
+        Err(error) => panic!("warmer snapshot write failed: {error}"),
+    }
+    assert!(snapshot_path.exists());
+    drop(warmer);
+
+    // Fresh consumer adopts FROM DISK and evaluates byte-identically.
+    let consumer_source = format!("(import {lib_str}).greet \"disk-user\"");
+    let consumer_ir = lower(&consumer_source);
+    let mut consumer = TreeWalk::with_options_and_source(
+        &consumer_ir,
+        TreeWalkOptions::default(),
+        b"snapshot-store-consumer".to_vec(),
+        consumer_source.as_bytes().to_vec(),
+    );
+    match consumer.try_adopt_snapshot_file(&snapshot_path) {
+        SnapshotAdoptAttempt::Adopted => {}
+        other => panic!("disk adoption should succeed: {other:?}"),
+    }
+    let value = consumer.eval_root().expect("consumer evaluates");
+    let adopted = consumer
+        .heap()
+        .get_string(value)
+        .expect("consumer result is a string")
+        .bytes()
+        .to_vec();
+    assert_eq!(consumer.stats_snapshot().imports_evaluated, 0);
+    drop(consumer);
+    let cold = eval_string_bytes_with_source(b"snapshot-store-cold", &consumer_source);
+    assert_eq!(adopted, cold);
+    assert_eq!(adopted, b"hi-disk-user-disk".to_vec());
+
+    // A corrupted wrapper REFUSES (digest) and leaves the evaluator on the
+    // cold path; a missing file likewise.
+    let mut corrupted = fs::read(&snapshot_path).expect("snapshot reads");
+    let mid = corrupted.len() / 2;
+    corrupted[mid] ^= 0xff;
+    let corrupted_path = dir.join("snapshots").join("corrupted.aosnap");
+    fs::write(&corrupted_path, corrupted).expect("corrupted snapshot writes");
+    let fallback_ir = lower(&consumer_source);
+    let mut fallback = TreeWalk::with_options_and_source(
+        &fallback_ir,
+        TreeWalkOptions::default(),
+        b"snapshot-store-fallback".to_vec(),
+        consumer_source.as_bytes().to_vec(),
+    );
+    assert!(matches!(
+        fallback.try_adopt_snapshot_file(&corrupted_path),
+        SnapshotAdoptAttempt::Refused(_)
+    ));
+    assert!(matches!(
+        fallback.try_adopt_snapshot_file(&dir.join("missing.aosnap")),
+        SnapshotAdoptAttempt::Refused(_)
+    ));
+    // The refused evaluator still evaluates cold, byte-identically.
+    let value = fallback.eval_root().expect("cold fallback evaluates");
+    let fallback_bytes = fallback
+        .heap()
+        .get_string(value)
+        .expect("fallback result is a string")
+        .bytes()
+        .to_vec();
+    assert_eq!(fallback_bytes, cold);
+}

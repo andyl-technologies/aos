@@ -12,6 +12,12 @@ mod force_persistence;
 mod force_subject;
 #[cfg(feature = "candidate_c_value")]
 mod heap_image;
+#[cfg(feature = "candidate_c_value")]
+mod snapshot_store;
+#[cfg(feature = "candidate_c_value")]
+pub(in crate::eval::tree_walk) use snapshot_store::{
+    SnapshotAdoptAttempt, snapshot_tier_enabled, snapshot_warm_requested,
+};
 mod memo;
 mod module_env;
 mod stack;
