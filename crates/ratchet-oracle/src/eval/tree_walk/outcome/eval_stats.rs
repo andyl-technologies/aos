@@ -19,6 +19,9 @@ pub struct EvalStats {
     /// Forces served by the single-entry direct-evaluation path.
     pub(crate) single_entry_thunks_forced: u64,
     pub(crate) thunk_cache_hits: u64,
+    /// Re-forces of an already-`Forced` thunk served before the share/claim
+    /// protocol by the evaluator's pre-share force fast path.
+    pub(crate) reforce_fast_path_hits: u64,
     pub(crate) inline_cache_hits: u64,
     pub(crate) inline_cache_misses: u64,
     pub(crate) shape_transitions: u64,
@@ -168,6 +171,11 @@ impl EvalStats {
     /// Returns the number of already-forced thunk cell reuses.
     pub const fn thunk_cache_hits(&self) -> u64 {
         self.thunk_cache_hits
+    }
+
+    /// Returns the number of re-forces served by the pre-share force fast path.
+    pub const fn reforce_fast_path_hits(&self) -> u64 {
+        self.reforce_fast_path_hits
     }
 
     /// Returns the number of inline-cache hits reported by active evaluator tiers.
@@ -420,6 +428,7 @@ impl EvalStats {
             single_entry_thunks_allocated,
             single_entry_thunks_forced,
             thunk_cache_hits,
+            reforce_fast_path_hits,
             inline_cache_hits,
             inline_cache_misses,
             shape_transitions,
@@ -515,6 +524,9 @@ impl EvalStats {
             .single_entry_thunks_forced
             .saturating_add(single_entry_thunks_forced);
         self.thunk_cache_hits = self.thunk_cache_hits.saturating_add(thunk_cache_hits);
+        self.reforce_fast_path_hits = self
+            .reforce_fast_path_hits
+            .saturating_add(reforce_fast_path_hits);
         self.inline_cache_hits = self.inline_cache_hits.saturating_add(inline_cache_hits);
         self.inline_cache_misses = self.inline_cache_misses.saturating_add(inline_cache_misses);
         self.shape_transitions = self.shape_transitions.saturating_add(shape_transitions);

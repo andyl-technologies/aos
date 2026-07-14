@@ -16,6 +16,7 @@ impl TreeWalk {
             single_entry_thunks_allocated: self.stats.single_entry_thunks_allocated,
             single_entry_thunks_forced: self.stats.single_entry_thunks_forced,
             thunk_cache_hits: self.stats.thunk_cache_hits,
+            reforce_fast_path_hits: self.stats.reforce_fast_path_hits,
             inline_cache_hits: self.stats.inline_cache_hits,
             inline_cache_misses: self.stats.inline_cache_misses,
             shape_transitions: self.stats.shape_transitions,
@@ -178,6 +179,7 @@ impl TreeWalk {
             single_entry_thunks_allocated = stats.single_entry_thunks_allocated(),
             single_entry_thunks_forced = stats.single_entry_thunks_forced(),
             thunk_cache_hits = stats.thunk_cache_hits(),
+            reforce_fast_path_hits = stats.reforce_fast_path_hits(),
             inline_cache_hits = stats.inline_cache_hits(),
             inline_cache_misses = stats.inline_cache_misses(),
             shape_transitions = stats.shape_transitions(),
@@ -408,6 +410,10 @@ impl TreeWalk {
 
     pub(super) fn increment_thunk_cache_hits(&mut self) {
         self.stats.thunk_cache_hits = self.stats.thunk_cache_hits.saturating_add(1);
+    }
+
+    pub(super) fn increment_reforce_fast_path_hits(&mut self) {
+        self.stats.reforce_fast_path_hits = self.stats.reforce_fast_path_hits.saturating_add(1);
     }
 
     pub(super) fn increment_eval_cache_hit(&mut self) {

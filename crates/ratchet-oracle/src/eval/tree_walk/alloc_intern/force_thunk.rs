@@ -34,6 +34,9 @@ impl TreeWalk {
             WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
             WhnfTagFastPath::RequiresThunkProtocol(value) => value,
         };
+        if let Some(forced) = self.reforce_already_forced_thunk(id, span, value)? {
+            return Ok(forced);
+        }
         let thunk = self
             .heap
             .share_thunk(value)
@@ -42,6 +45,70 @@ impl TreeWalk {
             return self.force_parallel_payload_thunk(id, span, value, &thunk, parallel_cell);
         }
         self.force_serial_thunk_value(id, span, value, &thunk)
+    }
+
+    /// Returns a thunk's already-published forced result before the full
+    /// force protocol runs, or `None` when the thunk must enter the protocol.
+    ///
+    /// Re-forcing a thunk that already cached a result is the dominant force
+    /// class, yet the general path still pays [`EvalHeap::share_thunk`]'s Arc
+    /// mint, the active-force root push/pop, and the [`ThunkCell::begin_force`]
+    /// claim before the claim discovers the cell is already `Forced`. This
+    /// fast path resolves the thunk record with a borrow only (no Arc mint),
+    /// acquire-loads the write-once monotone cell, and returns the cached value
+    /// directly on a `Forced` observation.
+    ///
+    /// The cell publishes its result exactly once and never changes it
+    /// (`Suspended -> Blackhole -> Forced`), so a single acquire load observing
+    /// `Forced` makes the subsequent result read sound — the identical argument
+    /// the `begin_force` `AlreadyForced` arm relies on. The returned value stays
+    /// reachable through the thunk record, so no rooting is required, matching
+    /// the protocol's own `AlreadyForced` arm which also skips the force root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkErrorKind::Heap`] if `value` does not resolve to a
+    /// thunk record in this evaluator's heap, or [`TreeWalkErrorKind::Force`]
+    /// if the resolved cell reports an invalid state word or a missing forced
+    /// value.
+    fn reforce_already_forced_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let thunk = self
+            .heap
+            .get_thunk(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        // Single-entry thunks re-evaluate their body on every force and never
+        // publish a cached result, so they must always take the full path.
+        if thunk.is_single_entry_force_storage() {
+            return Ok(None);
+        }
+        let has_parallel_cell = thunk.parallel_payload_cell().is_some();
+        let cached = thunk
+            .cell()
+            .cached_value()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        // The immutable-borrow of `thunk` ends here so the `&mut self` replay and
+        // counter calls below can run.
+        let Some(cached) = cached else {
+            return Ok(None);
+        };
+        self.increment_reforce_fast_path_hits();
+        if has_parallel_cell {
+            // A parallel-payload thunk forced by another worker still needs the
+            // shared-context prefix refresh and cache-hit accounting the payload
+            // replay performs; route through it rather than duplicating that
+            // contract here.
+            return self
+                .replay_parallel_payload_terminal_result(value, Ok(cached))
+                .map(Some);
+        }
+        self.unmark_relocated_lazy_identity_thunk(value);
+        self.increment_thunk_cache_hits();
+        Ok(Some(cached))
     }
 
     fn force_parallel_payload_thunk(

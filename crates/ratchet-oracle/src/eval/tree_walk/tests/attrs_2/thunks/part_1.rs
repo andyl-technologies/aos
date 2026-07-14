@@ -801,3 +801,124 @@ fn list_to_attrs_records_dynamic_repr_decision() {
     key_counts.sort_unstable();
     assert_eq!(key_counts, vec![(2, 1), (2, 2)]);
 }
+
+// P0 re-force fast path (RFC-0007): a second force of an already-`Forced`
+// serial thunk is served before `share_thunk`'s Arc mint and the `begin_force`
+// claim, so it returns the identical cached value while minting zero new
+// force-state sidecar Arcs.
+#[test]
+fn second_force_of_forced_serial_thunk_hits_reforce_fast_path_without_new_state_arcs() {
+    let ir = lower("[ (1 + 2) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    let thunk_span = ir
+        .arena
+        .node(thunk_alloc)
+        .expect("thunk alloc node exists")
+        .span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let value = evaluator.eval_root().expect("list evaluates");
+    let element = {
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_thunk(element)
+            .expect("element is a heap thunk")
+            .force_storage_mode(),
+        EvalThunkForceStorageMode::Serial,
+        "list element is a plain serial thunk with a publishable cache",
+    );
+
+    let first = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect("first force succeeds");
+    assert_eq!(first.as_int(), Ok(3));
+    let after_first = evaluator.stats();
+    assert_eq!(after_first.thunks_forced(), 1);
+    assert_eq!(after_first.reforce_fast_path_hits(), 0);
+    let state_arcs_after_first = after_first.campaign().thunk_state_arc_clones;
+
+    let second = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect("second force succeeds");
+    assert!(second.raw_eq(first), "re-force returns the identical value");
+    let after_second = evaluator.stats();
+    assert_eq!(
+        after_second.thunks_forced(),
+        1,
+        "the body ran exactly once; the re-force never reached the claim",
+    );
+    assert_eq!(after_second.reforce_fast_path_hits(), 1);
+    assert_eq!(after_second.thunk_cache_hits(), 1);
+    assert_eq!(
+        after_second.campaign().thunk_state_arc_clones,
+        state_arcs_after_first,
+        "the pre-share re-force mints no new force-state sidecar Arc",
+    );
+}
+
+// P0 re-force fast path (RFC-0007): a single-entry thunk re-evaluates its body
+// on every force and never publishes a cached result, so it must bypass the
+// re-force fast path and keep re-running.
+#[test]
+fn single_entry_thunk_reevaluates_on_each_force_and_skips_reforce_fast_path() {
+    let mut ir = lower("[ (1 + 2) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    let thunk_span = ir
+        .arena
+        .node(thunk_alloc)
+        .expect("thunk alloc node exists")
+        .span;
+    *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Unknown,
+        cardinality: crate::compile::Cardinality::Once,
+        escape: crate::compile::Escape::NoEscape,
+    };
+    let mut options = TreeWalkOptions::new();
+    options.set_parallel_thunk_payloads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("list evaluates");
+    let element = {
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_thunk(element)
+            .expect("element is a heap thunk")
+            .force_storage_mode(),
+        EvalThunkForceStorageMode::SingleEntry,
+        "consumed-once frame-local element earns single-entry storage",
+    );
+
+    let first = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect("first force succeeds");
+    assert_eq!(first.as_int(), Ok(3));
+    let second = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect("second force succeeds");
+    assert_eq!(second.as_int(), Ok(3));
+
+    let stats = evaluator.stats();
+    assert_eq!(
+        stats.single_entry_thunks_forced(),
+        2,
+        "single-entry storage re-runs the body on each force",
+    );
+    assert_eq!(
+        stats.reforce_fast_path_hits(),
+        0,
+        "single-entry thunks never publish a cache to short-circuit on",
+    );
+    assert_eq!(stats.thunk_cache_hits(), 0);
+}
