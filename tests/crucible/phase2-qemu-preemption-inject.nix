@@ -167,6 +167,13 @@ in
       inherit microtestSource patchSource;
       passAsFile = ["microtestSource" "patchSource"];
 
+      # qemuPackage / referenceQemu are consumed only via explicit paths
+      # (`${qemuPackage.src}` for the patched-source positive build and
+      # `-I${referenceQemu}/include` for the negative control), never buildDeps:
+      # in buildDeps the patched qemu-plugin.h lands on C_INCLUDE_PATH and
+      # satisfies the stock-negative compile even under `-I${referenceQemu}`,
+      # silently defeating the "stock lacks qemu_plugin_inject_preemption"
+      # control. Interpolation keeps both pinned as inputs.
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
@@ -175,8 +182,6 @@ in
         pkgs.tar
         pkgs.xz
         pkgs.glib
-        qemuPackage
-        referenceQemu
       ];
 
       phases = [

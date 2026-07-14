@@ -45,12 +45,18 @@ in
       version = "0";
       src = null;
 
+      # qemuPackage and referenceQemu are consumed only through explicit
+      # `-I${...}/include` flags below, NOT via buildDeps: putting the patched
+      # qemuPackage in buildDeps leaks its qemu-plugin.h onto C_INCLUDE_PATH,
+      # where it satisfies `#include <qemu-plugin.h>` in the negative-control
+      # compile even under `-I${referenceQemu}/include`, so the "stock lacks the
+      # sim-observer API" control silently misfires. String interpolation still
+      # pins both as build inputs; only their include dirs stay out of the
+      # ambient search path so each compile sees exactly the tree it names.
       buildDeps = [
         pkgs.coreutils
         pkgs.glib
         pkgs.pkg-config
-        qemuPackage
-        referenceQemu
       ];
 
       phases = [
