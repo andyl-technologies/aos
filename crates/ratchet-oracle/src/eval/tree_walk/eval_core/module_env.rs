@@ -161,6 +161,12 @@ impl TreeWalk {
         f: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
     ) -> Result<T, TreeWalkError> {
         self.module_ir(module)?;
+        // Skip the save/restore bookkeeping when the target module is already
+        // current: the swap would store and reinstate an identical id, so `f`
+        // observes exactly the same `current_module` either way.
+        if module == self.current_module {
+            return f(self);
+        }
         let saved = self.current_module;
         self.current_module = module;
         let result = f(self);
