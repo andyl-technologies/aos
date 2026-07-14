@@ -102,7 +102,7 @@ shape-line|crates/crucible-qemu/src/qmp.rs|1024
 shape-line|crates/crucible-qemu/src/quantum.rs|2046
 shape-line|crates/crucible-qemu/src/realization.rs|2478
 shape-line|crates/crucible-qemu/src/realization/backend_executor.rs|607
-shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/config.rs|1165
+shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/config.rs|1169
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/genesis_probe.rs|1466
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/identity.rs|955
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/terminal_horizon.rs|1325
