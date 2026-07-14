@@ -732,6 +732,26 @@ at application/env-frame cost; the levers that reach it are general (not
 literal-only) beta/inlining, env-release-on-force (memory), and getting the JIT
 to fire on this shape — not literal-apply beta.
 
+**Thunk-state Arc churn is also NEUTRAL on this wall (I1/I2 follow-up,
+2026-07-14).** The lazy-Arc thunk record (I1, `cd6bdfa7a`; serial
+`thunk_state_arc_clones` −93 %) and its K=4 side-map extension (I2,
+`df0bf4b23`; parallel −61 %) eliminated the attribution table's "8.6M
+thunk-state Arc clones" line item at the counter level with byte-identical
+behavior — but an interleaved pre/post A/B on `systems.server.build.toplevel`
+(same source, same protocol, x3 rounds, fresh cache per cold) measures cold
+wall **neutral** (pre 17.37s vs post 17.43s medians on a shared builder;
+warm identical). The churn was real and is gone, but it was never
+wall-dominant on this shape: an Arc clone is an uncontended atomic increment,
+and 8.6M of them is tens of milliseconds, not seconds. Consequences: (a) the
+counter deltas remain the correct *regression guards* (reintroduced churn is
+still waste), but no remaining wall claim rests on I1/I2; (b) the same
+suspicion now applies to the frame-allocation line item — **measure the
+per-frame cost before building I3 (frame-alloc fast path) / I4
+(env-release)**, since 3.45M allocations may likewise be a counters-large,
+wall-small item. The load-bearing levers for this shape remain JIT coverage
+of the module-fixpoint shape class and the heap-image prelude snapshot
+(doc 31 §1).
+
 ### 5.6 The carrier matrix — one-word variant vs baseline (S5 gate, 2026-07-12)
 
 First full both-carrier comparison at one HEAD (Linux builder, quiet,
