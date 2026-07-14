@@ -38,7 +38,7 @@ use crate::single_vm_fingerprint::SingleVmFingerprintGateError;
 /// `crucible.qemu.trace-fingerprint-definition.v3`, so the two authorities mint
 /// disjoint definition digests even for identical cadence and topology. Used for
 /// the single-vCPU topology only; multi-vCPU topologies use
-/// [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`].
+/// `RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`.
 pub const RUST_PLUGIN_FINGERPRINT_DOMAIN: &str = "crucible.qemu.rust-plugin-fingerprint.v1";
 
 /// Content-addressing domain for the multi-vCPU Rust-plugin fingerprint.
@@ -73,7 +73,7 @@ const BUILD_DIGEST_HEX_LEN: usize = 64;
 ///
 /// The topology (`vcpu_count`, `rr_switch_quantum`) selects the content-
 /// addressing domain: a single vCPU mints under [`RUST_PLUGIN_FINGERPRINT_DOMAIN`]
-/// (`.v1`), and `vcpu_count > 1` mints under [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`]
+/// (`.v1`), and `vcpu_count > 1` mints under `RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`
 /// (`.v2`), the multi-vCPU widening landed in M3 (T-TIME-9 / T-QEMU-16 /
 /// T-PLUG-26). The frozen `.v1` single-vCPU constants and digest are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl RustPluginFingerprintDefinition {
     /// Returns the content-addressing domain this definition mints under.
     ///
     /// A single-vCPU definition uses [`RUST_PLUGIN_FINGERPRINT_DOMAIN`] (`.v1`);
-    /// a multi-vCPU definition uses [`RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`]
+    /// a multi-vCPU definition uses `RUST_PLUGIN_FINGERPRINT_NVCPU_DOMAIN`
     /// (`.v2`).
     #[must_use]
     pub const fn domain(&self) -> &'static str {
