@@ -841,3 +841,40 @@ fn env_apply_probe_records_installs_under_stats_dump() {
         after.installs,
     );
 }
+
+/// The MEMO-2 package-boundary probe records a formal-set-pattern application
+/// and inspects its argument members only when stats collection is active.
+///
+/// Cumulative process statics mean the assertion is a lower bound on the delta
+/// rather than an absolute total — concurrent tests can only inflate it.
+#[test]
+fn pkg_boundary_probe_records_formal_set_application_under_stats_dump() {
+    use crate::eval::tree_walk::pkg_boundary_probe::pkg_boundary_report;
+
+    let before = pkg_boundary_report();
+    let before_apps = before.map_or(0, |report| report.applications);
+    let before_members = before.map_or(0, |report| report.arg_members);
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_stats_dump(true);
+    // `f` is a formal-set-pattern (`callPackage`-shaped) lambda applied to a
+    // two-member attrset, so a correctly wired probe records one boundary
+    // application and inspects both argument members.
+    let bytes = eval_string_bytes_with_options(
+        r#"let f = { a, b }: "${a}${b}"; in f { a = "x"; b = "y"; }"#,
+        options,
+    );
+    assert_eq!(bytes, b"xy");
+
+    let after = pkg_boundary_report().expect("probe recorded a boundary under stats dump");
+    assert!(
+        after.applications >= before_apps + 1,
+        "expected at least one new boundary application, before={before_apps} after={}",
+        after.applications,
+    );
+    assert!(
+        after.arg_members >= before_members + 2,
+        "expected at least two new argument members inspected, before={before_members} after={}",
+        after.arg_members,
+    );
+}

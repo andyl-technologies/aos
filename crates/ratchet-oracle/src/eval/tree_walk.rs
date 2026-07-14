@@ -553,6 +553,7 @@ mod memo;
 mod parallel_demand;
 mod parallel_import;
 mod parallel_shape;
+mod pkg_boundary_probe;
 mod primop_builtin_cache;
 mod region;
 mod relocation_identity;

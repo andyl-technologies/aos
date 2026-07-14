@@ -374,6 +374,19 @@ impl TreeWalk {
             let saved_scoped_globals =
                 std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
             eval.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
+            // MEMO-2 boundary economics probe (measurement only): a formal-set
+            // pattern is the `callPackage` argument shape, so its applications
+            // are the package boundaries the design would seed. The wall guard
+            // attributes body time to the outermost boundary; the decline
+            // classification below runs after the body so forced argument
+            // members are reflected.
+            let probe_boundary = eval.options.eval_stats_dump()
+                && matches!(
+                    eval.node(lambda.pattern()).map(|node| node.kind),
+                    Ok(IrKind::FormalSet)
+                );
+            let boundary_wall =
+                probe_boundary.then(super::pkg_boundary_probe::BoundaryWallGuard::enter);
             let result = (|| {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
@@ -393,6 +406,9 @@ impl TreeWalk {
                 bind_result?;
                 eval.eval_node(lambda.body())
             })();
+            // Close the wall window on the body before the (untimed) env
+            // restore and decline classification.
+            drop(boundary_wall);
             if let Some(saved) = eval.pop_suspended_env_roots() {
                 eval.restore_env_frames(saved.env);
                 eval.with_scopes = saved.with_scopes;
@@ -401,8 +417,71 @@ impl TreeWalk {
                 debug_assert!(false, "suspended env root stack is unbalanced");
             }
             eval.leave_call();
+            if probe_boundary {
+                eval.record_pkg_boundary_probe(&lambda, argument);
+            }
             result
         })
+    }
+
+    /// Dereferences an already-forced thunk chain to its underlying value
+    /// without forcing.
+    ///
+    /// Returns the first non-thunk value reachable through cached thunk results,
+    /// or `None` if a thunk in the chain is not yet forced — reading that would
+    /// require forcing, which the probe must never do. Bounded against a
+    /// pathological cached-thunk cycle.
+    fn peek_forced_value(&self, value: Value) -> Option<Value> {
+        const PEEK_DEPTH: usize = 64;
+        let mut current = value;
+        for _ in 0..PEEK_DEPTH {
+            if current.tag() != ValueTag::Thunk {
+                return Some(current);
+            }
+            match self.heap.get_thunk(current).ok()?.cell().cached_value() {
+                Ok(Some(cached)) => current = cached,
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Classifies one package-boundary application's argument members for the
+    /// MEMO-2 economics probe (measurement only; see
+    /// [`pkg_boundary_probe`](super::pkg_boundary_probe)).
+    ///
+    /// A formal-set-pattern lambda destructures a single attrset argument, so
+    /// its members are the dependency values a boundary record would key on.
+    /// Each member is hashable iff a durable value hash is derivable without
+    /// forcing ([`Self::force_cache_free_var_value_hash`]); an unforced thunk or
+    /// closure is not, and one such member makes the boundary decline under
+    /// MEMO-1 rules. This is a read-only classification and never forces.
+    fn record_pkg_boundary_probe(&self, lambda: &EvalLambda, argument: Value) {
+        // The formal-set binder already forced the argument to destructure it,
+        // so resolving the (now-forced) thunk to its attrs is a non-forcing read
+        // that cannot perturb demand order. A still-unforced or non-attrs
+        // argument records a zero-member boundary.
+        let members: Vec<Value> = match self
+            .peek_forced_value(argument)
+            .and_then(|value| self.heap.get_attrs(value).ok())
+        {
+            Some(attrs) => attrs
+                .entries_by_symbol()
+                .iter()
+                .map(|entry| entry.value)
+                .collect(),
+            None => Vec::new(),
+        };
+        let total = u32::try_from(members.len()).unwrap_or(u32::MAX);
+        let mut hashable = 0u32;
+        for value in members {
+            if self.force_cache_free_var_value_hash(value).is_some() {
+                hashable = hashable.saturating_add(1);
+            }
+        }
+        let def_site =
+            (u64::from(lambda.module().as_u32()) << 32) | u64::from(lambda.body().as_u32());
+        super::pkg_boundary_probe::note_pkg_boundary_apply(def_site, total, hashable);
     }
 
     #[allow(clippy::too_many_arguments)]
