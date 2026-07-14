@@ -73,7 +73,16 @@ pub struct FingerprintSampleVcpu {
     pub register_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Canonical register-file byte count the digest covers.
     pub register_file_bytes: u64,
-    /// Aggregate retired-instruction count observed for the vCPU.
+    /// Deterministic per-vCPU retired-instruction stamp — **always zero** by
+    /// design under aggregate accounting.
+    ///
+    /// Single-threaded RR icount keeps one global instruction counter (the node
+    /// clock), so QEMU exposes no per-vCPU retirement; the introspection export
+    /// sets this to zero deliberately (see the `out_retired_instruction_count = 0`
+    /// stamp in `0029-crucible-vcpu-introspect.patch`). A reader must not treat a
+    /// zero here as a broken counter: per-vCPU progress lives in the round-robin
+    /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock is the
+    /// aggregate icount stamped on the sample.
     pub retired_instruction_count: u64,
 }
 

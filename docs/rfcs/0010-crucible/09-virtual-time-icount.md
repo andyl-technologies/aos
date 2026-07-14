@@ -715,9 +715,27 @@ instruction-primary.
     and the recorded-icount-stamped-input-list variant: this live proof uses the
     empty input list (no injection), so the injected-input trajectory clause is
     not yet exercised.
-- [ ] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
+- [x] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the
   node-icount `rr_switch_quantum` into the content hash, and compute the node's
   exact next deadline as the minimum over all vCPUs' armed virtual-clock
   deadlines. — satisfies [TIME-24], [TIME-34], [TIME-35]; spec §9.8, §9.10.
+  Completed by `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (live at the
+  frozen `-smp 4` pin, corroborated at `-smp 2`) with the model proven by
+  `checks.crucible.phase1.timeMultiVcpuAggregateClock`. Live: the Rust plugin
+  drives the single aggregate-icount node clock across all `N` vCPUs to the
+  busy-window targets, and every boundary's aggregate node icount equals its
+  exact target (`aggregate_icount_equals_target`), so no per-vCPU shift/epoch or
+  idle-jump offset leaks into the aggregate accounting. The node-icount
+  `rr_switch_quantum` (4096) is pinned into the fingerprint definition digest
+  under the new `crucible.qemu.rust-plugin-fingerprint.v2` domain. Per-vCPU
+  counts stay plugin-internal: under single-threaded RR icount QEMU keeps one
+  global counter (the per-vCPU introspection retired stamp is a deterministic
+  constant), so the per-vCPU decomposition is the plugin's RR-cursor model
+  (`aggregate_multi_vcpu_deadline`), which the phase-1 gate proves. The node's
+  exact next deadline is the single `QEMU_CLOCK_VIRTUAL` timer-list read — already
+  the minimum across all vCPUs' armed virtual-clock deadlines by construction —
+  exercised live at the idle boundary by the `-smp 1` quantum gate and modeled at
+  `-smp N` by `aggregate_multi_vcpu_deadline`; the busy multi-vCPU gate does not
+  reach an idle window (deferred with the idle-warp determinism scope).

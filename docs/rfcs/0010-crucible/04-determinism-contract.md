@@ -880,6 +880,21 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     icount plus fixed modeled IPI latency, rounded to the next fixed RR switch
     boundary, and emits the resulting interrupt through the commanded-icount
     preemption path rather than a realtime callback.
+  - Live per-vCPU uniformity evidence is provided by
+    `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (frozen `-smp 4` pin,
+    corroborated at `-smp 2`): every vCPU's register-file digest is sampled and is
+    byte-identical across two runs (the second under host CPU load) plus a restart
+    probe, so the uniform `-cpu` pin and node-icount-derived per-vCPU TSC/RNG
+    (E23) produce a deterministic, uniform per-vCPU architectural state.
+    Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
+    is exercised by the same live `-smp 4` boot. **Deferred to M7 (exploration):**
+    the E22 inter-vCPU IPI-delivery clause served through the *Rust plugin's*
+    commanded-icount preemption injection (`inject_preemption`, 11/[PATCH-47]) —
+    there is no host→plugin preemption-command wire in M3; live preemption is
+    explorer-sourced. The E22 delivery mechanism is proven live on the C-plugin
+    path today (`checks.crucible.phase2.qemuDetIpi`, patch 0028, `-smp 2`) and
+    modeled by `checks.crucible.phase2.qemuPluginPreemption`; the Rust-plugin live
+    injection closes with [T-PLUG-25] in M7.
 - [ ] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection

@@ -1083,14 +1083,59 @@ component that makes that purity true *inside* the QEMU process.
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
+  **Partial (kept open by intent).** Altitude: the normative *behavior* is
+  live-proven, but it deliberately lives in patched QEMU with the plugin holding
+  the verified model, and one named clause is not yet live at `-smp N`. The
+  deterministic RR sub-division (fixed `rr_switch_quantum`, fixed ascending
+  rotation) and the all-vCPUs-halted predicate are *executed by QEMU*: patch 0002
+  pins the node-icount `rr_switch_quantum`, and patch 0025 fires the node idle
+  hook once at `all_cpu_threads_idle()`. The plugin holds the verified *model* of
+  the same mechanisms — `round_robin.rs` (`RoundRobinRunState` fixed-quantum
+  ascending rotation, `VcpuHaltTracker` per-vCPU halt tracking,
+  `compute_all_halted_idle_wake_plan` with `idle_wake = min` via
+  `aggregate_multi_vcpu_deadline`) — unit-proven and covered by
+  `checks.crucible.phase3.schedulerRrSubdivision` /
+  `schedulerAllVcpusIdle`. The RR sub-division behavior is live at `-smp N`:
+  `checks.crucible.phase2.qemuLivePluginFingerprintSmp` samples the authoritative
+  RR cursor deterministically over two runs at `-smp 4`. **Deferred:** the
+  all-vCPUs-halted node-idle predicate at `-smp N` is exercised live only at
+  `-smp 1` (`checks.crucible.phase2.qemuLivePluginQuantum`); the busy multi-vCPU
+  gate does not reach an idle window, and driving the node idle at `-smp N`
+  crosses the idle-warp window deferred by the M3 determinism scope. Closure of
+  the idle-at-`N` clause lands with that determinism-scope fix.
 - [ ] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
   satisfies [PLUG-50]; spec §12.3.6.
-- [ ] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
+  **Partial (kept open by intent), full live application deferred to M7.** The
+  injection capability is resolved at install — `PluginPreemptionInjector::require`
+  binds `qemu_plugin_inject_preemption` (11/[PATCH-47]) into the plugin state
+  partition — and `apply_decision` forces the commanded switch/interrupt at the
+  commanded node-icount, failing loud and localizing any command outside
+  `[deadline, ceiling]` rather than clamping or deferring; this is unit-proven in
+  `preemption.rs`. The scheduler-side RESOLVE application is modeled by
+  `checks.crucible.phase3.schedulerPreemptionResolve` ([T-SCHED-29]). What is not
+  yet live: there is no host→plugin preemption-command wire in the shared-memory
+  protocol — a live `Decision::Preemption` is produced only by the explorer, so
+  live injection is exercised in M7 (exploration on real backends). Closure lands
+  there; the injector and its fail-loud window are ready.
+- [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
+  Completed live by `checks.crucible.phase2.qemuLivePluginFingerprintSmp` at the
+  frozen `-smp 4` pin (corroborated at `-smp 2`). The plugin's
+  `PluginVcpuIntrospector::read_nvcpu_fingerprint_inputs` reads exactly the `0..N`
+  vCPU register files and the round-robin cursor (`current_vcpu` + position within
+  the pinned `rr_switch_quantum`) via the patched-QEMU `qemu_plugin_read_vcpu_regs`
+  and `qemu_plugin_read_rr_cursor` exports (11/[PATCH-46]), and
+  `PluginFingerprintSampling::sample` feeds them into the N-vCPU fingerprint
+  sample. The reads are side-effect-free with respect to `S`/`T`: the whole
+  fingerprint stream (per-vCPU register digests + RR cursor + guest-RAM +
+  device-state) is byte-identical across two runs (the second under host load) and
+  under a restart probe, so sampling perturbs neither guest state nor the
+  execution trace. The N-vCPU fingerprint mints under the new
+  `crucible.qemu.rust-plugin-fingerprint.v2` domain.
 - [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
   serve a `random_request` by drawing from the seeded decision source and
   replying at the trap icount under the injection contract, record a
