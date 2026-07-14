@@ -73,7 +73,7 @@ pub struct FingerprintSampleVcpu {
     pub register_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Canonical register-file byte count the digest covers.
     pub register_file_bytes: u64,
-    /// Deterministic per-vCPU retired-instruction stamp — **always zero** by
+    /// Deterministic per-vCPU retired-instruction stamp; **always zero** by
     /// design under aggregate accounting.
     ///
     /// Single-threaded RR icount keeps one global instruction counter (the node

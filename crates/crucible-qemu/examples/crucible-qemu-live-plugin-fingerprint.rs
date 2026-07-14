@@ -224,7 +224,7 @@ mod linux {
         /// One `sample[i]` line per boundary: aggregate icount + RR cursor + N.
         per_sample_lines: Vec<String>,
         /// Every boundary's aggregate node icount equals its exact busy-window
-        /// target — the regression guard for the raw-vs-logical aggregation hazard
+        /// target: the regression guard for the raw-vs-logical aggregation hazard
         /// (no idle-jump offset leaks into a busy-window aggregate accounting).
         aggregate_icount_equals_target: bool,
         /// The two runs produced the same round-robin cursor at every boundary.
