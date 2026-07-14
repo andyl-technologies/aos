@@ -139,6 +139,24 @@ holds the `EvalThunk` inline), the **record table** fallback
   ownership — `strong_count == 1` / `Arc::get_mut` — else defer, since an
   in-flight force holds a second ref).
 
+**I3/I4 SHELVED (2026-07-14, measured).** I1+I2 landed and eliminated the
+Arc-churn counters (serial −93 %, K=4 −61 %) with byte-identical behavior —
+but an interleaved pre/post toplevel A/B measures the cold wall **neutral**
+(doc 15 §5.5 addendum, 0c602a208): the churn was counters-large, wall-small.
+Applying the same test to I3 before building: a 5 s top-of-stack sample of
+`bench.compute.lambda-interp` (the module-fixpoint shape-class proxy) shows
+**no `EvalFrame` allocation in the hot leaves at all** — the wall is
+interpreter dispatch (`eval_node_on_current_stack`), attrs allocation
+(`alloc_attrs_with_projected_shape_metadata`), `memmove`, and compressed-word
+decode (`kind`/`semantic_tag`). I3 targets a non-hotspot; projected neutral.
+I4 is a memory lever and the memory target is already exceeded (wide-eval
+0.19x of C++). Both shelved with this evidence; re-open only if a profile of
+a real workload shows frame alloc/retention in the leaves. The load-bearing
+wall levers for this shape class are JIT coverage of the module-fixpoint
+shape and the heap-image prelude snapshot (doc 31 §1) — and the sample
+points at attrs-alloc + word-decode as the next attribution targets after
+those.
+
 Hazard resolutions to encode in I1: JIT `dispatch_env` keeps cloning an **owned**
 env snapshot out of the Arc'd thunk (never the shared handle); GC sweep reads the
 record kind through the Arc deref; FV-5 `EvalFlatCapture` stays a Copy handle
