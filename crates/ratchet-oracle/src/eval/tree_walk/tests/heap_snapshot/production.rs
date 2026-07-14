@@ -294,11 +294,21 @@ fn snapshot_adopt_probe() {
     };
     let warmer_expr = warmer_expr.to_string_lossy().into_owned();
     let consumer_expr = consumer_expr.to_string_lossy().into_owned();
+    // AOS_NIX_SNAPSHOT_PROBE_CACHE points every evaluator in the probe at a
+    // shared parse-cache root, reproducing the production cache posture (the
+    // W5 protocol): run the probe once to warm the cache, then measure.
+    let probe_options = || {
+        let mut options = TreeWalkOptions::default();
+        if let Some(cache) = std::env::var_os("AOS_NIX_SNAPSHOT_PROBE_CACHE") {
+            options.set_parse_cache_root(std::path::PathBuf::from(cache).join("parse"));
+        }
+        options
+    };
 
     let warmer_ir = lower(&warmer_expr);
     let mut warmer = TreeWalk::with_options_and_source(
         &warmer_ir,
-        TreeWalkOptions::default(),
+        probe_options(),
         b"snapshot-adopt-warmer".to_vec(),
         warmer_expr.as_bytes().to_vec(),
     );
@@ -332,7 +342,7 @@ fn snapshot_adopt_probe() {
     let consumer_ir = lower(&consumer_expr);
     let mut consumer = TreeWalk::with_options_and_source(
         &consumer_ir,
-        TreeWalkOptions::default(),
+        probe_options(),
         b"snapshot-adopt-consumer".to_vec(),
         consumer_expr.as_bytes().to_vec(),
     );
@@ -361,7 +371,22 @@ fn snapshot_adopt_probe() {
     drop(consumer);
 
     let cold_start = std::time::Instant::now();
-    let cold = eval_string_bytes_with_source(b"snapshot-adopt-cold", &consumer_expr);
+    let cold = {
+        let cold_ir = lower(&consumer_expr);
+        let mut cold_eval = TreeWalk::with_options_and_source(
+            &cold_ir,
+            probe_options(),
+            b"snapshot-adopt-cold".to_vec(),
+            consumer_expr.as_bytes().to_vec(),
+        );
+        let value = cold_eval.eval_root().expect("cold consumer evaluates");
+        cold_eval
+            .heap()
+            .get_string(value)
+            .expect("cold result is a string")
+            .bytes()
+            .to_vec()
+    };
     eprintln!("probe: cold consumer eval took {:?}", cold_start.elapsed());
     assert_eq!(
         restored_bytes, cold,

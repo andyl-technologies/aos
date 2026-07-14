@@ -119,6 +119,52 @@ Gap 1 fails loud today (the drift-refusal tests prove it). Gaps 2 and 4 fail
    either way against the 39-85% prelude-force share. This is the ROI gate
    for keeping the tier.
 
+## W5 verdict (2026-07-14, release build, warm parse cache, tree-walk path)
+
+Paired adopted-vs-cold decomposition (darwin, candidate-c, n=4 stable
+samples per target, byte-parity asserted every sample; probes in
+`heap_snapshot/production.rs`):
+
+| target | adopt | adopted eval | cold eval | eval delta | net |
+|---|---:|---:|---:|---:|---:|
+| `stdenv.stdenv.drvPath` (the warmer's own attr) | 26ms | 74ms | 96ms | -23% | ~+4ms |
+| `pkgs.coreutils.drvPath` | 25ms | 95ms | 117ms | -19% | ~+3ms |
+| `pkgs.systemd.drvPath` | 25ms | 167ms | 184ms | -9% | ~+8ms |
+| pure `deepSeq lib` | 25ms | 5.6ms | 7.6ms | -26% | ~+23ms |
+
+Adopt decomposition: manifest module reload 19.7ms (76%; 466 modules at
+parse-cache-hit cost), identity snapshot 1.2ms, image restore + re-intern
+3.8ms (the 5.3MB heap machinery itself is fast), seeds ~1ms.
+
+**Verdict: the tier stays default-OFF.** The eval-side win is real and
+consistent — a ~20ms absolute reduction, which is the lib/stdenv
+*file-forcing* share left after the parse cache — but two structural facts
+cancel it: (1) the `import root { system }` **application re-runs** in every
+consumer (the import cache seeds files, not applications), so the pkgs
+fixpoint and derivation hashing dominate adopted evals exactly as they
+dominate cold ones; (2) the ~25ms adopt cost (dominated by the eager
+466-module reload) equals or exceeds the banked delta on every target. The
+S0-era 39-85% prelude-force share has largely been eaten by the parse cache
+and the earlier cold-eval campaign — the snapshot's addressable remainder
+measured 9-26% of eval, ~20ms absolute.
+
+**Recorded follow-on** (lead-directed citation): value-level seeding at the
+*applied-pkgs boundary* through the existing MEMO-2/L2 memo layer (doc 29 —
+the persist/memo machinery already keys forced expressions durably) is the
+lever that addresses the fixpoint re-run ceiling; the snapshot tier's heap
+image and identity re-interning remain the substrate any such value-level
+restore would ride.
+
+**Measurement exclusion, pre-existing bug found:**
+`systems.server.build.toplevel` could not be measured — its evaluation trips
+`flat_capture.rs:121` (`debug_assert!(replaced, "unique pending closure
+must remain replaceable")`: a pending flat-capture publication meets an
+already-`Arc`-shared thunk) on a COLD debug-build eval, reproduced at
+pre-campaign commit 388fcc57a. Module-system evaluation sits outside the
+546-package parity corpus. Release builds compile the assert out, so a
+pending capture may silently publish nothing — this needs its own
+investigation, independent of the snapshot campaign.
+
 ## Non-goals (recorded)
 
 - Restoring arbitrary (non-prelude) heaps across evaluators.

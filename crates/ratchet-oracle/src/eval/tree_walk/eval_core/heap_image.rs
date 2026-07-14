@@ -221,12 +221,17 @@ impl TreeWalk {
         if self.shared.is_some() {
             return Err(HeapSnapshotAdoptError::ParallelMode);
         }
+        let reload_start = std::time::Instant::now();
         for module in &manifest.modules {
             self.reload_snapshot_module(module)?;
         }
+        let reload_elapsed = reload_start.elapsed();
         // The resolver must see the RELOADED module table; symbols advanced
         // during reloading, and the restore re-intern advances them further.
+        let identity_start = std::time::Instant::now();
         let identity = self.snapshot_code_identity();
+        let identity_elapsed = identity_start.elapsed();
+        let restore_start = std::time::Instant::now();
         let restored = EvalHeap::from_restored_heap_image_with_code_identity(
             image,
             &identity,
@@ -234,6 +239,12 @@ impl TreeWalk {
         )?;
         let old_heap = std::mem::replace(&mut self.heap, restored);
         drop(old_heap);
+        if self.options.eval_stats_dump() || std::env::var_os("AOS_NIX_EVAL_STATS").is_some() {
+            eprintln!(
+                "adopt decomposition: reload {reload_elapsed:?}, identity {identity_elapsed:?}, restore {:?}",
+                restore_start.elapsed()
+            );
+        }
         for (path, word) in &manifest.import_seeds {
             let word = CompressedValueWord::from_raw(*word)
                 .map_err(|_| HeapSnapshotAdoptError::MalformedImportSeed { path: path.clone() })?;
