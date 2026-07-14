@@ -149,6 +149,7 @@ where
     I: IntoIterator<Item = B>,
     B: AsRef<[u8]>,
 {
+    crate::cache::key_hash_probe::note_demand_confirmation_finalize();
     let mut hot = Xxh3::new();
     hot.write(KEY_DOMAIN_VERSION);
     identity.write_to(&mut hot);

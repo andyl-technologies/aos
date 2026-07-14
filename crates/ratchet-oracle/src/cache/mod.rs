@@ -10,6 +10,7 @@ pub mod dcg;
 pub mod hashing;
 pub mod input;
 pub mod key;
+pub(crate) mod key_hash_probe;
 pub mod parse;
 pub mod persist;
 pub mod policy;

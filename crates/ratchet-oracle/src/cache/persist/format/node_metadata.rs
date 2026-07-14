@@ -32,6 +32,7 @@ impl PersistNodeMetadataKey {
     where
         I: IntoIterator<Item = ValueHash>,
     {
+        crate::cache::key_hash_probe::note_persist_expression_key_finalize();
         let mut hasher = CacheDigestHasher::new();
         hasher.update(PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION);
         hasher.update(&identity.source_hash().as_durable_hash().as_bytes());
