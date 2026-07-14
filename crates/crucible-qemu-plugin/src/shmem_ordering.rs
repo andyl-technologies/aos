@@ -129,6 +129,19 @@ impl PluginShmemOrdering {
         slot.load_device_io_active()
     }
 
+    /// Loads the host-published device-I/O completion deadline in icount units.
+    ///
+    /// The host block-I/O servicer stores the icount at which the earliest
+    /// in-flight device request becomes deliverable (`ceil(vt(request) +
+    /// latency)`). A value of `0` means no completion is pending or the prior
+    /// deadline was retracted. The plugin reads this while `device_io_active`
+    /// holds so it can idle-jump the guest directly to the completion instead of
+    /// freezing to the scheduler ceiling.
+    #[must_use]
+    pub fn device_completion_deadline_icount(slot: &NodeSlot) -> u64 {
+        slot.device_completion_deadline_icount()
+    }
+
     /// Publishes that plugin-submitted device I/O is in flight.
     pub fn publish_device_io_active(slot: &NodeSlot) {
         slot.mark_device_io_active();

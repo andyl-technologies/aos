@@ -440,6 +440,7 @@ impl VcpuHaltTracker {
 /// Returns [`RoundRobinError`] when a per-vCPU deadline set is malformed, the
 /// deadline cannot be converted to icount units, or the scheduler ceiling is
 /// behind the current node icount.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_all_halted_idle_wake_plan(
     tracker: &VcpuHaltTracker,
     current_icount: u64,
@@ -448,6 +449,7 @@ pub fn compute_all_halted_idle_wake_plan(
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
+    device_completion_deadline_icount: Option<u64>,
 ) -> Result<Option<IdleWakePlan>, RoundRobinError> {
     if !tracker.all_halted() {
         return Ok(None);
@@ -463,6 +465,7 @@ pub fn compute_all_halted_idle_wake_plan(
         next_inbound_delivery_icount,
         ceiling,
         device_io_holding_ticks,
+        device_completion_deadline_icount,
     )
     .map(Some)
     .map_err(RoundRobinError::IdleWake)
@@ -721,6 +724,7 @@ mod tests {
                 None,
                 SchedulerCeiling::new(200),
                 false,
+                None,
             ),
             Ok(None)
         );
@@ -736,6 +740,7 @@ mod tests {
             None,
             SchedulerCeiling::new(200),
             false,
+            None,
         ) {
             Ok(Some(plan)) => plan,
             Ok(None) => panic!("all halted should produce an idle wake plan"),
@@ -770,6 +775,7 @@ mod tests {
                 None,
                 SchedulerCeiling::new(20),
                 false,
+                None,
             ),
             Err(RoundRobinError::DeadlineAggregation(
                 ExactDeadlineError::MissingVcpuDeadline { vcpu_id: 1 },
