@@ -7,15 +7,18 @@
 //! must be *observably transparent* with respect to Nix semantics — the
 //! soundness floor of doc 26 §1.
 //!
-//! # Skeleton status
+//! # Status: passes registered, flag-gated
 //!
-//! This is the **stage-1 skeleton**: the phased fixpoint driver, the
-//! [`SimplifyPass`] contract, the phase ordering, and the pass registry, with
-//! **no passes registered** ([`REGISTERED_PASSES`] is empty). With an empty pass
-//! set the driver is the identity — [`simplify_ir`] leaves the IR byte-for-byte
-//! unchanged — so no cache key moves. The individual passes (constant folding,
-//! case-of-known, inlining, dead-binding elimination, …) land later, one at a
-//! time, each behind its own byte-parity gate; see
+//! The stage-1 skeleton (the phased fixpoint driver, the [`SimplifyPass`]
+//! contract, the phase ordering, and the pass registry) is complete, and the
+//! doc-26 pass set is **registered** ([`REGISTERED_PASSES`]: constant folding,
+//! case-of-known, literal-apply beta-reduction, single-use let-inline, and
+//! dead-binding elision). The whole set is still **off by default**, gated by
+//! `AOS_NIX_SIMPLIFY` at the parse pipeline's persistence seam; while gated,
+//! the flag is part of the parse-cache *key* (`ParseCacheFlags::simplify`) so
+//! simplify-on and simplify-off processes never share lowered-IR entries.
+//! Default-on promotion bumps [`PASS_SET_VERSION`] behind the byte-parity
+//! gate; see
 //! `docs/rfcs/0007-nix-evaluator/design-notes/simplifier-implementation-plan.md`
 //! (§4 staging, §8 decisions).
 //!

@@ -18,6 +18,21 @@ fn keys_depend_on_source_schema_and_flags() {
             7,
             ParseCacheFlags {
                 retain_trivia: false,
+                ..flags
+            },
+        )
+    );
+    // A simplify-on process must key its entries apart from simplify-off ones:
+    // the flag-gated simplifier persists simplified ir.bin, and a shared entry
+    // would let a simplify-off reader load it.
+    assert_ne!(
+        key,
+        ParseCacheKey::for_source(
+            b"let x = 1; in x",
+            7,
+            ParseCacheFlags {
+                simplify: !flags.simplify,
+                ..flags
             },
         )
     );

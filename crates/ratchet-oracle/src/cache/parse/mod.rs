@@ -52,7 +52,7 @@ pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 12;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const LOWERED_IR_FINGERPRINT_DOMAIN: &[u8] = b"aos-nix-lowered-ir-fingerprint-v1";
-const FLAG_ENCODING_VERSION: u8 = 1;
+const FLAG_ENCODING_VERSION: u8 = 2;
 const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
 const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
 const SYMBOL_MAGIC: &[u8; 8] = b"AOSNIXSY";
@@ -66,6 +66,17 @@ static ATOMIC_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 pub struct ParseCacheFlags {
     /// Whether retained trivia is part of the parse artifact.
     pub retain_trivia: bool,
+    /// Whether the flag-gated IR simplifier runs in the persistence seam.
+    ///
+    /// While the registered pass set is flag-gated (not yet default-on), a
+    /// simplify-on process persists *simplified* `ir.bin` artifacts. This flag
+    /// keys those entries separately from simplify-off entries so the two
+    /// process configurations can never read each other's lowered IR (the
+    /// segregation requirement of [`PASS_SET_VERSION`]'s
+    /// flag-gated phase). Once the pass set is default-on and versioned, the
+    /// version fold in the lowered-IR fingerprint takes over and this flag
+    /// becomes constant-true.
+    pub simplify: bool,
 }
 
 impl Default for ParseCacheFlags {
@@ -76,15 +87,20 @@ impl Default for ParseCacheFlags {
 
 impl ParseCacheFlags {
     /// Creates parser flags matching the current evaluator frontend.
-    pub const fn new() -> Self {
+    ///
+    /// Reads the process-wide `AOS_NIX_SIMPLIFY` gate, so caches constructed
+    /// in a simplify-on process are keyed apart from simplify-off caches.
+    pub fn new() -> Self {
         Self {
             retain_trivia: true,
+            simplify: simplify_enabled(),
         }
     }
 
     fn update_hasher(self, hasher: &mut blake3::Hasher) {
         hasher.update(&[FLAG_ENCODING_VERSION]);
         hasher.update(&[u8::from(self.retain_trivia)]);
+        hasher.update(&[u8::from(self.simplify)]);
     }
 }
 
