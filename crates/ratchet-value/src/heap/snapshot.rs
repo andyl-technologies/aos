@@ -31,6 +31,8 @@
 //!   primop_count: u64      = number of primop-payload segments
 //!   frame_count:  u64      = number of env-frame-table segments
 //!   closure_count: u64     = number of closure-payload segments
+//!   attrs_count:  u64      = number of owned-attrs payload segments
+//!   string_count: u64      = number of owned-string payload segments
 //!   low:          low_len bytes   (the permanent lane, offset 0)
 //!   high:         high_len bytes  (the rewindable lane, ending at `capacity`)
 //!   relocs:       reloc_count * (index:u32 | kind:u8)
@@ -39,6 +41,8 @@
 //!   primops:      primop_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   frames:       frame_count  * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   closures:     closure_count * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   attrs:        attrs_count * (index:u32 | byte_len:u64 | byte_len bytes)
+//!   strings:      string_count * (index:u32 | byte_len:u64 | byte_len bytes)
 //!   digest:       u64      = xxh3-64 of every preceding byte (integrity guard)
 //! ```
 //!
@@ -73,16 +77,19 @@ pub const IMAGE_MAGIC: [u8; 8] = *b"AOSNIXH1";
 /// environment frames (doc 31 §1 step-3 increment 2); v7 adds the
 /// closure-payload segments that carry captured lambdas and suspended thunks
 /// as content-keyed code references plus frame-table environment references
-/// (step-3 increment 3).
-pub const IMAGE_VERSION: u32 = 7;
+/// (step-3 increment 3); v8 adds the owned-attrs and owned-string payload
+/// segments that carry over-threshold attrsets' owned entry/permutation
+/// arrays and over-threshold strings' owned byte buffers, which live outside
+/// the reservation and would otherwise restore dangling (step-3 increment 5).
+pub const IMAGE_VERSION: u32 = 8;
 
 /// Byte length of the fixed image header preceding the lane, relocation, and
 /// index-keyed payload bytes.
 ///
 /// `magic(8) | version(4) | domain(4) | capacity(8) | old_base(8) | low_len(8) |
 /// high_len(8) | reloc_count(8) | list_count(8) | ctx_count(8) | primop_count(8) |
-/// frame_count(8) | closure_count(8)`.
-const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
+/// frame_count(8) | closure_count(8) | attrs_count(8) | string_count(8)`.
+const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// Wire size of one [`RelocationEntry`] (`index(4) | kind(1)`).
 const RELOCATION_ENTRY_LEN: usize = 5;
@@ -211,6 +218,40 @@ pub struct ClosurePayload {
     pub closure_bytes: Vec<u8>,
 }
 
+/// One over-threshold attrset's owned entry and permutation arrays (RFC-0007
+/// doc 31 §1 step-3 increment 5).
+///
+/// Attrsets above the flat-inline threshold keep their moved owned `Vec`
+/// arrays behind the arena payload (a measured churn-workload decision), so
+/// the dumped lanes carry only dangling `Vec` headers. Capture serializes the
+/// entries and both order permutations here; restore rebuilds owned storage
+/// and overwrites the stale payload. The encoding is owned by the
+/// `EvalHeap`-level capture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedAttrsPayload {
+    /// The attrs object's arena index.
+    pub index: u32,
+    /// The encoded entries and permutations as opaque bytes.
+    pub attrs_bytes: Vec<u8>,
+}
+
+/// One over-threshold string's owned byte buffer and context (RFC-0007 doc 31
+/// §1 step-3 increment 5).
+///
+/// Strings above the flat-inline byte threshold keep their moved owned
+/// `Vec<u8>` behind the arena payload, so the dumped lanes carry only a
+/// dangling `Vec` header. Capture serializes the bytes (and the string's
+/// context, which for owned strings rides here instead of the
+/// context-payload segment); restore rebuilds the owned string and overwrites
+/// the stale payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedStringPayload {
+    /// The string or path object's arena index.
+    pub index: u32,
+    /// The encoded bytes and context as opaque bytes.
+    pub string_bytes: Vec<u8>,
+}
+
 /// A captured Candidate-C reservation heap image.
 ///
 /// Holds the reservation identity, its two used-lane byte ranges, the base it
@@ -253,6 +294,12 @@ pub struct HeapImage {
     /// the `EvalHeap`-level closure capture and rebuilt on load against a
     /// code-identity resolver.
     pub closure_payloads: Vec<ClosurePayload>,
+    /// Each over-threshold attrset's owned entry/permutation arrays; filled by
+    /// the `EvalHeap`-level capture and rebuilt as owned storage on load.
+    pub attrs_payloads: Vec<OwnedAttrsPayload>,
+    /// Each over-threshold string's owned byte buffer (plus context); filled
+    /// by the `EvalHeap`-level capture and rebuilt as an owned string on load.
+    pub string_payloads: Vec<OwnedStringPayload>,
 }
 
 impl HeapImage {
@@ -302,6 +349,20 @@ impl HeapImage {
                 .map(|p| p.closure_bytes.len())
                 .collect::<Vec<_>>(),
         );
+        let attrs_bytes = indexed_bytes(
+            &self
+                .attrs_payloads
+                .iter()
+                .map(|p| p.attrs_bytes.len())
+                .collect::<Vec<_>>(),
+        );
+        let string_bytes = indexed_bytes(
+            &self
+                .string_payloads
+                .iter()
+                .map(|p| p.string_bytes.len())
+                .collect::<Vec<_>>(),
+        );
         let mut out = Vec::with_capacity(
             HEADER_LEN
                 + self.low.len()
@@ -312,6 +373,8 @@ impl HeapImage {
                 + primop_bytes
                 + frame_bytes
                 + closure_bytes
+                + attrs_bytes
+                + string_bytes
                 + 8,
         );
         out.extend_from_slice(&IMAGE_MAGIC);
@@ -327,6 +390,8 @@ impl HeapImage {
         out.extend_from_slice(&(self.primop_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.frame_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&(self.closure_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.attrs_payloads.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(self.string_payloads.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.low);
         out.extend_from_slice(&self.high);
         for entry in &self.relocations {
@@ -347,6 +412,12 @@ impl HeapImage {
         }
         for payload in &self.closure_payloads {
             write_indexed_payload(&mut out, payload.index, &payload.closure_bytes);
+        }
+        for payload in &self.attrs_payloads {
+            write_indexed_payload(&mut out, payload.index, &payload.attrs_bytes);
+        }
+        for payload in &self.string_payloads {
+            write_indexed_payload(&mut out, payload.index, &payload.string_bytes);
         }
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -387,6 +458,8 @@ impl HeapImage {
         let primop_count = u64::from_le_bytes(read8(bytes, 72)) as usize;
         let frame_count = u64::from_le_bytes(read8(bytes, 80)) as usize;
         let closure_count = u64::from_le_bytes(read8(bytes, 88)) as usize;
+        let attrs_count = u64::from_le_bytes(read8(bytes, 96)) as usize;
+        let string_count = u64::from_le_bytes(read8(bytes, 104)) as usize;
 
         // Bound the fixed-width prefix (lanes + relocation table + each indexed
         // segment's fixed header) before parsing; each segment's variable bytes
@@ -396,7 +469,13 @@ impl HeapImage {
             low_len,
             high_len,
             reloc_count * RELOCATION_ENTRY_LEN,
-            (list_count + context_count + primop_count + frame_count + closure_count)
+            (list_count
+                + context_count
+                + primop_count
+                + frame_count
+                + closure_count
+                + attrs_count
+                + string_count)
                 * INDEXED_PAYLOAD_PREFIX_LEN,
         ]
         .iter()
@@ -469,6 +548,24 @@ impl HeapImage {
             });
         }
 
+        let mut attrs_payloads = Vec::with_capacity(attrs_count);
+        for _ in 0..attrs_count {
+            let (index, segment) = read_indexed_payload(bytes, &mut cursor)?;
+            attrs_payloads.push(OwnedAttrsPayload {
+                index,
+                attrs_bytes: segment,
+            });
+        }
+
+        let mut string_payloads = Vec::with_capacity(string_count);
+        for _ in 0..string_count {
+            let (index, segment) = read_indexed_payload(bytes, &mut cursor)?;
+            string_payloads.push(OwnedStringPayload {
+                index,
+                string_bytes: segment,
+            });
+        }
+
         let digest_start = cursor;
         let expected = xxh3_64(&bytes[..digest_start]);
         let actual = u64::from_le_bytes(read8(bytes, digest_start));
@@ -488,6 +585,8 @@ impl HeapImage {
             primop_payloads,
             frame_payloads,
             closure_payloads,
+            attrs_payloads,
+            string_payloads,
         })
     }
 }
@@ -554,6 +653,8 @@ pub fn capture_reservation(arena: &SharedFlatStoreArena) -> Result<HeapImage, Sn
         primop_payloads: Vec::new(),
         frame_payloads: Vec::new(),
         closure_payloads: Vec::new(),
+        attrs_payloads: Vec::new(),
+        string_payloads: Vec::new(),
     })
 }
 
@@ -797,6 +898,14 @@ mod tests {
                 index: 32,
                 closure_bytes: vec![9, 8, 7],
             }],
+            attrs_payloads: vec![OwnedAttrsPayload {
+                index: 48,
+                attrs_bytes: vec![1, 2],
+            }],
+            string_payloads: vec![OwnedStringPayload {
+                index: 56,
+                string_bytes: vec![3, 4, 5],
+            }],
         };
         let good = image.to_bytes();
 
@@ -852,6 +961,14 @@ mod tests {
             closure_payloads: vec![ClosurePayload {
                 index: 40,
                 closure_bytes: vec![6; 9],
+            }],
+            attrs_payloads: vec![OwnedAttrsPayload {
+                index: 48,
+                attrs_bytes: vec![7; 11],
+            }],
+            string_payloads: vec![OwnedStringPayload {
+                index: 56,
+                string_bytes: vec![8; 4],
             }],
         };
         let parsed = HeapImage::from_bytes(&image.to_bytes()).expect("wire image parses");

@@ -206,6 +206,34 @@ impl FlatAttrs {
         }
     }
 
+    /// Returns whether this attrset's arrays use owned (`Vec`) storage.
+    ///
+    /// Over-threshold attrsets interned into the flat store keep their moved
+    /// owned arrays (a measured churn-workload decision), so heap-image
+    /// capture must serialize them as payload segments — the dumped `Vec`
+    /// headers would otherwise restore dangling.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn has_owned_storage(&self) -> bool {
+        matches!(&self.storage, AttrsStorage::Owned { .. })
+    }
+
+    /// Rebuilds an attrset from restored owned arrays (RFC-0007 doc 31 §1
+    /// heap-image restore).
+    ///
+    /// The [`FlatAttrs::new`] invariants (symbol-sorted entries, inverse
+    /// source permutation, lexicographic iteration permutation, equal
+    /// lengths) transfer from the captured attrset; the restore decoder
+    /// validates permutation bounds and entry sort order before calling this,
+    /// since the serialized image is untrusted input.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn from_restored_parts(
+        entries: Vec<AttrEntry>,
+        source_order: Vec<u32>,
+        iteration_order: Vec<u32>,
+    ) -> Self {
+        Self::from_owned_parts(entries, source_order, iteration_order)
+    }
+
     /// Returns the symbol-sorted entry array.
     fn entries(&self) -> &[AttrEntry] {
         match &self.storage {

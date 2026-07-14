@@ -56,10 +56,8 @@ use super::super::closure_code_ref::{
     CodeNodeRef, LambdaCodeDrift, LambdaCodeFingerprints, LambdaCodeRef, LambdaCodeResolver,
 };
 use super::super::{EvalHeap, EvalLambda, EvalThunk, EvalThunkKind, FlatClosurePayload};
-use super::{
-    CapturedFrameTable, EvalHeapSnapshotError, RestoredFrameTable, read_le_u32, read_le_u64,
-    read_length_prefixed,
-};
+use super::wire::{read_le_u32, read_le_u64, read_length_prefixed};
+use super::{CapturedFrameTable, EvalHeapSnapshotError, RestoredFrameTable};
 use crate::cache::CacheExprSourceHash;
 use crate::compile::builtins::{PINNED_NIX_VERSION, lookup_builtin};
 use crate::compile::{FrameId, IrAttrPathId};
@@ -204,18 +202,41 @@ impl EvalHeap {
         seen: &mut HashSet<u32>,
     ) -> Result<(), EvalHeapSnapshotError> {
         let mut fixups: Vec<FlatEnvFixup> = Vec::new();
+        let mut tail_checks: Vec<(ArenaIndex, FlatObjectKind, u32)> = Vec::new();
         for payload in payloads {
             if !seen.insert(payload.index) {
                 return Err(EvalHeapSnapshotError::DuplicateObjectIndex {
                     index: payload.index,
                 });
             }
-            self.restore_one_closure(payload, frame_table, resolver, &mut fixups)?;
+            self.restore_one_closure(
+                payload,
+                frame_table,
+                resolver,
+                &mut fixups,
+                &mut tail_checks,
+            )?;
         }
         // Primop and closure segments each restore in their own capture order,
         // so the shared flat-closure registry is interleaved out of address
-        // order until this sort; handle signing below depends on it.
+        // order until this sort; tail resolution (the checks and handle
+        // signing below) binary-searches the registry and depends on it.
         self.flat_closures.finalize_restored_registry();
+        for (index, kind, own_tail_len) in tail_checks {
+            // The dumped header's tail length must agree with the declared
+            // extent, or handle signing would validate against a lie.
+            let ptr = self
+                .flat_arena
+                .pointer_for_index(index)
+                .ok_or(EvalHeapSnapshotError::ObjectOutsideReservation)?;
+            let tail = self
+                .flat_closures
+                .value_tail(ptr, kind)
+                .map_err(EvalHeapSnapshotError::FlatResolve)?;
+            if tail.map(<[Value]>::len) != Some(own_tail_len as usize) {
+                return Err(EvalHeapSnapshotError::MalformedClosurePayload { index: index.raw() });
+            }
+        }
         for fixup in fixups {
             self.apply_flat_env_fixup(fixup)?;
         }
@@ -229,6 +250,7 @@ impl EvalHeap {
         frame_table: &RestoredFrameTable,
         resolver: &dyn LambdaCodeResolver,
         fixups: &mut Vec<FlatEnvFixup>,
+        tail_checks: &mut Vec<(ArenaIndex, FlatObjectKind, u32)>,
     ) -> Result<(), EvalHeapSnapshotError> {
         let index = payload.index;
         let malformed = || EvalHeapSnapshotError::MalformedClosurePayload { index };
@@ -413,15 +435,9 @@ impl EvalHeap {
             self.flat_closures
                 .restore_payload_with_value_tail(ptr, kind, flat_payload, own_tail_len as usize)
                 .map_err(EvalHeapSnapshotError::FlatResolve)?;
-            // The dumped header's tail length must agree with the declared
-            // extent, or handle signing would validate against a lie.
-            let tail = self
-                .flat_closures
-                .value_tail(ptr, kind)
-                .map_err(EvalHeapSnapshotError::FlatResolve)?;
-            if tail.map(<[Value]>::len) != Some(own_tail_len as usize) {
-                return Err(malformed());
-            }
+            // The header-length sanity check runs after the registry finalize
+            // (tail resolution binary-searches the registry by address).
+            tail_checks.push((ArenaIndex::new(index), kind, own_tail_len));
         }
 
         if let Some((flat, frames)) = deferred_flat {

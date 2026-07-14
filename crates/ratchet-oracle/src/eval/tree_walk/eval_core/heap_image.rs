@@ -27,15 +27,18 @@ use super::super::TreeWalk;
 ///
 /// Produced by [`TreeWalk::snapshot_code_identity`]; serves as both the
 /// capture-side [`LambdaCodeFingerprints`] context and the restore-side
-/// [`LambdaCodeResolver`]. A fingerprint carried by two distinct modules is
-/// recorded as ambiguous and refuses to resolve (restore must never guess
-/// between candidates).
+/// [`LambdaCodeResolver`]. Two live modules *can* carry one fingerprint (the
+/// same file loaded again under a scoped import, for example); the identity
+/// hash is the parse-cache key domain, so an equal hash means equal source
+/// identity and therefore equal deterministic lowered IR — resolution binds
+/// the first such module, which is not a rebind to different code. Refusal is
+/// reserved for fingerprints absent from the table (genuine drift).
 #[derive(Debug)]
 pub(crate) struct TreeWalkCodeIdentity {
     /// Per-module fingerprints, indexed by module id.
     fingerprints: Vec<Option<CacheExprSourceHash>>,
-    /// Reverse map; `None` marks an ambiguous fingerprint.
-    modules_by_fingerprint: HashMap<CacheExprSourceHash, Option<EvalModuleId>>,
+    /// Reverse map to the first module carrying each fingerprint.
+    modules_by_fingerprint: HashMap<CacheExprSourceHash, EvalModuleId>,
 }
 
 impl LambdaCodeFingerprints for TreeWalkCodeIdentity {
@@ -46,10 +49,7 @@ impl LambdaCodeFingerprints for TreeWalkCodeIdentity {
 
 impl LambdaCodeResolver for TreeWalkCodeIdentity {
     fn resolve(&self, source_hash: CacheExprSourceHash) -> Option<EvalModuleId> {
-        self.modules_by_fingerprint
-            .get(&source_hash)
-            .copied()
-            .flatten()
+        self.modules_by_fingerprint.get(&source_hash).copied()
     }
 }
 
@@ -64,17 +64,19 @@ impl TreeWalk {
     /// than emit unkeyed code references.
     pub(crate) fn snapshot_code_identity(&self) -> TreeWalkCodeIdentity {
         let mut fingerprints = Vec::with_capacity(self.modules.len());
-        let mut modules_by_fingerprint: HashMap<CacheExprSourceHash, Option<EvalModuleId>> =
+        let mut modules_by_fingerprint: HashMap<CacheExprSourceHash, EvalModuleId> =
             HashMap::with_capacity(self.modules.len());
         for (index, module) in self.modules.iter().enumerate() {
             let fingerprint = Self::cache_module_identity_hash(module)
                 .map(CacheExprSourceHash::from_durable_hash);
             if let Some(fingerprint) = fingerprint {
-                let module_id = EvalModuleId::new(index as u32);
+                // First module wins for a repeated fingerprint: equal identity
+                // hashes mean equal source identity and equal deterministic
+                // lowered IR (see the type docs), so this is never a rebind to
+                // different code.
                 modules_by_fingerprint
                     .entry(fingerprint)
-                    .and_modify(|entry| *entry = None)
-                    .or_insert(Some(module_id));
+                    .or_insert(EvalModuleId::new(index as u32));
             }
             fingerprints.push(fingerprint);
         }

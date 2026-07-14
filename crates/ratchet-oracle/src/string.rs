@@ -138,6 +138,15 @@ impl NixString {
     }
 
     /// Returns the string's raw bytes.
+    /// Returns whether the byte storage is an owned `Vec` (RFC-0007 doc 31
+    /// §1 heap-image capture: over-threshold strings keep their moved owned
+    /// buffer, which must serialize as a payload segment — the dumped `Vec`
+    /// header would otherwise restore dangling).
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) fn has_owned_bytes(&self) -> bool {
+        matches!(&self.bytes, NixStringBytes::Owned(_))
+    }
+
     pub fn bytes(&self) -> &[u8] {
         self.bytes.as_slice()
     }
@@ -293,9 +302,9 @@ impl NixString {
         match &mut self.bytes {
             NixStringBytes::Owned(bytes) => Ok(bytes),
             // Unreachable: the flat arm above just replaced the storage.
-            NixStringBytes::Flat(flat) => Err(NixStringError::ByteAllocationFailed {
-                len: flat.len(),
-            }),
+            NixStringBytes::Flat(flat) => {
+                Err(NixStringError::ByteAllocationFailed { len: flat.len() })
+            }
         }
     }
 
