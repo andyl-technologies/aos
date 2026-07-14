@@ -482,6 +482,7 @@ pub struct TreeWalk {
 // The `impl TreeWalk` body is split across concern-focused submodules below.
 // Each re-opens `impl TreeWalk` and shares private items via `use super::*;`.
 mod alloc_intern;
+mod attr_repr_stats;
 mod call_summary;
 mod coerce_paths;
 mod derivation_build;
