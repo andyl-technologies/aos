@@ -954,7 +954,7 @@ fn authorize_qemu_delivery_ceiling(
     }
 }
 
-fn idle_state_from_snapshot(snapshot: NodeSlotSnapshot) -> QemuNodeIdleState {
+pub(crate) fn idle_state_from_snapshot(snapshot: NodeSlotSnapshot) -> QemuNodeIdleState {
     QemuNodeIdleState {
         current_icount: Icount {
             retired: snapshot.current_icount,

@@ -63,6 +63,7 @@ mod node_factory;
 mod plugin_control;
 mod qmp;
 mod quantum;
+mod quantum_boundary;
 mod realization;
 mod savevm_policy;
 mod setup_failure;
@@ -70,6 +71,8 @@ mod shutdown;
 mod single_vm_fingerprint;
 #[cfg(target_os = "linux")]
 mod spawn;
+#[cfg(target_os = "linux")]
+mod supervision;
 
 pub use async_driver::{
     QemuAsyncCrashEscalationTarget, QemuAsyncDriverError, QemuAsyncDriverOperation,
@@ -251,3 +254,5 @@ pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
+#[cfg(target_os = "linux")]
+pub use supervision::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};

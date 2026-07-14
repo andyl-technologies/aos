@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crucible::{AdvanceOutcome, ExecutionHorizon, Icount};
 
+use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
     QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodeIdleState, QemuShmemHotPathChannel,
 };
@@ -187,16 +188,14 @@ fn wait_for_quantum_boundary(
         let idle: QemuNodeIdleState = QemuShmemHotPathChannel::idle_state(hot_path)
             .map_err(|source| channel_error("poll idle state", source))?;
         let current = idle.current_icount.retired;
-        if current >= ceiling {
-            return Ok(QuantumStop::ReachedCeiling { icount: current });
-        }
-        if let Some(deadline) = idle.next_deadline
-            && deadline.retired > ceiling
-        {
-            return Ok(QuantumStop::Paused {
-                at: current,
-                deadline: deadline.retired,
-            });
+        match classify_quantum_boundary(&idle, ceiling) {
+            QuantumBoundary::Reached { icount } => {
+                return Ok(QuantumStop::ReachedCeiling { icount });
+            }
+            QuantumBoundary::Paused { at, deadline } => {
+                return Ok(QuantumStop::Paused { at, deadline });
+            }
+            QuantumBoundary::Pending => {}
         }
         if let Some(status) = child
             .try_wait_natural_exit()
