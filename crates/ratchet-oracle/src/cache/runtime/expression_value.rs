@@ -1,5 +1,6 @@
 //! Cached expression payload wrapper and replay accessors.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
@@ -749,7 +750,7 @@ impl CachedExpressionValue {
         payload: &InlineValuePayload,
         source_hash: AttrPositionSourceHash,
     ) -> ValueHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG);
         hasher.update(&source_hash.as_durable_hash().as_bytes());
         hasher.update(&payload.persistent_payload_len().to_le_bytes());

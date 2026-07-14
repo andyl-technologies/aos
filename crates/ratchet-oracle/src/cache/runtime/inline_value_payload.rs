@@ -1,5 +1,6 @@
 //! Inline cached expression payload representation and codec helpers.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
@@ -206,7 +207,7 @@ impl InlineValuePayload {
     }
 
     pub(super) fn value_hash_from_persistent_payload(&self) -> ValueHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         self.update_persistent_payload_preimage(&mut hasher);
         ValueHash::from_cached_expression_payload_hash(
             CachedExpressionPayloadValueHash::from_hasher(hasher),
@@ -312,7 +313,7 @@ where
 }
 
 fn update_positioned_attr_entries_preimage(
-    hasher: &mut blake3::Hasher,
+    hasher: &mut CacheDigestHasher,
     entries: &[PositionedAttrPayloadEntry],
 ) {
     hasher.update(&(entries.len() as u128).to_le_bytes());
@@ -325,7 +326,7 @@ fn update_positioned_attr_entries_preimage(
     }
 }
 
-fn update_attr_position_preimage(hasher: &mut blake3::Hasher, position: Option<AttrPosition>) {
+fn update_attr_position_preimage(hasher: &mut CacheDigestHasher, position: Option<AttrPosition>) {
     match position {
         Some(position) => {
             hasher.update(&[1]);
@@ -451,7 +452,7 @@ fn string_context_payload_len(context: &StringContext) -> u128 {
             .sum::<u128>()
 }
 
-fn update_string_context_payload_preimage(hasher: &mut blake3::Hasher, context: &StringContext) {
+fn update_string_context_payload_preimage(hasher: &mut CacheDigestHasher, context: &StringContext) {
     hasher.update(b"context");
     hasher.update(&(context.len() as u128).to_le_bytes());
     for element in context.elements() {

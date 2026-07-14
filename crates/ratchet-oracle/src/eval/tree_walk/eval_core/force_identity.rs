@@ -1,5 +1,6 @@
 //! Force-cache free-variable hashing, cache identities, and IR safety walks.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::CacheExprSourceHash;
 use crate::cache::hashing::{
@@ -242,7 +243,7 @@ impl TreeWalk {
                 if position_identities.is_empty() {
                     return Some(StaticSelectProjection::Present(selected_hash));
                 }
-                let mut hasher = blake3::Hasher::new();
+                let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"static-select");
                 hasher.update(&selected_hash.as_durable_hash().as_bytes());
@@ -388,7 +389,7 @@ impl TreeWalk {
         branch: &[u8],
         selected_hash: Option<ValueHash>,
     ) -> Option<ValueHash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"static-select-default");
         Self::update_cache_identity_chunk(&mut hasher, branch)?;
@@ -440,7 +441,7 @@ impl TreeWalk {
     }
 
     fn force_cache_static_has_attr_result_hash(present: bool) -> Option<ValueHash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"static-has-attr");
         hasher.update(&[u8::from(present)]);
@@ -456,7 +457,7 @@ impl TreeWalk {
         let module = self
             .modules
             .get(EvalModuleId::new(position.module).index())?;
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"static-select-position");
         match &module.source {
@@ -536,7 +537,7 @@ impl TreeWalk {
         match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
-                let mut hasher = blake3::Hasher::new();
+                let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"string");
                 Self::update_cache_identity_chunk(&mut hasher, string.bytes())?;
@@ -547,7 +548,7 @@ impl TreeWalk {
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
-                let mut hasher = blake3::Hasher::new();
+                let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"path");
                 Self::update_cache_identity_chunk(&mut hasher, path.bytes())?;
@@ -563,7 +564,7 @@ impl TreeWalk {
                     seen_thunks,
                     allow_suspended_capture_aliases,
                 )?;
-                let mut hasher = blake3::Hasher::new();
+                let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
                 self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
@@ -721,7 +722,7 @@ impl TreeWalk {
             return payload.value_hash().ok();
         }
 
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         if let Some(bytes) = payload.context_free_string_bytes() {
             hasher.update(b"string");
@@ -762,7 +763,7 @@ impl TreeWalk {
 
     fn update_force_capture_composite_payload_hash(
         &self,
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         payload: &CachedExpressionValue,
     ) -> Option<()> {
         let value_hash = payload.value_hash().ok()?;
@@ -797,7 +798,7 @@ impl TreeWalk {
     }
 
     fn update_force_capture_string_context(
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         context: &StringContext,
     ) -> Option<()> {
         hasher.update(b"context");

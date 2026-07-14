@@ -5,6 +5,7 @@
 //! produces the same value hash as the previous run, the caller can stop
 //! propagation at that node; otherwise the caller must propagate to consumers.
 
+use crate::cache::hashing::CacheDigestHasher;
 use thiserror::Error;
 
 use super::hashing::{
@@ -62,7 +63,7 @@ impl ValueHash {
         value
             .validate_payload()
             .map_err(|source| ValueHashError::InvalidValue { source })?;
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
         match value.tag() {
             ValueTag::Int => {
@@ -118,7 +119,7 @@ impl ValueHash {
     /// here; context-bearing strings require the full canonical context
     /// serialization before they can participate in early cutoff.
     pub fn from_context_free_string_bytes(bytes: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(CONTEXT_FREE_STRING_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"string");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
@@ -134,7 +135,7 @@ impl ValueHash {
     /// context-observable string values do not share cutoff identity with
     /// context-free strings or with other context kinds carrying the same path.
     pub fn from_context_string_parts(bytes: &[u8], context: &StringContext) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"string");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
@@ -148,7 +149,7 @@ impl ValueHash {
     /// This is separate from context-free string hashing because Nix paths and
     /// strings are distinct WHNF value tags even when their byte payloads match.
     pub fn from_path_bytes(bytes: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(PATH_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"path");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
@@ -163,7 +164,7 @@ impl ValueHash {
     /// context-free path hashing because Nix paths and strings remain distinct
     /// WHNF tags even when their byte payloads and contexts match.
     pub fn from_context_path_parts(bytes: &[u8], context: &StringContext) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(CONTEXT_PATH_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"path");
         hasher.update(&(bytes.len() as u128).to_le_bytes());
@@ -178,7 +179,7 @@ impl ValueHash {
     /// thunk policy, so the force-cache precursor admits only the empty list
     /// constructor for now.
     pub fn from_empty_list() -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(LIST_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"list");
         hasher.update(&0u128.to_le_bytes());
@@ -191,7 +192,7 @@ impl ValueHash {
     /// thunk policy, so the force-cache precursor admits only the empty attrset
     /// constructor for now.
     pub fn from_empty_attrs() -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(ATTRS_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"attrs");
         hasher.update(&0u128.to_le_bytes());
@@ -204,7 +205,7 @@ impl ValueHash {
     /// the BLAKE3 value-hash domain and must not feed Nix-observed SHA-256
     /// store paths or `.drv` hashes.
     pub fn from_derivation_aterm_bytes(aterm: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(DERIVATION_ATERM_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"derivation");
         hasher.update(&(aterm.len() as u128).to_le_bytes());
@@ -251,7 +252,7 @@ impl ValueHash {
     }
 }
 
-fn update_string_context_hash(hasher: &mut blake3::Hasher, context: &StringContext) {
+fn update_string_context_hash(hasher: &mut CacheDigestHasher, context: &StringContext) {
     hasher.update(b"context");
     hasher.update(&(context.len() as u128).to_le_bytes());
     for element in context.elements() {

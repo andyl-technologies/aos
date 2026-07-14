@@ -1,5 +1,6 @@
 //! File-artifact index key, value, entry, and storage format adapters.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::CompiledBodyRecordHash;
 use ratchet_cache::artifact_index::{
@@ -42,7 +43,7 @@ impl PersistFileArtifactKey {
         content_hash: ParseFileContentHash,
         parse_key: ParseCacheKey,
     ) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION);
         update_persist_index_chunk(&mut hasher, realpath);
         hasher.update(&content_hash.as_durable_hash().as_bytes());

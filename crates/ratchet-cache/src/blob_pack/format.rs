@@ -20,10 +20,41 @@ pub const BLOB_RECORD_HEADER_LEN: usize = 40;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlobPackHash([u8; 32]);
 
+/// High 16 bytes stamped into every xxh128 content address (must match the
+/// evaluator cache's `XXH128_FAMILY_TAG` so a cache key equals its blob-pack
+/// verify digest for the same payload under the experiment family).
+const XXH128_FAMILY_TAG: [u8; 16] = *b"aos-nix-xxh128\0\0";
+
+/// Returns whether the `AOS_NIX_CACHE_HASH=xxh128` populate-hash experiment is
+/// selected. Read once for the process; BLAKE3 is the default.
+fn use_xxh128_content_hash() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("AOS_NIX_CACHE_HASH")
+            .map(|value| {
+                value.eq_ignore_ascii_case("xxh128") || value.eq_ignore_ascii_case("xxh3-128")
+            })
+            .unwrap_or(false)
+    })
+}
+
 impl BlobPackHash {
-    /// Computes the BLAKE3 content address for `bytes`.
+    /// Computes the content address for `bytes` under the process hash family.
+    ///
+    /// BLAKE3 by default; under `AOS_NIX_CACHE_HASH=xxh128` the address is the
+    /// little-endian xxh3-128 digest in the low 16 bytes and [`XXH128_FAMILY_TAG`]
+    /// in the high 16, matching the evaluator cache's key derivation so a record's
+    /// key equals this verify digest for the same payload.
     pub fn for_bytes(bytes: &[u8]) -> Self {
-        Self::from_bytes(*blake3::hash(bytes).as_bytes())
+        if use_xxh128_content_hash() {
+            let mut out = [0u8; 32];
+            out[..16].copy_from_slice(&xxhash_rust::xxh3::xxh3_128(bytes).to_le_bytes());
+            out[16..].copy_from_slice(&XXH128_FAMILY_TAG);
+            Self(out)
+        } else {
+            Self::from_bytes(*blake3::hash(bytes).as_bytes())
+        }
     }
 
     /// Wraps raw BLAKE3 digest bytes.

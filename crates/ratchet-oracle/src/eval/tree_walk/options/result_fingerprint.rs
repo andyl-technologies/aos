@@ -7,6 +7,7 @@
 //! stability contract: each field is length-tagged and labeled so no two field
 //! sets can alias, and the domain string is versioned.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 /// Computes a stable digest over the result-affecting evaluator settings.
@@ -18,7 +19,7 @@ use super::*;
 /// the environment-variable map are excluded: the latter's observed reads are
 /// already covered fingerprint-by-fingerprint by the trace.
 pub(super) fn result_affecting_fingerprint(options: &TreeWalkOptions) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = CacheDigestHasher::new();
     hasher.update(b"aos-nix-treewalk-result-affecting-v1");
     let mut field = |label: &[u8], bytes: &[u8]| {
         hasher.update(&(label.len() as u64).to_le_bytes());
@@ -96,5 +97,5 @@ pub(super) fn result_affecting_fingerprint(options: &TreeWalkOptions) -> [u8; 32
         field(b"flake_ref_indirect", indirect);
         field(b"flake_ref_target", target);
     }
-    *hasher.finalize().as_bytes()
+    hasher.finalize_bytes()
 }

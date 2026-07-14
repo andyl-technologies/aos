@@ -1,5 +1,6 @@
 //! Demand-node metadata key, value, entry, and index format adapters.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::hashing::PersistNodeMetadataKeyHash;
 use ratchet_cache::node_metadata::{
@@ -31,7 +32,7 @@ impl PersistNodeMetadataKey {
     where
         I: IntoIterator<Item = ValueHash>,
     {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION);
         hasher.update(&identity.source_hash().as_durable_hash().as_bytes());
         hasher.update(&identity.node().as_u32().to_le_bytes());
@@ -46,7 +47,7 @@ impl PersistNodeMetadataKey {
     /// Creates a persistent metadata key for an impure-input leaf node.
     pub fn for_impure_input(identity_hash: ImpureInputIdentityHash) -> Self {
         let identity_hash = identity_hash.as_durable_hash();
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION);
         hasher.update(&identity_hash.as_bytes());
         Self {

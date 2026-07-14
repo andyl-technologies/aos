@@ -1,11 +1,12 @@
 //! Module, environment, scope, attr-path, and scoped-global helpers.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::compile::{FLAT_CAPTURE_MAX_SLOTS, IrInlineCacheSiteId, Upvalue};
 
 impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         Self::update_cache_module_source_identity(&mut hasher, module, true)?;
         module
@@ -18,7 +19,7 @@ impl TreeWalk {
         module: &TreeWalkModule,
         execution: BuiltinExecution,
     ) -> Option<DurableBlake3Hash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         Self::update_cache_module_source_identity(&mut hasher, module, false)?;
         module
@@ -31,7 +32,7 @@ impl TreeWalk {
         module: &TreeWalkModule,
         execution: BuiltinExecution,
     ) -> Option<DurableBlake3Hash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         Self::update_cache_module_source_identity(&mut hasher, module, false)?;
         module
@@ -41,7 +42,7 @@ impl TreeWalk {
     }
 
     fn update_cache_module_source_identity(
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         module: &TreeWalkModule,
         include_path_literal_base: bool,
     ) -> Option<()> {
@@ -75,7 +76,7 @@ impl TreeWalk {
     }
 
     pub(super) fn update_cache_identity_chunk(
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         chunk: &[u8],
     ) -> Option<()> {
         let len = u64::try_from(chunk.len()).ok()?;

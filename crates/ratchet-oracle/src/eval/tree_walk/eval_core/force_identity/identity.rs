@@ -4,6 +4,7 @@
 //! first-class primop calls, and derivation aterm/output subjects from the
 //! owning module's content hash and the node's span.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 impl TreeWalk {
@@ -74,7 +75,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
     ) -> CacheExprIdentity {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
         hasher.update(&module_hash.as_bytes());
@@ -109,7 +110,7 @@ impl TreeWalk {
         if node.kind != IrKind::Apply {
             return None;
         }
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_FIRST_CLASS_PRIMOP_CALL_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
         hasher.update(&module_hash.as_bytes());
@@ -153,7 +154,7 @@ impl TreeWalk {
         let module = self.modules.get(self.current_module.index())?;
         let module_hash = Self::cache_module_identity_hash(module)?;
         let node = module.ir.arena.node(id)?;
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
         hasher.update(stage);

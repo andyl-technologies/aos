@@ -5,6 +5,7 @@
 //! free-variable value hashes, and memoization admission hints. Includes the
 //! first-class cacheable-impure-call classification for builtin executions.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 impl TreeWalk {
@@ -290,7 +291,7 @@ impl TreeWalk {
     }
 
     fn force_cache_visible_nix_path_arg_hash(&self) -> Option<ValueHash> {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"synthetic-builtin-nix-path-v1");
         let len = u64::try_from(self.visible_nix_path().len()).ok()?;

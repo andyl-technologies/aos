@@ -5,6 +5,7 @@
 //! child-pushing walkers those classifications and the dependency collector
 //! iterate the IR with.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 impl TreeWalk {
@@ -224,7 +225,7 @@ impl TreeWalk {
         let execution = builtin.execution();
         let module_hash = Self::cache_synthetic_builtin_module_identity_hash(module, execution)?;
         let execution_bytes = Self::builtin_execution_cache_identity_bytes(execution)?;
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION);
         hasher.update(&module_hash.as_bytes());
         hasher.update(&site.id().as_u32().to_le_bytes());
@@ -251,7 +252,7 @@ impl TreeWalk {
             return None;
         }
 
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(FORCE_SYNTHETIC_SELECT_IDENTITY_DOMAIN_VERSION);
         hasher.update(&module_hash.as_bytes());
         hasher.update(&select.id().as_u32().to_le_bytes());

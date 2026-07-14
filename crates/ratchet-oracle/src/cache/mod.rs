@@ -23,9 +23,10 @@ pub use dcg::{
     SharedDemandGraph, SharedDemandGraphError,
 };
 pub use hashing::{
-    AttrPositionSourceHash, CacheExprSourceHash, CompiledBodyRecordHash, DurableBlake3Hash,
-    HotXxh3Hash, ImpureInputIdentityHash, ImpureInputObservationHash, LoweredIrFingerprint,
-    NixSha256Digest, ParseFileContentHash, PersistFileBlobHash,
+    AttrPositionSourceHash, CacheDigestHasher, CacheExprSourceHash, CacheHashFamily,
+    CompiledBodyRecordHash, DurableBlake3Hash, HotXxh3Hash, ImpureInputIdentityHash,
+    ImpureInputObservationHash, LoweredIrFingerprint, NixSha256Digest, ParseFileContentHash,
+    PersistFileBlobHash, cache_hash_family,
 };
 pub use input::{
     CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputFingerprint,

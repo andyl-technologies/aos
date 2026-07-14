@@ -18,6 +18,7 @@
 //! plus BLAKE3 content hash, allowing symlinked paths to share the same resolved
 //! artifact while still reparsing changed files.
 
+use crate::cache::hashing::CacheDigestHasher;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -103,7 +104,7 @@ impl ParseCacheFlags {
         }
     }
 
-    fn update_hasher(self, hasher: &mut blake3::Hasher) {
+    fn update_hasher(self, hasher: &mut CacheDigestHasher) {
         hasher.update(&[FLAG_ENCODING_VERSION]);
         hasher.update(&[u8::from(self.retain_trivia)]);
         hasher.update(&[u8::from(self.simplify)]);
@@ -139,7 +140,7 @@ impl ParseCacheKey {
         schema_version: u32,
         flags: ParseCacheFlags,
     ) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(KEY_PERSONALIZATION);
         hasher.update(&schema_version.to_le_bytes());
         flags.update_hasher(&mut hasher);
@@ -186,7 +187,7 @@ pub fn lowered_ir_fingerprint(ir: &Ir) -> Result<LoweredIrFingerprint, ParseCach
 }
 
 fn lowered_ir_artifact_fingerprint(ir_bytes: &[u8], symbol_bytes: &[u8]) -> LoweredIrFingerprint {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = CacheDigestHasher::new();
     hasher.update(LOWERED_IR_FINGERPRINT_DOMAIN);
     hasher.update(&PARSE_CACHE_SCHEMA_VERSION.to_le_bytes());
     // Fold the simplifier pass-set version into the fingerprint domain so that
@@ -254,7 +255,7 @@ pub(super) fn simplify_lowered_ir(ir: &mut Ir) -> Result<u32, ParseCacheError> {
     Ok(0)
 }
 
-fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {
+fn update_fingerprint_chunk(hasher: &mut CacheDigestHasher, chunk: &[u8]) {
     hasher.update(&(chunk.len() as u128).to_le_bytes());
     hasher.update(chunk);
 }

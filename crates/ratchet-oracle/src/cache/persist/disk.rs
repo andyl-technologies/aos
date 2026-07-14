@@ -16,6 +16,7 @@
 //!   files/        file/frontend blob pack and hash-to-offset index
 //! ```
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 use ratchet_cache::owned_paths::{OwnedPathError, OwnedPaths};
@@ -58,7 +59,7 @@ pub(super) fn read_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(raw)
 }
 
-pub(super) fn update_persist_index_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+pub(super) fn update_persist_index_chunk(hasher: &mut CacheDigestHasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
 }

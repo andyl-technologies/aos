@@ -3977,6 +3977,7 @@ dependencies = [
  "libc",
  "thiserror",
  "toml",
+ "xxhash-rust",
 ]
 
 [[package]]

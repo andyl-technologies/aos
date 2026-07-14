@@ -5,6 +5,7 @@
 //! observed-result hashes for those leaves while evaluator wiring remains
 //! separate.
 
+use crate::cache::hashing::CacheDigestHasher;
 use std::cmp::Ordering;
 
 use thiserror::Error;
@@ -496,12 +497,12 @@ fn validate_input_mode(
 }
 
 struct InputHasher {
-    hasher: blake3::Hasher,
+    hasher: CacheDigestHasher,
 }
 
 impl InputHasher {
     fn new(domain: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(domain);
         Self { hasher }
     }

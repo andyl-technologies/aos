@@ -4,6 +4,7 @@
 //! [`ForceCacheOptionsIdentity`] domain hashes so cached force payloads from
 //! a differently-configured evaluator can never collide.
 
+use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 
 impl ForceCacheOptionsIdentity {
@@ -25,7 +26,7 @@ impl ForceCacheOptionsIdentity {
         }
     }
 
-    pub(super) fn update_cache_identity(&self, hasher: &mut blake3::Hasher) -> Option<()> {
+    pub(super) fn update_cache_identity(&self, hasher: &mut CacheDigestHasher) -> Option<()> {
         hasher.update(b"force-cache-options-v4");
         hasher.update(b"store-dir");
         TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
@@ -109,7 +110,7 @@ impl ForceCacheOptionsIdentity {
 
     pub(super) fn update_synthetic_builtin_cache_identity(
         &self,
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         execution: BuiltinExecution,
     ) -> Option<()> {
         hasher.update(b"force-cache-synthetic-builtin-options-v1");
@@ -200,7 +201,7 @@ impl ForceCacheOptionsIdentity {
 
     pub(super) fn update_first_class_primop_cache_identity(
         &self,
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         execution: BuiltinExecution,
     ) -> Option<()> {
         hasher.update(b"force-cache-first-class-primop-options-v1");
@@ -225,7 +226,7 @@ impl ForceCacheOptionsIdentity {
 
     pub(super) fn update_synthetic_impure_constant_cache_identity(
         &self,
-        hasher: &mut blake3::Hasher,
+        hasher: &mut CacheDigestHasher,
         value_label: &'static [u8],
         value: Option<&[u8]>,
     ) -> Option<()> {

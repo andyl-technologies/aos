@@ -1,5 +1,6 @@
 //! Cached derivation side payload records and codecs.
 
+use crate::cache::hashing::CacheDigestHasher;
 use thiserror::Error;
 
 use crate::cache::hashing::DerivationSidePayloadValueHash;
@@ -67,7 +68,7 @@ impl CachedDerivationOutputPaths {
     }
 
     pub(crate) fn value_hash(&self, pre_output_aterm: &[u8]) -> ValueHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = CacheDigestHasher::new();
         hasher.update(STATIC_DERIVATION_OUTPUT_PATHS_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"pre-output-aterm");
         update_derivation_side_payload_hash_chunk(&mut hasher, pre_output_aterm);
@@ -405,7 +406,7 @@ fn derivation_aterm_path_payload_value_hash(
     path: &[u8],
     hash_derivation_modulo: Option<NixSha256Digest>,
 ) -> ValueHash {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = CacheDigestHasher::new();
     hasher.update(DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION);
     hasher.update(b"aterm");
     update_derivation_side_payload_hash_chunk(&mut hasher, aterm);
@@ -435,7 +436,7 @@ impl StaticDerivationOutputPathRecord {
     }
 }
 
-fn update_derivation_side_payload_hash_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+fn update_derivation_side_payload_hash_chunk(hasher: &mut CacheDigestHasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u128).to_le_bytes());
     hasher.update(bytes);
 }

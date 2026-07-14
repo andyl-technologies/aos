@@ -5,6 +5,7 @@
 //! combiner required by decision C-1; the demand graph decides when to allocate
 //! nodes and which canonical free-variable hashes to pass.
 
+use crate::cache::hashing::CacheDigestHasher;
 use std::hash::{Hash, Hasher};
 
 use thiserror::Error;
@@ -87,7 +88,7 @@ impl DemandCacheKey {
         let mut hasher = Xxh3::new();
         hasher.write(IMPURE_INPUT_KEY_DOMAIN_VERSION);
         hasher.write(&identity_hash.as_bytes());
-        let mut confirmation = blake3::Hasher::new();
+        let mut confirmation = CacheDigestHasher::new();
         confirmation.update(IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION);
         confirmation.update(&identity_hash.as_bytes());
         Self {
@@ -151,7 +152,7 @@ where
     let mut hot = Xxh3::new();
     hot.write(KEY_DOMAIN_VERSION);
     identity.write_to(&mut hot);
-    let mut confirmation = blake3::Hasher::new();
+    let mut confirmation = CacheDigestHasher::new();
     confirmation.update(KEY_CONFIRMATION_DOMAIN_VERSION);
     confirmation.update(&identity.source_hash().as_durable_hash().as_bytes());
     confirmation.update(&identity.node().as_u32().to_le_bytes());
@@ -175,7 +176,7 @@ fn write_len_prefixed(hasher: &mut Xxh3, chunk: &[u8]) -> Result<(), CacheKeyErr
 }
 
 fn write_len_prefixed_blake3(
-    hasher: &mut blake3::Hasher,
+    hasher: &mut CacheDigestHasher,
     chunk: &[u8],
 ) -> Result<(), CacheKeyError> {
     let len = u64::try_from(chunk.len())
