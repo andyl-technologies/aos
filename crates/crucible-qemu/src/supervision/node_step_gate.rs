@@ -424,10 +424,13 @@ fn run_one_scenario(
     }
 
     // The production host-I/O runtime maps an INDEPENDENT read-only view of the
-    // same shmem descriptor the node's hot-path channel writes; the node keeps
-    // its own owning mapping, so no channel-ownership refactor is needed.
+    // same shmem descriptor the node's hot-path channel writes and clones the
+    // plugin wake eventfd so it can rouse a vCPU parked in its between-quanta idle
+    // wait each advance; the node keeps its own owning mappings, so no
+    // channel-ownership refactor is needed.
     let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
+        setup.wake_as_fd(),
         setup.region().region_len,
         GATE_SLOT,
     )
