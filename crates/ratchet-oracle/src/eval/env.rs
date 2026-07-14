@@ -42,7 +42,7 @@ use crate::value::{HeapObject, Value, ValueTag};
 mod capture;
 
 pub use capture::{EvalEnv, EvalEnvFrames};
-pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer, flat_base_memo_counts};
+pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer};
 
 /// Process-wide environment capture/allocation counters (RFC-0007 doc 30 FV-0).
 ///

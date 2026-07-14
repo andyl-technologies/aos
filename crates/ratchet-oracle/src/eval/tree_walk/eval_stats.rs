@@ -170,12 +170,8 @@ impl TreeWalk {
     }
 
     pub(super) fn emit_stats_trace(stats: &EvalStats) {
-        let (flat_base_memo_hits, flat_base_memo_misses) =
-            crate::eval::env::flat_base_memo_counts();
         tracing::debug!(
             target: "aos_nix::eval::stats",
-            flat_base_memo_hits,
-            flat_base_memo_misses,
             thunks_forced = stats.thunks_forced(),
             thunks_allocated = stats.thunks_allocated(),
             thunks_elided = stats.thunks_elided(),

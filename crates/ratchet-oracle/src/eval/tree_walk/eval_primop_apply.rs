@@ -348,14 +348,14 @@ impl TreeWalk {
         self.with_current_module(lambda.module(), |eval| {
             let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
             let mut call_env = eval.clone_env_frames(id, lambda.env(), span)?;
-            let call_frame =
-                EvalFrame::new_linked(slot_count, call_env.frames.innermost().cloned()).map_err(
-                    |source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span),
-                )?;
+            let call_frame = EvalFrame::new_linked(slot_count, call_env.frames.last().cloned())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
             let call_with_env = eval.clone_with_scopes(id, lambda.with_scope_env(), span)?;
             let call_scoped_globals =
                 eval.clone_scoped_globals(id, lambda.scoped_global_env(), span)?;
-            call_env.frames.reserve_one().map_err(|_| {
+            call_env.frames.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Env {
                         id,
@@ -375,7 +375,7 @@ impl TreeWalk {
                 std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
             eval.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
             let result = (|| {
-                let call_frame = eval.env.innermost().cloned().ok_or_else(|| {
+                let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
                 })?;
                 eval.begin_order_sensitive_binding_assembly();

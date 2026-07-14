@@ -261,11 +261,8 @@ pub struct TreeWalk {
     /// The active lexical frame stack.
     ///
     /// Every production frame carries an immutable parent link, so capturing
-    /// the shared suffix clones only its innermost head pointer. The stack is
-    /// split into a shared immutable base and a mutable inner tail so that
-    /// installing a captured environment is a refcount bump, not a frame copy
-    /// (RFC-0007 §P1 stage B).
-    env: ActiveFrameStack,
+    /// the shared suffix clones only its innermost head pointer.
+    env: Vec<Arc<EvalFrame>>,
     /// Compact immutable outer prefix installed while a flat-captured closure
     /// runs. Frames pushed by the body remain in [`Self::env`].
     flat_env: Option<EvalFlatCapture>,

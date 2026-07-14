@@ -72,9 +72,9 @@ impl TreeWalk {
                 ));
             }
             Some(
-                EvalFrame::new_linked(slot_count, self.env.innermost().cloned()).map_err(
-                    |source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span),
-                )?,
+                EvalFrame::new_linked(slot_count, self.env.last().cloned()).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                })?,
             )
         } else {
             None

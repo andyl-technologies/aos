@@ -31,8 +31,8 @@ impl TreeWalk {
                 node.span,
             ));
         }
-        let frame_values = EvalFrame::new_linked(slot_count, self.env.innermost().cloned())
-            .map_err(|source| {
+        let frame_values =
+            EvalFrame::new_linked(slot_count, self.env.last().cloned()).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
             })?;
         self.push_env_frame(Arc::clone(&frame_values));
