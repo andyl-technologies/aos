@@ -415,8 +415,11 @@ mod tests {
         assert!(cache.state().is_megamorphic());
         // Megamorphic sites still resolve correctly through the slow path.
         let record = attrs(&[(key, 42)], &table);
-        let (value, source) =
-            hit_value(cache.select(ShapeId::new(9), &record, key).expect("selects"));
+        let (value, source) = hit_value(
+            cache
+                .select(ShapeId::new(9), &record, key)
+                .expect("selects"),
+        );
         assert_eq!(value, 42);
         assert!(matches!(
             source,
