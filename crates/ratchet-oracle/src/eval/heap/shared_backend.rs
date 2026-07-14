@@ -878,8 +878,10 @@ impl EvalHeap {
             }
             None => EvalHeapAttrsMetadata::new(shape, repr),
         };
-        let hash = attrs_structural_hash(metadata, &attrs);
-        let slot = if self.attrs_hash_cons_enabled {
+        // Skip the full structural xxh3 when hash-consing is disabled (nothing
+        // reads it; see [`EvalHeap::flat_alloc_attrs`]) and seed a zero header.
+        let (slot, header_hash) = if self.attrs_hash_cons_enabled {
+            let hash = attrs_structural_hash(metadata, &attrs);
             let existing = {
                 let shared = self.shared_backend()?;
                 self.attrs_cons
@@ -899,18 +901,21 @@ impl EvalHeap {
                 return Ok(value);
             }
             self.alloc_counters.note_hashcons(false);
-            Some(
-                self.attrs_cons
-                    .reserve_slot(hash)
-                    .map_err(EvalHeapError::from)?,
+            (
+                Some(
+                    self.attrs_cons
+                        .reserve_slot(hash)
+                        .map_err(EvalHeapError::from)?,
+                ),
+                hash.raw(),
             )
         } else {
-            None
+            (None, 0)
         };
         let result = match self.shared.as_ref() {
             Some(shared) => shared
                 .shard
-                .publish_flat_attrs(hash.raw(), FlatAttrsPayload { metadata, attrs })
+                .publish_flat_attrs(header_hash, FlatAttrsPayload { metadata, attrs })
                 .map_err(EvalHeapError::SharedArena),
             None => Err(EvalHeapError::SharedBackendMissing),
         };

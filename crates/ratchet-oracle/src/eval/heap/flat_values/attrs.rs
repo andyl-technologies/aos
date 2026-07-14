@@ -105,10 +105,17 @@ impl EvalHeap {
         metadata: EvalHeapAttrsMetadata,
         attrs: FlatAttrs,
     ) -> Result<Value, EvalHeapError> {
-        let hash = crate::eval::heap::arena::attrs_structural_hash(metadata, &attrs);
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
-        let cons_slot = if self.attrs_hash_cons_enabled {
+        // The structural hash is consumed only by hash-cons admission and the
+        // header word it seeds. When hash-consing is disabled — the raw `.drv`
+        // eval path, `eval_raw_bytes_with_evaluator_owned` — nothing reads
+        // either: the object never enters the cons table, and structural
+        // writeback recomputes the header hash from scratch before any reader
+        // observes it. Skip the full xxh3 over every entry there and seed the
+        // header with a zero placeholder.
+        let (cons_slot, header_hash) = if self.attrs_hash_cons_enabled {
+            let hash = crate::eval::heap::arena::attrs_structural_hash(metadata, &attrs);
             match self.admit_flat_attrs_cons(hash, metadata, &attrs)? {
                 HashConsReservation::Existing(value) => {
                     self.alloc_counters.note_hashcons(true);
@@ -117,11 +124,11 @@ impl EvalHeap {
                 }
                 HashConsReservation::Vacant(slot) => {
                     self.alloc_counters.note_hashcons(false);
-                    Some(slot)
+                    (Some(slot), hash.raw())
                 }
             }
         } else {
-            None
+            (None, 0)
         };
         let epoch = self.next_access_epoch();
         let shape = metadata.shape();
@@ -148,7 +155,7 @@ impl EvalHeap {
                         self.flat_attrs.alloc_with_trailing(
                             FlatObjectKind::Attrs,
                             flat_aux_for_len(entry_count),
-                            hash.raw(),
+                            header_hash,
                             epoch,
                             tail,
                             |writer| {
@@ -171,7 +178,7 @@ impl EvalHeap {
                 self.flat_attrs.alloc_with_aux(
                     FlatObjectKind::Attrs,
                     flat_aux_for_len(entry_count),
-                    hash.raw(),
+                    header_hash,
                     epoch,
                     FlatAttrsPayload { metadata, attrs },
                 )
