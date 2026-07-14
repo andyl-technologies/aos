@@ -712,13 +712,22 @@ impl LiveVcpuTimeCallbackState {
             .read_next_deadline()
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
         let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let device_io_holding_ticks = PluginShmemOrdering::device_io_active(self.slot.get());
+        let device_completion_deadline_icount = if device_io_holding_ticks {
+            Some(PluginShmemOrdering::device_completion_deadline_icount(
+                self.slot.get(),
+            ))
+        } else {
+            None
+        };
         let plan = compute_idle_wake_plan(
             current_icount,
             self.icount_shift,
             exact_deadline,
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
-            PluginShmemOrdering::device_io_active(self.slot.get()),
+            device_io_holding_ticks,
+            device_completion_deadline_icount,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
         let futex_wait = PluginShmemOrdering::publish_idle_wait(

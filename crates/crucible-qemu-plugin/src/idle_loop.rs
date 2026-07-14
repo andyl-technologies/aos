@@ -29,7 +29,11 @@ pub enum IdleWakeCause {
     TimerDeadline,
     /// The head inbound frame delivery icount woke the node.
     InboundFrame,
-    /// Device I/O is in flight, so guest timer deadlines are held.
+    /// Device I/O is in flight and the host published a completion deadline, so
+    /// the node idle-jumps directly to that completion icount.
+    DeviceIoCompletion,
+    /// Device I/O is in flight with no host-published completion deadline, so
+    /// guest timer deadlines are held and the node freezes to the ceiling.
     DeviceIoFreeze,
     /// No local timer or inbound input was pending, so the scheduler ceiling was the bound.
     SchedulerCeiling,
@@ -43,6 +47,7 @@ pub struct IdleWakePlan {
     ceiling_icount: u64,
     timer_deadline_icount: Option<u64>,
     inbound_delivery_icount: Option<u64>,
+    device_completion_deadline_icount: Option<u64>,
     device_io_holding_ticks: bool,
     cause: IdleWakeCause,
 }
@@ -76,6 +81,16 @@ impl IdleWakePlan {
     #[must_use]
     pub const fn inbound_delivery_icount(&self) -> Option<u64> {
         self.inbound_delivery_icount
+    }
+
+    /// Returns the host-published device-I/O completion deadline that entered the
+    /// merge, if device I/O was holding and a nonzero deadline was published.
+    ///
+    /// This is the clamped value (never earlier than the current icount) that the
+    /// merge actually considered, not the raw slot field.
+    #[must_use]
+    pub const fn device_completion_deadline_icount(&self) -> Option<u64> {
+        self.device_completion_deadline_icount
     }
 
     /// Returns whether device I/O suppressed guest timer deadlines.
@@ -266,6 +281,11 @@ impl PluginIdleHotLoop {
             || PluginShmemOrdering::device_io_active(slot),
             |freeze| freeze.is_tick_hold_active(slot),
         );
+        let device_completion_deadline_icount = if device_io_holding_ticks {
+            Some(PluginShmemOrdering::device_completion_deadline_icount(slot))
+        } else {
+            None
+        };
 
         PluginShmemOrdering::publish_reached_icount(slot, current_icount, clock.icount_shift())
             .map_err(|source| IdleHotLoopError::PublishReached { source })?;
@@ -277,6 +297,7 @@ impl PluginIdleHotLoop {
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
+            device_completion_deadline_icount,
         )?;
         let futex_wait = PluginShmemOrdering::publish_idle_wait(
             slot,
@@ -806,15 +827,41 @@ impl PluginIdleHotLoop {
     }
 }
 
-/// Computes the idle wake target from virtual timers, inbound delivery, and ceiling.
+/// Computes the idle wake target from virtual timers, inbound delivery, the
+/// host-published device-I/O completion deadline, and the scheduler ceiling.
 ///
-/// When `device_io_holding_ticks` is true, the exact timer deadline is still
-/// recorded in the returned plan, but it cannot select the wake target.
+/// # Merge rule
+///
+/// The timer deadline lives in QEMU's own virtual-clock domain (converted to
+/// aggregate icount here); the device completion deadline arrives from the host
+/// block-I/O servicer in the shared-memory slot, already in icount units. When
+/// `device_io_holding_ticks` is set the node is blocked on an in-flight device
+/// request, and the wake is the earliest of the pending events:
+///
+/// - **A host-published completion deadline is present** (`Some`, nonzero):
+///   the wake is `min(device_completion, timer, inbound)`. The device
+///   completion is the event that unblocks the guest; the timer rejoins the
+///   merge because a virtual-timer IRQ can wake a device-blocked vCPU before
+///   the I/O completes, after which it re-parks against the same completion.
+///   A completion deadline that is `0`/retracted contributes nothing, and a
+///   deadline in the past is clamped forward to `current_icount` (wake now) so
+///   a stale deadline never rewinds virtual time.
+/// - **No completion deadline is published** (`0`/retracted): timer deadlines
+///   stay held and the node freezes to the ceiling ([`IdleWakeCause::DeviceIoFreeze`]).
+///   Without a completion path, waking to a periodic timer would spin the guest
+///   against an I/O that cannot advance within the quantum.
+///
+/// When `device_io_holding_ticks` is false the device deadline is ignored and
+/// the wake is `min(timer, inbound)`, falling back to the ceiling.
+///
+/// On exact-icount ties the winner is chosen deterministically in the fixed
+/// priority order device completion, then timer, then inbound.
 ///
 /// # Errors
 ///
 /// Returns [`IdleHotLoopError`] when the timer deadline cannot be converted to
 /// an aggregate icount or the observed ceiling is behind the current icount.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_idle_wake_plan(
     current_icount: u64,
     icount_shift: u8,
@@ -822,6 +869,7 @@ pub fn compute_idle_wake_plan(
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
+    device_completion_deadline_icount: Option<u64>,
 ) -> Result<IdleWakePlan, IdleHotLoopError> {
     if ceiling.icount() < current_icount {
         return Err(IdleHotLoopError::CeilingBehindCurrent {
@@ -832,26 +880,55 @@ pub fn compute_idle_wake_plan(
 
     let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
         .map(|deadline| deadline.max(current_icount));
-    let effective_timer_deadline_icount = if device_io_holding_ticks {
-        None
-    } else {
-        timer_deadline_icount
-    };
     let inbound_delivery_icount = next_inbound_delivery_icount;
 
-    let (desired_wake_icount, cause) =
-        match (effective_timer_deadline_icount, inbound_delivery_icount) {
-            (Some(timer), Some(inbound)) if inbound < timer => {
-                (inbound, IdleWakeCause::InboundFrame)
-            }
-            (Some(timer), Some(_inbound)) => (timer, IdleWakeCause::TimerDeadline),
-            (Some(timer), None) => (timer, IdleWakeCause::TimerDeadline),
-            (None, Some(inbound)) => (inbound, IdleWakeCause::InboundFrame),
-            (None, None) if device_io_holding_ticks => {
-                (ceiling.icount(), IdleWakeCause::DeviceIoFreeze)
-            }
-            (None, None) => (ceiling.icount(), IdleWakeCause::SchedulerCeiling),
+    // The device completion deadline only participates while device I/O holds.
+    // A zero deadline means "none published / retracted"; a past deadline is
+    // clamped forward so it can never rewind virtual time below the current
+    // icount (the classic stale-deadline-in-the-past hazard).
+    let device_completion_deadline_icount = if device_io_holding_ticks {
+        device_completion_deadline_icount
+            .filter(|&deadline| deadline != 0)
+            .map(|deadline| deadline.max(current_icount))
+    } else {
+        None
+    };
+
+    // While device I/O holds without a completion deadline, timer deadlines are
+    // suppressed and the node freezes to the ceiling. Once the host publishes a
+    // completion deadline, the timer rejoins the merge as a legitimate earlier
+    // wake.
+    let effective_timer_deadline_icount =
+        if device_io_holding_ticks && device_completion_deadline_icount.is_none() {
+            None
+        } else {
+            timer_deadline_icount
         };
+
+    let mut earliest: Option<(u64, IdleWakeCause)> = None;
+    merge_earlier_wake(
+        &mut earliest,
+        device_completion_deadline_icount,
+        IdleWakeCause::DeviceIoCompletion,
+    );
+    merge_earlier_wake(
+        &mut earliest,
+        effective_timer_deadline_icount,
+        IdleWakeCause::TimerDeadline,
+    );
+    merge_earlier_wake(
+        &mut earliest,
+        inbound_delivery_icount,
+        IdleWakeCause::InboundFrame,
+    );
+
+    let (desired_wake_icount, cause) = earliest.unwrap_or_else(|| {
+        if device_io_holding_ticks {
+            (ceiling.icount(), IdleWakeCause::DeviceIoFreeze)
+        } else {
+            (ceiling.icount(), IdleWakeCause::SchedulerCeiling)
+        }
+    });
 
     Ok(IdleWakePlan {
         current_icount,
@@ -859,9 +936,26 @@ pub fn compute_idle_wake_plan(
         ceiling_icount: ceiling.icount(),
         timer_deadline_icount,
         inbound_delivery_icount,
+        device_completion_deadline_icount,
         device_io_holding_ticks,
         cause,
     })
+}
+
+/// Keeps `earliest` at the strictly-smallest wake icount seen so far.
+///
+/// A `None` candidate is ignored. On an exact tie the incumbent is retained, so
+/// the caller's invocation order fixes the tie-break priority.
+fn merge_earlier_wake(
+    earliest: &mut Option<(u64, IdleWakeCause)>,
+    candidate: Option<u64>,
+    cause: IdleWakeCause,
+) {
+    if let Some(icount) = candidate
+        && earliest.is_none_or(|(current, _)| icount < current)
+    {
+        *earliest = Some((icount, cause));
+    }
 }
 
 fn reject_passed_materialized_frames(
@@ -1080,6 +1174,7 @@ mod tests {
             Some(30),
             SchedulerCeiling::new(50),
             false,
+            None,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("timer wake plan should compute: {error}"),
@@ -1097,6 +1192,7 @@ mod tests {
             Some(30),
             SchedulerCeiling::new(20),
             false,
+            None,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("inbound wake plan should compute: {error}"),
@@ -1112,12 +1208,139 @@ mod tests {
             None,
             SchedulerCeiling::new(64),
             false,
+            None,
         ) {
             Ok(plan) => plan,
             Err(error) => panic!("ceiling wake plan should compute: {error}"),
         };
         assert_eq!(ceiling_wins.desired_wake_icount(), 64);
         assert_eq!(ceiling_wins.cause(), IdleWakeCause::SchedulerCeiling);
+    }
+
+    /// A published device-I/O completion deadline pulls the wake down to the
+    /// completion icount instead of freezing to the scheduler ceiling.
+    #[test]
+    fn idle_loop_device_completion_deadline_drives_wake() {
+        let plan = match compute_idle_wake_plan(
+            10,
+            0,
+            ExactDeadlineReport::NoArmedTimer,
+            None,
+            SchedulerCeiling::new(1_000),
+            true,
+            Some(200),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("device completion wake plan should compute: {error}"),
+        };
+        assert_eq!(plan.device_completion_deadline_icount(), Some(200));
+        assert_eq!(plan.desired_wake_icount(), 200);
+        assert_eq!(plan.cause(), IdleWakeCause::DeviceIoCompletion);
+    }
+
+    /// The merge takes the minimum of a completion deadline and an earlier timer,
+    /// and a completion deadline earlier than the timer wins the tie order.
+    #[test]
+    fn idle_loop_device_completion_merges_with_timer_by_min() {
+        // Timer at icount 20 is earlier than the device completion at 200.
+        let timer_first = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            None,
+            SchedulerCeiling::new(1_000),
+            true,
+            Some(200),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("timer-first merge should compute: {error}"),
+        };
+        assert_eq!(timer_first.timer_deadline_icount(), Some(20));
+        assert_eq!(timer_first.device_completion_deadline_icount(), Some(200));
+        assert_eq!(timer_first.desired_wake_icount(), 20);
+        assert_eq!(timer_first.cause(), IdleWakeCause::TimerDeadline);
+
+        // Device completion at 20 is earlier than the timer at 40.
+        let device_first = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 80 },
+            None,
+            SchedulerCeiling::new(1_000),
+            true,
+            Some(20),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("device-first merge should compute: {error}"),
+        };
+        assert_eq!(device_first.timer_deadline_icount(), Some(40));
+        assert_eq!(device_first.desired_wake_icount(), 20);
+        assert_eq!(device_first.cause(), IdleWakeCause::DeviceIoCompletion);
+    }
+
+    /// A zero (retracted) completion deadline leaves the node frozen to the
+    /// ceiling with timer deadlines held, the pre-fix device-I/O behavior.
+    #[test]
+    fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
+        let plan = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            None,
+            SchedulerCeiling::new(1_000),
+            true,
+            Some(0),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("retracted completion plan should compute: {error}"),
+        };
+        assert_eq!(plan.timer_deadline_icount(), Some(20));
+        assert_eq!(plan.device_completion_deadline_icount(), None);
+        assert_eq!(plan.desired_wake_icount(), 1_000);
+        assert_eq!(plan.cause(), IdleWakeCause::DeviceIoFreeze);
+    }
+
+    /// A stale completion deadline in the past clamps forward to the current
+    /// icount (wake now) rather than rewinding virtual time. This is the classic
+    /// first-live device-I/O hazard.
+    #[test]
+    fn idle_loop_stale_past_device_completion_clamps_to_current() {
+        let plan = match compute_idle_wake_plan(
+            100,
+            0,
+            ExactDeadlineReport::NoArmedTimer,
+            None,
+            SchedulerCeiling::new(1_000),
+            true,
+            Some(40),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("stale-past completion plan should compute: {error}"),
+        };
+        assert_eq!(plan.device_completion_deadline_icount(), Some(100));
+        assert_eq!(plan.desired_wake_icount(), 100);
+        assert_eq!(plan.cause(), IdleWakeCause::DeviceIoCompletion);
+    }
+
+    /// The completion deadline is ignored entirely when device I/O is not
+    /// holding, even if a nonzero value is present in the slot.
+    #[test]
+    fn idle_loop_completion_ignored_when_device_io_not_holding() {
+        let plan = match compute_idle_wake_plan(
+            10,
+            1,
+            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            None,
+            SchedulerCeiling::new(1_000),
+            false,
+            Some(15),
+        ) {
+            Ok(plan) => plan,
+            Err(error) => panic!("non-holding plan should compute: {error}"),
+        };
+        assert_eq!(plan.device_completion_deadline_icount(), None);
+        assert_eq!(plan.desired_wake_icount(), 20);
+        assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
     }
 
     #[test]
@@ -1597,6 +1820,7 @@ mod tests {
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
                 inbound_delivery_icount: Some(9),
+                device_completion_deadline_icount: None,
                 device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
@@ -1640,6 +1864,7 @@ mod tests {
                 ceiling_icount: 20,
                 timer_deadline_icount: None,
                 inbound_delivery_icount: Some(9),
+                device_completion_deadline_icount: None,
                 device_io_holding_ticks: false,
                 cause: IdleWakeCause::InboundFrame,
             },
@@ -1780,6 +2005,7 @@ mod tests {
                 ceiling_icount: 1,
                 timer_deadline_icount: Some(1),
                 inbound_delivery_icount: None,
+                device_completion_deadline_icount: None,
                 device_io_holding_ticks: false,
                 cause: IdleWakeCause::TimerDeadline,
             },
