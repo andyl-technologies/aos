@@ -752,6 +752,47 @@ wall-small item. The load-bearing levers for this shape remain JIT coverage
 of the module-fixpoint shape class and the heap-image prelude snapshot
 (doc 31 §1).
 
+**The wave-1 micro-opt stack is also NEUTRAL on this wall (2026-07-14).**
+Confirming the I3/I4 suspicion above directly: four per-op overhead reductions
+landed this session, each attributed to a line item in the cold table — the
+re-force fast path (P0, `5b20c4e37`+`ed014049f`: serve an already-forced thunk
+before the share/claim protocol), O(D) environment-chain resolution (P1A,
+`7fe0788b6`+`a2a020732`), the attrs hash-skip (P2, `92acc3205`+`dc6d0ac9a`),
+and the per-call-site primop cache (P4, `0ccf4781c`+`47de93598`). An
+interleaved pre/post A/B on the cache-off cold `systems.server.build.toplevel`
+(same source, x4 rounds, fresh cache per cold; oracle = pinned 2.24.12
+`nix-instantiate` 0.57s) measures the whole stack **wall-neutral**: pre
+2.57-3.11s vs post 2.61-3.07s (overlapping ranges, shared builder under load),
+546/546 `.drv` byte-parity green on **both** the serial and JIT tiers. Same
+lesson as I1/I2: the reduced counts are real and the counter deltas remain
+correct regression guards, but no wall claim rests on them — the cold wall on
+this shape is a **flat long tail**, not a removable hot spot (profile below).
+
+**Stage B (shared flattened environment base) regressed and was reverted
+(2026-07-14).** Flattening the captured-environment chain into a shared base
+(landed `dc03b0d31`) measured a **consistent ~10% cold regression** on the
+server toplevel — pre 2.61-2.71s vs post 2.90-3.25s, interleaved, same protocol
+— and was reverted (`48eb6772f`). Recorded as a measured negative result.
+
+**The fresh post-wave profile confirms the flat long tail (2026-07-14).** A
+sampling profile of the cache-off cold server toplevel at the post-wave HEAD has
+**no dominator**: the largest single frame is `memmove` at 8.1%, then
+`force_value` 7.7%, closure application 4.9%, `eval_node` dispatch 4.6%,
+environment capture 2.9%, `Arc` drops ~3.5%, and `EvalFrame::new_linked` 2.1%.
+No frame is a hot spot a point fix removes — which is why the wave-1 per-op
+reductions net wall-neutral, and why the load-bearing levers stay the ones named
+above (JIT coverage of the module-fixpoint shape class, the heap-image prelude
+snapshot) rather than further micro-optimization of the tail.
+
+**The cache-enabled cold leg is BLAKE3-bound, not eval-bound (2026-07-14).** The
+cache-populate cold leg costs **16.9s vs 2.6s cache-off** on the server toplevel,
+and a profile attributes **67% of cycles to BLAKE3** (durable-cache record-key
+hashing), not to evaluation. This sharpens the §5.5 cache-populate caveat and
+the §3.2(b) write-behind campaign's "eval work + coordination" remainder into a
+specific, addressable cost; the hash-attribution table and the hash-less fixes
+are the active campaign (first landing `3467c6126`, which skips the redundant
+append-time payload re-hash on the write-behind flush).
+
 ### 5.6 The carrier matrix — one-word variant vs baseline (S5 gate, 2026-07-12)
 
 First full both-carrier comparison at one HEAD (Linux builder, quiet,
