@@ -24,6 +24,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -33,6 +34,7 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
+use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
@@ -45,11 +47,25 @@ use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, Qe
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// A production host-I/O runtime backed by a read-only shared-memory view.
+///
+/// The runtime's own [`MappedSetupRegion`] is an observer view: it only reads the
+/// guest node slot. An optional [`QemuLiveBlockIoServicer`] added with
+/// [`QemuLiveHostIoRuntime::with_block_servicer`] is the participant half -- it
+/// owns a separate writable mapping confined to the `SLOT_BLK_IO` ring pair and
+/// is driven once per advance poll so a guest blocked on real block I/O can make
+/// progress.
 pub struct QemuLiveHostIoRuntime {
     region: MappedSetupRegion,
     wake: File,
     vm_slot: u32,
     poll_interval: Duration,
+    block: Option<BlockIoServicing>,
+}
+
+/// The participant half of the runtime: a block servicer plus its diagnostic sink.
+struct BlockIoServicing {
+    servicer: QemuLiveBlockIoServicer,
+    diagnostics: Arc<BlockIoDiagnostics>,
 }
 
 impl QemuLiveHostIoRuntime {
@@ -112,7 +128,28 @@ impl QemuLiveHostIoRuntime {
             wake,
             vm_slot,
             poll_interval,
+            block: None,
         })
+    }
+
+    /// Attaches a block-I/O servicer driven once per advance poll.
+    ///
+    /// The servicer owns its own writable mapping confined to the `SLOT_BLK_IO`
+    /// ring pair; `diagnostics` is the shared sink the caller reads back after the
+    /// advance. With a servicer attached, each advance poll drains newly arrived
+    /// block requests and delivers responses due at the guest's observed icount,
+    /// so a guest blocked on real block I/O can make progress.
+    #[must_use]
+    pub fn with_block_servicer(
+        mut self,
+        servicer: QemuLiveBlockIoServicer,
+        diagnostics: Arc<BlockIoDiagnostics>,
+    ) -> Self {
+        self.block = Some(BlockIoServicing {
+            servicer,
+            diagnostics,
+        });
+        self
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
@@ -128,7 +165,7 @@ impl QemuLiveHostIoRuntime {
     /// Signals the plugin wake eventfd once before polling so a vCPU parked in its
     /// between-quanta idle wait observes the ceiling the node just published.
     fn poll_advance_completion(
-        &self,
+        &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
         self.signal_wake()?;
@@ -139,6 +176,11 @@ impl QemuLiveHostIoRuntime {
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
+            // Service block I/O before classifying the boundary: a guest blocked
+            // on a probe read cannot reach the ceiling until its response is
+            // delivered, so draining and delivering at the observed icount is what
+            // lets the advance make progress.
+            self.service_block_io(&snapshot)?;
             let idle = idle_state_from_snapshot(snapshot);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
@@ -155,6 +197,33 @@ impl QemuLiveHostIoRuntime {
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
+    }
+
+    /// Services the block-I/O ring at the guest's observed icount, if attached.
+    ///
+    /// Drains newly arrived requests and delivers responses due at the guest's
+    /// current icount, then records the observation into the shared diagnostics.
+    /// This is a no-op when no block servicer is attached.
+    fn service_block_io(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(block) = &mut self.block else {
+            return Ok(());
+        };
+        let serviced = block
+            .servicer
+            .service(snapshot.current_icount)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("service block io", source.to_string())
+            })?;
+        block.diagnostics.record(
+            snapshot.current_icount,
+            snapshot.device_io_active != 0,
+            snapshot.idle_wake_icount,
+            &serviced,
+        );
+        Ok(())
     }
 }
 

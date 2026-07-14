@@ -30,8 +30,33 @@
 //! serviced I/O stays icount-deterministic. [`QemuLiveBlockIoServiceStep`]
 //! exposes the device's next completion icount, which is the exact device horizon
 //! a time-owning plugin must advance to before a blocked guest can complete.
+//!
+//! # Determinism invariant
+//!
+//! Servicing is a pure function of the observed guest icount. The host poll
+//! cadence may change *when* [`QemuLiveBlockIoServicer::service`] runs and *how
+//! many* frames it batches per call, but never *which* requests are processed,
+//! their COMPUTE result, their order, or their `delivery_icount`: requests are
+//! drained in SPSC FIFO order and delivered by the `(delivery_icount, src, seq)`
+//! total order, gated on the passed-in guest icount rather than any host clock.
+//! Two runs of the same guest therefore observe the identical processed sequence
+//! and identical delivery icounts regardless of poll jitter.
+//!
+//! # Mapping discipline
+//!
+//! Unlike the observer-only [`crate::QemuLiveHostIoRuntime`], this servicer is a
+//! participant: it holds an independent writable mapping. That writable authority
+//! is deliberately confined to the `SLOT_BLK_IO` ring pair reached through
+//! [`node_directed_ring_pair_mut`](MappedSetupRegion::node_directed_ring_pair_mut)
+//! -- the request-ring read cursor, the response-ring frames, and the guest slot's
+//! atomic wake word (the SPSC producer/consumer wakes). It never writes the guest
+//! node slot's observed fields (current icount, fingerprint, idle state); those
+//! stay the read-only province of the runtime, so the block servicer cannot
+//! perturb the state the determinism gates observe.
 
 use std::os::fd::BorrowedFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, DeviceError, IoCore};
 use crucible_shmem::{
@@ -190,6 +215,119 @@ pub struct QemuLiveBlockIoServiceStep {
     pub delivered: usize,
     /// The device's next completion icount after this call, when one is pending.
     pub next_completion_icount: Option<u64>,
+}
+
+/// A shared diagnostic sink for one live block-I/O servicing run.
+///
+/// The block-servicing poll loop lives inside the [`crate::QemuLiveHostIoRuntime`]
+/// that is moved into the node, so a run cannot read the servicer back out
+/// afterward. Instead the runtime writes each observation here and the runner
+/// holds a clone (via [`BlockIoDiagnostics::shared`]), reading the accumulated
+/// evidence once the advance returns. All fields are updated from the single
+/// advance-driving thread; the atomics exist only so the sink is `Sync` enough to
+/// live behind the node's boxed runtime.
+#[derive(Debug, Default)]
+pub struct BlockIoDiagnostics {
+    frames_processed: AtomicUsize,
+    frames_delivered: AtomicUsize,
+    service_calls: AtomicUsize,
+    first_request_seen: AtomicBool,
+    first_request_icount: AtomicU64,
+    first_completion_horizon: AtomicU64,
+    last_current_icount: AtomicU64,
+    max_current_icount: AtomicU64,
+    last_device_io_active: AtomicBool,
+    last_idle_wake_icount: AtomicU64,
+}
+
+impl BlockIoDiagnostics {
+    /// Creates an empty diagnostic sink wrapped for sharing across the boundary.
+    #[must_use]
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Records one servicing observation from the runtime poll loop.
+    ///
+    /// `current_icount`, `device_io_active`, and `idle_wake_icount` are the guest
+    /// slot's published state at the poll; `serviced` is the servicing outcome.
+    pub(crate) fn record(
+        &self,
+        current_icount: u64,
+        device_io_active: bool,
+        idle_wake_icount: u64,
+        serviced: &QemuLiveBlockIoServiceStep,
+    ) {
+        self.service_calls.fetch_add(1, Ordering::Relaxed);
+        if serviced.processed > 0 {
+            self.frames_processed
+                .fetch_add(serviced.processed, Ordering::Relaxed);
+            if !self.first_request_seen.swap(true, Ordering::Relaxed) {
+                self.first_request_icount
+                    .store(current_icount, Ordering::Relaxed);
+                self.first_completion_horizon.store(
+                    serviced.next_completion_icount.unwrap_or(0),
+                    Ordering::Relaxed,
+                );
+            }
+        }
+        if serviced.delivered > 0 {
+            self.frames_delivered
+                .fetch_add(serviced.delivered, Ordering::Relaxed);
+        }
+        self.last_current_icount
+            .store(current_icount, Ordering::Relaxed);
+        self.max_current_icount
+            .fetch_max(current_icount, Ordering::Relaxed);
+        self.last_device_io_active
+            .store(device_io_active, Ordering::Relaxed);
+        self.last_idle_wake_icount
+            .store(idle_wake_icount, Ordering::Relaxed);
+    }
+
+    /// Returns a plain-value snapshot of the accumulated observations.
+    #[must_use]
+    pub fn snapshot(&self) -> BlockIoDiagnosticsSnapshot {
+        let saw_request = self.first_request_seen.load(Ordering::Relaxed);
+        BlockIoDiagnosticsSnapshot {
+            frames_processed: self.frames_processed.load(Ordering::Relaxed),
+            frames_delivered: self.frames_delivered.load(Ordering::Relaxed),
+            service_calls: self.service_calls.load(Ordering::Relaxed),
+            first_request_icount: saw_request
+                .then(|| self.first_request_icount.load(Ordering::Relaxed)),
+            first_completion_horizon: saw_request.then_some(()).and_then(|()| {
+                let horizon = self.first_completion_horizon.load(Ordering::Relaxed);
+                (horizon != 0).then_some(horizon)
+            }),
+            last_current_icount: self.last_current_icount.load(Ordering::Relaxed),
+            max_current_icount: self.max_current_icount.load(Ordering::Relaxed),
+            last_device_io_active: self.last_device_io_active.load(Ordering::Relaxed),
+            last_idle_wake_icount: self.last_idle_wake_icount.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// A plain-value snapshot of the [`BlockIoDiagnostics`] accumulated for a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockIoDiagnosticsSnapshot {
+    /// Total request frames drained and COMPUTEd across the run.
+    pub frames_processed: usize,
+    /// Total response frames published to the response ring across the run.
+    pub frames_delivered: usize,
+    /// Number of poll-loop servicing calls made across the run.
+    pub service_calls: usize,
+    /// Guest icount observed when the first request frame was processed.
+    pub first_request_icount: Option<u64>,
+    /// Device completion horizon computed for the first processed request.
+    pub first_completion_horizon: Option<u64>,
+    /// Guest icount observed at the final poll.
+    pub last_current_icount: u64,
+    /// Highest guest icount observed across the run.
+    pub max_current_icount: u64,
+    /// Whether the guest slot last advertised active device I/O.
+    pub last_device_io_active: bool,
+    /// The guest slot's last published idle-wake icount.
+    pub last_idle_wake_icount: u64,
 }
 
 /// Builds the deterministic base-image bytes for a device of `size_bytes`.

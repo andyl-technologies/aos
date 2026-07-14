@@ -14,6 +14,7 @@ crucible-qemu	src/shutdown	thread::sleep	1
 crucible-qemu	src/spawn	thread::sleep	1
 crucible-qemu	src/spawn	std::thread::sleep	1
 crucible-qemu	src/supervision/host_io_runtime	thread::sleep	1
+crucible-qemu	src/supervision/block_io_gate	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate	thread::sleep	1
 crucible-qemu	tests/crash_detection	retry	1
 crucible-qemu	src/live_plugin_gate	thread::sleep	1
