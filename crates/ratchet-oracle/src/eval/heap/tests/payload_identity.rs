@@ -147,9 +147,19 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         relocation_sensitive: 0,
         b2_disposition: "inline numeric and boolean decoding only; no repair",
     },
+    // The four former `outcome.rs` diagnostic reads re-homed to these two
+    // children in the §2 file-size split; every call site is
+    // verbatim-unchanged.
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/outcome.rs",
-        raw_representation: 4,
+        path: "ratchet-oracle/src/eval/tree_walk/outcome/boundary_binding_fns.rs",
+        raw_representation: 1,
+        address_identity_only: 0,
+        relocation_sensitive: 0,
+        b2_disposition: "diagnostic mismatch payloads only; no repair",
+    },
+    PayloadIdentityAuditRow {
+        path: "ratchet-oracle/src/eval/tree_walk/outcome/boundary_root_reference_fns.rs",
+        raw_representation: 3,
         address_identity_only: 0,
         relocation_sensitive: 0,
         b2_disposition: "diagnostic mismatch payloads only; no repair",
@@ -295,7 +305,10 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
         .filter(|row| !row.path.ends_with("capture_validation.rs"));
-    assert_eq!(production_rows.clone().count(), 15);
+    // 15 reviewed production surfaces; 16 rows because the four former
+    // `outcome.rs` diagnostic reads split across two child-module rows in the
+    // §2 file-size re-layering (accessor totals unchanged).
+    assert_eq!(production_rows.clone().count(), 16);
     assert_eq!(
         production_rows
             .map(|row| {
