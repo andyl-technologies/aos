@@ -22,75 +22,109 @@ pub enum ArithmeticOp {
 }
 
 /// A tree-walk evaluation failure with source location.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The payload is boxed so the type is one pointer wide. `TreeWalkError` is the
+/// `E` in every `Result<Value, TreeWalkError>` the evaluator threads, and an
+/// inline payload — the 160-variant [`TreeWalkErrorKind`], the span, two
+/// diagnostic `Vec`s, and the optional source, ~144 bytes together — would
+/// force each of the ~20 call boundaries per op to return that `Result` through
+/// memory (an sret hidden pointer), paid on the success path for an error that
+/// is almost never raised. Boxing shrinks the type to a single pointer so the
+/// success path stays register-sized; the allocation happens only when an error
+/// is actually constructed, which is cold. See the per-op instruction-tax
+/// ledger (RFC-0007 design-notes) for the accounting.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TreeWalkError {
-    pub(crate) kind: TreeWalkErrorKind,
-    pub(crate) span: Span,
-    pub(crate) contexts: Vec<EvalErrorContext>,
-    pub(crate) labels: Vec<EvalErrorLabel>,
-    pub(crate) source: Option<EvalErrorSource>,
+    inner: Box<TreeWalkErrorInner>,
+}
+
+/// The boxed payload of a [`TreeWalkError`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TreeWalkErrorInner {
+    kind: TreeWalkErrorKind,
+    span: Span,
+    contexts: Vec<EvalErrorContext>,
+    labels: Vec<EvalErrorLabel>,
+    source: Option<EvalErrorSource>,
+}
+
+impl fmt::Debug for TreeWalkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Mirror the field layout a derived `Debug` on the flat struct produced,
+        // so diagnostics and test output are unchanged by the boxing.
+        formatter
+            .debug_struct("TreeWalkError")
+            .field("kind", &self.inner.kind)
+            .field("span", &self.inner.span)
+            .field("contexts", &self.inner.contexts)
+            .field("labels", &self.inner.labels)
+            .field("source", &self.inner.source)
+            .finish()
+    }
 }
 
 impl TreeWalkError {
     /// Creates a tree-walk evaluation error.
-    pub const fn new(kind: TreeWalkErrorKind, span: Span) -> Self {
+    pub fn new(kind: TreeWalkErrorKind, span: Span) -> Self {
         Self {
-            kind,
-            span,
-            contexts: Vec::new(),
-            labels: Vec::new(),
-            source: None,
+            inner: Box::new(TreeWalkErrorInner {
+                kind,
+                span,
+                contexts: Vec::new(),
+                labels: Vec::new(),
+                source: None,
+            }),
         }
     }
 
     /// Returns the error category.
     pub fn kind(&self) -> TreeWalkErrorKind {
-        self.kind.clone()
+        self.inner.kind.clone()
     }
 
     /// Returns the source span associated with this error.
-    pub const fn span(&self) -> Span {
-        self.span
+    pub fn span(&self) -> Span {
+        self.inner.span
     }
 
     pub fn with_span(mut self, span: Span) -> Self {
-        self.span = span;
+        self.inner.span = span;
         self
     }
 
     pub(crate) fn with_label(mut self, span: Span, label: &'static str) -> Self {
-        self.labels.push(EvalErrorLabel { span, label });
+        self.inner.labels.push(EvalErrorLabel { span, label });
         self
     }
 
     pub fn with_labels(mut self, labels: Vec<EvalErrorLabel>) -> Self {
-        self.labels = labels;
+        self.inner.labels = labels;
         self
     }
 
     pub fn with_contexts(mut self, contexts: Vec<EvalErrorContext>) -> Self {
-        self.contexts = contexts;
+        self.inner.contexts = contexts;
         self
     }
 
     pub fn with_source(mut self, source: EvalErrorSource) -> Self {
-        self.source = Some(source);
+        self.inner.source = Some(source);
         self
     }
 
     /// Returns diagnostic context messages from outermost to innermost.
     pub fn contexts(&self) -> &[EvalErrorContext] {
-        &self.contexts
+        &self.inner.contexts
     }
 
     /// Returns additional source labels relevant to this error.
     pub fn labels(&self) -> &[EvalErrorLabel] {
-        &self.labels
+        &self.inner.labels
     }
 
     /// Returns the source file associated with this evaluation error, if known.
-    pub const fn source(&self) -> Option<&EvalErrorSource> {
-        self.source.as_ref()
+    pub fn source(&self) -> Option<&EvalErrorSource> {
+        self.inner.source.as_ref()
     }
 
     pub(crate) fn try_prepend_context(
@@ -99,30 +133,34 @@ impl TreeWalkError {
         span: Span,
         context: EvalErrorContext,
     ) -> Result<Self, Self> {
-        self.contexts.try_reserve_exact(1).map_err(|_| {
+        self.inner.contexts.try_reserve_exact(1).map_err(|_| {
             Self::new(
                 TreeWalkErrorKind::ListAllocationFailed {
                     id,
-                    len: self.contexts.len().saturating_add(1),
+                    len: self.inner.contexts.len().saturating_add(1),
                 },
                 span,
             )
         })?;
-        self.contexts.insert(0, context.with_span(span));
+        self.inner.contexts.insert(0, context.with_span(span));
         Ok(self)
     }
 }
 
 impl fmt::Display for TreeWalkError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for context in &self.contexts {
+        for context in &self.inner.contexts {
             writeln!(
                 formatter,
                 "while evaluating: {}",
                 String::from_utf8_lossy(context.message())
             )?;
         }
-        write!(formatter, "{} at byte span {:?}", self.kind, self.span)
+        write!(
+            formatter,
+            "{} at byte span {:?}",
+            self.inner.kind, self.inner.span
+        )
     }
 }
 
@@ -210,5 +248,38 @@ impl EvalErrorContext {
     /// Returns the source file associated with this context span, if known.
     pub const fn source(&self) -> Option<&EvalErrorSource> {
         self.source.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod size_pins {
+    use super::TreeWalkError;
+    use crate::value::Value;
+
+    /// Pins the boxed-payload win: [`TreeWalkError`] is one pointer wide.
+    ///
+    /// Before boxing, the inline payload (160-variant kind + span + two `Vec`s +
+    /// optional source) made the type ~144 bytes, which
+    /// `#![allow(clippy::result_large_err)]` used to suppress. Boxing keeps the
+    /// error a single pointer so `Result<Value, TreeWalkError>` returns in
+    /// registers on the success path. See the per-op instruction-tax ledger
+    /// (RFC-0007 design-notes).
+    #[test]
+    fn tree_walk_error_is_one_pointer_wide() {
+        assert_eq!(
+            std::mem::size_of::<TreeWalkError>(),
+            std::mem::size_of::<usize>(),
+        );
+    }
+
+    /// Pins that the evaluator's ubiquitous return type stays register-sized:
+    /// at most the value payload plus the boxed-error pointer, versus the
+    /// ~144-byte inline error before boxing.
+    #[test]
+    fn result_value_error_stays_register_sized() {
+        assert!(
+            std::mem::size_of::<Result<Value, TreeWalkError>>()
+                <= std::mem::size_of::<Value>() + std::mem::size_of::<usize>()
+        );
     }
 }

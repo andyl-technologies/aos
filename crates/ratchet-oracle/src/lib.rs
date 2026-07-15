@@ -14,10 +14,12 @@
 //! the `aos-core`-facing `native` handle.
 
 #![forbid(unsafe_code)]
-// The tree-walk evaluator intentionally threads rich `TreeWalkError` values
-// and source-span context through many internal helpers. Refactoring that API
-// shape is a separate design pass, not a mechanical clippy cleanup.
-#![allow(clippy::result_large_err, clippy::too_many_arguments)]
+// The tree-walk evaluator threads source-span context through many internal
+// helpers, so several constructors take more positional arguments than the
+// default clippy threshold. `TreeWalkError` itself now boxes its payload (see
+// `eval::tree_walk::errors`), so `Result<Value, TreeWalkError>` is one pointer
+// wide and `result_large_err` no longer applies.
+#![allow(clippy::too_many_arguments)]
 
 // Re-exports so the moved modules' paths to lower crates keep resolving.
 pub use aos_nix_syntax as syntax;

@@ -697,12 +697,10 @@ fn break_thunks_can_be_forced_by_arithmetic_and_reused() {
     );
     assert!(matches!(
         eval_whnf(&lower("(builtins.break (x: x)) 1"))
-            .expect_err("direct break lambda remains a thunk"),
-        TreeWalkError {
-            kind: TreeWalkErrorKind::Type {
-                actual: ValueTag::Thunk,
-                ..
-            },
+            .expect_err("direct break lambda remains a thunk")
+            .kind(),
+        TreeWalkErrorKind::Type {
+            actual: ValueTag::Thunk,
             ..
         }
     ));
@@ -714,12 +712,10 @@ fn break_thunks_can_be_forced_by_arithmetic_and_reused() {
         eval_whnf(&lower(
             "let f = builtins.break (builtins.break (x: x)); in f 1"
         ))
-        .expect_err("double break lambda leaves one thunk"),
-        TreeWalkError {
-            kind: TreeWalkErrorKind::Type {
-                actual: ValueTag::Thunk,
-                ..
-            },
+        .expect_err("double break lambda leaves one thunk")
+        .kind(),
+        TreeWalkErrorKind::Type {
+            actual: ValueTag::Thunk,
             ..
         }
     ));
