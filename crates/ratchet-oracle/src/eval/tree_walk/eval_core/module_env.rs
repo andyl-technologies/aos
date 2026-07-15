@@ -1,7 +1,7 @@
 //! Module, environment, scope, attr-path, and scoped-global helpers.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::compile::{FLAT_CAPTURE_MAX_SLOTS, IrInlineCacheSiteId, Upvalue};
 
 impl TreeWalk {
@@ -272,6 +272,11 @@ impl TreeWalk {
         id: IrId,
         span: Span,
     ) -> Result<(EvalEnv, Option<EvalFlatCaptureBuffer>), TreeWalkError> {
+        // Depth-amplifier probe (RFC-0007): active depth at closure creation,
+        // before the capture-path branches so every closure counts.
+        if crate::eval::env::depth_probe_enabled() {
+            crate::eval::env::note_capture_depth(self.active_env_frame_count());
+        }
         #[cfg(test)]
         let runtime_conversion_enabled = self.capture_plan_validation.is_none();
         #[cfg(not(test))]
@@ -559,6 +564,10 @@ impl TreeWalk {
         // collection is active so a normal eval pays nothing.
         if self.options.eval_stats_dump() {
             crate::eval::env::note_env_install(frames.last());
+        }
+        // Depth-amplifier probe (RFC-0007): install depth = O(depth) work/apply.
+        if crate::eval::env::depth_probe_enabled() {
+            crate::eval::env::note_install_depth(frames.len());
         }
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(frames.len()).map_err(|_| {

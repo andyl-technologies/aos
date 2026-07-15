@@ -41,6 +41,7 @@ use crate::value::{HeapObject, Value, ValueTag};
 
 mod apply_probe;
 mod capture;
+mod depth_probe;
 mod frame_probe;
 
 #[cfg(test)]
@@ -48,6 +49,9 @@ pub(crate) use apply_probe::env_apply_histogram;
 pub(crate) use apply_probe::{emit_env_apply_histogram_report, note_env_install};
 pub use capture::{EvalEnv, EvalEnvFrames};
 pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer};
+pub(crate) use depth_probe::{
+    emit_depth_report, enabled as depth_probe_enabled, note_capture_depth, note_install_depth,
+};
 pub(crate) use frame_probe::emit_frame_probe_report;
 
 /// Process-wide environment capture/allocation counters (RFC-0007 doc 30 FV-0).

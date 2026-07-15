@@ -216,6 +216,10 @@ impl TreeWalk {
         // alloc-cost line on the same `AOS_NIX_EVAL_STATS` stderr path. A no-op
         // unless `AOS_NIX_FRAME_PROBE=1` recorded allocations this run.
         crate::eval::env::emit_frame_probe_report();
+        // Depth-amplifier lever (RFC-0007 instruction-bloat): dump the env
+        // install/capture depth histograms on the same stderr path. A no-op
+        // unless `AOS_NIX_DEPTH_PROBE=1` recorded samples this run.
+        crate::eval::env::emit_depth_report();
         // Cache-tax attribution (RFC-0007 §P4): dump the demand-node key-finalize
         // totals on the same `AOS_NIX_EVAL_STATS` stderr path. A no-op unless a
         // key was finalized this process (cache-on evals only).
