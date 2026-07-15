@@ -226,6 +226,9 @@ impl TreeWalk {
         // and boundary counts that gate the boundary-record design, on the same
         // stderr dump path for the same benchmark-capture reason.
         super::pkg_boundary_probe::emit_pkg_boundary_report();
+        // MEMO-2 M2-record incr. 2: the boundary-admission recognition counter
+        // (default-off; only populated under AOS_NIX_BOUNDARY_MEMO).
+        super::boundary_admission::emit_boundary_admission_report();
         // Force-shape wall census (RFC-0007 JIT fuse-shapes): the dynamic
         // per-force self-time by IR shape class that ranks which body shapes a
         // fused tier-2 grammar could remove wall from, on the same stderr dump

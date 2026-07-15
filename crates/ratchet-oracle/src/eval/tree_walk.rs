@@ -191,7 +191,7 @@ pub(crate) use eval_regex_ere::{bracket_expression_end, translate_posix_ere};
 pub(crate) use json_float::nlohmann_json_float_bytes;
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
-pub use options::{MemoNetMode, MemoNetOptions, MemoOptions};
+pub use options::{BoundaryMemoOptions, MemoNetMode, MemoNetOptions, MemoOptions};
 pub use options::{canonicalize_policy_path, normalize_absolute_path_bytes};
 pub(crate) use options::{
     file_type_name, is_valid_store_path, join_path_literal, join_search_path,
@@ -512,6 +512,8 @@ pub struct TreeWalk {
 // Each re-opens `impl TreeWalk` and shares private items via `use super::*;`.
 mod alloc_intern;
 mod attr_repr_stats;
+mod boundary_admission;
+mod boundary_apply_hooks;
 mod call_summary;
 mod coerce_paths;
 mod derivation_build;

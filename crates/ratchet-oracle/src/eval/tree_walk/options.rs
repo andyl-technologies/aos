@@ -2,12 +2,14 @@
 
 use super::*;
 
+mod boundary_memo;
 mod eval_stats;
 mod memo;
 mod path_policy;
 mod result_fingerprint;
 mod root_cutoff;
 
+pub use boundary_memo::BoundaryMemoOptions;
 pub use memo::{MemoNetMode, MemoNetOptions, MemoOptions};
 
 // Retains the former crate-visible helper paths, even when no current caller uses them.

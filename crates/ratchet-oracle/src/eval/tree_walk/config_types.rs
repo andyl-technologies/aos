@@ -68,6 +68,7 @@ pub struct TreeWalkOptions {
     pub(crate) memo: MemoOptions,
     pub(crate) memo_disk_locations: Vec<PersistDiskLocation>,
     pub(crate) memo_net: Option<MemoNetOptions>,
+    pub(crate) boundary_memo: BoundaryMemoOptions,
     #[cfg(test)]
     pub(crate) fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -120,6 +121,7 @@ impl Default for TreeWalkOptions {
             memo: MemoOptions::default(),
             memo_disk_locations: Vec::new(),
             memo_net: None,
+            boundary_memo: BoundaryMemoOptions::from_env(),
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }

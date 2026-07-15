@@ -879,6 +879,44 @@ fn pkg_boundary_probe_records_formal_set_application_under_stats_dump() {
     );
 }
 
+/// MEMO-2 M2-record increment 2: applying a keyed package file's root formal-set
+/// lambda is recognized as a package boundary when the boundary memo is enabled.
+///
+/// Cumulative process statics mean the assertion is a lower bound on the delta.
+#[test]
+fn boundary_admission_recognizes_a_keyed_package_application() {
+    use crate::eval::tree_walk::BoundaryMemoOptions;
+    use crate::eval::tree_walk::boundary_admission::recognized_applications;
+
+    let root = std::fs::canonicalize(unique_temp_dir("boundary-admission"))
+        .expect("temp directory canonicalizes");
+    // A package file: a top-level formal-set lambda (the `callPackage` shape).
+    std::fs::write(root.join("foo.nix"), b"{ mkDerivation }: mkDerivation")
+        .expect("package file writes");
+
+    let before = recognized_applications();
+
+    let mut options = TreeWalkOptions::new();
+    options.set_boundary_memo(BoundaryMemoOptions {
+        enabled: true,
+        pkgs_root: Some(root.clone()),
+        framework_roots: Vec::new(),
+    });
+    // Import the package file and apply its root formal-set lambda.
+    let expr = format!(
+        "import {}/foo.nix {{ mkDerivation = \"ok\"; }}",
+        root.display()
+    );
+    let bytes = eval_string_bytes_with_options(&expr, options);
+    assert_eq!(bytes, b"ok");
+
+    assert!(
+        recognized_applications() >= before + 1,
+        "the keyed package application is recognized, before={before} after={}",
+        recognized_applications(),
+    );
+}
+
 /// The force-shape census classifies forced *thunk* bodies into their IR shape
 /// classes only when stats collection is active.
 ///
