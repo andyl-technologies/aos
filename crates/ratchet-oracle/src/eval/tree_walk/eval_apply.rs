@@ -161,8 +161,10 @@ impl TreeWalk {
                 node.span,
             ));
         };
-        self.node(pattern)?;
-        self.node(body)?;
+        // `pattern` and `body` come from this validated Lambda node and IR ids are
+        // immutable post-lowering, so the two existence re-fetches that used to
+        // guard them here were pure validation with no result — dropped
+        // (RFC-0007 §P1 ledger lever 6).
         self.frame_info(id, frame, node.span)?;
         let (env, capture) = self.capture_env(id, node.span)?;
         let (with_env, scoped_globals) = self.capture_dynamic_envs(id, body, node.span)?;

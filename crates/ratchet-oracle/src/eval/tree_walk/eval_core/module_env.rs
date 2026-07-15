@@ -161,13 +161,17 @@ impl TreeWalk {
         module: EvalModuleId,
         f: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
     ) -> Result<T, TreeWalkError> {
-        self.module_ir(module)?;
-        // Skip the save/restore bookkeeping when the target module is already
-        // current: the swap would store and reinstate an identical id, so `f`
-        // observes exactly the same `current_module` either way.
+        // Skip the save/restore bookkeeping — and the module validity re-fetch —
+        // when the target module is already current: the swap would store and
+        // reinstate an identical id, so `f` observes exactly the same
+        // `current_module` either way, and the current module is already known
+        // valid (it was validated when it became current). Only a switch to a
+        // different module needs `module_ir(module)?` to reject a bad id
+        // (RFC-0007 §P1 ledger lever 6).
         if module == self.current_module {
             return f(self);
         }
+        self.module_ir(module)?;
         let saved = self.current_module;
         self.current_module = module;
         let result = f(self);
