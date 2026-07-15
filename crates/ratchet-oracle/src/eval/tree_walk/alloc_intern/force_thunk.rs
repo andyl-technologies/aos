@@ -465,23 +465,11 @@ impl TreeWalk {
                 scoped_globals,
             } => {
                 let thunk_env = self.clone_env_frames(id, env, span)?;
-                let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
-                let thunk_scoped_globals = self.clone_scoped_globals(id, scoped_globals, span)?;
                 self.reserve_suspended_env_root_frame(id, span)?;
-                let saved_env = self.swap_env_frames(thunk_env);
-                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                let saved_scoped_globals =
-                    std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
-                self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
+                self.push_env_scope(id, span, thunk_env, with_env, scoped_globals)?;
                 let result =
                     self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
-                if let Some(saved) = self.pop_suspended_env_roots() {
-                    self.restore_env_frames(saved.env);
-                    self.with_scopes = saved.with_scopes;
-                    self.scoped_globals = saved.scoped_globals;
-                } else {
-                    debug_assert!(false, "suspended env root stack is unbalanced");
-                }
+                self.pop_env_scope();
                 result
             }
             EvalThunkKind::Apply {

@@ -352,9 +352,6 @@ impl TreeWalk {
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
                 })?;
-            let call_with_env = eval.clone_with_scopes(id, lambda.with_scope_env(), span)?;
-            let call_scoped_globals =
-                eval.clone_scoped_globals(id, lambda.scoped_global_env(), span)?;
             call_env.frames.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Env {
@@ -369,11 +366,13 @@ impl TreeWalk {
             call_env.frames.push(call_frame);
             eval.reserve_suspended_env_root_frame(id, span)?;
             eval.enter_call(id, span)?;
-            let saved_env = eval.swap_env_frames(call_env);
-            let saved_with_scopes = std::mem::replace(&mut eval.with_scopes, call_with_env);
-            let saved_scoped_globals =
-                std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
-            eval.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
+            eval.push_env_scope(
+                id,
+                span,
+                call_env,
+                lambda.with_scope_env(),
+                lambda.scoped_global_env(),
+            )?;
             // MEMO-2 boundary economics probe (measurement only): a formal-set
             // pattern is the `callPackage` argument shape, so its applications
             // are the package boundaries the design would seed. The wall guard
@@ -415,13 +414,7 @@ impl TreeWalk {
             // Close the wall window on the body before the (untimed) env
             // restore and decline classification.
             drop(boundary_wall);
-            if let Some(saved) = eval.pop_suspended_env_roots() {
-                eval.restore_env_frames(saved.env);
-                eval.with_scopes = saved.with_scopes;
-                eval.scoped_globals = saved.scoped_globals;
-            } else {
-                debug_assert!(false, "suspended env root stack is unbalanced");
-            }
+            eval.pop_env_scope();
             eval.leave_call();
             if probe_boundary {
                 eval.record_pkg_boundary_probe(&lambda, argument);

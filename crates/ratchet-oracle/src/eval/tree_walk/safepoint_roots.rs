@@ -157,6 +157,75 @@ impl TreeWalk {
         self.suspended_env_roots.pop()
     }
 
+    /// Installs `new_env` as the active frames plus the captured dynamic scopes,
+    /// saving the displaced state as a suspended GC root. Pair with
+    /// [`Self::pop_env_scope`].
+    ///
+    /// When the active *and* captured `with` / scoped-global scopes are all
+    /// empty — the ~100% case on real workloads (RFC-0007 instruction-tax
+    /// lever 3) — installing empty over empty is a no-op, so the dynamic-scope
+    /// clone and swap are skipped and empty scopes are rooted: only the env
+    /// frames move. A body's own `with` / `scopedImport` reads push and pop in
+    /// balance, so the active dynamic scopes are empty again when the body
+    /// returns and [`Self::pop_env_scope`]'s unconditional restore writes empty
+    /// over empty.
+    ///
+    /// The caller must have reserved a suspended-root frame
+    /// ([`Self::reserve_suspended_env_root_frame`]) beforehand.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the dynamic-scope clone helpers on the slow path (infallible
+    /// in practice); the fast path cannot error. Cloning precedes the swap, so
+    /// a clone failure leaves the active env untouched.
+    pub(in crate::eval::tree_walk) fn push_env_scope(
+        &mut self,
+        id: IrId,
+        span: Span,
+        new_env: impl Into<ActiveEvalEnv>,
+        captured_with: &EvalWithEnv,
+        captured_scoped: &EvalScopedGlobalEnv,
+    ) -> Result<(), TreeWalkError> {
+        if self.with_scopes.is_empty()
+            && captured_with.is_empty()
+            && self.scoped_globals.is_empty()
+            && captured_scoped.is_empty()
+        {
+            let saved_env = self.swap_env_frames(new_env);
+            self.push_suspended_env_roots(
+                saved_env,
+                EvalWithEnv::default(),
+                EvalScopedGlobalEnv::default(),
+            );
+            return Ok(());
+        }
+        let new_with = self.clone_with_scopes(id, captured_with, span)?;
+        let new_scoped = self.clone_scoped_globals(id, captured_scoped, span)?;
+        let saved_env = self.swap_env_frames(new_env);
+        let saved_with = std::mem::replace(&mut self.with_scopes, new_with);
+        let saved_scoped = std::mem::replace(&mut self.scoped_globals, new_scoped);
+        self.push_suspended_env_roots(saved_env, saved_with, saved_scoped);
+        Ok(())
+    }
+
+    /// Restores the env frames and dynamic scopes displaced by
+    /// [`Self::push_env_scope`].
+    ///
+    /// Always restores — the body run reaches here on both success and error
+    /// unwind — so the fast path's empty scopes are written back
+    /// unconditionally, a no-op that keeps this branch identical to the slow
+    /// path (the audit invariant: no control path skips a restore the swap
+    /// established).
+    pub(in crate::eval::tree_walk) fn pop_env_scope(&mut self) {
+        if let Some(saved) = self.pop_suspended_env_roots() {
+            self.restore_env_frames(saved.env);
+            self.with_scopes = saved.with_scopes;
+            self.scoped_globals = saved.scoped_globals;
+        } else {
+            debug_assert!(false, "suspended env root stack is unbalanced");
+        }
+    }
+
     pub(in crate::eval::tree_walk) fn pop_active_force_root(&mut self) -> Value {
         let Some(value) = self.active_force_roots.pop() else {
             unreachable!("active force root stack is unbalanced");
