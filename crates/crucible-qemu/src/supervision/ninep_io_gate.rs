@@ -198,7 +198,7 @@ pub struct QemuLive9pIoReport {
     /// Host CPU load was actually applied during the second sim run.
     pub host_load_applied: bool,
     /// The TCG control leg saw the guest issue a real 9p op (QEMU's `msize`
-    /// warning) absent the sim accelerator — proving the sim-leg zero is a
+    /// warning) absent the sim accelerator -- proving the sim-leg zero is a
     /// forward gap, not a broken guest.
     pub tcg_control_issued_9p: bool,
 }
@@ -214,7 +214,7 @@ pub struct QemuLive9pIoReport {
 ///   device and a `mount -t 9p` initrd on the sim+plugin raw hot path, services
 ///   `SLOT_9P_IO`, and drives once toward the busy ceiling. The guest boots
 ///   (idle-jumps to the ceiling once its mount blocks) but `frames_processed`
-///   is 0 — the mount op never reaches the host servicer. Repeated under host
+///   is 0 -- the mount op never reaches the host servicer. Repeated under host
 ///   load; the two runs' icount-domain observations must match. The day the
 ///   C-side forward fix lands (`frames_processed` becomes nonzero) this leg's
 ///   assertion fails on purpose, flagging that the gate must be upgraded to
@@ -230,7 +230,7 @@ pub struct QemuLive9pIoReport {
 /// Returns [`QemuLive9pIoGateError`] when launch preparation, the plugin
 /// handshake, the 9p servicer, or the drive fails; when the two sim runs' 9p
 /// observations diverge; when the sim leg's `frames_processed` is nonzero (the
-/// forward gap has closed — upgrade the gate) or the guest failed to boot; or
+/// forward gap has closed -- upgrade the gate) or the guest failed to boot; or
 /// when the TCG control leg does not observe the guest issuing a 9p op.
 pub fn run_qemu_live_9p_io_gate(
     config: &QemuLive9pIoGateConfig,
