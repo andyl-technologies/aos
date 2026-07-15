@@ -161,13 +161,9 @@ impl TreeWalk {
         module: EvalModuleId,
         f: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
     ) -> Result<T, TreeWalkError> {
-        // Skip the save/restore bookkeeping — and the module validity re-fetch —
-        // when the target module is already current: the swap would store and
-        // reinstate an identical id, so `f` observes exactly the same
-        // `current_module` either way, and the current module is already known
-        // valid (it was validated when it became current). Only a switch to a
-        // different module needs `module_ir(module)?` to reject a bad id
-        // (RFC-0007 §P1 ledger lever 6).
+        // Already-current is the common case: skip the save/restore and the
+        // module validity re-fetch (the current module is already known valid).
+        // Only a switch validates the new id (RFC-0007 §P1 ledger lever 6).
         if module == self.current_module {
             return f(self);
         }
@@ -543,11 +539,7 @@ impl TreeWalk {
         _id: IrId,
         _span: Span,
     ) -> Result<EvalWithEnv, TreeWalkError> {
-        // Capture-count diagnostic (RFC-0007 §P1 ledger lever 4): recorded only
-        // while stats collection is active, so a normal eval pays no atomic.
-        if self.options.eval_stats_dump() {
-            crate::eval::env::capture_stats::note_with_env_capture(0);
-        }
+        self.note_persistent_with_env_capture();
         Ok(EvalWithEnv::capture_persistent(&self.with_scopes))
     }
 
@@ -556,9 +548,7 @@ impl TreeWalk {
         _id: IrId,
         _span: Span,
     ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
-        if self.options.eval_stats_dump() {
-            crate::eval::env::capture_stats::note_scoped_global_env_capture(0);
-        }
+        self.note_persistent_scoped_global_env_capture();
         Ok(EvalScopedGlobalEnv::capture_persistent(
             &self.scoped_globals,
         ))

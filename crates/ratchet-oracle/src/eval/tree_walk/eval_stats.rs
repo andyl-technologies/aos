@@ -566,6 +566,22 @@ impl TreeWalk {
         self.stats.imports_evaluated = self.stats.imports_evaluated.saturating_add(1);
     }
 
+    /// Records one persistent `with`-env capture, only while stats collection is
+    /// active so the default hot path pays no atomic (RFC-0007 §P1 ledger lever 4).
+    pub(super) fn note_persistent_with_env_capture(&self) {
+        if self.options.eval_stats_dump() {
+            crate::eval::env::capture_stats::note_with_env_capture(0);
+        }
+    }
+
+    /// Records one persistent scoped-global-env capture, only under active stats
+    /// collection (RFC-0007 §P1 ledger lever 4).
+    pub(super) fn note_persistent_scoped_global_env_capture(&self) {
+        if self.options.eval_stats_dump() {
+            crate::eval::env::capture_stats::note_scoped_global_env_capture(0);
+        }
+    }
+
     /// Adds elapsed `parse_bytes_with_symbols` time to the front-end parse timer.
     pub(super) fn add_front_end_parse_nanos(&mut self, start: std::time::Instant) {
         self.stats.front_end_parse_nanos = self
