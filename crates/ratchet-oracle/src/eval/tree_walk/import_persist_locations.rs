@@ -11,6 +11,8 @@
 
 use super::*;
 
+use crate::cache::hashing::cache_hash_family;
+
 impl TreeWalk {
     /// Loads an import's parse artifact from any configured persist location.
     ///
@@ -37,8 +39,20 @@ impl TreeWalk {
         if self.persist_secondary_caches.is_empty() {
             return None;
         }
+        // The parse-artifact key is derived under the primary's content-hash
+        // family, so a secondary recorded under a different family cannot be
+        // probed with it (the families domain-separate their digests). Skip a
+        // cross-family secondary until the heterogeneous re-derivation probe
+        // (RFC-0007 §P4 Option C) is wired; the homogeneous stack is the norm.
+        let probe_family = self
+            .persist_cache
+            .as_ref()
+            .map_or_else(cache_hash_family, PersistCache::hash_family);
         let mut secondary_hit = None;
         for (_, secondary) in &self.persist_secondary_caches {
+            if secondary.hash_family() != probe_family {
+                continue;
+            }
             if let Some(cached) = secondary
                 .load_parse_cache_source_from_index(cache, realpath, source)
                 .ok()

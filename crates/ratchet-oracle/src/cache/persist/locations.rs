@@ -332,7 +332,17 @@ impl PersistCacheLocations {
             };
             return Ok(PersistDemotionOutcome::Skipped { reason });
         }
-        let Some((target_class, secondary)) = self.secondaries.first() else {
+        // Demotion writes process-family-keyed records, so it may only target a
+        // secondary recorded under the same content-hash family; writing them
+        // into a foreign-family secondary would leave records unfindable there
+        // (the families domain-separate their keys). Pick the fastest
+        // same-family secondary (RFC-0007 §P4 Option C).
+        let primary_family = self.primary.hash_family();
+        let Some((target_class, secondary)) = self
+            .secondaries
+            .iter()
+            .find(|(_, secondary)| secondary.hash_family() == primary_family)
+        else {
             return Ok(PersistDemotionOutcome::Skipped {
                 reason: PersistDemotionSkip::NoSecondaryLocation,
             });
@@ -412,7 +422,7 @@ pub fn open_secondary_caches(
 ) -> Vec<(PersistLatencyClass, PersistCache)> {
     let mut caches = Vec::new();
     for location in locations {
-        match PersistCache::open(location.root()) {
+        match PersistCache::open_secondary(location.root()) {
             Ok(cache) => {
                 caches.push((
                     location.class(),

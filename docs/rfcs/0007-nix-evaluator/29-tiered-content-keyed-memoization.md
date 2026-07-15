@@ -510,6 +510,48 @@ safe to build without a hot hash leaking into a durable address; the
 unified store adds no new hash algorithms and no new domains beyond one
 domain constant per new record kind.
 
+#### 3.4.1 Per-layer content-hash family (RFC-0007 §P4 Option C)
+
+The blake3 default for L2/L3 addresses is a **per-root policy**, not a
+process constant. `AOS_NIX_CACHE_HASH=xxh128` selects the non-cryptographic
+xxh3-128 family for **newly initialized local roots** — measured ~2.9x
+faster cold populate on the blake3-keying tax — while blake3 stays the
+default and the shipping choice for shared caches and **L3 network stays
+blake3 unconditionally** (a shared surface is never re-keyed by one reader's
+env). The families cannot collide: every xxh128 digest carries a 16-byte
+family tag in its high half (`XXH128_FAMILY_TAG`), so a cross-family lookup
+*misses* — it never returns a wrong hit — and no discard is needed for
+integrity.
+
+Each root is **self-describing**: its `schema.toml` manifest records its
+`hash_family` (a family-less manifest is the historical blake3 default), and
+that record is authoritative:
+
+- **Primary open** reconciles the root to the process family. A matching
+  family keeps the payload; a mismatch re-initializes under the process
+  family exactly as a schema-version mismatch does (turning xxh128 on is a
+  deliberate repopulate). This keeps every primary root homogeneous and its
+  manifest truthful.
+- **Secondary open is non-destructive**: a shared secondary keeps whatever
+  family its own manifest records and is never rewritten or discarded by a
+  differently-configured reader. A cross-family secondary is *skipped* by
+  the probe and by demotion (both derive keys under the process family);
+  the identity-carrying **cross-family re-derivation probe** — re-deriving a
+  parse-artifact key under the secondary's family from the realpath+source
+  preimage it already holds — is the follow-on that lets a mixed stack
+  actually serve across families. That probe is limited to records whose
+  preimage/identity the prober carries (root/parse-artifact records via
+  their self-validating identity); a raw blob-by-key lookup is **not**
+  cross-family probeable, because its key is a content address with no
+  recoverable preimage.
+
+There is no mutable process hash-family global: the process family is
+resolved once from the environment (blake3 unless `AOS_NIX_CACHE_HASH` is
+set), so "sticky" means a set-once deploy env keeps its roots' family and
+new roots adopt it — not per-root family retention across an env flip, which
+would require either a mutable global or threading the family through every
+key-derivation site.
+
 ---
 
 ## 4. Implied refactors

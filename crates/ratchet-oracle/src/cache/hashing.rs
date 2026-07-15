@@ -117,7 +117,17 @@ pub enum CacheDigestHasher {
 impl CacheDigestHasher {
     /// Creates a hasher for the process [`cache_hash_family`].
     pub fn new() -> Self {
-        match cache_hash_family() {
+        Self::for_family(cache_hash_family())
+    }
+
+    /// Creates a hasher for an explicit [`CacheHashFamily`].
+    ///
+    /// This is the family-parameterized counterpart of [`Self::new`], used to
+    /// re-derive a cache key under a location's own recorded family rather than
+    /// the process family — for example when cross-probing a foreign-family
+    /// secondary from an identity-carrying preimage (RFC-0007 §P4 Option C).
+    pub fn for_family(family: CacheHashFamily) -> Self {
+        match family {
             CacheHashFamily::Blake3 => Self::Blake3(blake3::Hasher::new()),
             CacheHashFamily::Xxh128 => Self::Xxh128(Xxh3::new()),
         }

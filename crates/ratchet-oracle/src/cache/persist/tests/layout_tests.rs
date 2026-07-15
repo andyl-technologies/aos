@@ -128,7 +128,7 @@ fn open_creates_versioned_layout() {
     assert_eq!(
         fs::read_to_string(layout.schema_path()).expect("schema reads"),
         format!(
-            "format = \"aos-nix-eval-cache\"\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"
+            "format = \"aos-nix-eval-cache\"\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\nhash_family = \"blake3\"\n"
         )
     );
 

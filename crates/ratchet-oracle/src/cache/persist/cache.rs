@@ -6,6 +6,8 @@
 
 use super::*;
 
+use crate::cache::hashing::{CacheHashFamily, cache_hash_family};
+
 mod artifact_hydration;
 mod artifact_materialization;
 mod blob_index_rebuild;
@@ -16,6 +18,7 @@ mod indexed_values;
 mod maintenance_types;
 mod node_demand;
 mod node_io;
+mod open;
 mod reachability;
 mod repack_helpers;
 mod root_record_io;
@@ -79,6 +82,12 @@ pub struct PersistCache {
     node_metadata_index: PersistNodeMetadataIndex,
     node_trace_log: PersistNodeTraceLog,
     root_locks: Arc<PersistRootLocks>,
+    /// The content-hash family this root's keys and blob addresses are computed
+    /// under (RFC-0007 §P4 Option C). A primary root is always opened under, and
+    /// reconciled to, the process family; a secondary root reports the family
+    /// recorded in its own manifest so a differently-configured reader can skip
+    /// or (once wired) cross-probe it without re-keying its shared payload.
+    hash_family: CacheHashFamily,
     /// Whether indexed value decoding re-hashes each decoded payload against its
     /// content-address key. Off by default; enabled through the
     /// `AOS_NIX_CACHE_VERIFY` knob for defensive verification.
@@ -294,135 +303,21 @@ fn pending_file_roots_for_canonical_root(
     Ok(created)
 }
 
-impl PersistCache {
-    /// Opens or initializes a persistent eval-cache root.
-    ///
-    /// A matching schema preserves existing payload directories. A well-formed
-    /// mismatched schema discards `nodes/`, `values/`, and `files/` before
-    /// rewriting current metadata. Malformed schema metadata is reported as an
-    /// error and is not discarded.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistError`] if the cache root cannot be created or
-    /// canonicalized, schema metadata cannot be read, parsed, or written, cache
-    /// payload directories cannot be created or discarded, the process-local
-    /// root-lock registry is poisoned, the cross-process advisory open lock
-    /// cannot be acquired, the same-root open lock is poisoned, or packfiles or
-    /// sidecar indexes cannot be initialized.
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
-        let layout = PersistLayout::new(root);
-        ensure_root_dir(layout.root())?;
-        let layout = PersistLayout::new(fs::canonicalize(layout.root()).map_err(|source| {
-            PersistError::CanonicalizeRoot {
-                path: layout.root().to_path_buf(),
-                source,
-            }
-        })?);
-        let root_locks = root_locks_for_root(layout.root())?;
-        let open_lock_path = layout.open_lock_path();
-        let _open_advisory_guard =
-            AdvisoryFileLock::lock(open_lock_path.clone(), AdvisoryFileLockMode::Exclusive)
-                .map_err(|source| PersistError::OpenAdvisoryLock {
-                    path: open_lock_path,
-                    source,
-                })?;
-        let open_guard = root_locks.lock_open()?;
-        match read_schema_version(&layout)? {
-            Some(PERSIST_CACHE_SCHEMA_VERSION) => {
-                ensure_payload_dirs(&layout)?;
-            }
-            Some(_) => {
-                discard_payload_dirs(&layout)?;
-                ensure_payload_dirs(&layout)?;
-                write_schema(&layout)?;
-            }
-            None => {
-                ensure_payload_dirs(&layout)?;
-                write_schema(&layout)?;
-            }
-        }
-        let value_pack_path = layout.value_packfile_path();
-        let value_pack = PersistBlobPack::open(value_pack_path.clone()).map_err(|source| {
-            PersistError::OpenBlobPack {
-                path: value_pack_path,
-                source,
-            }
-        })?;
-        let file_pack_path = layout.file_packfile_path();
-        let file_pack = PersistBlobPack::open(file_pack_path.clone()).map_err(|source| {
-            PersistError::OpenBlobPack {
-                path: file_pack_path,
-                source,
-            }
-        })?;
-        let value_index_path = layout.value_index_path();
-        let value_index = PersistBlobIndex::open(value_index_path.clone()).map_err(|source| {
-            PersistError::OpenBlobIndex {
-                path: value_index_path,
-                source,
-            }
-        })?;
-        let file_index_path = layout.file_index_path();
-        let file_index = PersistBlobIndex::open(file_index_path.clone()).map_err(|source| {
-            PersistError::OpenBlobIndex {
-                path: file_index_path,
-                source,
-            }
-        })?;
-        let file_artifact_index_path = layout.file_artifact_index_path();
-        let file_artifact_index = PersistFileArtifactIndex::open(file_artifact_index_path.clone())
-            .map_err(|source| PersistError::OpenFileArtifactIndex {
-                path: file_artifact_index_path,
-                source,
-            })?;
-        let parse_artifact_index_path = layout.parse_artifact_index_path();
-        let parse_artifact_index = PersistParseArtifactIndex::open(
-            parse_artifact_index_path.clone(),
-        )
-        .map_err(|source| PersistError::OpenParseArtifactIndex {
-            path: parse_artifact_index_path,
-            source,
-        })?;
-        let node_metadata_index_path = layout.node_metadata_index_path();
-        let node_metadata_index = PersistNodeMetadataIndex::open(node_metadata_index_path.clone())
-            .map_err(|source| PersistError::OpenNodeMetadataIndex {
-                path: node_metadata_index_path,
-                source,
-            })?;
-        let node_trace_log_path = layout.node_trace_log_path();
-        let node_trace_log =
-            PersistNodeTraceLog::open(node_trace_log_path.clone()).map_err(|source| {
-                PersistError::OpenNodeTraceLog {
-                    path: node_trace_log_path,
-                    source,
-                }
-            })?;
-        drop(open_guard);
-        Ok(Self {
-            layout,
-            value_pack,
-            file_pack,
-            value_index,
-            file_index,
-            file_artifact_index,
-            parse_artifact_index,
-            node_metadata_index,
-            node_trace_log,
-            root_locks,
-            value_decode_verification: false,
-            verified_node_traces: Arc::new(Mutex::new(BTreeMap::new())),
-            pending_node_demands: Arc::new(Mutex::new(BTreeMap::new())),
-            write_behind_values: value_write_behind::write_behind_values_from_env(),
-            pending_value_blobs: Arc::new(Mutex::new(
-                value_write_behind::PendingValueBatch::default(),
-            )),
-            pending_file_artifacts: Arc::new(Mutex::new(
-                file_write_behind::PendingFileArtifactBatch::default(),
-            )),
-        })
-    }
+/// Whether a persistent root is opened as the process's authoritative primary
+/// or as additive, safe-to-lose secondary read capacity (RFC-0007 §P4 Option C
+/// / MEMO-2 §5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistOpenMode {
+    /// The primary root: reconciled to the process content-hash family and
+    /// re-initialized on any family or schema-version mismatch.
+    Primary,
+    /// A secondary root: opened non-destructively under whatever family its own
+    /// manifest records, so a differently-configured reader never rewrites or
+    /// discards its shared payload.
+    Secondary,
+}
 
+impl PersistCache {
     /// Returns this handle with indexed value-decode content re-hashing set.
     ///
     /// When `verify` is `false` (the default), indexed cached-expression value
@@ -439,6 +334,16 @@ impl PersistCache {
     /// Returns whether indexed value decoding re-hashes decoded payloads.
     pub const fn value_decode_verification(&self) -> bool {
         self.value_decode_verification
+    }
+
+    /// Returns the content-hash family this root's keys and blob addresses use.
+    ///
+    /// A primary root reports the process family it was reconciled to; a
+    /// secondary reports the family recorded in its own manifest (RFC-0007 §P4
+    /// Option C). Two locations are probeable under one family's keys only when
+    /// their families are equal.
+    pub const fn hash_family(&self) -> CacheHashFamily {
+        self.hash_family
     }
 
     #[cfg(test)]
