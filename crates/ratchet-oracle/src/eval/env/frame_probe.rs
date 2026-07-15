@@ -143,12 +143,9 @@ mod tests {
             nanos > 0,
             "a million alloc+drop lifecycles take nonzero time"
         );
-        // Sanity bound: a frame alloc+drop is nanoseconds, so a million of them
-        // is well under a second on any builder.
-        assert!(
-            nanos < 5_000_000_000,
-            "calibration unexpectedly slow: {nanos} ns for {CALIB_ITERS} iters",
-        );
+        // No upper time bound: under a saturated parallel test run the loop can
+        // be starved for arbitrarily long, and a real hang is caught by the test
+        // harness timeout rather than a wall-clock assertion here.
     }
 
     /// `should_time` is false inside a calibration scope even when enabled.
