@@ -122,6 +122,8 @@ impl TreeWalk {
             front_end_resolve_nanos: self.stats.front_end_resolve_nanos,
             front_end_lower_nanos: self.stats.front_end_lower_nanos,
             front_end_annotate_nanos: self.stats.front_end_annotate_nanos,
+            import_io_fingerprint_nanos: self.stats.import_io_fingerprint_nanos,
+            import_module_setup_nanos: self.stats.import_module_setup_nanos,
             prelude_thunks_forced: self.stats.prelude_thunks_forced,
             prelude_force_nanos: self.stats.prelude_force_nanos,
             all_force_nanos: self.stats.all_force_nanos,
@@ -589,6 +591,24 @@ impl TreeWalk {
         self.stats.front_end_annotate_nanos = self
             .stats
             .front_end_annotate_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Adds elapsed import file-I/O and source-fingerprint time to the
+    /// per-import I/O+fingerprint timer (RFC-0007 §P1 import-cost attribution).
+    pub(super) fn add_import_io_fingerprint_nanos(&mut self, start: std::time::Instant) {
+        self.stats.import_io_fingerprint_nanos = self
+            .stats
+            .import_io_fingerprint_nanos
+            .saturating_add(start.elapsed().as_nanos() as u64);
+    }
+
+    /// Adds elapsed module-registration and scope-swap time to the per-import
+    /// module-setup timer (RFC-0007 §P1 import-cost attribution).
+    pub(super) fn add_import_module_setup_nanos(&mut self, start: std::time::Instant) {
+        self.stats.import_module_setup_nanos = self
+            .stats
+            .import_module_setup_nanos
             .saturating_add(start.elapsed().as_nanos() as u64);
     }
 

@@ -355,6 +355,13 @@ impl TreeWalk {
         ir: Ir,
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        // Per-import module setup: registering the lowered module (with its path,
+        // base, and source copies) and swapping in its evaluation scopes, before
+        // the module body is evaluated. This is the tail-of-pipeline import work
+        // the front_end_*_nanos timers do not cover (RFC-0007 §P1 import-cost
+        // attribution). It ends before the body eval, so it excludes nested
+        // imports and stays non-overlapping with the other import timers.
+        let module_setup_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         self.reserve_suspended_env_root_frame(id, span)?;
         // The live symbol table (`self.symbols`) has already been advanced to the
         // superset covering this module's symbols by the caller: the fresh-parse
@@ -371,6 +378,9 @@ impl TreeWalk {
         let saved_scoped_globals =
             std::mem::replace(&mut self.scoped_globals, imported_scoped_globals);
         self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
+        if let Some(timer) = module_setup_timer {
+            self.add_import_module_setup_nanos(timer);
+        }
         let result =
             self.with_current_module(module, |eval| eval.eval_import_root_with_cache(root, path));
         if let Some(saved) = self.pop_suspended_env_roots() {

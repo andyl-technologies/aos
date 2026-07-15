@@ -867,6 +867,8 @@ impl TreeWalk {
         trace_import: bool,
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        // Per-import file I/O + source fingerprint, uncovered by front_end_*_nanos.
+        let io_fingerprint_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         let path = realpath.as_os_str().as_bytes().to_vec();
         let source = fs::read(realpath).map_err(|source| {
             TreeWalkError::new(
@@ -881,6 +883,9 @@ impl TreeWalk {
         self.record_impure_input_result(ImpureInputFingerprint::import(&path, &source));
         if !trace_import {
             self.mark_force_cache_impure_input_trace_incomplete();
+        }
+        if let Some(timer) = io_fingerprint_timer {
+            self.add_import_io_fingerprint_nanos(timer);
         }
         if let Some(cached) = self.load_parse_cached_import(
             argument,

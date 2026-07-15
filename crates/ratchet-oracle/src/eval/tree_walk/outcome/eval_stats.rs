@@ -89,6 +89,25 @@ pub struct EvalStats {
     /// Nanoseconds spent in import IR analysis/annotation across imports
     /// (`AOS_NIX_EVAL_STATS`).
     pub(crate) front_end_annotate_nanos: u64,
+    /// Nanoseconds spent per import on file I/O plus the impure-input source
+    /// fingerprint, across imports, accumulated only under `AOS_NIX_EVAL_STATS`.
+    ///
+    /// This is the front-of-pipeline import work the four `front_end_*_nanos`
+    /// timers do not cover: the `fs::read` of the source and the BLAKE3
+    /// observation hash of its full contents. It is non-overlapping with the
+    /// front-end timers and with `import_module_setup_nanos` (RFC-0007 §P1
+    /// import-cost attribution).
+    pub(crate) import_io_fingerprint_nanos: u64,
+    /// Nanoseconds spent per import registering the lowered module and swapping in
+    /// its evaluation scopes, before the module body is evaluated, across imports,
+    /// accumulated only under `AOS_NIX_EVAL_STATS`.
+    ///
+    /// This is the tail-of-pipeline import work the `front_end_*_nanos` timers do
+    /// not cover: `push_module` (which copies the module path, base, and source),
+    /// scoped-global import, and the env/with-scope save. It excludes the module
+    /// body evaluation, so it is non-overlapping with nested imports and with the
+    /// other import timers (RFC-0007 §P1 import-cost attribution).
+    pub(crate) import_module_setup_nanos: u64,
     /// Forces whose thunk evaluates prelude (`lib`/`stdenv`) code, accumulated only
     /// under `AOS_NIX_EVAL_STATS`. The ratio to `thunks_forced` is the primary
     /// prelude-force-share signal gating heap-image snapshots (RFC-0007 task #6).
@@ -481,6 +500,8 @@ impl EvalStats {
             front_end_resolve_nanos,
             front_end_lower_nanos,
             front_end_annotate_nanos,
+            import_io_fingerprint_nanos,
+            import_module_setup_nanos,
             prelude_thunks_forced,
             prelude_force_nanos,
             all_force_nanos,
@@ -627,6 +648,12 @@ impl EvalStats {
         self.front_end_annotate_nanos = self
             .front_end_annotate_nanos
             .saturating_add(front_end_annotate_nanos);
+        self.import_io_fingerprint_nanos = self
+            .import_io_fingerprint_nanos
+            .saturating_add(import_io_fingerprint_nanos);
+        self.import_module_setup_nanos = self
+            .import_module_setup_nanos
+            .saturating_add(import_module_setup_nanos);
         self.prelude_thunks_forced = self
             .prelude_thunks_forced
             .saturating_add(prelude_thunks_forced);
@@ -827,6 +854,18 @@ impl EvalStats {
     /// Returns nanoseconds spent annotating import IR (`AOS_NIX_EVAL_STATS`).
     pub const fn front_end_annotate_nanos(&self) -> u64 {
         self.front_end_annotate_nanos
+    }
+
+    /// Returns nanoseconds spent on per-import file I/O plus source fingerprinting
+    /// (`AOS_NIX_EVAL_STATS`).
+    pub const fn import_io_fingerprint_nanos(&self) -> u64 {
+        self.import_io_fingerprint_nanos
+    }
+
+    /// Returns nanoseconds spent registering imported modules and swapping their
+    /// scopes before body evaluation (`AOS_NIX_EVAL_STATS`).
+    pub const fn import_module_setup_nanos(&self) -> u64 {
+        self.import_module_setup_nanos
     }
 
     /// Returns the number of forces whose thunk evaluated prelude (`lib`/`stdenv`)

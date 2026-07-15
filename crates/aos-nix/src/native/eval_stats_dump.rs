@@ -17,6 +17,7 @@
 //!  "symbols_interned":4021,"imports_evaluated":37,
 //!  "front_end_parse_nanos":0,"front_end_resolve_nanos":0,
 //!  "front_end_lower_nanos":0,"front_end_annotate_nanos":0,
+//!  "import_io_fingerprint_nanos":0,"import_module_setup_nanos":0,
 //!  "prelude_thunks_forced":0,"prelude_force_nanos":0,"all_force_nanos":0,
 //!  "root_cutoffs":0,
 //!  "heap_chunks":0,"heap_reserved_bytes":0,"heap_mapped_bytes":0,
@@ -98,6 +99,8 @@ impl NixNative {
 \"front_end_resolve_nanos\":{},\
 \"front_end_lower_nanos\":{},\
 \"front_end_annotate_nanos\":{},\
+\"import_io_fingerprint_nanos\":{},\
+\"import_module_setup_nanos\":{},\
 \"prelude_thunks_forced\":{},\
 \"prelude_force_nanos\":{},\
 \"all_force_nanos\":{},\
@@ -196,6 +199,8 @@ impl NixNative {
             stats.front_end_resolve_nanos(),
             stats.front_end_lower_nanos(),
             stats.front_end_annotate_nanos(),
+            stats.import_io_fingerprint_nanos(),
+            stats.import_module_setup_nanos(),
             stats.prelude_thunks_forced(),
             stats.prelude_force_nanos(),
             stats.all_force_nanos(),
