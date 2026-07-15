@@ -112,6 +112,7 @@ shape-line|crates/crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs|864
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/trace.rs|1827
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/types.rs|1604
 shape-line|crates/crucible-qemu/src/spawn.rs|870
+shape-line|crates/crucible-qemu/src/supervision/ninep_io_gate.rs|906
 shape-line|crates/crucible-qemu/tests/deterministic_launch.rs|1619
 shape-line|crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs|1215
 shape-line|crates/crucible-qemu/tests/qemu_trace_fingerprint.rs|714

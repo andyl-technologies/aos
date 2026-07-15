@@ -9,6 +9,7 @@ mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
 mod host_io_runtime;
+mod ninep_io_gate;
 mod ninep_io_servicer;
 mod node_step_gate;
 
@@ -16,15 +17,19 @@ pub use block_io_gate::{
     BlockIoAdvanceOutcome, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
     QemuLiveBlockIoReport, run_qemu_live_block_io_gate,
 };
-pub use block_node_gate::{
-    BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
-    QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
-};
 pub use block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
     QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
 };
+pub use block_node_gate::{
+    BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
+    QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
+};
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use ninep_io_gate::{
+    NinepIoAdvanceOutcome, QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport,
+    run_qemu_live_9p_io_gate,
+};
 pub use ninep_io_servicer::{
     NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
     QemuLive9pIoServicerError,

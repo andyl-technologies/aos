@@ -412,6 +412,7 @@ in rec {
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};
+    qemuLive9pIo = import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;};
     qemuLivePluginQuantum = import ./phase2-qemu-live-plugin-quantum.nix {inherit pkgs lib;};
     qemuLivePluginFingerprint = import ./phase2-qemu-live-plugin-fingerprint.nix {inherit pkgs lib;};
     qemuLivePluginFingerprintSmp = import ./phase2-qemu-live-plugin-fingerprint-smp.nix {inherit pkgs lib;};
@@ -2549,6 +2550,16 @@ in rec {
     crucibleQemuPackage = import ./phase7-crucible-qemu-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleQemuPackage";
+      taskIds = ["T-PKG-2"];
+    };
+    packageFeatureLedger = import ./phase7-package-feature-ledger.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.packageFeatureLedger";
+      taskIds = ["T-PKG-2"];
+    };
+    pythonBootstrapClosure = import ./phase7-python-bootstrap-closure.nix {
+      inherit pkgs;
+      attrPath = "checks.crucible.phase7.pythonBootstrapClosure";
       taskIds = ["T-PKG-2"];
     };
     crucibleQemuPluginPackage = import ./phase7-crucible-qemu-plugin-package.nix {
