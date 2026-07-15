@@ -817,6 +817,9 @@ fn hash_consed_heap_records_share_cached_value_hashes() {
 #[test]
 fn cached_value_hash_lookups_refresh_cold_hash_consed_touch_epoch() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    // Consumes last-touch epochs, stamped only under epoch tracking (RFC-0007
+    // §P1 ledger lever 5).
+    heap.set_epoch_tracking_enabled(true);
     let value = heap
         .alloc_string(NixString::from_bytes(b"cache-key".to_vec()))
         .expect("string allocates");

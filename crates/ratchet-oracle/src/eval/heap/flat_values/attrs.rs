@@ -225,7 +225,9 @@ impl EvalHeap {
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::Attrs);
-                object.touch(self.next_access_epoch());
+                if self.epoch_tracking_enabled {
+                    object.touch(self.next_access_epoch());
+                }
                 Ok(&object.payload().attrs)
             }
             Err(error) => Err(self.flat_resolution_error(ValueTag::Attrs, ptr, error)),
@@ -245,7 +247,9 @@ impl EvalHeap {
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::Attrs);
-                object.touch(self.next_access_epoch());
+                if self.epoch_tracking_enabled {
+                    object.touch(self.next_access_epoch());
+                }
                 Ok(object.payload().metadata)
             }
             Err(error) => Err(self.flat_resolution_error(ValueTag::Attrs, ptr, error)),
@@ -259,7 +263,9 @@ impl EvalHeap {
     ) -> Result<FlatObjectRef<'_, FlatAttrsPayload>, EvalHeapError> {
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => {
-                object.touch(self.next_access_epoch());
+                if self.epoch_tracking_enabled {
+                    object.touch(self.next_access_epoch());
+                }
                 Ok(object)
             }
             Err(error) => Err(self.flat_resolution_error(ValueTag::Attrs, ptr, error)),

@@ -361,6 +361,9 @@ fn allocates_string_values_and_recovers_contents() {
 #[test]
 fn cold_hash_consed_bytes_follow_permanent_record_touches() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    // The cold-value advice this test exercises consumes last-touch epochs, which
+    // are stamped only when epoch tracking is enabled (RFC-0007 §P1 ledger lever 5).
+    heap.set_epoch_tracking_enabled(true);
     let string = heap
         .alloc_string(NixString::from_bytes(b"cold".to_vec()))
         .expect("string allocates");
@@ -402,6 +405,7 @@ fn cold_hash_consed_bytes_follow_permanent_record_touches() {
 #[test]
 fn cold_hash_consed_values_snapshot_does_not_refresh_touch_epoch() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.set_epoch_tracking_enabled(true);
     let string = heap
         .alloc_string(NixString::from_bytes(b"snapshot-cold".to_vec()))
         .expect("string allocates");
@@ -441,6 +445,7 @@ fn cold_hash_consed_values_snapshot_does_not_refresh_touch_epoch() {
 #[test]
 fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.set_epoch_tracking_enabled(true);
     let first = heap
         .alloc_string(NixString::from_bytes(b"shared".to_vec()))
         .expect("first string allocates");
@@ -472,6 +477,7 @@ fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
 #[test]
 fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.set_epoch_tracking_enabled(true);
     let string = heap
         .alloc_string(NixString::from_bytes(b"advise-cold".to_vec()))
         .expect("string allocates");
@@ -516,6 +522,7 @@ fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
 #[test]
 fn evict_hash_consed_advice_reports_selected_records_without_removing_values() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.set_epoch_tracking_enabled(true);
     let string = heap
         .alloc_string(NixString::from_bytes(b"advise-evict".to_vec()))
         .expect("string allocates");

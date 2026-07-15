@@ -95,6 +95,12 @@ impl TreeWalk {
             options.gc_stress_policy()
         };
         heap.set_gc_stress_policy(gc_stress_policy);
+        // Per-resolve last-touch epoch stamping is only consumed by the cheap
+        // memory-advice cold-value policy, so track it only when that option is
+        // set (RFC-0007 §P1 ledger lever 5).
+        heap.set_epoch_tracking_enabled(
+            options.heap_cheap_memory_advice_min_idle_epochs().is_some(),
+        );
         // The generational thunk-resolve write barrier resolves published
         // values against record generations, so barrier-exercising tiers keep
         // the record-table worker placement alongside the GC-stress proving
@@ -430,6 +436,11 @@ impl TreeWalk {
         let mut heap = EvalHeap::with_shared_shard(arena, shard);
         heap.set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
         heap.set_gc_stress_policy(GcStressPolicy::disabled());
+        heap.set_epoch_tracking_enabled(
+            self.options
+                .heap_cheap_memory_advice_min_idle_epochs()
+                .is_some(),
+        );
         if let Some(heap_memory_budget) = self.options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(

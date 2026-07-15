@@ -104,7 +104,9 @@ impl EvalHeap {
         match self.flat_lists.resolve(ptr, FlatObjectKind::List) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::List);
-                object.touch(self.next_access_epoch());
+                if self.epoch_tracking_enabled {
+                    object.touch(self.next_access_epoch());
+                }
                 Ok(object.payload())
             }
             Err(error) => Err(self.flat_resolution_error(ValueTag::List, ptr, error)),
@@ -118,7 +120,9 @@ impl EvalHeap {
     ) -> Result<FlatObjectRef<'_, NixList>, EvalHeapError> {
         match self.flat_lists.resolve(ptr, FlatObjectKind::List) {
             Ok(object) => {
-                object.touch(self.next_access_epoch());
+                if self.epoch_tracking_enabled {
+                    object.touch(self.next_access_epoch());
+                }
                 Ok(object)
             }
             Err(error) => Err(self.flat_resolution_error(ValueTag::List, ptr, error)),

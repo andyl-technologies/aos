@@ -567,7 +567,9 @@ impl EvalHeap {
                 | FlatClosurePayload::Lambda(_)
                 | FlatClosurePayload::Primop(_)) => {
                     self.deref_counters.note_flat_resolution(tag);
-                    object.touch(self.next_access_epoch());
+                    if self.epoch_tracking_enabled {
+                        object.touch(self.next_access_epoch());
+                    }
                     Ok(Some(payload))
                 }
                 FlatClosurePayload::Retired(_) => Err(EvalHeapError::unknown(tag, ptr)),

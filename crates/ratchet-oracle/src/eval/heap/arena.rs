@@ -110,6 +110,7 @@ impl EvalHeap {
             next_worker_region_mark: 1,
             worker_region_mark_stack: Vec::new(),
             access_epoch: Cell::new(0),
+            epoch_tracking_enabled: false,
             memory_budget: None,
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
@@ -171,6 +172,7 @@ impl EvalHeap {
             next_worker_region_mark: 1,
             worker_region_mark_stack: Vec::new(),
             access_epoch: Cell::new(0),
+            epoch_tracking_enabled: false,
             memory_budget: None,
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
@@ -780,6 +782,13 @@ impl EvalHeap {
         let next_epoch = self.access_epoch.get().saturating_add(1);
         self.access_epoch.set(next_epoch);
         next_epoch
+    }
+
+    /// Enables per-resolve last-touch epoch stamping, off by default and set from
+    /// the `heap_cheap_memory_advice_min_idle_epochs` option (its only consumer)
+    /// so the hot resolve path pays nothing (RFC-0007 §P1 ledger lever 5).
+    pub fn set_epoch_tracking_enabled(&mut self, enabled: bool) {
+        self.epoch_tracking_enabled = enabled;
     }
 
     fn is_cold_hash_consed_record(

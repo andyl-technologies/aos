@@ -356,6 +356,12 @@ pub struct EvalHeap {
     next_worker_region_mark: u64,
     worker_region_mark_stack: Vec<u64>,
     access_epoch: Cell<u64>,
+    /// Whether per-resolve last-touch epoch stamping is active (RFC-0007 §P1
+    /// ledger lever 5). The stamped epochs are read only by the cheap
+    /// memory-advice cold-value policy, which runs only when
+    /// `heap_cheap_memory_advice_min_idle_epochs` is set; so the stamp is gated
+    /// on that same option and the default hot resolve path takes no epoch write.
+    epoch_tracking_enabled: bool,
     memory_budget: Option<HeapMemoryBudget>,
     resident_memory_mode: EvalHeapResidentMemoryMode,
     memory_budget_poll_count: u64,
