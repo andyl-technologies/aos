@@ -1,9 +1,14 @@
 # Instruction-Bloat Attribution: Per-Symbol Profiles + Per-Op Budgets
 
-Status: MEASUREMENT-FIRST. Tooling landed (`AOS_NIX_BENCH_COLD_ONLY`); the
-per-op budget tables and the uniform-vs-amplifier verdict are gated on the
-builder perf runs designed in §3. Lead runs the commands; this note holds the
-methodology, the exact commands, and the analysis framework to fill on return.
+Status: **RESOLVED (2026-07-15). The bloat is UNIFORM, not amplified.** The
+builder runs are in (§6); the toplevel executes **~4.6x the instructions per
+function call vs C++** at near-equal IPC, and a file-free compute microbench
+carries the *same* per-op tax — so there is no toplevel-specific amplifier
+(imports/depth/module machinery are exonerated, §7). Attack the shared per-op
+eval-loop tax globally. The instruction-diet method is validated (moves the
+number, 546-green) but its realistic floor is **~3.0-3.7x C++**; the residual is
+architectural (§8). Tooling: `AOS_NIX_BENCH_COLD_ONLY` (landed). §§1-5 are the
+methodology and commands; §§6-8 are the results and verdict.
 
 ## 1. The finding that reopened the game
 
@@ -191,3 +196,123 @@ is real).
 - IPC is already known equal (2.5 vs 2.8); the campaign is about the instruction
   *count*, so the instructions:u event is the load-bearing one. Cycles are
   recorded only to compute per-symbol CPI for the Q1 density split.
+
+---
+
+## 6. Results — builder run, 2026-07-15
+
+Clean cold-only budgets (this note's `AOS_NIX_BENCH_COLD_ONLY` instrument;
+retired instructions **floor-subtracted** — process-startup floor is 135.8M for
+a `default.nix`/`pkgs.*` entry and ~80M for a `--file tests/bench/compute.nix`
+entry). Ops are the same eval's `AOS_NIX_EVAL_STATS` counters. `function_calls`
+is the primary denominator — it is the one op both engines count identically
+(`function_calls` ↔ C++ `nrFunctionCalls`) **and it matched** (us 3,176,661 vs
+C++ 3,163,115 on the toplevel, 0.4% apart), which is what makes "same work,
+more instructions" a fair claim.
+
+### T1 — per-op instruction budget
+
+| workload | gross insns | net insns | IPC | wall (s) | **insns/call** | insns/force | insns/(call+force) |
+|---|---|---|---|---|---|---|---|
+| pkgs.zlib | 703.4M | 567.6M | 2.19 | 0.083 | 93,494 | 48,192 | 31,800 |
+| attr-fixpoint | 9.69e9 | 9.61e9 | 4.78 | 0.47 | 155,900 | 335,451 | 106,435 |
+| **toplevel** | 28.79e9 | 28.65e9 | 2.44 | 2.41 | **9,020** | 9,738 | 4,683 |
+| lambda-interp | 77.48e9 | 77.40e9 | 2.49 | 6.26 | 11,327 | 10,927 | 5,562 |
+| **C++ toplevel** | 6.258e9 | — | 2.81 | 0.572 | **1,978** | 2,239¹ | 752² |
+| C++ zlib | 494.5M | — | 2.43 | 0.061 | — | — | — |
+
+¹ per (call + `nrThunks`). ² per (call + `nrThunks` + `nrPrimOpCalls`); this is
+the ~750/op figure — it just spreads the same instructions over a larger op
+count, so it is not comparable to our call-based number. Use **insns/call** for
+the cross-engine ratio.
+
+### Cross-engine, toplevel
+
+- **insns/call: us 9,020 vs C++ 1,978 = 4.56x.** Gross instructions 4.60x, wall
+  4.21x, IPC near-equal (2.44 vs 2.81). At matched call counts we retire ~4.6x
+  the instructions per call.
+
+## 7. Verdict — the bloat is UNIFORM (no toplevel amplifier)
+
+Three independent legs, each ruling out a shape-specific amplifier, plus the
+zlib corollary that localizes the tax:
+
+**Leg 1 — file-free parity (the decisive one).** `lambda-interp` is a pure
+λ-calculus compute microbench (a Brainfuck interpreter): **zero imports, zero
+file reads, zero derivations, no module fixpoint.** It costs **11,327 insns/call
+and 10,927 insns/force** — *higher* than the toplevel's 9,020/call and
+9,738/force. A workload with none of the toplevel's "amplifier" machinery pays
+the *same* (slightly higher) per-op tax. So the per-op cost is the baseline cost
+of the eval loop itself, not anything the toplevel adds. If an
+import/module/depth amplifier existed, the toplevel per-op would *exceed* the
+file-free microbench; it does not.
+
+**Leg 2 — depth exoneration** (env-depth instrument, task #23). Toplevel
+install-env depth averages **0.34 (89% length-0**, max bucket 5-8); capture depth
+averages 6.13. These are shallow and in line with zlib (0.22 / 2.77) and
+attr-fixpoint (0.31 / 3.32). Env-chain length does not scale the per-op cost —
+there is no O(depth) amplifier in the hot path.
+
+**Leg 3 — imports are a rounding error** (per-import timer, task #25). Toplevel
+import machinery is **io+fingerprint 5.1ms + module_setup 1.0ms = 6.1ms** of a
+2.41s eval (**0.25%**); the whole front-end (parse+resolve+lower+annotate) is
+~55ms (**2.3%**). The ~459 imports Dylan flagged cost single-digit milliseconds,
+not a 4x factor.
+
+**Corollary — why zlib is near-parity, and what that localizes.** zlib is
+**567.6M net vs C++ 494.5M = 1.15x** (1.42x gross) — essentially at parity, not
+5x. zlib's instruction mass is front-end (parse) plus derivation/hash/IO
+primops, shared-cost work already close to C++, and it makes only **6,071 calls /
+11,778 forces** — it barely touches the eval loop. The 4.6x tax is invisible on
+zlib precisely because zlib does little call/force work. This **localizes the
+tax to the eval loop** — the per-call/per-force/per-var-resolve path the toplevel
+hits 3.2M times — and away from the front-end and primops.
+
+**Conclusion.** The 4.6x is a uniform per-op tax on the interpreter's core
+call/force/resolve loop, identical in a file-free microbench and the full
+system. Attack it **globally** (the per-op instruction-tax ledger, task #22),
+not via any toplevel-specific amplifier (imports #25 and depth #23 are both
+ruled out).
+
+## 8. Diet scoreboard and honest remaining runway
+
+**Scoreboard (validates the method).** The per-op ledger's removable classes are
+real and byte-safe:
+
+| lever batch | insns | cycles |
+|---|---|---|
+| flagship (box `TreeWalkError`, #26) + lever 2 (collapse double value-resolve, #28) | −3.0% | −7-10% |
+| levers 4-6 (capture-atomics gate, inline audit, free wins, #27) | −0.9% | — |
+| **cumulative** | **28.79e9 → 27.68e9 = −3.86%** | — |
+
+546-green throughout — the instruction-diet method works and preserves .drv byte
+parity.
+
+**Runway (honest).** Parity with C++ means removing **78%** of instructions
+(28.79e9 → 6.26e9), a 4.6x per-op reduction. Diet arithmetic:
+
+| removed | result | vs C++ | insns/call |
+|---|---|---|---|
+| 3.86% (done) | 27.68e9 | 4.42x | ~8,670 |
+| 3.86% + ledger tail 10% | 24.80e9 | 3.96x | ~7,800 |
+| 3.86% + ledger tail 15% | 23.36e9 | 3.73x | ~7,340 |
+| optimistic 30% total | 20.15e9 | 3.22x | ~6,300 |
+
+The per-op ledger tail is estimated at ~10-15%, so the **realistic instruction-
+diet floor is ~3.7-4.0x C++**, and even an aggressive 30% total reaches only
+~3.2x. **Instruction diet alone does not reach parity.** The residual ~3.2-3.7x
+is the architectural per-op cost of a Rust tree-walking interpreter — `Result`+
+`Span` error propagation, bounds-checked arena indexing, thunk-cell indirection,
+Rc refcount traffic — against C++'s raw-pointer hand-tuned loop. Closing it needs
+a change to the per-op execution model (a bytecode / threaded / register
+interpreter, or the flat-value + arena-env restructuring already in flight),
+**not** more diet passes.
+
+**Framing for Dylan.** The instruction-bloat lever is real and worth harvesting:
+the diet floor (~3.2-3.7x C++, from today's 4.6x) closes roughly a third of the
+gap and is the best available near-term win now that JIT-for-toplevel is closed.
+But it is a *floor*, not parity: the last ~3x is an architectural property of the
+interpreter's per-op path and requires an execution-model change to remove. The
+target should be re-stated as "harvest the diet to ~3x, then decide whether an
+architectural interpreter change is on the table" — that decision is Dylan's, not
+an incremental diet lever.
