@@ -202,6 +202,21 @@ fn builds_against_the_real_package_set() {
         "framework identity is computed from real source"
     );
 
+    // The canonical-path lookup resolves to the same identity as the name
+    // lookup (the apply seam sees the module's file path, not the attr name).
+    let jq_path = root.join("pkgs/tools/jq.nix");
+    if jq_path.is_file() {
+        assert_eq!(
+            map.identity_for_source_path(&jq_path),
+            map.identity("jq"),
+            "path lookup agrees with name lookup"
+        );
+        assert!(
+            map.identity_for_source_path(&jq_path).is_some(),
+            "jq resolves by path"
+        );
+    }
+
     // Deterministic: a second build yields identical identities.
     let again = build_boundary_identity_map(&config).expect("map rebuilds");
     let first: Vec<_> = map.iter().map(|(n, id)| (n.to_string(), id)).collect();

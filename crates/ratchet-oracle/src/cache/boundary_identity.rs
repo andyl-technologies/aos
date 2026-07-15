@@ -136,6 +136,10 @@ impl BoundaryIdentity {
 pub struct BoundaryIdentityMap {
     /// Keyable package boundaries: `name → source-Merkle identity`.
     identities: BTreeMap<String, BoundaryIdentity>,
+    /// Keyable boundaries by canonical source-file path — the lookup the
+    /// evaluator uses at the apply seam, where an applied package lambda's
+    /// module names its file (`ModuleSource::name`), not the package attr name.
+    by_realpath: BTreeMap<PathBuf, BoundaryIdentity>,
     /// Packages that decline admission because a formal is unresolved and has no
     /// in-file default, or because a transitive dependency declines.
     declined: BTreeSet<String>,
@@ -148,6 +152,17 @@ impl BoundaryIdentityMap {
     /// declined.
     pub fn identity(&self, name: &str) -> Option<BoundaryIdentity> {
         self.identities.get(name).copied()
+    }
+
+    /// Returns the boundary identity for the package whose source file is
+    /// `path`, or `None` if the path is not a keyed package boundary.
+    ///
+    /// `path` is canonicalized before lookup so a relative or symlinked apply-time
+    /// module path resolves to the same entry the builder recorded. A path that
+    /// cannot be canonicalized is treated as a miss.
+    pub fn identity_for_source_path(&self, path: &Path) -> Option<BoundaryIdentity> {
+        let realpath = std::fs::canonicalize(path).ok()?;
+        self.by_realpath.get(&realpath).copied()
     }
 
     /// Returns whether `name` declined admission.
@@ -270,7 +285,17 @@ pub fn build_boundary_identity_map(
         overrides: &override_set,
     };
 
-    Ok(fold_identities(&facts, &classifier, &framework_identity))
+    let mut map = fold_identities(&facts, &classifier, &framework_identity);
+
+    // Index keyed boundaries by canonical source path for the apply-seam lookup.
+    for (name, path) in &packages {
+        if let Some(identity) = map.identities.get(name).copied() {
+            if let Ok(realpath) = std::fs::canonicalize(path) {
+                map.by_realpath.insert(realpath, identity);
+            }
+        }
+    }
+    Ok(map)
 }
 
 /// Folds every package's source-Merkle identity over the dependency DAG.
