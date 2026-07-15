@@ -418,6 +418,26 @@ impl PersistCache {
     ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
     {
         let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        self.hydrate_file_artifact_bundle_by_artifact_key(artifact_key, entry)
+    }
+
+    /// Hydrates an indexed file-artifact bundle addressed by `artifact_key`.
+    ///
+    /// This is the shared lookup-and-hydrate core: it takes the fully-derived
+    /// mapping key (so a caller can re-derive it under a foreign family for a
+    /// cross-family probe) and writes the decoded, family-independent bundle
+    /// payload into `entry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexedHydrationError`] under the same
+    /// conditions as [`Self::hydrate_file_artifact_bundle_from_index`].
+    fn hydrate_file_artifact_bundle_by_artifact_key(
+        &self,
+        artifact_key: PersistFileArtifactKey,
+        entry: &ParseCacheEntry,
+    ) -> Result<Option<PersistFileArtifactIndexEntry>, PersistFileArtifactIndexedHydrationError>
+    {
         let (
             files_advisory_guard,
             _file_artifact_advisory_guard,
@@ -644,6 +664,60 @@ impl PersistCache {
     ) -> Result<Option<CachedParse>, PersistParseSourceIndexedLoadError> {
         if self
             .hydrate_parse_cache_entry_from_source_index(parse_cache, realpath, source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        parse_cache
+            .load_cached_bytes(source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Load { source })
+    }
+
+    /// Loads an indexed parse-cache hit from a foreign-family cache location.
+    ///
+    /// This is the cross-family sibling of
+    /// [`Self::load_parse_cache_source_from_index`] (RFC-0007 §P4 Option C). The
+    /// persist lookup keys are re-derived under `location_family` — the family
+    /// recorded in this location's own manifest — from the identity-carrying
+    /// `(realpath, source)` preimage the caller already holds, so a secondary
+    /// stored under a different content-hash family still resolves. The decoded
+    /// artifact payload is family-independent and is written into the
+    /// **process-family** parse-cache entry, so the returned [`CachedParse`] and
+    /// any later same-source probe read it through the normal
+    /// [`ParseCache::load_cached_bytes`] path.
+    ///
+    /// This works only because a parse artifact is identity-carrying: its key is
+    /// recoverable from the realpath and source bytes. A raw blob-by-key lookup,
+    /// whose key is a content address with no recoverable preimage, is not
+    /// cross-family probeable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseSourceIndexedLoadError`] under the same conditions
+    /// as [`Self::load_parse_cache_source_from_index`].
+    pub fn load_parse_cache_source_from_index_for_family(
+        &self,
+        parse_cache: &ParseCache,
+        realpath: impl AsRef<Path>,
+        source: &[u8],
+        location_family: CacheHashFamily,
+    ) -> Result<Option<CachedParse>, PersistParseSourceIndexedLoadError> {
+        // Persist lookup keys under the location's family.
+        let content_hash = ParseFileContentHash::for_source_with_family(source, location_family);
+        let file_key = ParseFileKey::new(realpath.as_ref(), content_hash);
+        let persist_parse_key = parse_cache.key_for_source_with_family(source, location_family);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key_with_family(
+            &file_key,
+            persist_parse_key,
+            location_family,
+        );
+        // The in-memory parse-cache entry stays under the process family, so the
+        // hydrated payload is found by the normal `load_cached_bytes` path below
+        // and by any later same-source probe.
+        let entry = parse_cache.entry_for_key(parse_cache.key_for_source(source));
+        if self
+            .hydrate_file_artifact_bundle_by_artifact_key(artifact_key, &entry)
             .map_err(|source| PersistParseSourceIndexedLoadError::Hydrate { source })?
             .is_none()
         {

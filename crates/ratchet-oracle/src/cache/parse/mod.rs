@@ -18,7 +18,7 @@
 //! plus BLAKE3 content hash, allowing symlinked paths to share the same resolved
 //! artifact while still reparsing changed files.
 
-use crate::cache::hashing::CacheDigestHasher;
+use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -140,7 +140,41 @@ impl ParseCacheKey {
         schema_version: u32,
         flags: ParseCacheFlags,
     ) -> Self {
-        let mut hasher = CacheDigestHasher::new();
+        Self::from_content_hash_with_hasher(
+            CacheDigestHasher::new(),
+            content_hash,
+            schema_version,
+            flags,
+        )
+    }
+
+    /// Computes a parse-cache key under an explicit content-hash family.
+    ///
+    /// Both the `content_hash` and the composite key must be derived under the
+    /// same `family` to address a foreign-family cache location's entry
+    /// (RFC-0007 §P4 Option C cross-family probe). Callers pass a `content_hash`
+    /// from [`ParseFileContentHash::for_source_with_family`] with the matching
+    /// family.
+    pub fn from_content_hash_with_family(
+        content_hash: ParseFileContentHash,
+        schema_version: u32,
+        flags: ParseCacheFlags,
+        family: CacheHashFamily,
+    ) -> Self {
+        Self::from_content_hash_with_hasher(
+            CacheDigestHasher::for_family(family),
+            content_hash,
+            schema_version,
+            flags,
+        )
+    }
+
+    fn from_content_hash_with_hasher(
+        mut hasher: CacheDigestHasher,
+        content_hash: ParseFileContentHash,
+        schema_version: u32,
+        flags: ParseCacheFlags,
+    ) -> Self {
         hasher.update(KEY_PERSONALIZATION);
         hasher.update(&schema_version.to_le_bytes());
         flags.update_hasher(&mut hasher);
@@ -449,6 +483,20 @@ impl ParseCache {
     /// Computes this cache's key for source bytes.
     pub fn key_for_source(&self, source: &[u8]) -> ParseCacheKey {
         self.key_for_content_hash(ParseFileContentHash::for_source(source))
+    }
+
+    /// Computes this cache's key for source bytes under an explicit family.
+    ///
+    /// Re-derives both the content hash and the composite key under `family`,
+    /// for probing a foreign-family persist location that stored the artifact
+    /// under a different content-hash family (RFC-0007 §P4 Option C).
+    pub fn key_for_source_with_family(&self, source: &[u8], family: CacheHashFamily) -> ParseCacheKey {
+        ParseCacheKey::from_content_hash_with_family(
+            ParseFileContentHash::for_source_with_family(source, family),
+            self.schema_version,
+            self.flags,
+            family,
+        )
     }
 
     /// Computes this cache's key from a source's BLAKE3 content hash.

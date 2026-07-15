@@ -234,6 +234,17 @@ impl DurableBlake3Hash {
         Self::from_hasher(hasher)
     }
 
+    /// Computes a durable content hash for bytes under an explicit hash family.
+    ///
+    /// This re-derives the digest under `family` rather than the process family,
+    /// so an identity-carrying preimage can be re-keyed for a foreign-family
+    /// cache location (RFC-0007 §P4 Option C cross-family probe).
+    pub fn for_bytes_with_family(bytes: &[u8], family: CacheHashFamily) -> Self {
+        let mut hasher = CacheDigestHasher::for_family(family);
+        hasher.update(bytes);
+        Self::from_hasher(hasher)
+    }
+
     /// Finalizes a [`CacheDigestHasher`] into a durable cache hash.
     pub fn from_hasher(hasher: CacheDigestHasher) -> Self {
         Self(hasher.finalize_bytes())
@@ -669,6 +680,14 @@ impl ParseCacheSourceHash {
 pub struct ParseFileContentHash(DurableBlake3Hash);
 
 impl ParseFileContentHash {
+    /// Computes the file-content memo hash for `source` under an explicit family.
+    ///
+    /// Re-derives the content hash under `family` for a cross-family probe of a
+    /// foreign-family cache location (RFC-0007 §P4 Option C).
+    pub fn for_source_with_family(source: &[u8], family: CacheHashFamily) -> Self {
+        Self(DurableBlake3Hash::for_bytes_with_family(source, family))
+    }
+
     /// Computes the file-content memo hash for `source`.
     pub fn for_source(source: &[u8]) -> Self {
         Self(DurableBlake3Hash::for_bytes(source))

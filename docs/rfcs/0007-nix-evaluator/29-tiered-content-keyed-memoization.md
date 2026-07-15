@@ -534,15 +534,17 @@ that record is authoritative:
   manifest truthful.
 - **Secondary open is non-destructive**: a shared secondary keeps whatever
   family its own manifest records and is never rewritten or discarded by a
-  differently-configured reader. A cross-family secondary is *skipped* by
-  the probe and by demotion (both derive keys under the process family);
-  the identity-carrying **cross-family re-derivation probe** — re-deriving a
-  parse-artifact key under the secondary's family from the realpath+source
-  preimage it already holds — is the follow-on that lets a mixed stack
-  actually serve across families. That probe is limited to records whose
-  preimage/identity the prober carries (root/parse-artifact records via
-  their self-validating identity); a raw blob-by-key lookup is **not**
-  cross-family probeable, because its key is a content address with no
+  differently-configured reader. Demotion still targets only a same-family
+  secondary (it writes process-family-keyed records). Reads use the
+  identity-carrying **cross-family re-derivation probe**: on an L2 parse-artifact
+  lookup a same-family secondary is probed directly, and a cross-family
+  secondary is probed by re-deriving its content-hash, parse, and file-artifact
+  keys under *its* recorded family from the realpath+source preimage the probe
+  already holds; a hit is then promoted into the primary under the primary
+  family (the decoded artifact payload is family-independent). The probe is
+  limited to records whose preimage/identity the prober carries (parse-artifact
+  records via their realpath+source identity); a raw blob-by-key lookup is
+  **not** cross-family probeable, because its key is a content address with no
   recoverable preimage.
 
 There is no mutable process hash-family global: the process family is

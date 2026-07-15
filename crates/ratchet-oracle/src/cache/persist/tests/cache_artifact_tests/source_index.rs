@@ -198,6 +198,71 @@ fn cache_source_index_borrowed_load_visits_cached_parse_after_hydration() {
 }
 
 #[test]
+fn cache_source_index_cross_family_load_round_trips_and_domain_separates() {
+    use crate::cache::hashing::CacheHashFamily;
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let realpath = std::path::Path::new("/src/default.nix");
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(realpath, source);
+    persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    // The test process family is the BLAKE3 default, so the artifact was stored
+    // under BLAKE3. The cross-family load path re-derives its keys under the
+    // family it is told to probe: told BLAKE3 it re-derives the exact keys the
+    // store used and hits (proving the re-derivation round-trips against the
+    // real persist store); told xxh128 it derives domain-separated keys that
+    // cannot collide, so it misses — a foreign-family probe never returns a
+    // false hit. Populate-and-read under a single non-default family is the same
+    // family-agnostic code with the constant swapped, exercised here by the
+    // BLAKE3 round-trip.
+    let hit = persist
+        .load_parse_cache_source_from_index_for_family(
+            &parse_cache,
+            realpath,
+            source,
+            CacheHashFamily::Blake3,
+        )
+        .expect("same-family cross-family load succeeds")
+        .expect("same-family probe hits the stored artifact");
+    assert!(hit.hit);
+    assert_eq!(hit.key, parsed.key);
+    assert_eq!(hit.entry, parse_cache.entry_for_source(source));
+
+    fs::remove_dir_all(parse_cache.entry_for_source(source).dir())
+        .expect("parse-cache entry removes before the miss probe");
+
+    let miss = persist
+        .load_parse_cache_source_from_index_for_family(
+            &parse_cache,
+            realpath,
+            source,
+            CacheHashFamily::Xxh128,
+        )
+        .expect("foreign-family cross-family load succeeds");
+    assert!(
+        miss.is_none(),
+        "an xxh128 probe must not find a BLAKE3-stored artifact",
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_source_index_load_misses_without_mapping() {
     use crate::cache::parse::ParseCache;
 

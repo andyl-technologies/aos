@@ -1,6 +1,6 @@
 //! File-artifact index key, value, entry, and storage format adapters.
 
-use crate::cache::hashing::CacheDigestHasher;
+use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 use super::*;
 use crate::cache::CompiledBodyRecordHash;
 use ratchet_cache::artifact_index::{
@@ -30,7 +30,28 @@ impl PersistFileArtifactKey {
 
     /// Creates a persistent file-artifact index key from a parse file key.
     pub fn from_parse_file_key(file_key: &ParseFileKey, parse_key: ParseCacheKey) -> Self {
-        Self::for_realpath_bytes(
+        Self::for_realpath_bytes_with_hasher(
+            CacheDigestHasher::new(),
+            file_key.realpath().as_os_str().as_bytes(),
+            file_key.content_hash(),
+            parse_key,
+        )
+    }
+
+    /// Creates a file-artifact index key from a parse file key under a family.
+    ///
+    /// Folds the identity under `family` rather than the process family so a
+    /// foreign-family secondary's index entry can be addressed from an
+    /// identity-carrying preimage (RFC-0007 §P4 Option C cross-family probe).
+    /// The `file_key` and `parse_key` must already be derived under the same
+    /// family.
+    pub fn from_parse_file_key_with_family(
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        family: CacheHashFamily,
+    ) -> Self {
+        Self::for_realpath_bytes_with_hasher(
+            CacheDigestHasher::for_family(family),
             file_key.realpath().as_os_str().as_bytes(),
             file_key.content_hash(),
             parse_key,
@@ -43,7 +64,20 @@ impl PersistFileArtifactKey {
         content_hash: ParseFileContentHash,
         parse_key: ParseCacheKey,
     ) -> Self {
-        let mut hasher = CacheDigestHasher::new();
+        Self::for_realpath_bytes_with_hasher(
+            CacheDigestHasher::new(),
+            realpath,
+            content_hash,
+            parse_key,
+        )
+    }
+
+    fn for_realpath_bytes_with_hasher(
+        mut hasher: CacheDigestHasher,
+        realpath: &[u8],
+        content_hash: ParseFileContentHash,
+        parse_key: ParseCacheKey,
+    ) -> Self {
         hasher.update(PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION);
         update_persist_index_chunk(&mut hasher, realpath);
         hasher.update(&content_hash.as_durable_hash().as_bytes());

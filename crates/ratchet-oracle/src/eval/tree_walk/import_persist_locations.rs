@@ -40,24 +40,36 @@ impl TreeWalk {
             return None;
         }
         // The parse-artifact key is derived under the primary's content-hash
-        // family, so a secondary recorded under a different family cannot be
-        // probed with it (the families domain-separate their digests). Skip a
-        // cross-family secondary until the heterogeneous re-derivation probe
-        // (RFC-0007 §P4 Option C) is wired; the homogeneous stack is the norm.
+        // family. A same-family secondary is probed directly; a cross-family
+        // secondary is probed by re-deriving its keys under its own recorded
+        // family from the identity-carrying (realpath, source) preimage
+        // (RFC-0007 §P4 Option C). Either way a hit is promoted into the primary
+        // under the primary family below. The homogeneous stack takes the direct
+        // path — no extra hashing.
         let probe_family = self
             .persist_cache
             .as_ref()
             .map_or_else(cache_hash_family, PersistCache::hash_family);
         let mut secondary_hit = None;
         for (_, secondary) in &self.persist_secondary_caches {
-            if secondary.hash_family() != probe_family {
-                continue;
-            }
-            if let Some(cached) = secondary
-                .load_parse_cache_source_from_index(cache, realpath, source)
-                .ok()
-                .flatten()
-            {
+            let secondary_family = secondary.hash_family();
+            let cached = if secondary_family == probe_family {
+                secondary
+                    .load_parse_cache_source_from_index(cache, realpath, source)
+                    .ok()
+                    .flatten()
+            } else {
+                secondary
+                    .load_parse_cache_source_from_index_for_family(
+                        cache,
+                        realpath,
+                        source,
+                        secondary_family,
+                    )
+                    .ok()
+                    .flatten()
+            };
+            if let Some(cached) = cached {
                 secondary_hit = Some(cached);
                 break;
             }
