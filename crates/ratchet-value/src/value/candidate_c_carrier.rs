@@ -395,6 +395,11 @@ impl Value {
     /// Returns [`ValueError::NotHeapTag`] when this value is inline, and
     /// [`ValueError::UnregisteredReservation`] when the word's domain is not a
     /// live registered reservation.
+    // Inlined across the ratchet-value -> ratchet-oracle boundary: this is the
+    // per-touch heap-resolve accessor on the hot force/apply spine and was
+    // observed crossing out-of-line at several call sites (RFC-0007 §P1 ledger
+    // lever 5); inlining removes the call plus a redundant tag re-decode.
+    #[inline]
     pub fn as_heap_ptr(self) -> Result<NonNull<HeapObject>, ValueError> {
         let tag = self.word.semantic_tag();
         if !tag.is_heap() {
@@ -482,6 +487,7 @@ impl Value {
         self.expect_heap_tag(ValueTag::Thunk, "thunk")
     }
 
+    #[inline]
     fn expect_heap_tag(
         self,
         expected: ValueTag,
