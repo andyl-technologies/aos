@@ -155,6 +155,8 @@ confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterm
 confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_node_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_node_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
+confinement	crates/crucible-qemu/src/supervision/ninep_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/node_step_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/node_step_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/node_factory.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2

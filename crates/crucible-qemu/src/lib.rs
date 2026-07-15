@@ -260,12 +260,13 @@ pub use spawn::{
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,
-    NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
+    NinepIoAdvanceOutcome, NinepIoDiagnostics, NinepIoDiagnosticsSnapshot, QemuLive9pIoGateConfig,
+    QemuLive9pIoGateError, QemuLive9pIoReport, QemuLive9pIoServiceStep, QemuLive9pIoServicer,
     QemuLive9pIoServicerError, QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError,
     QemuLiveBlockIoReport, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
     QemuLiveBlockIoServicerError, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
     QemuLiveBlockNodeReport, QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError,
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
-    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, run_qemu_live_block_io_gate,
-    run_qemu_live_block_node_gate, run_qemu_live_node_step_gate,
+    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, run_qemu_live_9p_io_gate,
+    run_qemu_live_block_io_gate, run_qemu_live_block_node_gate, run_qemu_live_node_step_gate,
 };

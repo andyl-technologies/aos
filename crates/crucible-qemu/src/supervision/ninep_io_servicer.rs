@@ -381,8 +381,9 @@ mod tests {
     /// plumbs that already-deterministic device onto the shmem rings.
     #[test]
     fn deterministic_fs_tree_is_reproducible() {
-        let first = deterministic_fs_tree().expect("fixed 9p tree is well-formed");
-        let second = deterministic_fs_tree().expect("fixed 9p tree is well-formed");
+        let (Ok(first), Ok(second)) = (deterministic_fs_tree(), deterministic_fs_tree()) else {
+            panic!("fixed 9p tree is well-formed");
+        };
         assert_eq!(first, second);
     }
 
