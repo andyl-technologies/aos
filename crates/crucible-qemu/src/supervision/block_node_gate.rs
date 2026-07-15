@@ -1,4 +1,4 @@
-//! Live [`QemuNode`] block-I/O bring-up gate — the CP3 / T-PLUG-12 acceptance
+//! Live [`QemuNode`] block-I/O bring-up gate -- the CP3 / T-PLUG-12 acceptance
 //! vehicle for real guest block I/O through the production node shape.
 //!
 //! This gate boots the diskless-firmware guest with a `crucible-shmem`
@@ -12,7 +12,7 @@
 //!   `delivery_icount` (the SCHED-8 device-horizon gap: nothing advances a guest
 //!   halted on device I/O). The gate asserts this KNOWN stall SIGNATURE
 //!   (a request was processed, none delivered, device I/O still held, the guest
-//!   never reached the completion horizon) and exits cleanly — a characterization
+//!   never reached the completion horizon) and exits cleanly -- a characterization
 //!   baseline, not a timeout.
 //! - **Post-0039 (once the device-completion delivery patch lands).** The guest
 //!   progresses past the block I/O; the same harness flips to asserting real
