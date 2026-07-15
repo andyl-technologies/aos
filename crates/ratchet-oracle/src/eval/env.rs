@@ -178,13 +178,13 @@ pub(crate) mod capture_stats {
     }
 
     /// Records one `with`-scope stack copy of `scopes` entries.
-    pub(super) fn note_with_env_capture(scopes: usize) {
+    pub(crate) fn note_with_env_capture(scopes: usize) {
         WITH_ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
         WITH_ENV_CAPTURE_SCOPES.fetch_add(scopes as u64, Ordering::Relaxed);
     }
 
     /// Records one scoped-global stack copy of `scopes` values.
-    pub(super) fn note_scoped_global_env_capture(scopes: usize) {
+    pub(crate) fn note_scoped_global_env_capture(scopes: usize) {
         SCOPED_GLOBAL_ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
         SCOPED_GLOBAL_ENV_CAPTURE_SCOPES.fetch_add(scopes as u64, Ordering::Relaxed);
     }
@@ -313,8 +313,10 @@ impl EvalWithEnv {
     }
 
     /// Captures another persistent stack by cloning its head pointer.
+    ///
+    /// The capture counter is recorded by the caller under the stats flag
+    /// (RFC-0007 §P1 ledger lever 4), so the default hot path takes no atomic.
     pub(crate) fn capture_persistent(scopes: &Self) -> Self {
-        capture_stats::note_with_env_capture(0);
         scopes.clone()
     }
 
@@ -387,8 +389,10 @@ impl EvalScopedGlobalEnv {
     }
 
     /// Captures another persistent stack by cloning its head pointer.
+    ///
+    /// The capture counter is recorded by the caller under the stats flag
+    /// (RFC-0007 §P1 ledger lever 4), so the default hot path takes no atomic.
     pub(crate) fn capture_persistent(scopes: &Self) -> Self {
-        capture_stats::note_scoped_global_env_capture(0);
         scopes.clone()
     }
 

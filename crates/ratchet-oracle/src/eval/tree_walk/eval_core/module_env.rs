@@ -539,6 +539,11 @@ impl TreeWalk {
         _id: IrId,
         _span: Span,
     ) -> Result<EvalWithEnv, TreeWalkError> {
+        // Capture-count diagnostic (RFC-0007 §P1 ledger lever 4): recorded only
+        // while stats collection is active, so a normal eval pays no atomic.
+        if self.options.eval_stats_dump() {
+            crate::eval::env::capture_stats::note_with_env_capture(0);
+        }
         Ok(EvalWithEnv::capture_persistent(&self.with_scopes))
     }
 
@@ -547,6 +552,9 @@ impl TreeWalk {
         _id: IrId,
         _span: Span,
     ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
+        if self.options.eval_stats_dump() {
+            crate::eval::env::capture_stats::note_scoped_global_env_capture(0);
+        }
         Ok(EvalScopedGlobalEnv::capture_persistent(
             &self.scoped_globals,
         ))
