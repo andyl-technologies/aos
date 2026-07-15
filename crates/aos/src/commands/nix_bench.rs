@@ -14,6 +14,7 @@
 //! watermarks, arena gauges), and this file drives sampling and rendering.
 
 mod analysis;
+mod cold_only;
 #[cfg(feature = "native-eval")]
 mod changed_tree;
 pub(crate) mod corpus;
@@ -162,10 +163,20 @@ pub fn run(
     changed_tree: bool,
 ) -> Result<()> {
     validate_args(samples, regression_threshold, memory_regression_threshold)?;
-    NixRunner::ensure_nix_instantiate_available()?;
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
     }
+    // Instruction-attribution diagnostics path (RFC-0007 instruction-bloat
+    // campaign): a single, isolated, native-only cold eval with no C++ oracle,
+    // no warm re-instantiate, no parity gate, and no history — so `perf stat`
+    // wrapping this process counts exactly one cold eval's retired
+    // instructions, and a paired `AOS_NIX_EVAL_STATS=1` run reports that same
+    // eval's op counters and force-shape census for the per-op budget. See the
+    // instruction-bloat design note.
+    if cold_only::enabled() {
+        return cold_only::run(printer, verbose, &eval_config, file, attrs);
+    }
+    NixRunner::ensure_nix_instantiate_available()?;
     if changed_tree {
         #[cfg(feature = "native-eval")]
         return changed_tree::run(printer, verbose, samples);
@@ -337,7 +348,7 @@ fn validate_args(
     Ok(())
 }
 
-fn absolute_eval_file(path: &Path) -> Result<std::path::PathBuf> {
+pub(super) fn absolute_eval_file(path: &Path) -> Result<std::path::PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
@@ -517,7 +528,7 @@ fn capture_native_sample(
 ///
 /// Returns an error if the temp dir cannot be created, the cache root cannot be
 /// configured, or the evaluator cannot be built.
-fn fresh_isolated_candidate(
+pub(super) fn fresh_isolated_candidate(
     verbose: u8,
     base_config: &NixEvalConfig,
     spec: &BenchmarkSpec,
@@ -632,7 +643,10 @@ fn run_parity_gate(
 /// a diagnostics run may be measuring an evaluator whose `.drv` bytes do not
 /// yet match the store contents, and writing divergent `.drv`s is neither
 /// possible (store permissions) nor desirable.
-fn native_instantiate(candidate: &dyn NixEval, spec: &BenchmarkSpec) -> Result<std::path::PathBuf> {
+pub(super) fn native_instantiate(
+    candidate: &dyn NixEval,
+    spec: &BenchmarkSpec,
+) -> Result<std::path::PathBuf> {
     if skip_parity_gate_for_diagnostics()
         && let Some(closure) = candidate.instantiate_closure(&spec.file, &spec.attr)?
     {
