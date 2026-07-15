@@ -435,8 +435,7 @@ impl TreeWalk {
     ) -> Result<(EvalThunk, Option<EvalFlatCaptureBuffer>), TreeWalkError> {
         self.node(body)?;
         let (env, capture) = self.capture_env(id, span)?;
-        let with_env = self.capture_with_env(id, span)?;
-        let scoped_globals = self.capture_scoped_global_env(id, span)?;
+        let (with_env, scoped_globals) = self.capture_dynamic_envs(id, body, span)?;
         // Capture-on-demand attribution (RFC-0007 §P1): a no-op unless
         // `AOS_NIX_EVAL_STATS` collection is active, so production pays nothing.
         if self.options.eval_stats_dump() {

@@ -140,6 +140,7 @@ mod runtime_values;
 // re-exported here so siblings (and the public path) keep resolving them.
 mod api;
 mod campaign_counters;
+mod capture_on_demand;
 mod capture_probe;
 #[cfg(test)]
 mod capture_validation;
@@ -273,6 +274,9 @@ pub struct TreeWalk {
     order_sensitive_binding_failed: bool,
     with_scopes: EvalWithEnv,
     scoped_globals: EvalScopedGlobalEnv,
+    /// Opt-in capture-on-demand elision state for dynamic environments
+    /// (RFC-0007 §P1). Default-inert; see [`capture_on_demand`].
+    capture_on_demand: capture_on_demand::CaptureOnDemand,
     options: TreeWalkOptions,
     stats: EvalStats,
     /// Process-wide environment capture counters observed at construction;

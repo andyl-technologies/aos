@@ -5,10 +5,13 @@
 //! (`with` scopes and scoped-import globals) at allocation, yet most bodies can
 //! reach neither. This analysis proves, per node, whether the node's *entire
 //! lowered subtree* — descending through inner `Lambda`/`Let`/`ThunkAlloc`
-//! bodies, since dynamic scope flows through them — contains any `with`-var read
-//! ([`IrData::DialectScopeVar`]) or scoped-global read ([`IrData::GlobalVar`]).
-//! `with` never crosses a file/import boundary (an import resets the ambient
-//! scopes), so a within-module subtree walk is complete.
+//! bodies, since dynamic scope flows through them — can read the `with` env or
+//! the scoped-global env. A `with`-var read ([`IrData::DialectScopeVar`])
+//! reaches the `with` env; a scoped-global read ([`IrData::GlobalVar`]) reaches
+//! the scoped-global env; and because a `with`-var read that misses every
+//! active `with` scope falls back to the scoped-global env, a `DialectScopeVar`
+//! reaches *both*. `with` never crosses a file/import boundary (an import resets
+//! the ambient scopes), so a within-module subtree walk is complete.
 //!
 //! The reachability is conservative for a capture-elision consumer: a body may
 //! be treated as reaching a dynamic var when it does not (over-capture is always
@@ -85,8 +88,13 @@ pub fn analyze_dynamic_scope_reach(ir: &Ir) -> DynamicScopeReach {
                 continue;
             };
             if expanded {
-                let mut with = matches!(node.data, IrData::DialectScopeVar { .. });
-                let mut global = matches!(node.data, IrData::GlobalVar { .. });
+                let is_with_var = matches!(node.data, IrData::DialectScopeVar { .. });
+                let mut with = is_with_var;
+                // A `with`-var read that misses every active `with` scope falls
+                // back to the scoped-global environment (see the evaluator's
+                // `eval_global_fallback`), so a `DialectScopeVar` reaches the
+                // scoped-global env in addition to the `with` env.
+                let mut global = is_with_var || matches!(node.data, IrData::GlobalVar { .. });
                 for child in all_child_ids(ir, node) {
                     let c = child.as_u32() as usize;
                     if c < count {
@@ -162,6 +170,19 @@ mod tests {
         let ir = lower_with_dyn("with { a = 1; }; (arg: a)");
         let reach = analyze_dynamic_scope_reach(&ir);
         assert!(reach.reaches_with_var(ir.root));
+    }
+
+    #[test]
+    fn with_var_read_also_reaches_scoped_global_via_fallback() {
+        // A `with`-var read that misses the active `with` scopes falls back to
+        // the scoped-global env at runtime, so a body containing a `with`-var
+        // read must be reported as reaching the scoped-global env too — even
+        // though it has no `GlobalVar` node. Eliding the scoped-global capture
+        // here would break `with { y = 0; }; x` under `scopedImport { x = ...; }`.
+        let ir = lower_with_dyn("with { a = 1; }; a");
+        let reach = analyze_dynamic_scope_reach(&ir);
+        assert!(reach.reaches_with_var(ir.root));
+        assert!(reach.reaches_scoped_global(ir.root));
     }
 
     #[test]

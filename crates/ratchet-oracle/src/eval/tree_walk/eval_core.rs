@@ -158,6 +158,7 @@ impl TreeWalk {
             order_sensitive_binding_failed: false,
             with_scopes: EvalWithEnv::default(),
             scoped_globals: EvalScopedGlobalEnv::default(),
+            capture_on_demand: super::capture_on_demand::CaptureOnDemand::from_env(),
             options,
             stats: EvalStats::default(),
             campaign_env_baseline: crate::eval::env::capture_stats::snapshot(),
