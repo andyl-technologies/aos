@@ -859,7 +859,8 @@ impl EvalHeap {
         }
     }
 
-    /// Returns a force-path handle to the thunk referenced by `value`.
+    /// Returns a force-path handle to the thunk at an already-decoded heap
+    /// pointer.
     ///
     /// This is the force path's cheap replacement for [`clone_thunk`]
     /// (doc 15 §5.5 cheap-thunk-clone I1). For a serial flat thunk it mints an
@@ -877,16 +878,26 @@ impl EvalHeap {
     /// extra allocation — so I1 stays strictly a flat-hot-path change with zero
     /// regression on those (cold) paths.
     ///
+    /// The caller passes the pointer already decoded from the thunk value: the
+    /// force entry decodes it once and threads it to both the re-force cache
+    /// peek ([`get_thunk_ptr`](Self::get_thunk_ptr)) and this mint, so the second
+    /// resolve does not re-walk the carrier word and the reservation-base
+    /// registry (RFC-0007 instruction-tax lever 2). `value` is used only by the
+    /// cold `GcStressPolicy` record-table arm, which re-clones from the handle.
+    ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError::Value`] if `value` is not a thunk value, and
-    /// otherwise the same resolution errors as [`clone_thunk`]
-    /// ([`EvalHeapError::UnknownPointer`], [`EvalHeapError::RecordTypeMismatch`]).
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` does not belong to this
+    /// heap, and [`EvalHeapError::RecordTypeMismatch`] if it references a
+    /// non-thunk record.
     ///
     /// [`clone_thunk`]: Self::clone_thunk
     /// [`flat_share_thunk`]: Self::flat_share_thunk
-    pub(crate) fn share_thunk(&mut self, value: Value) -> Result<ClonedThunk, EvalHeapError> {
-        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+    pub(crate) fn share_thunk_from_ptr(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        value: Value,
+    ) -> Result<ClonedThunk, EvalHeapError> {
         if let Some(shared) = self.shared.as_ref() {
             // Parallel path (I2): the shared arena forbids in-slot mints
             // (publish-once), so each worker caches its own `Arc` in a

@@ -5,6 +5,10 @@
 //! (with tier-1 dispatch), memoized force-cache consultation, and the
 //! finish/shed steps that publish a forced result.
 
+use std::ptr::NonNull;
+
+use crate::value::HeapObject;
+
 use super::*;
 
 impl TreeWalk {
@@ -34,12 +38,25 @@ impl TreeWalk {
             WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
             WhnfTagFastPath::RequiresThunkProtocol(value) => value,
         };
-        if let Some(forced) = self.reforce_already_forced_thunk(id, span, value)? {
+        // Decode the thunk handle once. The re-force cache peek and the share
+        // below both resolve this same value; decoding twice re-walks the
+        // carrier word and the reservation-base registry for no gain (RFC-0007
+        // instruction-tax lever 2).
+        let ptr = value.as_thunk_ptr().map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id,
+                    source: EvalHeapError::Value(source),
+                },
+                span,
+            )
+        })?;
+        if let Some(forced) = self.reforce_already_forced_thunk(id, span, value, ptr)? {
             return Ok(forced);
         }
         let thunk = self
             .heap
-            .share_thunk(value)
+            .share_thunk_from_ptr(ptr, value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some(parallel_cell) = thunk.parallel_payload_cell() {
             return self.force_parallel_payload_thunk(id, span, value, &thunk, parallel_cell);
@@ -76,10 +93,11 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         value: Value,
+        ptr: NonNull<HeapObject>,
     ) -> Result<Option<Value>, TreeWalkError> {
         let thunk = self
             .heap
-            .get_thunk(value)
+            .get_thunk_ptr(ptr)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         // Single-entry thunks re-evaluate their body on every force and never
         // publish a cached result, so they must always take the full path.
