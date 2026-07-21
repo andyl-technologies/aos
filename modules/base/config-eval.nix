@@ -57,12 +57,6 @@ in {
       description = "Desired-package TOML whose `packages` seed the working set.";
     };
 
-    index = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/apm/index/provides.json";
-      description = "Registry `provides` index used for option→provider lookup.";
-    };
-
     manifest = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos/manifest.json";
@@ -135,10 +129,6 @@ in {
           fi
         fi
 
-        index_arg=""
-        if [ -r "${cfg.index}" ]; then
-          index_arg="--index ${cfg.index}"
-        fi
         desired_arg=""
         if [ -r "${cfg.desired}" ]; then
           desired_arg="--desired ${cfg.desired}"
@@ -153,7 +143,7 @@ in {
           --out "${cfg.manifest}" \
           --eval-root /run/aos-eval \
           --trusted-config-keys-dir /etc/apm/trusted-config-keys.d \
-          $index_arg $desired_arg || exit 1
+          $desired_arg || exit 1
       '';
     };
   };
