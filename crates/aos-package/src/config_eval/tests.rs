@@ -1,19 +1,21 @@
 //! Table-driven tests for the resolve↔eval fixpoint driver.
 //!
 //! The stock-Nix subprocess is replaced by a scripted [`ScriptedEvaluator`]
-//! that returns a pre-canned sequence of [`EvalClass`] values, and the registry
-//! fetch by a [`RecordingFetcher`]. This exercises the orchestration — the
-//! provider selection, the ABI gate, the config-output-first fetch order, the
-//! cycle/cap guard, and the A-vs-B lookup split — without a real evaluator.
+//! that returns a pre-canned sequence of [`EvalClass`] values, the registry by
+//! a [`MockResolver`] mapping package names to config modules, and the fetch by
+//! a [`RecordingFetcher`]. This exercises the orchestration — the locally-derived
+//! [`SystemRoots`] shared-root map, the by-name structural fallback for private
+//! roots, the ABI gate, the config-output-first fetch order, the cycle/cap
+//! guard, and the per-system integrity checks — without a real evaluator.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
 use super::*;
-use crate::types::{IndexEntry, ModuleAbiCompat, ProvidesIndex};
+use crate::types::{ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution};
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -79,6 +81,42 @@ impl ConfigOutputFetcher for RecordingFetcher {
     }
 }
 
+/// A [`ConfigModuleResolver`] over an in-memory `name -> config module` map,
+/// standing in for the on-host registry by-name lookup.
+struct MockResolver {
+    modules: BTreeMap<String, (String, String, ConfigModuleMeta)>,
+}
+
+impl MockResolver {
+    fn new() -> Self {
+        Self {
+            modules: BTreeMap::new(),
+        }
+    }
+
+    /// Registers `name`'s config module at version `1.0.0`, platform
+    /// `x86_64-linux`.
+    fn with(mut self, name: &str, module: ConfigModuleMeta) -> Self {
+        self.modules.insert(
+            name.to_string(),
+            ("1.0.0".to_string(), "x86_64-linux".to_string(), module),
+        );
+        self
+    }
+}
+
+impl ConfigModuleResolver for MockResolver {
+    fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
+        let (key, (version, platform, module)) = self.modules.get_key_value(package)?;
+        Some(ResolvedConfigModule {
+            package: key.as_str(),
+            version,
+            platform,
+            module,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -87,20 +125,37 @@ fn compat(min: u32, max: u32) -> ModuleAbiCompat {
     ModuleAbiCompat { min, max }
 }
 
-fn entry(pkg: &str, root: &str, owner: bool, abi: ModuleAbiCompat) -> IndexEntry {
-    IndexEntry {
-        package: pkg.to_string(),
-        version: "1.0.0".to_string(),
-        platform: "x86_64-linux".to_string(),
-        root: root.to_string(),
-        owner,
+/// A config module owning `root` (with the given contributable sub-paths) — the
+/// shared-root owner shape. Pass an empty `root` for a private-root module (a
+/// package whose config module owns no shared root; its root is its own name).
+fn owner_module(root: &str, contributable: &[&str], abi: ModuleAbiCompat) -> ConfigModuleMeta {
+    let owns_roots = if root.is_empty() {
+        vec![]
+    } else {
+        vec![OwnedRoot {
+            root: root.to_string(),
+            interface_abi: 1,
+            contributable: contributable.iter().map(|s| s.to_string()).collect(),
+        }]
+    };
+    ConfigModuleMeta {
+        config_output: ConfigOutputMeta {
+            store_path: "/nix/store/hash-config".to_string(),
+            nar_hash: "sha256:x".to_string(),
+            nar_size: 1,
+            references: vec![],
+        },
         module_abi_compat: abi,
-        config_output: format!("/nix/store/hash-{pkg}-config"),
+        declares: vec![],
+        owns_roots,
+        contributes: vec![],
+        provides_capabilities: vec![],
     }
 }
 
-fn put(index: &mut ProvidesIndex, path: &str, entry: IndexEntry) {
-    index.options.entry(path.to_string()).or_default().push(entry);
+/// A private-root config module (owns no shared root, ABI band `[min,max]`).
+fn private_module(abi: ModuleAbiCompat) -> ConfigModuleMeta {
+    owner_module("", &[], abi)
 }
 
 fn write_miss(path: &str) -> MissingOption {
@@ -146,13 +201,13 @@ fn inputs(seed: Vec<WorkingSetMember>, abi: u32, cap: Option<u32>) -> FixpointIn
 
 #[test]
 fn converges_with_zero_missing_rounds() {
-    let index = ProvidesIndex::empty();
+    let resolver = MockResolver::new();
     let eval = ScriptedEvaluator::new(vec![EvalClass::Manifest("{\"m\":1}".into())]);
     let fetcher = RecordingFetcher::new();
 
     let outcome = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
@@ -167,12 +222,10 @@ fn converges_with_zero_missing_rounds() {
 
 #[test]
 fn converges_after_one_undeclared_write_round() {
-    let mut index = ProvidesIndex::empty();
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(1, 2)),
-    );
+    // Case A resolution via the by-name structural fallback: `firewall.zone`'s
+    // root `firewall` is not owned by any seeded package, so it resolves to the
+    // package literally named `firewall`.
+    let resolver = MockResolver::new().with("firewall", private_module(compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![
         EvalClass::Missing(vec![write_miss("firewall.zone")]),
         EvalClass::Manifest("{\"m\":1}".into()),
@@ -181,7 +234,7 @@ fn converges_after_one_undeclared_write_round() {
 
     let outcome = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
@@ -204,18 +257,10 @@ fn converges_after_one_undeclared_write_round() {
 
 #[test]
 fn converges_after_n_rounds_mixing_write_and_root_read() {
-    let mut index = ProvidesIndex::empty();
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(1, 2)),
-    );
-    // tls declares a `tls.*` root; reached via a Case-B absent-root read.
-    put(
-        &mut index,
-        "tls.mode",
-        entry("tls", "tls", true, compat(1, 2)),
-    );
+    let resolver = MockResolver::new()
+        .with("firewall", private_module(compat(1, 2)))
+        // tls resolves via a Case-B absent-root read.
+        .with("tls", private_module(compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![
         EvalClass::Missing(vec![write_miss("firewall.zone")]),
         EvalClass::Missing(vec![read_miss("tls")]),
@@ -225,7 +270,7 @@ fn converges_after_n_rounds_mixing_write_and_root_read() {
 
     let outcome = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
@@ -243,41 +288,64 @@ fn converges_after_n_rounds_mixing_write_and_root_read() {
     assert_eq!(outcome.trace[1].provider_added, "tls");
 }
 
+#[test]
+fn shared_root_owner_resolves_via_system_roots() {
+    // A seeded package `fw-pkg` owns the shared root `firewall`; a Case-B read of
+    // that root resolves to it through SystemRoots (not the structural
+    // fallback), and its bare seed's config output is fetched.
+    let resolver = MockResolver::new()
+        .with("fw-pkg", owner_module("firewall", &["allowedTCPPorts"], compat(1, 2)));
+    let eval = ScriptedEvaluator::new(vec![
+        EvalClass::Missing(vec![read_miss("firewall")]),
+        EvalClass::Manifest("{\"m\":1}".into()),
+    ]);
+    let fetcher = RecordingFetcher::new();
+    let seed = vec![WorkingSetMember::seed("web"), WorkingSetMember::seed("fw-pkg")];
+
+    let outcome = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
+        .expect("converges via SystemRoots owner");
+    assert_eq!(outcome.iterations, 1);
+    assert_eq!(outcome.trace[0].provider_added, "fw-pkg");
+    assert_eq!(*fetcher.fetched.borrow(), vec!["fw-pkg".to_string()]);
+}
+
 // ---------------------------------------------------------------------------
 // Terminal: provider resolution
 // ---------------------------------------------------------------------------
 
 #[test]
 fn no_provider_for_unknown_path() {
-    let index = ProvidesIndex::empty();
+    let resolver = MockResolver::new();
     let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![write_miss("unknown.opt")])]);
     let fetcher = RecordingFetcher::new();
 
     let err = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
     .expect_err("no provider");
     assert!(matches!(err, FixpointError::NoProvider { .. }), "{err:?}");
+    // The exact message names the root twice (owner + registry lookup).
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no installed package owns root 'unknown' and no package named 'unknown' exists in the registry"),
+        "{msg}"
+    );
 }
 
 #[test]
-fn abi_mismatch_when_provider_excludes_image_abi() {
-    let mut index = ProvidesIndex::empty();
-    // Provider exists but only admits abi 2..4; running image is abi 1.
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(2, 4)),
-    );
+fn abi_mismatch_when_named_package_excludes_image_abi() {
+    // The package named `firewall` exists but only admits abi 2..4; running
+    // image is abi 1 ⇒ AbiMismatch, distinct from NoProvider.
+    let resolver = MockResolver::new().with("firewall", private_module(compat(2, 4)));
     let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![write_miss("firewall.zone")])]);
     let fetcher = RecordingFetcher::new();
 
     let err = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
@@ -291,8 +359,25 @@ fn abi_mismatch_when_provider_excludes_image_abi() {
 }
 
 #[test]
+fn abi_mismatch_when_owned_root_excludes_image_abi() {
+    // The SystemRoots owner path also distinguishes AbiMismatch from NoProvider.
+    let resolver =
+        MockResolver::new().with("fw-pkg", owner_module("firewall", &[], compat(2, 4)));
+    let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![read_miss("firewall")])]);
+    let fetcher = RecordingFetcher::new();
+    let seed = vec![WorkingSetMember::seed("web"), WorkingSetMember::seed("fw-pkg")];
+
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
+        .expect_err("owned-root abi mismatch");
+    assert!(
+        matches!(err, FixpointError::AbiMismatch { want: 1, .. }),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn seed_abi_gate_rejects_before_any_eval() {
-    let index = ProvidesIndex::empty();
+    let resolver = MockResolver::new();
     // An empty script: if the gate did not fire first, evaluate() would be
     // called and bail "exhausted", a different error.
     let eval = ScriptedEvaluator::new(vec![]);
@@ -304,32 +389,25 @@ fn seed_abi_gate_rejects_before_any_eval() {
         module_abi_compat: Some(compat(2, 4)),
     }];
 
-    let err = run_fixpoint(&inputs(seed, 1, None), &index, &eval, &fetcher)
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect_err("seed gate rejects");
-    assert!(
-        matches!(err, FixpointError::SeedAbiMismatch(_)),
-        "{err:?}"
-    );
+    assert!(matches!(err, FixpointError::SeedAbiMismatch(_)), "{err:?}");
     // The evaluator was never driven.
     assert!(eval.seen_sizes.borrow().is_empty());
 }
 
 #[test]
 fn unsatisfiable_when_loaded_provider_still_missing() {
-    let mut index = ProvidesIndex::empty();
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(1, 2)),
-    );
     // firewall's config module is ALREADY loaded (config_output present), yet a
-    // read of the firewall root is still missing ⇒ fetching cannot help. This
-    // is the real no-progress condition (build-spec §5 read cycle / bad module).
+    // read of the firewall root is still missing ⇒ fetching cannot help. This is
+    // the real no-progress condition (build-spec §5 read cycle / bad module).
+    let resolver =
+        MockResolver::new().with("firewall", owner_module("firewall", &[], compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![read_miss("firewall")])]);
     let fetcher = RecordingFetcher::new();
     let seed = vec![WorkingSetMember::seed("web"), loaded("firewall")];
 
-    let err = run_fixpoint(&inputs(seed, 1, None), &index, &eval, &fetcher)
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect_err("unsatisfiable");
     assert!(
         matches!(err, FixpointError::Unsatisfiable { ref provider, .. } if provider == "firewall"),
@@ -341,17 +419,13 @@ fn unsatisfiable_when_loaded_provider_still_missing() {
 
 #[test]
 fn bare_seed_provider_is_fetched() {
-    // A desired package that is ALSO a config provider but seeded BARE (no
-    // config module yet) must be fetchable: a read of its root drives the loop
-    // to fetch its config output, then converge. (Regression for the prior
-    // bug where bare seed names pre-populated the no-progress guard and wedged
-    // such a package to Unsatisfiable.)
-    let mut index = ProvidesIndex::empty();
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(1, 2)),
-    );
+    // A desired package that is ALSO a config provider but seeded BARE (no config
+    // module loaded yet) must be fetchable: a read of its root drives the loop to
+    // fetch its config output, then converge. (Regression for the prior bug where
+    // bare seed names pre-populated the no-progress guard and wedged such a
+    // package to Unsatisfiable.)
+    let resolver =
+        MockResolver::new().with("firewall", owner_module("firewall", &[], compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![
         EvalClass::Missing(vec![read_miss("firewall")]),
         EvalClass::Manifest("{\"schema\":\"aos.config-manifest/v1\"}".to_string()),
@@ -362,42 +436,92 @@ fn bare_seed_provider_is_fetched() {
         WorkingSetMember::seed("firewall"),
     ];
 
-    let out = run_fixpoint(&inputs(seed, 1, None), &index, &eval, &fetcher)
+    let out = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect("converges after fetching the bare provider's config module");
     assert_eq!(out.iterations, 1);
     assert_eq!(fetcher.fetched.borrow().as_slice(), &["firewall".to_string()]);
 }
 
 #[test]
-fn ambiguous_when_two_owners_of_one_root() {
-    let mut index = ProvidesIndex::empty();
-    // Two owners of the `firewall` root surviving the ABI filter: a
-    // registry-integrity violation surfaced as AmbiguousProvider, never a
-    // silent pick.
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall-a", "firewall", true, compat(1, 2)),
-    );
-    put(
-        &mut index,
-        "firewall.policy",
-        entry("firewall-b", "firewall", true, compat(1, 2)),
-    );
-    let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![read_miss("firewall")])]);
+fn two_owners_of_one_root_is_exclusivity_violation() {
+    // Two seeded packages own the `firewall` root: a per-system owned-root
+    // exclusivity violation caught while BUILDING SystemRoots, before any eval.
+    let resolver = MockResolver::new()
+        .with("firewall-a", owner_module("firewall", &[], compat(1, 2)))
+        .with("firewall-b", owner_module("firewall", &[], compat(1, 2)));
+    let eval = ScriptedEvaluator::new(vec![]);
     let fetcher = RecordingFetcher::new();
+    let seed = vec![
+        WorkingSetMember::seed("firewall-a"),
+        WorkingSetMember::seed("firewall-b"),
+    ];
 
-    let err = run_fixpoint(
-        &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
-        &eval,
-        &fetcher,
-    )
-    .expect_err("ambiguous");
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
+        .expect_err("exclusivity");
     assert!(
-        matches!(err, FixpointError::AmbiguousProvider { .. }),
+        matches!(err, FixpointError::AmbiguousProvider { ref root, .. } if root == "firewall"),
         "{err:?}"
     );
+    let msg = err.to_string();
+    assert!(msg.contains("firewall-a@1.0.0"), "{msg}");
+    assert!(msg.contains("firewall-b@1.0.0"), "{msg}");
+    assert!(msg.contains("owned roots are exclusive per system"), "{msg}");
+    // The evaluator was never driven.
+    assert!(eval.seen_sizes.borrow().is_empty());
+}
+
+#[test]
+fn owned_root_shadowing_a_package_name_is_terminal() {
+    // `web-extras` owns root `nginx`, but a package literally named `nginx` is
+    // also seeded: its private root would be silently shadowed ⇒ hard error.
+    let resolver = MockResolver::new()
+        .with("web-extras", owner_module("nginx", &[], compat(1, 2)))
+        .with("nginx", private_module(compat(1, 2)));
+    let eval = ScriptedEvaluator::new(vec![]);
+    let fetcher = RecordingFetcher::new();
+    let seed = vec![
+        WorkingSetMember::seed("web-extras"),
+        WorkingSetMember::seed("nginx"),
+    ];
+
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
+        .expect_err("shadowing");
+    assert!(
+        matches!(err, FixpointError::ShadowedRoot { ref root, .. } if root == "nginx"),
+        "{err:?}"
+    );
+    assert!(eval.seen_sizes.borrow().is_empty());
+}
+
+#[test]
+fn out_of_scope_contribution_is_terminal_at_resolve_time() {
+    // `nginx` owns root `nginx` allowing only `virtualHosts`; `web` contributes
+    // `nginx.upstreams`, outside the contributable set ⇒ F3-B resolve-time error.
+    let mut contributor = private_module(compat(1, 2));
+    contributor.contributes = vec![RootContribution {
+        root: "nginx".to_string(),
+        paths: vec!["upstreams".to_string()],
+    }];
+    let resolver = MockResolver::new()
+        .with("nginx", owner_module("nginx", &["virtualHosts"], compat(1, 2)))
+        .with("web", contributor);
+    let eval = ScriptedEvaluator::new(vec![]);
+    let fetcher = RecordingFetcher::new();
+    let seed = vec![
+        WorkingSetMember::seed("nginx"),
+        WorkingSetMember::seed("web"),
+    ];
+
+    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
+        .expect_err("out-of-scope contribution");
+    assert!(
+        matches!(
+            err,
+            FixpointError::Contributable { ref path, .. } if path == "upstreams"
+        ),
+        "{err:?}"
+    );
+    assert!(eval.seen_sizes.borrow().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -406,18 +530,13 @@ fn ambiguous_when_two_owners_of_one_root() {
 
 #[test]
 fn fetch_failure_is_terminal() {
-    let mut index = ProvidesIndex::empty();
-    put(
-        &mut index,
-        "firewall.zone",
-        entry("firewall", "firewall", true, compat(1, 2)),
-    );
+    let resolver = MockResolver::new().with("firewall", private_module(compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![write_miss("firewall.zone")])]);
     let fetcher = RecordingFetcher::failing();
 
     let err = run_fixpoint(
         &inputs(vec![WorkingSetMember::seed("web")], 1, None),
-        &index,
+        &resolver,
         &eval,
         &fetcher,
     )
@@ -430,7 +549,7 @@ fn fetch_failure_is_terminal() {
 
 #[test]
 fn eval_classes_map_to_terminal_errors() {
-    let index = ProvidesIndex::empty();
+    let resolver = MockResolver::new();
     let fetcher = RecordingFetcher::new();
     let seed = || vec![WorkingSetMember::seed("web")];
 
@@ -467,7 +586,7 @@ fn eval_classes_map_to_terminal_errors() {
 
     for (class, want) in cases {
         let eval = ScriptedEvaluator::new(vec![class.clone()]);
-        let err = run_fixpoint(&inputs(seed(), 1, None), &index, &eval, &fetcher)
+        let err = run_fixpoint(&inputs(seed(), 1, None), &resolver, &eval, &fetcher)
             .expect_err("terminal");
         assert!(want(&err), "class {class:?} -> {err:?}");
     }
@@ -479,24 +598,23 @@ fn eval_classes_map_to_terminal_errors() {
 
 #[test]
 fn non_convergence_hits_cap_and_dumps_trace() {
-    let mut index = ProvidesIndex::empty();
-    put(&mut index, "a.x", entry("prov-a", "a", true, compat(1, 2)));
-    put(&mut index, "b.x", entry("prov-b", "b", true, compat(1, 2)));
-    // Two distinct providers get added (iter 0, 1); at iter == cap (2) the loop
-    // bails before a third eval.
+    // Two seeded owners (`prov-a` owns `a`, `prov-b` owns `b`); each gets fetched
+    // once (iter 0, 1); at iter == cap (2) the loop bails before a third eval.
+    let resolver = MockResolver::new()
+        .with("prov-a", owner_module("a", &[], compat(1, 2)))
+        .with("prov-b", owner_module("b", &[], compat(1, 2)));
     let eval = ScriptedEvaluator::new(vec![
         EvalClass::Missing(vec![write_miss("a.x")]),
         EvalClass::Missing(vec![write_miss("b.x")]),
     ]);
     let fetcher = RecordingFetcher::new();
+    let seed = vec![
+        WorkingSetMember::seed("prov-a"),
+        WorkingSetMember::seed("prov-b"),
+    ];
 
-    let err = run_fixpoint(
-        &inputs(vec![WorkingSetMember::seed("seed")], 1, Some(2)),
-        &index,
-        &eval,
-        &fetcher,
-    )
-    .expect_err("non-convergence");
+    let err = run_fixpoint(&inputs(seed, 1, Some(2)), &resolver, &eval, &fetcher)
+        .expect_err("non-convergence");
 
     match err {
         FixpointError::NonConvergence {
@@ -516,8 +634,8 @@ fn non_convergence_hits_cap_and_dumps_trace() {
 
 #[test]
 fn derive_iter_cap_is_bounded_by_ceiling() {
-    let index = ProvidesIndex::empty();
-    assert_eq!(derive_iter_cap(&index), ITER_CAP_SLACK);
+    let empty = SystemRoots::default();
+    assert_eq!(derive_iter_cap(0, &empty), ITER_CAP_SLACK);
 }
 
 #[test]
@@ -533,7 +651,6 @@ fn host_nix_gate_enforced_by_default_fails_closed_with_no_anchors() {
     let cmd = EvalCommand {
         host_nix,
         base_lib: tmp.path().join("base-lib"),
-        index: None,
         desired: None,
         module_abi: 1,
         out: out.clone(),

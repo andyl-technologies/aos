@@ -507,9 +507,6 @@ pub enum PackageCommand {
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
-        /// The registry provides index (index/provides.json)
-        #[arg(long)]
-        index: Option<PathBuf>,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
         desired: Option<PathBuf>,
@@ -578,9 +575,6 @@ pub enum PackageCommand {
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
-        /// The registry provides index (index/provides.json)
-        #[arg(long)]
-        index: Option<PathBuf>,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
         desired: Option<PathBuf>,
@@ -2162,7 +2156,6 @@ pub async fn run(
     if let PackageCommand::Eval {
         host_nix,
         base_lib,
-        index,
         desired,
         module_abi,
         out,
@@ -2175,7 +2168,6 @@ pub async fn run(
         return config_eval::run_eval_command(&config_eval::EvalCommand {
             host_nix: host_nix.clone(),
             base_lib: base_lib.clone(),
-            index: index.clone(),
             desired: desired.clone(),
             module_abi: *module_abi,
             out: out.clone(),
@@ -2211,7 +2203,6 @@ pub async fn run(
         diff_against,
         base_label,
         base_lib,
-        index,
         desired,
         module_abi,
         eval_root,
@@ -2228,7 +2219,6 @@ pub async fn run(
             eval: config_eval::EvalCommand {
                 host_nix: from.clone(),
                 base_lib: base_lib.clone(),
-                index: index.clone(),
                 desired: desired.clone(),
                 module_abi: *module_abi,
                 out: candidate,

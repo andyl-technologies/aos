@@ -433,7 +433,7 @@ pub fn plan_config_gen_reactivation(
 /// pre-eval ABI gate still fires inside the fixpoint, so an incompatible config
 /// module is refused fail-closed and the old config-gen stays live.
 ///
-/// `index`, `desired`, `eval_root`, and `out` mirror
+/// `desired`, `eval_root`, and `out` mirror
 /// [`crate::config_eval::EvalCommand`].
 ///
 /// # Errors
@@ -443,7 +443,6 @@ pub fn plan_config_gen_reactivation(
 pub fn execute_cross_abi_reeval(
     inputs: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &std::path::Path,
-    index: Option<PathBuf>,
     desired: Option<PathBuf>,
     eval_root: PathBuf,
     out: PathBuf,
@@ -452,7 +451,6 @@ pub fn execute_cross_abi_reeval(
     crate::config_eval::reeval_cross_abi(
         inputs,
         running_base_lib,
-        index,
         desired,
         eval_root,
         out,
