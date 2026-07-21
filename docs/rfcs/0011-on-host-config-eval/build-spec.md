@@ -5,7 +5,7 @@ Decision-free implementation contracts for RFC-0011, written against the locked 
 
 ---
 
-# Data model — manifest, config output, registry index, module_abi
+# Data model — manifest, config output, system roots, module_abi
 
 Grounding complete. Here is the drop-in RFC markdown.
 
@@ -19,8 +19,10 @@ specifies, with no remaining choices, three artifacts:
 1. the **`config-manifest/v1`** eval output (`gen-N/manifest.json`);
 2. the second **`config`** package output and its `PackageMeta` metadata
    (`ConfigOutputMeta` + `ConfigModuleMeta`) and its feature gate;
-3. the registry **option-path → package inverted index** (`provides`) plus the
-   `module_abi_compat = { min, max }` declaration and its resolver gate.
+3. the per-package `ConfigModuleMeta` carried by name in `registry.toml`
+   (`owns_roots` / `provides_capabilities` / `module_abi_compat = { min, max }`),
+   the locally-derived **`SystemRoots`** structure it feeds, and their resolver
+   gate.
 
 All Rust types live in `crates/aos-package/src/types.rs` alongside the existing
 `PackageMeta` family and follow its conventions: `#[serde(deny_unknown_fields)]`
@@ -444,7 +446,7 @@ mirror `validate_expose_artifact_meta` (`types.rs:1472`).
 
 ---
 
-## (c) Inverted index, ABI compat, and the resolver gate
+## (c) System roots, ABI compat, and the resolver gate
 
 ### 3.1 Per-package config-module metadata
 
@@ -452,8 +454,10 @@ mirror `validate_expose_artifact_meta` (`types.rs:1472`).
 /// RFC-0011 config-module interface declared by a package.
 ///
 /// Carries the second `config` output, the declared option surface (the
-/// package's `provides`, computed by options-only eval at publish), the shared
-/// roots it owns or contributes to, and its base-lib ABI compatibility range.
+/// package's own `declares`, computed by options-only eval at publish), the
+/// shared roots it owns or contributes to, and its base-lib ABI compatibility
+/// range. This metadata is looked up **by name** from `registry.toml`; nothing
+/// registry-published aggregates it into a cross-package index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigModuleMeta {
@@ -461,9 +465,10 @@ pub struct ConfigModuleMeta {
     pub config_output: ConfigOutputMeta,
     /// Base-lib ABI range this module is compatible with (inclusive).
     pub module_abi_compat: ModuleAbiCompat,
-    /// Option paths this module *declares* (its `provides`), computed by an
-    /// options-only eval in isolation. Sorted, deduplicated. These become the
-    /// registry inverted-index keys for this package@version.
+    /// Option paths this module *declares*, computed by an options-only eval in
+    /// isolation. Sorted, deduplicated. Retained as per-package metadata for
+    /// publish-side lints and `aos show`; it is **not** aggregated into any
+    /// cross-package registry index.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declares: Vec<String>,
     /// Shared roots this module declares exclusive ownership of (e.g.
@@ -474,8 +479,9 @@ pub struct ConfigModuleMeta {
     /// owner-declared contributable sub-paths (F3-B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributes: Vec<RootContribution>,
-    /// Capability tokens this module *sets* (write-provider index entries),
-    /// e.g. `system.capabilities.dns-resolver`.
+    /// Capability tokens this module *sets*, e.g.
+    /// `system.capabilities.dns-resolver`. Contributed to the installed-set
+    /// capability map in `SystemRoots` at resolve time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides_capabilities: Vec<String>,
 }
@@ -503,7 +509,8 @@ pub struct OwnedRoot {
     pub interface_abi: u32,
     /// Owner-declared contributable sub-paths (relative to the root), e.g.
     /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
-    /// excluded. A non-owner write outside these is rejected at publish.
+    /// excluded. A non-owner write outside these is rejected at resolve time
+    /// against the installed owner's contributable surface in `SystemRoots`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributable: Vec<String>,
 }
@@ -524,93 +531,98 @@ pub struct RootContribution {
 analogue of the `SbatEntry` revocation floor (`types.rs:3016`): a monotonic
 integer band, gated pre-eval.
 
-### 3.2 Registry inverted index (`provides`)
+### 3.2 System roots (`SystemRoots`) — derived on-host, never published
 
-The registry publishes a single aggregated index, rebuilt on every publish, at
-the registry-repo path **`index/provides.json`**, served alongside
-`registry.toml`. It is the `option-path → package@version` map plus the data the
-resolver needs to gate without a second fetch.
+There is **no registry-published cross-package index.** Shared-root ownership is an
+attribute of the **system** (the composed image/toplevel plus the installed
+set), not of the registry. The resolver derives a `SystemRoots` structure at
+resolve time and consults it in place of any fetched index. It is computed
+locally, held in memory for the duration of a `switch`, and never serialized to
+a registry repo.
 
-```json
-{
-  "schema": "aos.provides-index/v1",
-  "options": {
-    "firewall.allowedTCPPorts": [
-      { "package": "firewall", "version": "1.4.0", "platform": "x86_64-linux",
-        "root": "firewall", "owner": true,
-        "module_abi_compat": { "min": 1, "max": 2 },
-        "config_output": "/nix/store/<hash>-firewall-config" }
-    ],
-    "nginx.virtualHosts": [
-      { "package": "nginx-full", "version": "1.27.3", "platform": "x86_64-linux",
-        "root": "nginx", "owner": true,
-        "module_abi_compat": { "min": 1, "max": 1 },
-        "config_output": "/nix/store/<hash>-nginx-full-config" }
-    ]
-  },
-  "capabilities": {
-    "system.capabilities.dns-resolver": [
-      { "package": "unbound", "version": "1.21.0", "platform": "x86_64-linux",
-        "module_abi_compat": { "min": 1, "max": 2 } }
-    ]
-  }
-}
-```
+`SystemRoots` maps each **shared** root (`firewall`, `dns`, `nginx`, …) to the
+single installed package that owns it, and each capability token to the
+installed packages that set it. It is built from exactly two local sources:
+
+1. the **base-lib / image manifest**'s bundled roots (the structural tree the
+   in-image module library ships, `manifest.inputs.base_lib`); and
+2. the **installed set**'s per-package `ConfigModuleMeta`, read by name from
+   `registry.toml`: each package's `owns_roots` (→ root owners) and
+   `provides_capabilities` (→ capability setters).
+
+Private roots (`{pkg}.*`) are **not** members of `SystemRoots`: their ownership
+is structural (root segment = package name) and is resolved by a registry
+by-name lookup, not by this map (§3.3, §4).
 
 ```rust
-/// Registry inverted index schema tag.
-pub const PROVIDES_INDEX_SCHEMA: &str = "aos.provides-index/v1";
-
-/// `option-path → providers` and `capability-token → setters` inverted index,
-/// served at `index/provides.json` in a registry repo.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProvidesIndex {
-    /// Always [`PROVIDES_INDEX_SCHEMA`].
-    pub schema: String,
-    /// Declared option path → the packages that declare it (their `provides`).
-    pub options: BTreeMap<String, Vec<IndexEntry>>,
-    /// Capability token → the packages that *set* it (write-provider index).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub capabilities: BTreeMap<String, Vec<CapabilityProvider>>,
+/// Locally-derived map of shared roots to their installed owner and of
+/// capability tokens to their installed setters, assembled at resolve time.
+///
+/// Built from the base-lib/image manifest's bundled roots and the installed
+/// set's [`ConfigModuleMeta`] (`owns_roots` / `provides_capabilities`). Held in
+/// memory for one `switch`; **never published to a registry, never fetched.**
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemRoots {
+    /// Shared root segment (`firewall`, `nginx`) → its single installed owner.
+    /// Two installed packages owning the same root is a hard error at build
+    /// time, citing both (owned-root exclusivity is per-system).
+    pub roots: BTreeMap<String, RootOwner>,
+    /// Capability token → the installed packages that *set* it (the union of
+    /// every installed package's `provides_capabilities`).
+    pub capabilities: BTreeMap<String, Vec<CapabilitySetter>>,
 }
 
-/// One provider of a declared option path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IndexEntry {
+/// The installed package that owns a shared root, with the ABI and contribution
+/// surface the resolver enforces against.
+///
+/// `module_abi_compat` and `config_output` are **pinned from the installed
+/// owner** at build time — never re-queried from the registry at selection — so
+/// the fixpoint fetches and ABI-gates exactly the config output the system
+/// owns, immune to a newer version appearing in the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootOwner {
+    /// Owning package name.
     pub package: String,
+    /// Owning package version.
     pub version: String,
+    /// Owning package target platform.
     pub platform: String,
-    /// Top-level root of the option path (`firewall.x` → `firewall`).
-    pub root: String,
-    /// Whether this package *owns* `root` (declarer) vs contributes to it.
-    pub owner: bool,
-    /// ABI band this provider is usable under; the resolver filters on it.
+    /// Independent interface ABI for this shared root (from `OwnedRoot`).
+    pub interface_abi: u32,
+    /// The owner's base-lib ABI band; selection is gated on it (§3.3 gate 1).
     pub module_abi_compat: ModuleAbiCompat,
-    /// `config` output to fetch when this provider is selected.
+    /// The owner's `config` output store path, fetched when the root is needed.
     pub config_output: String,
+    /// Owner-declared contributable sub-paths (relative to the root); a foreign
+    /// contributor's paths MUST be a subset of these (F3-B, checked at resolve).
+    pub contributable: Vec<String>,
 }
 
-/// One setter of a capability token.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapabilityProvider {
+/// One installed package that *sets* a capability token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilitySetter {
+    /// Setting package name.
     pub package: String,
+    /// Setting package version.
     pub version: String,
-    pub platform: String,
-    pub module_abi_compat: ModuleAbiCompat,
 }
 ```
 
-**Index construction (publish, mechanical).** For each published package
-version carrying `config_module`: add one `IndexEntry` under every path in
-`declares` (with `owner = owns_roots.contains(root)`), and one
-`CapabilityProvider` under every token in `provides_capabilities`. Lists within
-each key are sorted by `(package, version, platform)`. **Owned-root exclusivity**
-(`module-system.md`): at most one `owner: true` entry per `root` *per resolved
-set* is permitted; two packages declaring overlapping owned roots in the same
-release are a publish rejection, citing both.
+**Construction (resolve time, mechanical).** Seed `roots` from the base-lib
+manifest's bundled roots. Then, for each package in the installed set carrying
+`config_module`: for every `OwnedRoot` in `owns_roots`, insert
+`root → RootOwner` (all fields pinned from the installed owner) — a second
+installed owner of an already-present root is a hard error citing both packages
+(**owned-root exclusivity, per-system**, `module-system.md`). For every token in
+`provides_capabilities`, append a `CapabilitySetter` to `capabilities[token]`. The
+registry never adjudicates ownership: two registry packages may each claim
+`firewall`, but a single system cannot install both, and it is the install
+decision — not a publish-time claim — that resolves the choice.
+
+**Shadowing guard.** A shared root in `SystemRoots.roots` that collides with the
+NAME of a different installed package is a hard error: `SystemRoots` is consulted
+before the structural (`root = package name`) fallback, so a package name must
+never be silently shadowed by another package's owned root.
 
 ### 3.3 Resolver gate (normative algorithm)
 
@@ -619,14 +631,20 @@ manifest / `os-release` — never from the network. Two gates, both **pre-eval,
 fail-closed**, the old config-gen stays live on failure (mirrors
 `enforce_totality`, `sysroot.rs:192`):
 
-1. **Index lookup → provider selection.** On a missing-option signal
-   (strict throw, missing-attr, or index miss; `module-system.md` §Requires),
-   the resolver looks the path up in `ProvidesIndex.options[path]`, filters to
-   entries with `module_abi_compat.min <= K <= module_abi_compat.max`, applies
-   owned-root exclusivity + variant `Conflicts`, fetches the surviving
-   provider's `config_output`, and re-evals to a fixpoint. An empty filtered set
-   is a hard error: `"no provider for option '<path>' is compatible with image
-   module_abi <K>"`.
+1. **Root-based dispatch → provider selection.** On a missing-option signal
+   (strict throw or missing-attr; `module-system.md` §Requires), the resolver
+   dispatches on the option's **root segment** (§4):
+   - if the root is present in `SystemRoots.roots`, the owner is the installed
+     package named there — no fetch. A shared root with **no** installed owner
+     is a terminal, legible error (`"no installed package owns root
+     '<root>'"`); the resolver never auto-fetches a shared-root owner from the
+     registry.
+   - otherwise the root is treated **structurally** (root segment = package
+     name): the resolver performs a registry **by-name** lookup of that
+     package's `ConfigModuleMeta`, gates it on
+     `module_abi_compat.min <= K <= module_abi_compat.max` (ABI band excludes
+     `K` ⇒ `AbiMismatch`; name absent ⇒ `NoProvider`), fetches its
+     `config_output`, and re-evals to a fixpoint.
 
 2. **ABI compat gate (per module in the resolved set).** Before the manifest is
    forced, for every config module `M`:
@@ -634,11 +652,15 @@ fail-closed**, the old config-gen stays live on failure (mirrors
    refuse `M` with `"config module '<pkg>@<ver>' requires module_abi in
    [<min>,<max>], running image is <K>"` and abort before producing a manifest.
 
-3. **Owned-root interface ABI** is checked independently of the base `K`: a
-   contributor's `RootContribution.root` must match a present owner whose
-   `OwnedRoot.interface_abi` the contributor was built against, and every
-   contributed path must lie within that owner's `contributable` set — otherwise
-   reject (conscription / foreign-write guard, F3-B).
+3. **Owned-root interface ABI + contributable surface** is checked independently
+   of the base `K`, entirely at resolve time against `SystemRoots`: for each
+   installed contributor, its `RootContribution.root` must name a root whose
+   `RootOwner` is installed, the contributor must have been built against that
+   owner's `interface_abi`, and every contributed path must lie within that
+   owner's `contributable` set (`RootContribution.paths ⊆ RootOwner.contributable`)
+   — otherwise reject (conscription / foreign-write guard, F3-B). Publish no
+   longer performs this check against any global index; it is a per-system,
+   resolve-time assertion.
 
 The produced manifest records `module_abi = K` (→ `module_abi_pinned`), which the
 rollback pin (`generations.md` §pinning rule) later checks: a config-gen
@@ -683,9 +705,11 @@ contract below is the seam both implementations sit behind.
   generation (`manifest.inputs.base_lib`).
 - `seed_set: Vec<PackageName>` — packages explicitly installed
   (`desired.toml`), the starting working set.
-- `index: OptionIndex` — the registry-wide inverted index
-  `option-path → package@version`, derived by options-only eval at publish
-  (`module-system.md` §"Provides — derived, not declared"). Read-only here.
+- `system_roots: SystemRoots` — the locally-derived shared-root → installed-owner
+  and capability-token → installed-setter map (§3.2), built at resolve time from
+  the base-lib manifest's bundled roots and the installed set's `owns_roots` /
+  `provides_capabilities` (`module-system.md` §"Provides — derived, not
+  declared"). Read-only here; never fetched.
 - `module_abi: u32` — the image's base-lib ABI (§6).
 
 ### Mutable state (one `FixpointState` per `switch`)
@@ -708,7 +732,7 @@ non-terminal step strictly grows `working_set`.
 fn fixpoint(inputs) -> Result<Manifest, FixpointError>:
     state.working_set = inputs.seed_set
     # Pre-close with the publish-time AST scan so the loop usually adds 0..1.
-    state.working_set |= ast_requires_closure(seed_set, index)   # §4, over-approximate
+    state.working_set |= ast_requires_closure(seed_set)          # §4, over-approximate
 
     loop:
         if state.iter >= ITER_CAP:                  # §5
@@ -722,7 +746,7 @@ fn fixpoint(inputs) -> Result<Manifest, FixpointError>:
                 return Ok(manifest)
 
             MissingOption{ path, kind, read_by }:   # write-to-undeclared OR read-of-absent
-                provider = index.lookup(path)       # §4
+                provider = resolve_root(path, system_roots)   # §4 root-based dispatch
                   .ok_or(Err(NoProvider{ path, read_by }))?     # terminal, distinct exit
                 if provider in state.working_set:
                     # already present yet still missing ⇒ not a fetch problem
@@ -778,7 +802,9 @@ Because `_module.strict = true` on this evaluation, undeclared options are not a
 Detection: the header line is the sentinel; each `- '<path>' (defined in
 <file>)` line yields one `(path, read_by=file)`. **All** listed paths are
 emitted (a single eval can name several); the driver picks the first whose
-`index.lookup` resolves and fetches it, but records all for the trace.
+root-based dispatch (§4) resolves and fetches it, but records all for the trace.
+The full leaf path is retained for error text; dispatch keys only on its root
+segment.
 
 ### Case B — read of an absent root (raw missing-attr, NOT `:744`)
 
@@ -800,18 +826,18 @@ the string alone. It:
 
 1. extracts the missing root segment (`firewall`) and the `at <file>:line`
    locus from the trace;
-2. queries `index` for **any** option-path whose first segment equals the
-   missing root (`index.providers_for_root("firewall")`) — the publish-time
-   `option-path → package` index knows `firewall.*` belongs to a package not in
-   the set;
-3. if exactly one owner (shared roots are exclusive,
-   `module-system.md` §"How who declares it is answered"), fetch it; if the
-   root is genuinely unknown to the registry, this is `NoProvider`.
+2. dispatches on that root segment (§4): if `firewall` is a shared root in
+   `SystemRoots.roots` with an installed owner, that owner is selected (no
+   fetch); a shared root with no installed owner is the terminal `"no installed
+   package owns root '<root>'"` error;
+3. otherwise the root is structural (root = package name): a registry by-name
+   lookup of that package fetches it; if the name is genuinely unknown to the
+   registry, this is `NoProvider`.
 
-The distinction A-vs-B is **load-bearing**: A gives the full leaf path so
-`index.lookup(path)` is exact; B gives only the root so the lookup is
-`providers_for_root`. Conflating them (treating B's `firewall` as a full
-option path) produces an index miss and a false `NoProvider`.
+Because both cases collapse to **root-based dispatch**, the A-vs-B distinction is
+no longer load-bearing for *lookup* (A's full path and B's bare root key on the
+same segment); it remains load-bearing for **error text** — A can name the full
+leaf path, B only the root. The detectors themselves are unchanged.
 
 ### The exact P1 parse patterns (and their fragility)
 
@@ -876,21 +902,40 @@ exit cause (`systemctl show --property=Result`, or the
 from stderr. **Per-eval** budget; the resolver separately bounds **total**
 iterations (§5). A kill is a clean no-op (eval precedes the staged swap).
 
-## 4. Index lookup and provider fetch
+## 4. Root-based dispatch and provider fetch
 
-### Index
+### Dispatch — `resolve_root`
 
-`OptionIndex` is the registry-wide `option-path → package@version` inverted
-index, computed by **options-only evaluation** at publish (does not force
-`config`; `lib/modules.nix:924-930`, `lib/testing/eval.nix:20`). Two query
-shapes, one per missing-option case:
+Both missing-option cases collapse to one operation keyed on the option's
+**root segment**. There is no registry-wide index to query; the resolver
+consults `SystemRoots` (derived on-host, §3.2) and then the structural
+package-name convention:
 
-- `lookup(full_path) -> Option<Package>` — exact, for Case A.
-- `providers_for_root(segment) -> Set<Package>` — first-segment, for Case B.
-  Shared roots are **exclusive** (`module-system.md`), so a well-formed
-  registry returns 0 or 1; >1 is a registry-integrity error (two declarers of
-  one owned root, rejected at publish — surface as `AmbiguousProvider`, do not
-  silently pick).
+```text
+fn resolve_root(path, system_roots) -> Option<Provider>:
+    root = first_segment(path)
+    if let Some(owner) = system_roots.roots.get(root):   # shared root
+        return Some(owner)                               # installed; never fetched
+        # (no installed owner ⇒ the caller emits the terminal
+        #  "no installed package owns root '<root>'" error, not NoProvider)
+    else:                                                # structural: root == package name
+        return registry_lookup_by_name(root)             # ABI-gated (§3.3); None ⇒ NoProvider
+```
+
+- **Shared root** (`root ∈ SystemRoots.roots`) → the single installed owner
+  named there. Owned-root exclusivity is enforced **per-system** when
+  `SystemRoots` is built (§3.2), so this is always 0-or-1 by construction; a
+  shared root with no installed owner is the terminal `"no installed package
+  owns root '<root>'"` error — never an auto-fetch.
+- **Structural root** (root segment = package name) → a registry **by-name**
+  lookup of that package's `ConfigModuleMeta`, ABI-gated pre-fetch (§3.3). The
+  `declares` surface is still computed by **options-only evaluation** at publish
+  (does not force `config`; `lib/modules.nix:924-930`, `lib/testing/eval.nix:20`)
+  but is retained as per-package metadata, not aggregated registry-wide.
+
+`SystemRoots` is consulted **before** the structural fallback, so an installed
+package's owned root always shadows the bare-name convention (shadowing guard,
+§3.2).
 
 ### Fetch — config output first
 
@@ -936,9 +981,11 @@ Two distinct cyclic hazards, two guards:
    (`provider ∈ working_set` already at the lookup), that is `Unsatisfiable` —
    fetching cannot help, fail immediately rather than spin.
 
-**Iteration cap.** `ITER_CAP` bounds total re-evals (recommend `ITER_CAP =
-|registry providers reachable from seed| + 8`, with an absolute ceiling, e.g.
-64, so a pathological registry cannot make the loop unbounded). Because
+**Iteration cap.** `ITER_CAP` bounds total re-evals. It is derived from the
+size of the **working/installed set**, not from any registry index (there is
+none): recommend `ITER_CAP = |working_set closure over structural + shared-root
+providers| + 8`, with an absolute ceiling (e.g. 64) so a pathological seed
+cannot make the loop unbounded. Because
 `working_set` is append-only over a finite package universe, the loop is
 *guaranteed* to terminate at or before the cap even without cycle detection;
 the cap exists to convert "slow/divergent" into a **legible dump** rather than
@@ -1016,8 +1063,9 @@ boundary:
   structured engine results, not OOM-kill inference.
 
 The seam is exactly `eval(working_set, host_nix, base_lib) → Result<Manifest,
-EvalClass>`. The resolver, the index, the fetch order (§4), the `module_abi`
-gate (§6), and the manifest contract are **identical** on both evaluators;
+EvalClass>`. The resolver, the `SystemRoots` derivation and root dispatch (§4),
+the fetch order (§4), the `module_abi` gate (§6), and the manifest contract are
+**identical** on both evaluators;
 swapping P1↔P2 changes only how `EvalClass` is produced. None of this touches
 the registry format, the module contract, or the generations
 (`architecture.md` §"P2").

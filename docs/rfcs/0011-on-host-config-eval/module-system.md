@@ -5,7 +5,7 @@ dependency graph is composed by inference (no hand-authored TOML edges), and the
 eval-semantics policy that must be defined rather than left emergent. Line
 citations are to `lib/modules.nix`, `lib/types.nix`, and `lib/default.nix`.
 
-## Namespacing: per-package roots + privileged shared roots
+## Namespacing: per-package roots + owned shared roots
 
 Options live in a two-tier namespace:
 
@@ -18,46 +18,54 @@ Options live in a two-tier namespace:
   `lib/modules/systemd/types.nix:71-91`).
 
 - **Shared / extension roots — `firewall.*`, `dns.*`, `nginx.*`.** Neutral
-  options that many packages write and read. Each is declared by exactly one
-  **owner**. An owner is a **system extension**: it declares the interface
-  (option schema + merge semantics); other packages write into it to compose;
-  consumers read it. Ownership of a shared root is exclusive and registered.
+  options that many packages write and read. Each is owned by exactly one
+  **installed** package. An owner is a **system extension**: it declares the
+  interface (option schema + merge semantics); other packages write into it to
+  compose; consumers read it. Ownership of a shared root is exclusive
+  **per-system** — an attribute of the composed image plus the installed set,
+  never adjudicated by the registry.
 
 "The system" is not a separate category: the base lib is simply the subset of
 extensions that ships **in the image** and is **implicitly trusted**. So a
 shared root varies on two axes — delivery (image-bundled vs registry-fetched)
-and trust (implicit vs key-gated). `systemd.*` (base lib, image-bundled) and
-`firewall.*` (a registry extension, key-gated) are the same kind of thing.
+and trust (implicit vs operator install decision). `systemd.*` (base lib,
+image-bundled) and `firewall.*` (a registry extension the operator installs) are
+the same kind of thing.
 
 **The principled line for what must be base vs fetched:** does the toplevel
 renderer/activation itself consume the option? `systemd.*`, `environment.etc.*`,
 `users.*` — yes, the renderer cannot produce units or `/etc` without them, so
 they are structural-core and image-bundled. `firewall.*`, `dns.*` — consumed
-only by other packages, so they can be key-gated fetched extensions that version
-their interface independently. This keeps the ABI-stable, image-bound surface
+only by other packages, so they can be operator-installed fetched extensions that
+version their interface independently. This keeps the ABI-stable, image-bound surface
 minimal (see [`generations.md`](generations.md) for `module_abi`).
 
 ### How "who declares it" is answered
 
 | Root kind | Lookup | Mechanism |
 |-----------|--------|-----------|
-| `{pkg}.*` (private) | the package named in the root | **structural** — root = package name, no index |
-| `firewall.*` (shared) | the registered exclusive owner | **root-ownership registry** (`root → owner@version`) |
-| `system.capabilities.X` (token) | anyone who *sets* it | **write-provider index** (many setters) |
+| `{pkg}.*` (private) | the package named in the root | **structural** — root = package name, no index; missing-option lookup is a registry by-name metadata lookup |
+| `firewall.*` (shared) | the installed owner | **system roots map** — locally derived from the installed set's `owns_roots` (`root → installed owner`) |
+| `system.capabilities.X` (token) | anyone who *sets* it | **installed-set write-provider map** — union of installed `provides_capabilities` |
 
-Exclusivity is enforced at publish/resolve: a package declaring `firewall.*` is
-rejected if another package already owns that root, unless it is a successor
-version (or a registered variant — see [Variants](#variants-and-alternatives)).
-Declaring a shared root that others write into is privileged: only packages
-signed by a trusted system-extension key (or operator-allowlisted) may claim
-one, and each shared root carries its own `module_abi` so interfaces evolve
-independently.
+Exclusivity is enforced **per-system, at resolve time** (and optionally early at
+install): two installed packages owning the same root is a hard error citing
+both. The registry never adjudicates ownership — two registry packages may each
+claim `firewall`; a system simply cannot install both. There is no publish-time
+"privileged claim": trust moves to the **operator's install decision** (and
+install-time key policy), not a system-extension key that gates a shared root at
+publish. Each shared root still carries its own `module_abi` so interfaces evolve
+independently. A read/write against a shared root with **no installed owner** is
+a terminal, legible error (`"no installed package owns root 'firewall'"`); the
+operator installs an owner — the resolver never auto-fetches one. See
+[Variants](#variants-and-alternatives) for successor/variant handling.
 
 ## Dependency inference — no hand-authored TOML edges
 
 The dependency graph is a function of `options` declarations × `config`
-reads/writes across the resolved set, plus a registry-wide inverted index. The
-hand-maintained `expose.requires` package-name edge list is **removed**.
+reads/writes across the resolved set, dispatched through the locally-derived
+system roots map and structural package-name convention. The hand-maintained
+`expose.requires` package-name edge list is **removed**.
 
 ### Provides — derived, not declared
 
@@ -66,9 +74,10 @@ The options a module **declares** are its `provides`. They are extracted by an
 default, isDefined, definitions}` do not force the merge; only `.value` does
 (`lib/modules.nix:924-930`, real precedent at `lib/testing/eval.nix:20`). At
 publish, each package's `config` module is options-evaluated in isolation
-(base lib injected) to derive its declared option paths, stored registry-wide as
-the inverted index `option-path → package@version`. This is mechanical and
-trustworthy — computed, not claimed.
+(base lib injected) to derive its declared option paths, retained as
+**per-package metadata** (`ConfigModuleMeta.declares`, looked up by name from
+`registry.toml`). It is **not** aggregated into any cross-package registry-wide
+structure. This is mechanical and trustworthy — computed, not claimed.
 
 ### Requires — discovered, never hand-declared
 
@@ -88,16 +97,19 @@ expressions behind `mkIf`). Two mechanical discovery paths, both edge-free:
    - **Read of an absent root** (`{pkg}` reads `config.firewall.forwardPolicy`,
      firewall absent) → this surfaces as a raw `attribute 'firewall' missing`,
      *not* `:744` (which fires only for a *declared* option lacking a value — the
-     provider is already present). The resolver detects it by matching the read
-     path against the registry **option-path → package index** (so it knows
-     `firewall.*` is provided by a package not yet in the set) rather than relying
-     on a single throw string.
+     provider is already present). The resolver detects it from the naked
+     attribute error and dispatches on the **root segment** (`firewall`) rather
+     than relying on a single full-path throw string.
 
-   In both cases the resolver looks the path up in the inverted index, fetches the
-   provider, and re-evals — to a fixpoint:
+   In both cases the resolver dispatches on the option's **root segment**: a
+   shared root resolves to its installed owner via the system roots map (or is
+   the terminal "no installed package owns root" error); otherwise the root is
+   structural (root = package name) and a registry **by-name** lookup fetches
+   that package. It then re-evals — to a fixpoint:
 
    ```text
-   eval → (strict throw | missing-attr | index miss) names path X → index[X] → fetch provider → re-eval → …
+   eval → (strict throw | missing-attr) names root X →
+     SystemRoots[X] ? installed owner : registry-by-name(X) → fetch provider → re-eval → …
    ```
 
    Parsing human-readable throw strings is an acknowledged **P1 fragility** (not a
@@ -120,7 +132,12 @@ semantically. This is the one residual signal, expressed without a TOML edge as
 either:
 
 - a **capability token** a provider sets (`system.capabilities.dns-resolver =
-  true`), which the resolver can auto-close via the write-provider index; or
+  true`), which the resolver satisfies from the **installed-set write-provider
+  map** (the union of installed packages' `provides_capabilities`). An unmet
+  token is a **terminal resolve assertion** — the resolver never auto-fetches a
+  setter; the operator installs one. (A registry hub may *suggest* candidates —
+  "install one of: …" — but that is an optional, non-load-bearing search
+  facility, not part of resolution.) Or
 - an **in-module assertion** (`assertions = [{ assertion = anyResolverEnabled;
   … }]`), which fails the generation but cannot fetch a provider.
 
@@ -187,11 +204,13 @@ eval is a pure function of `(modules + host.nix data)`.
 
 ### Conflicts on shared roots — loud, not silent
 
-- **Multiple declarers of one owned root → rejected at publish.** The engine
-  does not merge declarations — `optionMap` is `acc // {key = decl}`
+- **Two installed owners of one shared root → hard error, per-system.** The
+  engine does not merge declarations — `optionMap` is `acc // {key = decl}`
   (`lib/modules.nix:657-664`), so a second declarer silently *shadows* the
-  first. The owner registry rejects two packages declaring overlapping owned
-  roots, citing both sources.
+  first. Building `SystemRoots` rejects two **installed** packages owning the
+  same root, citing both sources. The registry never adjudicates this: two
+  registry packages may both claim a root, but a single system cannot install
+  both (enforced at resolve, optionally early at install).
 - **List contributions merge** by concatenation + `mkBefore`/`mkAfter`
   (`lib/types.nix:349-393`) — no conflict by construction. (`firewall.allowedTCP
   += [443]` from any package.)
@@ -224,9 +243,12 @@ configuration:
 - **A package may write/enable only within roots it owns, or within the
   owner-declared *contributable sub-paths* of a shared root.** A write outside
   those (a foreign root, or an owner-only sub-path like `enable`) is rejected at
-  publish, detected from the **resolver-assigned provenance** (authenticated
-  package identity, *not* module `_file` — see precedence above) + the
-  owner/provider registry's contributable-surface declaration.
+  **resolve time**, detected from the **resolver-assigned provenance**
+  (authenticated package identity, *not* module `_file` — see precedence above)
+  checked against the installed owner's contributable surface in `SystemRoots`
+  (`RootContribution.paths ⊆ RootOwner.contributable`). Publish-side lints may
+  still check a package's *own* metadata, but the foreign-write/conscription
+  check is per-system and no longer runs against a global index.
 - **Foreign top-level service enable is forbidden.** `redis-exporter` cannot set
   `redis.enable`. It declares its dependency as a **resolve-time assertion**
   ("`redis-exporter` requires `redis.enable = true`; set it in `host.nix`"),

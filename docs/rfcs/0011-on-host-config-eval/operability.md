@@ -80,8 +80,11 @@ the last throw line (the one with file:option) as the summary, keeping the full
 trace at `--verbose` (the existing `Printer` stderr/stdout convention). The
 resolve↔eval fixpoint carries a causal chain so its terminal states are legible:
 
-- **No provider:** `unresolved: 'firewall.forwardPolicy' read by web but no
-  installed/registry package provides it` (distinct exit code).
+- **No provider / no owner:** for a shared root with no installed owner,
+  `no installed package owns root 'firewall' (read by web)`; for a structural
+  root, `unresolved: 'foo.bar' read by web but no registry package named 'foo'`
+  (distinct exit codes). Shared-root owners are never auto-fetched — the operator
+  installs one.
 - **Conflict:** the readonly-conflict throw already lists every def with its
   `file` — the `'conflict … between web and host.nix'` message, for free.
 - **Non-convergence / cycle:** cap fixpoint iterations; on exceeding, dump the
