@@ -40,6 +40,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = config.aos.config.evalAtBoot.enable;
+        message = "aos.config.unitGraph.enable requires aos.config.evalAtBoot.enable so the unit graph has an authenticated manifest producer.";
+      }
+    ];
+
     systemd.services = {
       # ---- aos-pkg-fetch@.service (template) -------------------------------
       # Network-only; carries NO config edges (downloads are order-independent,

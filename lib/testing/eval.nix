@@ -26,6 +26,31 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
+  # RFC-0011's transport and graph stages are consumers of aos-eval output.
+  # Reject partial configurations that fetch untrusted host input without an
+  # authenticator/evaluator, or start a unit graph without a manifest producer.
+  metadataWithoutEvalSystem = mkSystem [
+    ../../systems/server.nix
+    {aos.provisioning.metadataAgent.enable = true;}
+  ];
+  metadataRequiresEval = let
+    forced = builtins.tryEval (metadataWithoutEvalSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.provisioning.metadataAgent.enable must require aos.config.evalAtBoot.enable"
+    else "ok";
+
+  unitGraphWithoutEvalSystem = mkSystem [
+    ../../systems/server.nix
+    {aos.config.unitGraph.enable = true;}
+  ];
+  unitGraphRequiresEval = let
+    forced = builtins.tryEval (unitGraphWithoutEvalSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.config.unitGraph.enable must require aos.config.evalAtBoot.enable"
+    else "ok";
+
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------
   # A registry trust anchor produces the expected /etc contents, and
   # malformed trust keys fail evaluation.
@@ -462,6 +487,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
+        echo "RFC-0011 dependencies: metadata (${metadataRequiresEval}), unit graph (${unitGraphRequiresEval})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
