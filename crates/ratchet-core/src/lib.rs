@@ -7,6 +7,10 @@
 //! identifiers into de Bruijn-style variable accesses and records the frame side
 //! tables that later lowering, interpretation, and serialization consume.
 //!
+//! The [`bytecode`] module compiles that lowered IR into the verified compact
+//! artifact used by the production baseline tier. It owns no runtime values or
+//! dialect behavior; executors consume the artifact from higher layers.
+//!
 //! The `builtins` submodule owns the builtin *metadata* layer — the declaration
 //! inventory, name lookup, direct-lowering classification, and the abstract
 //! [`builtins::BuiltinExecutor`] adapter trait. Lowering and scope resolution
@@ -21,6 +25,7 @@
 pub use aos_nix_syntax as syntax;
 
 pub mod analysis;
+pub mod bytecode;
 pub mod builtins;
 pub mod ir;
 pub mod runtime_abi;
@@ -48,6 +53,10 @@ pub use analysis::{
     frame_local_single_entry_thunk_downgrade, primop_argument_escape_signature,
     primop_escape_signature, scalar_replacement_plan,
     worker_wrapper_plan,
+};
+pub use bytecode::{
+    BYTECODE_COMPILER_VERSION, BytecodeCompileError, BytecodeEntry, BytecodeInstruction,
+    BytecodeModule, BytecodePc, BytecodeRegister, BytecodeVerifyError,
 };
 pub use ir::{
     BindingLowering, CapturePlan, Cardinality, Effect, EffectClass, Escape, ExprFacts,

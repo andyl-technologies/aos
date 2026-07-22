@@ -127,6 +127,16 @@ accounting demonstrating physical sharing (PSS per child).
 
 ## 3. A threaded-code baseline tier for the sub-promotion-threshold tail
 
+**Implementation decision (2026-07-22).** The post-diet Linux instruction
+budget opens this gate and promotes bytecode from a measured candidate to an
+active production-baseline campaign. The system toplevel executes essentially
+the same function-call count as C++ Nix (within 0.4%) but retires **4.56x** the
+instructions per call at similar IPC; the file-free `lambda-interp` workload
+pays the same per-operation tax, while the remaining tree-walk diet has only a
+~3x optimistic floor. The staged format, safety, parity, memory, and rollout
+contract is recorded in
+[the threaded-bytecode baseline plan](design-notes/threaded-bytecode-baseline-plan.md).
+
 **Technique.** Compile IR once into a compact register bytecode
 executed by a computed-goto (threaded) dispatch loop with
 interpreter-level inline caches and fused superinstructions
@@ -159,9 +169,13 @@ alongside (or instead of) the lowered IR. Superinstruction selection
 comes from the existing dispatched-primop histogram evidence (e.g.
 `stringLength`-class dominance), not intuition.
 
-**Expected magnitude.** ~10–15% of end-to-end eval if the tail's 29%
-body-time share speeds 1.5–2x; more once other overheads shrink and
-interpretation re-dominates.
+**Expected magnitude.** The original tail-only estimate was ~10-15% of
+end-to-end eval. The later instruction census makes the larger opportunity
+explicit: the tree-walk call/force/resolve loop is the uniform residual, so a
+production bytecode baseline can attack the full 4.56x per-call instruction
+gap. The admission target is at least 1.5x fewer retired instructions on the
+lambda/apply spine before broadening coverage, followed by system-toplevel
+parity with C++ while retaining the current memory advantage.
 
 **Gate.** Byte-parity x corpus with the bytecode tier as producer and
 the tree walk in CHECK mode; per-dispatch microbenchmarks; the
@@ -356,6 +370,6 @@ are taken up (numbers assigned there):
 |-----------|-----------------|--------------------|
 | Heap snapshot boundary (§1) | What constitutes "the prelude" snapshot point; address-free image via compressed indices vs rebase step | Share of cold eval spent inside the snapshot boundary |
 | Zygote fork safety (§2) | Quiesce-workers-then-fork vs single-threaded template process | Fork latency + PSS sharing under concurrent evals |
-| Bytecode baseline scope (§3) | Replace tree walk as producer vs sit beside it as tier 0.5 | Tail (sub-promotion-threshold) share of body time after other sections land |
+| Bytecode baseline scope (§3) | **Decided:** production baseline below Cranelift; tree walk retained unchanged as oracle/fallback; staged BC-0 through BC-5 | Retired instructions/call + wall + RSS, then full closure byte parity in CHECK mode |
 | VFS manifest staleness contract (§4) | Snapshot-per-eval vs watcher-maintained; mid-eval mutation stance | Stat-cluster share of wall; staleness CHECK hit rate |
 | Trace prewarming aggressiveness (§8) | Pre-force depth; purity classification source | Mis-speculation rate vs idle-worker availability |
