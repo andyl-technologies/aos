@@ -40,7 +40,6 @@
     target = {
       system = systems.server-measured-boot;
       bootMode = "image";
-      provisioning = "newpath";
       imageDiskMiB = 16384;
       tpm = true;
       packages = ["aos-test-agent"];

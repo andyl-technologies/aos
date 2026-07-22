@@ -348,7 +348,7 @@ in {
       description = "Seed baked AOS package profile";
       wantedBy = ["multi-user.target"];
       before = [
-        "aos-install-packages.service"
+        "aos-install-baked-packages.service"
         "aos-preset.service"
         "multi-user.target"
       ];

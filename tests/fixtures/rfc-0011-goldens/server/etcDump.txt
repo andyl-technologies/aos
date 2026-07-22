@@ -59,7 +59,7 @@
 /systemd/system 4096 40755 1 0 0 0 1.0 - - -
 /systemd/system/aos-attest.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-attest.service/aos-attest.service - -
 /systemd/system/aos-ebpf-lsm-policies.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-ebpf-lsm-policies.service/aos-ebpf-lsm-policies.service - -
-/systemd/system/aos-install-packages.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-install-packages.service/aos-install-packages.service - -
+/systemd/system/aos-install-baked-packages.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-install-baked-packages.service/aos-install-baked-packages.service - -
 /systemd/system/aos-nix-db.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-nix-db.service/aos-nix-db.service - -
 /systemd/system/aos-preset.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-preset.service/aos-preset.service - -
 /systemd/system/aos-sysctl-late-apply.service 100 120777 1 0 0 0 1.0 /nix/store/<HASH>-unit-aos-sysctl-late-apply.service/aos-sysctl-late-apply.service - -
@@ -76,7 +76,7 @@
 /systemd/system/messagebus.service 100 120777 1 0 0 0 1.0 dbus.service - -
 /systemd/system/multi-user.target.wants 4096 40755 1 0 0 0 1.0 - - -
 /systemd/system/multi-user.target.wants/aos-ebpf-lsm-policies.service 100 120777 1 0 0 0 1.0 ../aos-ebpf-lsm-policies.service - -
-/systemd/system/multi-user.target.wants/aos-install-packages.service 100 120777 1 0 0 0 1.0 ../aos-install-packages.service - -
+/systemd/system/multi-user.target.wants/aos-install-baked-packages.service 100 120777 1 0 0 0 1.0 ../aos-install-baked-packages.service - -
 /systemd/system/multi-user.target.wants/aos-nix-db.service 100 120777 1 0 0 0 1.0 ../aos-nix-db.service - -
 /systemd/system/multi-user.target.wants/aos-preset.service 100 120777 1 0 0 0 1.0 ../aos-preset.service - -
 /systemd/system/multi-user.target.wants/aos-sysctl-late-apply.service 100 120777 1 0 0 0 1.0 ../aos-sysctl-late-apply.service - -

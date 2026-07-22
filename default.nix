@@ -52,10 +52,8 @@
   # Auto-discovered module list.
   modules = import ./modules;
 
-  # RFC-0011 stage-2: assemble the in-image, eval-only base library for a
-  # system variant. Lazy — only forced (and built) when a system actually sets
-  # `aos.config.evalAtBoot.enable = true`, so it adds nothing to every other
-  # system's closure. See `lib/build/base-lib.nix`.
+  # RFC-0011 stage-2: assemble the in-image, eval-only base library for every
+  # system. See `lib/build/base-lib.nix`.
   mkBaseLib = import ./lib/build/base-lib.nix {inherit lib pkgs;};
 
   # Build a system from a system definition module (or list of modules).
@@ -75,6 +73,10 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    systemName =
+      if builtins.isAttrs args && args ? systemName
+      then args.systemName
+      else "system";
     # RFC-0011 CS5 seam: the on-host resolver supplies the verified `host.nix`
     # store path here as an operator-provenance module, so its bare defs are
     # lifted to the reserved priority-75 band (see `lib/modules.nix`
@@ -84,9 +86,17 @@
       if builtins.isAttrs args && args ? operatorModules
       then args.operatorModules
       else [];
+    systemModules = builtins.filter builtins.isPath moduleList;
+    baseLib = mkBaseLib {
+      baseModules = modules;
+      inherit systemModules systemName;
+    };
   in
     lib.evalModules {
-      modules = modules ++ moduleList;
+      modules =
+        modules
+        ++ moduleList
+        ++ [{aos.config.evalAtBoot.baseLib = "${baseLib}";}];
       inherit pkgs lib specialArgs operatorModules;
     };
 
@@ -106,21 +116,9 @@
         name = lib.removeSuffix ".nix" name;
         value = let
           variant = ./systems + "/${name}";
-          # The variant's eval-only base library, wired into
-          # `aos.config.evalAtBoot.baseLib`. The string interpolation keeps it
-          # lazy: the derivation is built only when the variant sets
-          # `evalAtBoot.enable = true` (so the config-eval service reads
-          # `baseLib`), leaving every other system's closure untouched.
-          baseLib = mkBaseLib {
-            baseModules = modules;
-            systemModules = [variant];
-            systemName = lib.removeSuffix ".nix" name;
-          };
           evaluated = mkSystem {
-            modules = [
-              variant
-              {aos.config.evalAtBoot.baseLib = "${baseLib}";}
-            ];
+            modules = [variant];
+            systemName = lib.removeSuffix ".nix" name;
           };
         in {
           config = evaluated.config;

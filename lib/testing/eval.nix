@@ -26,29 +26,26 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
-  # RFC-0011's transport and graph stages are consumers of aos-eval output.
-  # Reject partial configurations that fetch untrusted host input without an
-  # authenticator/evaluator, or start a unit graph without a manifest producer.
-  metadataWithoutEvalSystem = mkSystem [
-    ../../systems/server.nix
-    {aos.provisioning.metadataAgent.enable = true;}
-  ];
-  metadataRequiresEval = let
-    forced = builtins.tryEval (metadataWithoutEvalSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.provisioning.metadataAgent.enable must require aos.config.evalAtBoot.enable"
-    else "ok";
-
-  unitGraphWithoutEvalSystem = mkSystem [
-    ../../systems/server.nix
-    {aos.config.unitGraph.enable = true;}
-  ];
-  unitGraphRequiresEval = let
-    forced = builtins.tryEval (unitGraphWithoutEvalSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.config.unitGraph.enable must require aos.config.evalAtBoot.enable"
+  # RFC-0011 is the sole provisioning/configuration architecture, not an
+  # optional migration path. Its former enable switches must stay deleted and
+  # the stock system must always emit every stage.
+  rfc0011Structural =
+    if system.options.aos.config.evalAtBoot ? enable
+    then throw "aos.config.evalAtBoot.enable must not exist"
+    else if system.options.aos.provisioning.metadataAgent ? enable
+    then throw "aos.provisioning.metadataAgent.enable must not exist"
+    else if system.options.aos.provisioning ? repart
+    then throw "aos.provisioning.repart must not exist"
+    else if system.options.aos.config.unitGraph ? enable
+    then throw "aos.config.unitGraph.enable must not exist"
+    else if !(builtins.hasAttr "aos-eval" system.config.systemd.services)
+    then throw "the stock system must emit aos-eval.service"
+    else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
+    then throw "the stock system must emit aos-graph-compile.service"
+    else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-metadata-fetch.service"
+    else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-repart.service"
     else "ok";
 
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------
@@ -487,7 +484,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
-        echo "RFC-0011 dependencies: metadata (${metadataRequiresEval}), unit graph (${unitGraphRequiresEval})"
+        echo "RFC-0011: structural default (${rfc0011Structural})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

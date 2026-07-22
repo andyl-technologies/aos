@@ -33,7 +33,6 @@
     # Python global `vm`.
     vm = {
       system = systems.server;
-      provisioning = "newpath";
     };
   };
 

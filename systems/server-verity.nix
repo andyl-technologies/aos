@@ -15,12 +15,7 @@
 ##!
 ##!   * the systemd-repart convention substrate — carves + grows /var (and swap)
 ##!     in the initrd from image-baked repart.d drop-ins; under measured boot
-##!     /var is left raw for aos-var-crypt to LUKS2-seal. The Ignition
-##!     disks/growfs/gpt-relocate units stand down (modules/services/ignition.nix,
-##!     modules/services/repart.nix).
-##!
-##! Leaves systems/server.nix and the VM-test systems on ext4 + verity off +
-##! repart off (the Ignition path), unchanged.
+##!     /var is left raw for aos-var-crypt to LUKS2-seal.
 ##!
 ##! Auto-registers as `systems.server-verity`.
 {...}: {
@@ -35,7 +30,5 @@
   # (modules/security/verity.nix).
   aos.security.verity.enable = true;
 
-  # systemd-native substrate provisioning (RFC-0011). Idempotent initrd
-  # partition carving/growth; Ignition disk units gate themselves off.
-  aos.provisioning.repart.enable = true;
+  # systemd-native substrate provisioning is structural for every system.
 }

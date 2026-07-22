@@ -1,7 +1,7 @@
 ##! lib/testing/apm-install-at-boot.nix — apm install-at-boot intent check.
 ##!
 ##! `aos.apm.installAtBoot` bakes `desired.toml` + registry config straight into
-##! the image /etc (RFC-0011 new path); `aos-install-packages` reconciles it at
+##! the image /etc (RFC-0011 new path); `aos-install-baked-packages` reconciles it at
 ##! first boot. The system under test enables it directly.
 {
   pkgs,
@@ -30,7 +30,7 @@ in
     system = testSystem;
     timeout = 300;
     testScript = ''
-      vm.wait_for_unit("aos-install-packages.service", timeout=120)
+      vm.wait_for_unit("aos-install-baked-packages.service", timeout=120)
 
       desired = vm.succeed("cat /etc/aos/packages.d/desired.toml")
       assert "packages = []" in desired, desired
@@ -44,9 +44,9 @@ in
       keys = vm.succeed("cat /etc/apm/trusted-keys.d/example.pub")
       assert "${anchorKey}" in keys, keys
 
-      vm.succeed("systemctl is-active --quiet aos-install-packages.service")
+      vm.succeed("systemctl is-active --quiet aos-install-baked-packages.service")
       assert "success" in vm.succeed(
-          "systemctl show -p Result --value aos-install-packages.service"
+          "systemctl show -p Result --value aos-install-baked-packages.service"
       )
     '';
   }

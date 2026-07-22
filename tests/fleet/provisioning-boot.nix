@@ -1,27 +1,25 @@
-# tests/fleet/newpath-boot.nix — RFC-0011 new-path boot smoke test.
+# tests/fleet/provisioning-boot.nix — RFC-0011 provisioning smoke test.
 #
-# The minimal end-to-end proof of the Ignition-free boot substrate: a single
-# image-boot machine on `provisioning = "newpath"`. It exercises, in one boot,
-# every piece that replaces Ignition —
+# The minimal end-to-end proof of the RFC-0011 boot substrate. It exercises
+# metadata transport, repartitioning, config evaluation, and activation in one boot.
 #
-#   * systemd-repart carving swap + var (and the reserved root-b slot) in the
-#     trailing free space of the grown per-run image disk (no ignition-disks),
-#   * `aos-config-seed` scaffolding the empty per-gen /etc lower (no
-#     ignition-files),
+#   * systemd-repart carving swap + var in the trailing free space of the
+#     grown per-run image disk,
+#   * `aos-config-seed` scaffolding the empty per-gen /etc lower,
 #   * per-VM identity (hostname, /etc/hosts, the eth0 .network, the guest-agent
 #     unit) baked into the image /etc via `extendModules` (no metadata channel),
 #
 # and asserts the machine reaches multi-user.target with the identity applied,
 # the read-only erofs root mounted, and /var carved by repart. It is the cheap
 # gate that must pass before the heavier image-boot install tests
-# (install-from-image / secure-boot / measured-boot) migrate to the new path.
+# (install-from-image / secure-boot / measured-boot).
 {
   lib,
   mkSystem,
   pkgs,
   systems,
 }: {
-  name = "newpath-boot";
+  name = "provisioning-boot";
   # One image build + one UEFI boot + repart carve + assertions. No registry,
   # no upgrade, no reboot — far cheaper than install-from-image.
   timeout = 1200;
@@ -30,7 +28,6 @@
     node = {
       system = systems.server-test;
       bootMode = "image";
-      provisioning = "newpath";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
     };

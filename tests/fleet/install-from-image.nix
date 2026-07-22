@@ -33,7 +33,7 @@
 #             (same shape as apm-registry-upgrade.nix), with the
 #             server-2 toplevel and bc pre-staged in its store.
 #   target:   image-boot (bootMode = "image"), new path (provisioning =
-#             "newpath"): no Ignition, no metadata channel — identity baked
+#             RFC-0011): no metadata channel — identity baked
 #             into /etc, systemd-repart carves swap/var.
 {
   lib,
@@ -83,7 +83,6 @@ in {
     registry = {
       system = serverWithRegistry;
       # New path (kernel boot, baked /var) — matches apm-registry-upgrade.
-      provisioning = "newpath";
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
@@ -108,7 +107,6 @@ in {
       # the reserved root-b slot) in the trailing free space of the grown
       # per-run image disk; per-VM identity + the guest agent are baked into
       # the image /etc via extendModules (lib/testing/fleet.nix).
-      provisioning = "newpath";
       imageDiskMiB = diskSizeMiB;
       packages = ["aos-test-agent"];
       # The upgrade leg imports the gen-2 closure delta (NAR decompress + nix

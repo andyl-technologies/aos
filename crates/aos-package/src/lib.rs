@@ -4208,14 +4208,14 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
 /// by a read-only seed below it — typically `/etc/apm`, baked into the image —
 /// cannot be removed this way: deleting the writable file would leave it
 /// visible from the seed, and apm never writes `/etc`. Such a removal is
-/// refused with guidance to blank the seed via Ignition (§5 of the design).
+/// refused with guidance to blank the seed through signed host configuration.
 fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
     if registry_defined_by_seed(config, name) {
         return Err(AosError::RegistryError {
             message: format!(
                 "registry '{name}' is defined by a read-only seed (e.g. /etc/apm) that apm \
                  cannot modify. To remove a seeded registry, blank its seed file \
-                 (replace the contents of registries.d/{name}.toml) via Ignition."
+                 (replace the contents of registries.d/{name}.toml) through signed host.nix."
             ),
         }
         .into());

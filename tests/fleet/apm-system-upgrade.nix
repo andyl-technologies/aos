@@ -161,7 +161,6 @@ in {
     # Python global `target`.
     target = {
       system = server1;
-      provisioning = "newpath";
       # Pre-stage gen-2's full closure so `apm upgrade --system` fetches
       # nothing over the network (see the header note).
       extraClosures = [server2Top];

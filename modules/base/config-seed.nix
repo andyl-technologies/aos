@@ -3,7 +3,7 @@
 ##! The initrd "files" backend: the on-host config-eval path's replacement for
 ##! Ignition's `ignition-files` stage. The neutral `/etc` overlay
 ##! (`etc-overlay-setup.service`, in modules/services/boot-substrate.nix)
-##! composes a per-generation lower at `/run/etc/ignition-<gen>/etc`; first-boot
+##! composes a per-generation lower at `/run/etc/config-<gen>/etc`; first-boot
 ##! `/etc` comes entirely from the baked system EROFS (gen-0) — the per-gen
 ##! lower is *empty* — and subsequent config generations are rendered by the
 ##! stage-2 `aos-eval` fixpoint and switched in by `activate`, post-pivot. So
@@ -46,7 +46,7 @@
         # new path the lower is intentionally empty on first boot.
         ExecStart =
           "${pkgs.coreutils}/bin/mkdir -p "
-          + "/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
+          + "/run/etc/config-\${AOS_PROFILE_GEN}/etc";
       };
     };
   };

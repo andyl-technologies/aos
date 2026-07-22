@@ -31,7 +31,6 @@
     target = {
       system = systems.server-secureboot-lockdown;
       bootMode = "image";
-      provisioning = "newpath";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
     };

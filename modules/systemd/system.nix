@@ -329,7 +329,7 @@ in {
     # below; the composefs dump script (spec v12 §5.2) recurses into
     # the directory so it lands as a real directory of symlinks
     # rather than a single symlink (which would be shadowed by the
-    # per-generation ignition lower at runtime).
+    # per-generation config lower at runtime).
     system.build.systemdSystemUnits = systemdLib.generateUnits {
       type = "system";
       units = config.systemd.units;
@@ -386,7 +386,7 @@ in {
     # the EROFS image carries it as a real directory of symlinks (the
     # composefs dump script's `mode == "symlink"` + `os.path.isdir(source)`
     # branch recurses — spec v12 §5.2). At runtime, this directory
-    # merges with the per-generation ignition lower's `/etc/systemd/system/`
+    # merges with the per-generation config lower's `/etc/systemd/system/`
     # without one side shadowing the other.
     environment.etc."systemd/system" = {
       source = config.system.build.systemdSystemUnits;

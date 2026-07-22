@@ -1,6 +1,6 @@
 //! Declarative desired-package reconciliation for install-at-boot.
 //!
-//! `desired.toml` is written by Ignition or another host-authoritative
+//! `desired.toml` is written by the signed host-configuration path or another host-authoritative
 //! provisioner. The reconciler treats its package list as the set of explicit
 //! APM package roots that should exist in the selected profile: missing names
 //! are installed, and explicit installed names absent from the file are

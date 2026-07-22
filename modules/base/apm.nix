@@ -54,7 +54,7 @@
     config.aos.packages;
   packageAttestationReadinessUnits =
     lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"]
-    ++ lib.optionals cfg.enable ["aos-install-packages.service"];
+    ++ lib.optionals cfg.enable ["aos-install-baked-packages.service"];
 
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
@@ -68,11 +68,10 @@
 
   registries = config.aos.apm.registries;
 
-  # Files baked into the image /etc when install-at-boot is enabled: the
-  # desired-package list `apm` reconciles at first boot (aos-install-packages
-  # is `ConditionPathExists`-guarded on it), plus — when `includeRegistries` is
-  # set — the registry config + trust anchors it needs. On the RFC-0011 new
-  # path these are baked straight into /etc (previously an Ignition fragment).
+  # Files baked into the image /etc when install-at-boot is enabled. The
+  # image-bootstrap reconciler consumes these only when no host-eval manifest
+  # exists; dynamic host configuration is owned exclusively by the RFC-0011
+  # unit graph.
   installAtBootEtc = lib.optionalAttrs cfg.enable (
     {
       "aos/packages.d/desired.toml" = {
@@ -281,7 +280,7 @@ in {
       requires = packageAttestationReadinessUnits;
       after = [
         "aos-seed-baked-packages.service"
-        "aos-install-packages.service"
+        "aos-install-baked-packages.service"
       ];
       serviceConfig = {
         Type = "oneshot";
@@ -333,14 +332,15 @@ in {
       '';
     };
 
-    systemd.services.aos-install-packages = {
-      description = "Reconcile AOS desired packages";
+    systemd.services.aos-install-baked-packages = {
+      description = "Reconcile image-baked AOS desired packages";
       wantedBy = ["multi-user.target"];
       before = [
         "aos-preset.service"
         "multi-user.target"
       ];
       after = [
+        "aos-eval.service"
         "aos-config-seed.service"
         "aos-seed-profiles.service"
         "nix-overlay-setup.service"
@@ -352,6 +352,11 @@ in {
         TimeoutStartSec = "2min";
       };
       script = ''
+        # A host-eval manifest belongs to the RFC-0011 unit graph. Never run a
+        # second, monolithic reconciler over the same desired state.
+        if [ -e /run/aos/manifest.json ]; then
+          exit 0
+        fi
         AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };

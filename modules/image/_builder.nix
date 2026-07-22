@@ -10,7 +10,7 @@
 ##!                          loader/loader.conf                (sd-boot config)
 ##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
 ##!
-##! Ignition creates root-b, swap, and /var partitions on first boot
+##! systemd-repart creates swap and /var partitions on first boot
 ##! in the unallocated space after root-a.
 ##!
 ##! Build strategy (no losetup/mount — fully sandbox-compatible):
@@ -282,7 +282,7 @@
             # Partition 1 is the ESP (type GUID C12A7328-…); partition 2
             # is the root A slot; partition 3 (verity only) is its dm-verity
             # hash tree. Root B, swap, and /var are carved out of the trailing
-            # unallocated space by ignition on first boot.
+            # unallocated space by systemd-repart on first boot.
             sfdisk image.raw <<PTABLE
             label: gpt
             size=$esp_sectors, type=${espGuid}, name="ESP"

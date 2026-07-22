@@ -73,13 +73,11 @@ in {
     # Lexicographic order → client=192.168.50.10, registry=192.168.50.11.
     client = {
       system = systems.server-test;
-      provisioning = "newpath";
       # No test package. `apm` ships via modules/base/apm.nix.
     };
 
     registry = {
       system = serverWithRegistry;
-      provisioning = "newpath";
       packages = ["aos-registry-server" "test-static-cache-server"];
       # The static cache and origin land under /var/lib (served on :8000);
       # the default 256 MiB /var is tight once the NAR is compressed in.

@@ -1,9 +1,7 @@
 ##! modules/services/aos-metadata.nix — the `aos metadata` agent (RFC-0011 CS8)
 ##!
-##! Additive, opt-in (`aos.provisioning.metadataAgent.enable`, default false)
-##! initrd units that replace Ignition's *fetch* layer with the transport-only
-##! `aos metadata` agent (a Rust subcommand in `pkgs.aos`). With the flag off
-##! nothing is emitted and the existing Ignition flow is byte-identical.
+##! Initrd units for the transport-only `aos metadata` agent (a Rust subcommand
+##! in `pkgs.aos`). Every AOS system carries this provisioning path.
 ##!
 ##! The agent is **transport-only**: it fetches and stashes the *untrusted*
 ##! operator `host.nix` (+ detached signature) and instance facts into
@@ -12,14 +10,11 @@
 ##! measured `/etc`. A failed/missing fetch leaves no `host.nix`, so eval falls
 ##! through to gen-0-only config — the failure-safe path.
 ##!
-##! Three units, mirroring the Ignition graph (modules/services/ignition.nix):
-##!   aos-metadata-detect   (replaces aos-platform-detect): DMI/ISO → platform.env
-##!   aos-metadata-network  (replaces aos-ignition-network): DHCP gate, cloud-only
-##!   aos-metadata-fetch    (replaces ignition-fetch): platform → stash
+##! Three units implement detection, conditional networking, and metadata fetch:
+##!   aos-metadata-detect   DMI/ISO → platform.env
+##!   aos-metadata-network  DHCP gate, cloud-only
+##!   aos-metadata-fetch    platform → stash
 ##!
-##! Phase A coexistence: these run alongside Ignition rather than deleting it;
-##! the cutover (deleting ignition-{fetch,disks,mount,files}) lands once each
-##! native path has a fleet-green test (see docs/rfcs/0011 provisioning.md).
 {
   config,
   lib,
@@ -29,9 +24,6 @@
   cfg = config.aos.provisioning.metadataAgent;
 in {
   options.aos.provisioning.metadataAgent = {
-    enable =
-      lib.mkEnableOption "the RFC-0011 `aos metadata` transport-only fetch agent";
-
     stashDir = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos-metadata";
@@ -49,14 +41,7 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = config.aos.config.evalAtBoot.enable;
-        message = "aos.provisioning.metadataAgent.enable requires aos.config.evalAtBoot.enable so fetched host configuration is authenticated and evaluated.";
-      }
-    ];
-
+  config = {
     boot.initrd.systemd.services = {
       # 1. Platform detection + offline config-drive probe. Absorbs
       #    aos-platform-detect: ports the DMI/SMBIOS decision table and probes
