@@ -112,7 +112,7 @@ upper_root=/run/etc/upper-${N}
 
 # Determine the config backend for this generation's per-host /etc.
 #
-# RFC-0011 path: per-host /etc comes from the on-host config-eval manifest
+# Per-host /etc comes from the on-host configuration manifest
 # (/run/aos/manifest.json), applied by `apm __materialize` below. When the
 # manifest is absent the generation's /etc is exactly the baked image /etc.
 
@@ -163,7 +163,7 @@ STAGE="$STAGE_PREPARE"
 # Render this generation's per-host /etc writes into the candidate lower
 # ($ign/etc).
 #
-# RFC-0011 path: when a converged config-eval manifest exists, apply it with
+# When a converged configuration manifest exists, apply it with
 # `apm __materialize`, which writes the manifest's text/symlink /etc entries
 # and job scripts into $ign/etc and rewrites unit-body job-script
 # placeholders. When the manifest is absent, $ign/etc stays empty and the

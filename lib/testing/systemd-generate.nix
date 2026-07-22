@@ -88,7 +88,7 @@
 
   evalAssertions =
     # hello-world.service: script compiled → ExecStart carries the job-script
-    # placeholder at eval time (RFC-0011 F2-A inversion). The placeholder is
+    # placeholder at evaluation time. The placeholder is
     # substituted for the real store path in the built unit file, asserted at
     # build time below (`ExecStart=/nix/store/`).
     lib.throwIfNot
@@ -157,7 +157,7 @@ in
             fi
           done
 
-          # RFC-0011 F2-A inversion: the eval-time unit body carries a
+          # The eval-time unit body carries a
           # `#aos-jobscript:<key>#` placeholder, but `makeUnit` substitutes it
           # for the real job-script store path when materializing the unit
           # file. Verify the built hello-world.service has the resolved path

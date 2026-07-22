@@ -1,4 +1,4 @@
-//! The RFC-0011 systemd unit-graph compiler (orchestration.md, build-spec §"Systemd unit-graph compiler").
+//! The systemd unit-graph compiler for configuration manifests.
 //!
 //! `aos-eval.service` produces two read-only inputs — `/run/aos/manifest.json`
 //! (the resolved package set + config) and `/run/aos/graph.json` (the

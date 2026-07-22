@@ -1,7 +1,7 @@
-//! Locally-derived shared-root ownership and capability map (RFC-0011).
+//! Locally derived shared-root ownership and capability map.
 //!
-//! RFC-0011 originally answered "which package provides this missing option"
-//! from a registry-published inverted index. That index is gone. Ownership of a
+//! Package providers were previously discovered from a registry-published
+//! inverted index. That index is gone. Ownership of a
 //! *shared* root (`firewall.*`, `nginx.*`) is not a
 //! registry-wide fact — it is an attribute of one **system**: two hosts with
 //! different installed sets can legitimately assign the same root to different
@@ -41,7 +41,7 @@
 //!    installed package's name (else its private root would be silently
 //!    shadowed, since [`SystemRoots`] is consulted before the structural
 //!    fallback).
-//! 3. **Contributable scope (F3-B)** — every `contributes` root must have an
+//! 3. **Contributable scope** — every `contributes` root must have an
 //!    owner, and every contributed sub-path must lie within that owner's
 //!    `contributable` set.
 
@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::types::{ConfigModuleMeta, ModuleAbiCompat};
 
-/// A package's RFC-0011 config module resolved by name from registry metadata.
+/// A package configuration module resolved by name from registry metadata.
 ///
 /// This is the local, per-package replacement for a lookup that used to hit the
 /// registry-wide provides index: given a package name, the resolver returns its
@@ -69,7 +69,7 @@ pub struct ResolvedConfigModule<'a> {
     pub module: &'a ConfigModuleMeta,
 }
 
-/// By-name resolution of a package's RFC-0011 config module.
+/// Resolves a package configuration module by name.
 ///
 /// The single seam the fixpoint uses in place of the removed provides index.
 /// The production implementation wraps the on-host [`RegistrySet`] and reads

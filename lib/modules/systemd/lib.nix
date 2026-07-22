@@ -14,7 +14,7 @@
 #     seam in modules/systemd/system.nix (see spec §4.2), `utils` is
 #     inlined (only `escapeSystemdPath` was needed, ported below).
 #   - `makeJobScript` no longer returns a bare `writeShellScriptBin` path.
-#     RFC-0011 F2-A reroutes it to a pure data record carrying the job
+#     On-host evaluation reroutes it to a pure data record carrying the job
 #     script's TEXT (for `manifest.jobScripts`) plus a build-side
 #     derivation that materializes the script at an `aos-job-scripts/<key>`
 #     path; the `Exec*=` directive now points there. See `makeJobScript`
@@ -220,7 +220,7 @@ in rec {
   makeUnit = name: unit:
     if unit.enable
     then let
-      # RFC-0011 F2-A inversion: `unit.text` carries `#aos-jobscript:<key>#`
+      # `unit.text` carries `#aos-jobscript:<key>#`
       # placeholders (so the eval-only manifest can render the body without
       # forcing any job-script derivation). Restore the build-side store paths
       # here, on the *build* side, so the materialized unit file boots gen-0.
@@ -709,11 +709,11 @@ in rec {
       # /lib/systemd/system/ via SYSTEM_DATA_UNIT_DIR. See spec §5.5.)
     ''; # */
 
-  # makeJobScript — RFC-0011 F2-A: render a shell-snippet service option
+  # makeJobScript — render a shell-snippet service option
   # (`script=`/`preStart=`/`postStart=`/`reload=`/`preStop=`/`postStop=`)
   # into a pure data *record*, not a bare store path.
   #
-  # Background (RFC-0011 architecture §"render/assemble split", decisions.md
+  # The render/assemble split keeps evaluation pure while image assembly
   # F2): unit rendering must become host-portable pure eval, but a job
   # script's body is a function of the *evaluated* stage-2 config, so an
   # eval-only on-host evaluator must not build it. The fix carries the job
@@ -725,8 +725,8 @@ in rec {
   # On the *build* side (off-host, where building is legitimate) this still
   # needs to produce a bootable gen-0 image. So the record also carries:
   #   - `drv`  — a derivation that writes the body to `$out/aos-job-scripts/<key>`
-  #              (path component `aos-job-scripts` so the RFC-0011 golden
-  #              comparator recognizes it; see lib/testing/rfc-0011-
+  #              (path component `aos-job-scripts` so the system golden
+  #              comparator recognizes it; see lib/testing/system-
   #              characterization.nix `JOB_SCRIPT_MARKERS`);
   #   - `path` — the absolute store path of that file, plugged into the
   #              *build-side* `Exec*=` so the image boots.
@@ -1032,7 +1032,7 @@ in rec {
       enable
       overrideStrategy
       ;
-    # RFC-0011 F2-A: carry the service's job-script records onto the rendered
+    # Carry the service's job-script records onto the rendered
     # unit so `makeUnit` can substitute each `#aos-jobscript:<key>#` placeholder
     # in `text` back to its build-side `path`. `text` keeps placeholders so the
     # eval-only manifest renders the body without forcing any job-script drv.

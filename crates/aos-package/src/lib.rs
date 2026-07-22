@@ -492,7 +492,7 @@ pub enum PackageCommand {
         #[arg(long)]
         system: bool,
     },
-    /// Hidden: drive the RFC-0011 on-host resolve↔eval config fixpoint.
+    /// Hidden: drive the on-host resolve/evaluate configuration fixpoint.
     ///
     /// Called only by `aos-eval.service`. Renders the working set into
     /// `entry.nix`, runs the sandboxed stock-Nix evaluator, fetches missing
@@ -530,7 +530,7 @@ pub enum PackageCommand {
         allow_unsigned_host_nix: bool,
     },
     /// Apply a converged config manifest's `/etc` tree into a per-generation
-    /// lower (RFC-0011 materializer). Called by `activate` on the new path.
+    /// lower. Called by `activate` when applying a configuration manifest.
     ///
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
     /// `etc` entries (text files with modes, relative + store symlinks) under
@@ -552,7 +552,7 @@ pub enum PackageCommand {
         )]
         job_scripts_runtime_dir: String,
     },
-    /// Evaluate the config and diff it against the live generation (RFC-0011).
+    /// Evaluate the configuration and diff it against the live generation.
     ///
     /// `--dry-run` runs the evaluator, loads the current generation's
     /// `gen-N/manifest.json`, prints a structural diff (etc entries, unit
@@ -595,7 +595,7 @@ pub enum PackageCommand {
         #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
         live_manifest: PathBuf,
     },
-    /// Materialize one package's pinned NAR closure into the store (RFC-0011).
+    /// Materialize one package's pinned NAR closure into the store.
     ///
     /// Backs the `aos-pkg-fetch@.service` template's `ExecStart=`. Reads the
     /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
@@ -611,7 +611,7 @@ pub enum PackageCommand {
         #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
         marker_root: PathBuf,
     },
-    /// Render one package's config artifacts into the staging area (RFC-0011).
+    /// Render one package's configuration artifacts into the staging area.
     ///
     /// Backs the `aos-pkg-install@.service` template's `ExecStart=`. Validates
     /// the package's `config`/`credentials` blocks against its signed
@@ -2178,7 +2178,7 @@ pub async fn run(
         });
     }
 
-    // `apm __materialize` (RFC-0011 materializer): apply a converged manifest's
+    // `apm __materialize`: apply a converged manifest's
     // /etc tree into a per-generation lower. Called by `activate` on the new
     // path in place of re-running Ignition.
     if let PackageCommand::Materialize {
@@ -2194,7 +2194,7 @@ pub async fn run(
         );
     }
 
-    // `apm switch [--dry-run]` (RFC-0011 operability.md). Eval-only diff against
+    // `apm switch [--dry-run]`: evaluate and diff against
     // the live generation; the eval is a pure function of its inputs, so the
     // same codepath runs off-host (CI) and on-host.
     if let PackageCommand::Switch {
@@ -2236,7 +2236,7 @@ pub async fn run(
         return config_eval::dry_run::run_switch(&params).map(|_| ());
     }
 
-    // The RFC-0011 graph compiler (`aos-graph-compile.service`) drives systemd
+    // The graph compiler (`aos-graph-compile.service`) drives systemd
     // over D-Bus and reads the eval output from /run/aos; it needs no apm
     // config. Dispatch it before `ApmConfig::load` (like the eval driver).
     if let PackageCommand::GraphCompile {

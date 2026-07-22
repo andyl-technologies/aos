@@ -1,4 +1,4 @@
-##! modules/base/config-seed.nix — on-host config files backend (RFC-0011)
+##! modules/base/config-seed.nix — on-host configuration files backend
 ##!
 ##! The initrd "files" backend: the on-host config-eval path's replacement for
 ##! Ignition's `ignition-files` stage. The neutral `/etc` overlay
@@ -19,7 +19,7 @@
 }: {
   config = {
     boot.initrd.systemd.services."aos-config-seed" = {
-      description = "Seed the per-generation /etc lower for on-host config (RFC-0011)";
+      description = "Seed the per-generation /etc lower for on-host configuration";
       wantedBy = ["initrd-fs.target"];
       before = [
         "etc-overlay-setup.service"
@@ -43,7 +43,7 @@
         # AOS_PROFILE_GEN is published by aos-seed-profiles.service.
         EnvironmentFile = "/run/aos-profile-gen.env";
         # The Ignition path had ignition-files' ExecStartPre create this; on the
-        # new path the lower is intentionally empty on first boot.
+        # the lower is intentionally empty on first boot.
         ExecStart =
           "${pkgs.coreutils}/bin/mkdir -p "
           + "/run/etc/config-\${AOS_PROFILE_GEN}/etc";

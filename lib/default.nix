@@ -98,7 +98,7 @@
   in
     evaluated.config;
 
-  # RFC-0011 module-namespacing + F3-B contributable-surface helpers.
+  # Module-namespacing and contributable-surface helpers.
   # Pure data over evaluated module sets / module values; takes the wired
   # `types` and `mkOption` so callers reach them at `lib.mkPackageRoot` etc.
   namespacing = import ./namespacing.nix {
@@ -201,7 +201,7 @@
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
 
-      # RFC-0011 namespacing + F3-B contributable-surface helpers.
+      # Namespacing and contributable-surface helpers.
       inherit
         (namespacing)
         optionSurface

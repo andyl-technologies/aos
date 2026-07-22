@@ -15,8 +15,8 @@
 ##!   - `/etc/apm/trusted-config-keys.d/<op>.pub` — operator config-signing
 ##!     key(s) (`aos.apm.configKeys`). `aos-eval.service` verifies the
 ##!     stage-2 `host.nix` detached SSHSIG against these anchors before
-##!     driving the config eval (RFC-0011 trust-and-secrets.md §host.nix
-##!     authenticity). Same baked-into-the-measured-image delivery as
+##!     driving configuration evaluation. They use the same
+##!     baked-into-the-measured-image delivery as
 ##!     `trusted-keys.d`; an unsigned/untrusted host.nix yields no manifest.
 ##!
 ##! This is the out-of-band root of trust: first contact with the
@@ -56,7 +56,7 @@ in {
       verifies the stage-2 `host.nix` detached SSHSIG against these anchors in
       the `aos-config` SSHSIG namespace before driving the config eval; an
       unsigned or untrusted-key host.nix produces no manifest and the box stays
-      on its prior generation (RFC-0011). Mirrors `trusted-keys.d`.
+      on its prior generation. Mirrors `trusted-keys.d`.
     '';
     type = lib.types.attrsOf (lib.types.listOf lib.types.str);
   };

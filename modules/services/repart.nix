@@ -1,4 +1,4 @@
-##! modules/services/repart.nix — systemd-repart convention substrate (RFC-0011)
+##! modules/services/repart.nix — systemd-repart convention substrate
 ##!
 ##! Systemd-native substrate provisioning that carves and grows `/var` (and swap) in the
 ##! initrd via convention `repart.d` drop-ins, replacing Ignition's

@@ -1,4 +1,4 @@
-##! base-lib default.nix — on-host eval-only entrypoint (RFC-0011, generated)
+##! base-lib default.nix — generated on-host eval-only entrypoint
 ##!
 ##! This file is copied verbatim to `$out/default.nix` by
 ##! `lib/build/base-lib.nix`. It is the entrypoint the on-host stage-2
@@ -46,7 +46,7 @@ let
   # from-source build graph.
   frozenPkgs = freeze.frozenFromJSON (builtins.readFile ./frozen-pkgs.json);
 
-  # Stage-1-captured store paths for image-fixed config artifacts (RFC-0011
+  # Stage-1-captured store paths for image-fixed config artifacts
   # Layer 2). Injected as `aos.config.frozenArtifacts` so modules read the
   # frozen path instead of rebuilding (their builder functions are absent from
   # `frozenPkgs`).

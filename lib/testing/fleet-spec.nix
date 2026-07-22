@@ -88,7 +88,7 @@
           `system.build.image.raw` under OVMF — UEFI → sd-boot → UKI →
           systemd initrd — where systemd-repart carves swap/var from the
           trailing free space on first boot (tests/fleet/install-from-image.nix,
-          RFC-0003/RFC-0011).
+          image installation tests).
         '';
       };
 

@@ -160,7 +160,7 @@
         }' > "$out/${packageHash}.attestation.json"
     '';
 
-  # RFC-0011 Layer 2: the package-profile seed is an image-fixed artifact (a
+  # The package-profile seed is an image-fixed artifact (a
   # function of the bundled packages, not host.nix). Reference the resolved
   # `artifacts.aos-package-profile-seed` (frozen store path on the on-host
   # evaluator, the live derivation below otherwise — byte-identical).
@@ -277,7 +277,7 @@ in {
 
   config = {
     # Register the package-profile seed as an image-fixed config artifact
-    # (RFC-0011 Layer 2). Guarded on frozenArtifacts so the stage-2 frozen pkgs
+    # Guarded on frozenArtifacts so the on-host frozen pkgs
     # (no `runCommand`) never evaluates the source.
     aos.config._artifactSources.aos-package-profile-seed =
       if config.aos.config.frozenArtifacts ? "aos-package-profile-seed"

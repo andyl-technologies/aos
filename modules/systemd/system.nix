@@ -178,7 +178,7 @@ in {
     '';
   };
 
-  # RFC-0011 render/assemble split (P0): the *pure* unit-body data that the
+  # Pure render/assemble split: the unit-body data that the
   # `systemdSystemUnits` derivation is the imperative materialization of.
   # `generateUnits` is intentionally left untouched (so the built unit
   # directory stays byte-for-byte identical except the documented F2-A
@@ -200,11 +200,11 @@ in {
     default = {};
     description = ''
       Pure render of every systemd unit body keyed by full unit name, the
-      data contract behind `system.build.systemdSystemUnits`. RFC-0011 P0.
+      data contract behind `system.build.systemdSystemUnits`.
     '';
   };
 
-  # RFC-0011 F2-A: every job script's TEXT, keyed `"<unit>:<slot>.<index>"`,
+  # Every job script's text, keyed `"<unit>:<slot>.<index>"`,
   # folded across all services. Consumed by `system.build.configManifest`
   # (`manifest.jobScripts`); the materializer writes each `text` to a
   # generation-local `aos-job-scripts/<key>` path and rewrites the matching
@@ -217,7 +217,7 @@ in {
     type = lib.types.attrsOf lib.types.attrs;
     internal = true;
     default = {};
-    description = "RFC-0011 F2-A job-script texts keyed by `<unit>:<slot>.<index>`.";
+    description = "Job-script texts keyed by `<unit>:<slot>.<index>`.";
   };
 
   config = let
@@ -343,7 +343,7 @@ in {
       package = config.systemd.package;
     };
 
-    # --- RFC-0011 P0 pure render values --------------------------------
+    # --- Pure render values ---------------------------------------------
     #
     # Fold every service's F2-A job-script records into the flat
     # `systemdJobScripts` map, and build the manifest-form unit bodies by
@@ -362,14 +362,14 @@ in {
         })
       allJobScripts);
 
-    # RFC-0011 F2-A inversion: `config.systemd.units.<u>.text` now carries the
+    # `config.systemd.units.<u>.text` carries the
     # `#aos-jobscript:<key>#` placeholders natively (the `Exec*=` directives
     # embed the placeholder, not the build-side store path — see
     # `lib/modules/systemd/unit-options.nix`). So the manifest body is just
     # `u.text` verbatim: no `replaceStrings` over job-script paths, and crucially
     # nothing here forces a job-script derivation. That is what lets the on-host
     # eval-only evaluator compute these bodies under a `pkgs` with no builder
-    # functions (RFC-0011 stage-2). The build-side `systemdSystemUnits`
+    # functions during on-host evaluation. The build-side `systemdSystemUnits`
     # derivation restores the real paths in `makeUnit`, so it stays
     # byte-for-byte identical.
     system.build.systemdUnitBodies =

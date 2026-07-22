@@ -1,6 +1,6 @@
 ##! modules/base/host-facts.nix — Declared host facts (`host.facts.*`)
 ##!
-##! RFC-0011 `module-system.md` §"Host facts": host-varying inputs
+##! Host-varying inputs available to configuration modules.
 ##! (hostname, networking-by-MAC, disk IDs, operator SSH keys) enter the
 ##! pure on-host evaluation **only** as typed config under a privileged-owned
 ##! `host.facts.*` root — never via `specialArgs` (which is untyped, unmerged,

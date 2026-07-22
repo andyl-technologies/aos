@@ -1,5 +1,4 @@
-//! Eval-failure classification for the operability surface (RFC-0011
-//! operability.md §Observability).
+//! Evaluation-failure classification for the configuration operability surface.
 //!
 //! The module system already throws structured, sourced messages; the job here
 //! is to map each terminal [`FixpointError`] to an operator-legible class and a

@@ -216,7 +216,7 @@ in {
           # create fixpoint cycles). So a bare `mkIf (text != null) "${textDrv}…"`
           # would build `writeTextFile` for EVERY entry, including the many
           # store-sourced ones whose `text` is null. That faults under the
-          # RFC-0011 on-host eval-only `pkgs` (no builder functions). The inner
+          # On-host evaluation uses a `pkgs` value without builder functions. The inner
           # guard keeps the dead-branch value a plain string so WHNF never
           # constructs the derivation; the live branch is byte-identical.
           source = lib.mkIf (config.text != null) (
@@ -253,12 +253,12 @@ in {
         '';
       };
 
-      ## RFC-0011 `aos.config-manifest/v1` — the pure-data contract.
+      ## Pure-data `aos.config-manifest/v1` contract.
       configManifest = lib.mkOption {
         type = lib.types.attrs;
         readOnly = true;
         description = ''
-          The RFC-0011 `aos.config-manifest/v1` value: a pure attrset (no
+          The `aos.config-manifest/v1` value: a pure attrset (no
           derivations forced, no secrets) describing the rendered `/etc`
           tree, systemd reconcile actions, F2-A job-script texts, users,
           presets, pinned store paths, the module ABI, and the eval-input
@@ -514,7 +514,7 @@ in {
     # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
     # binary); this does not create a cycle since `pkgs.aos` is a Rust
     # binary that does not depend on the toplevel.
-    # RFC-0011 Layer 2: the activate script is an image-fixed artifact (it just
+    # The activate script is an image-fixed artifact (it just
     # substitutes pkgs store paths into activate.sh.in). Reference the resolved
     # artifact; register the source guarded on frozenArtifacts so the stage-2
     # frozen pkgs (no `runCommand`) never evaluates it.
@@ -536,7 +536,7 @@ in {
           chmod +x "$out"
         '';
 
-    # --- RFC-0011 aos.config-manifest/v1 (pure data) -------------------
+    # --- aos.config-manifest/v1 (pure data) ----------------------------
     #
     # Purely additive: assembled from the same pure render values the
     # toplevel derivation is built from, but as host-portable data. Not

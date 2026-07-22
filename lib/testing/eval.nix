@@ -26,10 +26,10 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
-  # RFC-0011 is the sole provisioning/configuration architecture, not an
-  # optional migration path. Its former enable switches must stay deleted and
+  # Provisioning and configuration are structural, not optional paths. Their
+  # former enable switches must stay deleted and
   # the stock system must always emit every stage.
-  rfc0011Structural =
+  structuralConfiguration =
     if system.options.aos.config.evalAtBoot ? enable
     then throw "aos.config.evalAtBoot.enable must not exist"
     else if system.options.aos.provisioning.metadataAgent ? enable
@@ -137,7 +137,7 @@
     else "ok";
 
   # --- aos.apm.installAtBoot --------------------------------------------
-  # Host-authored package intent bakes into the image /etc (RFC-0011 new path):
+  # Host-authored package intent bakes into the image /etc:
   # desired.toml plus registry config / trust anchors, as `environment.etc`.
   installAtBootSystem = mkSystem [
     ../../systems/server.nix
@@ -484,7 +484,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
-        echo "RFC-0011: structural default (${rfc0011Structural})"
+        echo "configuration pipeline: structural default (${structuralConfiguration})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

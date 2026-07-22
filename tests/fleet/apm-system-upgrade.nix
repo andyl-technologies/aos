@@ -50,7 +50,7 @@
   systems,
 }: let
   fleetSystem = evaluated: {
-    # Re-expose extendModules so the new-path harness can bake per-VM identity.
+    # Re-expose extendModules so the harness can bake per-VM identity.
     inherit (evaluated) config options extendModules;
     build = {
       toplevel = evaluated.config.system.build.toplevel;

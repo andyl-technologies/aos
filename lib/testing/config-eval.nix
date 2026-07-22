@@ -1,4 +1,4 @@
-# lib/testing/config-eval.nix — RFC-0011 off-host config-eval preflight gate.
+# lib/testing/config-eval.nix — off-host config-eval preflight gate.
 #
 # operability.md §Off-host CI preflight: a pure-eval derivation that exercises
 # the config-eval inputs the on-host evaluator consumes, with the same
@@ -88,7 +88,7 @@ in
           set -eu
           : ${builtins.toString evalAssertions}
           mkdir -p $out
-          echo "==> RFC-0011 config-eval preflight gate" | tee $out/result
+          echo "==> config-eval preflight gate" | tee $out/result
           echo "  module set evaluates: OK"
           echo "  manifest inputs deterministic (eval-twice byte-identical): OK"
           echo "  trusted-config-keys.d schema-valid: OK"

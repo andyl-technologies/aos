@@ -32,7 +32,7 @@
   testToken = "aoscontrolplanefleet1";
 
   # Per-node k3s config, baked into the image /etc via extendModules (the
-  # new-path replacement for Ignition storage.files). Two files:
+  # baked machine configuration). Two files:
   #
   #   /etc/rancher/k3s/k3s.env    — K3S_TOKEN (+ K3S_URL for the worker),
   #                                 mode 0600 (holds the join token).

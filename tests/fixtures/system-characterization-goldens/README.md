@@ -1,8 +1,8 @@
-# RFC-0011 toplevel characterization goldens
+# System toplevel characterization goldens
 
-These are the committed baseline snapshots for the RFC-0011 T0 characterization
-check (`lib/testing/rfc-0011-characterization.nix`, wired as
-`checks.rfc-0011-characterization`). For each system variant, the snapshot pins
+These are the committed baseline snapshots for the system characterization
+check (`lib/testing/system-characterization.nix`, wired as
+`checks.system-characterization`). For each system variant, the snapshot pins
 the deterministic, renderable outputs of `system.build.toplevel`:
 
 ```text
@@ -25,8 +25,8 @@ The toplevel render is Linux-only, so the baselines must be produced on a
 Linux/KVM builder, not on darwin:
 
 ```sh
-nix-build -A checks.rfc-0011-characterization.regenerate
-cp -r ./result/. tests/fixtures/rfc-0011-goldens/server/
+nix-build -A checks.system-characterization.regenerate
+cp -r ./result/. tests/fixtures/system-characterization-goldens/server/
 ```
 
 Then commit the regenerated tree as a standalone, reviewed diff. Until the

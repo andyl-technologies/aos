@@ -1,4 +1,4 @@
-//! Stock-Nix eval-result classifier (RFC-0011 P1 fixpoint, build-spec §2).
+//! Stock-Nix evaluation-result classifier for the configuration fixpoint.
 //!
 //! Stock Nix has no read-access instrumentation, so the resolver discovers the
 //! provider set by *parsing* the human-readable throw strings stock Nix prints
@@ -35,7 +35,7 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 
-/// Why a runaway eval subprocess was killed (RFC-0011 build-spec §3).
+/// Why a runaway evaluation subprocess was killed.
 ///
 /// Populated by the driver from the transient scope's exit cause
 /// (`systemctl show --property=Result`), not guessed from stderr.

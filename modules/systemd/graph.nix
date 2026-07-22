@@ -1,4 +1,4 @@
-##! modules/systemd/graph.nix — RFC-0011 systemd unit-graph templates (gen-0)
+##! modules/systemd/graph.nix — systemd unit-graph templates for generation zero
 ##!
 ##! Bakes the static surface of the on-host config unit graph into the image:
 ##! the `aos-pkg-fetch@.service` / `aos-pkg-install@.service` templates and the
@@ -8,7 +8,7 @@
 ##! `daemon-reload`s and starts `aos-config.target` (orchestration.md,
 ##! build-spec §"Systemd unit-graph compiler").
 ##!
-##! This is the structural RFC-0011 package orchestration path and is emitted
+##! This is the package orchestration path and is emitted
 ##! for every AOS system.
 {
   config,

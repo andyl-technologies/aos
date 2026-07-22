@@ -392,11 +392,11 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// RFC-0011 cross-ABI config-generation rollback (build-spec §6)
+// Cross-ABI configuration-generation rollback.
 // ---------------------------------------------------------------------------
 
 /// Decide how a config-generation may be re-activated under the running image's
-/// shared-option ABI (RFC-0011 build-spec §6, the pinning rule).
+/// shared-option ABI according to the generation pin.
 ///
 /// This is the rollback-side entrypoint to [`SystemGeneration::reactivation_plan`]:
 /// it compares the target generation's `module_abi_pinned` against the running
@@ -424,7 +424,7 @@ pub fn plan_config_gen_reactivation(
 }
 
 /// Execute the cross-ABI re-eval branch of a config-generation rollback
-/// (RFC-0011 build-spec §6), reusing the CS5 fixpoint driver.
+/// by reusing the configuration fixpoint driver.
 ///
 /// Given a [`ReactivationPlan::CrossAbiReEval`]'s retained inputs, this feeds the
 /// content-pinned `host.nix` and the rolled-back image's `running_base_lib` into
@@ -480,7 +480,7 @@ mod tests {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
     }
 
-    /// Build a config-gen record with the given RFC-0011 axis metadata.
+    /// Builds a configuration-generation record with the supplied axis metadata.
     fn config_gen(
         number: u32,
         module_abi_pinned: Option<u32>,
@@ -504,7 +504,7 @@ mod tests {
         }
     }
 
-    // RFC-0011 §6: a legacy generation (no pin) re-activates directly.
+    // A legacy generation without a pin reactivates directly.
     #[test]
     fn reactivation_legacy_gen_is_direct() {
         let target = config_gen(3, None, false);
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(plan, ReactivationPlan::DirectReactivate);
     }
 
-    // RFC-0011 §6: same ABI ⇒ direct pointer-switch re-activation.
+    // The same ABI permits direct pointer-switch reactivation.
     #[test]
     fn reactivation_same_abi_is_direct() {
         let target = config_gen(3, Some(2), true);
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(plan, ReactivationPlan::DirectReactivate);
     }
 
-    // RFC-0011 §6: different ABI ⇒ cross-ABI re-eval over the retained inputs.
+    // A different ABI requires reevaluation over the retained inputs.
     #[test]
     fn reactivation_cross_abi_returns_retained_inputs() {
         let target = config_gen(3, Some(1), true);
@@ -537,7 +537,7 @@ mod tests {
         }
     }
 
-    // RFC-0011 §6: a cross-ABI gen missing its retained inputs is fail-closed.
+    // A cross-ABI generation missing retained inputs fails closed.
     #[test]
     fn reactivation_cross_abi_missing_inputs_errors() {
         let target = config_gen(3, Some(1), false);

@@ -688,7 +688,7 @@
               initrd = "${builtins.toString systemInitrd}/initrd.img";
               disk = "${builtins.toString systemDisk}/disk.img";
               # Single-VM tests bake all config into the system /etc; no metadata
-              # channel (RFC-0011 new path).
+              # channel because machine identity is baked into the image.
               metadata = null;
               memory_mib = effectiveMemory;
               vcpu_count = 2;

@@ -1,4 +1,4 @@
-##! modules/services/aos-metadata.nix — the `aos metadata` agent (RFC-0011 CS8)
+##! modules/services/aos-metadata.nix — the `aos metadata` agent
 ##!
 ##! Initrd units for the transport-only `aos metadata` agent (a Rust subcommand
 ##! in `pkgs.aos`). Every AOS system carries this provisioning path.
@@ -48,7 +48,7 @@ in {
       #    blkid -L {aos-metadata,cidata,config-2}. Writes platform.env (+ the
       #    adjacent need-network flag for cloud platforms).
       "aos-metadata-detect" = {
-        description = "AOS metadata platform detection (RFC-0011)";
+        description = "Detect the metadata platform and configuration drive";
         wantedBy = ["initrd-root-fs.target"];
         before = ["aos-metadata-fetch.service"];
         requires = [
@@ -96,7 +96,7 @@ in {
       #    signature is verified here. SuccessExitStatus=0 1 keeps a failed
       #    fetch from wedging boot — the absent host.nix makes stage-2 a no-op.
       "aos-metadata-fetch" = {
-        description = "Fetch + stash untrusted operator host.nix + instance facts (RFC-0011)";
+        description = "Fetch untrusted operator configuration and instance facts";
         wantedBy = ["initrd-root-fs.target"];
         requires = ["aos-metadata-detect.service"];
         after = [

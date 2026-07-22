@@ -55,8 +55,8 @@ the regression net the refactor runs under.
 
 ### 1. Pure-eval toplevel golden (the strongest lever)
 
-`lib/testing/rfc-0011-characterization.nix` + committed fixtures under
-`tests/fixtures/rfc-0011-goldens/<system>/`. For each system variant, snapshot
+`lib/testing/system-characterization.nix` + committed fixtures under
+`tests/fixtures/system-characterization-goldens/<system>/`. For each system variant, snapshot
 the current `system.build.toplevel` render and assert byte-equal:
 
 - `etcDump.txt` — the composefs-dump(5) text (deterministic, sortable).

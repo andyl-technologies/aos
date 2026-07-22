@@ -1,6 +1,6 @@
-# tests/fleet/provisioning-boot.nix — RFC-0011 provisioning smoke test.
+# tests/fleet/provisioning-boot.nix — provisioning smoke test.
 #
-# The minimal end-to-end proof of the RFC-0011 boot substrate. It exercises
+# The minimal end-to-end proof of the boot substrate. It exercises
 # metadata transport, repartitioning, config evaluation, and activation in one boot.
 #
 #   * systemd-repart carving swap + var in the trailing free space of the
@@ -38,7 +38,7 @@
     ''
       import re
 
-      # Reaching the agent handshake already proves the whole new-path boot:
+      # Reaching the agent handshake proves the complete provisioned boot:
       # UEFI -> sd-boot -> UKI -> systemd initrd -> aos-repart (carve swap/var)
       # -> mount-var -> aos-config-seed (empty /etc lower) -> overlays ->
       # switch-root -> stage-2 -> baked aos-test-agent.service answered.
@@ -74,7 +74,7 @@
       var_dev = node.succeed("readlink -f /dev/disk/by-partlabel/var").strip()
       assert f"{var_dev} /var " in mounts, f"/var not mounted from {var_dev}:\n{mounts}"
 
-      # No ignition provisioning unit is loaded/active on the new path. A
+      # No removed provisioning unit may be loaded or active. A
       # stray `not-found` ordering reference (a stage-2 unit ordering after the
       # stage-1 files backend by its old name) is harmless — the unit does not
       # exist — so flag only units systemd actually loaded.
@@ -85,12 +85,12 @@
           if "ignition" in line.lower() and "not-found" not in line
       ]
       assert not loaded_ignition, (
-          "a loaded ignition unit is present on the new path:\n"
+          "a removed ignition unit is loaded:\n"
           + "\n".join(loaded_ignition)
       )
 
       # No failed units.
       failed = node.succeed("systemctl --failed --no-legend").strip()
-      assert not failed, f"failed units on new-path boot: {failed!r}"
+      assert not failed, f"failed units on provisioned boot: {failed!r}"
     '';
 }
