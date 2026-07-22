@@ -1,4 +1,4 @@
-# lib/testing/config-materialize.nix — RFC-0011 manifest materializer integration.
+# lib/testing/config-materialize.nix — configuration manifest materializer integration.
 #
 # The eval-only core PRODUCES `config.system.build.configManifest` (an
 # `aos.config-manifest/v1` document). This gate feeds a REAL server manifest to

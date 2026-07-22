@@ -68,7 +68,7 @@ pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
-/// Registry feature flag for the RFC-0011 second `config` package output and
+/// Registry feature flag for the second `config` package output and
 /// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
 pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
 
@@ -531,7 +531,7 @@ pub struct PackageMeta {
     /// Store artifact carrying rendered RFC-0001 unit files and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// RFC-0011 config-only module output and its declared interface.
+    /// Configuration-only module output and its declared interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module: Option<ConfigModuleMeta>,
     /// Signed RFC-0001 permission manifest.
@@ -559,7 +559,7 @@ pub use aos_registry_surface::manifest::{
     RequiredCapabilityMeta, SyscallProfile,
 };
 
-// RFC-0011 config schema types are pure manifest data; they live in the
+// Configuration schema types are pure manifest data; they live in the
 // wasm-clean `aos-registry-surface` crate alongside the rest of the package
 // schema (so the hub indexer and the Worker share them) and are re-exported
 // here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
@@ -578,7 +578,7 @@ pub fn option_path_root(path: &str) -> &str {
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
 /// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
-/// [`rfc0001_metadata_requires_provenance`]; in addition, an RFC-0011
+/// [`rfc0001_metadata_requires_provenance`]; in addition, a configuration
 /// `config_module` block is privileged metadata that independently forces
 /// provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
@@ -975,7 +975,7 @@ pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()
     Ok(())
 }
 
-/// Validate the second `config` package output metadata (RFC-0011).
+/// Validates metadata for the second `config` package output.
 ///
 /// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
 /// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
@@ -1025,7 +1025,7 @@ pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
     Ok(())
 }
 
-/// Validate RFC-0011 config-module metadata.
+/// Validates configuration-module metadata.
 ///
 /// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
 /// (`min <= max`), the option paths, owned roots, and contributions for
@@ -1830,7 +1830,7 @@ pub struct ApmMeta {
     /// Rendered RFC-0001 expose artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// RFC-0011 config-only module metadata captured at install time.
+    /// Configuration-only module metadata captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module: Option<ConfigModuleMeta>,
     /// RFC-0001 permission manifest captured at install time.
@@ -2665,16 +2665,16 @@ pub struct SystemGeneration {
     /// upgrades and rollbacks (`None` when the toplevel ships no kernel).
     #[serde(default)]
     pub kernel_path: Option<String>,
-    /// RFC-0011: the [`ImageGeneration::number`] this config-gen was evaluated
+    /// The [`ImageGeneration::number`] against which this configuration was evaluated.
     /// against, establishing the parent edge.
     ///
     /// `None` for legacy single-axis generations created before the two-axis
     /// split; such generations re-activate directly (the rollback pin treats a
-    /// missing pin as "same ABI", preserving the pre-RFC-0011 flow). Populated
+    /// missing pin as "same ABI" for compatibility). Populated
     /// for generations produced by the on-host config evaluator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_gen_parent: Option<u32>,
-    /// RFC-0011: the `module_abi` in effect at eval time (== the parent
+    /// The `module_abi` in effect at evaluation time, equal to the parent
     /// image-gen's `module_abi`).
     ///
     /// The rollback pin ([`SystemGeneration::reactivation_plan`]) compares this
@@ -2682,26 +2682,26 @@ pub struct SystemGeneration {
     /// different ⇒ cross-ABI re-eval. `None` for legacy generations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_abi_pinned: Option<u32>,
-    /// RFC-0011: content-address of the canonicalized manifest JSON
+    /// Content address of the canonicalized manifest JSON.
     /// (`gen-N/manifest.json`) that identifies the config-gen's *output*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_hash: Option<String>,
-    /// RFC-0011: store path of the config-module **source** closure the
+    /// Store path of the configuration-module **source** closure the
     /// evaluator read (the eval *input*, distinct from package runtime
     /// outputs). GC-rooted by `gen-N/cfgsrc/<hash>`; required for cross-ABI
     /// re-eval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_module_closure: Option<String>,
-    /// RFC-0011: store path / content hash of the exact `host.nix` this
+    /// Store path or content hash of the exact `host.nix` this
     /// config-gen was evaluated from (content-pin, never a mutable git ref).
     /// GC-rooted by the same `gen-N/cfgsrc/<hash>` root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_nix_ref: Option<String>,
-    /// RFC-0011: optional non-authoritative provenance — the git commit
+    /// Optional non-authoritative provenance: the Git commit
     /// `host.nix` came from, recorded for operator traceability only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_nix_commit: Option<String>,
-    /// RFC-0011: content-address of the resolved instance facts (`facts.json`)
+    /// Content address of the resolved instance facts (`facts.json`).
     /// the eval consumed. Part of the reproducible input set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facts_hash: Option<String>,
@@ -2709,7 +2709,7 @@ pub struct SystemGeneration {
 
 impl SystemGeneration {
     /// Decides how this config-generation may be re-activated under a running
-    /// image whose shared-option ABI is `running_abi` (RFC-0011 build-spec §6).
+    /// image whose shared-option ABI is `running_abi`.
     ///
     /// A config-gen is pinned to the `module_abi` it was evaluated against
     /// ([`Self::module_abi_pinned`]); the manifest is the *output* of evaluating
@@ -2718,7 +2718,7 @@ impl SystemGeneration {
     ///
     /// - **Same ABI (or a legacy generation with no recorded pin)** ⇒
     ///   [`ReactivationPlan::DirectReactivate`]: a pure pointer switch over the
-    ///   retained `cfg/` outputs. A `None` pin maps here so the pre-RFC-0011
+    ///   retained `cfg/` outputs. A `None` pin maps here so the single-axis
     ///   single-axis rollback flow is preserved byte-for-byte.
     /// - **Different ABI** ⇒ [`ReactivationPlan::CrossAbiReEval`] carrying the
     ///   retained inputs (`config_module_closure`, `host_nix_ref`, `facts_hash`)
@@ -2769,7 +2769,7 @@ impl SystemGeneration {
 }
 
 /// The action required to re-activate a config-generation under a (possibly
-/// changed) running image's `module_abi` (RFC-0011 build-spec §6).
+/// changed) running image's `module_abi`.
 ///
 /// Produced by [`SystemGeneration::reactivation_plan`] and consumed by the
 /// rollback path. The two arms are the two independent re-bind outcomes the
@@ -2787,7 +2787,7 @@ pub enum ReactivationPlan {
 }
 
 /// The retained eval inputs a cross-ABI re-activation must replay
-/// (RFC-0011 build-spec §6, generations.md "Different-ABI").
+/// using its retained inputs.
 ///
 /// All three store references are kept alive on `/var` by the per-generation
 /// `gen-N/cfgsrc/<hash>` GC root, so the re-eval is satisfiable without any
@@ -2820,10 +2820,10 @@ pub struct SystemGenerationState {
 }
 
 // ---------------------------------------------------------------------------
-// RFC-0011 two-axis generations: image-gen (substrate) + config-gen (overlay)
+// Two-axis generations: image generation (substrate) and configuration generation (overlay).
 // ---------------------------------------------------------------------------
 //
-// RFC-0011 splits the bundled [`SystemGeneration`] into two records on two
+// The generation model splits the bundled [`SystemGeneration`] into two records on two
 // axes (a tree: each [`ConfigGeneration`] is a child of exactly one
 // [`ImageGeneration`]). These types are introduced *alongside* the existing
 // `SystemGeneration`/`SystemGenerationState`, which remain the on-disk
@@ -2832,7 +2832,7 @@ pub struct SystemGenerationState {
 // over a `SystemGeneration` record; [`ImageGeneration`] is the genuinely new
 // image axis persisted at `/var/lib/profiles/image/state.json`.
 
-/// A/B slot discriminant for an image-generation (RFC-0011).
+/// A/B slot discriminant for an image generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImageSlot {
     /// The `A` partition slot.
@@ -2843,7 +2843,7 @@ pub enum ImageSlot {
 
 /// One measured, signed image-generation: kernel + initrd + base lib +
 /// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
-/// PCR-11 policy (RFC-0011 build-spec §1.1).
+/// PCR-11 policy recorded for an image generation.
 ///
 /// It is **not** the authority of record — the ESP UKI set + the running
 /// image's `/etc/os-release` are. The `/var` record is a userspace *index*
@@ -2905,7 +2905,7 @@ impl ImageGeneration {
 }
 
 /// Persistent state for the image-generation axis
-/// (`/var/lib/profiles/image/state.json`, RFC-0011 build-spec §1.1).
+/// stored at `/var/lib/profiles/image/state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageGenerationState {
     /// The image-gen the live kernel booted (cross-checked against
@@ -2933,7 +2933,7 @@ impl ImageGenerationState {
 
 /// One config-generation: the materialized `/etc` overlay produced by
 /// evaluating the installed set's config modules + `host.nix` against a
-/// specific image-gen's base lib (RFC-0011 build-spec §1.2).
+/// specific image generation's base library.
 ///
 /// This is the forward-looking canonical view; the on-disk authority is the
 /// (additively extended) [`SystemGeneration`] record. Use
@@ -2973,12 +2973,12 @@ pub struct ConfigGeneration {
 
 impl ConfigGeneration {
     /// Projects a persisted [`SystemGeneration`] into the canonical config-gen
-    /// view, copying the RFC-0011 axis fields verbatim.
+    /// view, copying the generation-axis fields verbatim.
     ///
     /// This is the one-shot migration seam: a legacy `state.json` whose
-    /// generations carry none of the RFC-0011 fields yields config-gens with
+    /// generations carry none of the two-axis fields yields configuration generations with
     /// `None` axis metadata, which the rollback pin treats as same-ABI
-    /// (preserving the pre-RFC-0011 single-axis flow).
+    /// preserving the single-axis compatibility flow.
     pub fn from_system_generation(record: &SystemGeneration) -> Self {
         Self {
             number: record.number,
@@ -2995,7 +2995,7 @@ impl ConfigGeneration {
 }
 
 /// Persistent state for the config-generation axis, the forward-looking
-/// canonical view over [`SystemGenerationState`] (RFC-0011 build-spec §1.2).
+/// canonical view over [`SystemGenerationState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigGenerationState {
     /// Number of the currently active generation (`0` = none yet).
@@ -5227,7 +5227,7 @@ pin = "v2026.02"
     }
 
     // ----------------------------------------------------------------------
-    // RFC-0011 config-module metadata + inverted index
+    // Configuration-module metadata.
     // ----------------------------------------------------------------------
 
     fn sample_config_module() -> ConfigModuleMeta {
@@ -5352,10 +5352,10 @@ provenance = "provenance/firewall.jsonl"
     }
 
     // -----------------------------------------------------------------------
-    // RFC-0011 two-axis generation records
+    // Two-axis generation records.
     // -----------------------------------------------------------------------
 
-    /// A legacy single-axis `state.json` (no RFC-0011 fields) still parses, and
+    /// A legacy single-axis `state.json` without two-axis fields still parses, and
     /// every config-gen field defaults to `None` (backward compatibility).
     #[test]
     fn legacy_system_generation_state_parses() {
@@ -5385,7 +5385,7 @@ provenance = "provenance/firewall.jsonl"
             g.reactivation_plan(5).unwrap(),
             ReactivationPlan::DirectReactivate
         );
-        // Re-serializing a legacy generation must NOT inject any RFC-0011 axis
+        // Reserializing a legacy generation must not inject any two-axis
         // keys (skip_serializing_if = Option::is_none) — otherwise upgrading a
         // node would churn its on-disk state.json for no reason.
         let reser = serde_json::to_value(g).expect("serialize legacy gen");
@@ -5400,12 +5400,12 @@ provenance = "provenance/firewall.jsonl"
         ] {
             assert!(
                 reser.get(k).is_none(),
-                "legacy gen must not emit RFC-0011 key '{k}'"
+                "legacy generation must not emit two-axis key '{k}'"
             );
         }
     }
 
-    /// A config-gen carrying the RFC-0011 axis fields round-trips through serde
+    /// A configuration generation carrying the two-axis fields round-trips through serde.
     /// and the new fields are emitted (and re-read) verbatim.
     #[test]
     fn config_gen_axis_fields_round_trip() {

@@ -52,7 +52,7 @@
   # Auto-discovered module list.
   modules = import ./modules;
 
-  # RFC-0011 stage-2: assemble the in-image, eval-only base library for every
+  # Assemble the in-image, eval-only base library for every
   # system. See `lib/build/base-lib.nix`.
   mkBaseLib = import ./lib/build/base-lib.nix {inherit lib pkgs;};
 
@@ -77,7 +77,7 @@
       if builtins.isAttrs args && args ? systemName
       then args.systemName
       else "system";
-    # RFC-0011 CS5 seam: the on-host resolver supplies the verified `host.nix`
+    # The on-host resolver supplies the verified `host.nix`
     # store path here as an operator-provenance module, so its bare defs are
     # lifted to the reserved priority-75 band (see `lib/modules.nix`
     # `operatorModules`). Defaults `[]` — no caller sets it yet, so every
@@ -331,7 +331,7 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    # RFC-0011 off-host config-eval preflight + flat<->module parity gates
+    # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
@@ -339,13 +339,13 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
-    # RFC-0011 T0 characterization golden. Buildable via
-    # `nix-build -A checks.rfc-0011-characterization`, but NOT yet wired into the
+    # System characterization golden. Buildable via
+    # `nix-build -A checks.system-characterization`, but not wired into the
     # hard CI gate (flake.nix / build.all): it is RED until its baselines are
-    # generated on a Linux/KVM builder (`-A checks.rfc-0011-characterization.regenerate`)
-    # and committed under tests/fixtures/rfc-0011-goldens/server/. Wire it into the
+    # generated on a Linux/KVM builder (`-A checks.system-characterization.regenerate`)
+    # and committed under tests/fixtures/system-characterization-goldens/server/. Wire it into the
     # gate in the same diff that lands the baselines. See that dir's README.
-    rfc-0011-characterization = import ./lib/testing/rfc-0011-characterization.nix {
+    system-characterization = import ./lib/testing/system-characterization.nix {
       inherit pkgs lib mkSystem;
       system = serverSystem;
     };

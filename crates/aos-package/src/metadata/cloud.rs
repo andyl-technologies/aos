@@ -36,7 +36,7 @@ macro_rules! stub_fetcher {
             }
 
             async fn fetch_user_data(&self, _http: &dyn MetadataHttp) -> Result<Option<UserData>> {
-                // TODO(rfc-0011 Phase C): implement the documented contract for
+                // TODO: implement the documented contract for
                 // this platform with a recorded-fixture test, mirroring
                 // `crate::metadata::aws::AwsImdsFetcher`. Until then, no
                 // user-data ⇒ gen-0-only / Ignition-compat fallback.
@@ -44,7 +44,7 @@ macro_rules! stub_fetcher {
             }
 
             async fn fetch_facts(&self, _http: &dyn MetadataHttp) -> Result<Facts> {
-                // TODO(rfc-0011 Phase C): GET the platform's metadata document.
+                // TODO: fetch the platform's metadata document.
                 Ok(Facts::default())
             }
         }

@@ -1,4 +1,4 @@
-# lib/testing/config-parity.nix — RFC-0011 flat-merge <-> module-eval parity.
+# lib/testing/config-parity.nix — flat-merge to module-eval parity.
 #
 # operability.md §Parity gate (model: the aos-nix `.drv` parity gate). The
 # safe-migration invariant is that a package migrating from a flat
@@ -60,7 +60,7 @@ in
           : ${builtins.toString evalAssertions}
           mkdir -p $out
           cp ${golden} $out/web.golden
-          echo "==> RFC-0011 config-parity gate" | tee $out/result
+          echo "==> config-parity gate" | tee $out/result
           echo "  flat-merge golden present + well-formed (${builtins.toString (builtins.length sectionHeaders)} sections): OK"
           echo "  authoritative byte-parity oracle: crates/aos-package/tests/golden_config_artifact.rs (runs in pkgs.aos build)"
         '';

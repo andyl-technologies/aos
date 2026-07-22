@@ -64,7 +64,7 @@ in {
       '';
     };
 
-    ## sd-boot boot-counting tries for durable image rollback (RFC-0011 §5.2).
+    ## sd-boot boot-counting tries for durable image rollback.
     ##
     ## When non-null, the UKI staged into the ESP is named with the sd-boot
     ## tries-suffix `aos-<name>-<version>+<tries>.efi`. sd-boot decrements the
@@ -79,8 +79,8 @@ in {
       type = lib.types.nullOr lib.types.int;
       default = null;
       description = ''
-        sd-boot boot-counting tries-suffix for the staged UKI (RFC-0011
-        durable image rollback). When set to N, the ESP UKI is named
+        sd-boot boot-counting tries suffix for durable image rollback. When
+        set to N, the ESP UKI is named
         `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
         UKI that fails to start, falling back to the other A/B slot. Durable
         rollback is `bootctl set-default`, not the lexical glob. `null` keeps

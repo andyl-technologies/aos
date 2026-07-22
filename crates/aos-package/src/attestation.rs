@@ -1,5 +1,4 @@
-//! The `aos.gen-attestation/v1` generation-attestation record (RFC-0011
-//! build-spec §1, trust-and-secrets.md §Generation-attestation record).
+//! The `aos.gen-attestation/v1` generation-attestation record.
 //!
 //! The locally-computed config manifest needs **no signature**: it is
 //! `f(inputs)` under `--pure-eval`, so reproducibility-from-signed-inputs is

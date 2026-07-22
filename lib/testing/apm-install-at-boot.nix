@@ -1,7 +1,7 @@
 ##! lib/testing/apm-install-at-boot.nix — apm install-at-boot intent check.
 ##!
 ##! `aos.apm.installAtBoot` bakes `desired.toml` + registry config straight into
-##! the image /etc (RFC-0011 new path); `aos-install-baked-packages` reconciles it at
+##! the image /etc; `aos-install-baked-packages` reconciles it at
 ##! first boot. The system under test enables it directly.
 {
   pkgs,

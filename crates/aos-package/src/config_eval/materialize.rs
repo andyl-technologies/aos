@@ -1,4 +1,4 @@
-//! The RFC-0011 manifest materializer — the *consumer* half of on-host config
+//! The configuration manifest materializer for on-host configuration
 //! evaluation.
 //!
 //! [`super::stock`] and [`super::run_fixpoint`] *produce* an
@@ -6,7 +6,7 @@
 //! *applies* it, rendering the manifest's `/etc` tree into a per-generation
 //! lower directory so a generation's `/etc` reflects the operator `host.nix`.
 //! Before this existed, `activate` re-ran Ignition to render per-host `/etc`;
-//! on the RFC-0011 path there is no Ignition, so the manifest is the sole
+//! the manifest is the sole
 //! source of a generation's per-host `/etc`.
 //!
 //! # The manifest (`aos.config-manifest/v1`)

@@ -625,7 +625,7 @@ in
                 # (predicting PCR-11 for the registry catalog), not needed
                 # inside the initrd. (No apostrophes in this comment — it
                 # lives inside a single-quoted sh -c block.)
-                # systemd-repart is KEPT (RFC-0011 provisioning): the
+                # systemd-repart is kept because the
                 # convention-substrate carves /var/swap/root-b in the initrd
                 # before mount-var via repart.d drop-ins. systemd-firstboot
                 # stays stripped (hostname is manifest-rendered, not firstboot).

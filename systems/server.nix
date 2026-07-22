@@ -1,7 +1,7 @@
 ##! systems/server.nix — Server golden image
 ##!
 ##! Builds a server image suitable for cloud/datacenter deployment.
-##! RFC-0011 evaluates signed host configuration at boot; Kubernetes role
+##! Signed host configuration is evaluated at boot; Kubernetes role
 ##! configuration is applied separately.
 ##!
 ##! Profiles: server, debug

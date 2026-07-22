@@ -3,7 +3,7 @@
 # Each machine boots through the production initrd path (stage-1 systemd
 # → systemd-repart substrate → switch-root → stage-2 systemd). Per-machine
 # identity (hostname, /etc/hosts, eth0 .network, the guest-agent unit) is
-# baked into the image's /etc via `extendModules` (the RFC-0011 new path),
+# baked into the image's /etc via `extendModules`,
 # so no metadata channel is attached.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
 # UDP multicast carrying Ethernet frames — so no host bridge or tap setup
@@ -116,13 +116,13 @@
     lib.concatStringsSep "\n"
     (builtins.map (m: "${m.ip} ${m.name}") machinesWithIndex);
 
-  # ── New-path identity module (baked via extendModules) ─────────────
-  # The RFC-0011 replacement for the Ignition storage.files fragments above.
+  # ── Per-machine identity module (baked via extendModules) ──────────
+  # Bakes each machine's identity into the image.
   # Instead of delivering hostname / hosts / .network / ssh-key / agent-unit
   # over a metadata channel at first boot, they are baked straight into the
   # machine image's `/etc` (the system EROFS, gen-0) by overlaying this module
   # onto the machine's already-evaluated system with `extendModules`. On the
-  # new path the initrd `aos-config-seed` leaves the per-gen `/etc` lower empty,
+  # the initrd `aos-config-seed` leaves the per-generation `/etc` lower empty,
   # so all of `/etc` comes from this baked EROFS — exactly what these entries
   # populate. The same module flips the machine onto the new provisioning
   # substrate (Ignition off, systemd-repart on).
@@ -246,7 +246,7 @@
     builtins.map (
       m: let
         # Every machine bakes per-VM identity + provisioning into its image /etc
-        # via extendModules (the new path); nothing rides a metadata channel.
+        # via extendModules; nothing rides a metadata channel.
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
       in
         {
@@ -331,7 +331,7 @@
                     kernel = builtins.toString mb.kernel;
                     initrd = "${builtins.toString mb.initrd}/initrd.img";
                     disk = "${builtins.toString mb.disk}/disk.img";
-                    # `null` on the new path: identity is baked into /etc, so no
+                    # `null` because identity is baked into /etc, so no
                     # metadata ISO is attached (driver omits the SCSI CD-ROM).
                     metadata =
                       if mb.metadataISO == null

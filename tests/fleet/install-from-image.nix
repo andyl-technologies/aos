@@ -1,10 +1,10 @@
 # tests/fleet/install-from-image.nix - The installation guide, as a test.
 #
-# RFC-0003 + RFC-0011: the de-facto AOS install flow, end to end, using only
+# The AOS install flow, end to end, using only
 # what a new user has — the published raw image and apm:
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
-#                 UKI → systemd initrd). On the RFC-0011 new path there is no
+#                 UKI → systemd initrd). There is no runtime provisioning
 #                 Ignition: systemd-repart carves swap and var (taking the
 #                 rest) in the trailing free space of the grown per-run disk.
 #                 root-a (the read-only erofs base) ships in the image
@@ -32,8 +32,7 @@
 #   registry: kernel-boot peer publishing the registry + static cache
 #             (same shape as apm-registry-upgrade.nix), with the
 #             server-2 toplevel and bc pre-staged in its store.
-#   target:   image-boot (bootMode = "image"), new path (provisioning =
-#             RFC-0011): no metadata channel — identity baked
+#   target:   image boot with no metadata channel; identity is baked
 #             into /etc, systemd-repart carves swap/var.
 {
   lib,
@@ -82,7 +81,7 @@ in {
   machines = {
     registry = {
       system = serverWithRegistry;
-      # New path (kernel boot, baked /var) — matches apm-registry-upgrade.
+      # Kernel boot with baked /var matches apm-registry-upgrade.
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
@@ -103,7 +102,7 @@ in {
     target = {
       system = systems.server-test;
       bootMode = "image";
-      # RFC-0011 new path: no Ignition. systemd-repart carves swap + var (and
+      # systemd-repart carves swap and var (and
       # the reserved root-b slot) in the trailing free space of the grown
       # per-run image disk; per-VM identity + the guest agent are baked into
       # the image /etc via extendModules (lib/testing/fleet.nix).

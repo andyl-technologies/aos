@@ -1,4 +1,4 @@
-##! modules/security/verity.nix — dm-verity root anchoring (RFC-0011 F1)
+##! modules/security/verity.nix — dm-verity root anchoring
 ##!
 ##! Anchors the read-only erofs root (carrying the base lib + on-host evaluator
 ##! closure) to measured boot via dm-verity. The Merkle root hash of the root
@@ -34,7 +34,7 @@
   cfg = config.aos.security.verity;
 in {
   options.aos.security.verity = {
-    ## Enable dm-verity root anchoring for the immutable erofs root (RFC-0011 F1).
+    ## Enable dm-verity root anchoring for the immutable erofs root.
     ##
     ## Opt-in. When false (the default, and every ext4/VM-test system) this
     ## module is completely inert: no kernel params, no initrd module, no root
@@ -49,7 +49,7 @@ in {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable dm-verity root anchoring (RFC-0011 F1). When enabled, the build
+        Enable dm-verity root anchoring. When enabled, the build
         produces a Merkle hash tree over the read-only erofs root, ships it in a
         dedicated `root-a-hash` GPT partition, and bakes the root hash into the
         measured UKI `.cmdline`. At boot, systemd-veritysetup-generator assembles

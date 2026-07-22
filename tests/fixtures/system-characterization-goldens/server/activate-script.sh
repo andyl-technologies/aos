@@ -117,7 +117,7 @@ upper_root=/run/etc/upper-${N}
 # stage-2's /run across switch_root), so per-host /etc is rendered by re-running
 # ignition's fetch+files stages below.
 #
-# RFC-0011 path: there is no Ignition stage, so platform.env is absent. Per-host
+# Per-host
 # /etc comes from the on-host config-eval manifest (/run/aos/manifest.json),
 # applied by `apm __materialize` below. When neither is present the generation's
 # /etc is exactly the baked image /etc. Detect the path by the presence of
@@ -171,7 +171,7 @@ STAGE="$STAGE_PREPARE"
 # mounting unit; if the metadata mount was reaped, restore it here so
 # ignition's file provider can read /run/aos-metadata/config.json.)
 # `ignition_active` short-circuits before $PLATFORM_ID is referenced, so this is
-# safe under `set -u` on the RFC-0011 path (where platform.env is never sourced).
+# safe under `set -u` when platform.env is never sourced.
 if [ "$ignition_active" = 1 ] && [ "$PLATFORM_ID" = "file" ] && \
    ! /nix/store/<HASH>-util-linux-2.42.1/bin/mountpoint -q /run/aos-metadata; then
   /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/aos-metadata
@@ -194,7 +194,7 @@ fi
 #     (carries /run/aos-metadata/config.json). `env -i` clears the environment;
 #     the absolute path avoids relying on the PATH we cleared.
 #
-#   * RFC-0011 path (a converged config-eval manifest exists): apply it with
+#   * a converged config-eval manifest exists: apply it with
 #     `apm __materialize`, which writes the manifest's text/symlink /etc entries
 #     and job scripts into $ign/etc and rewrites unit-body job-script
 #     placeholders. When neither backend fires, $ign/etc stays empty and the

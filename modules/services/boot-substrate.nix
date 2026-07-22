@@ -132,7 +132,7 @@
     #                                             (machine-id, ssh host keys)
     #   lowerdir+=/run/etc/config-<gen>/etc   — per-gen files-backend lower
     #                                             (Ignition storage.links, or
-    #                                             empty seed on the new path)
+    #                                             empty initial seed)
     #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
     #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
     #                                              entries (metacopy)

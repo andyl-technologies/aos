@@ -240,7 +240,7 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    functions) and is **byte-identical** to the real-pkgs manifest. Required the
    three engine/representation fixes ("What actually unblocked it") plus the
    three image-fixed builder conversions; toplevel `.drv` unchanged. Validated
-   on the builder, and green across `eval`, `rfc-0011-characterization` (golden
+   on the builder, and green across `eval`, `system-characterization` (golden
    byte-diff), `module-enforcement`, `module-args`, `systemd-lib`,
    `systemd-generate`, `config-eval`, `config-parity`, `package-expose`,
    `package-preset`, `systemd-credentials`, `systemd-verity`, `lint`.
@@ -270,7 +270,7 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    1. Flip the stock systems (`server.nix`, `edge`, …) to the new path
       (`ignition.enable = false`, `repart`/`metadata`/`evalAtBoot` on), or make
       `server-rfc0011` the canonical `server`. This changes those systems'
-      toplevel bytes, so **regenerate the `rfc-0011-characterization` golden**
+      toplevel bytes, so **regenerate the `system-characterization` golden**
       in the same reviewed diff.
    2. Boot-validate each migrated system.
    3. Delete `pkgs/boot/ignition.nix` + `pkgs/boot/butane.nix` (+
@@ -299,7 +299,7 @@ the new path; `apm upgrade --system` **succeeds** (after making `activate`'s
 Ignition rendering conditional); `apm-install-at-boot` and `package-preset`
 migrated to bake their intent into `/etc`; `pkgs.ignition` removed from **every**
 system closure; the ~430-line stage-unit block + gate deleted. `checks.eval`,
-`rfc-0011-characterization` (golden regenerated), and the boot/upgrade VM tests
+`system-characterization` (golden regenerated), and the boot/upgrade VM tests
 were all green.
 
 Then `checks.fleet.install-from-image` **failed**: *"agent did not become ready

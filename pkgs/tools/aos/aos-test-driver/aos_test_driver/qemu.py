@@ -236,7 +236,7 @@ class QemuMachine(Machine):
             log.info("  Firmware: %s", self.firmware_code)
             log.info("  fw_cfg:   %s", self.fw_cfg_path)
         else:
-            # A metadata ISO is optional on the RFC-0011 new path: fleet
+            # A metadata ISO is optional because fleet
             # identity is baked into the image's /etc (via extendModules), so a
             # kernel-boot machine may carry no metadata channel at all. When
             # absent, no SCSI CD-ROM is attached (see the argv block below) and
@@ -450,7 +450,7 @@ class QemuMachine(Machine):
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
             # Attach the metadata ISO as a SCSI CD-ROM only when present; the
-            # new path bakes identity into /etc and ships no metadata channel.
+            # machine identity is baked into /etc, so no metadata channel ships.
             if self.metadata_src is not None:
                 argv += [
                     "-drive",

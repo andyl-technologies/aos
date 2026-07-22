@@ -70,7 +70,7 @@
 
   # Files baked into the image /etc when install-at-boot is enabled. The
   # image-bootstrap reconciler consumes these only when no host-eval manifest
-  # exists; dynamic host configuration is owned exclusively by the RFC-0011
+  # exists; dynamic host configuration is owned exclusively by the
   # unit graph.
   installAtBootEtc = lib.optionalAttrs cfg.enable (
     {
@@ -352,7 +352,7 @@ in {
         TimeoutStartSec = "2min";
       };
       script = ''
-        # A host-eval manifest belongs to the RFC-0011 unit graph. Never run a
+        # A host-eval manifest belongs to the unit graph. Never run a
         # second, monolithic reconciler over the same desired state.
         if [ -e /run/aos/manifest.json ]; then
           exit 0

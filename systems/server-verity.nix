@@ -1,6 +1,6 @@
 ##! systems/server-verity.nix — measured-boot + dm-verity root + repart substrate
 ##!
-##! The RFC-0011 production anchoring variant. Builds on
+##! The production integrity-anchoring variant. Builds on
 ##! systems/server-measured-boot.nix (erofs root via the server profile, Secure
 ##! Boot signing + enrollment, signed-PCR-policy measured boot, TPM2-sealed
 ##! /var) and additionally turns on:

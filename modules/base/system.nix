@@ -97,7 +97,7 @@ in {
       '';
     };
 
-    ## Shared-option-schema ABI integer (RFC-0011 generations OQ).
+    ## Shared-option-schema ABI integer used to validate configuration generations.
     ##
     ## A monotonic integer identifying the base-lib option schema this image
     ## ships. It is written to `/etc/os-release` as `AOS_MODULE_ABI` (and so

@@ -29,7 +29,7 @@
   timeout = 1800;
 
   machines = {
-    # The base image ships only ESP + root-a; on the RFC-0011 new path
+    # The base image ships only ESP and root-a;
     # systemd-repart creates swap/var on first boot. /var is required for the
     # system to reach multi-user (identity + role activation persist there).
     target = {

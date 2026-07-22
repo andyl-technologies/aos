@@ -49,7 +49,7 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
-  # RFC-0011 Layer 2: the merged system bus config is an image-fixed artifact
+  # The merged system bus config is an image-fixed artifact
   # (a function of which packages are enabled, not of host.nix). Register it as
   # a config artifact and reference the resolved value, so the on-host eval-only
   # evaluator uses the stage-1-frozen store path instead of re-building it. On a
@@ -85,7 +85,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     # Register the merged system bus config as an image-fixed config artifact
-    # (RFC-0011 Layer 2). Built at stage-1; referenced via
+    # built during image assembly and referenced via
     # `config.aos.config.artifacts.dbus-system-conf` (see the `let` above).
     # Skip the live build entirely when the on-host evaluator injected a frozen
     # path for this artifact: `pkgs.dbus-conf` is absent from the stage-2 frozen

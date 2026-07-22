@@ -34,7 +34,7 @@
   bootTimeout = 600;
 
   machines = {
-    # New path: systemd-repart carves swap + var. /var is left RAW (repart
+    # systemd-repart carves swap and var. /var is left raw (repart
     # omits Format= under measured boot) — aos-var-crypt owns its filesystem:
     # plain ext4 on the Setup boot, LUKS2 once enforcing.
     target = {

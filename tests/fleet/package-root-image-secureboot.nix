@@ -224,7 +224,7 @@ in {
   timeout = 1800;
 
   machines = {
-    # New path: systemd-repart carves swap + var on first boot.
+    # systemd-repart carves swap and var on first boot.
     target = {
       system = testSystem;
       bootMode = "image";

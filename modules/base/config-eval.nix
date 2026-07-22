@@ -1,4 +1,4 @@
-##! modules/base/config-eval.nix — RFC-0011 on-host config evaluation
+##! modules/base/config-eval.nix — on-host configuration evaluation
 ##!
 ##! Authors `aos-eval.service`: the stage-2 systemd unit that drives the
 ##! resolve↔eval fixpoint (`apm __eval`) over the in-image base library, the
@@ -70,7 +70,7 @@ in {
     ];
 
     systemd.services.aos-eval = {
-      description = "RFC-0011 on-host config evaluation (resolve↔eval fixpoint)";
+      description = "Evaluate signed host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
       wants = ["network-online.target"];
       after = [

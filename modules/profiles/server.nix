@@ -1,6 +1,6 @@
 ##! modules/profiles/server.nix — Server role profile
 ##!
-##! Configures the system for server/cloud deployments: RFC-0011 signed host
+##! Configures the system for server/cloud deployments: signed host
 ##! first-boot provisioning in the initrd, encrypted swap, NTP via chrony,
 ##! SSH access, and standard security posture.
 ##!

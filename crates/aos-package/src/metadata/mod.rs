@@ -1,4 +1,4 @@
-//! The `aos metadata` agent — the Ignition fetch replacement (RFC-0011 CS8).
+//! The `aos metadata` agent for fetching host configuration and instance facts.
 //!
 //! Two initrd phases own cross-cloud user-data + instance-metadata acquisition,
 //! replacing Ignition's fetch layer. The agent is **transport-only**: it

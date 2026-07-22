@@ -64,7 +64,7 @@
   # image is the byte-reproducible unsigned artifact.
   sb = system.config.aos.boot.secureBoot;
 
-  # RFC-0011 F1: dm-verity root anchoring. Opt-in via aos.security.verity.enable
+  # dm-verity root anchoring, enabled by aos.security.verity.enable.
   # (modules/security/verity.nix, auto-loaded so the option always exists; false
   # for every ext4/VM-test system). When false, every verity branch below is
   # gated off and the image build is unchanged.
@@ -120,7 +120,7 @@
       if sb.measuredBoot.enable
       then sb.measuredBoot.pcrPublicKey
       else null;
-    # RFC-0011 F1: bake `roothash=<hex>` (a build output) into the measured
+    # Bake `roothash=<hex>` (a build output) into the measured
     # .cmdline. `null` when verity is off, so non-verity UKIs are unchanged.
     rootHashFile =
       if verityEnabled
@@ -130,7 +130,7 @@
 
   ukiFilename = "aos-${name}-${version}.efi";
 
-  # RFC-0011 §5.2: sd-boot boot-counting tries-suffix for durable image
+  # sd-boot boot-counting tries suffix for durable image
   # rollback. When `aos.boot.bootCountingTries` is set, the UKI staged into the
   # ESP is named `aos-<name>-<version>+<tries>.efi`; sd-boot decrements the
   # counter on each boot attempt and auto-demotes a UKI that fails to boot, so a
@@ -216,12 +216,12 @@
             fi
 
             # UKI auto-discovered by sd-boot from /EFI/Linux/. The ESP filename
-            # carries the RFC-0011 §5.2 boot-counting tries-suffix when enabled.
+            # carries the boot-counting tries suffix when enabled.
             cp "$UKI_PATH" esp/EFI/Linux/${espUkiFilename}
 
             # sd-boot configuration. The `default aos-*.efi` glob is the
             # FIRST-INSTALL FALLBACK only: it picks the lexically-highest match.
-            # For A/B rollout, RFC-0011 §5.2 names UKIs with a boot-counting
+            # For A/B rollout, name UKIs with a boot-counting
             # tries-suffix (auto-demoting a bad new image) and pins durable
             # rollback via `bootctl set-default` at runtime, which overrides the
             # glob's lexical preference.
@@ -259,7 +259,7 @@
 
             # ── 4. Assemble final GPT image ─────────────────────────────
             root_sectors=$(( root_bytes / 512 ))
-            # RFC-0011 F1: the dm-verity hash tree rides in a `root-a-hash`
+            # The dm-verity hash tree rides in a `root-a-hash`
             # partition immediately after root-a, sized from the build-time
             # root-verity-size-bytes and rounded up to a 1 MiB (2048-sector)
             # boundary. hash_sectors stays 0 (and the whole block is gated off)
@@ -345,7 +345,7 @@
       ];
     }
     // lib.optionalAttrs verityEnabled {
-      # RFC-0011 F1 verity inputs (gated): present only when verity is on, so the
+      # Verity inputs are present only when verity is on, so the
       # non-verity image derivation's environment — and hash — is unchanged.
       VERITY_IMG = "${rootfs}/root.verity";
       VERITY_SIZE_FILE = "${rootfs}/root-verity-size-bytes";
