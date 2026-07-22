@@ -12327,21 +12327,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       other crate root uses `forbid`; `aos-proto` uses the decision's explicit
       `deny` + scoped-CI exception path only for its private generated module
       ([30](30-flat-value-architecture.md) §8, §11).
-- [x] Dispatch measure gate: the post-diet Linux instruction census finds the
-      system toplevel at 4.56x C++ instructions/call with matched call counts and
-      similar IPC, and a file-free lambda interpreter pays the same uniform
-      tree-walk tax. This opens the doc 31 §3 production bytecode baseline
-      campaign; the versioned BC-0 register-bytecode artifact, explicit per-IR
-      admission table, verifier, deterministic renderer, and scalar/lexical-load
-      compiler slice establish the behavior-inert format foundation
-      ([31](31-substrate-optimizations.md) §3;
-      [implementation plan](design-notes/threaded-bytecode-baseline-plan.md)).
-- [ ] Complete bytecode BC-1 through BC-5: executable control-flow slice,
-      thunk/lambda/apply spine, full producer coverage and persistence,
-      measured superinstructions/dispatch selection, closure-wide CHECK parity,
-      and production-baseline rollout. Admission requires lower retired
-      instructions and wall time without regressing the established wide-eval
-      memory advantage; the safe tree walk remains the permanent oracle.
+- [ ] Measure-gated dispatch items (not committed): superinstructions
+      for the profit-census shapes; flat bytecode + operand stack only if
+      post-campaign profiles show dispatch as the top residual
+      ([30](30-flat-value-architecture.md) §6).
 
 **EXIT CRITERIA (falsifiable).** Doc 30 §12's campaign exit criteria: all
 six FV stages battery-green; the record table and address map off the
