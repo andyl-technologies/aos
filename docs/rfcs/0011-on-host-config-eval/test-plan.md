@@ -139,8 +139,10 @@ are *specified here* so the tests are written before the code:
   verification against `trusted-config-keys.d`, facts → `host.facts.*`,
   static-networking seed for DHCP-less clouds.
 - **Conscription / capability-scoped contribution** (`checks.eval`): a foreign
-  `enable` write is rejected at publish; a contribution to an owner-declared
-  contributable sub-path is allowed; provenance from the authenticated source
+  `enable` write is rejected at resolve time (its paths are not a subset of the
+  installed owner's contributable surface in `SystemRoots`); a contribution to an
+  owner-declared contributable sub-path is allowed; provenance from the
+  authenticated source
   (forged `_file` does not earn operator priority — review M-forgeable-file).
 
 ## How a check is added

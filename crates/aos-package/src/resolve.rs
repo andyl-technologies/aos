@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, bail};
 
 use super::registry::{RegistrySet, store_path_hash};
-use super::types::{ConfigModuleMeta, IndexEntry, ModuleAbiCompat, PackageMeta, ProvidesIndex};
+use super::types::{ConfigModuleMeta, ModuleAbiCompat, PackageMeta};
 use aos_core::error::AosError;
 
 // ---------------------------------------------------------------------------
@@ -399,53 +399,6 @@ pub fn enforce_module_abi_compat(modules: &[GatedConfigModule<'_>], image_abi: u
         }
     }
     Ok(())
-}
-
-/// Select the single index provider for a missing option path, gated on
-/// `module_abi` (RFC-0011 build-spec §3.3 gate 1).
-///
-/// Filters [`ProvidesIndex`] entries for `option_path` to those whose ABI band
-/// admits `image_abi`, then applies owned-root exclusivity: at most one
-/// `owner: true` entry may survive. An empty filtered set, or two surviving
-/// owners of the same root, is a hard error — the resolver aborts before
-/// producing a manifest.
-///
-/// # Errors
-///
-/// Returns an error when no compatible provider exists for `option_path`, or
-/// when more than one owner of the path's root survives the ABI filter (an
-/// owned-root exclusivity violation).
-pub fn select_index_provider<'a>(
-    index: &'a ProvidesIndex,
-    option_path: &str,
-    image_abi: u32,
-) -> Result<&'a IndexEntry> {
-    let candidates = index.providers_for(option_path, image_abi);
-    if candidates.is_empty() {
-        bail!(
-            "no provider for option '{option_path}' is compatible with image module_abi {image_abi}"
-        );
-    }
-
-    let owners: Vec<&IndexEntry> = candidates
-        .iter()
-        .copied()
-        .filter(|entry| entry.owner)
-        .collect();
-    match owners.as_slice() {
-        // Exactly one declaring owner: it wins.
-        [owner] => Ok(owner),
-        // No owner among compatible providers: a single contributor may stand
-        // in, but ambiguity (multiple contributors) is left to the caller's
-        // variant-conflict resolution; pick the first in stored order.
-        [] => Ok(candidates[0]),
-        // Two owners of the same root surviving the ABI filter is an
-        // owned-root exclusivity violation.
-        _ => bail!(
-            "option '{option_path}' has {} compatible owners; owned-root exclusivity requires exactly one",
-            owners.len()
-        ),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,74 +967,4 @@ requires = ["cycle-a"]
         assert!(msg.contains("running image is 1"), "{msg}");
     }
 
-    fn index_with(entries: Vec<(&str, IndexEntry)>) -> ProvidesIndex {
-        let mut index = ProvidesIndex::empty();
-        for (path, entry) in entries {
-            index
-                .options
-                .entry(path.to_string())
-                .or_default()
-                .push(entry);
-        }
-        index
-    }
-
-    fn entry(package: &str, owner: bool, root: &str, min: u32, max: u32) -> IndexEntry {
-        IndexEntry {
-            package: package.to_string(),
-            version: "1.0.0".to_string(),
-            platform: "x86_64-linux".to_string(),
-            root: root.to_string(),
-            owner,
-            module_abi_compat: ModuleAbiCompat { min, max },
-            config_output: format!("/nix/store/{:0>32}-{package}-config", package),
-        }
-    }
-
-    // 16. Provider selection filters on module_abi and picks the lone owner.
-    #[test]
-    fn select_provider_picks_compatible_owner() {
-        let index = index_with(vec![(
-            "firewall.allowedTCPPorts",
-            entry("firewall", true, "firewall", 1, 2),
-        )]);
-        let chosen =
-            select_index_provider(&index, "firewall.allowedTCPPorts", 1).expect("owner selected");
-        assert_eq!(chosen.package, "firewall");
-    }
-
-    // 17. An empty ABI-filtered provider set is a hard error.
-    #[test]
-    fn select_provider_no_compatible_provider() {
-        let index = index_with(vec![(
-            "firewall.allowedTCPPorts",
-            entry("firewall", true, "firewall", 2, 3),
-        )]);
-        let err = select_index_provider(&index, "firewall.allowedTCPPorts", 1)
-            .expect_err("no compatible provider");
-        assert!(
-            err.to_string()
-                .contains("no provider for option 'firewall.allowedTCPPorts'"),
-            "{err}"
-        );
-    }
-
-    // 18. Two compatible owners of one root violate owned-root exclusivity.
-    #[test]
-    fn select_provider_rejects_two_owners() {
-        let index = index_with(vec![
-            ("nginx.virtualHosts", entry("nginx-a", true, "nginx", 1, 2)),
-            ("nginx.virtualHosts", entry("nginx-b", true, "nginx", 1, 2)),
-        ]);
-        let err = select_index_provider(&index, "nginx.virtualHosts", 1)
-            .expect_err("two owners must be rejected");
-        assert!(err.to_string().contains("owned-root exclusivity"), "{err}");
-    }
-
-    // 19. A missing path resolves to no provider.
-    #[test]
-    fn select_provider_missing_path() {
-        let index = ProvidesIndex::empty();
-        assert!(select_index_provider(&index, "absent.option", 1).is_err());
-    }
 }

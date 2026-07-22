@@ -38,7 +38,9 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use super::classify::{EvalClass, KillReason, classify};
+use super::system_roots::{ConfigModuleResolver, ResolvedConfigModule};
 use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
+use crate::registry::RegistrySet;
 
 /// The default on-host eval root that `aos-eval.service` prepares.
 pub const DEFAULT_EVAL_ROOT: &str = "/run/aos-eval";
@@ -251,6 +253,52 @@ impl ConfigOutputFetcher for SubstituterFetcher {
             );
         }
         Ok(())
+    }
+}
+
+/// The on-host registry set exposed as a by-name [`ConfigModuleResolver`].
+///
+/// This is the production replacement for the removed registry-wide provides
+/// index: it answers "does a package named `<root>` ship a config module?" by
+/// reading each package's `config_module` block from `registry.toml`. It backs
+/// both the [`SystemRoots`](super::SystemRoots) build (the installed set's
+/// config modules) and the resolver's structural fallback for private
+/// `{pkg}.*` roots.
+pub struct RegistryConfigModules {
+    registries: RegistrySet,
+}
+
+impl RegistryConfigModules {
+    /// Wraps an already-loaded registry set.
+    pub fn new(registries: RegistrySet) -> Self {
+        Self { registries }
+    }
+
+    /// Loads the on-host system-scope registries, best-effort.
+    ///
+    /// When the apm config cannot be read (off-host/CI, no `/var/lib/apm`), this
+    /// returns a resolver over an empty registry set: private roots then resolve
+    /// to nothing, the correct fail-closed behavior for a host with no registry
+    /// metadata. The per-system [`SystemRoots`](super::SystemRoots) is still
+    /// derived from the seed set and remains authoritative for shared roots.
+    pub fn load_system() -> Self {
+        let registries = crate::config::ApmConfig::load(crate::types::ProfileScope::System)
+            .and_then(|config| crate::install::load_registries(&config))
+            .unwrap_or_else(|_| RegistrySet::new(Vec::new()));
+        Self::new(registries)
+    }
+}
+
+impl ConfigModuleResolver for RegistryConfigModules {
+    fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
+        let (_registry, meta) = self.registries.resolve(package)?;
+        let module = meta.config_module.as_ref()?;
+        Some(ResolvedConfigModule {
+            package: &meta.name,
+            version: &meta.version,
+            platform: &meta.platform,
+            module,
+        })
     }
 }
 

@@ -89,7 +89,7 @@ use crate::types::{
     FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
     FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
-    PACKAGE_META_FORMAT, PermissionsMeta, ProvidesIndex, RegistryConfig, RegistryFile,
+    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
     RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
     package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
     validate_branch_name, validate_channel_name, validate_config_module_meta,
@@ -5291,30 +5291,6 @@ pub(crate) fn record_config_module_platform_fields(
         toml::Value::try_from(module).context("serializing config-module metadata")?,
     );
     Ok(())
-}
-
-/// Rebuild the registry-wide RFC-0011 inverted index from all package versions.
-///
-/// This is the publish-side construction of `index/provides.json` (RFC-0011
-/// build-spec §3.2): for every package version carrying `config_module`, every
-/// declared option path and capability token is folded into a [`ProvidesIndex`]
-/// via [`ProvidesIndex::insert_package`]. The index is a *derived* artifact —
-/// rebuilt mechanically on every publish — so this function takes the already
-/// parsed package set and produces the serializable index the registry serves.
-// Publish-side seam: exercised by tests and called once the publish/release
-// path writes `index/provides.json`. Marked `allow` so the unwired state does
-// not warn in the non-test build.
-#[allow(dead_code)]
-pub(crate) fn build_provides_index<'a>(
-    packages: impl IntoIterator<Item = &'a crate::types::PackageMeta>,
-) -> ProvidesIndex {
-    let mut index = ProvidesIndex::empty();
-    for meta in packages {
-        if let Some(module) = &meta.config_module {
-            index.insert_package(&meta.name, &meta.version, &meta.platform, module);
-        }
-    }
-    index
 }
 
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
@@ -12129,52 +12105,6 @@ mod tests {
                 .filter(|f| **f == toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string()))
                 .count(),
             1
-        );
-    }
-
-    #[test]
-    fn build_provides_index_folds_config_modules() {
-        let mut meta = crate::types::PackageMeta {
-            name: "firewall".to_string(),
-            version: "1.4.0".to_string(),
-            description: String::new(),
-            homepage: None,
-            license: "MIT".to_string(),
-            maintainer: "aos".to_string(),
-            platform: "x86_64-linux".to_string(),
-            store_path: "/nix/store/0000000000000000000000000000000c-firewall-1.4.0".to_string(),
-            nar_hash: "sha256:aa".to_string(),
-            nar_size: 1,
-            references: vec![],
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1,
-            sysroot: false,
-            previous: None,
-            images: vec![],
-            min_format: None,
-            requires_features: vec![],
-            expose: None,
-            expose_artifact: None,
-            config_module: Some(config_module_fixture()),
-            permissions: Default::default(),
-            bpf_lsm: None,
-            attestation: Default::default(),
-        };
-        let index = build_provides_index(std::slice::from_ref(&meta));
-        assert_eq!(index.providers_for("firewall.allowedTCPPorts", 1).len(), 1);
-        assert_eq!(
-            index
-                .capability_setters("system.capabilities.dns-resolver", 2)
-                .len(),
-            1
-        );
-        // A package without config_module contributes nothing.
-        meta.config_module = None;
-        assert!(
-            build_provides_index(std::slice::from_ref(&meta))
-                .options
-                .is_empty()
         );
     }
 

@@ -41,6 +41,7 @@ pub mod diagnostics;
 pub mod dry_run;
 pub mod materialize;
 pub mod stock;
+pub mod system_roots;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -48,9 +49,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 pub use classify::{ConflictDef, EvalClass, KillReason, MissingOption, MissingOptionKind};
+pub use system_roots::{
+    CapabilitySetter, ConfigModuleResolver, ResolvedConfigModule, RootOwner, SystemRoots,
+    SystemRootsError,
+};
 
-use crate::resolve::{GatedConfigModule, enforce_module_abi_compat, select_index_provider};
-use crate::types::{ModuleAbiCompat, ProvidesIndex, option_path_root};
+use crate::resolve::{GatedConfigModule, enforce_module_abi_compat};
+use crate::types::{ModuleAbiCompat, option_path_root};
 
 /// Absolute ceiling on re-evals, so a pathological registry cannot make the
 /// loop unbounded (build-spec §5).
@@ -149,9 +154,10 @@ pub struct FixpointOutcome {
 /// system (build-spec §1).
 #[derive(Debug)]
 pub enum FixpointError {
-    /// A missing option whose root/path the registry does not provide at all.
+    /// A missing option whose root no installed package owns and whose name no
+    /// registry package matches.
     NoProvider {
-        /// The unresolved option path or root.
+        /// The unresolved root segment.
         path: String,
         /// The reader/writer locus, when known.
         read_by: Option<String>,
@@ -165,10 +171,36 @@ pub enum FixpointError {
     },
     /// A seed config module excludes the running `module_abi` (pre-eval gate).
     SeedAbiMismatch(String),
-    /// More than one owner of a shared root survived the ABI filter.
+    /// Two installed packages own the same shared root (a per-system owned-root
+    /// exclusivity violation, caught while building [`SystemRoots`]).
     AmbiguousProvider {
-        /// The option path or root with multiple compatible owners.
+        /// The contested shared root.
+        root: String,
+        /// The first owner, as `package@version`.
+        owner_a: String,
+        /// The second owner, as `package@version`.
+        owner_b: String,
+    },
+    /// An installed package's owned root collides with a *different* installed
+    /// package's name, which would silently shadow that package's private root.
+    ShadowedRoot {
+        /// The owned root that collides with a package name.
+        root: String,
+        /// The package that owns the root, as `package@version`.
+        owner: String,
+    },
+    /// A package's `contributes` declaration is not permitted: the foreign root
+    /// has no owner, or a contributed sub-path is outside the owner's
+    /// contributable set (F3-B, checked at resolve time).
+    Contributable {
+        /// The contributing package, as `package@version`.
+        contributor: String,
+        /// The foreign root being contributed into.
+        root: String,
+        /// The offending sub-path (empty when the root has no owner at all).
         path: String,
+        /// Whether the root lacked an owner or the sub-path was out of scope.
+        reason: system_roots::ContributableError,
     },
     /// A provider is already present yet the same option stays missing —
     /// fetching cannot help (a read cycle's terminal frame).
@@ -227,7 +259,10 @@ impl std::fmt::Display for FixpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FixpointError::NoProvider { path, read_by } => {
-                write!(f, "no registry provider declares '{path}'")?;
+                write!(
+                    f,
+                    "no installed package owns root '{path}' and no package named '{path}' exists in the registry"
+                )?;
                 if let Some(loc) = read_by {
                     write!(f, " (read by {loc})")?;
                 }
@@ -238,10 +273,37 @@ impl std::fmt::Display for FixpointError {
                 "every provider of '{path}' is incompatible with image module_abi {want}"
             ),
             FixpointError::SeedAbiMismatch(msg) => f.write_str(msg),
-            FixpointError::AmbiguousProvider { path } => write!(
+            FixpointError::AmbiguousProvider {
+                root,
+                owner_a,
+                owner_b,
+            } => write!(
                 f,
-                "option '{path}' has more than one compatible owner; owned-root exclusivity requires exactly one"
+                "root '{root}' is owned by both '{owner_a}' and '{owner_b}'; \
+                 owned roots are exclusive per system"
             ),
+            FixpointError::ShadowedRoot { root, owner } => write!(
+                f,
+                "owned root '{root}' (owned by '{owner}') collides with a different \
+                 installed package named '{root}'; the package's private root would be shadowed"
+            ),
+            FixpointError::Contributable {
+                contributor,
+                root,
+                path,
+                reason,
+            } => match reason {
+                system_roots::ContributableError::NoOwner => write!(
+                    f,
+                    "package '{contributor}' contributes to root '{root}' but no installed \
+                     package owns it"
+                ),
+                system_roots::ContributableError::NotContributable => write!(
+                    f,
+                    "package '{contributor}' contributes '{root}.{path}' but '{path}' is not in \
+                     the owner's contributable set"
+                ),
+            },
             FixpointError::Unsatisfiable { path, provider } => write!(
                 f,
                 "'{path}' is still missing after fetching '{provider}'; fetching cannot satisfy it (read cycle)"
@@ -286,6 +348,39 @@ impl std::error::Error for FixpointError {
         match self {
             FixpointError::Fetch { source, .. } => Some(source.as_ref()),
             _ => None,
+        }
+    }
+}
+
+impl From<SystemRootsError> for FixpointError {
+    /// Maps a [`SystemRoots`] build failure onto its terminal [`FixpointError`],
+    /// so an integrity violation in the installed set aborts the fixpoint before
+    /// any eval runs.
+    fn from(err: SystemRootsError) -> Self {
+        match err {
+            SystemRootsError::OwnedRootConflict {
+                root,
+                owner_a,
+                owner_b,
+            } => FixpointError::AmbiguousProvider {
+                root,
+                owner_a,
+                owner_b,
+            },
+            SystemRootsError::ShadowedRoot { root, owner } => {
+                FixpointError::ShadowedRoot { root, owner }
+            }
+            SystemRootsError::Contributable {
+                contributor,
+                root,
+                path,
+                reason,
+            } => FixpointError::Contributable {
+                contributor,
+                root,
+                path,
+                reason,
+            },
         }
     }
 }
@@ -382,10 +477,17 @@ pub trait ConfigOutputFetcher {
 /// Drive stock-Nix `evalModules` to a complete configuration (build-spec §1).
 ///
 /// The loop renders the current `working_set` into `entry.nix`, evaluates it,
-/// and on a missing-option signal selects the owning provider from `index`
-/// (ABI-filtered), fetches its `config` output, and re-evaluates. `working_set`
-/// is append-only over the finite package universe, so the loop terminates at
-/// or before the iteration cap.
+/// and on a missing-option signal selects the owning provider — a shared-root
+/// owner from the locally-derived [`SystemRoots`], else the package the root
+/// structurally names, resolved by name through `resolver` (ABI-gated) — fetches
+/// its `config` output, and re-evaluates. `working_set` is append-only over the
+/// finite package universe, so the loop terminates at or before the iteration
+/// cap.
+///
+/// [`SystemRoots`] is built once, up front, from the installed set: every seed
+/// package's config module (resolved by name through `resolver`). A per-system
+/// integrity violation (owned-root exclusivity, a shadowing collision, or an
+/// out-of-scope contribution) is a terminal error before any eval runs.
 ///
 /// Before iteration 0 every seed that carries config-module metadata is gated
 /// against `inputs.module_abi`; an incompatible seed is a terminal
@@ -395,22 +497,35 @@ pub trait ConfigOutputFetcher {
 /// # Errors
 ///
 /// Returns a [`FixpointError`] for every terminal state (no provider, ABI
-/// mismatch, conflict, assertion, kill, opaque eval error, fetch failure) and
+/// mismatch, owned-root/ shadowing/ contributable integrity violation, conflict,
+/// assertion, kill, opaque eval error, fetch failure) and
 /// [`FixpointError::NonConvergence`] at the iteration cap. Every terminal state
 /// is a clean no-op: no manifest is emitted, so nothing downstream activates.
-pub fn run_fixpoint<E, F>(
+pub fn run_fixpoint<R, E, F>(
     inputs: &FixpointInputs,
-    index: &ProvidesIndex,
+    resolver: &R,
     evaluator: &E,
     fetcher: &F,
 ) -> std::result::Result<FixpointOutcome, FixpointError>
 where
+    R: ConfigModuleResolver,
     E: NixEvaluator,
     F: ConfigOutputFetcher,
 {
     // Pre-eval gate (build-spec §6): refuse an ABI-incompatible seed before any
     // eval. Wires CS3's `enforce_module_abi_compat` into the live path.
     gate_seeds(&inputs.seed_set, inputs.module_abi)?;
+
+    // Build the per-system shared-root map from the installed set's config
+    // modules. This is the authoritative place the owned-root exclusivity,
+    // shadowing, and F3-B contributable invariants are enforced; a violation
+    // aborts before any eval runs.
+    let installed: Vec<ResolvedConfigModule<'_>> = inputs
+        .seed_set
+        .iter()
+        .filter_map(|m| resolver.config_module(&m.package))
+        .collect();
+    let system_roots = SystemRoots::build(installed)?;
 
     let mut working_set = inputs.seed_set.clone();
     // The no-progress guard tracks packages whose CONFIG MODULE is actually
@@ -424,7 +539,9 @@ where
         .map(|m| m.package.clone())
         .collect();
     let mut trace: Vec<IterRecord> = Vec::new();
-    let cap = inputs.iter_cap.unwrap_or_else(|| derive_iter_cap(index));
+    let cap = inputs
+        .iter_cap
+        .unwrap_or_else(|| derive_iter_cap(inputs.seed_set.len(), &system_roots));
 
     let mut iter: u32 = 0;
     loop {
@@ -457,7 +574,8 @@ where
                 });
             }
             EvalClass::Missing(missing) => {
-                let selection = select_first_resolvable(&missing, index, inputs.module_abi)?;
+                let selection =
+                    select_first_resolvable(&missing, &system_roots, resolver, inputs.module_abi)?;
 
                 // The provider's config module is already loaded yet the same
                 // option is still missing — fetching cannot fix it (build-spec
@@ -542,15 +660,18 @@ fn gate_seeds(seeds: &[WorkingSetMember], image_abi: u32) -> std::result::Result
         .map_err(|e| FixpointError::SeedAbiMismatch(format!("{e:#}")))
 }
 
-/// Derive the iteration cap: reachable providers + slack, capped at the ceiling.
-fn derive_iter_cap(index: &ProvidesIndex) -> u32 {
-    let providers: BTreeSet<(&str, &str)> = index
-        .options
-        .values()
-        .flat_map(|entries| entries.iter())
-        .map(|e| (e.package.as_str(), e.version.as_str()))
-        .collect();
-    let count = u32::try_from(providers.len()).unwrap_or(ITER_CAP_CEILING);
+/// Derive the iteration cap from local state, capped at the ceiling.
+///
+/// With the registry-wide index gone there is no closed provider universe to
+/// count, so the cap is derived from what is known locally: the seed set size
+/// plus the number of owned shared roots, plus [`ITER_CAP_SLACK`] headroom for
+/// providers discovered by absent-root reads. Each iteration fetches one new
+/// distinct package, so this bounds the loop in the same spirit as the old
+/// provider count. The result is clamped to [`ITER_CAP_CEILING`] so no local
+/// state can push the loop unbounded.
+fn derive_iter_cap(seed_len: usize, system_roots: &SystemRoots) -> u32 {
+    let base = seed_len.saturating_add(system_roots.len());
+    let count = u32::try_from(base).unwrap_or(ITER_CAP_CEILING);
     count.saturating_add(ITER_CAP_SLACK).min(ITER_CAP_CEILING)
 }
 
@@ -569,19 +690,20 @@ struct Selection {
 /// Pick the first missing option that resolves to a provider, recording the
 /// terminal error if none do (build-spec §2: "picks the first whose lookup
 /// resolves").
-fn select_first_resolvable(
+fn select_first_resolvable<R: ConfigModuleResolver>(
     missing: &[MissingOption],
-    index: &ProvidesIndex,
+    system_roots: &SystemRoots,
+    resolver: &R,
     abi: u32,
 ) -> std::result::Result<Selection, FixpointError> {
     let mut deferred: Option<FixpointError> = None;
     for item in missing {
-        match resolve_one(item, index, abi) {
+        match resolve_one(item, system_roots, resolver, abi) {
             Ok(selection) => return Ok(selection),
             Err(err) => {
-                // Keep the most informative terminal error: an ABI mismatch or
-                // ambiguity outranks a plain "no provider", which is the
-                // fallback when nothing resolved.
+                // Keep the most informative terminal error: an ABI mismatch
+                // outranks a plain "no provider", which is the fallback when
+                // nothing resolved.
                 if deferred
                     .as_ref()
                     .map(|d| matches!(d, FixpointError::NoProvider { .. }))
@@ -595,82 +717,83 @@ fn select_first_resolvable(
     Err(deferred.unwrap_or_else(|| FixpointError::NoProvider {
         path: missing
             .first()
-            .map(|m| m.path.clone())
+            .map(|m| option_path_root(&m.path).to_string())
             .unwrap_or_default(),
         read_by: missing.first().and_then(|m| m.read_by.clone()),
     }))
 }
 
-/// Resolve a single missing option to a provider, using the lookup shape its
-/// [`MissingOptionKind`] dictates (build-spec §4).
-fn resolve_one(
+/// Resolve a single missing option to a provider by its root (build-spec §4).
+///
+/// Both Case A (an undeclared write, whose `path` is a full leaf) and Case B (an
+/// absent-root read, whose `path` is the bare root) collapse to the same
+/// root-based dispatch; the full Case-A path is retained only for error text.
+/// The root is dispatched in order:
+///
+/// 1. **Shared root** — a [`SystemRoots`] hit selects the single owning package,
+///    ABI-gated by the owner's pinned `module_abi_compat`.
+/// 2. **Private root** — the structural fallback treats the root as a package
+///    name and resolves its config module by name through `resolver`, ABI-gated.
+/// 3. Neither — a terminal [`FixpointError::NoProvider`].
+///
+/// # Errors
+///
+/// Returns [`FixpointError::AbiMismatch`] when the owning/named package exists
+/// but its ABI band excludes `abi`, and [`FixpointError::NoProvider`] when no
+/// installed package owns the root and no package named the root exists in the
+/// registry.
+fn resolve_one<R: ConfigModuleResolver>(
     item: &MissingOption,
-    index: &ProvidesIndex,
+    system_roots: &SystemRoots,
+    resolver: &R,
     abi: u32,
 ) -> std::result::Result<Selection, FixpointError> {
-    let entry = match item.kind {
-        // Case A: exact full-path lookup with owned-root exclusivity, wiring
-        // CS3's `select_index_provider` into the live path.
-        MissingOptionKind::UndeclaredWrite => {
-            let has_any = index.options.contains_key(&item.path);
-            let compatible = !index.providers_for(&item.path, abi).is_empty();
-            if !compatible {
-                return Err(if has_any {
-                    FixpointError::AbiMismatch {
-                        path: item.path.clone(),
-                        want: abi,
-                    }
-                } else {
-                    FixpointError::NoProvider {
-                        path: item.path.clone(),
-                        read_by: item.read_by.clone(),
-                    }
-                });
-            }
-            select_index_provider(index, &item.path, abi).map_err(|_| {
-                FixpointError::AmbiguousProvider {
-                    path: item.path.clone(),
-                }
-            })?
-        }
-        // Case B: first-segment lookup, owned roots are exclusive.
-        MissingOptionKind::AbsentRootRead => {
-            let root = option_path_root(&item.path);
-            let candidates = index.providers_for_root(root, abi);
-            if candidates.is_empty() {
-                return Err(if index.declares_root(root) {
-                    FixpointError::AbiMismatch {
-                        path: item.path.clone(),
-                        want: abi,
-                    }
-                } else {
-                    FixpointError::NoProvider {
-                        path: item.path.clone(),
-                        read_by: item.read_by.clone(),
-                    }
-                });
-            }
-            let owners: Vec<_> = candidates.iter().filter(|e| e.owner).collect();
-            match owners.as_slice() {
-                [owner] => owner,
-                [] => candidates[0],
-                _ => {
-                    return Err(FixpointError::AmbiguousProvider {
-                        path: item.path.clone(),
-                    });
-                }
-            }
-        }
-    };
+    let root = option_path_root(&item.path);
 
-    Ok(Selection {
-        package: entry.package.clone(),
-        version: entry.version.clone(),
-        platform: entry.platform.clone(),
-        config_output: entry.config_output.clone(),
-        module_abi_compat: entry.module_abi_compat,
-        missing_path: item.path.clone(),
-        kind: item.kind,
+    // 1. Shared root owned by an installed package (per-system ownership).
+    if let Some(owner) = system_roots.owner(root) {
+        if !owner.module_abi_compat.admits(abi) {
+            return Err(FixpointError::AbiMismatch {
+                path: item.path.clone(),
+                want: abi,
+            });
+        }
+        return Ok(Selection {
+            package: owner.package.clone(),
+            version: owner.version.clone(),
+            platform: owner.platform.clone(),
+            config_output: owner.config_output.clone(),
+            module_abi_compat: owner.module_abi_compat,
+            missing_path: item.path.clone(),
+            kind: item.kind,
+            read_by: item.read_by.clone(),
+        });
+    }
+
+    // 2. Private root: the root segment IS the package name. Resolve it by name
+    //    from registry metadata and ABI-gate its config module.
+    if let Some(resolved) = resolver.config_module(root) {
+        if !resolved.module.module_abi_compat.admits(abi) {
+            return Err(FixpointError::AbiMismatch {
+                path: item.path.clone(),
+                want: abi,
+            });
+        }
+        return Ok(Selection {
+            package: resolved.package.to_string(),
+            version: resolved.version.to_string(),
+            platform: resolved.platform.to_string(),
+            config_output: resolved.module.config_output.store_path.clone(),
+            module_abi_compat: resolved.module.module_abi_compat,
+            missing_path: item.path.clone(),
+            kind: item.kind,
+            read_by: item.read_by.clone(),
+        });
+    }
+
+    // 3. Terminal: no owner and no package named the root.
+    Err(FixpointError::NoProvider {
+        path: root.to_string(),
         read_by: item.read_by.clone(),
     })
 }
@@ -686,8 +809,6 @@ pub struct EvalCommand {
     pub host_nix: PathBuf,
     /// The in-image module library store path.
     pub base_lib: PathBuf,
-    /// The registry `provides` index (`index/provides.json`); empty when absent.
-    pub index: Option<PathBuf>,
     /// Optional `desired.toml` whose `packages` seed the working set.
     pub desired: Option<PathBuf>,
     /// The running image's base-lib ABI.
@@ -716,18 +837,25 @@ pub struct EvalCommand {
 
 /// Run the on-host fixpoint with the production stock-Nix evaluator and fetcher.
 ///
-/// Loads the registry index and seed set from disk, drives [`run_fixpoint`], and
-/// — **only on convergence** — writes the manifest to [`EvalCommand::out`]. Any
-/// terminal failure prints a legible diagnostic and returns an error *without*
-/// writing a manifest, so the downstream `ConditionPathExists` guard makes the
-/// install step a no-op and the box stays live on the gen-0 seed.
+/// Loads the on-host registries (as the by-name [`ConfigModuleResolver`]) and
+/// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
+/// writes the manifest to [`EvalCommand::out`]. Any terminal failure prints a
+/// legible diagnostic and returns an error *without* writing a manifest, so the
+/// downstream `ConditionPathExists` guard makes the install step a no-op and the
+/// box stays live on the gen-0 seed.
+///
+/// The per-system [`SystemRoots`] map is derived inside [`run_fixpoint`] from the
+/// seed set's config modules; nothing registry-wide is loaded or passed. When
+/// the on-host apm config cannot be read (off-host/CI), the resolver falls back
+/// to an empty registry set: private roots then resolve to nothing, which is the
+/// correct fail-closed behavior for a host with no registry metadata.
 ///
 /// # Errors
 ///
-/// Returns an error when the index/desired files cannot be read or parsed, when
-/// the fixpoint reaches a terminal state, or when the manifest cannot be
-/// written. The caller (the hidden `apm __eval` subcommand) maps this to a
-/// non-zero exit; the service treats it as best-effort.
+/// Returns an error when the desired file cannot be read or parsed, when the
+/// fixpoint reaches a terminal state, or when the manifest cannot be written.
+/// The caller (the hidden `apm __eval` subcommand) maps this to a non-zero exit;
+/// the service treats it as best-effort.
 pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
     // Stage-2 trust gate (build-spec §3): an unsigned, badly-signed, or
     // untrusted-key host.nix produces NO manifest. This runs BEFORE the fixpoint
@@ -762,15 +890,11 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
         }
     }
 
-    let index = match &cmd.index {
-        Some(path) if path.exists() => {
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("reading provides index {}", path.display()))?;
-            serde_json::from_str::<ProvidesIndex>(&text)
-                .with_context(|| format!("parsing provides index {}", path.display()))?
-        }
-        _ => ProvidesIndex::empty(),
-    };
+    // The by-name config-module resolver is the on-host registry set: it reads
+    // each package's `config_module` block from `registry.toml`. This replaces
+    // the removed registry-wide provides index. When apm config is
+    // unavailable (off-host/CI), fall back to an empty registry set.
+    let resolver = stock::RegistryConfigModules::load_system();
 
     let seed_set = load_seed_set(cmd.desired.as_deref())?;
 
@@ -785,7 +909,7 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
     let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
     let fetcher = stock::SubstituterFetcher::new(cmd.verbose);
 
-    match run_fixpoint(&inputs, &index, &evaluator, &fetcher) {
+    match run_fixpoint(&inputs, &resolver, &evaluator, &fetcher) {
         Ok(outcome) => {
             if let Some(parent) = cmd.out.parent() {
                 std::fs::create_dir_all(parent)
@@ -823,23 +947,21 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
 ///
 /// `running_base_lib` is the rolled-back image's base-lib store path (the ABI
 /// artifact retained on `/var` by the `image-gen-N/baselib/<module_abi>` root).
-/// `index`, `desired`, `eval_root`, and `out` mirror [`EvalCommand`]; the seed
-/// set and instance facts are resolved exactly as a normal eval. The §3 pre-eval
-/// ABI gate still applies inside [`run_fixpoint`], so a config module
-/// incompatible with the rolled-back ABI is refused fail-closed and the old gen
-/// stays live.
+/// `desired`, `eval_root`, and `out` mirror [`EvalCommand`]; the seed set and
+/// instance facts are resolved exactly as a normal eval. The §3 pre-eval ABI
+/// gate still applies inside [`run_fixpoint`], so a config module incompatible
+/// with the rolled-back ABI is refused fail-closed and the old gen stays live.
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying [`run_eval_command`] fails — the index
-/// or seed set cannot be read, the fixpoint reaches a terminal state (including
-/// the pre-eval ABI gate refusing a module against `to_module_abi`), or the
-/// manifest cannot be written. No manifest is emitted on failure, so nothing
-/// downstream activates and the old config-gen stays live.
+/// Returns an error when the underlying [`run_eval_command`] fails — the seed
+/// set cannot be read, the fixpoint reaches a terminal state (including the
+/// pre-eval ABI gate refusing a module against `to_module_abi`), or the manifest
+/// cannot be written. No manifest is emitted on failure, so nothing downstream
+/// activates and the old config-gen stays live.
 pub fn reeval_cross_abi(
     retained: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &Path,
-    index: Option<PathBuf>,
     desired: Option<PathBuf>,
     eval_root: PathBuf,
     out: PathBuf,
@@ -850,7 +972,6 @@ pub fn reeval_cross_abi(
         // fed back verbatim so re-eval reproduces the intended config (OQ5).
         host_nix: PathBuf::from(&retained.host_nix_ref),
         base_lib: running_base_lib.to_path_buf(),
-        index,
         desired,
         // Re-eval is pinned to the *running* (rolled-back) image's ABI.
         module_abi: retained.to_module_abi,

@@ -88,7 +88,7 @@ rule either too strict or vacuous.
 | M-static-ip | DHCP-less metadata-network clouds deadlock | The initrd `aos metadata` agent parses platform network config and seeds **static `networkd`** into the gen-0 `/var/etc` lower, so stage-2 has a route without DHCP. | provisioning.md |
 | M-partial-commit | Degraded partial /etc ≠ hash(manifest) | The degraded generation is content-addressed over the **re-projected** manifest (full manifest minus un-fetched packages), re-hashed; the gen records the dropped set. Reproducible from (inputs + recorded drop-set). | orchestration.md, generations.md |
 | M-forgeable-file | Priority-75/conscription key on forgeable `_file` | Provenance is assigned by the **resolver from the authenticated fetch source** (signed package identity / verified host.nix store path); module-supplied `_file` is **ignored** for priority and conscription. | module-system.md |
-| M-read-absent | Fixpoint throw doesn't name a read of an absent root | Two discovery mechanisms separated: writes-to-undeclared (strict throw) vs reads-of-absent-root (resolver detects via the option-path→package index + raw missing-attr); throw-string parsing flagged P1-fragile, structured in P2 (aos-nix). | module-system.md |
+| M-read-absent | Fixpoint throw doesn't name a read of an absent root | Two discovery mechanisms separated: writes-to-undeclared (strict throw) vs reads-of-absent-root (resolver detects the raw missing-attr and dispatches on its root segment — `SystemRoots` for shared roots, else structural by-name lookup); throw-string parsing flagged P1-fragile, structured in P2 (aos-nix). | module-system.md |
 | M-gc-inputs | cfg/ roots outputs, but cross-ABI re-eval needs inputs | Added a per-gen **`cfgsrc/` root** pinning the config-module **source** closure + the host.nix store path, so `apm gc` cannot break cross-ABI re-eval. | operability.md, generations.md |
 | M-rollback-glob | `default aos-*.efi` glob picks the suspect UKI | Image rollback uses `bootctl set-default` / sd-boot boot-counting (`+tries` assessment), not the lexically-highest glob. | generations.md |
 
@@ -123,5 +123,6 @@ rule either too strict or vacuous.
   readonly-conflict throw); acceptable for P1, improvable.
 - Provider/capability disambiguation when one option-path maps to many packages
   is handled by the single-owner rule (D10) + variants `Conflicts` (D16); the
-  residual ambiguity for capability *tokens* is tracked under the write-provider
-  index.
+  residual ambiguity for capability *tokens* is tracked under the installed-set
+  write-provider map (an unmet token is a terminal resolve assertion, never an
+  auto-fetch).
