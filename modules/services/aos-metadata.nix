@@ -50,6 +50,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = config.aos.config.evalAtBoot.enable;
+        message = "aos.provisioning.metadataAgent.enable requires aos.config.evalAtBoot.enable so fetched host configuration is authenticated and evaluated.";
+      }
+    ];
+
     boot.initrd.systemd.services = {
       # 1. Platform detection + offline config-drive probe. Absorbs
       #    aos-platform-detect: ports the DMI/SMBIOS decision table and probes
