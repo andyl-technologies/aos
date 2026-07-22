@@ -7,10 +7,9 @@
 ##! never activates — a failed eval or fetch leaves the box live on the gen-0
 ##! seed for the operator to fix `host.nix`.
 ##!
-##! Additive and inert by default (`aos.config.evalAtBoot.enable = false`): with
-##! the flag off the unit is not emitted and every existing system evaluates
-##! identically. `aos-install-packages.service` is intentionally left in place;
-##! a later changeset rewires it to consume the manifest.
+##! This is a structural boot service. Every AOS system carries the evaluator;
+##! `ConditionPathExists` makes hosts without a delivered `host.nix` a clean
+##! no-op on the baked generation.
 {
   config,
   lib,
@@ -20,13 +19,11 @@
   cfg = config.aos.config.evalAtBoot;
 in {
   options.aos.config.evalAtBoot = {
-    enable = lib.mkEnableOption "the RFC-0011 on-host config-eval fixpoint service";
-
     hostNix = lib.mkOption {
       type = lib.types.str;
       default = "/etc/aos/host.nix";
       description = ''
-        Path to the verified leaf `host.nix` delivered by Ignition. The service
+        Path to the verified leaf `host.nix` delivered by the metadata agent. The service
         is `ConditionPathExists`-guarded on this path, so with no `host.nix` the
         eval is a clean no-op.
       '';
@@ -37,7 +34,7 @@ in {
       default = "";
       description = ''
         Store path of the in-image, ABI-pinned module library passed to the
-        evaluator as `--base-lib`. Required when {option}`enable` is set.
+        evaluator as `--base-lib`.
       '';
     };
 
@@ -64,11 +61,11 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = {
     assertions = [
       {
         assertion = cfg.baseLib != "";
-        message = "aos.config.evalAtBoot.enable requires aos.config.evalAtBoot.baseLib to be set to the in-image base library store path.";
+        message = "aos.config.evalAtBoot.baseLib must be set to the in-image base library store path.";
       }
     ];
 
@@ -83,7 +80,8 @@ in {
         "aos-seed-profiles.service"
       ];
       before = [
-        "aos-install-packages.service"
+        "aos-install-baked-packages.service"
+        "aos-graph-compile.service"
         "multi-user.target"
       ];
       # No host.nix ⇒ nothing to evaluate ⇒ clean no-op.

@@ -210,7 +210,7 @@ in
               ln -sfn usr/bin rootfs/sbin
               ln -sfn usr/lib rootfs/lib
               # /etc is an empty mountpoint — the runtime overlay (system
-              # EROFS lower + per-gen ignition lower + /var/etc) mounts
+              # EROFS lower + per-gen config lower + /var/etc) mounts
               # on top in stage-1 (etc-overlay-setup.service).
               mkdir -p rootfs/etc
               mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp

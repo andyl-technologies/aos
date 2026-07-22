@@ -14,13 +14,9 @@
 ##!   - `run-etc-setup.service`     — the /run/etc tmpfs the overlay lives on
 ##!   - `aos-machine-id.service`    — seeds /var/etc/machine-id
 ##!
-##! These order against the *active* provisioning backend through the
-##! `disksUnit`/`filesUnit` indirection: `disksUnit` is `aos-repart.service`
-##! when systemd-repart carves the substrate (`aos.provisioning.repart.enable`)
-##! and `null` when /var is already present (a baked test disk or an
-##! operator-provisioned volume); `filesUnit` is always the on-host config-gen
-##! seed (`aos-config-seed.service`). RFC-0011 replaced the Ignition path that
-##! previously drove these.
+##! These order against `aos-repart.service` and the on-host config-generation
+##! seed (`aos-config-seed.service`). Repart is idempotent when `/var` already
+##! exists.
 {
   config,
   pkgs,
@@ -44,17 +40,9 @@
     (lib.makeSearchPath "sbin" bootTools)
   ];
 
-  # Provisioning-backend indirection. The neutral boot units order against the
-  # active disks backend when there is one — `systemd-repart`
-  # (modules/services/repart.nix) carves and grows the substrate — and against
-  # nothing when /var is already present.
-  disksUnit =
-    if config.aos.provisioning.repart.enable
-    then "aos-repart.service"
-    # No carver: a machine whose /var is already present (a baked test disk, or
-    # an operator who pre-provisioned it). mount-var just mounts the existing
-    # partition with no ordering dependency on a disks backend.
-    else null;
+  # `systemd-repart` carves and grows the substrate before the neutral boot
+  # units consume it. It is idempotent when /var is already present.
+  disksUnit = "aos-repart.service";
 
   # The files backend is always the on-host config-gen seed
   # (modules/base/config-seed.nix), which scaffolds the empty per-generation
@@ -62,9 +50,8 @@
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
 
-  # The neutral boot-infrastructure units — always emitted, ordered against
-  # the active provisioning backend via `disksUnit`/`filesUnit`. Not specific
-  # to Ignition: a new-path system reuses these unchanged.
+  # The neutral boot-infrastructure units are always emitted and ordered
+  # against `disksUnit` and `filesUnit`.
   neutralBootServices = {
     # Best-effort wait-online: succeed as soon as ANY managed link is
     # routable. Without --any the default "all links online" wedges ~90 s
@@ -80,13 +67,12 @@
       ];
     };
 
-    # aos-ignition-preset.service was removed in spec v12 §6.1.6 —
-    # the [Install] symlinks now ride in the system EROFS image
+    # The [Install] symlinks ride in the system EROFS image
     # (via environment.etc."systemd/system" and the composefs dump
     # script's directory recursion at spec v12 §5.2) and in the
-    # per-gen ignition lower (via generated storage.links,
+    # per-gen config lower (via generated storage.links,
     # spec v12 §5.6). The runtime preset-walker is
-    # redundant.
+    # sufficient.
 
     # Mount the /var partition created by the disks backend so that the
     # files backend can write to /sysroot/var/etc/* and the mount
@@ -144,7 +130,7 @@
     #
     #   lowerdir+=/var/etc                      — host-persistent allowlist
     #                                             (machine-id, ssh host keys)
-    #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen files-backend lower
+    #   lowerdir+=/run/etc/config-<gen>/etc   — per-gen files-backend lower
     #                                             (Ignition storage.links, or
     #                                             empty seed on the new path)
     #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
@@ -208,7 +194,7 @@
         # of the moved /run rather than a child of it, so the
         # moved /run would shadow the whole subtree post-pivot.
         sys=/run/etc/system-$gen
-        ign=/run/etc/ignition-$gen
+        ign=/run/etc/config-$gen
         upper_root=/run/etc/upper-$gen
 
         mkdir -p "$sys/metadata" "$sys/content" \
@@ -247,7 +233,7 @@
         # switch_root). Created under the initrd's /run/etc so they
         # move into stage-2 along with the rest of /run.
         ln -sfn system-$gen   /run/etc/system
-        ln -sfn ignition-$gen /run/etc/ignition
+        ln -sfn config-$gen /run/etc/config
         ln -sfn upper-$gen    /run/etc/upper
 
         # Both readers have run; drop the gen-handoff file so it
@@ -405,7 +391,7 @@
 
     # Mount a tmpfs on /run/etc once, before anything else writes
     # under it. The files backend writes its per-gen
-    # /run/etc/ignition-<gen>/ subtree here, and etc-overlay-setup
+    # /run/etc/config-<gen>/ subtree here, and etc-overlay-setup
     # later creates the system-<gen> mount points and the upper-<gen>
     # dir (a plain directory, not its own mount) alongside.
     #

@@ -99,7 +99,6 @@ in {
       # New path: identity baked into /etc, /var baked into the per-machine
       # disk at this size (baking identity already forks the image per machine,
       # so a shared var-less base buys nothing here).
-      provisioning = "newpath";
       varSizeMiB = 3072;
       varProvisioning = "baked";
     };
@@ -110,7 +109,6 @@ in {
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on
       # the var partition). Sized to match the registry for headroom.
-      provisioning = "newpath";
       varSizeMiB = 3072;
       varProvisioning = "baked";
     };

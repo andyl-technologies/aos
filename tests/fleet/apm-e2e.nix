@@ -121,13 +121,11 @@ in {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
     client = {
       system = systems.server-test;
-      provisioning = "newpath";
       # No registry package. `apm` ships via modules/base/apm.nix.
     };
 
     server = {
       system = serverWithRegistry;
-      provisioning = "newpath";
       packages = ["aos-registry-server"];
     };
   };

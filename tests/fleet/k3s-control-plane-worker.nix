@@ -115,7 +115,6 @@ in {
   machines = {
     controlplane = {
       system = controlPlaneSystem;
-      provisioning = "newpath";
       packages = ["k3s-control-plane"];
       extraModules = [
         (k3sEtcModule {
@@ -127,7 +126,6 @@ in {
 
     worker = {
       system = workerSystem;
-      provisioning = "newpath";
       packages = ["k3s-worker"];
       extraModules = [
         (k3sEtcModule {

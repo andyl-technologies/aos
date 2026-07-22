@@ -8,10 +8,7 @@
 #   3. Naming a non-existent package rejects at eval time — the per-machine
 #      `enum` derived from `config.system.config.aos.packages` (filtered to
 #      `bundle = true`) should reject any name not in the bundled set.
-#   4. Setting `instanceMetadata.config` to a malformed ignition fragment
-#      (an unknown top-level key under `storage`) rejects at eval time
-#      via the strict ignition format submodule.
-#   5. Naming a defined-but-unbundled package (`bundle = false`)
+#   4. Naming a defined-but-unbundled package (`bundle = false`)
 #      rejects at eval time — the enum filters must exclude unbundled
 #      entries, otherwise a fleet spec could synthesise runtime
 #      activation for artifacts that won't exist on the running host.
@@ -125,7 +122,6 @@ in
           echo "  minimal spec evaluates: OK"
           echo "  spec with declared package evaluates: OK"
           echo "  spec with undeclared package rejected: OK"
-          echo "  spec with malformed ignition rejected: OK"
           echo "  spec with unbundled package rejected: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"

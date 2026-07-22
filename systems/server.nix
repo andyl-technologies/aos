@@ -1,7 +1,7 @@
 ##! systems/server.nix — Server golden image
 ##!
 ##! Builds a server image suitable for cloud/datacenter deployment.
-##! Ignition configures the system at first boot; Kubernetes role
+##! RFC-0011 evaluates signed host configuration at boot; Kubernetes role
 ##! configuration is applied separately.
 ##!
 ##! Profiles: server, debug

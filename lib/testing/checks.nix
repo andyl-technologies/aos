@@ -1,6 +1,6 @@
 ##! lib/testing/checks.nix — Compose a per-test check script
 ##!
-##! A test group is `{ description; checks; instanceMetadata; }` where
+##! A test group is `{ description; checks; }` where
 ##! `checks` is a flat list of `{ name; description; script; }`. The
 ##! submodule type in `modules/base/system.nix` validates the shape,
 ##! so this file does no structural checking — it glues `script`

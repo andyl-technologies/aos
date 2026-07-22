@@ -98,7 +98,6 @@ in {
   machines = {
     combined = {
       system = combinedSystem;
-      provisioning = "newpath";
       packages = ["k3s-combined"];
       # k3s starts both kube-controller-manager and its embedded cloud
       # controller with PodCIDR allocation enabled. In the combined topology
@@ -119,7 +118,6 @@ in {
 
     worker = {
       system = workerSystem;
-      provisioning = "newpath";
       packages = ["k3s-worker"];
       extraModules = [
         (k3sEtcModule {

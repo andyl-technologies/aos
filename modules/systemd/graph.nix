@@ -8,11 +8,8 @@
 ##! `daemon-reload`s and starts `aos-config.target` (orchestration.md,
 ##! build-spec §"Systemd unit-graph compiler").
 ##!
-##! Additive and inert by default (`aos.config.unitGraph.enable = false`): with
-##! the flag off none of these units are emitted and every existing system is
-##! byte-for-byte unchanged. The monolithic `aos-install-packages.service`
-##! (modules/base/apm.nix) is intentionally left in place as the fallback; the
-##! graph runs in parallel and a later changeset retires the monolith.
+##! This is the structural RFC-0011 package orchestration path and is emitted
+##! for every AOS system.
 {
   config,
   lib,
@@ -23,9 +20,6 @@
   apm = "${pkgs.aos}/bin/apm";
 in {
   options.aos.config.unitGraph = {
-    enable =
-      lib.mkEnableOption "the RFC-0011 systemd unit-graph compiler templates and targets";
-
     manifest = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos/manifest.json";
@@ -39,14 +33,7 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = config.aos.config.evalAtBoot.enable;
-        message = "aos.config.unitGraph.enable requires aos.config.evalAtBoot.enable so the unit graph has an authenticated manifest producer.";
-      }
-    ];
-
+  config = {
     systemd.services = {
       # ---- aos-pkg-fetch@.service (template) -------------------------------
       # Network-only; carries NO config edges (downloads are order-independent,

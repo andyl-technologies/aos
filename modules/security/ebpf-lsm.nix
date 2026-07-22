@@ -56,7 +56,7 @@ in {
       after = [
         "local-fs.target"
         "aos-seed-baked-packages.service"
-        "aos-install-packages.service"
+        "aos-install-baked-packages.service"
       ];
       unitConfig.ConditionPathExists = "/etc/aos/policy.toml";
       serviceConfig = {

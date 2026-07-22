@@ -1,6 +1,6 @@
 unit	aos-attest.service
 unit	aos-ebpf-lsm-policies.service
-unit	aos-install-packages.service
+unit	aos-install-baked-packages.service
 unit	aos-nix-db.service
 unit	aos-preset.service
 unit	aos-sysctl-late-apply.service
@@ -17,7 +17,7 @@ unit	getty@tty1.service
 link	messagebus.service	dbus.service
 d	multi-user.target.wants
 link	multi-user.target.wants/aos-ebpf-lsm-policies.service	../aos-ebpf-lsm-policies.service
-link	multi-user.target.wants/aos-install-packages.service	../aos-install-packages.service
+link	multi-user.target.wants/aos-install-baked-packages.service	../aos-install-baked-packages.service
 link	multi-user.target.wants/aos-nix-db.service	../aos-nix-db.service
 link	multi-user.target.wants/aos-preset.service	../aos-preset.service
 link	multi-user.target.wants/aos-sysctl-late-apply.service	../aos-sysctl-late-apply.service

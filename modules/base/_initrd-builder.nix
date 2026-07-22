@@ -5,7 +5,7 @@
 ##! populated from:
 ##!
 ##!   1. The full runtime closure of each initrd package (bash, coreutils,
-##!      cryptsetup, e2fsprogs, ignition, kmod, systemd, util-linux) copied
+##!      cryptsetup, e2fsprogs, kmod, systemd, util-linux) copied
 ##!      under /nix/store/. Store RPATHs make ld.so happy without any
 ##!      ELF-walking or rpath rewriting.
 ##!   2. `/bin/<name>` symlinks into those closures so systemd units and
@@ -48,8 +48,6 @@
 }: let
   inherit
     (pkgs)
-    aos-growfs
-    aos-platform-detect
     bash
     coreutils
     cpio
@@ -70,8 +68,6 @@
   # /nix/store. See the docstring at the top of this file for why.
   initrdPackages =
     [
-      aos-growfs
-      aos-platform-detect
       bash
       coreutils
       cryptsetup
@@ -229,16 +225,6 @@
       src = "sbin";
     }
     {
-      pkg = aos-platform-detect;
-      bin = "aos-platform-detect";
-      src = "bin";
-    }
-    {
-      pkg = aos-growfs;
-      bin = "aos-growfs";
-      src = "bin";
-    }
-    {
       pkg = gptfdisk;
       bin = "sgdisk";
       src = "sbin";
@@ -297,8 +283,8 @@
     "kmod-static-nodes.service"
     "systemd-ask-password-console.path"
     "systemd-ask-password-console.service"
-    # Stage-1 networking for ignition metadata fetch on cloud platforms.
-    # The aos-ignition-network gate (modules/services/ignition.nix) issues a
+    # Stage-1 networking for metadata fetch on cloud platforms.
+    # The aos-metadata-network gate issues a
     # blocking `systemctl start network-online.target` only when the detector
     # flags a network-dependent platform; these units are the closure it pulls.
     "network-pre.target"

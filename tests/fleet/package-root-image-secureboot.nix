@@ -228,7 +228,6 @@ in {
     target = {
       system = testSystem;
       bootMode = "image";
-      provisioning = "newpath";
       imageDiskMiB = 16384;
       tpm = true;
       packages = [
@@ -239,7 +238,6 @@ in {
     };
     verifier = {
       system = verifierSystem;
-      provisioning = "newpath";
     };
   };
 

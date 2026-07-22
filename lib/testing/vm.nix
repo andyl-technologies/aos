@@ -85,7 +85,7 @@
     # Size of the /var partition (partition 4) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
-    # Only consulted when `varProvisioning == "baked"`; under "ignition"
+    # Only consulted when `varProvisioning == "baked"`; under "repart"
     # the image carries no /var partition and the size is applied at boot.
     varSizeMiB ? 256,
     # Most VM tests run without an SELinux policy and need the test
@@ -93,11 +93,11 @@
     # opt out so the system-generated /etc/selinux/config is visible.
     seedSELinuxDisabledConfig ? true,
     # How /var is provisioned. "baked" (default): /var is partition 4 of
-    # this image, formatted and seeded at build time. "ignition": the
-    # image is boot+root-a+swap only — ignition creates and formats /var
-    # on first boot (see lib/testing/fleet.nix), so machines differing
+    # this image, formatted and seeded at build time. "repart": the
+    # image is boot+root-a+swap only — systemd-repart creates and formats /var
+    # on first boot, so machines differing
     # only in /var size share one base image. The build-time `varSeed` is
-    # skipped under "ignition"; the guest agent arrives via the
+    # skipped under "repart"; the guest agent arrives via the
     # `aos-test-agent` package instead.
     varProvisioning ? "baked",
   }: let
@@ -415,8 +415,8 @@
             # — the harness passes kernel+initrd via -kernel/-initrd —
             # but reserving it keeps root at /dev/vda2 matching production.
             #
-            # Under varProvisioning="ignition" the image stops at
-            # boot+root-a+swap: ignition creates /var (partition 4) on
+            # Under varProvisioning="repart" the image stops at
+            # boot+root-a+swap: systemd-repart creates /var (partition 4) on
             # first boot, so machines differing only in /var size share
             # this one base image. The driver grows the per-run copy to
             # make room before boot (see lib/testing/fleet.nix).
@@ -447,9 +447,8 @@
             # swap GUID for the swap stub. The partlabel `var` is what
             # mount-var.service binds to via /dev/disk/by-partlabel/var.
             # The root partition is labelled `root-a` to match the
-            # production A/B layout — aos-growfs triggers on
-            # ConditionPathExists=/dev/disk/by-partlabel/root-a. The var
-            # line is omitted under "ignition" (created at first boot).
+            # production A/B layout. The var line is omitted under "repart"
+            # because it is created at first boot.
             {
               echo "label: gpt"
               echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
