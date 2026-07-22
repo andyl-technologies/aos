@@ -14,13 +14,19 @@
 //! Case A — undeclared WRITE  (lib/modules.nix:917 strict throw)
 //!   error: The following option(s) are not declared:
 //!     - 'firewall.zone' (defined in /nix/store/<h>-web-config/config.nix)
-//!   ⇒ full leaf path; resolve with index.providers_for(path)
+//!   ⇒ full leaf path; resolve by its root via SystemRoots.owner(root)
 //!
 //! Case B — absent-root READ  (raw stock-Nix attribute error, NOT :744)
 //!   error: attribute 'firewall' missing
 //!          at /nix/store/<h>-web-config/config.nix:42:14:
-//!   ⇒ first path SEGMENT only; resolve with index.providers_for_root(root)
+//!   ⇒ first path SEGMENT only; resolve via SystemRoots.owner(root)
 //! ```
+//!
+//! Both cases now collapse to the same root-based dispatch (a [`SystemRoots`]
+//! owner lookup, else a by-name structural fallback); the full Case-A path is
+//! kept only for error text.
+//!
+//! [`SystemRoots`]: super::SystemRoots
 //!
 //! Conflating them produces an index miss and a false `NoProvider`, so the
 //! [`MissingOptionKind`] on every [`MissingOption`] records which lookup shape
@@ -57,11 +63,13 @@ impl std::fmt::Display for KillReason {
 /// Which lookup shape a [`MissingOption`] requires (build-spec §2 A-vs-B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissingOptionKind {
-    /// Case A: a write to an undeclared option. `path` is the full leaf path,
-    /// resolved with an exact `index.providers_for(path)` lookup.
+    /// Case A: a write to an undeclared option. `path` is the full leaf path;
+    /// the resolver dispatches on its root via `SystemRoots.owner(root)`, then a
+    /// by-name structural fallback.
     UndeclaredWrite,
-    /// Case B: a read of an absent root. `path` is only the first segment,
-    /// resolved with `index.providers_for_root(root)`.
+    /// Case B: a read of an absent root. `path` is only the first segment;
+    /// resolved by that root via `SystemRoots.owner(root)`, then a by-name
+    /// structural fallback.
     AbsentRootRead,
 }
 

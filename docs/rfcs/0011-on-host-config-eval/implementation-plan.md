@@ -70,29 +70,31 @@ job-script normalization, documented in the commit.
 - [ ] Registry: add `Option<ConfigOutputMeta>` to `PackageMeta`
       (`crates/aos-package/src/types.rs`) + `FEATURE_MULTI_OUTPUT_V1` gate;
       `store/` realization entries for the config output.
-- [ ] Remove the hand-authored `expose.requires` edge list; derive the
-      provides index (options-only eval at publish) + AST-scan requires.
+- [ ] Remove the hand-authored `expose.requires` edge list; derive per-package
+      `provides` metadata (options-only eval at publish) + AST-scan requires.
 
 ### Namespacing & module system
 
 - [ ] Per-package root mounting: each `config` module as a submodule at `{pkg}.*`.
-- [ ] Owner registry for shared roots (`root → owner@version`), exclusivity +
-      trust-gate (system-extension key / operator allowlist) enforced at
-      publish/resolve.
+- [ ] `SystemRoots` for shared roots (`root → installed owner`), per-system
+      exclusivity + install-time trust (key policy / operator allowlist)
+      enforced at resolve (optionally early at install).
 - [ ] Variants/alternatives: `Provides`/`Conflicts` on a virtual shared root
       (single-declarer-per-resolved-set).
 - [ ] Merge precedence: file-provenance priority tagging at `lib/modules.nix:695`
       → `host.nix` bare defs at priority 75 (do **not** subtree-wrap).
 - [ ] `host.facts.*` privileged root (`attrsOf`-by-MAC); reject ambient facts.
 - [ ] Shared scalars typed `uniq`/`mergeEqualOption`; reject multiple declarers.
-- [ ] Enablement policy: forbid foreign `enable` writes (per-def file provenance
-      + owner/provider registry); provider sub-feature enable allowed;
-      dependencies as resolve-time assertions.
+- [ ] Enablement policy: forbid foreign `enable` writes (per-def authenticated
+      provenance + the installed owner's contributable surface in `SystemRoots`);
+      provider sub-feature enable allowed; dependencies as resolve-time
+      assertions.
 
 ### Resolver & evaluator
 
-- [ ] Error-driven resolve↔eval fixpoint (parse the strict throw → index lookup
-      → fetch provider → re-eval), with causal-chain diagnostics + iteration cap.
+- [ ] Error-driven resolve↔eval fixpoint (parse the strict throw → root-based
+      dispatch → fetch provider → re-eval), with causal-chain diagnostics +
+      iteration cap.
 - [ ] `module_abi`: bake the monotonic integer into `os-release`/toplevel;
       config modules declare `module_abi_compat`; resolver fail-closed refuses
       incompatible modules pre-eval (mirror `trust_ctx.enforce_totality()`).
@@ -230,9 +232,10 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
       + host.nix per config-gen (cross-ABI re-eval survives `apm gc`).
 - [ ] **Durable image rollback** via `bootctl set-default` + sd-boot
       boot-counting (`+tries`), not the lexically-highest `default aos-*.efi`.
-- [ ] **Read-of-absent-root discovery** via the option-path→package index
-      (distinct from the strict write-throw); flag throw-string parsing as the
-      P1 stopgap retired by aos-nix structured errors.
+- [ ] **Read-of-absent-root discovery** via root-based dispatch on the missing
+      root segment (`SystemRoots` for shared roots, else structural by-name
+      lookup; distinct from the strict write-throw); flag throw-string parsing as
+      the P1 stopgap retired by aos-nix structured errors.
 - [ ] **Retarget `activate.sh.in` `prepare`** off the hard-coded Ignition binary
       to the `aos metadata` agent; enable `-Dfirstboot` only if firstboot is
       adopted (else keep manifest-rendered hostname).
