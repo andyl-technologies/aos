@@ -12364,6 +12364,16 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       24.247-24.249B (approximately 0.53%) at unchanged IPC; stats-on counts and
       byte parity remained intact
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Heap-owned Candidate-C construction and resolution:** flat allocations
+      now encode their just-allocated pointer through the serial heap's cached
+      reservation instead of reverse-scanning the process-global registry;
+      lambda and primop getters likewise use the heap-owned cached resolver.
+      All arithmetic remains checked and typed flat-store validation remains in
+      place, so no `unsafe` was added. Full-toplevel instructions improved from
+      24.247-24.249B to 24.2099-24.2102B (approximately 0.16%) with byte parity.
+      A broader production-counter gate measured only approximately 0.15% and
+      was reverted to preserve public statistics and GC-policy semantics
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
       the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
       The call is bracketed by compiled-frame stack-map enter/exit helpers and

@@ -65,6 +65,16 @@ impl EvalHeap {
         value.as_lambda_ptr().map_err(EvalHeapError::Value)
     }
 
+    /// Resolves a primop pointer through this heap's cached serial reservation.
+    #[inline]
+    fn primop_ptr(&self, value: Value) -> Result<NonNull<HeapObject>, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Primop) {
+            return Ok(ptr);
+        }
+        value.as_primop_ptr().map_err(EvalHeapError::Value)
+    }
+
     /// Allocates a Nix string object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains
@@ -754,7 +764,7 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-lambda record.
     pub fn get_lambda(&self, value: Value) -> Result<&EvalLambda, EvalHeapError> {
-        let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self.lambda_ptr(value)?;
         self.get_lambda_ptr(ptr)
     }
 
@@ -804,7 +814,7 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-builtin record.
     pub fn get_primop(&self, value: Value) -> Result<&EvalPrimOp, EvalHeapError> {
-        let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self.primop_ptr(value)?;
         self.get_primop_ptr(ptr)
     }
 

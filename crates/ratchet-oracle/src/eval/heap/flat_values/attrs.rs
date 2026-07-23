@@ -195,7 +195,7 @@ impl EvalHeap {
         };
         self.permanent_allocator
             .record_flat_attrs_allocation_safepoint(shape, slots, allocation.allocation);
-        let value = match Value::attrs(allocation.ptr).map_err(EvalHeapError::Value) {
+        let value = match self.value_for_flat_allocation(ValueTag::Attrs, allocation.ptr) {
             Ok(value) => value,
             Err(error) => {
                 if let Some(cons_slot) = cons_slot {

@@ -78,7 +78,7 @@ impl EvalHeap {
         };
         self.permanent_allocator
             .record_flat_list_allocation_safepoint(len, allocation.allocation);
-        let value = match Value::list(allocation.ptr).map_err(EvalHeapError::Value) {
+        let value = match self.value_for_flat_allocation(ValueTag::List, allocation.ptr) {
             Ok(value) => value,
             Err(error) => {
                 self.cancel_list_cons_slot(cons_slot);

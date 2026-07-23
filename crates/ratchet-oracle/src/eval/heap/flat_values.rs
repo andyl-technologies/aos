@@ -156,6 +156,35 @@ impl FlatColdHashStore {
 }
 
 impl EvalHeap {
+    /// Builds a runtime handle for one just-allocated serial flat object.
+    ///
+    /// Candidate C already caches this heap's reservation identity, so its
+    /// allocation path encodes the known pointer as `base + index` directly
+    /// instead of scanning the process-global reverse registry. Compatibility
+    /// heaps and other carriers retain the context-free constructor.
+    pub(super) fn value_for_flat_allocation(
+        &self,
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Value, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(resolver) = self.serial_reservation {
+            let address = ptr.as_ptr() as usize;
+            if let Some(offset) = address.checked_sub(resolver.base)
+                && offset < resolver.capacity
+                && let Ok(offset) = u32::try_from(offset)
+            {
+                return Value::from_domain_index(
+                    tag,
+                    resolver.domain,
+                    crate::heap::ArenaIndex::new(offset),
+                )
+                .map_err(EvalHeapError::Value);
+            }
+        }
+        Value::heap(tag, ptr).map_err(EvalHeapError::Value)
+    }
+
     /// Serial [`EvalHeap::alloc_string`]: hash-cons admission over the flat
     /// store, then one flat allocation (no heap record).
     pub(super) fn flat_alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
@@ -201,7 +230,7 @@ impl EvalHeap {
         };
         self.permanent_allocator
             .record_flat_allocation_safepoint(len, allocation.allocation);
-        let value = match Value::string(allocation.ptr).map_err(EvalHeapError::Value) {
+        let value = match self.value_for_flat_allocation(ValueTag::String, allocation.ptr) {
             Ok(value) => value,
             Err(error) => {
                 self.cancel_string_cons_slot(cons_slot);
@@ -253,7 +282,7 @@ impl EvalHeap {
         };
         self.permanent_allocator
             .record_flat_allocation_safepoint(len, allocation.allocation);
-        let value = match Value::path(allocation.ptr).map_err(EvalHeapError::Value) {
+        let value = match self.value_for_flat_allocation(ValueTag::Path, allocation.ptr) {
             Ok(value) => value,
             Err(error) => {
                 self.cancel_path_cons_slot(cons_slot);

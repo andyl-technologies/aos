@@ -437,7 +437,7 @@ impl EvalHeap {
         };
         self.allocator
             .record_flat_thunk_allocation_safepoint(allocation.allocation);
-        let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
+        let value = self.value_for_flat_allocation(ValueTag::Thunk, allocation.ptr)?;
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
@@ -498,7 +498,7 @@ impl EvalHeap {
         };
         self.allocator
             .record_flat_lambda_allocation_safepoint(allocation.allocation);
-        let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
+        let value = self.value_for_flat_allocation(ValueTag::Lambda, allocation.ptr)?;
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
@@ -532,7 +532,7 @@ impl EvalHeap {
             PRIMOP_TYPE_TAG,
             allocation.allocation,
         );
-        let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
+        let value = self.value_for_flat_allocation(ValueTag::Primop, allocation.ptr)?;
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)

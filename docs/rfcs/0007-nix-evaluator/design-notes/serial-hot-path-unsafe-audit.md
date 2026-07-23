@@ -347,3 +347,35 @@ stats-enabled run retained all nonzero campaign counts, and full toplevel
 `.drv` closure parity remained byte-green. This is a small uniform
 instrumentation-tax removal, not a resolution of the remaining approximately
 3.88x instruction ratio to pinned C++ Nix.
+
+Gating the broader production telemetry set (allocation, function-call,
+thunk-allocation, and inline-cache counters) provided only another approximately
+0.15% reduction. That prototype was reverted: those counters support public
+statistics and GC policy, and their measured ceiling did not justify splitting
+their semantics.
+
+## Fifth implementation result
+
+The Candidate-C serial heap was still entering the process-global reservation
+registry in two places where it already owned the required address context:
+
+- every flat string, path, list, attrset, thunk, lambda, and primop allocation
+  reverse-scanned the registry to encode a just-allocated pointer; and
+- lambda and primop getters scanned the domain registry even though
+  `EvalHeap` caches its own reservation base and domain.
+
+Flat allocation now performs a checked `pointer - cached_base` conversion and
+constructs the known `(domain, index)` handle directly. Lambda and primop
+resolution use the same heap-owned cached resolver already used by thunks.
+Compatibility carriers and context-free accessors retain the registry path.
+The change adds no `unsafe`: subtraction, reservation capacity, and `u32`
+conversion are checked before handle construction, while typed getters retain
+their flat-store membership/header validation.
+
+Three isolated cache-off `systems.server.build.toplevel` runs retired
+24.2099-24.2102B instructions, approximately **0.16%** below the 24.247-24.249B
+baseline. Peak RSS was 854,288-854,708KiB and IPC 2.52-2.58 on the shared
+builder. Full toplevel `.drv` closure parity remained byte-green. This closes a
+real direct-addressing mismatch with C++ Nix, but its small measured bound shows
+that process-global reservation lookup is not a primary cause of the remaining
+approximately 3.88x instruction gap.
