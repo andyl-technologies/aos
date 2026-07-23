@@ -379,3 +379,21 @@ builder. Full toplevel `.drv` closure parity remained byte-green. This closes a
 real direct-addressing mismatch with C++ Nix, but its small measured bound shows
 that process-global reservation lookup is not a primary cause of the remaining
 approximately 3.88x instruction gap.
+
+## Sixth exploration result
+
+Full-toplevel environment telemetry reports 4,861,457 captured-environment
+installs: 4,337,801 empty and 523,656 non-empty. The non-empty path currently
+clones frames into a temporary `Vec` and then converts it into the inline
+`SmallVec` active suffix, so shallow installs still perform a transient heap
+allocation despite the inline-stack design.
+
+A prototype cloned directly into the inline `SmallVec` while preserving the
+single-pass chain walk and fallible reservation. Focused capture-chain tests
+passed, but three successful isolated full-toplevel runs retired
+24.2354B instructions versus the 24.210B baseline (**0.10% worse**). The
+prototype was reverted. Removing the allocation through a more generic buffer
+made code generation worse than the allocator saving; the redundant staging
+should be removed only as part of a direct persistent-head active environment,
+where it also eliminates frame cloning and stack conversion rather than merely
+changing the destination container.

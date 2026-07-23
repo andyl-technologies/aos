@@ -12330,6 +12330,16 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       a useful high-tax stress case, not the product acceptance benchmark
       ([15](15-differential-testing-and-benchmarking.md),
       [unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered shallow captured-environment staging gap:** the full
+      toplevel performs 4,861,457 environment installs (4,337,801 empty and
+      523,656 non-empty). Non-empty installs clone through a temporary `Vec`
+      before converting to the inline active `SmallVec`. Directly cloning into
+      a generic inline buffer passed focused tests but regressed full-toplevel
+      instructions from 24.210B to 24.2354B (0.10%), so that prototype was
+      reverted. Close this as part of a persistent-head active environment
+      that removes cloning and stack conversion together; do not retry the
+      isolated generic-buffer substitution
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [ ] **Discovered process-global telemetry test isolation gap:** adding an
       unrelated allocation-free Candidate-C cell round-trip test made
       `heap_cheap_memory_advice_option_reports_after_tree_walk_eval` fail in two
