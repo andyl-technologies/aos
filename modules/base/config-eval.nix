@@ -2,10 +2,10 @@
 ##!
 ##! Authors `aos-eval.service`: the stage-2 systemd unit that drives the
 ##! resolve↔eval fixpoint (`apm __eval`) over the in-image base library, the
-##! per-package `config` modules fetched from the registry, and the verified
+##! per-package `config` modules fetched from the registry, and the delivered
 ##! leaf `host.nix`. It emits ONLY a manifest (`/run/aos/manifest.json`) and
-##! never activates — a failed eval or fetch leaves the box live on the gen-0
-##! seed for the operator to fix `host.nix`.
+##! never activates — a failed eval or fetch leaves the baked or previously
+##! activated configuration running for the operator to fix `host.nix`.
 ##!
 ##! This is a structural boot service. Every AOS system carries the evaluator;
 ##! `ConditionPathExists` makes hosts without a delivered `host.nix` a clean
@@ -21,11 +21,31 @@ in {
   options.aos.config.evalAtBoot = {
     hostNix = lib.mkOption {
       type = lib.types.str;
-      default = "/etc/aos/host.nix";
+      default = "/run/aos-metadata/host.nix";
       description = ''
-        Path to the verified leaf `host.nix` delivered by the metadata agent. The service
-        is `ConditionPathExists`-guarded on this path, so with no `host.nix` the
-        eval is a clean no-op.
+        Path to the leaf `host.nix` delivered by the initrd metadata agent. The
+        metadata stash lives under `/run`, which is moved into the real root
+        during switch_root. The service is `ConditionPathExists`-guarded on
+        this path, so with no `host.nix` the eval is a clean no-op.
+      '';
+    };
+
+    trust = lib.mkOption {
+      type = lib.types.enum ["platform" "signed"];
+      default = "platform";
+      description = ''
+        Authentication policy for the delivered `host.nix`.
+
+        `platform` trusts configuration obtained by the initrd metadata agent
+        from the deployment platform. This is the default for cloud images:
+        control of instance user-data is already part of the cloud control
+        plane's authority, so one unmodified golden image can configure every
+        instance.
+
+        `signed` is the fail-closed mode for deployments that do not trust
+        their metadata transport. It requires a detached `host.nix.sig` that
+        verifies against a key in `aos.apm.configKeys`. Missing keys, missing
+        signatures, and invalid signatures all prevent evaluation.
       '';
     };
 
@@ -67,10 +87,16 @@ in {
         assertion = cfg.baseLib != "";
         message = "aos.config.evalAtBoot.baseLib must be set to the in-image base library store path.";
       }
+      {
+        assertion =
+          cfg.trust != "signed"
+          || builtins.attrNames config.aos.apm.configKeys != [];
+        message = "aos.config.evalAtBoot.trust = \"signed\" requires at least one aos.apm.configKeys trust anchor.";
+      }
     ];
 
     systemd.services.aos-eval = {
-      description = "Evaluate signed host configuration to a converged manifest";
+      description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
       wants = ["network-online.target"];
       after = [
@@ -89,8 +115,8 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # Per-eval hardened budget — the limits ARE the perf budget
-        # (build-spec §3). A runaway is OOM-/timeout-killed by the cgroup.
+        # Per-eval hardened resource budget. A runaway is OOM- or
+        # timeout-killed by the cgroup.
         RuntimeMaxSec = 120;
         MemoryMax = "2G";
         MemoryHigh = "1536M";
@@ -108,12 +134,10 @@ in {
       script = ''
         set -u
         mkdir -p /run/aos-eval /run/aos
-        # Stage the UNTRUSTED host.nix + its detached operator signature into the
-        # eval root. apm __eval authenticates the SSHSIG against the image-baked
-        # trusted-config-keys.d BEFORE evaluating (the stage-2 trust gate); a
-        # missing/bad signature yields no manifest (failure-safe). The signature
-        # is read from <host.nix>.sig; stage it best-effort (its absence makes the
-        # gate fail closed with MissingSignature, which is correct).
+        # Stage the metadata-agent-owned input into the hardened eval root.
+        # Signed mode authenticates the sibling SSHSIG before evaluation;
+        # platform mode relies on the deployment control plane that supplied
+        # the initrd metadata.
         cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
         cp -f "${cfg.hostNix}.sig" /run/aos-eval/host.nix.sig 2>/dev/null || true
 
@@ -140,7 +164,7 @@ in {
           --module-abi "$module_abi" \
           --out "${cfg.manifest}" \
           --eval-root /run/aos-eval \
-          --trusted-config-keys-dir /etc/apm/trusted-config-keys.d \
+          ${lib.optionalString (cfg.trust == "signed") "--require-signed-host-nix --trusted-config-keys-dir /etc/apm/trusted-config-keys.d"} \
           $desired_arg || exit 1
       '';
     };
