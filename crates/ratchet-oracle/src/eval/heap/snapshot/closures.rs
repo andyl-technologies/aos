@@ -585,9 +585,12 @@ fn encode_thunk(
         EvalThunkKind::Node {
             body,
             env,
-            with_env,
-            scoped_globals,
+            dynamic_env,
         } => {
+            let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+                Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
+                None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
+            };
             out.push(KIND_NODE_THUNK);
             out.push(single_entry);
             out.extend_from_slice(&node_ref(code, *body)?.to_bytes());

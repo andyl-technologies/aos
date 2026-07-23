@@ -363,12 +363,15 @@ fn collapse_payload_fields(
     // Thunk node kinds also carry `with`/scoped-global stacks.
     if let FlatClosurePayload::Thunk(thunk) = payload {
         if let EvalThunkKind::Node {
-            with_env,
-            scoped_globals,
+            dynamic_env: Some(dynamic),
             ..
         } = &mut thunk.kind
         {
-            changed += collapse_scope_stacks(Some(with_env), Some(scoped_globals), rewrite);
+            changed += collapse_scope_stacks(
+                Some(&mut dynamic.with_env),
+                Some(&mut dynamic.scoped_globals),
+                rewrite,
+            );
         }
     }
     changed

@@ -140,10 +140,8 @@ pub(crate) enum EvalThunkKind {
         body: EvalNodeRef,
         /// Captured lexical frames.
         env: EvalEnv,
-        /// Captured dynamic `with` scopes.
-        with_env: EvalWithEnv,
-        /// Captured scoped-import global scopes.
-        scoped_globals: EvalScopedGlobalEnv,
+        /// Rare non-empty dynamic scopes, kept out of the common thunk body.
+        dynamic_env: Option<Box<EvalThunkDynamicEnv>>,
     },
     /// Applies a forced function value to a lazy argument value.
     Apply {
@@ -205,6 +203,31 @@ pub(crate) enum EvalThunkKind {
     /// deferred work of a released thunk is an evaluator bug and every reader
     /// must fail loudly rather than guess.
     Released,
+}
+
+/// Non-lexical environments captured only when a thunk has dynamic scopes.
+///
+/// The AOS module-system workload captures millions of node thunks while both
+/// stacks are empty. Keeping the two persistent-head handles out of line makes
+/// that common thunk record smaller without adding an allocation there.
+#[derive(Clone, Debug)]
+pub(crate) struct EvalThunkDynamicEnv {
+    pub(crate) with_env: EvalWithEnv,
+    pub(crate) scoped_globals: EvalScopedGlobalEnv,
+}
+
+impl EvalThunkDynamicEnv {
+    /// Builds an optional dynamic capture, omitting two empty stack handles.
+    fn new(with_env: EvalWithEnv, scoped_globals: EvalScopedGlobalEnv) -> Option<Box<Self>> {
+        if with_env.scopes().is_empty() && scoped_globals.scopes().is_empty() {
+            None
+        } else {
+            Some(Box::new(Self {
+                with_env,
+                scoped_globals,
+            }))
+        }
+    }
 }
 
 /// The serial force-state cell of an [`EvalThunk`], stored inline until sharing

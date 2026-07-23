@@ -486,9 +486,12 @@ impl TreeWalk {
             EvalThunkKind::Node {
                 body,
                 env,
-                with_env,
-                scoped_globals,
+                dynamic_env,
             } => {
+                let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+                    Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
+                    None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
+                };
                 let thunk_env = self.clone_env_frames(id, env, span)?;
                 self.reserve_suspended_env_root_frame(id, span)?;
                 self.push_env_scope(id, span, thunk_env, with_env, scoped_globals)?;

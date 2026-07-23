@@ -95,12 +95,10 @@ impl TreeWalk {
             thunk.kind(),
             EvalThunkKind::Node {
                 env,
-                with_env,
-                scoped_globals,
+                dynamic_env,
                 ..
             } if env.is_empty()
-                && with_env.scopes().is_empty()
-                && scoped_globals.scopes().is_empty()
+                && dynamic_env.is_none()
         )
     }
 

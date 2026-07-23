@@ -538,21 +538,27 @@ pub(super) fn thunk_supports_suspended_field_write(
     Ok(matches!(
         (thunk.kind(), source),
         (
-            EvalThunkKind::Node { with_env, .. },
+            EvalThunkKind::Node {
+                dynamic_env: Some(dynamic),
+                ..
+            },
             HeapEdgeSource::CapturedWithScope {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
-        ) if *index < with_env.scopes().len()
+        ) if *index < dynamic.with_env.scopes().len()
     ) || matches!(
         (thunk.kind(), source),
         (
-            EvalThunkKind::Node { scoped_globals, .. },
+            EvalThunkKind::Node {
+                dynamic_env: Some(dynamic),
+                ..
+            },
             HeapEdgeSource::CapturedScopedGlobal {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
-        ) if *index < scoped_globals.scopes().len()
+        ) if *index < dynamic.scoped_globals.scopes().len()
     ) || matches!(
         (thunk.kind(), source),
         (
@@ -595,15 +601,17 @@ pub(super) fn rewrite_suspended_thunk_field(
             EvalThunkKind::Node {
                 body,
                 env,
-                with_env,
-                scoped_globals,
+                dynamic_env,
             },
             HeapEdgeSource::CapturedWithScope {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
         ) => {
-            let mut scopes = with_env.scopes().to_vec();
+            let Some(dynamic) = dynamic_env.as_deref() else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            let mut scopes = dynamic.with_env.scopes().to_vec();
             let Some(scope) = scopes.get_mut(*index) else {
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
@@ -615,8 +623,10 @@ pub(super) fn rewrite_suspended_thunk_field(
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    with_env,
-                    scoped_globals: scoped_globals.clone(),
+                    dynamic_env: EvalThunkDynamicEnv::new(
+                        with_env,
+                        dynamic.scoped_globals.clone(),
+                    ),
                 },
             )
         }
@@ -624,15 +634,17 @@ pub(super) fn rewrite_suspended_thunk_field(
             EvalThunkKind::Node {
                 body,
                 env,
-                with_env,
-                scoped_globals,
+                dynamic_env,
             },
             HeapEdgeSource::CapturedScopedGlobal {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
         ) => {
-            let mut scopes = scoped_globals.scopes().to_vec();
+            let Some(dynamic) = dynamic_env.as_deref() else {
+                return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+            };
+            let mut scopes = dynamic.scoped_globals.scopes().to_vec();
             let Some(scope) = scopes.get_mut(*index) else {
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
@@ -644,8 +656,10 @@ pub(super) fn rewrite_suspended_thunk_field(
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    with_env: with_env.clone(),
-                    scoped_globals,
+                    dynamic_env: EvalThunkDynamicEnv::new(
+                        dynamic.with_env.clone(),
+                        scoped_globals,
+                    ),
                 },
             )
         }
@@ -804,16 +818,21 @@ pub(super) fn push_thunk_kind_edges(
     match kind {
         EvalThunkKind::Node {
             env,
-            with_env,
-            scoped_globals,
+            dynamic_env,
             ..
-        } => push_capture_edges(
-            edges,
-            CapturedRootOwner::Thunk,
-            env,
-            with_env,
-            scoped_globals,
-        ),
+        } => {
+            let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+                Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
+                None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
+            };
+            push_capture_edges(
+                edges,
+                CapturedRootOwner::Thunk,
+                env,
+                with_env,
+                scoped_globals,
+            )
+        }
         EvalThunkKind::Apply {
             function_value,
             argument_value,

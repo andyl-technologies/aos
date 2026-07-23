@@ -498,12 +498,9 @@ fn thunk_kind_has_reclaimable_captures(kind: &EvalThunkKind) -> bool {
     match kind {
         EvalThunkKind::Node {
             env,
-            with_env,
-            scoped_globals,
+            dynamic_env,
             ..
-        } => {
-            !env.is_empty() || !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty()
-        }
+        } => !env.is_empty() || dynamic_env.is_some(),
         EvalThunkKind::Apply { .. }
         | EvalThunkKind::Apply2 { .. }
         | EvalThunkKind::Select { .. } => true,

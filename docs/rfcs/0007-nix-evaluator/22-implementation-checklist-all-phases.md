@@ -12297,8 +12297,9 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       Compute workloads consequently peak at approximately 1.3GiB for
       `attr-fixpoint`, 1.5GiB for `sum-fold`, 2.3GiB for `tak`, 2.8GiB for
       `lambda-interp`, and 6.0GiB for `string-builder`. A fresh-process
-      `systems.server.build.toplevel` run likewise peaks at approximately
-      858MiB versus C++ Nix's 337MiB (2.55x), despite the post-run-RSS
+      `systems.server.build.toplevel` run peaked at approximately 858MiB before
+      the dynamic-capture layout reduction below and approximately 828MiB
+      after it, versus C++ Nix's 337MiB (2.46x current), despite the post-run-RSS
       scoreboard reporting a much smaller retained value. Close this only when
       a production-enabled, root-complete mid-evaluation collector reclaims
       aggregate payloads and returns or reuses their storage while the full
@@ -12306,6 +12307,16 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       alone do not satisfy the item
       ([06](06-memory-management-and-gc.md) §4,
       [memory campaign](design-notes/memory-campaign-plan.md)).
+- [x] **Common thunk dynamic-capture layout reduction:** store the persistent
+      `with` and scoped-global heads out of line only when either stack is
+      non-empty. On the full AOS `systems.server.build.toplevel` workload all
+      2,440,809 observed dynamic captures had zero entries, so this removes one
+      word from each common Candidate-C thunk without adding an allocation.
+      `EvalThunk` and `FlatClosurePayload` fell from 128 to 120 bytes. In
+      isolated fresh-process runs, peak RSS fell from 878,492 to 848,284KiB
+      (29.5MiB, 3.4%) and retired instructions from 24.790B to 24.757B (0.13%);
+      byte parity and the 2,668-test Candidate-C oracle suite remained green.
+      This is a measured layout win, not resolution of the production-GC gap.
 - [ ] **Discovered benchmark-representativeness gap:** the full
       `systems.server.build.toplevel` evaluation is the primary product
       benchmark (currently about 3.6x slower than stock Nix on the Linux

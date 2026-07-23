@@ -31,8 +31,7 @@ impl EvalThunk {
             kind: EvalThunkKind::Node {
                 body: EvalNodeRef::new(module, body),
                 env,
-                with_env,
-                scoped_globals,
+                dynamic_env: EvalThunkDynamicEnv::new(with_env, scoped_globals),
             },
             cell: ThunkCellSlot::inline_suspended(),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
@@ -267,7 +266,10 @@ impl EvalThunk {
     /// Returns the captured dynamic `with` environment, if any.
     pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
         match &self.kind {
-            EvalThunkKind::Node { with_env, .. } => Some(with_env),
+            EvalThunkKind::Node { dynamic_env, .. } => match dynamic_env {
+                Some(dynamic) => Some(&dynamic.with_env),
+                None => Some(EvalWithEnv::empty_ref()),
+            },
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
@@ -279,7 +281,10 @@ impl EvalThunk {
     /// Returns the captured scoped-import global environment, if any.
     pub const fn scoped_global_env(&self) -> Option<&EvalScopedGlobalEnv> {
         match &self.kind {
-            EvalThunkKind::Node { scoped_globals, .. } => Some(scoped_globals),
+            EvalThunkKind::Node { dynamic_env, .. } => match dynamic_env {
+                Some(dynamic) => Some(&dynamic.scoped_globals),
+                None => Some(EvalScopedGlobalEnv::empty_ref()),
+            },
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
@@ -369,7 +374,7 @@ impl EvalThunk {
 #[cfg(test)]
 mod tests {
     use crate::compile::IrId;
-    use crate::eval::ThunkState;
+    use crate::eval::{EvalWithScope, ThunkState};
     use crate::eval::thunk_cas::ParallelThunkWorkerId;
     use crate::eval::thunk_payload::TreeWalkParallelThunkWait;
     use crate::eval::tree_walk::TreeWalkErrorKind;
@@ -450,6 +455,72 @@ mod tests {
             IrAttrPathId::new(0),
         );
         assert_serial_storage(&select);
+    }
+
+    #[test]
+    fn eval_thunk_omits_empty_dynamic_captures_and_preserves_nonempty_captures() {
+        let empty = EvalThunk::new(IrId::new(7));
+        assert!(matches!(
+            empty.kind(),
+            EvalThunkKind::Node {
+                dynamic_env: None,
+                ..
+            }
+        ));
+        assert!(
+            empty
+                .with_scope_env()
+                .expect("node thunks expose a with-scope capture")
+                .scopes()
+                .is_empty()
+        );
+        assert!(
+            empty
+                .scoped_global_env()
+                .expect("node thunks expose a scoped-global capture")
+                .scopes()
+                .is_empty()
+        );
+
+        let with_scope =
+            EvalWithScope::new(EvalModuleId::ROOT, IrId::new(8), Value::int(11));
+        let dynamic = EvalThunk::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(7),
+            EvalEnv::default(),
+            vec![with_scope].into(),
+            vec![Value::int(13)].into(),
+        );
+        assert!(matches!(
+            dynamic.kind(),
+            EvalThunkKind::Node {
+                dynamic_env: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            dynamic
+                .with_scope_env()
+                .expect("node thunks expose a with-scope capture")
+                .scopes()[0]
+                .value()
+                .as_int(),
+            Ok(11)
+        );
+        assert_eq!(
+            dynamic
+                .scoped_global_env()
+                .expect("node thunks expose a scoped-global capture")
+                .scopes()[0]
+                .as_int(),
+            Ok(13)
+        );
+    }
+
+    #[cfg(all(feature = "candidate_c_value", target_pointer_width = "64"))]
+    #[test]
+    fn candidate_c_common_thunk_record_stays_within_fifteen_words() {
+        assert_eq!(std::mem::size_of::<EvalThunk>(), 15 * 8);
     }
 
     #[test]

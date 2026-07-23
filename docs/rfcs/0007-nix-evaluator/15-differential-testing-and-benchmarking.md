@@ -637,7 +637,10 @@ to the host-load spikes that skew the mean on a contended machine.
      roughly 84k minor faults, 0.39s user CPU, and 0.09s system CPU. Extend
      `nix-bench` to report an isolated native-child peak measured the same way
      as the oracle child, make that peak/peak ratio canonical, and rerun every
-     claimed memory gate before treating the ≤0.50 goal as achieved.
+     claimed memory gate before treating the ≤0.50 goal as achieved. Moving
+     empty dynamic-scope captures out of the common thunk subsequently reduced
+     the isolated native peak to about 828MiB, but the current 2.46x peak/peak
+     ratio remains well outside the goal.
 
    **Achieved (2026-07-12, builder-hil1-87eb5b00, HEAD 223fd30f, byte-parity
    green).** With mimalloc's default deferred purge the native process retains

@@ -294,6 +294,11 @@ pub struct EvalWithEnv {
 }
 
 impl EvalWithEnv {
+    /// Returns the shared empty dynamic-scope capture.
+    pub(crate) const fn empty_ref() -> &'static Self {
+        &EMPTY_WITH_ENV
+    }
+
     /// Returns whether two captures share the same persistent stack.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
         self.scopes.raw_eq(&other.scopes)
@@ -370,6 +375,11 @@ pub struct EvalScopedGlobalEnv {
 }
 
 impl EvalScopedGlobalEnv {
+    /// Returns the shared empty scoped-global capture.
+    pub(crate) const fn empty_ref() -> &'static Self {
+        &EMPTY_SCOPED_GLOBAL_ENV
+    }
+
     /// Returns whether two captures share the same persistent stack.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
         self.scopes.raw_eq(&other.scopes)
@@ -411,6 +421,14 @@ impl EvalScopedGlobalEnv {
         self.scopes.replace(index, value)
     }
 }
+
+static EMPTY_WITH_ENV: EvalWithEnv = EvalWithEnv {
+    scopes: PersistentEnvStack { head: None },
+};
+
+static EMPTY_SCOPED_GLOBAL_ENV: EvalScopedGlobalEnv = EvalScopedGlobalEnv {
+    scopes: PersistentEnvStack { head: None },
+};
 
 impl Deref for EvalScopedGlobalEnv {
     type Target = [Value];

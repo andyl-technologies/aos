@@ -679,13 +679,12 @@ impl TreeWalk {
         let EvalThunkKind::Node {
             body,
             env,
-            with_env,
-            scoped_globals,
+            dynamic_env,
         } = thunk.kind()
         else {
             return None;
         };
-        if !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty() {
+        if dynamic_env.is_some() {
             return None;
         }
         let module = self.modules.get(body.module().index())?;
