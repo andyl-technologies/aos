@@ -3,7 +3,7 @@
 # Each spec file under `tests/fleet/` is a function of `{ lib, pkgs,
 # systems }` returning one attrset; the discoverer in `default.nix`
 # evaluates the attrset against `fleetSpecType` here so eval-time
-# mistakes (typos in field names, malformed ignition, package-name typos)
+# mistakes (typos in field names and package names)
 # surface as `evalModules` errors rather than runtime failures inside
 # the harness.
 #
@@ -66,29 +66,15 @@
         '';
       };
 
-      provisioning = mkOption {
-        type = types.enum ["newpath"];
-        default = "newpath";
-        description = ''
-          First-boot provisioning path (RFC-0011). `newpath` bakes per-VM
-          identity (hostname, /etc/hosts, the eth0 .network, the guest-agent
-          unit) straight into the image's /etc via `extendModules` and
-          provisions the substrate with systemd-repart. This is the only path
-          (Ignition has been removed); the field is retained as an explicit
-          marker on machines.
-        '';
-      };
-
       extraModules = mkOption {
         type = types.listOf unspecifiedType;
         default = [];
         description = ''
           Extra NixOS-style module fragments overlaid onto this machine's
-          system via `extendModules` (new path only). The mechanism the fleet
+          system via `extendModules`. The mechanism the fleet
           harness uses to bake per-VM configuration into the image `/etc` in
-          place of Ignition `storage.files` — e.g. a k3s node's
-          `/etc/rancher/k3s/config.yaml` and token env. Ignored on the
-          `ignition` path (which delivers such files over the metadata channel).
+          place of runtime file injection — e.g. a k3s node's
+          `/etc/rancher/k3s/config.yaml` and token env.
         '';
       };
 
@@ -102,7 +88,7 @@
           `system.build.image.raw` under OVMF — UEFI → sd-boot → UKI →
           systemd initrd — where systemd-repart carves swap/var from the
           trailing free space on first boot (tests/fleet/install-from-image.nix,
-          RFC-0003/RFC-0011).
+          image installation tests).
         '';
       };
 

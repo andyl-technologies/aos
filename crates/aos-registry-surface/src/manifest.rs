@@ -141,7 +141,7 @@ pub struct PlatformEntry {
     /// Golden package measurement tuple.
     #[serde(default)]
     pub measurement: Option<String>,
-    /// RFC-0011 config-only module output and its declared interface.
+    /// Configuration-only module output and its declared interface.
     #[serde(default)]
     pub config_module: Option<ConfigModuleMeta>,
 }
@@ -1215,10 +1215,10 @@ mod root_config_tests {
 
 
 // ---------------------------------------------------------------------------
-// RFC-0011 config-module schema (pure manifest data)
+// Configuration-module schema represented as pure manifest data.
 // ---------------------------------------------------------------------------
 
-/// Store metadata for a package's second `config` output (RFC-0011).
+/// Stores metadata for a package's second `config` output.
 ///
 /// The `config` output is a store-path NAR carrying the package's config-only
 /// Nix module (`module.nix` at its root) plus any relative-imported private
@@ -1247,7 +1247,7 @@ pub struct ConfigOutputMeta {
     pub references: Vec<String>,
 }
 
-/// RFC-0011 config-module interface declared by a package.
+/// Configuration-module interface declared by a package.
 ///
 /// Carries the second [`ConfigOutputMeta`] output, the declared option surface
 /// (the package's `provides`, computed by an options-only eval at publish), the
@@ -1283,7 +1283,7 @@ pub struct ConfigModuleMeta {
 /// Inclusive base-lib ABI compatibility range for a config module.
 ///
 /// The resolver refuses the module unless `min <= running_image_abi <= max`.
-/// This is the RFC-0011 analogue of the SBAT revocation floor: a monotonic
+/// This is the configuration analogue of the SBAT revocation floor: a monotonic
 /// integer band, gated pre-eval and fail-closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

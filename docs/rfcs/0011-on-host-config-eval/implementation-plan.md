@@ -20,8 +20,8 @@ Pin current behavior so every later phase runs under a regression net. Written
 and verified green on master *before* P0 touches rendering. Full strategy in
 [`test-plan.md`](test-plan.md).
 
-- [ ] **Pure-eval toplevel golden** — `lib/testing/rfc-0011-characterization.nix`
-      + `tests/fixtures/rfc-0011-goldens/<system>/` (etcDump, unit bodies,
+- [ ] **Pure-eval toplevel golden** — `lib/testing/system-characterization.nix`
+      + `tests/fixtures/system-characterization-goldens/<system>/` (etcDump, unit bodies,
       substituted `activate.sh.in`, os-release). Added to `checks.eval`.
       **Comparator normalizes job scripts to text** (the only intentional P0
       byte change, review C2).

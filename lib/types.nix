@@ -641,7 +641,7 @@ in rec {
 
   ## A conflict-rejecting enumerated scalar: `uniq (enum values)`.
   ##
-  ## This is the canonical RFC-0011 merge for an **owned shared scalar** on a
+  ## This is the canonical merge for an **owned shared scalar** on a
   ## shared root — e.g. `firewall.forwardPolicy = uniqEnum [ "accept" "drop" ]`.
   ## `enum` constrains the value set; `uniq` makes two *disagreeing* equal-
   ## priority definitions a loud eval error ("conflicting definitions … must

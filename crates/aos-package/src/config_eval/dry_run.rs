@@ -1,5 +1,5 @@
 //! `apm switch --dry-run` — the off-host/on-host config preflight
-//! (RFC-0011 operability.md §Dry-run / preflight).
+//! used by dry-run and preflight operations.
 //!
 //! Because the eval is a pure function of its inputs, it runs identically
 //! off-host (CI `checks.config-eval`) and on-host. `--dry-run` runs the

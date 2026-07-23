@@ -17,7 +17,7 @@
     pkgs = self;
   };
 
-  # RFC-0011 config-module renderer: turns a package-authored `configModule`
+  # Turn a package-authored `configModule`
   # arg into the package's second `config` output (a pure-data store path
   # carrying `module.nix` + a declared-interface manifest). Wired into
   # mkDerivation below the same way `expose` is.

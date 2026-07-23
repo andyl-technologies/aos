@@ -17,7 +17,6 @@ in {
   machines = {
     server = {
       system = serverWithHttp;
-      provisioning = "newpath";
       packages = ["test-http-server"];
     };
 
@@ -25,7 +24,6 @@ in {
       system = systems.server-test;
       # Roleless. Identity fragment + system-default packages are
       # enough — the test script drives `curl` via `client.execute(...)`.
-      provisioning = "newpath";
     };
   };
 

@@ -1,7 +1,6 @@
-##! modules/services/repart.nix — systemd-repart convention substrate (RFC-0011)
+##! modules/services/repart.nix — systemd-repart convention substrate
 ##!
-##! Opt-in (`aos.provisioning.repart.enable`, default false) systemd-native
-##! substrate provisioning that carves and grows `/var` (and swap) in the
+##! Systemd-native substrate provisioning that carves and grows `/var` (and swap) in the
 ##! initrd via convention `repart.d` drop-ins, replacing Ignition's
 ##! `disks`/`aos-growfs`/`aos-gpt-relocate` for the zero-config cloud VM. It is
 ##! **idempotent by construction**: `systemd-repart` computes the delta between
@@ -9,12 +8,8 @@
 ##! *grows* growable ones — running it every boot equals running it once, so it
 ##! carries no guard.
 ##!
-##! GATED + ADDITIVE: when disabled (every existing ext4/VM-test system) this
-##! module contributes nothing — no initrd unit, no definitions, no ordering
-##! edges — so the Ignition disk path is untouched. When enabled, it runs
-##! `systemd-repart` before `mount-var.service` and the Ignition disk-carving
-##! units (`ignition-disks`, `aos-growfs`, `aos-gpt-relocate`) gate themselves
-##! off (see modules/services/ignition.nix).
+##! It runs on every boot before `mount-var.service`; its additive partition
+##! model makes an already-provisioned disk a no-op.
 ##!
 ##! First-boot substrate is **image-only** (review M-repart-order): repart runs
 ##! in the initrd, before host.nix is evaluated in stage-2, so only the
@@ -32,7 +27,6 @@
   lib,
   ...
 }: let
-  cfg = config.aos.provisioning.repart;
   measured = config.aos.boot.secureBoot.measuredBoot.enable;
 
   # Convention repart.d drop-ins baked into the initrd. systemd-repart only
@@ -87,25 +81,7 @@
     VAR
   '';
 in {
-  options.aos.provisioning.repart = {
-    ## Carve/grow `/var` (and swap) in the initrd via systemd-repart.
-    ##
-    ## Opt-in convention substrate (RFC-0011 provisioning). When false (the
-    ## default, and every existing system) this module is inert and Ignition
-    ## owns disk carving. Enable it on a systemd-native production variant; the
-    ## Ignition disk units then gate themselves off.
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Provision substrate with systemd-repart convention drop-ins in the
-        initrd instead of Ignition's disks/growfs/gpt-relocate. Idempotent:
-        adds only missing partitions and grows growable ones every boot.
-      '';
-    };
-  };
-
-  config = lib.mkIf cfg.enable (lib.mkMerge [
+  config = lib.mkMerge [
     {
       # The repart definitions closure must be reachable from the initrd store.
       aos.boot.initrd.extraPackages = [repartDefinitions];
@@ -222,5 +198,5 @@ in {
     (lib.mkIf measured {
       boot.initrd.systemd.services."aos-var-crypt".after = ["aos-repart.service"];
     })
-  ]);
+  ];
 }

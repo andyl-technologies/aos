@@ -215,7 +215,7 @@ fn materialize_package_config(
 /// The render is deterministic: artifacts are emitted in declaration order and
 /// each artifact's fields serialize from a sorted [`BTreeMap`], so output bytes
 /// do not depend on input insertion order. This determinism is the content-
-/// addressing invariant the RFC-0011 flat-merge parity oracle pins.
+/// addressing invariant pinned by the flat-merge parity oracle.
 ///
 /// Exposed (`#[doc(hidden)]`) only so the `golden_config_artifact` integration
 /// test can snapshot it; the behavior is unchanged from when it was private.

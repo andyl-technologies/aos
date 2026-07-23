@@ -1,4 +1,4 @@
-//! `host.nix` stage-2 authenticity gate (RFC-0011 build-spec §3).
+//! Stage-2 authenticity gate for `host.nix`.
 //!
 //! The initrd `aos metadata` agent is **transport-only**: it fetches the
 //! operator's `host.nix` (literal Nix or a `sha256`-pinned URL pointer) and

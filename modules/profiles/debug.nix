@@ -56,7 +56,7 @@ in {
       # and these values hold identically in the stage-1 initrd,
       # which has no NSS to resolve a passwd lookup through.
       #
-      # RFC-0011 Layer 2: this shim is an image-fixed artifact (pure function
+      # This shim is an image-fixed artifact (pure function
       # of pkgs, not host.nix). Reference the resolved artifact so the on-host
       # eval-only evaluator uses the stage-1-frozen store path instead of
       # rebuilding it (`pkgs.writeShellScriptBin` is absent from the stage-2

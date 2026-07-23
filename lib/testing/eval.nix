@@ -26,6 +26,28 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
+  # Provisioning and configuration are structural, not optional paths. Their
+  # former enable switches must stay deleted and
+  # the stock system must always emit every stage.
+  structuralConfiguration =
+    if system.options.aos.config.evalAtBoot ? enable
+    then throw "aos.config.evalAtBoot.enable must not exist"
+    else if system.options.aos.provisioning.metadataAgent ? enable
+    then throw "aos.provisioning.metadataAgent.enable must not exist"
+    else if system.options.aos.provisioning ? repart
+    then throw "aos.provisioning.repart must not exist"
+    else if system.options.aos.config.unitGraph ? enable
+    then throw "aos.config.unitGraph.enable must not exist"
+    else if !(builtins.hasAttr "aos-eval" system.config.systemd.services)
+    then throw "the stock system must emit aos-eval.service"
+    else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
+    then throw "the stock system must emit aos-graph-compile.service"
+    else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-metadata-fetch.service"
+    else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-repart.service"
+    else "ok";
+
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------
   # A registry trust anchor produces the expected /etc contents, and
   # malformed trust keys fail evaluation.
@@ -115,7 +137,7 @@
     else "ok";
 
   # --- aos.apm.installAtBoot --------------------------------------------
-  # Host-authored package intent bakes into the image /etc (RFC-0011 new path):
+  # Host-authored package intent bakes into the image /etc:
   # desired.toml plus registry config / trust anchors, as `environment.etc`.
   installAtBootSystem = mkSystem [
     ../../systems/server.nix
@@ -462,6 +484,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
+        echo "configuration pipeline: structural default (${structuralConfiguration})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

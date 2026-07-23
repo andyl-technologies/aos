@@ -4,7 +4,7 @@
 ##! inputs and returns `{ unitsDrv, storageLinks, driftCheck }`:
 ##!
 ##!   - `unitsDrv` is the `generateUnits` derivation output. The role's
-##!     ignition lower binds this into `/run/etc/ignition-<gen>/etc/`
+##!     config lower binds this into `/run/etc/config-<gen>/etc/`
 ##!     via the per-link entries below; at runtime the overlay merges
 ##!     it with the system EROFS image's `/systemd/system/` tree.
 ##!

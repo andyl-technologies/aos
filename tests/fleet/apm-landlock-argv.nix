@@ -24,7 +24,6 @@ in {
 
   machines.vm = {
     inherit system;
-    provisioning = "newpath";
     # Package activation measures PCR 15 while seeding the package profile.
     tpm = true;
     packages = ["landlock-argv-test"];

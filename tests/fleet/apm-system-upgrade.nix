@@ -50,7 +50,7 @@
   systems,
 }: let
   fleetSystem = evaluated: {
-    # Re-expose extendModules so the new-path harness can bake per-VM identity.
+    # Re-expose extendModules so the harness can bake per-VM identity.
     inherit (evaluated) config options extendModules;
     build = {
       toplevel = evaluated.config.system.build.toplevel;
@@ -161,7 +161,6 @@ in {
     # Python global `target`.
     target = {
       system = server1;
-      provisioning = "newpath";
       # Pre-stage gen-2's full closure so `apm upgrade --system` fetches
       # nothing over the network (see the header note).
       extraClosures = [server2Top];

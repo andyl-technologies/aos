@@ -284,7 +284,7 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     Ok(())
 }
 
-/// Create the RFC-0011 config-generation GC roots: `cfg/` (manifest outputs)
+/// Creates the configuration-generation GC roots: `cfg/` (manifest outputs)
 /// and `cfgsrc/` (config-module source closure + `host.nix`).
 ///
 /// Extends the per-generation symlink farm written by [`create_gc_roots`] with
@@ -321,7 +321,7 @@ pub fn create_config_gc_roots(
 }
 
 /// Create the image-scoped `image-gen-N/baselib/<module_abi>` GC root
-/// (RFC-0011 build-spec §2/§4, OQ1).
+/// retained by the active configuration generations.
 ///
 /// Pins **only** the base-lib + evaluator closure of one image-generation —
 /// not the kernel/initrd/whole UKI — keyed by the image's `module_abi`. This is
@@ -354,7 +354,7 @@ pub fn create_baselib_gc_root(
     })
 }
 
-/// Computes which `baselib/<module_abi>` roots to retain (RFC-0011 build-spec
+/// Computes which `baselib/<module_abi>` roots to retain across
 /// §4, OQ1 — "keep ≥1 prior base lib on `/var`, never re-download").
 ///
 /// A base-lib root for `module_abi = K` is retained iff **either** (a) `K` is
@@ -991,7 +991,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RFC-0011 config-gen GC roots (cfg/ + cfgsrc/) and baselib retention
+    // Configuration-generation GC roots (cfg/ and cfgsrc/) and base-library retention.
     // -----------------------------------------------------------------------
 
     #[test]

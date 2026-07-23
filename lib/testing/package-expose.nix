@@ -2129,7 +2129,7 @@ in
           grep -q 'RestartSec=5s' "$k3s_worker_unit"
           grep -q 'ConditionPathExists=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
           grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          # RFC-0011 F2-A: script-derived Exec*= directives now point at the
+          # Script-derived Exec directives point at the
           # gen-local `aos-job-scripts/<unit>:<slot>.<index>` materialization
           # (derivation `aos-job-script-<scriptName>`) instead of the legacy
           # `unit-script-<name>/bin/<name>` path. See lib/modules/systemd/lib.nix.

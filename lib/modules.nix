@@ -59,7 +59,7 @@
     # stored but otherwise ignored. Ports of nixpkgs code frequently
     # set this on `*.unit` / `*.jobScripts` fields.
     internal ? false,
-    # `contributable` is the RFC-0011 F3-B "capability-scoped contribution
+    # `contributable` is the capability-scoped contribution
     # surface" marker. It is a *pure declaration field* — the merge engine
     # (phases 3-6) completely ignores it, so setting it never changes how an
     # option's value is computed. Its sole purpose is to let a shared-root
@@ -572,7 +572,7 @@
     lib ? {},
     extraArgs ? {},
     specialArgs ? {},
-    # `operatorModules` (RFC-0011, review M-forgeable-file) — modules the
+    # `operatorModules` contains modules the
     # RESOLVER has authenticated as operator-provenance (the verified
     # `host.nix` store path). Every def these modules contribute is stamped
     # with `_provenance = "operator"` and lifted to the reserved priority-75
@@ -742,7 +742,7 @@
             # Unwrap override markers and assign priorities.
             #
             # A BARE def (no explicit `mkOverride`/`mkForce`/`mkDefault`) is
-            # normally priority 100. The one exception is the RFC-0011
+            # normally priority 100. The one exception is the
             # operator tier: a bare def whose engine-stamped provenance is
             # `"operator"` (it came from a resolver-supplied `host.nix`
             # module) is lifted to the reserved priority-75 band, so the
@@ -882,7 +882,7 @@
       # including toplevel-only builders like `system.build.etcBasedir =
       # pkgs.runCommand …`. Forcing one declared option (e.g.
       # `system.build.configManifest`) would then force every sibling builder —
-      # fatal under the RFC-0011 on-host eval-only `pkgs`, which has no builder
+      # fatal under the on-host eval-only `pkgs`, which has no builder
       # functions. Using `finalConfig` keeps the result lazy per-option (so
       # broken-config paths stay inspectable, and the eval-only manifest never
       # touches the build graph) while remaining identical for any config whose
@@ -1033,7 +1033,7 @@
           }
           // builtins.removeAttrs args ["modules"]);
 
-      # RFC-0011 F3-B: the declared option surface, flattened to one record
+      # The declared contributable option surface, flattened to one record
       # per declared option path, carrying the `contributable` marker. This
       # is the data the publish-time options-only eval folds into the
       # registry inverted index (`option-path → {owner@version,

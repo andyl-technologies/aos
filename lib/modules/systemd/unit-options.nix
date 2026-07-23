@@ -224,7 +224,7 @@ in rec {
         description = "The generated unit.";
       };
 
-      # RFC-0011 F2-A: the job-script records (from `makeJobScript`) whose
+      # The job-script records from `makeJobScript` whose
       # `#aos-jobscript:<key>#` placeholders appear in `text`. `serviceToUnit`
       # copies the owning service's records here so `makeUnit` can substitute
       # each placeholder back to its build-side `path` when materializing the
@@ -235,7 +235,7 @@ in rec {
       jobScripts = mkOption {
         internal = true;
         default = [];
-        description = "RFC-0011 F2-A job-script records whose placeholders appear in `text`.";
+        description = "Job-script records whose placeholders appear in `text`.";
       };
     };
 
@@ -621,7 +621,7 @@ in rec {
       };
 
       jobScripts = mkOption {
-        # RFC-0011 F2-A: each entry is the pure record returned by
+        # Each entry is the pure record returned by
         # `makeJobScript` (key/name/scriptName/text/body/mode/placeholder as
         # strings, plus `path` and the build-side `drv` derivation). The
         # records are folded into `manifest.jobScripts` and drive the
@@ -633,13 +633,13 @@ in rec {
         # check calls `isDerivation` on every record field, forcing the `drv`
         # (a `writeTextFile`) whenever the option is read — even though the
         # manifest only consumes the string fields (`key`/`body`/`mode`/
-        # `scriptName`). That force faults under the RFC-0011 on-host eval-only
+        # `scriptName`). That force faults under the on-host eval-only
         # `pkgs` (no builder functions). `attrs` validates each element is an
         # attrset without descending into (forcing) its values; `listOf`
         # still concatenates contributions across the six Exec* mkMerge blocks.
         type = with types; listOf attrs;
         internal = true;
-        description = "Job-script records (RFC-0011 F2-A) for this unit.";
+        description = "Job-script records for this unit.";
         default = [];
       };
 
@@ -671,13 +671,13 @@ in rec {
     # mkDefault wrapper is resolved at the ExecStart / ExecStartPre
     # sub-attribute level inside `serviceConfig = attrsOf unitOption`.
     #
-    # RFC-0011 F2-A: `makeJobScript` now returns a record (not a bare path).
+    # `makeJobScript` returns a record rather than a bare path.
     # Each block appends the record to `jobScripts` and plugs the *placeholder*
     # token (`js.placeholder = #aos-jobscript:<key>#`) into the `Exec*=`
     # directive — NOT the build-side store path. The placeholder is a pure
     # function of the unit/slot/index (no derivation), so the rendered unit
     # text is drv-free and the on-host eval-only manifest can compute it under
-    # a `pkgs` that has no builder functions (RFC-0011 stage-2). The build-side
+    # a `pkgs` that has no builder functions. The build-side
     # `makeUnit` substitutes each placeholder back to `js.path` when it
     # materializes the bootable unit file, so `system.build.systemdSystemUnits`
     # stays byte-for-byte identical. The value *shape* is unchanged (list vs.

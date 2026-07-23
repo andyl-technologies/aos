@@ -62,7 +62,7 @@
     (l: "${l.domain} ${l.type} ${l.item} ${toString l.value}")
     limits;
 
-  # RFC-0011 Layer 2: the merged limits.conf is registered as a config artifact
+  # The merged limits.conf is registered as an image-fixed config artifact
   # keyed by a hash of its content, so identical limit sets dedupe and the
   # on-host eval-only evaluator reads a stage-1-frozen store path instead of
   # rebuilding it (`pkgs.writeTextFile` is absent from the stage-2 frozen pkgs).
@@ -322,7 +322,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     # Register every distinct non-empty limit set as an image-fixed config
-    # artifact (RFC-0011 Layer 2), keyed by content hash. `makeLimitsConf`
+    # artifact keyed by content hash. `makeLimitsConf`
     # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
     # resolves to the stage-1-frozen store path on-host without rebuilding.
     # Guarded so the stage-2 frozen pkgs never evaluates `writeTextFile`. The

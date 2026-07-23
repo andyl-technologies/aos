@@ -1,7 +1,7 @@
 //! The opaque `secretRef` type and its activation resolution contract
-//! (RFC-0011 build-spec §2, trust-and-secrets.md §Secrets).
+//! without embedding secret material in the evaluated manifest.
 //!
-//! RFC-0011 does **not** solve secrets; it fixes the boundary so secret material
+//! Configuration evaluation does **not** resolve secrets; it fixes the boundary so secret material
 //! never enters the value graph and a future secret-management system slots in
 //! without reshaping the manifest. The one invariant: *secret material must
 //! never appear in any value the evaluator produces.* The manifest is

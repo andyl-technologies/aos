@@ -1,6 +1,6 @@
-##! lib/namespacing.nix — RFC-0011 module namespacing + contributable surface
+##! lib/namespacing.nix — module namespacing and contributable surface
 ##!
-##! Helpers for the two-tier option namespace defined in RFC-0011
+##! Helpers for the two-tier option namespace used by package configuration.
 ##! `module-system.md`:
 ##!
 ##!   - **Per-package roots `{pkg}.*`** — each package's `config` module is

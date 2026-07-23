@@ -1,4 +1,4 @@
-//! The RFC-0011 resolve↔eval fixpoint driver (P1, on-host config eval).
+//! The on-host resolve/evaluate fixpoint driver.
 //!
 //! Stock Nix gives no read-access instrumentation, so the set of config
 //! providers a host needs cannot be statically closed: it is *discovered* by
@@ -933,7 +933,7 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
 }
 
 /// Re-evaluate a config-generation across an ABI boundary from its retained
-/// inputs (RFC-0011 build-spec §6, the cross-ABI rollback path).
+/// retained inputs used for cross-ABI rollback.
 ///
 /// When a config-gen's `module_abi_pinned` differs from the running image's
 /// `module_abi`, direct re-activation is refused and the generation is instead

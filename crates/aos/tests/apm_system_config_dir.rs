@@ -478,7 +478,7 @@ fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
     );
     assert!(
         text.contains("defined by a read-only seed"),
-        "remove error should explain the registry is seeded and must be blanked via Ignition:\n{text}"
+        "remove error should explain the registry is seeded and must be blanked through host.nix:\n{text}"
     );
     assert!(
         user_config.exists(),
@@ -755,7 +755,7 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     assert!(fs::read_to_string(&user_overlay)?.contains("enabled = true"));
 
     // A seeded registry cannot be removed by apm — the seed must be blanked via
-    // Ignition. The command is refused and nothing on disk is deleted.
+    // signed host configuration. The command is refused and nothing on disk is deleted.
     let output = run_aos_package_output(
         &home,
         &system_dir,
@@ -774,7 +774,7 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     );
     assert!(
         text.contains("defined by a read-only seed"),
-        "remove error should explain the registry is seeded and must be blanked via Ignition:\n{text}"
+        "remove error should explain the registry is seeded and must be blanked through host.nix:\n{text}"
     );
     assert!(
         system_config.exists() && system_trust_key.exists(),

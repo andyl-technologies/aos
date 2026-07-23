@@ -1,8 +1,8 @@
-##! pkgs/build-support/_config-module-renderer.nix — RFC-0011 config-module
+##! pkgs/build-support/_config-module-renderer.nix — configuration-module
 ##! output renderer.
 ##!
 ##! Converts a package-authored `configModule` attrset into a separate store
-##! path — the package's second `config` output (RFC-0011 build-spec §2). The
+##! path — the package's second `config` output. The
 ##! rendered path carries `module.nix` at its root (plus any relative-imported
 ##! private `.nix`) and a `config-meta.json` describing the module's declared
 ##! interface. Like the expose renderer, the payload derivation never receives
@@ -75,7 +75,7 @@
     # NOTE (populate path): `declares` / `ownsRoots` / `contributes` /
     # `providesCapabilities` are recorded here from author hints, but the
     # AUTHORITATIVE values are derived at publish time by an options-only eval
-    # of `module.nix` in isolation (RFC-0011 module-system.md, "Provides —
+    # of `module.nix` in isolation (the package module's declared provides
     # derived, not declared"). That step needs the evaluator and is wired in a
     # later changeset; until then apr records these hints verbatim and the
     # options-only-eval cross-check is a TODO.
