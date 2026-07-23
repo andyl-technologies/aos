@@ -444,6 +444,24 @@ pub struct EvalHeap {
     /// allocation and resolution path keeps its unchanged serial behavior
     /// behind one branch-predictable check of this option.
     shared: Option<SharedHeapBackend>,
+    /// Cached Candidate-C reservation identity for the trusted serial resolve
+    /// path.
+    ///
+    /// Context-free [`Value`] accessors must consult the process-global
+    /// reservation registry. The evaluator already owns the reservation, so
+    /// its serial hot path can validate the encoded domain and reconstruct a
+    /// pointer with one checked `base + index` operation instead.
+    #[cfg(feature = "candidate_c_value")]
+    serial_reservation: Option<SerialReservationResolver>,
+}
+
+/// Heap-owned Candidate-C reservation metadata used by serial hot paths.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Clone, Copy, Debug)]
+struct SerialReservationResolver {
+    domain: crate::heap::ArenaDomainId,
+    base: usize,
+    capacity: usize,
 }
 
 impl Default for EvalHeap {

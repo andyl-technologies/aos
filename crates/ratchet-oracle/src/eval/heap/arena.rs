@@ -100,6 +100,8 @@ impl EvalHeap {
         flat_arena: SharedFlatStoreArena,
         allocator: RuntimeAllocator,
     ) -> Self {
+        #[cfg(feature = "candidate_c_value")]
+        let serial_reservation = serial_reservation_resolver(&flat_arena);
         let flat_closures = serial_flat_closure_store(&flat_arena);
         Self {
             allocator,
@@ -145,6 +147,8 @@ impl EvalHeap {
             flat_cold_hashes: FlatColdHashStore::default(),
             flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
+            #[cfg(feature = "candidate_c_value")]
+            serial_reservation,
         }
     }
 
@@ -208,6 +212,8 @@ impl EvalHeap {
             flat_cold_hashes: FlatColdHashStore::default(),
             flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
+            #[cfg(feature = "candidate_c_value")]
+            serial_reservation: None,
         })
     }
 
@@ -830,6 +836,19 @@ impl EvalHeap {
     pub(crate) fn deref_counters_snapshot(&self) -> EvalHeapDerefCountersSnapshot {
         self.deref_counters.snapshot()
     }
+}
+
+/// Captures the stable reservation metadata owned by a production serial heap.
+#[cfg(feature = "candidate_c_value")]
+fn serial_reservation_resolver(arena: &SharedFlatStoreArena) -> Option<SerialReservationResolver> {
+    let domain = arena.arena_domain_id()?;
+    let base = crate::heap::reservation_base(domain)?;
+    let capacity = arena.reservation_stats()?.virtual_reserved_bytes;
+    Some(SerialReservationResolver {
+        domain,
+        base,
+        capacity,
+    })
 }
 
 pub(super) fn value_heap_ptr(

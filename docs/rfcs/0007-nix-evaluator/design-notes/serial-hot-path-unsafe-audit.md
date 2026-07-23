@@ -1,8 +1,8 @@
 # Serial evaluator hot-path and `unsafe` audit
 
-**Status:** measured exploration, 2026-07-22. This note compares the shipped
-Candidate-C tree walker at `db666f2c` with the pinned C++ Nix 2.24.12 tree
-walker. It does not propose bytecode and makes no runtime change.
+**Status:** measured exploration plus first implementation, 2026-07-23. This
+note compares the Candidate-C tree walker with the pinned C++ Nix 2.24.12 tree
+walker. It does not propose bytecode.
 
 ## Conclusion
 
@@ -215,3 +215,59 @@ the structural difference from C++ Nix. Preserve Candidate C's 8-byte carrier,
 the existing memory gates, and the checked general paths. Pursue serial-cell
 splitting next if the direct arena path confirms that general-mode machinery is
 a material part of the remaining instruction budget.
+
+## First implementation result
+
+The serial heap now caches its Candidate-C reservation identity and resolves
+owned thunk/lambda handles with a checked `base + index` operation. More
+importantly, the default serial, GC-disabled, non-tiered force path borrows an
+inline flat thunk directly across evaluator re-entry. Shared heaps, parallel
+payloads, GC modes, tiered execution, and compatibility records retain the
+owned/shared checked path.
+
+The one `unsafe` dereference is local to `force_value`, allowed explicitly
+under a crate-wide `deny(unsafe_code)`, and documents these invariants:
+
+- the pointer was resolved as a live flat thunk owned by this serial heap;
+- the production flat arena is stable and non-moving;
+- GC, payload shedding, replacement, and tier-engine mutation are disabled;
+- the active force root prevents lexical reclamation during re-entry; and
+- nested allocation uses disjoint stable arena addresses.
+
+An equivalent direct-borrow experiment for lambda application passed the full
+test suite but did not measurably reduce retired instructions, so it was
+reverted rather than expanding the unsafe surface without evidence.
+
+### `lambda-interp` measurements
+
+Linux builder, release Candidate C, three alternating fresh-process samples:
+
+```text
+                         baseline                 direct serial thunk
+retired instructions     71.693B                  69.873B   (-2.54%)
+peak RSS                 3,876MiB                 2,766MiB  (-28.6%)
+cold-only wall           15.385s                  9.960s    (-35.3%)
+```
+
+The wall samples were taken on a shared builder and are secondary to the
+deterministic instruction count. The disproportionate wall and RSS reductions
+are consistent with eliminating millions of transient `Arc<EvalThunk>`
+allocations and their allocator-retained pages.
+
+The standard three-sample parity harness remained byte-identical to the pinned
+oracle:
+
+```text
+cold native mean         5.819s
+C++ Nix mean             0.627s
+native / C++             9.286x
+warm native mean         5.267s
+warm native / C++        8.406x
+```
+
+A fresh-process wrapper also measured about 431MiB peak RSS for C++ Nix. That
+is materially stricter than the benchmark harness's post-evaluation RSS and
+process-watermark delta, and shows that the native evaluator is not yet below
+the requested memory ratio on this leg. Future performance gates should use
+fresh child processes for both implementations so prior process watermarks
+cannot hide the true peak.

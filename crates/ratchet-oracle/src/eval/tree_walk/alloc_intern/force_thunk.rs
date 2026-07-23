@@ -28,6 +28,7 @@ impl TreeWalk {
         }
     }
 
+    #[allow(unsafe_code)]
     pub(crate) fn force_value(
         &mut self,
         id: IrId,
@@ -42,17 +43,41 @@ impl TreeWalk {
         // below both resolve this same value; decoding twice re-walks the
         // carrier word and the reservation-base registry for no gain (RFC-0007
         // instruction-tax lever 2).
-        let ptr = value.as_thunk_ptr().map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id,
-                    source: EvalHeapError::Value(source),
-                },
-                span,
-            )
-        })?;
+        let ptr = self
+            .heap
+            .thunk_ptr(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some(forced) = self.reforce_already_forced_thunk(id, span, value, ptr)? {
             return Ok(forced);
+        }
+        // The default serial one-shot heap never moves, retires, sheds, or
+        // replaces a live thunk payload. Keep that payload in place while its
+        // body re-enters evaluation instead of moving it into an `Arc` solely
+        // to escape the heap borrow. GC and tier-1 execution retain the shared
+        // handle path below because they may replace a payload or invoke a
+        // heap-mutating engine hook while the force is active.
+        if !self.gc_mode.is_enabled()
+            && self.tier1_engine.is_none()
+            && let Some(thunk_ptr) =
+                self.heap
+                    .serial_flat_thunk_payload_ptr(ptr)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })?
+        {
+            // SAFETY: `serial_flat_thunk_payload_ptr` proved that `thunk_ptr`
+            // names a live thunk payload in this evaluator's serial flat
+            // arena. The one-shot, GC-disabled path cannot retire, relocate,
+            // shed, or replace that payload. `source_thunk` is pushed into the
+            // active-force roots before body evaluation, preventing a lexical
+            // region pop from reclaiming it during re-entry. The tier-1 engine
+            // is absent, so no engine callback can mutate the source record.
+            // Nested allocations use disjoint stable arena addresses. The
+            // thunk's force cell uses interior atomic mutation by design.
+            let thunk = unsafe { thunk_ptr.as_ref() };
+            if thunk.parallel_payload_cell().is_none() {
+                return self.force_serial_thunk_value(id, span, value, thunk);
+            }
         }
         let thunk = self
             .heap

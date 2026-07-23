@@ -7,6 +7,64 @@
 use super::*;
 
 impl EvalHeap {
+    /// Resolves one heap value through this heap's cached serial reservation.
+    ///
+    /// Returns `None` when the value is not an expected-tagged value in this
+    /// heap's production Candidate-C reservation, allowing callers to retain
+    /// the checked context-free fallback for shared, compatibility, malformed,
+    /// and foreign values.
+    #[cfg(feature = "candidate_c_value")]
+    #[inline]
+    fn serial_heap_ptr(&self, value: Value, expected: ValueTag) -> Option<NonNull<HeapObject>> {
+        if self.shared.is_some() || value.tag() != expected {
+            return None;
+        }
+        let resolver = self.serial_reservation?;
+        let word = value.word();
+        if word.arena_domain()? != resolver.domain {
+            return None;
+        }
+        let offset = word.arena_index()?.raw() as usize;
+        if offset > resolver.capacity.saturating_sub(std::mem::size_of::<u64>()) {
+            return None;
+        }
+        let address = resolver.base.checked_add(offset)?;
+        if address % std::mem::align_of::<u64>() != 0 {
+            return None;
+        }
+        NonNull::new(address as *mut HeapObject)
+    }
+
+    /// Resolves a thunk pointer, preferring the heap-owned serial reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] when `value` is not a valid thunk
+    /// handle.
+    #[inline]
+    pub(crate) fn thunk_ptr(&self, value: Value) -> Result<NonNull<HeapObject>, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Thunk) {
+            return Ok(ptr);
+        }
+        value.as_thunk_ptr().map_err(EvalHeapError::Value)
+    }
+
+    /// Resolves a lambda pointer, preferring the heap-owned serial reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] when `value` is not a valid lambda
+    /// handle.
+    #[inline]
+    fn lambda_ptr(&self, value: Value) -> Result<NonNull<HeapObject>, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Lambda) {
+            return Ok(ptr);
+        }
+        value.as_lambda_ptr().map_err(EvalHeapError::Value)
+    }
+
     /// Allocates a Nix string object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains
@@ -776,7 +834,7 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-thunk record.
     pub fn get_thunk(&self, value: Value) -> Result<&EvalThunk, EvalHeapError> {
-        let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self.thunk_ptr(value)?;
         self.get_thunk_ptr(ptr)
     }
 
@@ -812,6 +870,37 @@ impl EvalHeap {
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Thunk,
                 object.tag(),
+                ptr,
+            )),
+        }
+    }
+
+    /// Returns a stable pointer to an inline serial flat-thunk payload.
+    ///
+    /// The returned pointer is detached from this method's heap borrow so the
+    /// serial evaluator can re-enter evaluation without first moving the thunk
+    /// into an `Arc`. Callers must uphold the flat arena's lifetime and
+    /// non-reclamation invariants before dereferencing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed-resolution errors as [`Self::get_thunk_ptr`].
+    pub(crate) fn serial_flat_thunk_payload_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Option<NonNull<EvalThunk>>, EvalHeapError> {
+        if self.shared.is_some() {
+            return Ok(None);
+        }
+        let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)?
+        else {
+            return Ok(None);
+        };
+        match payload.as_thunk() {
+            Some(thunk) => Ok(Some(NonNull::from(thunk))),
+            None => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Thunk,
+                payload.tag(),
                 ptr,
             )),
         }
@@ -920,7 +1009,7 @@ impl EvalHeap {
 
     /// Clones lambda metadata so application can release the heap borrow before evaluating the body.
     pub(crate) fn clone_lambda(&self, value: Value) -> Result<EvalLambda, EvalHeapError> {
-        let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self.lambda_ptr(value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_lambda_ptr(ptr);
         }

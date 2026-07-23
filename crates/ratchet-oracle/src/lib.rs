@@ -11,9 +11,11 @@
 //! The crate sits above the value and frontend crates (`ratchet-value`,
 //! `ratchet-core`, `aos-nix-syntax`) and below the `aos-nix` umbrella, which
 //! re-exports these modules and adds the typed error taxonomy, diagnostics, and
-//! the `aos-core`-facing `native` handle.
+//! the `aos-core`-facing `native` handle. Unsafe code remains denied by default;
+//! the serial force path has one explicitly allowed, invariant-documented
+//! stable-arena dereference used to avoid per-force ownership promotion.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 // The tree-walk evaluator threads source-span context through many internal
 // helpers, so several constructors take more positional arguments than the
 // default clippy threshold. `TreeWalkError` itself now boxes its payload (see

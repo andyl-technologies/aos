@@ -842,6 +842,10 @@ fn second_force_of_forced_serial_thunk_hits_reforce_fast_path_without_new_state_
     assert_eq!(after_first.thunks_forced(), 1);
     assert_eq!(after_first.reforce_fast_path_hits(), 0);
     let state_arcs_after_first = after_first.campaign().thunk_state_arc_clones;
+    assert_eq!(
+        state_arcs_after_first, 0,
+        "the serial stable-arena force borrows the thunk without cloning sidecar Arcs",
+    );
 
     let second = evaluator
         .force_value(thunk_alloc, thunk_span, element)
