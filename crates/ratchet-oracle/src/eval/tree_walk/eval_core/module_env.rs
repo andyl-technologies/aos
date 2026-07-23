@@ -4,6 +4,8 @@ use super::*;
 use crate::cache::hashing::CacheDigestHasher;
 use crate::compile::{FLAT_CAPTURE_MAX_SLOTS, IrInlineCacheSiteId, Upvalue};
 
+mod active_install;
+
 impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
         let mut hasher = CacheDigestHasher::new();
@@ -296,7 +298,7 @@ impl TreeWalk {
                 return Ok((EvalEnv::default(), None));
             }
             if slots.len() > FLAT_CAPTURE_MAX_SLOTS {
-                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let env = self.capture_active_env_snapshot(id, span)?;
                 return Ok((env, None));
             }
             let mut capture_slots = [Upvalue { depth: 0, slot: 0 }; FLAT_CAPTURE_MAX_SLOTS];
@@ -305,7 +307,7 @@ impl TreeWalk {
             let allocation_site = EvalNodeRef::new(self.current_module, id);
             let frame_count = self.active_env_frame_count();
             if self.order_sensitive_binding_depth != 0 {
-                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let env = self.capture_active_env_snapshot(id, span)?;
                 let buffer =
                     EvalFlatCaptureBuffer::pending(allocation_site, frame_count, capture_len)
                         .map_err(|source| {
@@ -330,7 +332,7 @@ impl TreeWalk {
             return Ok((EvalEnv::default(), Some(buffer.finish())));
         }
 
-        let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+        let env = self.capture_active_env_snapshot(id, span)?;
         Ok((env, None))
     }
 
@@ -366,8 +368,8 @@ impl TreeWalk {
         depth: usize,
         slot: u32,
     ) -> Result<Value, EvalEnvError> {
-        if depth < self.env.len() {
-            return self.env[self.env.len() - 1 - depth].get(slot);
+        if let Some(frame) = self.env.get_at_depth(depth) {
+            return frame.get(slot);
         }
         let Some(flat) = self.flat_env.as_ref() else {
             return Err(EvalEnvError::SlotOutOfBounds {
@@ -552,52 +554,6 @@ impl TreeWalk {
         Ok(EvalScopedGlobalEnv::capture_persistent(
             &self.scoped_globals,
         ))
-    }
-
-    pub(in crate::eval::tree_walk) fn clone_env_frames(
-        &self,
-        id: IrId,
-        env: &EvalEnv,
-        span: Span,
-    ) -> Result<ActiveEvalEnv, TreeWalkError> {
-        let frames = env.frames();
-        // Env-flatten lever diagnostic (RFC-0007 §P1): record this install
-        // against the captured environment's identity, only while stats
-        // collection is active so a normal eval pays nothing.
-        if self.options.eval_stats_dump() {
-            crate::eval::env::note_env_install(frames.last());
-        }
-        // Depth-amplifier probe (RFC-0007): install depth = O(depth) work/apply.
-        if crate::eval::env::depth_probe_enabled() {
-            crate::eval::env::note_install_depth(frames.len());
-        }
-        if frames.is_empty() {
-            return Ok(ActiveEvalEnv {
-                frames: ActiveEvalFrames::new(),
-                flat_base: env.flat_base().cloned(),
-            });
-        }
-        let mut cloned = Vec::new();
-        cloned.try_reserve_exact(frames.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Env {
-                    id,
-                    source: EvalEnvError::CaptureAllocationFailed {
-                        frames: frames.len(),
-                    },
-                },
-                span,
-            )
-        })?;
-        // Single-pass `O(depth)` clone into the pre-reserved buffer, walking
-        // the capture chain's parent links exactly once. Routing through
-        // `frames.iter().cloned()` here would reintroduce the `O(depth^2)`
-        // per-index chain walk on the hottest apply/force path.
-        frames.clone_into(&mut cloned);
-        Ok(ActiveEvalEnv {
-            frames: ActiveEvalFrames::from_vec(cloned),
-            flat_base: env.flat_base().cloned(),
-        })
     }
 
     pub(in crate::eval::tree_walk) fn clone_with_scopes(

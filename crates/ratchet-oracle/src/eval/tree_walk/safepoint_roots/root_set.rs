@@ -138,7 +138,8 @@ impl TreeWalk {
     ) -> Result<EvalRootSet, TreeWalkSafepointRootError> {
         let mut roots = EvalRootSet::new();
 
-        for (frame_index, frame) in self.env.iter().enumerate() {
+        for (depth, frame) in self.env.iter_innermost().enumerate() {
+            let frame_index = self.env.len().saturating_sub(depth + 1);
             let slots = frame.slot_values()?;
             for (slot_index, value) in slots.into_iter().enumerate() {
                 roots.try_push_tree_walk_frame(frame_index, slot_index, value)?;
@@ -157,7 +158,8 @@ impl TreeWalk {
         }
 
         for (depth, suspended) in self.suspended_env_roots.iter().rev().enumerate() {
-            for (frame_index, frame) in suspended.env.frames.iter().enumerate() {
+            for (frame_depth, frame) in suspended.env.frames.iter_innermost().enumerate() {
+                let frame_index = suspended.env.frames.len().saturating_sub(frame_depth + 1);
                 let slots = frame.slot_values()?;
                 for (slot_index, value) in slots.into_iter().enumerate() {
                     roots.try_push_suspended_tree_walk_frame(

@@ -175,11 +175,13 @@ impl Default for EvalEnvStorage {
 }
 
 impl EvalEnvStorage {
+    fn linked(head: Option<Arc<EvalFrame>>, frames: usize) -> Self {
+        debug_assert_eq!(head.is_some(), frames != 0);
+        Self::Chain { head, frames }
+    }
+
     fn capture_linked(frames: &[Arc<EvalFrame>]) -> Self {
-        Self::Chain {
-            head: frames.last().cloned(),
-            frames: frames.len(),
-        }
+        Self::linked(frames.last().cloned(), frames.len())
     }
 
     fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
@@ -282,6 +284,22 @@ impl EvalEnv {
         })
     }
 
+    /// Captures frames plus an inherited flat lexical prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::CaptureAllocationFailed`] only for the
+    /// compatibility array fallback.
+    pub(crate) fn capture_with_flat_base(
+        frames: &[Arc<EvalFrame>],
+        flat_base: Option<EvalFlatCapture>,
+    ) -> Result<Self, EvalEnvError> {
+        Ok(Self {
+            storage: EvalEnvStorage::capture(frames)?,
+            flat_base,
+        })
+    }
+
     /// Rebuilds a captured environment from restored shared frames and an
     /// optional flat capture (RFC-0007 doc 31 §1 heap-image closure restore).
     ///
@@ -304,8 +322,20 @@ impl EvalEnv {
         })
     }
 
-    /// Captures the evaluator-owned linked active stack without rescanning its
-    /// parent-pointer invariant at every closure allocation.
+    /// Captures a known linked active environment from its innermost head.
+    pub(crate) fn capture_linked_head_with_flat_base(
+        head: Option<Arc<EvalFrame>>,
+        frames: usize,
+        flat_base: Option<EvalFlatCapture>,
+    ) -> Self {
+        Self {
+            storage: EvalEnvStorage::linked(head, frames),
+            flat_base,
+        }
+    }
+
+    /// Captures a linked frame slice for tests that construct a flat prefix.
+    #[cfg(test)]
     pub(crate) fn capture_linked_with_flat_base(
         frames: &[Arc<EvalFrame>],
         flat_base: Option<EvalFlatCapture>,
@@ -313,6 +343,14 @@ impl EvalEnv {
         Self {
             storage: EvalEnvStorage::capture_linked(frames),
             flat_base,
+        }
+    }
+
+    /// Returns the persistent-chain head and frame count when storage is linked.
+    pub(crate) fn linked_parts(&self) -> Option<(Option<&Arc<EvalFrame>>, usize)> {
+        match &self.storage {
+            EvalEnvStorage::Chain { head, frames } => Some((head.as_ref(), *frames)),
+            EvalEnvStorage::Array(_) => None,
         }
     }
 

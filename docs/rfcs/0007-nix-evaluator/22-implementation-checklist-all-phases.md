@@ -12330,15 +12330,19 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       a useful high-tax stress case, not the product acceptance benchmark
       ([15](15-differential-testing-and-benchmarking.md),
       [unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
-- [ ] **Discovered shallow captured-environment staging gap:** the full
+- [x] **Discovered shallow captured-environment staging gap:** the full
       toplevel performs 4,861,457 environment installs (4,337,801 empty and
       523,656 non-empty). Non-empty installs clone through a temporary `Vec`
       before converting to the inline active `SmallVec`. Directly cloning into
       a generic inline buffer passed focused tests but regressed full-toplevel
       instructions from 24.210B to 24.2354B (0.10%), so that prototype was
-      reverted. Close this as part of a persistent-head active environment
-      that removes cloning and stack conversion together; do not retry the
-      isolated generic-buffer substitution
+      reverted. The serial active environment now carries the persistent
+      innermost frame head and count, so all installs avoid cloning and stack
+      conversion together while unlinked compatibility frames retain an inline
+      array. Full-toplevel instructions improved from 24.210B to
+      23.8293-23.8296B (1.57%) with byte parity and the complete Candidate-C
+      suite green; focused tests pin linked and compatibility behavior. Fresh
+      peak RSS remains essentially flat and still fails the `<0.5x` C++ gate
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [ ] **Discovered process-global telemetry test isolation gap:** adding an
       unrelated allocation-free Candidate-C cell round-trip test made
@@ -12349,6 +12353,15 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       advice inputs to the evaluated heap (preferred) or serializing every test
       that touches the global gauges, then restore an independent Candidate-C
       cell unit test and prove repeated parallel full-suite runs green.
+- [ ] **Discovered frozen source-size gate debt:** the mandatory
+      `aos-nix/tests/source_file_size.rs` gate currently fails on three
+      pre-existing `ratchet-oracle` files: `eval/env.rs` (1,012 lines),
+      `eval/heap/arena.rs` (1,024), and `eval/heap/arena/values.rs` (1,104).
+      Split them into concern-focused submodules without behavior changes and
+      restore the gate to green. The persistent-head work initially made
+      `eval_core/module_env.rs` a fourth offender; its new capture/install code
+      was moved into `module_env/active_install.rs`, returning the parent to 961
+      lines, so this performance chunk adds no new source-size violation.
 - [x] **Candidate-C trusted atomic-cell decode:** private frame/thunk cells
       validate values at construction/store and reconstruct the intact word
       directly after an acquire load. The local `unsafe` boundary documents the

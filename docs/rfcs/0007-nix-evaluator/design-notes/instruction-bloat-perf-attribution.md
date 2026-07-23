@@ -12,17 +12,18 @@ methodology and commands; §§6-8 are the results and verdict.
 
 **2026-07-23 Candidate-C refresh.** On the current PR build after gating
 diagnostic FV dereference counters and bypassing process-global reservation
-lookups where the serial heap already owns the address context, isolated
+lookups where the serial heap already owns the address context, and carrying
+the active lexical environment as a persistent frame-chain head, isolated
 cache-off `systems.server.build.toplevel` evaluations retire
-**24.2099-24.2102B instructions**; pinned C++ Nix 2.24.12 retires **6.246B at
-IPC 2.85** for byte-identical output. Function-call counts remain nearly
-identical (3.177M native versus 3.163M C++), so the current live-load gap is
-**3.88x in instructions and about 3.85x in instructions/function-call**. The
-latest native IPC samples were 2.52-2.58 on a shared builder; earlier quiet
-samples were 2.78-2.80, matching C++ closely enough that stalls cannot explain
-the multi-fold gap. A separate three-sample wall run measured 1.980s versus
-0.554s, or **3.58x slower**. The absolute gap has improved since the original
-audit; its uniform per-operation character has not changed.
+**23.8293-23.8296B instructions at IPC 2.77-2.78**. Pinned C++ Nix 2.24.12
+retires **6.2181B at IPC 2.81-2.89** for byte-identical output. Function-call
+counts remain nearly identical (3.177M native versus 3.163M C++), so the
+current live-load gap is **3.83x in instructions and about 3.81x in
+instructions/function-call**, with no IPC deficit that could explain it. A
+prior separate three-sample wall run measured 1.980s versus 0.554s, or
+**3.58x slower**; wall time on the shared builder remains secondary to retired
+instructions. The absolute gap has improved since the original audit; its
+uniform per-operation character has not changed.
 
 ## 1. The finding that reopened the game
 

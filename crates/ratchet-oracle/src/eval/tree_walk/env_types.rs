@@ -2,17 +2,8 @@
 //! (split from tree_walk.rs under the §2 file-size cap).
 use super::*;
 
-/// Inline capacity for the active lexical frame suffix.
-///
-/// Captured-environment telemetry shows an average installed depth of 0.15,
-/// and every lambda application adds exactly one call frame. Keeping the first
-/// two frames inline therefore removes the per-call `Vec` allocation from the
-/// dominant serial path while retaining a spill path for arbitrary Nix scope
-/// depth.
-pub(crate) const ACTIVE_ENV_INLINE_FRAMES: usize = 2;
-
-/// The active lexical suffix, inline for the overwhelmingly common shallow case.
-pub(crate) type ActiveEvalFrames = smallvec::SmallVec<[Arc<EvalFrame>; ACTIVE_ENV_INLINE_FRAMES]>;
+mod active_frames;
+pub(crate) use active_frames::ActiveEvalFrames;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AttrUpdateTelemetryState {
@@ -107,7 +98,9 @@ impl std::ops::Index<usize> for ActiveEvalEnv {
     type Output = Arc<EvalFrame>;
 
     fn index(&self, index: usize) -> &Self::Output {
-        &self.frames[index]
+        self.frames
+            .get(index)
+            .unwrap_or_else(|| panic!("active environment frame index {index} is out of bounds"))
     }
 }
 
@@ -120,7 +113,7 @@ pub(crate) struct EvalEnvRef<'a> {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EvalEnvFramesRef<'a> {
-    Active(&'a [Arc<EvalFrame>]),
+    Active(&'a ActiveEvalFrames),
     Captured(EvalEnvFrames<'a>),
 }
 
@@ -133,7 +126,10 @@ impl<'a> EvalEnvFramesRef<'a> {
     }
 
     pub(crate) fn is_empty(self) -> bool {
-        self.len() == 0
+        match self {
+            Self::Active(frames) => frames.is_empty(),
+            Self::Captured(frames) => frames.is_empty(),
+        }
     }
 
     pub(crate) fn get(self, index: usize) -> Option<&'a Arc<EvalFrame>> {

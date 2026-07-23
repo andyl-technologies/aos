@@ -397,3 +397,33 @@ made code generation worse than the allocator saving; the redundant staging
 should be removed only as part of a direct persistent-head active environment,
 where it also eliminates frame cloning and stack conversion rather than merely
 changing the destination container.
+
+## Seventh implementation result
+
+The serial tree walker now carries the active shared-frame suffix as its
+existing persistent innermost `Arc<EvalFrame>` head plus a frame count.
+Production push/pop follows immutable parent links, captured-environment
+installation clones one head, and suspension swaps that compact head instead of
+materializing an outermost-first `SmallVec`. Depth-relative lexical lookup now
+walks the same parent chain as C++ Nix's `Env *`. Independently constructed
+unlinked test/restore frames retain the old inline-array compatibility path,
+and safepoint root enumeration preserves outermost-first frame indices.
+
+This removes the clone/conversion work from the 4,861,457 full-toplevel
+environment installs rather than merely changing its destination buffer.
+Dedicated tests pin linked depth lookup, push/pop restoration, and unlinked
+compatibility order. The serial Candidate-C suite passed 2,674 tests (37
+ignored) plus doctests.
+
+Three isolated cache-off `systems.server.build.toplevel` runs of the final
+source retired 23.8293-23.8296B instructions, down from 24.2099-24.2102B by
+approximately **1.57%**, at IPC 2.77-2.78. Full `.drv` closure parity remained
+byte-green.
+
+The pinned C++ Nix process currently retires 6.2181B instructions at IPC
+2.81-2.89, leaving a **3.83x** instruction ratio.
+
+Fresh-process peak RSS was 855,940-858,492KiB native versus
+344,140-345,528KiB C++ (approximately 2.49x), essentially flat versus the
+preceding native build but still far outside the requested `<0.5x` fresh-peak
+memory gate. The change is a measured CPU win, not a memory-gate claim.
