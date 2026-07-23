@@ -77,6 +77,17 @@ work of implementing packages and potentially large dependency chains in Nix
 correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 (e.g. Go from-scratch bootstrap) and must be explicitly marked as TODO.
 
+## Documentation feedback loop
+
+Treat implementation work as an audit of the documentation under `docs/`.
+Whenever work exposes a concrete bug, missing production path, invalid
+assumption, misleading benchmark, or unfinished prerequisite, add or update an
+unchecked TODO in the relevant RFC or design document in the same change. Record
+the observed evidence and the condition that closes the TODO; do not leave the
+finding only in a commit message, benchmark log, or chat. When the implementation
+lands, update that TODO with the result and gate evidence before marking it
+complete.
+
 ## The `aos` CLI tool
 
 The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via

@@ -12290,6 +12290,52 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       balanced pairs improve by paired medians of ~5.9% cold and ~3.8% warm.
       Threshold-zero sweep retires 135,872 closures with byte parity; doc 30
       §12 carries the full gate record.*
+- [ ] **Discovered production-GC gap:** Candidate-C serial strings, paths,
+      lists, and attrsets are placed in the permanent flat store and therefore
+      survive for the whole evaluation. B1 sweep retires closure payloads only,
+      is disabled by default, and cannot return bump-arena pages to the OS.
+      Compute workloads consequently peak at approximately 1.3GiB for
+      `attr-fixpoint`, 1.5GiB for `sum-fold`, 2.3GiB for `tak`, 2.8GiB for
+      `lambda-interp`, and 6.0GiB for `string-builder`. A fresh-process
+      `systems.server.build.toplevel` run likewise peaks at approximately
+      858MiB versus C++ Nix's 337MiB (2.55x), despite the post-run-RSS
+      scoreboard reporting a much smaller retained value. Close this only when
+      a production-enabled, root-complete mid-evaluation collector reclaims
+      aggregate payloads and returns or reuses their storage while the full
+      parity/GC-stress gates stay green; planning and validation scaffolding
+      alone do not satisfy the item
+      ([06](06-memory-management-and-gc.md) §4,
+      [memory campaign](design-notes/memory-campaign-plan.md)).
+- [ ] **Discovered benchmark-representativeness gap:** the full
+      `systems.server.build.toplevel` evaluation is the primary product
+      benchmark (currently about 3.6x slower than stock Nix on the Linux
+      builder), while the narrow compute shapes are diagnostic only. Add
+      calibrated component benchmarks for the toplevel's measured mix of
+      dynamic closure dispatch, thunk force/avoid traffic, lexical lookup,
+      recursive attr updates, and list construction. Record stock-Nix counters
+      and native/stock ratios for each, and require the composite proxy's
+      instruction and wall-time changes to predict the toplevel direction
+      before using it to accept broad hot-path changes. `lambda-interp` remains
+      a useful high-tax stress case, not the product acceptance benchmark
+      ([15](15-differential-testing-and-benchmarking.md),
+      [unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered process-global telemetry test isolation gap:** adding an
+      unrelated allocation-free Candidate-C cell round-trip test made
+      `heap_cheap_memory_advice_option_reports_after_tree_walk_eval` fail in two
+      parallel full-suite runs while the same test passed alone. Its assertions
+      observe process-global heap/hash-cons gauges that other tests can mutate,
+      so suite scheduling can create false regressions. Close by scoping the
+      advice inputs to the evaluated heap (preferred) or serializing every test
+      that touches the global gauges, then restore an independent Candidate-C
+      cell unit test and prove repeated parallel full-suite runs green.
+- [x] **Candidate-C trusted atomic-cell decode:** private frame/thunk cells
+      validate values at construction/store and reconstruct the intact word
+      directly after an acquire load. The local `unsafe` boundary documents the
+      sentinel, non-tearing, and valid-word invariants. Five compute workloads
+      remained byte-identical; fresh-process instructions improved by
+      0.05%-2.35% individually and the preceding inline-stack plus trusted-cell
+      changes improve `lambda-interp` by 2.45%
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
       the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
       The call is bracketed by compiled-frame stack-map enter/exit helpers and

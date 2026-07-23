@@ -213,6 +213,20 @@ impl Value {
         Self { word }
     }
 
+    /// Rebuilds a value from a raw word already validated by its owning cell.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be the intact encoding of a previously constructed
+    /// [`Value`]. See [`CompressedValueWord::from_raw_unchecked`] for the
+    /// complete representation invariants.
+    #[inline]
+    pub const unsafe fn from_validated_raw_unchecked(raw: u64) -> Self {
+        // SAFETY: the caller promises the complete Candidate-C word contract.
+        let word = unsafe { CompressedValueWord::from_raw_unchecked(raw) };
+        Self { word }
+    }
+
     /// Returns the underlying compressed word.
     pub const fn word(self) -> CompressedValueWord {
         self.word

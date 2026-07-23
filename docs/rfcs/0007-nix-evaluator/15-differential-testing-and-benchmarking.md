@@ -628,6 +628,17 @@ to the host-load spikes that skew the mean on a contended machine.
    attributable to arena vs non-arena traffic. Measure on **Linux** so the
    `MIMALLOC_PURGE_DELAY` reclaim (a no-op under darwin `MADV_FREE`) is reflected.
 
+   - [ ] **Discovered metric defect (2026-07-23):** post-run native RSS is not a
+     valid substitute for peak native RSS. A fresh-process
+     `systems.server.build.toplevel` run retained only about 25MiB after
+     evaluation but reached about 858MiB peak RSS; pinned C++ Nix reached about
+     337MiB. The same native run incurred roughly 288k minor faults, 1.61s user
+     CPU, and 1.68s system CPU with zero filesystem input blocks, while C++ used
+     roughly 84k minor faults, 0.39s user CPU, and 0.09s system CPU. Extend
+     `nix-bench` to report an isolated native-child peak measured the same way
+     as the oracle child, make that peak/peak ratio canonical, and rerun every
+     claimed memory gate before treating the ≤0.50 goal as achieved.
+
    **Achieved (2026-07-12, builder-hil1-87eb5b00, HEAD 223fd30f, byte-parity
    green).** With mimalloc's default deferred purge the native process retains
    ~136-139 MiB (0.70-0.72x of the C++ `nix-instantiate` child, which peaks at

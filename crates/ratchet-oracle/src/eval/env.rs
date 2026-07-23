@@ -602,18 +602,17 @@ impl AtomicValueCell {
     /// Returns [`AtomicValueCellError::InvalidEncoding`] if the stored word is
     /// not a valid Candidate-C value word. This is unreachable through
     /// [`AtomicValueCell::store`], which only accepts well-formed values.
+    #[allow(unsafe_code)]
     pub(crate) fn load(&self) -> Result<Option<Value>, AtomicValueCellError> {
         let word = self.word.load(Ordering::Acquire);
         if word == ATOMIC_VALUE_CELL_EMPTY_TAG {
             return Ok(None);
         }
-        match crate::value::compressed::CompressedValueWord::from_raw(word) {
-            Ok(compressed) => Ok(Some(Value::from_word(compressed))),
-            Err(_) => Err(AtomicValueCellError::InvalidEncoding {
-                tag: word,
-                payload: word,
-            }),
-        }
+        // SAFETY: this private atomic is initialized and subsequently written
+        // only by `filled`/`store`, both of which copy an already-validated
+        // `Value` word intact. The single AtomicU64 load cannot tear, and the
+        // only other encoding admitted by `clear` was handled above.
+        Ok(Some(unsafe { Value::from_validated_raw_unchecked(word) }))
     }
 }
 

@@ -218,6 +218,20 @@ impl CompressedValueWord {
         }
     }
 
+    /// Rebuilds a word whose Candidate-C invariants were already validated.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must have been produced by a [`CompressedValueWord`] constructor
+    /// or copied intact from one. In particular, its kind, forced bit, arena
+    /// domain, and inline payload must satisfy the checks in [`Self::from_raw`].
+    /// Violating this contract can reach otherwise-unreachable branches in
+    /// later kind-specific accessors.
+    #[inline]
+    pub const unsafe fn from_raw_unchecked(raw: u64) -> Self {
+        Self { raw }
+    }
+
     /// Returns the complete encoded word.
     #[inline]
     pub const fn raw(self) -> u64 {

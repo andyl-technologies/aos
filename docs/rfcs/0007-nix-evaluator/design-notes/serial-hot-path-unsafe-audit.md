@@ -271,3 +271,35 @@ process-watermark delta, and shows that the native evaluator is not yet below
 the requested memory ratio on this leg. Future performance gates should use
 fresh child processes for both implementations so prior process watermarks
 cannot hide the true peak.
+
+## Second implementation result
+
+Candidate-C `AtomicValueCell` now validates its private storage invariant at
+the write boundary and reconstructs a value directly after the acquire load.
+The cell can contain only the empty sentinel or an intact word copied from a
+constructed `Value`; `AtomicU64` prevents tearing. The unchecked constructor is
+documented at both carrier layers and confined to this cell load. Candidate-C
+cell traffic is covered by the serial and K=4 parity batteries.
+
+Fresh-process retired-instruction comparisons against the preceding
+inline-frame-stack build were:
+
+```text
+lambda-interp   68.739B -> 67.820B  (-1.34%)
+fib              8.160B ->  7.988B  (-2.10%)
+attr-fixpoint    9.320B ->  9.316B  (-0.05%)
+hash-loop       21.486B -> 21.378B  (-0.50%)
+all-any         10.215B ->  9.975B  (-2.35%)
+```
+
+Together, the inline-frame-stack and trusted-cell changes reduce
+`lambda-interp` from 69.525B to 67.820B instructions (-2.45%). Peak RSS is
+unchanged at approximately 2,765MiB. The five-workload byte-parity run remained
+green. This is a justified local `unsafe` optimization, but its size confirms
+that checked word reconstruction is only one layer of the end-to-end gap.
+
+The product acceptance axis remains the live AOS system evaluation, not this
+stress case. On the same current release build, three byte-identical samples of
+`systems.server.build.toplevel` measured 1.980s native versus 0.554s in pinned
+C++ Nix 2.24.12: native is 3.58x slower cold (3.62x warm). Future microbench
+work must explain and predict movement on that toplevel result.
