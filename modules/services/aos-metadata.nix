@@ -3,12 +3,13 @@
 ##! Initrd units for the transport-only `aos metadata` agent (a Rust subcommand
 ##! in `pkgs.aos`). Every AOS system carries this provisioning path.
 ##!
-##! The agent is **transport-only**: it fetches and stashes the *untrusted*
+##! The agent is **transport-only**: it fetches and stashes the
 ##! operator `host.nix` (+ detached signature) and instance facts into
-##! `/run/aos-metadata/`; signature verification is deferred to the stage-2
-##! `aos-eval.service` where the `trusted-config-keys.d` anchors live in the
-##! measured `/etc`. A failed/missing fetch leaves no `host.nix`, so eval falls
-##! through to gen-0-only config — the failure-safe path.
+##! `/run/aos-metadata/`. The default policy trusts metadata delivered by the
+##! deployment platform. Deployments using the signed policy defer signature
+##! verification to `aos-eval.service`, where the trust anchors live in the
+##! measured `/etc`. A failed or missing fetch leaves no `host.nix`, so the
+##! baked configuration remains active.
 ##!
 ##! Three units implement detection, conditional networking, and metadata fetch:
 ##!   aos-metadata-detect   DMI/ISO → platform.env
@@ -92,11 +93,11 @@ in {
         };
       };
 
-      # 3. Fetch + stash the untrusted user-data + facts. Transport-only: no
-      #    signature is verified here. SuccessExitStatus=0 1 keeps a failed
+      # 3. Fetch + stash user-data + facts. Transport-only: no signature is
+      #    verified here. SuccessExitStatus=0 1 keeps a failed
       #    fetch from wedging boot — the absent host.nix makes stage-2 a no-op.
       "aos-metadata-fetch" = {
-        description = "Fetch untrusted operator configuration and instance facts";
+        description = "Fetch operator configuration and instance facts";
         wantedBy = ["initrd-root-fs.target"];
         requires = ["aos-metadata-detect.service"];
         after = [
