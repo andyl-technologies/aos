@@ -761,11 +761,11 @@ pub struct NixEvalConfig {
 /// evaluation results.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NativeAttrShapesMode {
-    /// `AOS_NIX_SHAPES=off`: no shape projection at all.
-    Off,
-    /// The default: per-allocation shape projection with transient shaped
-    /// select views (the L2-P4 baseline).
+    /// The default: no shape projection or transient shaped-view allocation.
     #[default]
+    Off,
+    /// `AOS_NIX_SHAPES=transient`: per-allocation shape projection with
+    /// transient shaped select views (the L2-P4 baseline).
     Transient,
     /// `AOS_NIX_SHAPES=record`: heap-resident shaped layout - the projected
     /// shape id in the record guards a constant-offset select over the flat
@@ -1528,11 +1528,11 @@ impl NixEvalConfig {
 
     fn set_aos_nix_shapes_env_var(&mut self, value: &str) {
         match value.trim() {
-            "off" | "0" | "false" | "no" => {
+            "" | "off" | "0" | "false" | "no" => {
                 self.set_native_attr_shapes(NativeAttrShapesMode::Off);
             }
             "record" => self.set_native_attr_shapes(NativeAttrShapesMode::Record),
-            "" | "transient" => self.set_native_attr_shapes(NativeAttrShapesMode::Transient),
+            "transient" => self.set_native_attr_shapes(NativeAttrShapesMode::Transient),
             other => {
                 tracing::warn!(
                     value = other,
@@ -5594,6 +5594,22 @@ mod tests {
                 None,
                 "value {value:?} must disable parallel mode"
             );
+        }
+    }
+
+    #[test]
+    fn native_attr_shapes_default_off_and_explicit_modes_round_trip() {
+        assert_eq!(NativeAttrShapesMode::default(), NativeAttrShapesMode::Off);
+
+        let mut config = NixEvalConfig::new();
+        for (value, expected) in [
+            ("", NativeAttrShapesMode::Off),
+            ("off", NativeAttrShapesMode::Off),
+            ("transient", NativeAttrShapesMode::Transient),
+            ("record", NativeAttrShapesMode::Record),
+        ] {
+            config.set_aos_nix_shapes_env_var(value);
+            assert_eq!(config.native_attr_shapes(), expected);
         }
     }
 

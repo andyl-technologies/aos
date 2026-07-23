@@ -10301,7 +10301,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       megamorphic plus monomorphic site states, and keep slow-select shaped
       hit/miss telemetry. This does not cover native lowering or `.drv` parity.
 - [x] Current heap-resident shaped record select path (`AOS_NIX_SHAPES=record`,
-      knob-gated; the measured default stays `transient` — the record mode's
+      knob-gated; the measured default is `off` — a fresh-process instruction
+      comparison over all nine compute workloads found that avoiding
+      projection and transient shaped views saved about 0.4% in aggregate,
+      including 4.4% on attr-fixpoint, 0.9% on lambda-interp, and 0.7% on
+      hash-loop. The record mode's
       clean serial win on attr-fixpoint (cold/warm -7%/-11%, other benchmarks
       within noise) is offset by a small consistent `K = 4` loss on short
       package evals (zlib warm up to +20%) where the baseline disables

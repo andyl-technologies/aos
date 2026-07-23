@@ -596,6 +596,10 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-string record.
     pub fn get_string(&self, value: Value) -> Result<&NixString, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::String) {
+            return self.get_string_ptr(ptr);
+        }
         let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
         self.get_string_ptr(ptr)
     }
@@ -623,6 +627,10 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-path record.
     pub fn get_path(&self, value: Value) -> Result<&NixString, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Path) {
+            return self.get_path_ptr(ptr);
+        }
         let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
         self.get_path_ptr(ptr)
     }
@@ -650,6 +658,10 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-list record.
     pub fn get_list(&self, value: Value) -> Result<&NixList, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::List) {
+            return self.get_list_ptr(ptr);
+        }
         let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
         self.get_list_ptr(ptr)
     }
@@ -677,6 +689,10 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-attrset record.
     pub fn get_attrs(&self, value: Value) -> Result<&FlatAttrs, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Attrs) {
+            return self.get_attrs_ptr(ptr);
+        }
         let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
         self.get_attrs_ptr(ptr)
     }
@@ -704,6 +720,10 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-attrset record.
     pub fn get_attrs_metadata(&self, value: Value) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Attrs) {
+            return self.get_attrs_metadata_ptr(ptr);
+        }
         let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
         self.get_attrs_metadata_ptr(ptr)
     }

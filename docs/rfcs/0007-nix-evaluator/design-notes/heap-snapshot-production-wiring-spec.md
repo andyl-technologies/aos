@@ -50,7 +50,7 @@ per-evaluator state, not heap state:
    `import ./lib` re-forces from scratch unless the restore seam seeds the
    import cache with the captured prelude entry values. The image must
    therefore carry `(import path identity, root value word)` seeds.
-4. **Shape table.** The default `AttrShapeMode::Transient` gives every
+4. **Shape table.** `AttrShapeMode::Transient` gives every
    evaluator a live `ShapeTable`, and heap attrs metadata carries projected
    `ShapeId`s. Shape ids are assigned per-evaluator by transition-tree walk
    order, so restored metadata ids are foreign in a fresh table: shaped select

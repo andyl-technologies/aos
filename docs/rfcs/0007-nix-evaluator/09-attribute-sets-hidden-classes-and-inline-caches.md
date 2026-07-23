@@ -764,7 +764,11 @@ harness, never cut for scope.
       allocate evaluator heap objects, replace `FlatAttrs`, or affect active
       evaluation / `.drv` bytes.
 - [x] Current heap-resident shaped record layout (`AOS_NIX_SHAPES=record`,
-      knob-gated; the measured default stays `transient` — the record mode's
+      knob-gated; the measured default is `off` — a fresh-process instruction
+      comparison over all nine compute workloads found that avoiding
+      projection and transient shaped views saved about 0.4% in aggregate,
+      including 4.4% on attr-fixpoint, 0.9% on lambda-interp, and 0.7% on
+      hash-loop. The record mode's
       clean serial win on attr-fixpoint (cold/warm -7%/-11% vs the pre-round
       baseline, other benchmarks within noise) is offset by a small
       consistent `K = 4` loss on short package evals (zlib warm up to +20%),
