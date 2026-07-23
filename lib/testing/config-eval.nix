@@ -10,9 +10,8 @@
 #
 # The full host.nix -> manifest fixpoint runs stock Nix on-host (builder-gated,
 # `apm switch --dry-run`); this pure gate covers the trust-anchor rendering
-# (`aos.apm.configKeys` -> /etc/apm/trusted-config-keys.d/<op>.pub, the stage-2
-# host.nix SSHSIG verification anchor) and its fail-closed assertions, which are
-# the on-host trust gate's image-baked input.
+# (`aos.apm.configKeys` -> /etc/apm/trusted-config-keys.d/<op>.pub) and the
+# platform-versus-signed host-configuration policy.
 #
 # Runs via `nix-build -A checks.config-eval`.
 {
@@ -34,6 +33,21 @@
 
   systemA = mkConfigSystem [opKey];
   systemB = mkConfigSystem [opKey];
+  signedSystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {
+        aos.apm.configKeys.ops = [opKey];
+        aos.config.evalAtBoot.trust = "signed";
+      }
+    ];
+  };
+  signedWithoutKeySystem = aos.mkSystem {
+    modules = [
+      ../../systems/server.nix
+      {aos.config.evalAtBoot.trust = "signed";}
+    ];
+  };
 
   anchorPath = "apm/trusted-config-keys.d/ops.pub";
   anchorA = systemA.config.environment.etc.${anchorPath}.text;
@@ -64,6 +78,17 @@
   mismatchBuildThrows =
     !(builtins.tryEval mismatchSystem.config.system.build.toplevel.name).success;
 
+  defaultTrustsPlatform =
+    systemA.config.aos.config.evalAtBoot.trust == "platform"
+    && systemA.config.aos.config.evalAtBoot.hostNix == "/run/aos-metadata/host.nix";
+  signedModeRequiresSignature =
+    builtins.match
+    ".*--require-signed-host-nix.*"
+    signedSystem.config.systemd.services.aos-eval.script
+    != null;
+  signedModeWithoutKeyThrows =
+    !(builtins.tryEval signedWithoutKeySystem.config.system.build.toplevel.name).success;
+
   evalAssertions =
     lib.throwIfNot evalSucceeds
     "config-eval: the config module set must evaluate"
@@ -75,7 +100,13 @@
           "config-eval: a malformed operator config key must fire a fail-closed assertion"
           (lib.throwIfNot mismatchBuildThrows
             "config-eval: an operator-prefix mismatch must be rejected"
-            true))));
+            (lib.throwIfNot defaultTrustsPlatform
+              "config-eval: the stock image must trust the metadata-agent stash"
+              (lib.throwIfNot signedModeRequiresSignature
+                "config-eval: signed policy must require host.nix signature verification"
+                (lib.throwIfNot signedModeWithoutKeyThrows
+                  "config-eval: signed policy without a trust anchor must fail evaluation"
+                  true)))))));
 in
   pkgs.mkDerivation {
     pname = "config-eval-check";
@@ -93,6 +124,7 @@ in
           echo "  manifest inputs deterministic (eval-twice byte-identical): OK"
           echo "  trusted-config-keys.d schema-valid: OK"
           echo "  malformed/ mismatched config key fails closed: OK"
+          echo "  platform trust default and signed policy wiring: OK"
         '';
       }
     ];

@@ -639,11 +639,9 @@ fn derive_iter_cap_is_bounded_by_ceiling() {
 }
 
 #[test]
-fn host_nix_gate_enforced_by_default_fails_closed_with_no_anchors() {
-    // The stage-2 trust gate is ON by default. With no anchor dir and the
-    // off-host flag unset, run_eval_command must bail BEFORE the evaluator runs
-    // (a clean no-op), never silently fail open — the regression that the CS10
-    // review caught in the on-host service wiring.
+fn signed_host_nix_policy_fails_closed_with_no_anchors() {
+    // Signed policy must bail before evaluation when the image has no trust
+    // anchors, leaving no manifest behind.
     let tmp = tempfile::tempdir().unwrap();
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{ }").unwrap();
@@ -657,10 +655,31 @@ fn host_nix_gate_enforced_by_default_fails_closed_with_no_anchors() {
         eval_root: tmp.path().to_path_buf(),
         verbose: 0,
         trusted_config_keys_dirs: Vec::new(),
-        allow_unsigned_host_nix: false,
+        require_signed_host_nix: true,
     };
     let err = run_eval_command(&cmd).expect_err("gate must fail closed with no anchors");
     let msg = format!("{err:#}");
-    assert!(msg.contains("authenticity gate"), "wrong error: {msg}");
+    assert!(msg.contains("signature verification"), "wrong error: {msg}");
     assert!(!out.exists(), "no manifest may be written on a gate failure");
+}
+
+#[test]
+fn platform_host_nix_policy_needs_no_image_baked_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host_nix = tmp.path().join("host.nix");
+    std::fs::write(&host_nix, b"{ }").unwrap();
+    let cmd = EvalCommand {
+        host_nix,
+        base_lib: tmp.path().join("base-lib"),
+        desired: None,
+        module_abi: 1,
+        out: tmp.path().join("manifest.json"),
+        eval_root: tmp.path().to_path_buf(),
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        require_signed_host_nix: false,
+    };
+
+    super::enforce_host_nix_trust_policy(&cmd)
+        .expect("platform metadata is trusted without an image-specific key");
 }
