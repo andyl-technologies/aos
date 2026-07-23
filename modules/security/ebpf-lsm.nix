@@ -10,7 +10,7 @@
   ...
 }: let
   cfg = config.aos.security.ebpfLsm;
-  # RFC-0011 Layer 2: the bpffs-prep script is an image-fixed artifact (a pure
+  # The bpffs-prep script is an image-fixed artifact (a pure
   # function of pkgs, not host.nix). Reference the resolved artifact so the
   # on-host eval-only evaluator uses the stage-1-frozen store path instead of
   # rebuilding it; `pkgs.writeShellScriptBin` is absent from the stage-2 frozen
@@ -31,7 +31,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     # Register the bpffs-prep script as an image-fixed config artifact
-    # (RFC-0011 Layer 2). Guarded so the stage-2 frozen pkgs (which lacks
+    # Guarded so the on-host frozen pkgs (which lacks
     # `writeShellScriptBin`) never evaluates the builder; the resolved
     # `artifacts.ebpf-lsm-prepare-bpffs` reads the frozen path in that case.
     aos.config._artifactSources.ebpf-lsm-prepare-bpffs =
@@ -56,7 +56,7 @@ in {
       after = [
         "local-fs.target"
         "aos-seed-baked-packages.service"
-        "aos-install-packages.service"
+        "aos-install-baked-packages.service"
       ];
       unitConfig.ConditionPathExists = "/etc/aos/policy.toml";
       serviceConfig = {

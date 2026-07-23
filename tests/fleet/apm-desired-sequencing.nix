@@ -33,7 +33,6 @@ in {
   machines = {
     vm = {
       inherit system;
-      provisioning = "newpath";
       # Package activation measures PCR 15, including the seed profile.
       tpm = true;
       # Seed only the package that the desired file will prune. The config

@@ -33,7 +33,7 @@
 ##!   pcrPublicKey   — optional PCR-policy public key (PEM); embedded in
 ##!                    the `.pcrpkey` section, required with pcrPrivateKey
 ##!   rootHashFile   — optional path to a file containing the dm-verity root
-##!                    hash (ASCII hex) of the erofs root (RFC-0011 F1). When
+##!                    hash (ASCII hex) of the erofs root. When
 ##!                    set, `roothash=<hex>` is appended to the materialized
 ##!                    cmdline before ukify, so the build-output Merkle root —
 ##!                    unknowable at Nix eval — lands in the same `.cmdline`
@@ -109,7 +109,7 @@ in
           export PATH="${systemd}/lib/systemd''${PATH:+:$PATH}"
           # cmdline arrives as a Nix string; materialize to a file so
           # ukify's @path read path handles special characters and
-          # trailing-newline rules consistently. RFC-0011 F1: when a
+          # trailing-newline rules consistently. When a
           # rootHashFile is supplied, append `roothash=<hex>` here — this is
           # the load-bearing trick. The roothash is a build output (the Merkle
           # root of root.img), unknowable at Nix eval, so it cannot travel

@@ -1,5 +1,5 @@
 [Unit]
-After=aos-seed-baked-packages.service aos-install-packages.service
+After=aos-seed-baked-packages.service aos-install-baked-packages.service
 Description=Produce AOS package attestation quote
 
 [Service]

@@ -1,9 +1,9 @@
-##! modules/base/config-seed.nix — on-host config files backend (RFC-0011)
+##! modules/base/config-seed.nix — on-host configuration files backend
 ##!
 ##! The initrd "files" backend: the on-host config-eval path's replacement for
 ##! Ignition's `ignition-files` stage. The neutral `/etc` overlay
 ##! (`etc-overlay-setup.service`, in modules/services/boot-substrate.nix)
-##! composes a per-generation lower at `/run/etc/ignition-<gen>/etc`; first-boot
+##! composes a per-generation lower at `/run/etc/config-<gen>/etc`; first-boot
 ##! `/etc` comes entirely from the baked system EROFS (gen-0) — the per-gen
 ##! lower is *empty* — and subsequent config generations are rendered by the
 ##! stage-2 `aos-eval` fixpoint and switched in by `activate`, post-pivot. So
@@ -19,7 +19,7 @@
 }: {
   config = {
     boot.initrd.systemd.services."aos-config-seed" = {
-      description = "Seed the per-generation /etc lower for on-host config (RFC-0011)";
+      description = "Seed the per-generation /etc lower for on-host configuration";
       wantedBy = ["initrd-fs.target"];
       before = [
         "etc-overlay-setup.service"
@@ -43,10 +43,10 @@
         # AOS_PROFILE_GEN is published by aos-seed-profiles.service.
         EnvironmentFile = "/run/aos-profile-gen.env";
         # The Ignition path had ignition-files' ExecStartPre create this; on the
-        # new path the lower is intentionally empty on first boot.
+        # the lower is intentionally empty on first boot.
         ExecStart =
           "${pkgs.coreutils}/bin/mkdir -p "
-          + "/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
+          + "/run/etc/config-\${AOS_PROFILE_GEN}/etc";
       };
     };
   };

@@ -25,7 +25,7 @@ export PATH=
 # the exit code and the cleanup action. $STAGE is reassigned as the
 # script advances; only these constants are readonly.
 declare -r STAGE_PREFLIGHT=preflight  # arg + env checks, before any mount
-declare -r STAGE_PREPARE=prepare      # render the new gen's ignition lower
+declare -r STAGE_PREPARE=prepare      # render the new gen's config lower
 declare -r STAGE_COMPOSE=compose      # build the candidate /etc overlay
 declare -r STAGE_PRESWAP=preswap      # stop old units + write reconcile plan
 declare -r STAGE_SWAP=swap            # mount-move-beneath + lazy-umount of /etc
@@ -67,7 +67,7 @@ cleanup_partial_gen() {
   /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
   /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
   /nix/store/<HASH>-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
-                         "/run/etc/ignition-${N:-_}" 2>/dev/null || true
+                         "/run/etc/config-${N:-_}" 2>/dev/null || true
 }
 
 on_err() {
@@ -105,7 +105,7 @@ N=$1
 new_top=$(/nix/store/<HASH>-coreutils-9.5/bin/readlink /var/lib/profiles/system/gen-${N}/toplevel)
 
 sys=/run/etc/system-${N}
-ign=/run/etc/ignition-${N}
+ign=/run/etc/config-${N}
 # Declared in preflight (not Phase B-pre) so cleanup_partial_gen can
 # reference it if Phase A fails before the tmpfs is mounted.
 upper_root=/run/etc/upper-${N}
@@ -117,7 +117,7 @@ upper_root=/run/etc/upper-${N}
 # stage-2's /run across switch_root), so per-host /etc is rendered by re-running
 # ignition's fetch+files stages below.
 #
-# RFC-0011 path: there is no Ignition stage, so platform.env is absent. Per-host
+# Per-host
 # /etc comes from the on-host config-eval manifest (/run/aos/manifest.json),
 # applied by `apm __materialize` below. When neither is present the generation's
 # /etc is exactly the baked image /etc. Detect the path by the presence of
@@ -171,7 +171,7 @@ STAGE="$STAGE_PREPARE"
 # mounting unit; if the metadata mount was reaped, restore it here so
 # ignition's file provider can read /run/aos-metadata/config.json.)
 # `ignition_active` short-circuits before $PLATFORM_ID is referenced, so this is
-# safe under `set -u` on the RFC-0011 path (where platform.env is never sourced).
+# safe under `set -u` when platform.env is never sourced.
 if [ "$ignition_active" = 1 ] && [ "$PLATFORM_ID" = "file" ] && \
    ! /nix/store/<HASH>-util-linux-2.42.1/bin/mountpoint -q /run/aos-metadata; then
   /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/aos-metadata
@@ -194,7 +194,7 @@ fi
 #     (carries /run/aos-metadata/config.json). `env -i` clears the environment;
 #     the absolute path avoids relying on the PATH we cleared.
 #
-#   * RFC-0011 path (a converged config-eval manifest exists): apply it with
+#   * a converged config-eval manifest exists: apply it with
 #     `apm __materialize`, which writes the manifest's text/symlink /etc entries
 #     and job scripts into $ign/etc and rewrites unit-body job-script
 #     placeholders. When neither backend fires, $ign/etc stays empty and the
@@ -319,7 +319,7 @@ done
 prev_gen=$(/nix/store/<HASH>-coreutils-9.5/bin/readlink /run/etc/system \
            | /nix/store/<HASH>-coreutils-9.5/bin/cut -d- -f2-)
 /nix/store/<HASH>-coreutils-9.5/bin/ln -sfn system-${N}   /run/etc/system
-/nix/store/<HASH>-coreutils-9.5/bin/ln -sfn ignition-${N} /run/etc/ignition
+/nix/store/<HASH>-coreutils-9.5/bin/ln -sfn config-${N} /run/etc/config
 /nix/store/<HASH>-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
 
 # --- post-swap reconcile ---
@@ -345,7 +345,7 @@ esac
 STAGE="$STAGE_CLEANUP"
 
 # Tear down the previous generation's LOWER stack only (EROFS metadata +
-# content bind, and the rendered ignition lower). These are rebuilt from the
+# content bind, and the rendered config lower). These are rebuilt from the
 # toplevel by the prepare stage on every activation, so a later switch back
 # to $prev_gen reconstructs them cheaply.
 #
@@ -359,7 +359,7 @@ if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
   /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
   /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
   /nix/store/<HASH>-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
-                         "/run/etc/ignition-${prev_gen}"
+                         "/run/etc/config-${prev_gen}"
 fi
 
 # All phases succeeded. If reconcile reported failed units the switch

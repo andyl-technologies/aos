@@ -1,4 +1,4 @@
-##! modules/base/config-artifacts.nix — image-fixed config artifacts (RFC-0011)
+##! modules/base/config-artifacts.nix — image-fixed configuration artifacts
 ##!
 ##! Layer 2 of the eval-only core (see docs/rfcs/0011-on-host-config-eval/
 ##! eval-only-core.md). Some config modules build a *derivation* at eval time

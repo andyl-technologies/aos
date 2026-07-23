@@ -63,7 +63,7 @@
   # "erofs" builds a zstd-compressed, read-only image via `mkfs.erofs` —
   # roughly a third the size — for the immutable production boot image.
   fsType ? "ext4",
-  # RFC-0011 F1: when true, format a deterministic dm-verity Merkle hash tree
+  # When true, format a deterministic dm-verity Merkle hash tree
   # over the finalized root.img and emit `root.verity` + `root.roothash`
   # (+ `root.roothash.p7s` when an SB db key is supplied) + `root-verity-size-
   # bytes` alongside `root.img`. Default false leaves the erofs/ext4 path
@@ -154,7 +154,7 @@ in
           pkgs.util-linux
           pkgs.erofs-utils
         ]
-        # RFC-0011 F1 verity sub-step tooling — gated so the non-verity path's
+        # Verity sub-step tooling is gated so the non-verity path's
         # build environment (and thus its derivation hash) is unchanged.
         ++ lib.optionals verity [
           pkgs.cryptsetup
@@ -210,7 +210,7 @@ in
               ln -sfn usr/bin rootfs/sbin
               ln -sfn usr/lib rootfs/lib
               # /etc is an empty mountpoint — the runtime overlay (system
-              # EROFS lower + per-gen ignition lower + /var/etc) mounts
+              # EROFS lower + per-gen config lower + /var/etc) mounts
               # on top in stage-1 (etc-overlay-setup.service).
               mkdir -p rootfs/etc
               mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
@@ -412,7 +412,7 @@ in
               '';
           }
         ]
-        # RFC-0011 F1: deterministic dm-verity hash tree over the finalized
+        # Build a deterministic dm-verity hash tree over the finalized
         # root.img. Gated, so the phase list (and the derivation) is unchanged
         # when verity = false. Mirrors lib/build/package-root-image.nix's
         # `veritysetup format --salt <pinned> --uuid <pinned>` + roothash

@@ -1,6 +1,6 @@
 ##! lib/build/base-lib.nix — assemble the in-image on-host eval-only base-lib
 ##!
-##! RFC-0011 stage-2. Produces a self-contained derivation that the on-host
+##! Produces a self-contained derivation that the on-host
 ##! evaluator imports by store path to recompute the config manifest for a
 ##! verified `host.nix` WITHOUT touching the from-source build graph. The
 ##! derivation bundles:

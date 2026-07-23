@@ -1,4 +1,4 @@
-//! RFC-0011 T0 flat-merge golden (the parity oracle).
+//! Flat-merge golden used as the module-evaluation parity oracle.
 //!
 //! Snapshots [`aos_package::render_package_config`] for a hand-authored
 //! multi-artifact fixture package and pins three properties that the

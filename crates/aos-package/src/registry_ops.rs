@@ -5249,10 +5249,10 @@ fn package_platform_table(
     Ok(toml::Value::Table(table))
 }
 
-/// Record an RFC-0011 `config_module` block into a package platform TOML table.
+/// Records a `config_module` block in a package platform TOML table.
 ///
 /// This is the publish-side data path / seam for the second `config` package
-/// output (RFC-0011 build-spec §2). It validates `module`, serializes it under
+/// output. It validates `module`, serializes it under
 /// the `config_module` key of `table`, and appends [`FEATURE_CONFIG_MODULE_V1`]
 /// to `required_features` so older clients fail closed. The caller is
 /// responsible for ensuring the platform table also carries the structural

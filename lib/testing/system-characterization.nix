@@ -1,13 +1,13 @@
-# lib/testing/rfc-0011-characterization.nix — RFC-0011 T0 toplevel golden.
+# lib/testing/system-characterization.nix — system toplevel golden.
 #
 # Pure-eval characterization (no VM, no host tools) that pins the
 # *deterministic, renderable* outputs of `system.build.toplevel` for a
 # system variant against committed golden fixtures. This is the regression
-# net the RFC-0011 render/assemble refactor (P0) runs under: an unexpected
+# net the render/assemble split runs under: an unexpected
 # byte diff in any snapshotted artifact fails the build.
 #
 # Snapshotted artifacts (per variant, under
-# `tests/fixtures/rfc-0011-goldens/<variant>/`):
+# `tests/fixtures/system-characterization-goldens/<variant>/`):
 #   - etcDump.txt        — the composefs-dump(5) text (system.build.etcDump).
 #   - os-release         — environment.etc."os-release".source verbatim.
 #   - activate-script.sh — the substituted activate.sh.in (system.build.activateScript).
@@ -26,12 +26,12 @@
 # `writeShellScriptBin` form) or `/aos-job-scripts/` (the reserved F2 gen-local
 # form). The check carries a self-test proving both forms normalize equal.
 #
-#   nix-build -A checks.rfc-0011-characterization            # diff vs goldens
-#   nix-build -A checks.rfc-0011-characterization.regenerate # emit baselines to $out
+#   nix-build -A checks.system-characterization            # diff vs goldens
+#   nix-build -A checks.system-characterization.regenerate # emit baselines to $out
 #
 # The baselines are produced on a Linux/KVM builder (this render needs Linux) by
 # building `.regenerate` and copying its `$out` into
-# `tests/fixtures/rfc-0011-goldens/<variant>/`; see that directory's README.
+# `tests/fixtures/system-characterization-goldens/<variant>/`; see that directory's README.
 {
   pkgs,
   lib,
@@ -44,7 +44,7 @@
   variant = "server";
   _ = mkSystem; # accepted for call-site symmetry; `system` is pre-evaluated.
 
-  goldensDir = ../../tests/fixtures/rfc-0011-goldens + "/${variant}";
+  goldensDir = ../../tests/fixtures/system-characterization-goldens + "/${variant}";
 
   systemdUnits = system.config.system.build.systemdSystemUnits;
   etcDump = system.config.system.build.etcDump;
@@ -55,10 +55,10 @@
   # job-script normalization and the readable unified diff are robust. Python3
   # is an AOS package (no host tools).
   snapshotPy = pkgs.writeTextFile {
-    name = "rfc-0011-snapshot-py";
+    name = "system-characterization-snapshot-py";
     destination = "/snapshot.py";
     text = ''
-      """RFC-0011 T0 characterization: snapshot + normalize + compare.
+      """System characterization: snapshot, normalize, and compare.
 
       Builds a normalized snapshot tree of a system toplevel's renderable
       artifacts and either writes it out (generate mode) or diffs it against a
@@ -210,7 +210,7 @@
           two recognized path forms (store `-unit-script-` and gen-local
           `/aos-job-scripts/`) must normalize to identical text.
           """
-          root = tempfile.mkdtemp(prefix="rfc0011-selftest-")
+          root = tempfile.mkdtemp(prefix="system-characterization-selftest-")
           body = "#!/bin/sh\nset -e\n\necho hello from the job script\n"
           store_form = os.path.join(root, "abc123-unit-script-demo-start", "bin", "demo-start")
           genlocal_form = os.path.join(root, "aos-job-scripts", "demo.service:Script.0")
@@ -264,11 +264,11 @@
                   failures.append("DIFF %s:\n%s" % (rel, "".join(diff)))
 
           if failures:
-              sys.stderr.write("==> RFC-0011 characterization golden MISMATCH (%d)\n\n" % len(failures))
+              sys.stderr.write("==> system characterization golden MISMATCH (%d)\n\n" % len(failures))
               sys.stderr.write("\n\n".join(failures))
               sys.stderr.write("\n\nAn unexpected diff is a caught regression. An intentional change\n")
               sys.stderr.write("requires regenerating the baseline (nix-build -A\n")
-              sys.stderr.write("checks.rfc-0011-characterization.regenerate) in a reviewed commit.\n")
+              sys.stderr.write("checks.system-characterization.regenerate) in a reviewed commit.\n")
               sys.exit(1)
 
 
@@ -295,9 +295,9 @@
           build_snapshot(args, args.out)
           if args.mode == "check":
               compare(args.out, args.goldens)
-              print("==> RFC-0011 characterization: snapshot matches goldens.")
+              print("==> system characterization: snapshot matches goldens.")
           else:
-              print("==> RFC-0011 characterization: baseline written to $out.")
+              print("==> system characterization: baseline written to $out.")
 
 
       if __name__ == "__main__":
@@ -307,7 +307,7 @@
 
   mkRun = mode:
     pkgs.mkDerivation {
-      pname = "rfc-0011-characterization-${variant}-${mode}";
+      pname = "system-characterization-${variant}-${mode}";
       version = "0";
       src = null;
 
@@ -347,7 +347,7 @@
         }
       ];
 
-      meta.description = "RFC-0011 T0 toplevel characterization golden (${variant}, ${mode})";
+      meta.description = "System toplevel characterization golden (${variant}, ${mode})";
     };
 
   check = mkRun "check";

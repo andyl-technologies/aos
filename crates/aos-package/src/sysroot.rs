@@ -323,10 +323,10 @@ pub async fn install_system(
         registry: closure.registry_name.clone(),
         created_at: now_iso,
         kernel_path: kernel_path.clone(),
-        // RFC-0011 two-axis fields: this single-axis sysroot-install path does
+        // This single-axis sysroot-install path does not populate two-axis fields;
         // not run the on-host config evaluator, so the config-gen axis metadata
         // is absent. A `None` `module_abi_pinned` makes the rollback pin treat
-        // the generation as same-ABI (the pre-RFC-0011 direct re-activation).
+        // the generation is treated as same-ABI for direct reactivation.
         image_gen_parent: None,
         module_abi_pinned: None,
         manifest_hash: None,

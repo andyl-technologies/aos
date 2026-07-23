@@ -1,7 +1,7 @@
 ##! modules/profiles/edge.nix — Edge/IoT device profile
 ##!
 ##! Configures the system for edge and IoT deployments (Jetson Nano,
-##! Raspberry Pi, small appliances): ext4 root (no ZFS), ignition-based
+##! Raspberry Pi, small appliances): ext4 root (no ZFS), signed host
 ##! first-boot provisioning, chrony NTP, SSH, and conservative resource
 ##! usage.
 {
@@ -18,7 +18,7 @@ in {
       default = false;
       description = ''
         Enable the edge/IoT profile. Configures ext4 storage (no ZFS),
-        ignition-based first-boot provisioning, chrony, SSH, and
+        signed first-boot host configuration, chrony, SSH, and
         conservative resource defaults suitable for resource-constrained
         devices.
       '';

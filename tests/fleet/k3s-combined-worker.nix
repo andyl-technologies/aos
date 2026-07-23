@@ -31,7 +31,7 @@
   testToken = "aoscombinedfleettoken1";
 
   # Per-node k3s config baked into the image /etc via extendModules (the
-  # new-path replacement for Ignition storage.files): /etc/rancher/k3s/k3s.env
+  # baked machine configuration): /etc/rancher/k3s/k3s.env
   # (K3S_TOKEN, +K3S_URL for the worker; mode 0600) and
   # /etc/rancher/k3s/config.yaml (node-ip + flannel-iface, +extraConfig).
   #
@@ -98,7 +98,6 @@ in {
   machines = {
     combined = {
       system = combinedSystem;
-      provisioning = "newpath";
       packages = ["k3s-combined"];
       # k3s starts both kube-controller-manager and its embedded cloud
       # controller with PodCIDR allocation enabled. In the combined topology
@@ -119,7 +118,6 @@ in {
 
     worker = {
       system = workerSystem;
-      provisioning = "newpath";
       packages = ["k3s-worker"];
       extraModules = [
         (k3sEtcModule {

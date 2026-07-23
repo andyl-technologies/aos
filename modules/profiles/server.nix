@@ -1,11 +1,11 @@
 ##! modules/profiles/server.nix — Server role profile
 ##!
-##! Configures the system for server/cloud deployments: ignition-based
+##! Configures the system for server/cloud deployments: signed host
 ##! first-boot provisioning in the initrd, encrypted swap, NTP via chrony,
 ##! SSH access, and standard security posture.
 ##!
 ##! ZFS is disabled for this iteration. /var lives on its own ext4
-##! partition (created by ignition at first boot), so the root filesystem
+##! partition (created by systemd-repart at first boot), so the root filesystem
 ##! is mounted read-only. ZFS will come back in a later iteration.
 {
   config,
@@ -20,7 +20,7 @@ in {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable the server profile. Configures ZFS storage, ignition-based
+        Enable the server profile. Configures ZFS storage, signed host
         first-boot provisioning, chrony NTP, SSH, and standard security
         defaults.
       '';
@@ -30,7 +30,7 @@ in {
   config = lib.mkIf cfg.enable {
     # Storage: zstd-compressed read-only erofs root (~3x smaller than ext4;
     # the root is immutable, with writable state on /var, /etc overlay, and
-    # tmpfs). /var on its own ext4 partition created by ignition at first
+    # tmpfs). /var on its own ext4 partition created by systemd-repart at first
     # boot. ZFS deferred.
     aos.filesystems.zfs.enable = lib.mkDefault false;
     aos.filesystems.rootFsType = lib.mkDefault "erofs";

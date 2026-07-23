@@ -851,7 +851,7 @@ priority = 300
     #[test]
     fn blank_seed_file_is_ignored() {
         let seed = TempDir::new().unwrap();
-        // An emptied seed (the operator blanked it via Ignition) contributes
+        // An emptied seed (the operator blanked it through host.nix) contributes
         // nothing and is never an error.
         write_file(seed.path(), "registries.d/aos-core.toml", "\n");
         let registries = ApmConfig::load_registries(&layers(&[&seed])).unwrap();

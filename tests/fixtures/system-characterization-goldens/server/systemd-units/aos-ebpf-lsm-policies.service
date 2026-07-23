@@ -1,5 +1,5 @@
 [Unit]
-After=local-fs.target aos-seed-baked-packages.service aos-install-packages.service
+After=local-fs.target aos-seed-baked-packages.service aos-install-baked-packages.service
 Before=multi-user.target
 ConditionPathExists=/etc/aos/policy.toml
 Description=Load AOS fleet BPF-LSM policies

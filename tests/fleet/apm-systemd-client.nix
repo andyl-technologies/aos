@@ -43,7 +43,6 @@ in {
     # Python global `vm`.
     vm = {
       system = serverWithClientTest;
-      provisioning = "newpath";
       # Exposed package activation measures PCR 15, so this package-backed
       # systemd-client test needs a vTPM even though the assertions are about
       # D-Bus job handling.

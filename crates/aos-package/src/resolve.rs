@@ -338,12 +338,12 @@ pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
 }
 
 // ---------------------------------------------------------------------------
-// RFC-0011 module_abi pre-eval gate
+// Module-ABI pre-evaluation gate.
 // ---------------------------------------------------------------------------
 
 /// One config module presented to the [`module_abi`] resolver gate.
 ///
-/// The full RFC-0011 fixpoint resolver (P1) is not yet built; this carries the
+/// The full fixpoint resolver is not yet built; this carries the
 /// minimum a gate needs — the package identity and its declared
 /// [`ModuleAbiCompat`] band — so the gate can be wired ahead of the loop and
 /// tested in isolation.
@@ -372,7 +372,7 @@ impl<'a> GatedConfigModule<'a> {
 
 /// Fail-closed `module_abi` compatibility gate, run **before** any eval.
 ///
-/// RFC-0011 build-spec §3.3 gate 2 / §6: for every config module `M` in the
+/// For every configuration module `M` in the
 /// resolved set, `M.module_abi_compat.min <= K <= M.module_abi_compat.max` must
 /// hold, where `K` is the running image's `module_abi`. The first module whose
 /// band excludes `K` aborts resolution before a manifest is produced, so an
@@ -892,7 +892,7 @@ requires = ["cycle-a"]
     }
 
     // ----------------------------------------------------------------------
-    // RFC-0011 module_abi gate
+    // Module-ABI gate.
     // ----------------------------------------------------------------------
 
     fn gated(package: &'static str, min: u32, max: u32) -> GatedConfigModule<'static> {

@@ -116,7 +116,7 @@
   beatenExec = svc.script-beaten-by-direct.serviceConfig.ExecStart;
   preStartList = svc.with-prestart.serviceConfig.ExecStartPre;
 
-  # RFC-0011 F2-A inversion: the eval-time `ExecStart` from a `script=` option
+  # The eval-time `ExecStart` from a `script=` option
   # is the drv-free `#aos-jobscript:<key>#` placeholder (so the on-host
   # eval-only manifest renders the unit without forcing the job-script
   # derivation); the real build-side store path lives on the job-script record
@@ -213,7 +213,7 @@ in
     version = "0";
     src = null;
 
-    # Force the compiled script derivations into the closure. RFC-0011 F2-A:
+    # Force the compiled script derivations into the closure:
     # `jobScripts` entries are now records; the build-side derivation is the
     # `.drv` field (was a bare derivation/path before the split).
     buildDeps = map (j: j.drv) svc.with-environment.jobScripts;

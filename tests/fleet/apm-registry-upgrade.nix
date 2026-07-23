@@ -42,7 +42,7 @@
   systems,
 }: let
   fleetSystem = evaluated: {
-    # Re-expose extendModules so the new-path harness can bake per-VM identity.
+    # Re-expose extendModules so the harness can bake per-VM identity.
     inherit (evaluated) config options extendModules;
     build = {
       toplevel = evaluated.config.system.build.toplevel;
@@ -53,7 +53,7 @@
     checks = evaluated.config.system.build.checks;
   };
 
-  # Both machines boot the new path (Ignition-free) with a baked /var, so the
+  # Both machines boot with a baked /var, so the
   # guest agent rides the /var seed; identity + the seeded package list are
   # baked into /etc. They hand-seed the registry (git) and probe HTTP/firewall
   # (curl/nft).
@@ -96,10 +96,9 @@ in {
       # cache (~540 MiB) alongside it, so /var needs well over 1.5 GiB free.
       # 1536 MiB (the old baked size) overflowed mid-generation; 3072 MiB
       # matches install-from-image.nix's headroom for the same workload.
-      # New path: identity baked into /etc, /var baked into the per-machine
+      # Identity is baked into /etc and /var into the per-machine
       # disk at this size (baking identity already forks the image per machine,
       # so a shared var-less base buys nothing here).
-      provisioning = "newpath";
       varSizeMiB = 3072;
       varProvisioning = "baked";
     };
@@ -110,7 +109,6 @@ in {
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on
       # the var partition). Sized to match the registry for headroom.
-      provisioning = "newpath";
       varSizeMiB = 3072;
       varProvisioning = "baked";
     };

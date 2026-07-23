@@ -77,7 +77,7 @@
         description = "/etc is the composefs three-layer overlay (spec v12 §1)";
         script = ''
           # /etc is mounted as overlayfs with lowerdir+= /var/etc,
-          # /run/etc/ignition-<gen>/etc, /run/etc/system-<gen>/
+          # /run/etc/config-<gen>/etc, /run/etc/system-<gen>/
           # metadata, plus datadir+= /run/etc/system-<gen>/content
           # and upperdir on /run/etc/upper-<gen>.
           #
@@ -98,7 +98,7 @@
           assert "overlay" in mount_line, f"/etc is not overlayfs: {mount_line!r}"
           for needle in (
               "lowerdir+=/sysroot/var/etc",
-              "lowerdir+=/run/etc/ignition-",
+              "lowerdir+=/run/etc/config-",
               "lowerdir+=/run/etc/system-",
               "datadir+=/run/etc/system-",
               "upperdir=/run/etc/upper-",
@@ -112,7 +112,7 @@
           # it. Stat the system-<gen>/metadata mountpoint to prove
           # the path resolves, not just that findmnt sees the mount.
           vm.succeed("test -d /run/etc/system-1/metadata")
-          vm.succeed("test -d /run/etc/ignition-1/etc")
+          vm.succeed("test -d /run/etc/config-1/etc")
         '';
       }
       {

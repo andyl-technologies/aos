@@ -25,13 +25,12 @@
   timeout = 1800;
 
   machines = {
-    # Base image ships only ESP + root-a; on the RFC-0011 new path
+    # The base image ships only ESP and root-a;
     # systemd-repart creates swap/var on first boot. /var is required to reach
     # multi-user (see tests/fleet/secure-boot.nix).
     target = {
       system = systems.server-secureboot-lockdown;
       bootMode = "image";
-      provisioning = "newpath";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
     };

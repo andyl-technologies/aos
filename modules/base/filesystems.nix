@@ -50,7 +50,7 @@
     "# EFI System Partition — FAT32 so UEFI firmware can read it."
     "${cfg.espDevice}  /boot  vfat  ro,noatime,fmask=0077,dmask=0077  0  2"
     ""
-    "# /var — persistent mutable state (partition created by ignition)"
+    "# /var — persistent mutable state (partition created by systemd-repart)"
     "/dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2"
     ""
     "# tmpfs mounts"
@@ -137,12 +137,12 @@ in {
 
       ## ZFS datasets to create and mount.
       ##
-      ## Modules add entries here; Ignition creates them at first boot.
+      ## Modules add entries here; host activation creates them at first boot.
       datasets = lib.mkOption {
         type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
         default = {};
         description = ''
-          ZFS datasets to create and mount. Modules add entries; Ignition
+          ZFS datasets to create and mount. Modules add entries; host activation
           creates them at first boot, filesystems mounts them at runtime.
           Each key is the dataset name (relative to the pool), and the value
           is an attrset of ZFS properties. The "mountpoint" property
@@ -154,7 +154,7 @@ in {
     # `aos.filesystems.overlayEtc` was removed in spec v12: the
     # composefs-backed /etc overlay is now unconditional. See
     # `modules/services/ignition.nix:etc-overlay-setup.service` for the
-    # three-layer mount (system EROFS lower + per-gen ignition lower +
+    # three-layer mount (system EROFS lower + per-gen config lower +
     # /var/etc + tmpfs upper).
   };
 
@@ -282,7 +282,7 @@ in {
 
       # Encrypted swap — plain dm-crypt keyed from /dev/urandom. The key
       # is discarded on reboot so swap contents are not recoverable.
-      # The swap partition itself is created by ignition on first boot.
+      # The swap partition itself is created by systemd-repart on first boot.
       {
         "cryptswap" = {
           description = "Set Up Encrypted Swap";
@@ -294,8 +294,8 @@ in {
             "dev-disk-by\\x2dpartlabel-swap.device"
           ];
           unitConfig = {
-            # The partition only exists after ignition's first-boot run.
-            # ConditionPathExists makes the first pre-ignition boot a
+            # The partition only exists after systemd-repart's first-boot run.
+            # ConditionPathExists makes the first pre-repart boot a
             # no-op instead of a fatal service failure.
             ConditionPathExists = "/dev/disk/by-partlabel/swap";
             DefaultDependencies = "no";

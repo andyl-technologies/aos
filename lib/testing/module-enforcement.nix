@@ -126,7 +126,7 @@
   pathInStoreRejectsRelative = !lib.types.pathInStore.check "not-a-path";
   pathInStoreRejectsNumber = !lib.types.pathInStore.check 42;
 
-  # --- RFC-0011 CS4: F3-B contributable surface -----------------------
+  # --- Contributable option surface -----------------------------------
   #
   # An owner marks the curated extension points `contributable = true` and
   # leaves `enable` / globals owner-only (the default). The marker is a pure
@@ -160,7 +160,7 @@
   # the marker did not change the merged value
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
 
-  # --- RFC-0011 CS4: operator priority-75 band ------------------------
+  # --- Operator priority-75 band --------------------------------------
   #
   # A bare def from a resolver-supplied `operatorModules` member is lifted to
   # tier 75 and beats a normal package contribution (tier 100), regardless of
@@ -236,7 +236,7 @@
     .x
     == "true-operator";
 
-  # --- RFC-0011 CS4: types.uniqEnum (owned shared scalar) -------------
+  # --- types.uniqEnum (owned shared scalar) ---------------------------
   uniqEnumAgrees =
     (lib.evalModules {
       modules = [
@@ -286,7 +286,7 @@
       ))
     .success;
 
-  # --- RFC-0011 CS4: mkPackageRoot ({pkg}.* mount) --------------------
+  # --- mkPackageRoot ({pkg}.* mount) ----------------------------------
   #
   # Mount a package module under its own root name; the root name is injected
   # as the submodule `name`, and an un-configured root is inert (defaults).
@@ -376,12 +376,12 @@ in
           echo "  types.pathInStore — accepts store paths: OK"
           echo "  types.pathInStore — rejects host paths: OK"
           echo "  types.pathInStore — rejects non-paths: OK"
-          echo "  RFC-0011 F3-B — contributable surface exposed, marker inert: OK"
-          echo "  RFC-0011 — operator tier-75 beats package, mkForce beats operator: OK"
-          echo "  RFC-0011 — no operatorModules ⇒ no lift (inert): OK"
-          echo "  RFC-0011 — package _file/_provenance cannot forge operator priority: OK"
-          echo "  RFC-0011 — types.uniqEnum agree/conflict: OK"
-          echo "  RFC-0011 — mkPackageRoot mount + name injection: OK"
+          echo "  contributable surface exposed, marker inert: OK"
+          echo "  operator tier-75 beats package, mkForce beats operator: OK"
+          echo "  no operatorModules means no priority lift: OK"
+          echo "  package provenance cannot forge operator priority: OK"
+          echo "  types.uniqEnum agree/conflict: OK"
+          echo "  mkPackageRoot mount and name injection: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

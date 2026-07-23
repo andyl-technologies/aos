@@ -1,4 +1,4 @@
-##! lib/build/freeze-pkgs.nix — frozen `pkgs` for on-host config eval (RFC-0011)
+##! lib/build/freeze-pkgs.nix — frozen `pkgs` for on-host configuration evaluation
 ##!
 ##! The stage-2 on-host evaluator must compute the config manifest WITHOUT
 ##! traversing the from-source `pkgs` build graph: under the eval sandbox
