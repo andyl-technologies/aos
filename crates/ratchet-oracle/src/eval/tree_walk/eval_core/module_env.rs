@@ -571,6 +571,12 @@ impl TreeWalk {
         if crate::eval::env::depth_probe_enabled() {
             crate::eval::env::note_install_depth(frames.len());
         }
+        if frames.is_empty() {
+            return Ok(ActiveEvalEnv {
+                frames: ActiveEvalFrames::new(),
+                flat_base: env.flat_base().cloned(),
+            });
+        }
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(frames.len()).map_err(|_| {
             TreeWalkError::new(
@@ -589,7 +595,7 @@ impl TreeWalk {
         // per-index chain walk on the hottest apply/force path.
         frames.clone_into(&mut cloned);
         Ok(ActiveEvalEnv {
-            frames: cloned,
+            frames: ActiveEvalFrames::from_vec(cloned),
             flat_base: env.flat_base().cloned(),
         })
     }

@@ -264,7 +264,7 @@ pub struct TreeWalk {
     ///
     /// Every production frame carries an immutable parent link, so capturing
     /// the shared suffix clones only its innermost head pointer.
-    env: Vec<Arc<EvalFrame>>,
+    env: env_types::ActiveEvalFrames,
     /// Compact immutable outer prefix installed while a flat-captured closure
     /// runs. Frames pushed by the body remain in [`Self::env`].
     flat_env: Option<EvalFlatCapture>,

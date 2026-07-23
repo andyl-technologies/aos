@@ -1901,6 +1901,14 @@ value word (Candidates B and C) remains open and separately gated:**
       lists for the remainder (`eval/env.rs`): capture = one pointer;
       depth-walk access by lexical coordinates. Gate: `__overrides` and
       rec-assembly adversarial corpus from FV-0's Chunk-D arms.
+- [x] Inline the first two frames of the active lexical suffix. Captured
+      install depth averages 0.15 and every lambda call adds one frame, so the
+      two-slot inline stack removes the dominant per-call `Vec` allocation
+      while retaining arbitrary-depth spill and the existing precise-root
+      slice. Fresh-process Candidate-C instruction counts moved by 1.13% on
+      `lambda-interp`, 1.77% on `fib`, 1.59% on `hash-loop`, and 2.94% on
+      `all-any`; `attr-fixpoint` remained effectively neutral (-0.08%).
+      Byte parity passed on all five workloads.
 - [x] Delete the generation-keyed capture cache and its four
       mutation-site helpers (`eval_core/module_env.rs`) once both forms
       land; capture counters (FV-0) show the copy mass gone. Exit:

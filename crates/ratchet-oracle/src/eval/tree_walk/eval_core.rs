@@ -158,7 +158,7 @@ impl TreeWalk {
             current_module: EvalModuleId::ROOT,
             symbols: ir.symbols.clone(),
             heap,
-            env: Vec::new(),
+            env: ActiveEvalFrames::new(),
             flat_env: None,
             pending_flat_captures: Vec::new(),
             order_sensitive_binding_failed: false,

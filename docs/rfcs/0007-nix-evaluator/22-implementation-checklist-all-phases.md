@@ -12271,6 +12271,12 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       dynamic/scoped-global stacks copying zero entries. Shared-parallel and
       B2 record-stress placement use the one-head linked form; doc 30 §12
       records the representation boundary and full gate evidence.*
+      *The active lexical suffix now stores its first two frames inline.
+      Measured install depth averages 0.15 and each lambda call adds one frame,
+      so this removes the dominant per-call frame-stack `Vec` allocation.
+      Fresh-process Candidate-C instruction counts improved by 0.08%-2.94%
+      across five compute shapes (1.13% on `lambda-interp`), with byte parity
+      green on all five.*
 - [x] FV-6 — arena-owned payloads (payload `Arc` removal; the sweep owns
       reclamation) — **closes the value-rep-flattening gate on Tier-B
       stage B2** ([06](06-memory-management-and-gc.md) §4,

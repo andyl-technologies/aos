@@ -2,6 +2,18 @@
 //! (split from tree_walk.rs under the §2 file-size cap).
 use super::*;
 
+/// Inline capacity for the active lexical frame suffix.
+///
+/// Captured-environment telemetry shows an average installed depth of 0.15,
+/// and every lambda application adds exactly one call frame. Keeping the first
+/// two frames inline therefore removes the per-call `Vec` allocation from the
+/// dominant serial path while retaining a spill path for arbitrary Nix scope
+/// depth.
+pub(crate) const ACTIVE_ENV_INLINE_FRAMES: usize = 2;
+
+/// The active lexical suffix, inline for the overwhelmingly common shallow case.
+pub(crate) type ActiveEvalFrames = smallvec::SmallVec<[Arc<EvalFrame>; ACTIVE_ENV_INLINE_FRAMES]>;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AttrUpdateTelemetryState {
     pub(crate) override_chain_depth: usize,
@@ -64,14 +76,14 @@ impl SuspendedTreeWalkEnv {
 /// still sees `flat_base.frame_count() + frames.len()` conceptual frames.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ActiveEvalEnv {
-    pub(crate) frames: Vec<Arc<EvalFrame>>,
+    pub(crate) frames: ActiveEvalFrames,
     pub(crate) flat_base: Option<EvalFlatCapture>,
 }
 
 impl ActiveEvalEnv {
     pub(crate) fn from_frames(frames: Vec<Arc<EvalFrame>>) -> Self {
         Self {
-            frames,
+            frames: ActiveEvalFrames::from_vec(frames),
             flat_base: None,
         }
     }
