@@ -300,28 +300,61 @@ impl<T> FlatObjectStore<T> {
         values: &[Value],
         payload: T,
     ) -> Result<FlatValueTailAllocation, FlatObjectError> {
-        let mut tail = FlatTailLayout::new();
-        tail.add_slice::<Value>(values.len())?;
-        let allocation = self.alloc_with_trailing(
-            kind,
-            flat_aux_for_len(values.len()),
-            hash,
-            epoch,
-            tail,
-            |writer| {
-                let _witness = writer.write_slice(values)?;
-                Ok(payload)
-            },
-        )?;
-        let address = allocation.ptr.as_ptr() as usize;
-        let Some(entry) = self.entries.last_mut() else {
-            return Err(FlatObjectError::UnknownAddress { address });
-        };
-        if entry.ptr != allocation.ptr {
-            return Err(FlatObjectError::UnknownAddress { address });
+        let () = FlatLayoutCheck::<T>::PAYLOAD_FITS_ARENA_ALIGNMENT;
+        self.check_kind_allowed(kind)?;
+        let object_size = mem::size_of::<FlatObject<T>>();
+        let tail_size = mem::size_of::<Value>()
+            .checked_mul(values.len())
+            .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
+        let size = object_size
+            .checked_add(tail_size)
+            .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
+        let store_index = self.entries.len();
+        let entries = store_index
+            .checked_add(1)
+            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
+        let allocation = self
+            .backing
+            .alloc_raw(size, kind)
+            .map_err(FlatObjectError::Arena)?;
+        debug_assert!(allocation.reserved_size >= size);
+        debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
+        debug_assert_eq!(object_size % mem::align_of::<Value>(), 0);
+        let ptr = allocation.ptr;
+        // SAFETY: `ptr` is a fresh, exclusively owned arena reservation
+        // covering the object head followed by `values.len()` `Value` slots.
+        // `FlatObject<T>`'s size preserves its alignment, which is at least
+        // `Value`'s alignment under the post-mono arena check. `Value` is
+        // `Copy`, the source cannot overlap this newly reserved range, and the
+        // tail is immutable after this initialization.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                values.as_ptr(),
+                ptr.as_ptr().cast::<u8>().add(object_size).cast::<Value>(),
+                values.len(),
+            );
+            ptr.as_ptr().cast::<FlatObject<T>>().write(FlatObject {
+                header: FlatHeader {
+                    kind_word: kind.kind_word(flat_aux_for_len(values.len())),
+                    hash,
+                    epoch: AtomicU64::new(epoch),
+                },
+                payload,
+            });
         }
+        let mut entry = FlatStoreEntry::plain(ptr, allocation.reserved_size);
         entry.mark_value_tail();
-        let handle = FlatValueTailHandle::new(allocation.store_index, values.len());
+        self.entries.push(entry);
+        self.refresh_regions();
+        let allocation = FlatAllocation {
+            ptr,
+            store_index,
+            allocation,
+        };
+        let handle = FlatValueTailHandle::new(store_index, values.len());
         Ok(FlatValueTailAllocation { allocation, handle })
     }
 }

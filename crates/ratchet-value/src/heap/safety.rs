@@ -327,6 +327,12 @@ mod tests {
         // trailing-bytes inline copy plus its object-head write) moved
         // verbatim into `flat/alloc.rs`; resolution, iteration, pops, and
         // drop stay in `flat.rs`. No operation was added or changed.
+        // flat/alloc.rs count 4 -> 5 (RFC-0007 full-toplevel allocation-door
+        // specialization): the inline-Value-tail path now copies its
+        // bounds-checked `Value` run and writes the object head directly into
+        // one fresh exclusive reservation instead of entering the generic
+        // tail-writer callback. Both operations share one documented block
+        // under the existing `FlatObjectPayloadAccess` premise.
         // flat.rs count 8 -> 9 (B2 structural writeback): the exclusive
         // header reconstruction behind `&mut self` repairs the staged
         // structural-hash word after collector payload relocation, under the
@@ -424,7 +430,7 @@ mod tests {
             ("arena/tests.rs", 3usize),
             ("flat.rs", 6usize),
             ("flat/restore.rs", 1usize),
-            ("flat/alloc.rs", 4usize),
+            ("flat/alloc.rs", 5usize),
             ("flat/bytes.rs", 3usize),
             ("flat/region_ops.rs", 3usize),
             ("flat/slice.rs", 7usize),

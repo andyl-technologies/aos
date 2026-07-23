@@ -526,3 +526,65 @@ leaving a **3.71x** instruction ratio. The result recovers only part of the
 no-check ceiling because a sound per-entry stack-pointer comparison remains;
 further removal requires a proven amortized or recursive-edge-only check, not
 an unprotected tree walk.
+
+## Twelfth exploration result
+
+The last instruction profile attributed visible mass to the environment
+save/restore closure around thunk and lambda bodies. Because the default
+full-toplevel run has collection disabled, a prototype kept each displaced
+environment in the caller's Rust frame instead of reserving and pushing it
+onto the explicit suspended-GC-root vector. The production rooted path remained
+unchanged whenever GC was enabled.
+
+Three cache-off `systems.server.build.toplevel` runs retired
+23.0892-23.0915B instructions versus the 23.0727-23.0728B baseline,
+approximately **0.07% more**, with peak RSS unchanged at
+855,268-858,004KiB. The prototype was reverted. The reusable root vector is
+already cheaper than the extra mode split and larger scoped helper after
+optimization; do not special-case no-GC environment suspension again without
+new profile evidence. The result also reinforces that the current gap is a
+flat per-operation instruction tail rather than hidden wait time.
+
+## Thirteenth exploration result
+
+A refreshed CPU-time sample of the cache-off
+`systems.server.build.toplevel` benchmark found that the earlier `memmove`
+hotspot disappeared after the persistent-environment-head change. The two
+hottest named functions were instead
+`FlatObjectStore::alloc_with_aux` and
+`FlatObjectStore::alloc_with_value_tail`. Their generated code copies the
+roughly 144-byte closure payload through stack temporaries while crossing the
+generic crate boundary.
+
+A clean isolated-target build forced `#[inline]` on those entry points and
+their shared trailing-allocation helper. Three full-toplevel runs retired
+23.0732-23.0773B instructions, versus the pushed 23.0727-23.0728B baseline,
+with no peak-RSS improvement. The annotations were reverted. Compiler-hint
+tuning alone does not remove the allocation-door cost; any follow-up should
+specialize the closure path structurally and prove that it avoids payload
+copies and generic registry work.
+
+## Fourteenth exploration result
+
+The dedicated inline-`Value`-tail door now performs its concrete operation
+directly: checked object-plus-tail sizing, one arena reservation, one tail
+copy, one payload write, and one already-flagged registry insertion. The old
+path built a generic tail plan, entered a callback writer, then looked up and
+mutated the registry entry it had just appended. This specialization adds no
+new unsafe premise; its single write block is the same fresh-reservation,
+alignment, and immutable-tail argument already used by the generic door.
+
+Three isolated-target, cache-off `systems.server.build.toplevel` runs retired
+22.9732-22.9770B instructions at IPC 2.76-2.77, approximately **0.43% fewer**
+than the 23.0727-23.0728B baseline. Peak RSS remained
+857,588-858,096KiB. Byte-level `.drv` closure parity passed, followed by all
+2,674 active Candidate-C tests (37 ignored) and doctests. The pinned C++ count
+remains 6.2186B, leaving a **3.69x** instruction ratio.
+
+The paired stats run also quantified the next structural problem. The
+toplevel allocates 3,218,224 thunks; `EvalThunk` and `FlatClosurePayload` are
+both 120 bytes, so the flat object is 144 bytes after its three-word generic
+header. The worker lane reaches 566,881,608 used bytes. A single largest enum
+variant and a generic hash/epoch-bearing header therefore tax every common
+node/apply thunk. Closing the memory and instruction targets requires a compact
+thunk-specific layout, not more annotations on the uniform payload.

@@ -12443,6 +12443,43 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       reaches the configured Nix depth error instead of aborting; the complete
       Candidate-C suite passed 2,674 tests (37 ignored) plus doctests
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered no-GC environment-root bypass ceiling:** a scoped
+      prototype kept displaced thunk/lambda environments in the caller's Rust
+      frame when collection was disabled, while retaining the explicit
+      suspended-root vector for GC-enabled evaluation. Full-toplevel
+      instructions regressed from 23.0727-23.0728B to
+      23.0892-23.0915B (approximately 0.07%) at unchanged peak RSS, so the
+      prototype was reverted. Keep the shared rooted save/restore path unless
+      a future profile supplies contrary evidence
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered flat-allocation inline-hint ceiling:** after the persistent
+      environment-head change removed the old `memmove` hotspot, CPU-time
+      samples put the generic flat-object allocation entry points at the top.
+      Forcing those helpers inline in a clean isolated-target build produced
+      23.0732-23.0773B full-toplevel instructions versus the
+      23.0727-23.0728B baseline and did not improve peak RSS, so the annotations
+      were reverted. Future work must structurally specialize the closure
+      allocation path rather than rely on inline hints
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Specialize the inline-capture allocation door:** replace its generic
+      tail-layout/callback/post-insert-lookup sequence with one concrete
+      checked reservation, tail copy, payload write, and flagged registry
+      insert. Clean full-toplevel runs improved from 23.0727-23.0728B to
+      22.9732-22.9770B instructions (approximately 0.43%) at unchanged peak
+      RSS, with byte-identical `.drv` closure output and all 2,674 active
+      Candidate-C tests (37 ignored) plus doctests green
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered oversized uniform flat-closure layout:** the live toplevel
+      allocates 3,218,224 thunks and drives the worker lane to 566,881,608 used
+      bytes. `EvalThunk` and the largest-variant `FlatClosurePayload` are each
+      120 bytes, and the generic flat header adds 24 bytes even though closure
+      hash and access-epoch words are cold/constant in the default evaluator.
+      Design a thunk-specific compact representation (including separate
+      treatment of rare large variants and only the metadata closure
+      resolution actually needs), preserve force identity/GC/snapshot
+      semantics, and accept it only with byte parity, the full Candidate-C
+      suite, and measured full-toplevel instruction and peak-RSS wins
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [ ] **Discovered oracle unsafe-fence drift:** `ratchet-oracle` is documented
       as the safe differential reference but currently carries local unsafe
       allowances for stable-arena dereference, trusted atomic-value decode, and
