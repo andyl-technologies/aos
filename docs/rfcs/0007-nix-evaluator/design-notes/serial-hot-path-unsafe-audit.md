@@ -320,3 +320,30 @@ isolated telemetry test passed, and the Candidate-C oracle suite passed
 serially (2,670 passed, 37 ignored). The parallel suite also passed 2,669 tests
 before hitting its separately tracked process-global memory-telemetry isolation
 flake.
+
+## Fourth implementation result
+
+A direct-resolver experiment tested whether the remaining flat-thunk cost was
+primarily defensive pointer validation. The prototype used a local `unsafe`
+mapped-reservation resolver that skipped the flat store's region-partition
+search while retaining reservation bounds, alignment, object-header, and kind
+validation. On a successful byte-identical
+`systems.server.build.toplevel` run it retired 24.437B instructions versus the
+24.379B baseline (**0.24% worse**). It was reverted: a broader unsafe surface
+is not justified when the product workload regresses.
+
+The same audit found a separate instrumentation bug: the normal production
+path updated FV campaign `Cell<u64>` counters on every heap resolution even
+though those detailed counters are emitted only for
+`AOS_NIX_EVAL_STATS=1`. The full toplevel performs 18,750,711 such resolutions
+(2,980,929 strings, 850 paths, 2,141,946 lists, 1,737,487 attrsets, 8,705,350
+thunks, 3,169,141 lambdas, and 15,008 primops). Counter updates are now opt-in
+with the stats-dump option; direct heap users retain counters by default, and
+focused tests prove both disabled and enabled behavior.
+
+Three fresh-process product runs retired 24.247-24.249B instructions, down from
+24.379B by approximately **0.53%**, at unchanged 2.78-2.80 IPC. A separate
+stats-enabled run retained all nonzero campaign counts, and full toplevel
+`.drv` closure parity remained byte-green. This is a small uniform
+instrumentation-tax removal, not a resolution of the remaining approximately
+3.88x instruction ratio to pinned C++ Nix.

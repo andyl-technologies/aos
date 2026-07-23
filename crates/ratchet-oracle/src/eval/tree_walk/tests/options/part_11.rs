@@ -2,6 +2,37 @@
 
 use super::*;
 
+#[test]
+fn detailed_heap_dereference_counters_are_opt_in() {
+    let ir = lower(r#"let xs = [ "a" "b" ]; in builtins.elemAt xs 1"#);
+    let mut evaluator = TreeWalk::new(&ir);
+    evaluator.eval_root().expect("source evaluates");
+
+    let campaign = evaluator.stats().campaign().clone();
+    assert_eq!(campaign.record_probes_total(), 0);
+    assert_eq!(campaign.flat_string_resolutions, 0);
+    assert_eq!(campaign.flat_list_resolutions, 0);
+    assert_eq!(campaign.flat_thunk_resolutions, 0);
+}
+
+#[test]
+fn detailed_heap_dereference_counters_record_under_stats_dump() {
+    let ir = lower(r#"let xs = [ "a" "b" ]; in builtins.elemAt xs 1"#);
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_stats_dump(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    evaluator.eval_root().expect("source evaluates");
+
+    let campaign = evaluator.stats().campaign().clone();
+    assert!(
+        campaign.flat_string_resolutions
+            + campaign.flat_list_resolutions
+            + campaign.flat_thunk_resolutions
+            > 0,
+        "stats-dump evaluation records flat heap resolutions",
+    );
+}
+
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under

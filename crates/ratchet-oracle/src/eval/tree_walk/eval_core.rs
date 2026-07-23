@@ -101,6 +101,10 @@ impl TreeWalk {
         heap.set_epoch_tracking_enabled(
             options.heap_cheap_memory_advice_min_idle_epochs().is_some(),
         );
+        // The FV campaign counters touch a `Cell<u64>` on every heap
+        // resolution. They are diagnostic data emitted only by the explicit
+        // stats-dump path, so keep that bookkeeping out of normal evaluation.
+        heap.set_deref_counters_enabled(options.eval_stats_dump());
         // The generational thunk-resolve write barrier resolves published
         // values against record generations, so barrier-exercising tiers keep
         // the record-table worker placement alongside the GC-stress proving
@@ -441,6 +445,7 @@ impl TreeWalk {
                 .heap_cheap_memory_advice_min_idle_epochs()
                 .is_some(),
         );
+        heap.set_deref_counters_enabled(self.options.eval_stats_dump());
         if let Some(heap_memory_budget) = self.options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(

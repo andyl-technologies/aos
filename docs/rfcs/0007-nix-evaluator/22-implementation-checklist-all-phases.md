@@ -12355,6 +12355,15 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       24.757B to 24.379B (1.53%) with byte parity; the serial Candidate-C suite
       passed 2,670 tests (37 ignored)
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered always-on FV instrumentation tax:** normal production
+      evaluation updated detailed dereference campaign counters despite those
+      counters being consumed only by the explicit stats-dump path. The system
+      toplevel performed 18,750,711 unnecessary counter updates. Gate them on
+      `eval_stats_dump`, retain direct-heap counter behavior, and test both
+      modes. Fresh-process full-toplevel instructions improved from 24.379B to
+      24.247-24.249B (approximately 0.53%) at unchanged IPC; stats-on counts and
+      byte parity remained intact
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
       the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
       The call is bracketed by compiled-frame stack-map enter/exit helpers and

@@ -10,12 +10,13 @@ number, 546-green) but its realistic floor is **~3.0-3.7x C++**; the residual is
 architectural (§8). Tooling: `AOS_NIX_BENCH_COLD_ONLY` (landed). §§1-5 are the
 methodology and commands; §§6-8 are the results and verdict.
 
-**2026-07-23 Candidate-C refresh.** On the current PR build, one isolated
-cache-off `systems.server.build.toplevel` evaluation retires **24.790B
+**2026-07-23 Candidate-C refresh.** On the current PR build after gating
+diagnostic FV dereference counters, isolated cache-off
+`systems.server.build.toplevel` evaluations retire **24.247-24.249B
 instructions at IPC 2.79**; pinned C++ Nix 2.24.12 retires **6.246B at IPC
 2.85** for byte-identical output. Function-call counts remain nearly identical
-(3.177M native versus 3.163M C++), so the current live-load gap is **3.97x in
-instructions and about 3.95x in instructions/function-call**, with no IPC
+(3.177M native versus 3.163M C++), so the current live-load gap is **3.88x in
+instructions and about 3.86x in instructions/function-call**, with no IPC
 deficit to explain it. A separate three-sample wall run measured 1.980s versus
 0.554s, or **3.58x slower**. The absolute gap has improved since the original
 audit; its uniform per-operation character has not changed.

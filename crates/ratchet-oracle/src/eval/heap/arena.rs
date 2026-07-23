@@ -797,6 +797,15 @@ impl EvalHeap {
         self.epoch_tracking_enabled = enabled;
     }
 
+    /// Enables detailed heap-dereference campaign counters.
+    ///
+    /// These counters update on every heap resolution, so production
+    /// evaluations keep them disabled unless the caller requested the
+    /// evaluator statistics dump.
+    pub(crate) fn set_deref_counters_enabled(&mut self, enabled: bool) {
+        self.deref_counters.set_enabled(enabled);
+    }
+
     fn is_cold_hash_consed_record(
         record: &HeapRecord,
         current_epoch: u64,

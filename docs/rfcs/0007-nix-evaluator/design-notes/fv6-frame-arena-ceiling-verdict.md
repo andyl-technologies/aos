@@ -8,12 +8,17 @@ Owner: p1a-env. Task #19. **Question: is arena-owning the remaining
 > candidate the toplevel actually churns — the `Arc<EvalFrame>` alloc/free — is
 > now empirically bounded at **~2.8-3.4% of the cold toplevel wall** by a direct
 > builder measurement, inside the predicted 2-4% band and below the 10% gate.
-> The thunk-state half was already done (I1/I2) and measured wall-neutral. And
-> arena ownership is coupled to memory: native's 0.03x RSS advantage comes from
-> reclaiming transients during eval, which lazy-sweep arena ownership trades
-> away against Dylan's hold-memory constraint — an independent kill condition.
+> The thunk-state half was already done (I1/I2) and measured wall-neutral.
 > Re-entry only if a future sampling profile shows `EvalFrame` alloc/drop as a
 > top-3 line item.
+>
+> **2026-07-23 memory correction:** the original post-run RSS comparison below
+> was not a peak measurement. Fresh child-process watermarks show the current
+> native toplevel at approximately 828-835MiB versus 337MiB for C++ Nix
+> (roughly 2.46x), so the claimed 0.03x memory advantage and the resulting
+> "independent kill condition" are retracted. The measured 2.8-3.4% speed
+> ceiling remains valid; any future arena prototype must measure peak memory
+> rather than assuming its direction.
 
 Mirrors the L2 close: a lever ruled out by direct measurement so it is not
 re-explored.
@@ -68,24 +73,27 @@ bump + wholesale sweep — recovering most of ~3%, minus the bump and sweep-mark
 cost it still pays. Net recoverable is a fraction of ~3%: sub-noise against the
 ±5% builder floor.
 
-## Memory coupling — the independent kill condition
+## Memory coupling — corrected peak measurement
 
-Native's RSS is 0.03x of C++ (28 MiB vs ~1 GiB) *because* it frees transient
-values during eval — that is what the profile's `Arc`-drops line is. FV-6's
-payload win on the wide workload kept memory (it moved `malloc`'d bytes into the
-already-swept arena at the same reclamation cadence). Extending arena ownership
-to the frame/transient churn to actually capture the alloc savings means
-reclaiming *less often* (lazy sweep) — which is exactly C++'s ~1 GiB model. That
-trades the crown-jewel memory advantage against Dylan's explicit hold-memory
-constraint, and would do so for a sub-noise speed return. This alone rules the
-lever out even if the ceiling were larger.
+The earlier 28MiB native versus approximately 1GiB C++ comparison sampled
+retained RSS after evaluation in one process; it did not measure either
+evaluator's true high-water mark. Fresh child-process measurements reverse the
+conclusion: the current native toplevel peaks around 828-835MiB while pinned
+C++ Nix peaks around 337MiB. The production-GC TODO in doc 22 records the
+underlying permanent-flat-store retention gap.
+
+Arena-owning frames could increase retention, but that is now a hypothesis to
+measure, not an independent reason to reject the lever. The direct allocation
+ceiling still rejects it as a speed priority: even eliminating the entire
+measured frame allocation/drop cost cannot materially close a roughly 3.9x
+instruction gap.
 
 ## Re-entry condition
 
 Revisit frame arena ownership only if a future sampling profile shows
 `EvalFrame` allocation or drop as a **top-3 wall line item** (which would
 contradict this ~3% bound), *and* a sweep policy is found that captures the
-alloc savings without regressing the memory advantage. Absent both, the
+alloc savings without worsening the measured native peak. Absent both, the
 cold-parity weight stays on the levers §5.5 names as load-bearing: JIT coverage
 of the module-fixpoint shape class (task #20) and the heap-image prelude
 snapshot.

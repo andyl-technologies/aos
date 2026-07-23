@@ -21,8 +21,9 @@ use crate::value::ValueTag;
 ///
 /// Snapshot with [`EvalHeapDerefCounters::snapshot`]; the snapshot feeds the
 /// campaign block of the evaluator's public statistics.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct EvalHeapDerefCounters {
+    enabled: bool,
     record_probes_string: Cell<u64>,
     record_probes_path: Cell<u64>,
     record_probes_list: Cell<u64>,
@@ -42,10 +43,43 @@ pub(crate) struct EvalHeapDerefCounters {
     thunk_state_arc_clones: Cell<u64>,
 }
 
+impl Default for EvalHeapDerefCounters {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            record_probes_string: Cell::new(0),
+            record_probes_path: Cell::new(0),
+            record_probes_list: Cell::new(0),
+            record_probes_attrs: Cell::new(0),
+            record_probes_lambda: Cell::new(0),
+            record_probes_primop: Cell::new(0),
+            record_probes_thunk: Cell::new(0),
+            record_probes_other: Cell::new(0),
+            flat_string_resolutions: Cell::new(0),
+            flat_path_resolutions: Cell::new(0),
+            flat_list_resolutions: Cell::new(0),
+            flat_attrs_resolutions: Cell::new(0),
+            flat_thunk_resolutions: Cell::new(0),
+            flat_lambda_resolutions: Cell::new(0),
+            flat_primop_resolutions: Cell::new(0),
+            payload_arc_clones: Cell::new(0),
+            thunk_state_arc_clones: Cell::new(0),
+        }
+    }
+}
+
 impl EvalHeapDerefCounters {
+    /// Enables or disables detailed hot-path counter updates.
+    pub(crate) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     /// Records one record-table address probe issued under `tag`.
     #[inline]
     pub(super) fn note_record_probe(&self, tag: ValueTag) {
+        if !self.enabled {
+            return;
+        }
         let counter = match tag {
             ValueTag::String => &self.record_probes_string,
             ValueTag::Path => &self.record_probes_path,
@@ -62,6 +96,9 @@ impl EvalHeapDerefCounters {
     /// Records one flat-object resolution that bypassed the record table.
     #[inline]
     pub(super) fn note_flat_resolution(&self, tag: ValueTag) {
+        if !self.enabled {
+            return;
+        }
         let counter = match tag {
             ValueTag::String => &self.flat_string_resolutions,
             ValueTag::Path => &self.flat_path_resolutions,
@@ -78,6 +115,9 @@ impl EvalHeapDerefCounters {
     /// Records thunk force-state sidecar `Arc` clones in an owned snapshot.
     #[inline]
     pub(super) fn note_thunk_state_arc_clones(&self, clones: u64) {
+        if !self.enabled {
+            return;
+        }
         self.thunk_state_arc_clones
             .set(self.thunk_state_arc_clones.get().saturating_add(clones));
     }
