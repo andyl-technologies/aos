@@ -11,14 +11,15 @@ architectural (§8). Tooling: `AOS_NIX_BENCH_COLD_ONLY` (landed). §§1-5 are th
 methodology and commands; §§6-8 are the results and verdict.
 
 **2026-07-23 Candidate-C refresh.** On the current PR build after gating
-diagnostic FV dereference counters and bypassing process-global reservation
-lookups where the serial heap already owns the address context, and carrying
-the active lexical environment as a persistent frame-chain head, isolated
-cache-off `systems.server.build.toplevel` evaluations retire
-**23.8293-23.8296B instructions at IPC 2.77-2.78**. Pinned C++ Nix 2.24.12
-retires **6.2181B at IPC 2.81-2.89** for byte-identical output. Function-call
-counts remain nearly identical (3.177M native versus 3.163M C++), so the
-current live-load gap is **3.83x in instructions and about 3.81x in
+diagnostic FV dereference counters, bypassing process-global reservation
+lookups where the serial heap already owns the address context, carrying the
+active lexical environment as a persistent frame-chain head, and returning
+already-WHNF node results before the lazy-identity helper, isolated cache-off
+`systems.server.build.toplevel` evaluations retire
+**23.1874-23.1880B instructions at IPC 2.70-2.75**. Pinned C++ Nix 2.24.12
+retires **6.2186B at IPC 2.84** for byte-identical output. Function-call counts
+remain nearly identical (3.177M native versus 3.163M C++), so the current
+live-load gap is **3.73x in instructions and about 3.71x in
 instructions/function-call**, with no IPC deficit that could explain it. A
 prior separate three-sample wall run measured 1.980s versus 0.554s, or
 **3.58x slower**; wall time on the shared builder remains secondary to retired

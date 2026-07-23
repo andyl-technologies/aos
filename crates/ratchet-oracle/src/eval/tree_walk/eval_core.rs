@@ -588,10 +588,14 @@ impl TreeWalk {
         mut value: Value,
     ) -> Result<Value, TreeWalkError> {
         loop {
-            if self.is_suspended_lazy_identity_thunk(id, span, value)? {
+            // Most node evaluators already return WHNF. Test the carrier tag
+            // before consulting the lazy-identity set so that common results
+            // do not enter a helper that tests the same tag and then test it
+            // again here.
+            if !value.is_thunk() {
                 return Ok(value);
             }
-            if !value.is_thunk() {
+            if self.is_suspended_lazy_identity_thunk(id, span, value)? {
                 return Ok(value);
             }
             let forced = self.force_value(id, span, value)?;

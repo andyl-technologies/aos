@@ -427,3 +427,71 @@ Fresh-process peak RSS was 855,940-858,492KiB native versus
 344,140-345,528KiB C++ (approximately 2.49x), essentially flat versus the
 preceding native build but still far outside the requested `<0.5x` fresh-peak
 memory gate. The change is a measured CPU win, not a memory-gate claim.
+
+## Eighth exploration result
+
+The full toplevel forces approximately 2.94 million previously suspended
+thunks, and each serial claim currently uses the future-parallel
+`compare_exchange(Suspended, Blackhole)`. Because an uncontended x86
+read-modify-write can look disproportionately expensive, a scoped prototype
+used a relaxed load plus relaxed store only for the already-established direct
+flat-arena path: one-shot arena, GC disabled, no tier-1 engine, and no parallel
+payload cell. Shared, parallel, GC, and tiered paths retained the CAS.
+
+Two isolated cache-off `systems.server.build.toplevel` runs retired
+23.8914B and 23.8930B instructions versus the 23.8293-23.8296B baseline,
+approximately **0.26% worse**, with peak RSS unchanged at 858,096-859,576KiB.
+The prototype was reverted. The serial CAS is therefore not a profitable
+selective-`unsafe` lever on this build: removing the locked operation does not
+reduce retired instructions, and the extra claim-path split/code layout costs
+more than it saves. Keep the atomic protocol shared with parallel forcing
+unless a future profile identifies a different architecture or contention
+regime; pursue the remaining uniform interpreter dispatch/representation tax
+instead.
+
+## Ninth provisional exploration result
+
+Candidate-C getters reconstruct a pointer from the heap-owned reservation and
+then every flat store performs a sorted live-region membership search before
+loading the object header. To bound the maximum benefit of direct
+dereferencing, an explicitly non-shippable prototype removed the membership
+search globally while retaining alignment and header-kind checks.
+
+After refreshing the C++ oracle derivations, two successful isolated cache-off
+`systems.server.build.toplevel` runs retired 23.1754B and 23.1756B
+instructions, approximately **2.74%** below the 23.8293-23.8296B baseline.
+IPC remained 2.73-2.76 and peak RSS 852,752-858,648KiB. The prototype was
+reverted because the public resolver can receive arbitrary Candidate-C
+in-reservation offsets and therefore cannot safely dereference before proving
+an exact allocation start. A subsequent restore exposed stale incremental
+cross-crate codegen and required cleaning package artifacts to recover the
+baseline, so treat this number as a **provisional upper bound**, not an
+acceptance-quality A/B, until both legs are repeated in isolated target
+directories.
+
+This indicates a bounded direct-addressing opportunity: an O(1)-class exact
+allocation-start/provenance proof may recover up to the provisional 2.74%, but
+unchecked header dereferences do not satisfy Rust's safety contract. The
+discovered soundness TODO in the master checklist must be resolved as part of
+any shipped version.
+
+## Tenth implementation result
+
+`force_node_result` used to call `is_suspended_lazy_identity_thunk` before its
+ordinary WHNF test. For almost every node result, that out-of-line helper
+tested `value.is_thunk()`, returned false, and the caller immediately tested
+`value.is_thunk()` again. The common scalar, string, path, list, attrset,
+lambda, and primop result now returns on the first carrier-tag test; only an
+actual thunk consults the lazy-identity set.
+
+Against a cleanly rebuilt 23.8292-23.8315B baseline, three isolated cache-off
+`systems.server.build.toplevel` runs retired 23.1874-23.1880B instructions,
+approximately **2.70%** fewer, at IPC 2.70-2.75. Peak RSS remained
+857,520-858,744KiB. Full toplevel `.drv` closure parity remained byte-green,
+and the complete serial Candidate-C suite passed 2,674 tests (37 ignored) plus
+doctests.
+
+Pinned C++ Nix retired 6.2186B instructions at IPC 2.84, leaving a **3.73x**
+instruction ratio. This is a larger win than its one-branch source diff
+suggests because the avoided helper call sits on nearly every already-WHNF
+node-result boundary.

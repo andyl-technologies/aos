@@ -12362,6 +12362,20 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `eval_core/module_env.rs` a fourth offender; its new capture/install code
       was moved into `module_env/active_install.rs`, returning the parent to 961
       lines, so this performance chunk adds no new source-size violation.
+- [ ] **Discovered flat-store allocation-start soundness gap:** the current
+      `FlatStore::resolve`/`kind_at` proof checks word alignment, membership in
+      a live arena chunk/used-lane region, and a matching header kind before
+      constructing `&FlatObject<T>`, but does not prove that the supplied
+      address is an exact allocation start. Safe Candidate-C constructors
+      (`Value::from_domain_index`, `Value::from_word`, and context-free heap
+      constructors) can name an arbitrary aligned in-reservation offset; an
+      interior word that decodes as a permitted kind could therefore reach a
+      typed reference with invalid provenance. Close this before adding
+      unchecked direct dereferences: either make heap-word construction carry
+      an unsafe/provenance contract and audit every ingress, or add an
+      O(1)-class exact allocation-start proof (with memory measured against the
+      `<0.5x` gate). Add adversarial interior-pointer tests and run Miri/ASan;
+      the existing region-plus-header check alone is not a Rust safety proof.
 - [x] **Candidate-C trusted atomic-cell decode:** private frame/thunk cells
       validate values at construction/store and reconstruct the intact word
       directly after an acquire load. The local `unsafe` boundary documents the
@@ -12397,6 +12411,33 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       A broader production-counter gate measured only approximately 0.15% and
       was reverted to preserve public statistics and GC-policy semantics
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered serial thunk-claim CAS ceiling:** the full toplevel claims
+      approximately 2.94 million suspended thunks through the future-parallel
+      atomic state word. A scoped prototype replaced the locked CAS with a
+      relaxed load/store only on the proven one-shot, non-GC, non-tiered,
+      non-parallel flat-arena path. Two isolated runs regressed from
+      23.8293-23.8296B to 23.8914-23.8930B instructions (approximately 0.26%)
+      with unchanged peak RSS, so the prototype was reverted. Do not split the
+      serial force protocol or add `unsafe` for this lever without new
+      architecture-specific evidence
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Return already-WHNF node results before lazy-identity lookup:**
+      `force_node_result` previously entered an out-of-line helper that tested
+      `is_thunk`, then repeated the same tag test in the caller for almost
+      every scalar/container/callable node result. Move the common WHNF return
+      first so only actual thunks consult the identity set. Clean full-toplevel
+      runs improved from 23.8292-23.8315B to 23.1874-23.1880B instructions
+      (approximately 2.70%) with unchanged peak RSS, byte-identical `.drv`
+      closure output, and all 2,674 active Candidate-C tests plus doctests green
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered release A/B incremental-codegen contamination:** restoring
+      the flat-region check after an unsafe upper-bound prototype and rebuilding
+      incrementally left the resulting binary near the prototype's instruction
+      count; cleaning affected package artifacts restored the exact
+      23.8292-23.8315B baseline. Performance acceptance runs that change generic
+      cross-crate hot paths must clean affected package/dependent artifacts (or
+      use isolated target directories) before both A and B builds, and must
+      verify the restored baseline before attributing a result.
 - [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
       the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
       The call is bracketed by compiled-frame stack-map enter/exit helpers and
