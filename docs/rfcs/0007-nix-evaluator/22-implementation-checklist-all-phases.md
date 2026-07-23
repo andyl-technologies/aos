@@ -12347,6 +12347,14 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       0.05%-2.35% individually and the preceding inline-stack plus trusted-cell
       changes improve `lambda-interp` by 2.45%
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Single-resolution serial force path:** the one-shot, non-GC,
+      non-tiered evaluator resolves each flat thunk once and reuses the stable
+      payload pointer for the cached-result probe and, when suspended, body
+      evaluation. General checked resolution remains for shared, parallel, GC,
+      and tiered modes. Full-toplevel retired instructions improved from
+      24.757B to 24.379B (1.53%) with byte parity; the serial Candidate-C suite
+      passed 2,670 tests (37 ignored)
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
       the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
       The call is bracketed by compiled-frame stack-map enter/exit helpers and

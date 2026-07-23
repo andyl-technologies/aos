@@ -47,15 +47,14 @@ impl TreeWalk {
             .heap
             .thunk_ptr(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if let Some(forced) = self.reforce_already_forced_thunk(id, span, value, ptr)? {
-            return Ok(forced);
-        }
         // The default serial one-shot heap never moves, retires, sheds, or
         // replaces a live thunk payload. Keep that payload in place while its
-        // body re-enters evaluation instead of moving it into an `Arc` solely
-        // to escape the heap borrow. GC and tier-1 execution retain the shared
-        // handle path below because they may replace a payload or invoke a
-        // heap-mutating engine hook while the force is active.
+        // body re-enters evaluation, and use this same resolution for the
+        // already-forced probe. Previously a suspended thunk was resolved once
+        // for that probe and again before body evaluation. GC and tier-1
+        // execution retain the shared handle path below because they may
+        // replace a payload or invoke a heap-mutating engine hook while the
+        // force is active.
         if !self.gc_mode.is_enabled()
             && self.tier1_engine.is_none()
             && let Some(thunk_ptr) =
@@ -76,8 +75,16 @@ impl TreeWalk {
             // thunk's force cell uses interior atomic mutation by design.
             let thunk = unsafe { thunk_ptr.as_ref() };
             if thunk.parallel_payload_cell().is_none() {
+                if let Some(forced) =
+                    self.reforce_already_forced_serial_thunk(id, span, value, thunk)?
+                {
+                    return Ok(forced);
+                }
                 return self.force_serial_thunk_value(id, span, value, thunk);
             }
+        }
+        if let Some(forced) = self.reforce_already_forced_thunk(id, span, value, ptr)? {
+            return Ok(forced);
         }
         let thunk = self
             .heap
@@ -87,6 +94,30 @@ impl TreeWalk {
             return self.force_parallel_payload_thunk(id, span, value, &thunk, parallel_cell);
         }
         self.force_serial_thunk_value(id, span, value, &thunk)
+    }
+
+    /// Replays a cached result from the already-resolved one-shot serial thunk.
+    fn reforce_already_forced_serial_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        thunk: &EvalThunk,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        if thunk.is_single_entry_force_storage() {
+            return Ok(None);
+        }
+        let Some(cached) = thunk
+            .cell()
+            .cached_value()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
+        else {
+            return Ok(None);
+        };
+        self.increment_reforce_fast_path_hits();
+        self.unmark_relocated_lazy_identity_thunk(value);
+        self.increment_thunk_cache_hits();
+        Ok(Some(cached))
     }
 
     /// Returns a thunk's already-published forced result before the full

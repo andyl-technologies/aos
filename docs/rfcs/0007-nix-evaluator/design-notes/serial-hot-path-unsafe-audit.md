@@ -303,3 +303,20 @@ stress case. On the same current release build, three byte-identical samples of
 `systems.server.build.toplevel` measured 1.980s native versus 0.554s in pinned
 C++ Nix 2.24.12: native is 3.58x slower cold (3.62x warm). Future microbench
 work must explain and predict movement on that toplevel result.
+
+## Third implementation result
+
+The default one-shot serial force path now resolves a flat thunk once and uses
+the same stable payload pointer for both the already-forced probe and suspended
+body evaluation. Previously every first force performed one checked flat-store
+resolution to inspect the force cell and a second resolution to recover the
+payload for evaluation. Shared heaps, parallel payloads, GC, and tiered
+execution retain the general checked path.
+
+On `systems.server.build.toplevel`, the successful fresh-process retired
+instruction count fell from 24.757B to 24.379B (**-1.53%**) at unchanged IPC.
+The three-sample benchmark remained byte-identical to pinned C++ Nix, the
+isolated telemetry test passed, and the Candidate-C oracle suite passed
+serially (2,670 passed, 37 ignored). The parallel suite also passed 2,669 tests
+before hitting its separately tracked process-global memory-telemetry isolation
+flake.
