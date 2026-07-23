@@ -498,10 +498,10 @@ pub enum PackageCommand {
     /// `entry.nix`, runs the sandboxed stock-Nix evaluator, fetches missing
     /// providers' config outputs, and — only on convergence — writes the
     /// manifest. Failure-safe: a terminal error writes no manifest, so the
-    /// install step is a no-op and the box stays live on the gen-0 seed.
+    /// install step is a no-op and the active configuration remains unchanged.
     #[command(name = "__eval", hide = true)]
     Eval {
-        /// The verified leaf host.nix store path
+        /// The delivered leaf host.nix path
         #[arg(long = "host-nix")]
         host_nix: PathBuf,
         /// The in-image module library store path
@@ -519,15 +519,12 @@ pub enum PackageCommand {
         /// The eval root holding entry.nix
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
-        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable. The
-        /// host.nix SSHSIG is verified against these before eval (the stage-2
-        /// gate). Verification is enforced BY DEFAULT (no dir => fail closed).
+        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
         #[arg(long = "trusted-config-keys-dir")]
         trusted_config_keys_dir: Vec<PathBuf>,
-        /// OFF-HOST/CI ONLY: skip the host.nix authenticity gate (host.nix is a
-        /// trusted checked-out fixture, not user-data). Never use on a host.
-        #[arg(long = "allow-unsigned-host-nix")]
-        allow_unsigned_host_nix: bool,
+        /// Require a detached host.nix signature from a trusted config key.
+        #[arg(long = "require-signed-host-nix")]
+        require_signed_host_nix: bool,
     },
     /// Apply a converged config manifest's `/etc` tree into a per-generation
     /// lower. Called by `activate` when applying a configuration manifest.
@@ -585,12 +582,11 @@ pub enum PackageCommand {
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
         /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
-        /// Verification is enforced BY DEFAULT (no dir => fail closed).
         #[arg(long = "trusted-config-keys-dir")]
         trusted_config_keys_dir: Vec<PathBuf>,
-        /// OFF-HOST/CI ONLY: skip the host.nix authenticity gate. Never on a host.
-        #[arg(long = "allow-unsigned-host-nix")]
-        allow_unsigned_host_nix: bool,
+        /// Require a detached host.nix signature from a trusted config key.
+        #[arg(long = "require-signed-host-nix")]
+        require_signed_host_nix: bool,
         /// Where a real (non-dry-run) switch publishes the committed manifest
         #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
         live_manifest: PathBuf,
@@ -2161,7 +2157,7 @@ pub async fn run(
         out,
         eval_root,
         trusted_config_keys_dir,
-        allow_unsigned_host_nix,
+        require_signed_host_nix,
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
@@ -2174,7 +2170,7 @@ pub async fn run(
             eval_root: eval_root.clone(),
             verbose,
             trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
-            allow_unsigned_host_nix: *allow_unsigned_host_nix,
+            require_signed_host_nix: *require_signed_host_nix,
         });
     }
 
@@ -2207,7 +2203,7 @@ pub async fn run(
         module_abi,
         eval_root,
         trusted_config_keys_dir,
-        allow_unsigned_host_nix,
+        require_signed_host_nix,
         live_manifest,
     } = command
     {
@@ -2225,7 +2221,7 @@ pub async fn run(
                 eval_root: eval_root.clone(),
                 verbose,
                 trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
-                allow_unsigned_host_nix: *allow_unsigned_host_nix,
+                require_signed_host_nix: *require_signed_host_nix,
             },
             base_manifest: diff_against.clone(),
             base_label: base_label.clone(),

@@ -1,22 +1,18 @@
-//! Stage-2 authenticity gate for `host.nix`.
+//! Detached-signature authentication for `host.nix`.
 //!
 //! The initrd `aos metadata` agent is **transport-only**: it fetches the
 //! operator's `host.nix` (literal Nix or a `sha256`-pinned URL pointer) and
-//! stashes the *untrusted* bytes at `/run/aos-metadata/host.nix` plus an
+//! stashes the bytes at `/run/aos-metadata/host.nix` plus an
 //! optional detached SSHSIG at `host.nix.sig` (see
-//! [`crate::metadata::stash`]). It performs **no** signature check — the
-//! `trusted-config-keys.d` anchors live in the measured `/etc` that is only
-//! assembled in stage-2.
+//! [`crate::metadata::stash`]). It performs no signature check itself.
 //!
-//! This module is the trust gate `aos-eval.service` runs **before** driving the
-//! config fixpoint: it verifies the stashed `host.nix` bytes against an
-//! image-baked `trusted-config-keys.d/<op>.pub` set, reusing
+//! Deployments that select signed host configuration use this module before
+//! evaluation. It verifies the delivered bytes against an image-baked
+//! `trusted-config-keys.d/<op>.pub` set, reusing
 //! [`crate::security::KeyStore`] and
 //! [`crate::security::verify_payload_signature`] unchanged. An unsigned,
 //! badly-signed, or untrusted-key `host.nix` yields no [`HostNixTrust`] and the
-//! caller emits **no manifest** — the box stays on the prior generation
-//! (gen-0 on first boot). This is the single fail-closed seam that turns CS8's
-//! untrusted transport into a trusted eval input.
+//! caller emits no manifest, leaving the prior configuration active.
 //!
 //! ```text
 //! authenticate_host_nix(bytes, detached_sig, trusted_dirs):
@@ -38,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use crate::security::{KeyStore, verify_payload_signature};
 
-/// SSHSIG namespace for operator `host.nix` signatures (build-spec §3.3).
+/// SSHSIG namespace for operator `host.nix` signatures.
 ///
 /// Distinct from the `git` namespace used by
 /// [`crate::security::verify_commit_signature`] /
@@ -46,10 +42,10 @@ use crate::security::{KeyStore, verify_payload_signature};
 /// underlying verifier to return `Ok(false)` and the gate to fail closed.
 pub const CONFIG_SIGNATURE_NAMESPACE: &str = "aos-config";
 
-/// The image-baked operator trust-anchor directory (build-spec §3.2).
+/// The image-baked operator trust-anchor directory.
 pub const TRUSTED_CONFIG_KEYS_DIR: &str = "/etc/apm/trusted-config-keys.d";
 
-/// A successful `host.nix` authentication (build-spec §3.2 `Trusted`).
+/// A successful `host.nix` authentication.
 ///
 /// Carries exactly the provenance the manifest's `inputs.host_nix` and the
 /// `gen-attestation/v1` record need: the operator id whose key file matched and
@@ -65,7 +61,7 @@ pub struct HostNixTrust {
     pub operator_key: String,
 }
 
-/// Why a `host.nix` failed the stage-2 authenticity gate (build-spec §3.4).
+/// Why a `host.nix` failed detached-signature authentication.
 ///
 /// Every variant is fail-closed: the caller emits no manifest and the box stays
 /// on the prior generation. The variants are distinguished so the operability
@@ -101,8 +97,7 @@ impl fmt::Display for HostNixTrustError {
 
 impl std::error::Error for HostNixTrustError {}
 
-/// Authenticate `host.nix` bytes against an image-baked trust-anchor set
-/// (build-spec §3.2).
+/// Authenticate `host.nix` bytes against an image-baked trust-anchor set.
 ///
 /// `trusted_dirs` are the directories that hold `trusted-config-keys.d/<op>.pub`
 /// files (typically `[<writable>, /etc/apm/trusted-config-keys.d]`). Every
@@ -159,8 +154,7 @@ pub fn authenticate_host_nix(
 /// `host_nix_path` points at the verified-bytes file (the stash payload staged
 /// into the evaluator root); the detached signature is read from
 /// `<host_nix_path>.sig` if it exists. The bytes hashed and verified are the
-/// exact file contents, matching the `host_nix.content_hash` definition
-/// (build-spec §1.3).
+/// exact file contents, matching the recorded `host_nix.content_hash`.
 ///
 /// # Errors
 ///

@@ -106,7 +106,7 @@ impl WorkingSetMember {
 /// Immutable inputs for one `switch` (build-spec §1).
 #[derive(Debug, Clone)]
 pub struct FixpointInputs {
-    /// The verified, provenance-stamped leaf `host.nix` store path.
+    /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
     /// The in-image, ABI-pinned module library.
     pub base_lib: PathBuf,
@@ -414,7 +414,7 @@ fn render_trace(trace: &[IterRecord], iterations: u32) -> String {
 /// One eval attempt's inputs, handed to a [`NixEvaluator`].
 #[derive(Debug)]
 pub struct EvalAttempt<'a> {
-    /// The verified leaf `host.nix`, passed as an operator-provenance module.
+    /// The trusted leaf `host.nix`, passed as an operator-provenance module.
     pub host_nix: &'a Path,
     /// The in-image module library.
     pub base_lib: &'a Path,
@@ -805,7 +805,7 @@ fn resolve_one<R: ConfigModuleResolver>(
 /// Parameters for the on-host config-eval command.
 #[derive(Debug, Clone)]
 pub struct EvalCommand {
-    /// The verified leaf `host.nix` store path.
+    /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
     /// The in-image module library store path.
     pub base_lib: PathBuf,
@@ -819,20 +819,38 @@ pub struct EvalCommand {
     pub eval_root: PathBuf,
     /// Verbosity forwarded to `nix`.
     pub verbose: u8,
-    /// Operator trust-anchor directories holding `trusted-config-keys.d/<op>.pub`
-    /// (build-spec §3.2). [`run_eval_command`] verifies the `host.nix` SSHSIG
-    /// against these anchors **before** the fixpoint drives — the stage-2 trust
-    /// gate that turns CS8's untrusted transport into a trusted eval input.
+    /// Operator trust-anchor directories holding
+    /// `trusted-config-keys.d/<op>.pub`.
     pub trusted_config_keys_dirs: Vec<PathBuf>,
 
-    /// **Off-host escape hatch only.** When `false` (the default and the only
-    /// safe on-host value), the trust gate is ALWAYS enforced: an empty
-    /// `trusted_config_keys_dirs`, a missing anchor, or a missing/bad signature
-    /// fails closed (no manifest). It is `true` only for off-host CI / `--dry-run`
-    /// where `host.nix` is a trusted checked-out fixture, never user-data. This
-    /// is a distinct, explicit flag precisely so the absence of an anchor dir can
-    /// never silently fail OPEN on the boot path.
-    pub allow_unsigned_host_nix: bool,
+    /// Require the delivered `host.nix` to carry a valid detached signature.
+    /// The default trusts the deployment platform that supplied instance
+    /// metadata. Signed mode is fail-closed when anchors or signatures are
+    /// missing or invalid.
+    pub require_signed_host_nix: bool,
+}
+
+fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
+    if !cmd.require_signed_host_nix {
+        eprintln!("using host.nix from the configured trusted source");
+        return Ok(());
+    }
+
+    match crate::config_trust::authenticate_host_nix_file(
+        &cmd.host_nix,
+        &cmd.trusted_config_keys_dirs,
+    ) {
+        Ok(trust) => {
+            eprintln!(
+                "host.nix authenticated (operator '{}', key {})",
+                trust.operator_id, trust.operator_key
+            );
+            Ok(())
+        }
+        Err(err) => {
+            anyhow::bail!("host.nix failed signature verification: {err}; no manifest emitted")
+        }
+    }
 }
 
 /// Run the on-host fixpoint with the production stock-Nix evaluator and fetcher.
@@ -841,8 +859,8 @@ pub struct EvalCommand {
 /// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
 /// writes the manifest to [`EvalCommand::out`]. Any terminal failure prints a
 /// legible diagnostic and returns an error *without* writing a manifest, so the
-/// downstream `ConditionPathExists` guard makes the install step a no-op and the
-/// box stays live on the gen-0 seed.
+/// downstream `ConditionPathExists` guard makes the install step a no-op and
+/// leaves the active configuration unchanged.
 ///
 /// The per-system [`SystemRoots`] map is derived inside [`run_fixpoint`] from the
 /// seed set's config modules; nothing registry-wide is loaded or passed. When
@@ -857,38 +875,11 @@ pub struct EvalCommand {
 /// The caller (the hidden `apm __eval` subcommand) maps this to a non-zero exit;
 /// the service treats it as best-effort.
 pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
-    // Stage-2 trust gate (build-spec §3): an unsigned, badly-signed, or
-    // untrusted-key host.nix produces NO manifest. This runs BEFORE the fixpoint
-    // drives, so a failed authenticity check is a clean no-op on the live
-    // system — the box stays on the prior generation. The gate is the trust seam
-    // CS8's transport-only metadata agent deferred to stage-2.
-    // Enforced BY DEFAULT. Skipped only with the explicit off-host escape hatch,
-    // so the absence of an anchor dir on the boot path fails CLOSED (an empty
-    // dir set makes authenticate_host_nix_file return NoTrustedKeys) rather than
-    // silently fails open.
-    if cmd.allow_unsigned_host_nix {
-        eprintln!(
-            "WARNING: host.nix authenticity gate DISABLED (--allow-unsigned-host-nix); \
-             off-host/CI mode only — never use on a host consuming user-data"
-        );
-    } else {
-        match crate::config_trust::authenticate_host_nix_file(
-            &cmd.host_nix,
-            &cmd.trusted_config_keys_dirs,
-        ) {
-            Ok(trust) => {
-                eprintln!(
-                    "host.nix authenticated (operator '{}', key {})",
-                    trust.operator_id, trust.operator_key
-                );
-            }
-            Err(err) => {
-                anyhow::bail!(
-                    "host.nix failed the stage-2 authenticity gate: {err}; no manifest emitted"
-                );
-            }
-        }
-    }
+    // The default path trusts configuration delivered by the deployment
+    // platform's metadata channel. Signed mode adds an independent trust root
+    // for environments where that transport is not trusted. Authentication
+    // runs before the fixpoint so failures cannot emit a manifest.
+    enforce_host_nix_trust_policy(cmd)?;
 
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's `config_module` block from `registry.toml`. This replaces
@@ -968,8 +959,8 @@ pub fn reeval_cross_abi(
     verbose: u8,
 ) -> Result<()> {
     let cmd = EvalCommand {
-        // The content-pinned host.nix the rolled-back-to config-gen recorded —
-        // fed back verbatim so re-eval reproduces the intended config (OQ5).
+        // Feed back the content-pinned host.nix recorded by the selected
+        // configuration generation so re-evaluation reproduces it verbatim.
         host_nix: PathBuf::from(&retained.host_nix_ref),
         base_lib: running_base_lib.to_path_buf(),
         desired,
@@ -978,15 +969,11 @@ pub fn reeval_cross_abi(
         out,
         eval_root,
         verbose,
-        // The content-pinned host.nix was already authenticated when its
-        // config-gen was first committed (build-spec §3.5); the binding-of-record
-        // is the content hash fed back here (an immutable store path), so re-eval
-        // intentionally bypasses the signature gate. This is the one legitimate
-        // on-box bypass — a previously-trusted, content-addressed artifact, NOT
-        // fresh user-data — so it sets the explicit flag rather than relying on
-        // an empty anchor dir (which now fails closed).
+        // This is an immutable, content-addressed input retained from a
+        // previously committed generation, not fresh platform metadata.
+        // Re-evaluation therefore does not require a new detached signature.
         trusted_config_keys_dirs: Vec::new(),
-        allow_unsigned_host_nix: true,
+        require_signed_host_nix: false,
     };
     run_eval_command(&cmd)
 }
