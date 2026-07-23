@@ -495,3 +495,34 @@ Pinned C++ Nix retired 6.2186B instructions at IPC 2.84, leaving a **3.73x**
 instruction ratio. This is a larger win than its one-branch source diff
 suggests because the avoided helper call sits on nearly every already-WHNF
 node-result boundary.
+
+## Eleventh implementation result
+
+Every recursive node entry used `stacker::maybe_grow`, whose inlined wrapper
+still called the out-of-line `remaining_stack` helper and read its private
+thread-local stack limit. Removing stack protection entirely bounded this
+full-toplevel tax at approximately 2.03%, but is not shippable: deeply
+recursive Nix must grow a temporary native stack and reach the configured
+`max-call-depth` error rather than aborting the process.
+
+On x86-64 and AArch64, the evaluator now reads the native stack pointer with
+one local, documented inline-assembly block and compares it with a one-word
+thread-local cached stack floor. It asks `stacker::remaining_stack` only when
+initializing that floor, clears the cache while `stacker::grow` runs on a
+temporary segment, and restores it through an unwind-safe guard. Other
+architectures retain the original safe `stacker::maybe_grow` path. The zero
+sentinel is valid because a process stack cannot begin at address zero; using
+it also avoids the two-word representation and discriminant load of
+`Option<usize>`.
+
+Three cache-off `systems.server.build.toplevel` runs retired
+23.0727-23.0728B instructions versus the 23.1874-23.1880B baseline,
+approximately **0.49%** fewer, at IPC 2.77. Peak RSS remained
+855,616-858,620KiB. Full `.drv` closure parity was byte-green, and dedicated
+tests crossed the native-stack boundary both successfully and through the
+configured Nix depth error. The complete Candidate-C suite passed 2,674 tests
+(37 ignored) plus doctests. Pinned C++ Nix remains at 6.2186B instructions,
+leaving a **3.71x** instruction ratio. The result recovers only part of the
+no-check ceiling because a sound per-entry stack-pointer comparison remains;
+further removal requires a proven amortized or recursive-edge-only check, not
+an unprotected tree walk.

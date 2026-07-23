@@ -14,12 +14,13 @@ methodology and commands; §§6-8 are the results and verdict.
 diagnostic FV dereference counters, bypassing process-global reservation
 lookups where the serial heap already owns the address context, carrying the
 active lexical environment as a persistent frame-chain head, and returning
-already-WHNF node results before the lazy-identity helper, isolated cache-off
+already-WHNF node results before the lazy-identity helper, and caching the
+native-stack floor used by recursive node-entry protection, isolated cache-off
 `systems.server.build.toplevel` evaluations retire
-**23.1874-23.1880B instructions at IPC 2.70-2.75**. Pinned C++ Nix 2.24.12
+**23.0727-23.0728B instructions at IPC 2.77**. Pinned C++ Nix 2.24.12
 retires **6.2186B at IPC 2.84** for byte-identical output. Function-call counts
 remain nearly identical (3.177M native versus 3.163M C++), so the current
-live-load gap is **3.73x in instructions and about 3.71x in
+live-load gap is **3.71x in instructions and about 3.69x in
 instructions/function-call**, with no IPC deficit that could explain it. A
 prior separate three-sample wall run measured 1.980s versus 0.554s, or
 **3.58x slower**; wall time on the shared builder remains secondary to retired

@@ -12430,6 +12430,28 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       (approximately 2.70%) with unchanged peak RSS, byte-identical `.drv`
       closure output, and all 2,674 active Candidate-C tests plus doctests green
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Cache the native-stack floor at recursive evaluator entry:**
+      `stacker::maybe_grow` previously entered its out-of-line
+      `remaining_stack` helper and private TLS lookup for every evaluated node.
+      On x86-64 and AArch64, use a documented direct stack-pointer read and a
+      one-word thread-local cached floor, invalidating and unwind-safely
+      restoring it across temporary stack segments; unsupported architectures
+      retain the original safe path. Clean full-toplevel runs improved from
+      23.1874-23.1880B to 23.0727-23.0728B instructions (approximately 0.49%)
+      at unchanged peak RSS, with byte-identical `.drv` closure output.
+      Dedicated tests prove deep recursion still grows the native stack and
+      reaches the configured Nix depth error instead of aborting; the complete
+      Candidate-C suite passed 2,674 tests (37 ignored) plus doctests
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered oracle unsafe-fence drift:** `ratchet-oracle` is documented
+      as the safe differential reference but currently carries local unsafe
+      allowances for stable-arena dereference, trusted atomic-value decode, and
+      native stack-pointer reads. Move those primitives behind a separately
+      reviewed unsafe substrate boundary and restore a source-scan-clean
+      oracle, or formally reclassify the crate and apply the complete unsafe
+      manifest, Miri/sanitizer, and two-maintainer-review gates. Close only
+      after an automated token inventory proves every allowance is manifested
+      ([14](14-integration-with-aos.md) §10).
 - [x] **Discovered release A/B incremental-codegen contamination:** restoring
       the flat-region check after an unsafe upper-bound prototype and rebuilding
       incrementally left the resulting binary near the prototype's instruction

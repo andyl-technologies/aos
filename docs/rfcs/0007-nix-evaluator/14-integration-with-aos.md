@@ -954,8 +954,19 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
       frontend/tree-walk/native-glue crate carries `#![forbid(unsafe_code)]`,
       checks under that fence, and source scans find no Rust `unsafe` forms in
       the evaluator crate; remaining `unsafe*` spellings there are Nix builtin
-      names or docs/comments (§10.1, §10.2) — **P1** discipline, `S-17`; gate
-      today: `aos-nix` check under the crate-level fence.
+      names or docs/comments (§10.1, §10.2) — **historical P1** discipline,
+      `S-17`; this predates the `ratchet-*` split and is not a claim about the
+      current `ratchet-oracle` crate.
+- [ ] **Discovered oracle unsafe-fence drift:** `ratchet-oracle` still presents
+      itself as the safe reference implementation and denies unsafe by default,
+      but local allowances now contain a stable-arena thunk dereference, a
+      trusted atomic-value decode, and x86-64/AArch64 native stack-pointer
+      reads. Close by either moving these primitives behind a separately
+      reviewed unsafe substrate API and restoring a source-scan-clean oracle,
+      or formally reclassifying the crate and extending the unsafe manifest,
+      Miri/sanitizer gates, and two-maintainer review rule to every allowance.
+      The closeout must enumerate all real unsafe tokens and prove that no
+      unmanifested exception bypasses the crate-level lint (§10.1-§10.3).
 - [ ] Final safe/unsafe workspace fence remains: split safe
       oracle/frontend/compat/harness crates with `#![forbid(unsafe_code)]`,
       future unsafe value-repr/JIT/GC/runtime-ABI crates with
