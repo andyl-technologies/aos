@@ -200,15 +200,9 @@ this touches the registry format, the module contract, or the generations.
 
 ## Boot / first-boot bootstrap ordering
 
-> **Note on Ignition.** The initrd chain below names the `ignition-*` units as
-> they exist today; that is the **Phase A** state. In the end-state Ignition is
-> removed: substrate provisioning moves to `systemd-repart` + `cryptenroll`,
-> user-data fetch moves to the `aos metadata` agent, and the stage-2
-> install/activate monolith becomes a systemd unit graph. The eval *locus* and
-> the failure-safe properties below are unchanged by that swap. See
-> [`provisioning.md`](provisioning.md) (substrate + metadata agent) and
-> [`orchestration.md`](orchestration.md) (the unit graph) for the end-state, and
-> [`implementation-plan.md`](implementation-plan.md) for the phasing.
+The chain below is the end state: native metadata acquisition, authenticated
+first-boot storage, systemd-native substrate, and stage-2 evaluation. Ignition
+and its configuration format are absent.
 
 The first on-host eval runs **post-switch-root, in stage-2** — the same locus
 where APM reconciles at first boot today (`modules/base/apm.nix`). Initrd cannot
@@ -216,41 +210,47 @@ host it: putting the evaluator + registry client in initrd would drag the
 toplevel into the initrd closure (the documented `initrd → toplevel → initrd`
 derivation cycle, `modules/services/ignition.nix:608-615`,
 `lib/build/rootfs.nix:241-249`), and registry trust anchors + DNS
-(`systemd-resolved`) are stage-2 constructs. Initrd's job is to **deliver
-inputs**; stage-2 **evaluates**.
+(`systemd-resolved`) are stage-2 constructs. Initrd's job is to acquire and
+authorize provisioning input, validate the narrow storage schema, and deliver
+the exact bound `host.nix`; stage-2 performs full Nix evaluation.
 
 ### Ordered chain
 
-**Initrd** (`modules/services/ignition.nix`):
+**Initrd**:
 
-1. `aos-platform-detect.service` — writes `/run/ignition/platform.env`.
-2. `aos-ignition-network.service` — baseline DHCP over the initrd
+1. `aos-metadata-detect.service` — writes
+   `/run/aos-metadata/platform.env`.
+2. `aos-metadata-network.service` — baseline DHCP over the initrd
    `80-dhcp.network` (no config-driven networking yet).
-3. `ignition-fetch.service` — fetches user-data carrying the signed leaf
-   `host.nix` + registry/trust config.
-4. `ignition-disks` → `mount-var` → `nix-overlay-setup` → `aos-seed-profiles`
+3. `aos-metadata-fetch.service` fetches literal `host.nix` or an
+   `aos.provisioning/v1` bundle.
+4. `aos-provisioning-authorize.service` applies the image's `platform` or
+   `signed` policy. `aos-storage-plan-render.service` validates any typed plan
+   and renders transient `repart.d`. A declared invalid plan stops here with no
+   fallback or disk mutation; an absent plan selects the baked convention.
+5. `systemd-repart` → `aos-var-crypt`/`mount-var` → `nix-overlay-setup` →
+   `aos-seed-profiles`
    (seeds **gen-0**) → `run-etc-setup`.
-5. `ignition-files.service` — writes the per-gen `/etc` lower: `host.nix`
-   (e.g. `/etc/aos/host.nix`), `/etc/apm/registries.d`, `trusted-keys.d`,
-   `trusted-config-keys.d`.
-6. `etc-overlay-setup.service` — assembles the three-layer `/etc` overlay from
+6. The accepted host.nix and validation record survive under `/run`; registry
+   trust configuration comes from gen-0.
+7. `etc-overlay-setup.service` — assembles the three-layer `/etc` overlay from
    the seed toplevel.
-7. `switch_root` → stage-2.
+8. `switch_root` → stage-2.
 
 **Stage-2:**
 
-8. `systemd-networkd` + `systemd-resolved` come up from gen-0's baked `/etc`
+9. `systemd-networkd` + `systemd-resolved` come up from gen-0's baked `/etc`
    (DHCP-on-all-`en*` + `resolved.conf`); `network-online.target` reachable.
-9. **`aos-eval.service` (new)** — `After=network-online.target
-   nix-overlay-setup.service ignition-files.service aos-seed-profiles.service`,
+10. **`aos-eval.service` (new)** — `After=network-online.target
+   nix-overlay-setup.service aos-seed-profiles.service`,
    `Before=aos-install-packages.service`, `Type=oneshot`, best-effort. Runs the
    sandboxed evaluator over base-lib (in image) + per-package `config` modules
    (downloaded from the registry — needs net + DNS + store + trust) + the leaf
    `host.nix`. Emits the manifest (a `desired.toml`-shaped reconcile input).
-10. `aos-install-packages.service` — `apm install --system --from <manifest>`
+11. `aos-install-packages.service` — `apm install --system --from <manifest>`
     (`modules/base/apm.nix:385-406`), which materializes the manifest into a
     generation and invokes `activate.sh.in` for the atomic `/etc` swap.
-11. `aos-preset.service` — applies preset policy, starts `aos-pkg-*.target`.
+12. `aos-preset.service` — applies preset policy, starts `aos-pkg-*.target`.
 
 ### Chicken-and-egg resolution
 
@@ -276,7 +276,7 @@ profile-state seed.
 ### Failure-safe by construction
 
 `aos-eval.service` produces **only a manifest; it never calls `activate`**. A
-failed eval or fetch (no network, registry unreachable, bad/unsigned host.nix)
+failed eval or fetch (no network, registry unreachable, rejected provisioning input)
 yields no manifest, so `aos-install-packages.service` (already
 `ConditionPathExists`-guarded, `modules/base/apm.nix:397`) is a no-op →
 `activate.sh.in` is never invoked → no `/etc` swap → the box stays fully live on

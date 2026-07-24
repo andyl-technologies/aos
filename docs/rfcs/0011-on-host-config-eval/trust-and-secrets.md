@@ -2,7 +2,7 @@
 
 This document specifies why the locally-computed manifest is trustworthy
 without its own signature, the measured-vs-derived boundary and its one real
-gap, how `host.nix` authenticity is established, the generation-attestation
+gap, how provisioning-input authenticity is established, the generation-attestation
 record, and the secrets-out-of-manifest interface to the forthcoming
 secret-management system.
 
@@ -21,7 +21,9 @@ inherits this for `config` closures unchanged.
 Trust anchors ride in the measured image: `modules/base/apm-registries.nix`
 writes `/etc/apm/trusted-keys.d/<name>.pub` (registry tag key) and
 `trusted-sb-certs.d/<name>.pem` (SB db cert). RFC-0011 adds
-`trusted-config-keys.d/<op>.pub` (operator config key, below).
+`trusted-config-keys.d/<op>.pub` (optional signed-mode configuration keys,
+below). The same public anchors are included in the measured initrd when
+signed-mode provisioning must be authorized before repart.
 
 ## The manifest needs no signature
 
@@ -34,7 +36,7 @@ only from trusted inputs by the trusted function," established by:
 TRUSTED INPUTS                               DETERMINISTIC TRANSFORM      OUTPUT
 base lib       (in the measured UKI)        ─┐
 config modules (signed-tag-blessed NARs)    ─┼─► pure evalModules ──►   MANIFEST
-host.nix       (operator-signed user-data)  ─┘   (no I/O, no builds)     (content-addressed gen)
+host.nix       (policy-authenticated data) ─┘   (no I/O, no builds)     (content-addressed gen)
 ```
 
 1. **Input authenticity.** config modules ∈ NARs that re-root to the signed
@@ -51,7 +53,8 @@ host.nix       (operator-signed user-data)  ─┘   (no I/O, no builds)     (co
    config-module closure, host.nix, instance-facts)`; all five must be pinned for
    the re-derivation argument to hold.
 
-⇒ **Reproducibility-from-signed-inputs is sufficient and strictly stronger than
+⇒ **Reproducibility from authenticated, recorded inputs is sufficient and
+strictly stronger than
 a signature.** Signing the manifest would attest only that "some box ran the
 eval" — which a verifier can re-derive — and would require a per-host online
 signing key, exactly the anti-pattern `key-custody.md` forbids for the registry
@@ -97,40 +100,47 @@ and a naive PCR-11 quote cannot distinguish. The seal answers "did a good UKI
 run?", not "did it derive config only from the inputs I expect?" Closing this is
 the attestation record below.
 
-## host.nix authenticity
+## Provisioning and host.nix authenticity
 
 `host.nix` is operator-supplied and per-host — an input to the trusted
-computation but not in the image. It is delivered as **literal Nix in the cloud
-user-data** (or a hash-pinned URL pointer) and fetched by the `aos metadata`
-agent (see [`provisioning.md`](provisioning.md)). Today the equivalent user-data
-is read with **no signature check**; RFC-0011 requires it be authenticated:
+computation but not in the image. It is delivered as literal Nix or as an exact
+inline/pinned member of an `aos.provisioning/v1` bundle fetched by the
+`aos metadata` agent (see [`provisioning.md`](provisioning.md)). Authentication
+is selected by image policy:
 
-- **Operator-signed (detached SSHSIG) verified against an image-baked
-  `trusted-config-keys.d/<op>.pub`**, mirroring `trusted-keys.d` /
-  `trusted-sb-certs.d` (`apm-registries.nix`), via the existing
-  `security.rs::verify_payload_signature` + `TrustStore`. An unsigned/badly-signed
-  host.nix fails the eval (no manifest, box stays on gen-0, per
-  [`architecture.md`](architecture.md)).
+- **`platform` (default)** treats successful delivery through the detected
+  cloud metadata service or deployment-owned config drive as authorization.
+  This is the zero-touch golden-image path: the cloud control plane already
+  controls instance creation, disk attachment, and user-data.
+- **`signed` (secure mode)** requires a detached SSHSIG over the exact
+  provisioning-bundle bytes, verified against
+  `trusted-config-keys.d/<op>.pub` via
+  `security.rs::verify_payload_signature` + `TrustStore`.
 
-- **Verification happens in stage-2, not initrd.** The `trusted-config-keys.d`
-  keys live in the measured `/etc` that is only assembled in stage-2, so the
-  initrd `aos metadata` agent is **transport-only** — it fetches and stashes the
-  *untrusted* bytes, and `aos-eval.service` performs the signature check before
-  eval, where the trust anchors and the `apm verify` machinery are natively
-  available. This keeps the *consumer* (the evaluator) measured while not
-  dragging trust anchors into the initrd. For the URL-pointer case the agent
-  also checks the pointer's `sha256` content-pin (integrity before authenticity);
-  the two checks are independent — the pin defends the fetch, the signature
-  defends authenticity.
+The selected policy is measured boot configuration and cannot be supplied or
+overridden by the provisioning bundle. `signed` never falls back to `platform`.
+The public anchor set may be common to every copy of a golden image; only the
+private signing key remains outside the image.
 
-The evaluator runs in stage-2 from the **measured** image (UKI), so the
-*consumer* of user-data is measured even though the *user-data* is not.
+When a bundle contains a storage plan, authorization happens in initrd before
+the plan is rendered or `systemd-repart` may mutate GPT. Signed-mode public
+anchors are therefore copied into the measured initrd. Public verification keys
+are safe to share across every deployment of one golden image; per-instance
+secret injection is neither necessary nor desirable. The bundle authenticates
+the storage plan and the `host.nix` content hash as one object.
+
+Full Nix evaluation remains in stage-2. The evaluator consumes the exact
+accepted `host.nix` bytes carried through `/run` and confirms their recorded
+hash before eval. A platform-mode authorization failure or a signed-mode
+missing/bad signature fails closed. For a declared storage plan this is an
+initrd failure before disk mutation; for host configuration without an early
+plan, no manifest is produced and the box stays on gen-0.
 
 **Per-host config does not break attestation** — it breaks whole-image
 attestation (no single golden manifest hash fleet-wide), but not
 *input-set* attestation. A verifier expects not "host X's manifest == golden"
 but "host X's manifest == eval(base-lib@v, config-modules@signed-tag,
-host.nix@operator-sig-H, facts@facts-hash-F)."
+host.nix@authenticated-hash-H, facts@facts-hash-F)."
 
 ## Instance facts are a recorded input (review M-facts)
 
@@ -150,10 +160,12 @@ argument **fails unless it is recorded**. Therefore:
   exactly as it would any IMDS-sourced fact. Facts must never carry security
   decisions that the operator did not authorize (see the gen-0 SSH-key fix in
   [`provisioning.md`](provisioning.md): no `authorized_keys` is seeded from this
-  channel before the stage-2 host.nix signature check).
+  channel before the selected provisioning policy accepts the input).
 
-So "exactly one signed input" means one **operator-authored** input (`host.nix`);
-the instance-facts input is recorded-and-attested, not signed.
+The operator-authored input and the platform-facts input are distinct recorded
+inputs. In `platform` mode both rely on the platform binding; in `signed` mode
+the provisioning bundle has an independent signer while facts remain
+platform-supplied.
 
 ## Generation-attestation record
 
@@ -180,8 +192,10 @@ generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PC
       realization    = <hash of the signed store/ graph subset consumed>
     host_nix:
       content_hash   = <sha256 of the operator config>
-      operator_key   = <trusted-config-keys.d fingerprint>
-      signature_ok   = true
+      bundle_hash    = <sha256 of the accepted provisioning bundle, if used>
+      trust_mode     = <platform|signed>
+      platform       = <aws|gcp|...>             # required for platform mode
+      signer_key     = <config-key fingerprint>  # present only in signed mode
     instance_facts:
       facts_hash     = <sha256 of the canonical host.facts.* tree>   # M-facts: the 2nd host-varying input
       platform       = <aws|gcp|...>                                 # facts are platform-supplied, not signed
@@ -191,8 +205,9 @@ generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PC
 
 A verifier confirms (a) PCR-7/11 match the registry's recorded `expected_pcr11`
 (`registry-catalog.md:42-52`, reused — not a parallel value), (b) `release_tag`
-is signed by a roster key and not revoked, (c) `host_nix.operator_key` is
-trusted and `signature_ok`, then optionally (d) **re-runs the pure eval on those
+is signed by a roster key and not revoked, (c) the recorded configuration trust
+evidence satisfies the named policy (platform binding or trusted signed-mode
+key), then optionally (d) **re-runs the pure eval on those
 exact inputs and checks `manifest_hash`** — turning attestation into full
 re-derivation. This extends RFC-0006's UKI-only "inputs" attestation
 (`measured-boot.md:169-176`) to the config-eval inputs. `base_lib.abi_hash`
