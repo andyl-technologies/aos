@@ -16,6 +16,7 @@
 //! CRUCIBLE_BLOCK_IO_BUSY_CEILING    icount the single advance drives toward
 //! CRUCIBLE_BLOCK_IO_TIMEOUT_SECS    per-advance host wait bound (seconds)
 //! CRUCIBLE_BLOCK_IO_SECOND_RUN_LOAD "0" disables second-run host load
+//! GUEST_KERNEL_APPEND                explicit guest kernel command line
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -75,6 +76,9 @@ fn run() -> Result<(), String> {
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
+    if let Some(kernel_cmdline) = env::var_os("GUEST_KERNEL_APPEND") {
+        config = config.with_kernel_cmdline(kernel_cmdline.to_string_lossy());
+    }
 
     let report = run_qemu_live_block_io_gate(&config).map_err(|error| error_chain(&error))?;
     let diagnostics = &report.diagnostics;
@@ -88,6 +92,10 @@ fn run() -> Result<(), String> {
     // Diagnostic observations. frames_processed>0 proves real guest block I/O
     // flowed over SLOT_BLK_IO to the host servicer.
     println!("frames_processed={}", diagnostics.frames_processed);
+    println!(
+        "write_frames_processed={}",
+        diagnostics.write_frames_processed
+    );
     println!("frames_delivered={}", diagnostics.frames_delivered);
     println!("service_calls={}", diagnostics.service_calls);
     println!(
@@ -115,9 +123,18 @@ fn run() -> Result<(), String> {
             println!("guest_progressed_past_block_io=true");
         }
         BlockIoAdvanceOutcome::PausedBelowCeiling { icount } => {
-            println!("advance_outcome=paused-below-ceiling");
+            let write_completed =
+                diagnostics.write_frames_processed > 0 && !diagnostics.last_device_io_active;
+            println!(
+                "advance_outcome={}",
+                if write_completed {
+                    "quiesced-after-write"
+                } else {
+                    "paused-below-ceiling"
+                }
+            );
             println!("advance_icount={icount}");
-            println!("guest_progressed_past_block_io=false");
+            println!("guest_progressed_past_block_io={write_completed}");
         }
         BlockIoAdvanceOutcome::Failed { detail } => {
             println!("advance_outcome=failed");

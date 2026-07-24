@@ -47,7 +47,7 @@ const GATE_SLOT: u32 = 0;
 /// Fixed inbound/outbound ring capacity for the single-node run.
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the block-I/O run.
-const GATE_MEMORY_MIB: u32 = 64;
+const GATE_MEMORY_MIB: u32 = 128;
 /// Number of background threads used to stress host scheduling on the load run.
 const HOST_LOAD_WORKERS: usize = 4;
 /// Host poll interval while driving and servicing the guest.
@@ -61,6 +61,8 @@ const DELAYED_RESPONSE_WALL_TIME: Duration = Duration::from_millis(100);
 const DEFAULT_DEVICE_SIZE_BYTES: u64 = 4 * 1024 * 1024;
 /// Default busy-window ceiling the run advances the node toward.
 const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 12_000_000;
+/// Maximum successive scheduler windows used to complete a userspace write.
+const MAX_BLOCK_IO_QUANTA: u64 = 8;
 
 /// Inputs for one certifying live block-I/O gate run.
 #[derive(Clone, Debug)]
@@ -340,18 +342,32 @@ fn run_one_scenario(
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
         .map_err(|source| QemuLiveBlockIoGateError::DriveHotPath { source })?;
 
-    let (advance, response_delay_applied) = drive_and_service(
-        &mut hot_path,
-        &mut servicer,
-        &diagnostics,
-        &setup,
-        &mut child,
-        DriveOptions {
-            ceiling: config.busy_ceiling_icount,
-            timeout: config.completion_timeout,
-            response_wall_delay: role.response_wall_delay(),
-        },
-    )?;
+    let mut advance = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
+    let mut response_delay_applied = false;
+    for quantum in 1..=MAX_BLOCK_IO_QUANTA {
+        let ceiling = config.busy_ceiling_icount.saturating_mul(quantum);
+        let (next_advance, delayed) = drive_and_service(
+            &mut hot_path,
+            &mut servicer,
+            &diagnostics,
+            &setup,
+            &mut child,
+            DriveOptions {
+                ceiling,
+                timeout: config.completion_timeout,
+                response_wall_delay: if response_delay_applied {
+                    Duration::ZERO
+                } else {
+                    role.response_wall_delay()
+                },
+            },
+        )?;
+        advance = next_advance;
+        response_delay_applied |= delayed;
+        if matches!(advance, BlockIoAdvanceOutcome::Failed { .. }) {
+            break;
+        }
+    }
 
     // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
     // if it is still alive, so no QEMU is orphaned on an early return.
@@ -493,10 +509,10 @@ fn assert_runs_match(
     reference: &BlockIoRunOutcome,
     second: &BlockIoRunOutcome,
 ) -> Result<(), QemuLiveBlockIoGateError> {
-    if reference.advance != second.advance {
+    if !same_advance_class(&reference.advance, &second.advance) {
         return Err(QemuLiveBlockIoGateError::SecondRunDiverged {
             reason: format!(
-                "advance outcome differed: {:?} vs {:?}",
+                "advance outcome class differed: {:?} vs {:?}",
                 reference.advance, second.advance
             ),
         });
@@ -513,6 +529,26 @@ fn assert_runs_match(
         });
     }
     Ok(())
+}
+
+/// Compares scheduler outcomes without host-poll sampling coordinates.
+fn same_advance_class(first: &BlockIoAdvanceOutcome, second: &BlockIoAdvanceOutcome) -> bool {
+    matches!(
+        (first, second),
+        (
+            BlockIoAdvanceOutcome::ReachedCeiling { .. },
+            BlockIoAdvanceOutcome::ReachedCeiling { .. }
+        ) | (
+            BlockIoAdvanceOutcome::PausedBelowCeiling { .. },
+            BlockIoAdvanceOutcome::PausedBelowCeiling { .. }
+        )
+    ) || matches!(
+        (first, second),
+        (
+            BlockIoAdvanceOutcome::Failed { detail: first },
+            BlockIoAdvanceOutcome::Failed { detail: second }
+        ) if first == second
+    )
 }
 
 /// Returns the number of drive polls that fit within `timeout`, at least one.
