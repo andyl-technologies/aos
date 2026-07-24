@@ -136,17 +136,6 @@ async_run_on_cpu(CPUState *cpu, void (*fn)(CPUState *, run_on_cpu_data),
   }
 }
 
-static void
-run_queued_cpu_work(void)
-{
-  void (*work)(CPUState *, run_on_cpu_data) = queued_cpu_work;
-
-  queued_cpu_work = NULL;
-  if (work != NULL) {
-    work(first_cpu, queued_cpu_data);
-  }
-}
-
 void
 aio_bh_schedule_oneshot(AioContext *ctx, QEMUBHFunc *cb, void *opaque)
 {
@@ -360,7 +349,8 @@ test_advance_fails_closed_without_owner(void)
     return false;
   }
   return qemu_plugin_advance_time_ns(100) == -ENODEV &&
-         queued_cpu_work == NULL && callbacks == 0;
+         queued_completion_bh == NULL && completion_bh_schedules == 0 &&
+         callbacks == 0;
 }
 
 static bool
@@ -389,7 +379,8 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
   /* Enqueue-only: the clock has not moved and no timer has run yet. */
   if (icount_get() != 100 || clock_advance_calls != 0 ||
       run_timers_calls != 0 || notify_calls != 0 || callbacks != 0 ||
-      async_queue_calls != 1 || queued_cpu_work == NULL ||
+      async_queue_calls != 0 || completion_bh_schedules != 1 ||
+      queued_completion_bh == NULL ||
       !qemu_plugin_time_advance_is_pending()) {
     return false;
   }
@@ -398,19 +389,19 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
     return false;
   }
 
-  run_queued_cpu_work();
+  run_normal_main_loop_bottom_halves();
   /* The bias-bump advance moved the icount-derived clock to the target and ran
    * the due virtual timer; it never used the qtest set-based advance. */
   if (icount_get() != 5000 || clock_advance_calls != 0 ||
       run_timers_calls != 1 || notify_calls != 1 ||
-      timer_callback_icount != 5000 || !timer_bh_pending || timer_bh_visible ||
-      callbacks != 0 || completion_bh_schedules != 1 ||
+      timer_callback_icount != 5000 || timer_bh_pending || !timer_bh_visible ||
+      callbacks != 0 || completion_bh_schedules != 2 ||
       queued_completion_bh == NULL) {
     return false;
   }
 
   run_normal_main_loop_bottom_halves();
-  if (callbacks != 0 || !timer_bh_visible || completion_bh_schedules != 2 ||
+  if (callbacks != 0 || !timer_bh_visible || completion_bh_schedules != 3 ||
       queued_completion_bh == NULL) {
     return false;
   }
@@ -435,7 +426,7 @@ test_backward_advance_reports_completion_failure(void)
       qemu_plugin_advance_time_ns(1999) != 0) {
     return false;
   }
-  run_queued_cpu_work();
+  run_normal_main_loop_bottom_halves();
   run_normal_main_loop_bottom_halves();
   run_normal_main_loop_bottom_halves();
   return callbacks == 1 && completion_status == -ERANGE &&
@@ -452,7 +443,8 @@ test_invalid_and_unregistered_requests_fail_before_queue(void)
   }
   return qemu_plugin_advance_time_ns(-1) == -EINVAL &&
          qemu_plugin_advance_time_ns(1) == -ENODEV &&
-         queued_cpu_work == NULL && async_queue_calls == 0;
+         queued_completion_bh == NULL && completion_bh_schedules == 0 &&
+         async_queue_calls == 0;
 }
 
 /*
@@ -503,7 +495,7 @@ main(void)
     return 1;
   }
   if (!test_callback_safe_handoff_and_normal_bh_completion()) {
-    fprintf(stderr, "callback-safe CPU-work/BH handoff failed\n");
+    fprintf(stderr, "callback-safe main-loop BH handoff failed\n");
     return 1;
   }
   if (!test_backward_advance_reports_completion_failure()) {
@@ -532,7 +524,7 @@ main(void)
   puts("pending_predicate_tracks_completion_barrier=true");
   puts("negative_target_rejected_before_queue=true");
   puts("backward_target_reports_completion_failure=true");
-  puts("queued_worker_runs_virtual_timers=true");
+  puts("queued_main_loop_worker_runs_virtual_timers=true");
   puts("icount_bias_advance_converges_where_qtest_set_hangs=true");
   puts("completion_uses_normal_main_loop_bh=true");
   puts("completion_uses_two_stage_bh_barrier=true");

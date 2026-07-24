@@ -90,7 +90,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1412,6 +1412,139 @@ QEMU_PLUGIN_API
+@@ -1413,6 +1413,139 @@ QEMU_PLUGIN_API
  int qemu_plugin_crucible_device_state_schema_sha256(
      uint8_t digest_out[32], uint64_t *sections_out);
  

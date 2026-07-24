@@ -355,6 +355,20 @@ pub struct BlockIoDiagnosticsSnapshot {
     pub last_idle_wake_icount: u64,
 }
 
+impl BlockIoDiagnosticsSnapshot {
+    /// Compares guest-visible deterministic evidence, excluding host poll count.
+    pub(crate) fn deterministic_observation_eq(&self, other: &Self) -> bool {
+        self.frames_processed == other.frames_processed
+            && self.frames_delivered == other.frames_delivered
+            && self.first_request_icount == other.first_request_icount
+            && self.first_completion_horizon == other.first_completion_horizon
+            && self.last_current_icount == other.last_current_icount
+            && self.max_current_icount == other.max_current_icount
+            && self.last_device_io_active == other.last_device_io_active
+            && self.last_idle_wake_icount == other.last_idle_wake_icount
+    }
+}
+
 /// Builds the deterministic base-image bytes for a device of `size_bytes`.
 fn deterministic_base_image(size_bytes: u64) -> Vec<u8> {
     let len = usize::try_from(size_bytes).unwrap_or(usize::MAX);
@@ -397,5 +411,27 @@ mod tests {
         assert_eq!(first[0], 0);
         assert_eq!(first[251], 0);
         assert_eq!(first[250], 250);
+    }
+
+    #[test]
+    fn deterministic_diagnostics_ignore_host_poll_cadence() {
+        let first = BlockIoDiagnosticsSnapshot {
+            frames_processed: 1,
+            frames_delivered: 1,
+            service_calls: 17,
+            first_request_icount: Some(0),
+            first_completion_horizon: Some(1512),
+            last_current_icount: 12_000_000,
+            max_current_icount: 12_000_000,
+            last_device_io_active: false,
+            last_idle_wake_icount: 1,
+        };
+        let second = BlockIoDiagnosticsSnapshot {
+            service_calls: 29,
+            ..first
+        };
+
+        assert_ne!(first, second);
+        assert!(first.deterministic_observation_eq(&second));
     }
 }

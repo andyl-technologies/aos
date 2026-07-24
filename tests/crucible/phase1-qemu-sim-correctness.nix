@@ -393,7 +393,7 @@ in
             cp "${pluginTimeAdvanceCheck}/result" "$out/plugin-time-advance.result"
             grep -q '^PASS$' "$out/plugin-time-advance.result"
             grep -q '^callback_entry_is_enqueue_only=true$' "$out/plugin-time-advance.result"
-            grep -q '^queued_worker_runs_virtual_timers=true$' "$out/plugin-time-advance.result"
+            grep -q '^queued_main_loop_worker_runs_virtual_timers=true$' "$out/plugin-time-advance.result"
             grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/plugin-time-advance.result"
             grep -q '^callback_path_main_loop_reentry_absent=true$' "$out/plugin-time-advance.result"
 

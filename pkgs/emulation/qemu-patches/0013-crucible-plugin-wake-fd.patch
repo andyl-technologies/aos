@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -797,6 +797,43 @@ uint64_t qemu_plugin_icount_raw(void);
+@@ -798,6 +798,43 @@ uint64_t qemu_plugin_icount_raw(void);
  QEMU_PLUGIN_API
  void qemu_plugin_force_vcpu_exit(void);
  
@@ -19,11 +19,11 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + * qemu_plugin_register_wake_fd() - register a scheduler wake fd
 + * @fd: nonblocking eventfd or pipe descriptor owned by the plugin
 + *
-+ * Registers @fd on QEMU's main-loop iohandler context. Read readiness drains the
-+ * descriptor, then kicks the first RR vCPU out of its BQL condition wait. The
-+ * scheduler remains the single authority for publishing wake decisions.
-+ * Main-loop IO handlers run after QEMU reacquires BQL, pairing with the vCPU's
-+ * atomic BQL release-and-wait so a scheduler wake cannot race ahead of parking.
++ * Registers @fd on QEMU's main AioContext. Read readiness is therefore serviced
++ * by both the outer main loop and nested aio_poll() waits used by synchronous
++ * block I/O. The handler drains the descriptor, resumes device waiters, and
++ * kicks the first RR vCPU. The scheduler remains the single authority for
++ * publishing wake decisions.
 + *
 + * Returns: 0 on successful registration, nonzero on invalid input.
 + */
@@ -94,7 +94,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  static void qemu_plugin_time_advance_barrier_bh(void *opaque);
  static void qemu_plugin_time_advance_complete_bh(void *opaque);
-@@ -248,6 +256,104 @@ void qemu_plugin_force_vcpu_exit(void)
+@@ -247,6 +255,106 @@ void qemu_plugin_force_vcpu_exit(void)
      }
  }
  
@@ -106,7 +106,8 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +
 +static void qemu_plugin_unregister_wake_fd(int fd)
 +{
-+    qemu_set_fd_handler(fd, NULL, NULL, NULL);
++    aio_set_fd_handler(qemu_get_aio_context(), fd, NULL, NULL,
++                       NULL, NULL, NULL);
 +    if (qemu_plugin_wake_fd == fd) {
 +        qemu_plugin_wake_fd = -1;
 +    }
@@ -182,8 +183,9 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +    }
 +
 +    qemu_plugin_wake_fd = fd;
-+    qemu_set_fd_handler(fd, qemu_plugin_wake_fd_read, NULL,
-+                        (void *)(intptr_t)fd);
++    aio_set_fd_handler(qemu_get_aio_context(), fd,
++                       qemu_plugin_wake_fd_read, NULL, NULL, NULL,
++                       (void *)(intptr_t)fd);
 +    return 0;
 +}
 +

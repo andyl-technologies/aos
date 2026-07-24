@@ -369,7 +369,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
   * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
-@@ -1416,6 +1434,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
+@@ -1417,6 +1435,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
  
@@ -414,7 +414,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  static void qemu_plugin_time_advance_barrier_bh(void *opaque);
  static void qemu_plugin_time_advance_complete_bh(void *opaque);
-@@ -425,6 +427,30 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+@@ -426,6 +428,30 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
      }
  }
  

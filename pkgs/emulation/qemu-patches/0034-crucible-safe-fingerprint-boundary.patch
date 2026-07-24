@@ -256,7 +256,7 @@ diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-s
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1063,17 +1063,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+@@ -1064,17 +1064,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
  
  /**
   * qemu_plugin_register_sim_shmem_observer_cb() - observe exact sim boundaries

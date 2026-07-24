@@ -48,7 +48,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -728,6 +728,55 @@ const void *qemu_plugin_request_time_control(void);
+@@ -728,6 +728,56 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
@@ -68,9 +68,9 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + * @time: requested absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
 + * @userdata: opaque pointer supplied at registration
 + *
-+ * The callback runs from QEMU's normal main-loop bottom-half context after the
-+ * vCPU work item has advanced virtual time and dispatched due virtual timers.
-+ * It never runs nested inside a vCPU/plugin callback.
++ * The callback runs from QEMU's normal main-loop bottom-half context after a
++ * preceding main-loop bottom half has advanced virtual time and dispatched due
++ * virtual timers. It never runs nested inside a vCPU/plugin callback.
 + */
 +typedef void (*qemu_plugin_time_advance_cb_t)(int status, int64_t time,
 +                                              void *userdata);
@@ -90,13 +90,14 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 + * qemu_plugin_advance_time_ns() - enqueue an absolute virtual-time advance
 + * @time: absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
 + *
-+ * This callback-safe entry point only queues work on the single RR vCPU. The
-+ * queued worker advances the clock and dispatches due virtual timers while
-+ * holding BQL, then hands completion to the normal main-loop AioContext. It
-+ * never calls main_loop_wait(), aio_poll(), or aio_bh_poll().
++ * This callback-safe entry point queues work on the normal main-loop
++ * AioContext. The queued bottom half advances the clock and dispatches due
++ * virtual timers while holding BQL, then hands completion to a later main-loop
++ * pass. It never calls main_loop_wait(), aio_poll(), or aio_bh_poll(), and does
++ * not depend on a vCPU being runnable (an I/O-blocked vCPU may request it).
 + *
 + * Returns: zero when queued, -EINVAL for negative time, -ENODEV without time
-+ * control, a CPU, or a completion callback, and -EBUSY for overlap.
++ * control or a completion callback, and -EBUSY for overlap.
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_advance_time_ns(int64_t time);
@@ -139,7 +140,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  bool qemu_plugin_has_time_control(void)
  {
-@@ -133,6 +141,90 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -133,6 +141,89 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  
@@ -160,13 +161,12 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +    return qatomic_load_acquire(&qemu_plugin_time_advance_pending) != 0;
 +}
 +
-+static void qemu_plugin_advance_time__async(CPUState *cpu,
-+                                             run_on_cpu_data data)
++static void qemu_plugin_advance_time_bh(void *opaque)
 +{
-+    int64_t new_time = (int64_t)data.host_ulong;
++    int64_t new_time = qatomic_read(&qemu_plugin_time_advance_target);
 +    int status = 0;
 +
-+    (void)cpu;
++    (void)opaque;
 +    if (!has_control) {
 +        status = -ENODEV;
 +    } else if (new_time < qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
@@ -214,7 +214,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +    if (new_time < 0) {
 +        return -EINVAL;
 +    }
-+    if (!has_control || !first_cpu || !qemu_plugin_time_advance_cb) {
++    if (!has_control || !qemu_plugin_time_advance_cb) {
 +        return -ENODEV;
 +    }
 +    if (qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0, 1) != 0) {
@@ -222,8 +222,8 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +    }
 +
 +    qatomic_set(&qemu_plugin_time_advance_target, new_time);
-+    async_run_on_cpu(first_cpu, qemu_plugin_advance_time__async,
-+                     RUN_ON_CPU_HOST_ULONG((uint64_t)new_time));
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_advance_time_bh, NULL);
 +    return 0;
 +}
 +

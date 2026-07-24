@@ -122,12 +122,14 @@ in
               'crucible_blk_wait_cb(request_id, crucible_blk_wait_userdata);' \
               block/crucible-shmem.c
             grep -F -q \
+              'crucible_shmem_wait_one_poll(bs, observed_generation);' \
+              block/crucible-shmem.c
+            grep -F -q \
               'notifier_list_notify(&qemu_plugin_wake_notifiers,' \
               plugins/api-system.c
             grep -F -q \
               '(void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);' \
               plugins/api-system.c
-
             mkdir -p "$out"
             {
               echo PASS
@@ -136,6 +138,7 @@ in
               echo patched_api_compiles=true
               echo stock_api_negative_control=true
               echo pending_wait_hook_source_verified=true
+              echo generation_race_guard_verified=true
               echo post_commit_resume_source_verified=true
               echo qemu_package=${qemuPackage}
               echo qemu_package_version=${qemuPackage.version}

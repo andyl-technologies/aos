@@ -1,16 +1,19 @@
 # 0039 crucible-blk-device-completion-advance
 
-Status: IMPLEMENTED IN PATCH 0039; certifying live validation pending.
+Status: IMPLEMENTED AND LIVE-CERTIFIED.
 Author: m4-cp2.
 
 Implementation resolution: Part A uses the dedicated block-wait callback. For
 R1, the driver re-fires that callback on every pending poll after the scheduler
 wake fd resumes the coroutine, so a deadline-publish race retries without
-guest-visible progress. Part B uses B2: after the normal-main-loop time-advance
-completion callback commits logical time, QEMU notifies its wake-fd-backed
-device waiters and then kicks the vCPU. A response that is still physically
-absent simply parks and retries at the same logical icount, satisfying R3
-without a second icount-to-nanosecond conversion in the block driver.
+guest-visible progress. Part B uses B2: after the callback queues an advance,
+the block coroutine yields through QEMU's ordinary `CoQueue`, returning control
+to the AioContext main loop so it can drain either the deadline-publication wake
+fd or the queued advance and ordering barrier. The completion callback commits
+logical time, notifies wake-fd-backed device waiters, clears the pending state,
+and kicks the vCPU. A response that is still physically absent simply parks and
+retries at the same logical icount, satisfying R3 without a second
+icount-to-nanosecond conversion in the block driver.
 
 ## 1. Problem (observed, live)
 
@@ -47,7 +50,8 @@ Add a plugin callback fired when a crucible block poll coroutine is about to
 yield on PENDING, so the plugin can advance virtual time to the host-published
 completion deadline.
 
-Proposed export (mirrors 0025's `qemu_plugin_register_vcpu_idle_resume_cb`):
+Implemented export (mirrors 0025's
+`qemu_plugin_register_vcpu_idle_resume_cb`):
 
 ```c
 /* Fired from the crucible-shmem block poll loop just before it yields on a
@@ -79,13 +83,12 @@ past-clamp-to-current.
 **R1 (REQUIRED, observed as "PROBE skip: no deadline cur=0"): deadline-publish
 race + retry.** blk_wait can fire before the host servicer has published the
 deadline (the field reads 0). A skip-with-no-retry reproduces today's hang, so
-this MUST have a defined retry path: on a 0/retracted read the plugin does NOT
-advance and does NOT return-to-yield-forever — it parks on the node wake eventfd
-and re-reads `device_completion_deadline_icount` until it is nonzero (the host
-servicer signals the wake fd after publishing via
-`wake_for_device_io_release`), then advances. Equivalent alternative: the driver
-re-fires blk_wait on each subsequent poll wake so the plugin re-reads; pick the
-park-and-re-read form since it needs no extra driver state.
+this MUST have a defined retry path. The implemented driver re-fires blk_wait
+after every pending re-poll. The host servicer signals the node wake fd after
+publishing via `wake_for_device_io_release`; QEMU drains that fd from its main
+`AioContext`, resumes the generation-protected `CoQueue`, and the next poll
+re-reads `device_completion_deadline_icount`. A 0/retracted read therefore
+parks without advancing but cannot become a yield-forever state.
 Determinism note for the patch header: this wall-timing race is guest-invisible
 and determinism-safe — the guest is frozen at the SAME icount regardless of when
 the host publishes, and the deadline VALUE is a deterministic function of the
@@ -106,11 +109,12 @@ The yielded block coroutine must be re-entered when virtual time reaches
   path (no new IRQ code needed — the vIRQ is virtio-blk's, we only unblock its
   completion). This keeps delivery ordering pinned to the deterministic
   `delivery_icount` the host already computes.
-- **B2 (selected): sim-advance-completion hook.** Wake the coroutine from the
-  sim loop's time-advance-completion path when the reached icount >= the pending
-  request's delivery_icount. Patch 0039 orders this after the plugin completion
-  callback, which commits the logical-time offset, and uses the existing
-  wake-notifier path rather than introducing a second timer conversion.
+- **B2 (selected): sim-advance-completion hook.** The block-wait callback runs
+  before the ordinary coroutine queue wait. The coroutine then yields to the
+  AioContext main loop, which can drain the deadline-publish wake fd or execute a
+  queued advance. Patch 0039 wakes the coroutine after the plugin completion
+  callback commits the logical-time offset and uses the existing wake-notifier
+  path rather than introducing a second timer conversion.
 
 **R2 (satisfied by avoiding a driver conversion): single icount<->ns
 domain-conversion definition.** The ABI
@@ -147,11 +151,11 @@ in-flight requests are handled by re-arming per poll-loop iteration (each
 service() republishes the new earliest), so the field is always the next thing
 the plugin must advance to. State this in the header.
 
-Resolved (was open question): arming the QEMU_CLOCK_VIRTUAL timer in the plugin's
-virtual-time domain is made safe by R2 (single conversion). The delivery+IRQ
-path is still the one piece not yet exercised live (positive-latency blocks any
-synchronous-delivery shortcut), so the node bring-up micro-test is what validates
-it end to end.
+Resolved (was open question): no QEMU_CLOCK_VIRTUAL timer is armed by the block
+driver. The queued-advance completion notifier resumes the ordinary block
+`CoQueue` after logical time commits. The live positive-latency block-I/O gate
+exercises delivery and the virtio-blk completion path end to end, so no
+synchronous-delivery shortcut is part of the evidence.
 
 ## 3. Shmem/ABI touchpoints
 
@@ -189,19 +193,17 @@ passes on the Linux builder against the complete 40-patch QEMU package. It:
 - verifies the pending-poll wait hook and post-commit waiter resume in the
   reconstructed source.
 
-- **Behavioral micro-test:** in sim mode with the plugin registered, a guest
-  read of sector 0 must complete: assert the poll coroutine resumes, the block
-  request delivers at exactly `delivery_icount`, and the guest progresses past
-  the probe (guest_progressed_past_block_io=true, frames_delivered>=1),
-  run-twice byte-identical including post-I/O advance. The certifying live
-  block-I/O gate drives the mapped production hot path while servicing the
-  reserved block ring.
+- **Behavioral live gate:** in sim mode with the plugin registered, a guest read
+  of sector 0 completes through the mapped production hot path and reserved
+  block ring. The gate records `frames_processed=1`, `frames_delivered=1`,
+  `guest_progressed_past_block_io=true`, and advancement to the 12,000,000
+  icount scheduler ceiling.
 - **R3 stress leg:** a deliberately-slowed servicer (wall delay before writing
-  the response frame) must yield the byte-identical guest-visible poll sequence
-  and fingerprint as the fast servicer — proves the host-side re-poll block
-  (R3) hides wall-timing from the guest.
+  the response frame) produces the same guest-visible diagnostic projection as
+  the fast run under host CPU load. Host `service_calls` is deliberately
+  excluded because it measures polling cadence rather than guest state.
 - **R1 race leg:** start the servicer so the deadline publish lags the first
-  blk_wait fire — the plugin's park-and-re-read (R1) must still reach progress,
+  blk_wait fire. The driver's wake/resume/re-fire path still reaches progress,
   proving no skip-and-hang.
 - **Inertness micro-test:** build the SAME source without sim mode / without the
   plugin; a crucible-shmem block op falls back to classic yield (or the driver
@@ -214,4 +216,5 @@ passes on the Linux builder against the complete 40-patch QEMU package. It:
 ## 6. Sequencing / dependencies
 
 - Patch 0039 and its Rust callback trampoline are present in the deterministic
-  patch stack. The remaining step is the certifying live block-I/O run.
+  40-patch stack. The certifying live block-I/O run and byte-for-byte patch
+  regeneration gate both pass on the Linux builder.

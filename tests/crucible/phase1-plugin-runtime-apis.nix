@@ -102,8 +102,8 @@
         needle = "!qemu_tcg_mttcg_enabled()";
       }
       {
-        label = "fd handler integration";
-        needle = "qemu_set_fd_handler";
+        label = "main AioContext fd handler integration";
+        needle = "aio_set_fd_handler(qemu_get_aio_context()";
       }
       {
         label = "device wake notifier header";
@@ -126,8 +126,8 @@
         needle = "if (drained && first_cpu)";
       }
       {
-        label = "BQL wake ordering rationale";
-        needle = "atomic BQL release-and-wait";
+        label = "nested block poll wake rationale";
+        needle = "nested aio_poll() waits";
       }
       {
         label = "device repoll after successful drain";
@@ -423,8 +423,13 @@ in
             typedef void IOHandler(void *opaque);
             #endif
 
-            void qemu_set_fd_handler(int fd, IOHandler *fd_read,
-                                     IOHandler *fd_write, void *opaque);
+            typedef struct AioContext AioContext;
+            typedef bool AioPollFn(void *opaque);
+            AioContext *qemu_get_aio_context(void);
+            void aio_set_fd_handler(AioContext *ctx, int fd,
+                                    IOHandler *fd_read, IOHandler *fd_write,
+                                    AioPollFn *io_poll,
+                                    IOHandler *io_poll_ready, void *opaque);
 
             #endif
             MAIN_LOOP_FIXTURE

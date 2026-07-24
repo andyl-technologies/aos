@@ -336,7 +336,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -875,6 +913,20 @@ QEMU_PLUGIN_API
+@@ -876,6 +914,20 @@ QEMU_PLUGIN_API
  void qemu_plugin_register_tcg_exec_cb(qemu_plugin_tcg_exec_cb_t cb,
                                         void *userdata);
  

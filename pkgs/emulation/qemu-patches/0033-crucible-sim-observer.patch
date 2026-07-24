@@ -38,7 +38,7 @@ diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-s
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1061,6 +1061,21 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+@@ -1062,6 +1062,21 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
      qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
      void *userdata);
  
