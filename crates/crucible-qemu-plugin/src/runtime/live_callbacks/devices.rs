@@ -481,12 +481,7 @@ impl LiveVcpuTimeCallbackState {
         data: Option<&[u8]>,
         len: usize,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
-            return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance { family: "block" },
-            ));
-        }
-        let current_icount = self.callback_current_icount()?;
+        let current_icount = self.device_callback_icount()?;
         self.lock_devices()?
             .submit_block(
                 self.slot.get(),
@@ -515,13 +510,6 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn ninep_burst_start(&self) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
-            return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance {
-                    family: "9p burst start",
-                },
-            ));
-        }
         self.lock_devices()?
             .begin_ninep_burst(self.slot.get())
             .map_err(LiveVcpuTimeCallbackError::live_device)
@@ -533,14 +521,7 @@ impl LiveVcpuTimeCallbackState {
         payload: &[u8],
         response_capacity: usize,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
-            return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance {
-                    family: "9p submit",
-                },
-            ));
-        }
-        let current_icount = self.callback_current_icount()?;
+        let current_icount = self.device_callback_icount()?;
         self.lock_devices()?
             .submit_ninep(
                 self.slot.get(),
@@ -751,12 +732,6 @@ pub enum LiveDeviceCallbackError {
     /// A previous callback panic poisoned the device state.
     #[error("live block/9p callback state is poisoned")]
     StatePoisoned,
-    /// A callback ran while an exact idle advance was still pending.
-    #[error("live {family} callback ran during a pending idle advance")]
-    CallbackDuringIdleAdvance {
-        /// Device family that crossed the completion barrier.
-        family: &'static str,
-    },
     /// QEMU and the plugin's fixed request sequence disagreed.
     #[error(
         "live {family} request id mismatch: QEMU supplied {qemu_request_id}, plugin expected {plugin_request_id}"

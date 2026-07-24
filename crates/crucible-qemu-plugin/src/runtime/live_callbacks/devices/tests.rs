@@ -222,6 +222,62 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
     );
 }
 
+#[test]
+fn live_device_submits_during_idle_completion_use_the_advance_target() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
+        .unwrap_or_else(|error| panic!("test deadline should bind: {error}"));
+    let advance = crate::QueuedIdleAdvance::require(Some(test_advance))
+        .unwrap_or_else(|error| panic!("test advance should bind: {error}"));
+    let mut storage = DeviceRingStorage::new();
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
+    std::mem::forget(teardown_receiver);
+    let state = LiveVcpuTimeCallbackState::new(
+        63,
+        test_icount_raw,
+        1,
+        0,
+        0,
+        deadline,
+        advance,
+        &header,
+        &slot,
+        Arc::new(LiveCallbackQuiescence::new()),
+        teardown_sender,
+    )
+    .and_then(|state| state.attach_devices(0, block, ninep))
+    .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
+    let pending = advance
+        .enqueue(10)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(0, 10, pending)
+        .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+
+    state
+        .block_submit(0, 0, 0, None, 1)
+        .unwrap_or_else(|error| panic!("timer-boundary block submit should succeed: {error}"));
+    state
+        .ninep_burst_start()
+        .unwrap_or_else(|error| panic!("timer-boundary 9p burst should start: {error}"));
+    state
+        .ninep_submit(0, b"request", 8)
+        .unwrap_or_else(|error| panic!("timer-boundary 9p submit should succeed: {error}"));
+
+    assert_eq!(storage.block_out_entries[0].delivery_icount, 10);
+    assert_eq!(storage.ninep_out_entries[0].delivery_icount, 10);
+    assert_eq!(slot.snapshot().device_io_active, 1);
+}
+
 extern "C" fn test_deadline() -> i64 {
     -1
 }
