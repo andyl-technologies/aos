@@ -135,7 +135,7 @@ are *specified here* so the tests are written before the code:
   systemd-repart-*` + idempotency (carve+grow on fresh VM, **no-op on reboot**) +
   the destructive-op state-probe guards run once.
 - **`aos metadata` agent** (`checks` + `fleet`): per-platform fetch over recorded
-  fixtures (offline channels first), exact bundle/hash retention, platform-mode
+  fixtures (offline channels first), exact host.nix/hash retention, platform-mode
   authorization, signed-mode initrd verification against public anchors,
   first-boot typed storage-plan validation/rendering, facts → `host.facts.*`,
   and the static-networking seed for DHCP-less clouds.

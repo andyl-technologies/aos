@@ -75,6 +75,7 @@
       pname = "aos-image-${name}-rootfs";
       label = "aos-root";
       fsType = rootFsType;
+      erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       shrinkToFit = true;
       headroomMiB = 64;
     }

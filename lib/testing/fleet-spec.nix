@@ -84,7 +84,7 @@
         description = ''
           Files exposed to the initrd on a read-only ISO labelled
           `aos-metadata`. Attribute names are plain file names such as
-          `provisioning.json` and values are their exact contents. Use this
+          `host.nix` and values are their exact contents. Use this
           to exercise the production cloud-metadata provisioning path.
         '';
       };

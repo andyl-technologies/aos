@@ -30,6 +30,8 @@ pub use package::*;
 pub use server::*;
 pub use test::*;
 
+use std::path::PathBuf;
+
 use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -263,7 +265,7 @@ pub enum MetadataCmd {
     Detect,
     /// Fetch and stash exact user-data + instance facts
     Fetch,
-    /// Authorize user-data and render any typed first-boot storage plan
+    /// Authorize user-data as exact literal host.nix
     Authorize {
         /// Measured provisioning trust policy: platform or signed
         #[arg(long)]
@@ -271,6 +273,15 @@ pub enum MetadataCmd {
         /// Public configuration-key directory; repeatable
         #[arg(long = "trusted-config-keys-dir")]
         trusted_config_keys_dir: Vec<PathBuf>,
+    },
+    /// Evaluate the closed aos.provisioning projection and render storage
+    EvalProvisioning {
+        /// ABI-pinned base module library embedded in the image
+        #[arg(long)]
+        base_lib: PathBuf,
+        /// Scratch directory admitted to restricted evaluation
+        #[arg(long, default_value = "/run/aos-provisioning-eval")]
+        eval_root: PathBuf,
         /// Keep `/var` raw for measured-boot LUKS enrollment
         #[arg(long)]
         measured_boot: bool,

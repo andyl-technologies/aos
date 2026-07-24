@@ -80,7 +80,7 @@ sandboxing, slices) is image-baked and measured.
 failure-isolated); `┄▶` = `After=` only.
 
 ```text
-[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ aos-provisioning-authorize
+[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ aos-metadata-authorize
           ═▶ aos-storage-plan-render ═▶ systemd-repart ═▶ aos-var-crypt/mount-var
           ═▶ nix-overlay-setup ═▶ aos-seed-profiles (gen-0) ═▶ etc-overlay-setup ═▶ switch_root
 
@@ -162,7 +162,7 @@ of the degraded one.)
 genuine substrate loss — never a single package — can pull the system out of
 multi-user:
 
-- explicit storage plan unauthorized/invalid, or substrate broken in initrd
+- authenticated `host.nix` provisioning projection invalid, or substrate broken in initrd
   (repart/cryptsetup/mount-var, hard edges) → cannot
   reach `initrd-fs.target` → **`emergency.target`**;
 - stage-2 structural failure (`/etc` swap indeterminate, `EX_SWAP=4`) →

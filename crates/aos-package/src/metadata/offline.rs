@@ -8,9 +8,8 @@
 //!
 //! Channels:
 //!
-//! - [`AosMetadataFetcher`] — the AOS-native `aos-metadata` ISO:
-//!   `provisioning.json` or literal `host.nix`, optional `provisioning.sig`,
-//!   and optional pre-baked `facts.json`.
+//! - [`AosMetadataFetcher`] — the AOS-native `aos-metadata` ISO: literal
+//!   `host.nix`, optional `host.nix.sig`, and optional pre-baked `facts.json`.
 //! - [`NoCloudFetcher`] — NoCloud `cidata`: `user-data` is the literal
 //!   `host.nix`; `meta-data` (YAML) + `network-config` (netplan) feed facts.
 //! - [`ConfigDriveFetcher`] — OpenStack `config-2`:
@@ -66,16 +65,10 @@ impl PlatformFetcher for AosMetadataFetcher {
     }
 
     async fn fetch_user_data(&self, _http: &dyn MetadataHttp) -> Result<Option<UserData>> {
-        let payload = match read_opt(&self.dir.join("provisioning.json"))? {
-            Some(bytes) => bytes,
-            None => {
-                let Some(bytes) = read_opt(&self.dir.join("host.nix"))? else {
-                    return Ok(None);
-                };
-                bytes
-            }
+        let Some(payload) = read_opt(&self.dir.join("host.nix"))? else {
+            return Ok(None);
         };
-        let sig = read_opt_string(&self.dir.join("provisioning.sig"))?;
+        let sig = read_opt_string(&self.dir.join("host.nix.sig"))?;
         Ok(Some(UserData::Inline { payload, sig }))
     }
 
@@ -256,10 +249,10 @@ impl PlatformFetcher for ConfigDriveFetcher {
 /// Default `fw_cfg` sysfs root (overridable for tests).
 pub const FW_CFG_ROOT: &str = "/sys/firmware/qemu_fw_cfg/by_name";
 
-/// AOS `fw_cfg` blob name for the provisioning payload.
-pub const FW_CFG_PROVISIONING: &str = "opt/org.andyl/provisioning";
-/// AOS `fw_cfg` blob name for the detached signature.
-pub const FW_CFG_PROVISIONING_SIG: &str = "opt/org.andyl/provisioning.sig";
+/// AOS `fw_cfg` blob name for literal `host.nix`.
+pub const FW_CFG_HOST_NIX: &str = "opt/org.andyl/host-nix";
+/// AOS `fw_cfg` blob name for the detached host signature.
+pub const FW_CFG_HOST_NIX_SIG: &str = "opt/org.andyl/host-nix.sig";
 
 /// The qemu `fw_cfg` channel.
 pub struct QemuFwCfgFetcher {
@@ -292,10 +285,10 @@ impl PlatformFetcher for QemuFwCfgFetcher {
     }
 
     async fn fetch_user_data(&self, _http: &dyn MetadataHttp) -> Result<Option<UserData>> {
-        let Some(payload) = read_opt(&self.raw(FW_CFG_PROVISIONING))? else {
+        let Some(payload) = read_opt(&self.raw(FW_CFG_HOST_NIX))? else {
             return Ok(None);
         };
-        let sig = read_opt_string(&self.raw(FW_CFG_PROVISIONING_SIG))?;
+        let sig = read_opt_string(&self.raw(FW_CFG_HOST_NIX_SIG))?;
         Ok(Some(UserData::Inline { payload, sig }))
     }
 

@@ -101,7 +101,7 @@ forcing, no secrets (credentials appear only as handles). It is persisted at
     "base_lib":       { "store_path": "/nix/store/<hash>-aos-base-lib", "abi_hash": "sha256:…", "module_abi": 1 },
     "evaluator":      { "store_path": "/nix/store/<hash>-nix-2.24.12", "store_hash": "sha256:…" },
     "config_modules": { "closure_hash": "sha256:…", "count": 2 },
-    "host_nix":       { "content_hash": "sha256:…", "bundle_hash": "sha256:…", "trust_mode": "platform", "platform": "aws", "signer_key": null },
+    "host_nix":       { "content_hash": "sha256:…", "trust_mode": "platform", "platform": "aws", "signer_key": null },
     "instance_facts": { "facts_hash": "sha256:…", "platform": "aws" }
   }
 }
@@ -347,8 +347,6 @@ pub struct ConfigModulesInput {
 pub struct HostNixInput {
     /// `sha256` of the policy-accepted `host.nix` bytes.
     pub content_hash: String,
-    /// `sha256` of the provisioning bundle, if bundle form was used.
-    pub bundle_hash: Option<String>,
     /// Selected policy: `"platform"` or `"signed"`.
     pub trust_mode: String,
     /// Control-plane identity for platform mode.
@@ -1404,7 +1402,11 @@ Files an implementer touches: `modules/systemd/graph.nix` (new, the §1 template
 
 ---
 
-# aos metadata agent — PlatformFetcher, provisioning, first-boot storage, static-net
+# Metadata and one-time provisioning implementation contract
+
+> [`provisioning.md`](provisioning.md) is authoritative: literal authenticated
+> `host.nix`, restricted `aos.provisioning` evaluation, strict Rust validation
+> of the evaluated result, and a pending/committed GPT provenance protocol.
 
 Returning the drop-in RFC markdown contract.
 
@@ -1412,30 +1414,34 @@ Returning the drop-in RFC markdown contract.
 
 # `aos metadata` agent — implementation contract
 
-> Scope: this CONTRACT specifies the wire-level behavior an implementer must produce for the `aos metadata` Rust subcommand and its initrd phases (`detect`, `fetch`, and `authorize`, with typed storage rendering owned by authorization). It pins the `PlatformFetcher` trait, one concrete fetcher contract per offline channel plus the AWS IMDSv2 cloud exemplar, the `/run/aos-metadata` stash format, the `facts.json` → `host.facts.*` rendering, the DHCP-less static-networking seed, and authenticated first-boot storage plans. It is the binding interface for [`provisioning.md`](provisioning.md).
+> Historical scope only. This is not an implementation contract.
 
-The agent acquires bytes, applies the selected provisioning trust policy, and
-validates/renders only the narrow storage schema in initrd. It never evaluates
-Nix there. The exact accepted host.nix bytes and validation record survive to
-stage-2. If no storage plan is declared, the baked layout is used; failure of a
-declared plan stops before disk mutation and never falls back.
+The agent acquires bytes, applies the selected host trust policy, and preserves
+exact accepted `host.nix` bytes. A restricted Nix invocation evaluates only the
+closed `aos.provisioning` projection in initrd, after which Rust validates and
+renders storage. With no host input, that same projection supplies defaults.
 
 ## 1. Command surface
 
 ```text
 aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+ need-network, +cidata mount)
-aos metadata fetch       # platform → provisioning input + facts
-aos metadata authorize   # platform|signed policy → exact accepted input
+aos metadata fetch       # platform → exact host.nix transport + facts
+aos metadata authorize   # platform|signed policy → exact accepted host.nix
+aos metadata eval-provisioning # restricted Nix → validated transient repart.d
 ```
 
 - `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env` and, for network-dependent platforms, touches the `need-network` flag the `aos-metadata-network` gate keys off (replacing today's `/run/ignition/need-network`).
 - `detect` also performs the **config-drive probe** (the net-new mount helper, [§8](#8-net-new-pieces)) so that an offline ISO/vfat channel short-circuits the cloud path exactly as `aos-platform-detect.nix:51` does today for the `aos-metadata` label.
 - `fetch` selects a `Box<dyn PlatformFetcher>` from `PLATFORM_ID` and writes only under `/run/aos-metadata`.
-- `authorize` accepts platform delivery by default or verifies the whole input with the `aos-provisioning` SSHSIG namespace in signed mode. It then rejects unknown storage fields and raw fragments and writes transient definitions only after authorization.
+- `authorize` accepts platform delivery by default or verifies exact
+  `host.nix` with the `aos-config` SSHSIG namespace in signed mode.
+- `eval-provisioning` evaluates only the schema bundled in the base library;
+  strict Rust validation rejects unsafe evaluated values before rendering.
 
 The initrd graph is `aos-metadata-detect.service` →
 `aos-metadata-network.service` → `aos-metadata-fetch.service` →
-`aos-metadata-authorize.service` → `aos-repart.service`. Every phase uses
+`aos-metadata-authorize.service` → `aos-provisioning-eval.service` →
+`aos-repart.service`. Every phase uses
 `DefaultDependencies=no` and `RemainAfterExit=yes`; authorization failure is
 fatal before repart.
 
@@ -1456,8 +1462,8 @@ pub trait PlatformFetcher: Send + Sync {
     /// (e.g. "aws", "nocloud", "config-drive", "qemu", "aos-metadata").
     fn platform_id(&self) -> &'static str;
 
-    /// Acquires literal `host.nix`, a provisioning bundle, or a pinned
-    /// pointer to a bundle, plus a detached bundle SSHSIG when available.
+    /// Acquires literal `host.nix`, or a pinned pointer to those exact bytes,
+    /// plus a detached host SSHSIG when available.
     ///
     /// Returns `Ok(None)` when the platform has no user-data attached
     /// (a valid, non-error state ⇒ gen-0-only). Returns `Err` only on
@@ -1485,13 +1491,11 @@ pub trait PlatformFetcher: Send + Sync {
 
 /// Operator user-data acquired before policy authorization.
 pub enum UserData {
-    /// Literal `host.nix`; this form cannot declare early storage.
-    InlineHostNix { host_nix: Vec<u8>, sig: Option<String> },
-    /// Exact `aos.provisioning/v1` JSON bytes and optional detached SSHSIG.
-    ProvisioningBundle { bytes: Vec<u8>, sig: Option<String> },
+    /// Literal `host.nix`, including any aos.provisioning declarations.
+    Inline { payload: Vec<u8>, sig: Option<String> },
     /// A size-cap pointer resolved with a mandatory content pin.
-    ProvisioningPointer {
-        provisioning_url: String,
+    Pointer {
+        host_nix_url: String,
         sha256: String,
         sig_url: Option<String>,
     },
@@ -1535,25 +1539,32 @@ All offline channels resolve to a **mounted directory** under `/run/aos-metadata
 ### 3.1 `aos-metadata` ISO (AOS-native channel)
 
 - **Detect:** `blkid -L aos-metadata` (already done by `aos-platform-detect.nix:51`); mount read-only at `/run/aos-metadata/media`. Sets `PLATFORM_ID=aos-metadata`, `METADATA_DIR=/run/aos-metadata/media`. Never sets `need-network`.
-- **`fetch_user_data`:** prefer `${METADATA_DIR}/provisioning.json` plus optional `provisioning.sig` → `UserData::ProvisioningBundle`; otherwise read `${METADATA_DIR}/host.nix` → `UserData::InlineHostNix`.
+- **`fetch_user_data`:** read `${METADATA_DIR}/host.nix` plus optional
+  `${METADATA_DIR}/host.nix.sig` as exact operator input.
 - **`fetch_facts`:** read optional `${METADATA_DIR}/facts.json` if the operator pre-baked it; else `Facts::default()`.
 
 ### 3.2 NoCloud `cidata`
 
 - **Detect:** `blkid -L cidata` (ISO9660 **or** vfat); mount RO at `/run/aos-metadata/media`. `PLATFORM_ID=nocloud`.
-- **`fetch_user_data`:** read `${METADATA_DIR}/user-data` as a provisioning bundle or literal `host.nix` (not cloud-init YAML); a sibling `user-data.sig` supplies the detached whole-input SSHSIG when present.
+- **`fetch_user_data`:** read `${METADATA_DIR}/user-data` as literal
+  `host.nix` (not cloud-init YAML); a sibling `user-data.sig` supplies the
+  detached exact-input SSHSIG when present.
 - **`fetch_facts`:** parse `${METADATA_DIR}/meta-data` (YAML — the vendored crate, [§8](#8-net-new-pieces)): `local-hostname` → `hostname`, `instance-id` → `instance_id`. `${METADATA_DIR}/network-config` (NoCloud netplan-v1/v2 YAML), when present, parses into `Facts::network` ([§6](#6-static-networking-seed)).
 
 ### 3.3 config-drive `config-2` (OpenStack)
 
 - **Detect:** `blkid -L config-2`; mount RO at `/run/aos-metadata/media`. `PLATFORM_ID=config-drive`.
-- **`fetch_user_data`:** read `${METADATA_DIR}/openstack/latest/user_data` as a provisioning bundle or literal `host.nix`; use sibling `user_data.sig` as the whole-input signature when present.
+- **`fetch_user_data`:** read `${METADATA_DIR}/openstack/latest/user_data` as
+  literal `host.nix`; use sibling `user_data.sig` as the exact-input signature.
 - **`fetch_facts`:** parse `${METADATA_DIR}/openstack/latest/meta_data.json` (JSON, `serde_json`): `.hostname`, `.uuid` → `instance_id`, `.keys[].data` / `.public_keys` → `ssh_authorized_keys`, `.devices` → `disk_ids`. Parse `${METADATA_DIR}/openstack/latest/network_data.json` → `Facts::network` ([§6](#6-static-networking-seed)) — this is the metadata-delivered network for OpenStack.
 
 ### 3.4 QEMU `fw_cfg`
 
 - **Detect:** QEMU DMI classification. `PLATFORM_ID=qemu`; no mount or network.
-- **`fetch_user_data`:** read the `fw_cfg` blob via `std::fs` from `/sys/firmware/qemu_fw_cfg/by_name/<name>/raw`. AOS convention: `opt/org.andyl/provisioning/raw` (bundle or literal host.nix) and `opt/org.andyl/provisioning.sig/raw` (optional SSHSIG).
+- **`fetch_user_data`:** read the `fw_cfg` blob via `std::fs` from
+  `/sys/firmware/qemu_fw_cfg/by_name/<name>/raw`. AOS convention:
+  `<name>` is `opt/org.andyl/host-nix` or
+  `opt/org.andyl/host-nix.sig`.
 - **`fetch_facts`:** `Facts::default()` (fw_cfg carries no standard facts document); hostname/keys, if needed, ride in `host.nix`.
 
 ## 4. AWS IMDSv2 fetcher (cloud exemplar)
@@ -1573,9 +1584,11 @@ The cloud exemplar; the GCP / Azure / DigitalOcean / OpenStack-IMDS fetchers fol
 
   Every subsequent GET carries `.with_header("X-aws-ec2-metadata-token", &token)`.
 - **`fetch_user_data`:** GET `/latest/user-data`.
-  - HTTP 200 → body is literal `host.nix`, an `aos.provisioning/v1` bundle, or a `{ provisioning_url, sha256, sig_url }` pointer. Resolve pointers with `with_hash(Sha256, sha256)` before authorization.
+  - HTTP 200 → body is literal `host.nix` or a
+    `{ host_nix_url, sha256, sig_url }` transport pointer. Resolve pointers
+    with `with_hash(Sha256, sha256)` before authorization.
   - HTTP 404 → `Ok(None)` (no user-data attached; **not** an error).
-  - AWS uses the pointer form when signed mode requires a detached bundle signature.
+  - AWS uses the pointer form when `host.nix` exceeds the user-data size cap.
 - **`fetch_facts`:** GET under `/latest/meta-data/`:
   - `instance-id`, `placement/region`, `placement/availability-zone`,
   - `public-keys/0/openssh-key` (iterate indices) → `ssh_authorized_keys`,
@@ -1593,8 +1606,9 @@ The stash is a child of the initrd `/run` so it survives `mount --move /run /sys
 ├── user-data               # exact acquired input bytes
 ├── user-data.sig           # detached whole-input SSHSIG, when supplied
 ├── host.nix                # exact policy-accepted operator config
-├── storage-plan.json       # canonical validated plan, when declared
-├── repart.d/               # rendered transient definitions, when declared
+├── provisioning-plan.json  # canonical validated early projection
+├── repart-targets          # stable device → definition directory index
+├── repart.d/               # rendered transient per-device definitions
 ├── facts.json              # normalized Facts (see §2), serde_json
 ├── network/                # rendered networkd seed for DHCP-less clouds (see §6)
 │   └── 10-aos-seed.network
@@ -1680,35 +1694,38 @@ On clouds with no DHCP server (DigitalOcean static/anchor IPs, OpenStack `networ
 - **Supersession:** the operator's *declared* network config in `host.nix` takes effect at the first `activate.sh.in` /etc swap and supersedes the seed. The seed exists only to give stage-2 a route to fetch config modules; it is not authoritative.
 - The seed is written **only** when `Facts::network.is_some()`; DHCP clouds (AWS/GCP) skip it (recorded as `network_seed_written: false`).
 
-## 7. Authenticated first-boot storage plan
+## 7. Authenticated one-time provisioning projection
 
-An `aos.provisioning/v1` bundle may contain `storage.partitions`, a closed typed
-array. Each entry has a unique `label`, allowlisted `type` (`swap` or `var`),
-positive integer `size_min_bytes`, optional bounded `size_max_bytes`, optional
-`grow`, and an allowlisted `format`. Unknown fields and raw `repart.d` text are
-errors.
+`host.nix` may define `aos.provisioning.storage.partitions`, an attribute set
+whose closed schema is declared by `modules/base/provisioning.nix`. The initrd
+imports the ABI-pinned base library and exact authorized host module under
+`restrict-eval=true` and `allow-import-from-derivation=false`. It does not load
+runtime package modules. Undeclared runtime definitions remain lazy and cannot
+affect the early result.
 
-The validator resolves the parent disk of the booted root partition and permits
-only additive allocation from that disk's free space. It rejects any attempt to
-select another device or alter/delete existing ESP, root, root-verity, or
-verity-hash partitions. There may be at most one grow partition. Measured-boot
-`var` remains unformatted for the existing LUKS path; otherwise `var` must use
-`ext4`. Every present plan must include `var`.
+Rust deserializes the evaluated `aos.provisioning-plan/v1` JSON with unknown
+fields denied. It permits `null` for the root disk or stable
+`/dev/disk/by-id/...` targets, validates labels/sizes/UUIDs, rejects protected
+partition types and the reserved sentinel GUID, and permits at most one grow
+partition per device. Measured-boot `var` remains raw; the unmeasured default is
+ext4.
 
 The hard ordering is:
 
 ```text
-metadata-fetch → provisioning-authorize → storage-validate/render
-  → systemd-repart → aos-var-crypt/mount-var → switch_root → aos-eval
+durable-state-detect → metadata-fetch → authorize exact host.nix
+  → restricted aos.provisioning eval → Rust validate/render
+  → dry-run every disk → mutate every disk → commit GPT provenance marker
+  → aos-var-crypt/mount-var → switch_root → full aos-eval
 ```
 
-Absent `storage` selects the image-baked repart definitions.
-Present-but-invalid or unauthorized storage stops before `systemd-repart` and
-never falls back. Repart dry-runs the complete definition set against the
-resolved boot disk before its mutating pass. A valid plan is rendered only
-under `/run/aos-metadata/repart.d/`, applies on first boot, and remains
-convergent on reboot. There is no persistent pending-plan or second-boot
-hand-off.
+The renderer adds `aos-provisioning-pending-v1` using the reserved GPT type GUID
+in the same transaction as the root-disk definitions. Only after every device
+succeeds does the unit relabel it to `aos-provenance-operator-v1` or
+`aos-provenance-fallback-v1`. A pending marker fails closed for recovery. A
+committed marker skips metadata, early evaluation, and all future disk
+mutation. With no host input, the same schema defaults are evaluated and
+committed as fallback provenance; there is no image-baked parallel layout.
 
 ## 8. Net-new pieces (the bounded build)
 
@@ -1791,7 +1808,6 @@ aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
       realization         : "sha256:<hex>"   # hash of consumed signed store/ subset
     host_nix:
       content_hash        : "sha256:<hex>"   # sha256 of the operator config bytes
-      bundle_hash         : "sha256:<hex>"   # absent for literal host.nix
       trust_mode          : "<platform|signed>"
       platform            : "<aws|gcp|...>"  # platform mode
       signer_key          : "<fingerprint>"  # signed mode only
@@ -1839,8 +1855,6 @@ concrete.
   validated).
 - `host_nix.content_hash` — `sha256` of the exact `host.nix` bytes that were fed
   to the evaluator (the store-path-pinned content; §3, §F1-Q5).
-- `host_nix.bundle_hash` — hash of the exact provisioning bundle when bundle
-  form was used.
 - `host_nix.trust_mode` plus `platform` or `signer_key` — evidence for the
   policy that accepted the input. Exactly the policy-appropriate field is
   present; no record is emitted when authorization fails.
@@ -2017,35 +2031,35 @@ path. The generation hash is a function of references, never of secret material.
 
 ### 3.1 Boundary
 
-The initrd fetches literal `host.nix`, an `aos.provisioning/v1` bundle, or a
-hash-pinned pointer to that bundle. The image policy is `platform` by default or
+The initrd fetches literal `host.nix`, or resolves a hash-pinned transport
+pointer to those exact bytes. The image policy is `platform` by default or
 `signed` in secure mode. Platform mode accepts delivery by the detected
-control-plane channel. Signed mode verifies a detached SSHSIG over the exact
-bundle bytes against public anchors included in the measured initrd.
+control-plane channel. Signed mode verifies a detached SSHSIG over exact
+`host.nix` bytes against public anchors included in the measured initrd.
 `trust_mode` is measured boot configuration, is not accepted from user-data,
 and cannot fall back from `signed` to `platform`.
 
-Authorization occurs before interpreting `storage`. Stage-2 does not repeat
+Authorization occurs before restricted evaluation. Stage-2 does not repeat
 the trust decision over mutable input: it verifies that `/run/aos-eval/host.nix`
 has the content hash recorded by initrd, then evaluates those exact bytes.
 
 ### 3.2 Verification algorithm
 
 ```text
-authorize_provisioning(bundle_bytes, detached_sig, policy, platform, key_store):
+authorize_host(host_nix_bytes, detached_sig, policy, platform, key_store):
   1. if policy == "platform":
        require detected platform channel and successful acquisition
-       return Trusted(mode = platform, platform, bundle_hash)
+       return Trusted(mode = platform, platform, sha256(host_nix_bytes))
   2. require policy == "signed" and detached_sig is present
   3. keys = key_store.lookup_all(operator_id)
   4. for key in keys:
        ok = verify_payload_signature(
-              payload = bundle_bytes,
+              payload = host_nix_bytes,
               signature = detached_sig,
               trusted_key = key.key_line(),
-              namespace = "aos-provisioning")
-       if ok: return Trusted(mode = signed, signer_key, bundle_hash)
-  5. FAIL("provisioning bundle is not signed by a trusted config key")
+              namespace = "aos-config")
+       if ok: return Trusted(mode = signed, signer_key, sha256(host_nix_bytes))
+  5. FAIL("host.nix is not signed by a trusted config key")
 ```
 
 This reuses `security.rs::verify_payload_signature` (`security.rs:639`) and the
@@ -2059,10 +2073,10 @@ mirroring `trusted-keys.d` and `trusted-sb-certs.d` written by
 ### 3.3 SSHSIG namespace
 
 The detached signature is an armored SSHSIG produced by
-`security.rs::sign_payload_signature(key, "aos-provisioning", bundle_bytes)`
+`security.rs::sign_payload_signature(key, "aos-config", host_nix_bytes)`
 (HashAlg::Sha512, `security.rs:619`) — the same OpenSSH format `ssh-keygen -Y
-sign -n aos-provisioning` emits. The namespace string is the literal
-**`aos-provisioning`**,
+sign -n aos-config` emits. The namespace string is the literal
+**`aos-config`**,
 distinct from the `git` namespace used by `verify_commit_signature` /
 `verify_tag_signature` so a config signature can never be replayed as a tag/commit
 signature and vice versa. Verification uses the same namespace; a namespace
@@ -2071,10 +2085,11 @@ mismatch yields `Ok(false)` and fails closed.
 ### 3.4 Failure behavior
 
 An unavailable platform channel or signed-mode authentication failure is
-fail-closed. If the bundle declares storage, the initrd stops before GPT
-mutation and does not select the baked default. Without early storage, stage-2
-produces no manifest and leaves the prior generation live. Facts must never
-seed security decisions before the selected policy accepts provisioning input.
+fail-closed. The initrd stops before evaluating `aos.provisioning` or mutating
+GPT; it never falls back to an unauthenticated storage plan. Without accepted
+`host.nix`, stage 2 produces no manifest and leaves the prior generation live.
+Facts must never seed security decisions before the selected policy accepts
+provisioning input.
 
 ### 3.5 Pinning (F1-Q5)
 

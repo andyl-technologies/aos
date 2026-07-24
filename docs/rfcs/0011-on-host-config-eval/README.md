@@ -44,9 +44,11 @@ the invariants, and the resolved decisions; the topic files hold the detail:
   secrets-out-of-manifest interface to the forthcoming secret-management system.
 - [`provisioning.md`](provisioning.md) — removing Ignition: systemd-native
   substrate (`systemd-repart`/`cryptenroll`/`tmpfiles`/`sysusers`), the
-  idempotent-vs-one-shot principle and its guarded-unit rendering, the
-  `aos metadata` agent (literal-Nix user-data, authenticated first-boot storage
-  plans, the platform parity surface), and the convention substrate.
+  restricted initrd evaluation of `aos.provisioning`, the one-time storage
+  commit protocol, and the `aos metadata` transport/authentication agent.
+- [`image-host-boundary.md`](image-host-boundary.md) — the rule that the golden
+  image supplies capabilities and trust roots while `host.nix` supplies host
+  policy, plus the migration of mixed profiles and artificial frozen artifacts.
 - [`orchestration.md`](orchestration.md) — compiling the eval output into a
   systemd unit/target graph: runtime units in `/run/systemd/system`, templated
   per-package fetch/install instances, `Wants=`-driven degraded boot, the
@@ -160,12 +162,11 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
    closures (binary `out` + `config`) via the existing realization-graph
    machinery; it never substitutes a build for a download.
 
-3. **Cloud user-data is the primary source of host configuration, as literal
-   Nix.** Operator intent arrives as a leaf `host.nix`, either carried verbatim
-   or bound by an authenticated provisioning bundle, and participates in the same
-   `evalModules` as base and package modules — at the *evaluation* layer. The
-   operator never authors systemd units or files in a provisioning format;
-   everything is Nix.
+3. **Cloud user-data carries the sole host configuration, as literal Nix.**
+   Operator intent arrives as a leaf `host.nix` and participates in the same
+   `evalModules` as base and package modules. A size-limit pointer may locate
+   and authenticate the exact file, but it cannot express configuration.
+   There is no JSON storage plan or other parallel provisioning language.
 
 4. **Configuration is packed into nix-store-addressed generations** that switch
    atomically and roll back. A config-generation is `(image_gen_parent,
@@ -192,7 +193,7 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
 
 | # | Decision | Resolution |
 |---|----------|------------|
-| D1 | Where stage-2 eval runs | **Post-switch-root, stage-2** (initrd cannot reference the evaluator/toplevel without the documented `initrd → toplevel → initrd` cycle; registry trust + DNS are stage-2 constructs). New `aos-eval.service`, `After=network-online.target`, `Before=aos-install-packages.service`. |
+| D1 | Where evaluation runs | **Two closed projections of the same authenticated `host.nix`.** The initrd evaluates only `aos.provisioning` from the in-image base library; post-switch-root stage 2 performs the full resolve/eval fixpoint. The early projection has no package config modules, registry access, or `system.build` read, so it cannot form the full-evaluator closure cycle. |
 | D2 | Config distribution | A second **`config` output** per package; its **closure is its import graph** (store-path-string imports captured by `nix-store --dump` reference scanning). The hand-maintained `requires` edge list is **removed**. |
 | D3 | Shared library wiring | The base lib is **injected** (`specialArgs`/`_module.args`), version-bound to the image generation — not imported per package. Package config modules are leaf `{ lib, config, ... }:` modules. |
 | D4 | Namespacing | **Per-package roots** (`{pkg}.*`) plus **"system extension"** packages owning shared roots (`firewall.*`). Declaration ownership is structural for private roots (root = package name), and the locally-derived **system roots map** (built from the installed set's `owns_roots`) for shared roots. |
@@ -204,13 +205,14 @@ pkgs/*.nix (mkDerivation)                 base lib (in measured image) ─┐
 | D10 | Conflicts | Two **installed owners** of one shared root → hard error, **per-system** at resolve time (optionally early at install), citing both; the registry never adjudicates ownership. Shared scalars typed `uniq`/`mergeEqualOption` so equal-priority disagreement is a **loud error**, not silent last-wins. |
 | D11 | Enablement & conscription | **Foreign conscription forbidden; provider enablement allowed.** A package may write/enable only within roots it **owns or is a registered provider/contributor of**; it may not enable a *foreign* service it merely depends on (`redis-exporter` cannot start `redis` — it declares a resolve-time assertion `redis.enable` that fails loudly). A registered provider may enable the sub-features it ships within its root (`nginx-full` setting `nginx.modules.http3.enable`). Top-level `{service}.enable` stays operator-owned in `host.nix` (installing ≠ starting; `apm install` injects the operator's enable); the operator always overrides (priority 75). Enforced at resolve time via per-def authenticated provenance + the installed owner's contributable surface in `SystemRoots`. |
 | D16 | Variants & alternatives | A logical service (`nginx`) is a shared root; concrete variants (`nginx-full`, `nginx-minimal`, `nginx-light`) are mutually-exclusive **alternative providers** (`Provides`/`Conflicts` on the virtual root), so exactly one declares/implements `nginx.*` in any resolved set — single-declarer (D10) holds per-set. The operator selects by installing the variant and enables via `nginx.enable`. |
-| D17 | Ignition removed; systemd-native substrate | Ignition is **removed**. Substrate is provisioned by **`systemd-repart`** (idempotent partition/grow — subsumes `aos-growfs`+`aos-gpt-relocate`), **`systemd-cryptenroll`/`cryptsetup`** (already RFC-0006's `/var` seal), `systemd-tmpfiles`, `systemd-sysusers`. The initrd validates a typed provisioning-bundle storage plan before rendering transient `repart.d`; when no plan is declared it uses the image-baked convention. Full `host.nix` evaluation remains in stage-2. See [`provisioning.md`](provisioning.md). |
-| D18 | Idempotent vs one-shot lifecycle | **Prefer convergent tools** (repart/tmpfiles/sysusers/cryptsetup-attach — no guard, run every activation); **guard only genuinely-destructive ops** with a **state probe** (`cryptsetup isLuks`, `blkid \|\| mkfs`) preferred over a marker, `ConditionFirstBoot=` for identity ops; **never guard a convergent op**. A Nix module declares desired state; the materializer renders the correct guard — destructive → `Type=oneshot`+probe (outside reconcile), config → manifest `etc`+`units.action` (reconciled every activation). |
+| D17 | Ignition removed; `host.nix` provisions storage | Ignition is **removed**. The authenticated `host.nix` is partially evaluated in the initrd to a typed `aos.provisioning.storage` plan, independently validated in Rust, then applied through `systemd-repart` and the existing cryptsetup substrate. No raw repart text or second provisioning language is accepted. |
+| D18 | Provision-once vs reconciliation | Disk topology is a one-time commit recorded by a reserved GPT provenance marker. A pending marker fails closed for explicit partial-commit recovery; only a committed operator/fallback label freezes automatic mutation and removes the metadata dependency. Normal files, units, packages, networking, tmpfiles, sysusers, and unlock operations remain reconciled. |
 | D19 | Provisioning as a systemd unit graph | The eval emits `manifest.json` + `graph.json`; a compiler writes **per-package templated instance units** (`aos-pkg-fetch@<p>`/`aos-pkg-install@<p>`) + edge dropins into `/run/systemd/system`, `daemon-reload`s, and starts `aos-config.target`. APM fetch/render are units; the config DAG becomes systemd ordering. **`Wants=`** (not `Requires=`) pulls packages so a failure **degrades** (`is-system-running=degraded`, box reachable) rather than fails the boot; `Requires=`/`BindsTo=` reserved for true substrate edges (→ rescue/emergency). The single `activate.sh.in` `mount --move --beneath` stays the lone atomic commit. See [`orchestration.md`](orchestration.md). |
-| D20 | Literal-Nix user-data; `aos metadata` agent | Cloud user-data is either literal `host.nix` or an `aos.provisioning/v1` bundle that binds `host.nix` bytes (inline or URL+SHA-256) and an optional typed storage plan. The **`aos metadata`** initrd agent owns cross-cloud acquisition. In the default `platform` mode, delivery by the selected metadata/config-drive channel authorizes the bundle. In `signed` mode, the exact bundle bytes are verified in initrd against public anchors included in the measured initrd **before any disk mutation**. The validated plan is rendered to transient `repart.d`; raw fragments are never accepted. The same authenticated host input survives switch-root for full stage-2 evaluation. Instance facts enter as `host.facts.*` (D9), not imperative writes. |
+| D20 | Literal-Nix user-data; `aos metadata` agent | Cloud user-data is literal `host.nix`. A minimal URL/SHA-256/signature pointer is permitted only as transport metadata for provider size limits. The **`aos metadata`** initrd agent owns cross-cloud acquisition and authenticates the exact Nix bytes under `platform` or `signed` policy before early evaluation. The same bytes survive switch-root for full stage-2 evaluation. Instance facts enter separately as recorded `host.facts.*`, not imperative writes. |
 | D12 | Evaluator | **Stock C++ Nix for P1** (already packaged), sandboxed `--pure-eval --restrict-eval --allow-import-from-derivation=false` and bounded by a hardened transient systemd unit (`MemoryMax`/`RuntimeMaxSec`). **aos-nix for P2** behind the same seam. |
 | D13 | Manifest trust | The locally-computed manifest needs **no signature**: it is a deterministic function of authenticated inputs and is fully re-derivable. Measure the *producer* (UKI), seal-protect the *product* (`/var`), attest the *input set*. |
-| D14 | host.nix authenticity | Trust is policy-selected. The default **`platform`** mode trusts the cloud/deployment control plane that delivered user-data. The opt-in **`signed`** mode requires an SSHSIG-authenticated provisioning bundle (or detached signature for literal `host.nix`) against image-baked public anchors. Any signed-mode failure is fail-closed; a declared early storage plan is never applied unless its whole bundle has already been authorized. |
+| D14 | host.nix authenticity | Trust is policy-selected. The default **`platform`** mode trusts the cloud/deployment control plane that delivered user-data. The opt-in **`signed`** mode requires an SSHSIG over the exact `host.nix` bytes against a measured vendor/fleet root or a key delegated by that root. `host.nix` cannot select its own trust policy or trust anchor. |
+| D21 | Golden-image boundary | Consumers configure hosts through `host.nix`, not by rebuilding the release image. The image contains boot capabilities, evaluator/runtime mechanisms, bootstrap networking/storage, and initial trust roots. Roles, desired packages, identity, networking, users, services, runtime security and observability policy live in `host.nix`. Mixed profiles are split accordingly. |
 | D15 | Secrets | Referenced by **handle** via an opaque `secretRef` type + an activation-time resolution contract; backend/rotation/distribution **deferred** to the forthcoming secret-management system. |
 
 ## Open questions

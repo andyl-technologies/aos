@@ -43,6 +43,9 @@
 ##!                          Later entries never overwrite earlier ones.
 ##!   postPopulate         — shell fragment spliced after tree population and
 ##!                          before mkfs. Runs with `rootfs/` as the tree.
+##!   erofsCompressionLevel — zstd level for EROFS images (default 19).
+##!                           Test variants may select a faster level without
+##!                           weakening production image compression.
 ##!
 ##! Output: `$out/root.img` (the ext4 image) and `$out/rootfs-size-bytes`
 ##! (the final image byte count, so the caller can size the partition).
@@ -63,6 +66,7 @@
   # "erofs" builds a zstd-compressed, read-only image via `mkfs.erofs` —
   # roughly a third the size — for the immutable production boot image.
   fsType ? "ext4",
+  erofsCompressionLevel ? 19,
   # When true, format a deterministic dm-verity Merkle hash tree
   # over the finalized root.img and emit `root.verity` + `root.roothash`
   # (+ `root.roothash.p7s` when an SB db key is supplied) + `root-verity-size-
@@ -355,13 +359,13 @@ in
                 mkfs.erofs --all-root -T0 \
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
                   --workers="$NIX_BUILD_CORES" \
-                  -z zstd,level=19 \
+                  -z zstd,level=${toString erofsCompressionLevel} \
                   -C262144 \
                   -Efragments,ztailpacking \
                   -L ${label} root.img rootfs
                 fsck.erofs root.img >/dev/null
                 final_bytes=$(stat -c %s root.img)
-                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-19, 256K cluster, fragments)"
+                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, fragments)"
                 echo "$final_bytes" > rootfs-size-bytes
               ''
               else ''

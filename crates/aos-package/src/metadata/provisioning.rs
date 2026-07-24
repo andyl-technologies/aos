@@ -1,45 +1,23 @@
-//! Provisioning-input authorization and first-boot extraction.
+//! Exact-`host.nix` authorization and the restricted first-boot projection.
 //!
-//! Fetchers write exact user-data bytes without interpreting them. This module
-//! is the only path that turns those bytes into an evaluator-visible
-//! `host.nix` or transient storage definitions. The trust decision therefore
-//! precedes every destructive interpretation.
-//!
-//! ```json
-//! {
-//!   "schema": "aos.provisioning/v1",
-//!   "host_nix": {
-//!     "url": "https://config.example/hosts/i-123.nix",
-//!     "sha256": "0123456789abcdef..."
-//!   },
-//!   "storage": {
-//!     "partitions": [
-//!       {
-//!         "label": "var",
-//!         "type": "var",
-//!         "size_min_bytes": 4294967296,
-//!         "grow": true,
-//!         "format": "ext4"
-//!       }
-//!     ]
-//!   }
-//! }
-//! ```
+//! Fetchers write user-data bytes without interpreting them. Authorization
+//! authenticates those complete bytes and promotes them, unchanged, to
+//! `host.nix`. A separate restricted Nix evaluation then projects only
+//! `aos.provisioning` from that module and hands the resulting JSON to the
+//! strict Rust storage validator.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::config_trust::{PROVISIONING_SIGNATURE_NAMESPACE, authenticate_config_payload};
+use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
-use super::http::MetadataHttp;
-use super::repart::{StoragePlan, render_storage_plan};
+use super::repart::{ProvisioningPlan, render_provisioning_plan};
 use super::stash::{Stash, sha256_hex};
 
-/// Provisioning-bundle schema identifier.
-pub const PROVISIONING_SCHEMA: &str = "aos.provisioning/v1";
 /// Raw user-data filename written by the fetch phase.
 pub const RAW_USER_DATA_FILE: &str = "user-data";
 /// Detached signature over the exact raw user-data bytes.
@@ -47,18 +25,18 @@ pub const RAW_USER_DATA_SIGNATURE_FILE: &str = "user-data.sig";
 /// Authorization record consumed by stage 2.
 pub const PROVISIONING_RESULT_FILE: &str = ".provisioning-result.json";
 
-/// Trust policy applied to provisioning input.
+/// Trust policy applied to `host.nix`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProvisioningTrust {
     /// Trust successful delivery by the detected deployment platform.
     Platform,
-    /// Require an SSHSIG over the complete input.
+    /// Require an SSHSIG over the complete `host.nix`.
     Signed,
 }
 
 impl ProvisioningTrust {
-    /// Stable serialized policy name.
+    /// Returns the stable serialized policy name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Platform => "platform",
@@ -79,35 +57,7 @@ impl FromStr for ProvisioningTrust {
     }
 }
 
-/// Complete authenticated provisioning bundle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProvisioningBundle {
-    /// Must equal [`PROVISIONING_SCHEMA`].
-    pub schema: String,
-    /// Operator host configuration source.
-    pub host_nix: HostNixSource,
-    /// Optional typed first-boot storage plan.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<StoragePlan>,
-}
-
-/// Inline or content-pinned host configuration source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostNixSource {
-    /// Inline literal Nix. Exactly one of `inline` and `url` is required.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline: Option<String>,
-    /// URL for a larger host module.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    /// Mandatory lowercase-hex SHA-256 pin when `url` is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
-}
-
-/// Result of accepting provisioning input.
+/// Result of accepting exact `host.nix` bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProvisioningResult {
@@ -115,47 +65,49 @@ pub struct ProvisioningResult {
     pub trust_mode: ProvisioningTrust,
     /// Detected platform that delivered the input.
     pub platform_id: String,
-    /// SHA-256 of the exact authorized input bytes.
-    pub input_sha256: String,
-    /// SHA-256 of the exact stage-2 `host.nix`.
+    /// SHA-256 of the exact authorized `host.nix` bytes.
     pub host_nix_sha256: String,
     /// Matching trusted-key fingerprint in signed mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
-    /// Whether a custom storage plan was rendered.
-    pub storage_plan_rendered: bool,
 }
 
-/// Options for provisioning authorization.
+/// Options for exact-`host.nix` authorization.
 pub struct AuthorizeOptions {
     /// Metadata stash root.
     pub stash_dir: PathBuf,
-    /// Measured boot keeps `/var` raw for the LUKS enrollment path.
-    pub measured_boot: bool,
     /// Measured policy selected by the image.
     pub trust: ProvisioningTrust,
     /// Public signed-mode anchors available in initrd.
     pub trusted_config_key_dirs: Vec<PathBuf>,
 }
 
-/// Authorize the fetched input and produce `host.nix` plus optional repart
-/// definitions.
+/// Options for the restricted one-time provisioning evaluation.
+pub struct EvalProvisioningOptions {
+    /// Metadata stash root containing the accepted `host.nix`, when present.
+    pub stash_dir: PathBuf,
+    /// ABI-pinned base module library embedded in the image.
+    pub base_lib: PathBuf,
+    /// Scratch directory made visible to restricted evaluation.
+    pub eval_root: PathBuf,
+    /// Whether measured boot requires `/var` to remain raw.
+    pub measured_boot: bool,
+}
+
+/// Authorizes fetched user-data as literal `host.nix`.
 ///
-/// No user-data is a successful no-op, selecting the image-baked layout. A
-/// missing fetch result, malformed bundle, trust failure, content-pin failure,
-/// or invalid declared storage plan is fail-closed.
+/// No user-data is a successful no-op. Any present payload is copied byte for
+/// byte after the selected trust policy succeeds. There is no second storage
+/// language and no JSON envelope to unwrap.
 ///
 /// # Errors
 ///
-/// Returns an error for every failed prerequisite or authorization step. On
-/// error, no evaluator-visible host file or transient repart directory remains.
-pub async fn run_authorize(
-    opts: &AuthorizeOptions,
-    http: &dyn MetadataHttp,
-) -> Result<Option<ProvisioningResult>> {
+/// Returns an error when fetch did not complete, signature authentication
+/// fails, or authorized outputs cannot be replaced.
+pub fn run_authorize(opts: &AuthorizeOptions) -> Result<Option<ProvisioningResult>> {
     let stash = Stash::open(&opts.stash_dir)?;
     stash.clear_authorized_outputs()?;
-    match authorize_inner(&stash, opts, http).await {
+    match authorize_inner(&stash, opts) {
         Ok(result) => Ok(result),
         Err(error) => {
             stash
@@ -166,13 +118,7 @@ pub async fn run_authorize(
     }
 }
 
-async fn authorize_inner(
-    stash: &Stash,
-    opts: &AuthorizeOptions,
-    http: &dyn MetadataHttp,
-) -> Result<Option<ProvisioningResult>> {
-    // A completed fetch record distinguishes "no user-data" from a transport
-    // failure that left the stash incomplete.
+fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<ProvisioningResult>> {
     if !stash.dir().join(".metadata-result.json").is_file() {
         bail!("metadata fetch did not complete; refusing first-boot provisioning");
     }
@@ -181,7 +127,7 @@ async fn authorize_inner(
     if !raw_path.is_file() {
         return Ok(None);
     }
-    let raw = std::fs::read(&raw_path).context("reading fetched user-data")?;
+    let raw = std::fs::read(&raw_path).context("reading fetched host.nix")?;
     let sig = std::fs::read_to_string(stash.dir().join(RAW_USER_DATA_SIGNATURE_FILE)).ok();
     let env = stash.read_platform_env()?;
 
@@ -192,41 +138,104 @@ async fn authorize_inner(
                 &raw,
                 sig.as_deref(),
                 &opts.trusted_config_key_dirs,
-                PROVISIONING_SIGNATURE_NAMESPACE,
+                CONFIG_SIGNATURE_NAMESPACE,
             )
             .map_err(anyhow::Error::new)
-            .context("authorizing signed provisioning input")?
+            .context("authorizing signed host.nix")?
             .operator_key,
         ),
     };
 
-    let (host_nix, storage) = parse_authorized_input(&raw, http).await?;
-    let host_nix_sha256 = sha256_hex(&host_nix);
-
-    let storage_plan_rendered = match storage {
-        Some(plan) => {
-            render_storage_plan(stash.dir(), &plan, opts.measured_boot)?;
-            true
-        }
-        None => false,
-    };
-    std::fs::write(stash.dir().join("host.nix"), &host_nix).context("writing accepted host.nix")?;
-
+    std::fs::write(stash.dir().join("host.nix"), &raw).context("writing accepted host.nix")?;
     let result = ProvisioningResult {
         trust_mode: opts.trust,
         platform_id: env.platform_id,
-        input_sha256: sha256_hex(&raw),
-        host_nix_sha256,
+        host_nix_sha256: sha256_hex(&raw),
         signer,
-        storage_plan_rendered,
     };
-    let encoded = serde_json::to_vec_pretty(&result).context("serializing provisioning result")?;
+    let encoded = serde_json::to_vec_pretty(&result).context("serializing authorization result")?;
     std::fs::write(stash.dir().join(PROVISIONING_RESULT_FILE), encoded)
-        .context("writing provisioning result")?;
+        .context("writing authorization result")?;
     Ok(Some(result))
 }
 
-/// Verify that stage 2 is consuming the exact host bytes accepted in initrd.
+/// Evaluates and renders the closed `aos.provisioning` projection.
+///
+/// When no `host.nix` was delivered, the same evaluator supplies the schema
+/// defaults. The command enables restricted evaluation and disables
+/// import-from-derivation; only the scratch root, base library, and accepted
+/// host file are admitted.
+///
+/// # Errors
+///
+/// Returns an error when the restricted evaluator fails, emits malformed JSON,
+/// or the strict Rust validation or renderer rejects the projection.
+pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<ProvisioningPlan> {
+    std::fs::create_dir_all(&opts.eval_root)
+        .with_context(|| format!("creating eval root {}", opts.eval_root.display()))?;
+    let host_path = opts.stash_dir.join("host.nix");
+    let operator_modules = if host_path.is_file() {
+        format!("[ (import {}) ]", nix_path(&host_path))
+    } else {
+        "[]".to_string()
+    };
+    let entry = opts.eval_root.join("provisioning-entry.nix");
+    let expression = format!(
+        "# Generated by aos metadata eval-provisioning; do not edit.\n\
+         let\n\
+        \x20 baseLib = import {base};\n\
+        \x20 system = baseLib.evalProvisioningConfig {{\n\
+        \x20   operatorModules = {operators};\n\
+        \x20 }};\n\
+         in {{\n\
+        \x20 schema = \"aos.provisioning-plan/v1\";\n\
+        \x20 storage = system.config.aos.provisioning.storage;\n\
+         }}\n",
+        base = nix_path(&opts.base_lib),
+        operators = operator_modules,
+    );
+    std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
+
+    let mut command = Command::new("nix");
+    command
+        .arg("eval")
+        .arg("--json")
+        .args(["--option", "restrict-eval", "true"])
+        .args(["--option", "allow-import-from-derivation", "false"])
+        .arg("-I")
+        .arg(&opts.eval_root)
+        .arg("-I")
+        .arg(&opts.base_lib);
+    if host_path.is_file() {
+        command.arg("-I").arg(&host_path);
+    }
+    let output = command
+        .arg("-f")
+        .arg(&entry)
+        .output()
+        .context("spawning restricted provisioning evaluation")?;
+    if !output.status.success() {
+        bail!(
+            "restricted provisioning evaluation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let plan: ProvisioningPlan =
+        serde_json::from_slice(&output.stdout).context("parsing evaluated provisioning plan")?;
+    render_provisioning_plan(&opts.stash_dir, &plan, opts.measured_boot)?;
+    std::fs::write(
+        opts.stash_dir.join("provisioning-source"),
+        if host_path.is_file() {
+            "operator\n"
+        } else {
+            "fallback\n"
+        },
+    )
+    .context("writing provisioning source")?;
+    Ok(plan)
+}
+
+/// Verifies that stage 2 is consuming the exact host bytes accepted in initrd.
 ///
 /// # Errors
 ///
@@ -250,44 +259,6 @@ pub fn verify_host_binding(stash_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn parse_authorized_input(
-    raw: &[u8],
-    http: &dyn MetadataHttp,
-) -> Result<(Vec<u8>, Option<StoragePlan>)> {
-    match serde_json::from_slice::<serde_json::Value>(raw) {
-        Ok(value)
-            if value.get("schema").is_some()
-                || value.get("host_nix").is_some()
-                || value.get("storage").is_some() =>
-        {
-            let bundle: ProvisioningBundle =
-                serde_json::from_value(value).context("parsing aos.provisioning/v1 bundle")?;
-            if bundle.schema != PROVISIONING_SCHEMA {
-                bail!(
-                    "unsupported provisioning schema '{}'; expected '{}'",
-                    bundle.schema,
-                    PROVISIONING_SCHEMA
-                );
-            }
-            let host_nix = resolve_host_nix(bundle.host_nix, http).await?;
-            Ok((host_nix, bundle.storage))
-        }
-        Ok(_) | Err(_) => Ok((raw.to_vec(), None)),
-    }
-}
-
-async fn resolve_host_nix(source: HostNixSource, http: &dyn MetadataHttp) -> Result<Vec<u8>> {
-    match (source.inline, source.url, source.sha256) {
-        (Some(inline), None, None) => Ok(inline.into_bytes()),
-        (None, Some(url), Some(sha256)) => http
-            .get_pinned(&url, &sha256, &[])
-            .await
-            .with_context(|| format!("fetching pinned host.nix {url}"))?
-            .into_ok_body()
-            .ok_or_else(|| anyhow::anyhow!("pinned host.nix {url} returned no body")),
-        (Some(_), Some(_), _) => bail!("host_nix must set exactly one of inline or url"),
-        (None, Some(_), None) => bail!("host_nix.url requires sha256"),
-        (Some(_), None, Some(_)) => bail!("host_nix.inline must not set sha256"),
-        (None, None, _) => bail!("host_nix must set exactly one of inline or url"),
-    }
+fn nix_path(path: &Path) -> String {
+    path.to_string_lossy().replace(' ', "\\ ")
 }

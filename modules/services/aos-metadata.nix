@@ -5,14 +5,16 @@
 ##!
 ##! Fetch stores exact user-data and facts under `/run/aos-metadata/`.
 ##! Authorization then applies the measured `platform` or `signed` policy and
-##! is the only step allowed to produce `host.nix` or transient `repart.d`.
-##! Full Nix evaluation remains in stage 2.
+##! is the only step allowed to produce exact `host.nix`. Restricted initrd
+##! evaluation projects `aos.provisioning`; full evaluation remains in stage 2.
 ##!
-##! Four units implement detection, networking, fetch, and authorization:
+##! Units implement state detection, acquisition, authorization, and projection:
+##!   aos-provisioning-state durable GPT marker → one-time gate
 ##!   aos-metadata-detect   DMI/ISO → platform.env
 ##!   aos-metadata-network  DHCP gate, cloud-only
 ##!   aos-metadata-fetch    platform → stash
-##!   aos-metadata-authorize trust + schema → host.nix + optional repart.d
+##!   aos-metadata-authorize trust → exact host.nix
+##!   aos-provisioning-eval restricted Nix → validated transient repart.d
 ##!
 {
   config,
@@ -53,9 +55,48 @@ in {
   };
 
   config = {
-    aos.boot.initrd.extraPackages = [configTrustAnchors];
+    aos.boot.initrd.extraPackages = [
+      configTrustAnchors
+      config.aos.config.evalAtBoot.baseLib
+      pkgs.nix
+    ];
 
     boot.initrd.systemd.services = {
+      "aos-provisioning-state" = {
+        description = "Detect durable first-boot provisioning state";
+        wantedBy = ["initrd-root-fs.target"];
+        before = [
+          "aos-metadata-detect.service"
+          "aos-metadata-fetch.service"
+          "aos-metadata-authorize.service"
+          "aos-provisioning-eval.service"
+        ];
+        requires = [
+          "systemd-udevd.service"
+          "systemd-udev-trigger.service"
+        ];
+        after = [
+          "systemd-udevd.service"
+          "systemd-udev-trigger.service"
+          "systemd-udev-settle.service"
+        ];
+        unitConfig.DefaultDependencies = "no";
+        environment.PATH = lib.makeBinPath [pkgs.coreutils pkgs.systemd];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -u
+          udevadm settle || true
+          if [ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 ] \
+            || [ -e /dev/disk/by-partlabel/aos-provenance-fallback-v1 ]; then
+            mkdir -p ${cfg.stashDir}
+            : > ${cfg.stashDir}/provisioned
+          fi
+        '';
+      };
+
       # 1. Platform detection + offline config-drive probe. Applies the
       #    DMI/SMBIOS decision table and probes blkid -L
       #    {aos-metadata,cidata,config-2}. Writes platform.env (+ the
@@ -68,18 +109,27 @@ in {
           "aos-metadata-authorize.service"
         ];
         requires = [
+          "aos-provisioning-state.service"
           "systemd-udevd.service"
           "systemd-udev-trigger.service"
         ];
         after = [
+          "aos-provisioning-state.service"
           "systemd-udevd.service"
           "systemd-udev-trigger.service"
         ];
-        unitConfig.DefaultDependencies = "no";
-        environment.PATH = lib.makeBinPath [
-          pkgs.coreutils
-          pkgs.util-linux
-        ];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "!${cfg.stashDir}/provisioned";
+        };
+        environment = {
+          AOS_METADATA_BLKID = "${pkgs.util-linux}/sbin/blkid";
+          AOS_METADATA_MOUNT = "${pkgs.util-linux}/bin/mount";
+          PATH = lib.makeBinPath [
+            pkgs.coreutils
+            pkgs.util-linux
+          ];
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -126,7 +176,10 @@ in {
           "aos-metadata-authorize.service"
           "initrd-root-fs.target"
         ];
-        unitConfig.DefaultDependencies = "no";
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "!${cfg.stashDir}/provisioned";
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -138,20 +191,20 @@ in {
         };
       };
 
-      # 4. Apply the measured trust policy, parse the closed provisioning
-      #    schema, content-pin any host.nix URL, and render transient repart
-      #    definitions. Unlike fetch, failure is fatal: a possibly declared
-      #    storage plan must never silently fall back to the baked layout.
+      # 4. Apply the trust policy to the exact fetched host.nix bytes.
       "aos-metadata-authorize" = {
-        description = "Authorize first-boot provisioning input";
+        description = "Authorize exact first-boot host.nix";
         requiredBy = ["initrd-root-fs.target"];
         requires = ["aos-metadata-fetch.service"];
         after = ["aos-metadata-fetch.service"];
         before = [
-          "aos-repart.service"
+          "aos-provisioning-eval.service"
           "initrd-root-fs.target"
         ];
-        unitConfig.DefaultDependencies = "no";
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "!${cfg.stashDir}/provisioned";
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -159,7 +212,38 @@ in {
             "${pkgs.aos}/bin/aos metadata authorize"
             + " --trust ${trust}"
             + lib.optionalString (trust == "signed")
-            " --trusted-config-keys-dir ${configTrustAnchors}"
+            " --trusted-config-keys-dir ${configTrustAnchors}";
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+      };
+
+      # 5. Evaluate only aos.provisioning using the image's ABI-pinned base
+      #    library. No package modules, registry, builders, or full runtime
+      #    configuration are reachable in this projection.
+      "aos-provisioning-eval" = {
+        description = "Evaluate and validate one-time host provisioning";
+        requiredBy = ["initrd-root-fs.target"];
+        requires = ["aos-metadata-authorize.service"];
+        after = ["aos-metadata-authorize.service"];
+        before = [
+          "aos-repart.service"
+          "initrd-root-fs.target"
+        ];
+        unitConfig = {
+          DefaultDependencies = "no";
+          ConditionPathExists = "!${cfg.stashDir}/provisioned";
+        };
+        environment = {
+          NIX_CONFIG = "experimental-features = nix-command";
+          PATH = lib.makeBinPath [pkgs.nix pkgs.coreutils];
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart =
+            "${pkgs.aos}/bin/aos metadata eval-provisioning"
+            + " --base-lib ${config.aos.config.evalAtBoot.baseLib}"
             + lib.optionalString measured " --measured-boot";
           StandardOutput = "journal+console";
           StandardError = "journal+console";

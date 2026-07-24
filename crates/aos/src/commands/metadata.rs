@@ -14,7 +14,8 @@ use crate::cli::MetadataCmd;
 ///
 /// `detect` writes `/run/aos-metadata/platform.env`; `fetch` selects the
 /// platform fetcher and stashes exact payload + facts; `authorize` applies the
-/// measured trust policy before producing host or storage outputs.
+/// measured trust policy before producing exact `host.nix`; and
+/// `eval-provisioning` evaluates only the closed one-time projection.
 ///
 /// # Errors
 ///
@@ -28,18 +29,30 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
         MetadataCmd::Authorize {
             trust,
             trusted_config_keys_dir,
-            measured_boot,
         } => {
             let opts = aos_package::metadata::AuthorizeOptions {
                 stash_dir: std::path::PathBuf::from(
                     aos_package::metadata::stash::DEFAULT_STASH_DIR,
                 ),
-                measured_boot: *measured_boot,
                 trust: trust.parse()?,
                 trusted_config_key_dirs: trusted_config_keys_dir.clone(),
             };
             aos_package::metadata::authorize_main(&opts).await
         }
+        MetadataCmd::EvalProvisioning {
+            base_lib,
+            eval_root,
+            measured_boot,
+        } => aos_package::metadata::eval_provisioning_main(
+            &aos_package::metadata::EvalProvisioningOptions {
+                stash_dir: std::path::PathBuf::from(
+                    aos_package::metadata::stash::DEFAULT_STASH_DIR,
+                ),
+                base_lib: base_lib.clone(),
+                eval_root: eval_root.clone(),
+                measured_boot: *measured_boot,
+            },
+        ),
         MetadataCmd::VerifyBinding => aos_package::metadata::verify_binding_main(
             std::path::Path::new(aos_package::metadata::stash::DEFAULT_STASH_DIR),
         ),

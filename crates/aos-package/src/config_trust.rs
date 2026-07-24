@@ -1,7 +1,7 @@
 //! Domain-separated configuration signature authentication.
 //!
-//! Secure first-boot provisioning verifies the complete raw provisioning
-//! input in the initrd before extracting either `host.nix` or a storage plan.
+//! Secure first-boot provisioning verifies exact `host.nix` bytes in the
+//! initrd before either restricted or full evaluation.
 //! Manual configuration-evaluation commands can use the same implementation
 //! to verify a detached signature over a standalone `host.nix`.
 //!
@@ -21,9 +21,8 @@
 //!   Err(Untrusted)
 //! ```
 //!
-//! Standalone host modules use [`CONFIG_SIGNATURE_NAMESPACE`]; provisioning
-//! bundles use [`PROVISIONING_SIGNATURE_NAMESPACE`]. Both are distinct from
-//! the `git` namespace, preventing cross-protocol signature replay.
+//! Host modules use [`CONFIG_SIGNATURE_NAMESPACE`], which is distinct from the
+//! `git` namespace and therefore prevents cross-protocol signature replay.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -37,12 +36,6 @@ use crate::security::{KeyStore, verify_payload_signature};
 /// [`crate::security::verify_tag_signature`]; a namespace mismatch causes the
 /// underlying verifier to return `Ok(false)` and the gate to fail closed.
 pub const CONFIG_SIGNATURE_NAMESPACE: &str = "aos-config";
-/// SSHSIG namespace for complete first-boot provisioning inputs.
-///
-/// It is intentionally distinct from both [`CONFIG_SIGNATURE_NAMESPACE`] and
-/// `git`, preventing a signature over a host module or registry object from
-/// being replayed as authorization for a storage plan.
-pub const PROVISIONING_SIGNATURE_NAMESPACE: &str = "aos-provisioning";
 
 /// The image-baked operator trust-anchor directory.
 pub const TRUSTED_CONFIG_KEYS_DIR: &str = "/etc/apm/trusted-config-keys.d";
@@ -137,10 +130,8 @@ pub fn authenticate_host_nix(
 /// Authenticate arbitrary configuration bytes in a caller-selected SSHSIG
 /// namespace.
 ///
-/// The first-boot provisioning path uses this with
-/// [`PROVISIONING_SIGNATURE_NAMESPACE`] so one signature binds the storage plan
-/// and the referenced `host.nix` hash. Callers must use a stable,
-/// domain-separated namespace.
+/// Callers must use a stable, domain-separated namespace. First boot uses
+/// [`CONFIG_SIGNATURE_NAMESPACE`] over the exact host module bytes.
 ///
 /// # Errors
 ///
@@ -357,31 +348,26 @@ mod tests {
     }
 
     #[test]
-    fn provisioning_namespace_binds_complete_bundle() {
+    fn config_namespace_binds_complete_host() {
         let tmp = TempDir::new().unwrap();
         let keys = tmp.path().join("trusted-config-keys.d");
         let priv_path = enroll_operator(&keys, tmp.path(), "ops");
-        let bundle = br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{}"}}"#;
-        let sig =
-            sign_payload_signature(&priv_path, PROVISIONING_SIGNATURE_NAMESPACE, bundle).unwrap();
+        let host = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"8G\"; }";
+        let sig = sign_payload_signature(&priv_path, CONFIG_SIGNATURE_NAMESPACE, host).unwrap();
 
         let trust = authenticate_config_payload(
-            bundle,
+            host,
             Some(&sig),
             std::slice::from_ref(&keys),
-            PROVISIONING_SIGNATURE_NAMESPACE,
+            CONFIG_SIGNATURE_NAMESPACE,
         )
         .unwrap();
         assert_eq!(trust.operator_id, "ops");
 
-        let changed = br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{x=1;}"}}"#;
-        let err = authenticate_config_payload(
-            changed,
-            Some(&sig),
-            &[keys],
-            PROVISIONING_SIGNATURE_NAMESPACE,
-        )
-        .unwrap_err();
+        let changed = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"9G\"; }";
+        let err =
+            authenticate_config_payload(changed, Some(&sig), &[keys], CONFIG_SIGNATURE_NAMESPACE)
+                .unwrap_err();
         assert_eq!(err, HostNixTrustError::Untrusted);
     }
 

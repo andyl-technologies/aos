@@ -22,6 +22,19 @@
 {pkgs, ...}: {
   imports = [./server.nix];
 
+  # Runtime policy is deliberately absent from the production golden image.
+  # This fixture opts into a server role and local recovery console just as a
+  # test host.nix would.
+  aos.roles.server.enable = true;
+  aos.profiles.debug = {
+    enable = true;
+    autologin = true;
+  };
+
+  # Preserve the production EROFS format and all boot semantics while avoiding
+  # zstd-19 recompression on every iterative fleet-test image rebuild.
+  aos.image.erofsCompressionLevel = 1;
+
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See
   # lib/testing/fleet.nix `mkMachinesWithIndex`. Bundling this exposed package

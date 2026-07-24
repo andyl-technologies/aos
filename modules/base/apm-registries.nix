@@ -48,16 +48,16 @@ in {
   options.aos.apm.configKeys = lib.mkOption {
     default = {};
     description = ''
-      Operator provisioning-signing keys for signed provisioning policy, baked
+      Operator host-configuration signing keys for signed policy, baked
       into the image as
       `/etc/apm/trusted-config-keys.d/<op>.pub`. Each attribute name is an
       operator id; its value is a list of `<op>:Ed25519:<base64>` public key
       lines (rotation overlap is a multi-element list). In signed mode the
-      initrd verifies the exact provisioning input in the `aos-provisioning`
-      SSHSIG namespace before rendering a storage plan or exposing `host.nix`.
+      initrd verifies the exact `host.nix` bytes in the `aos-config` SSHSIG
+      namespace before either restricted or full evaluation.
       Missing or untrusted signatures fail closed. Explicit off-boot
       `apm switch --require-signed-host-nix` operations use the same anchors
-      with the narrower `aos-config` namespace.
+      with the same domain-separated namespace.
     '';
     type = lib.types.attrsOf (lib.types.listOf lib.types.str);
   };
