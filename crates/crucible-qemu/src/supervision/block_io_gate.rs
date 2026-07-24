@@ -348,9 +348,11 @@ fn run_one_scenario(
         &diagnostics,
         &setup,
         &mut child,
-        config.busy_ceiling_icount,
-        config.completion_timeout,
-        role.response_wall_delay(),
+        DriveOptions {
+            ceiling: config.busy_ceiling_icount,
+            timeout: config.completion_timeout,
+            response_wall_delay: role.response_wall_delay(),
+        },
     )?;
 
     // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
@@ -385,25 +387,31 @@ fn run_one_scenario(
 ///
 /// Returns [`QemuLiveBlockIoGateError`] only when the quantum cannot be published
 /// or the guest slot cannot be read; a stalled guest is a normal outcome.
+struct DriveOptions {
+    ceiling: u64,
+    timeout: Duration,
+    response_wall_delay: Duration,
+}
+
 fn drive_and_service(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     servicer: &mut QemuLiveBlockIoServicer,
     diagnostics: &BlockIoDiagnostics,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
-    ceiling: u64,
-    timeout: Duration,
-    response_wall_delay: Duration,
+    options: DriveOptions,
 ) -> Result<(BlockIoAdvanceOutcome, bool), QemuLiveBlockIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
-            icount: Icount { retired: ceiling },
+            icount: Icount {
+                retired: options.ceiling,
+            },
         },
     )
     .map_err(|source| QemuLiveBlockIoGateError::drive("start block-io drive quantum", source))?;
 
-    let max_polls = bounded_drive_polls(timeout);
+    let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;
     let mut stall_polls = 0_u64;
     let mut response_delay_applied = false;
@@ -414,7 +422,7 @@ fn drive_and_service(
             .vm_node_snapshot()
             .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
         if !response_delay_applied
-            && !response_wall_delay.is_zero()
+            && !options.response_wall_delay.is_zero()
             && servicer
                 .next_completion_icount()
                 .is_some_and(|deadline| snapshot.current_icount >= deadline)
@@ -422,7 +430,7 @@ fn drive_and_service(
             // This wall-only delay forces QEMU to re-poll at an already reached
             // delivery icount before the response ring write becomes visible.
             // The guest remains parked at the same logical time throughout.
-            thread::sleep(response_wall_delay);
+            thread::sleep(options.response_wall_delay);
             response_delay_applied = true;
         }
         let serviced = servicer
@@ -435,7 +443,7 @@ fn drive_and_service(
             &serviced,
         );
 
-        if snapshot.current_icount >= ceiling {
+        if snapshot.current_icount >= options.ceiling {
             outcome = BlockIoAdvanceOutcome::ReachedCeiling {
                 icount: snapshot.current_icount,
             };

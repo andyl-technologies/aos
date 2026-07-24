@@ -81,22 +81,26 @@
         request="$2"
         response="$3"
         response_err="$response.err"
+        attempts=0
+        while [ "$attempts" -lt 100 ]; do
+          {
+            printf '{"execute":"qmp_capabilities"}\r\n'
+            printf '%s\r\n' "$request"
+          } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
 
-        {
-          printf '{"execute":"qmp_capabilities"}\r\n'
-          printf '%s\r\n' "$request"
-        } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+          if [ -s "$response" ] \
+            && ! jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null \
+            && jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+          then
+            return 0
+          fi
+          sleep 0.1
+          attempts=$((attempts + 1))
+        done
 
-        if [ ! -s "$response" ]; then
-          cat "$response_err" >&2
-          return 1
-        fi
-
-        if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
-          cat "$response" >&2
-          return 1
-        fi
-        jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+        cat "$response_err" >&2 || true
+        cat "$response" >&2 || true
+        return 1
       }
 
       wait_for_socket() {

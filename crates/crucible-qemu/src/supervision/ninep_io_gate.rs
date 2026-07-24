@@ -411,9 +411,11 @@ fn run_one_scenario(
         &diagnostics,
         &setup,
         &mut child,
-        config.busy_ceiling_icount,
-        config.completion_timeout,
-        role.response_wall_delay(),
+        DriveOptions {
+            ceiling: config.busy_ceiling_icount,
+            timeout: config.completion_timeout,
+            response_wall_delay: role.response_wall_delay(),
+        },
     )?;
 
     // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
@@ -621,25 +623,31 @@ fn prime_guest_off_boot_barrier(
 ///
 /// Returns [`QemuLive9pIoGateError`] only when the quantum cannot be published or
 /// the guest slot cannot be read; a stalled guest is a normal outcome.
+struct DriveOptions {
+    ceiling: u64,
+    timeout: Duration,
+    response_wall_delay: Duration,
+}
+
 fn drive_and_service(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     servicer: &mut QemuLive9pIoServicer,
     diagnostics: &NinepIoDiagnostics,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
-    ceiling: u64,
-    timeout: Duration,
-    response_wall_delay: Duration,
+    options: DriveOptions,
 ) -> Result<(NinepIoAdvanceOutcome, bool), QemuLive9pIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
-            icount: Icount { retired: ceiling },
+            icount: Icount {
+                retired: options.ceiling,
+            },
         },
     )
     .map_err(|source| QemuLive9pIoGateError::drive("start 9p-io drive quantum", source))?;
 
-    let max_polls = bounded_drive_polls(timeout);
+    let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;
     let mut stall_polls = 0_u64;
     let mut response_delay_applied = false;
@@ -650,7 +658,7 @@ fn drive_and_service(
             .vm_node_snapshot()
             .map_err(|source| QemuLive9pIoGateError::NinepServicer { source })?;
         if !response_delay_applied
-            && !response_wall_delay.is_zero()
+            && !options.response_wall_delay.is_zero()
             && servicer
                 .next_completion_icount()
                 .is_some_and(|deadline| snapshot.current_icount >= deadline)
@@ -658,7 +666,7 @@ fn drive_and_service(
             // Force a repoll at an already reached delivery icount before the
             // response ring write is visible. The guest stays parked at the
             // same logical time while this wall-only delay elapses.
-            thread::sleep(response_wall_delay);
+            thread::sleep(options.response_wall_delay);
             response_delay_applied = true;
         }
         let serviced = servicer
@@ -666,7 +674,7 @@ fn drive_and_service(
                 snapshot.current_icount,
                 |processed, computed_deadline| {
                     if !response_delay_applied
-                        && !response_wall_delay.is_zero()
+                        && !options.response_wall_delay.is_zero()
                         && processed > 0
                         && computed_deadline
                             .is_some_and(|deadline| snapshot.current_icount >= deadline)
@@ -674,7 +682,7 @@ fn drive_and_service(
                         // The host first observed this request after its horizon.
                         // Delay between COMPUTE and DELIVER so the certification
                         // still proves wall time cannot change logical timing.
-                        thread::sleep(response_wall_delay);
+                        thread::sleep(options.response_wall_delay);
                         response_delay_applied = true;
                     }
                 },
@@ -692,7 +700,7 @@ fn drive_and_service(
         // consume the response and release its device-I/O hold before teardown;
         // otherwise shutdown can make the callback return -1 and turn a valid
         // response into a spurious virtio I/O error.
-        if snapshot.current_icount >= ceiling
+        if snapshot.current_icount >= options.ceiling
             && snapshot.device_io_active == 0
             && serviced.processed == 0
             && serviced.delivered == 0
