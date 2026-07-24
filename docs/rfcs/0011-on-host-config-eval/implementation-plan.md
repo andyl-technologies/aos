@@ -100,10 +100,10 @@ job-script normalization, documented in the commit.
       incompatible modules pre-eval (mirror `trust_ctx.enforce_totality()`).
 - [ ] `aos-eval.service` (stage-2, `After=network-online.target`,
       `Before=aos-install-packages.service`, `Type=oneshot`, best-effort) running
-      sandboxed stock Nix (`--pure-eval --restrict-eval
-      --allow-import-from-derivation=false`) → manifest.
+      sandboxed stock Nix (`nix-instantiate --store dummy:// --eval --strict
+      --json`, `restrict-eval`, `allow-import-from-derivation=false`) → manifest.
 - [ ] Hardened transient eval scope: `MemoryMax=2G`/`MemoryHigh=1536M`/
-      `RuntimeMaxSec=120`/`TasksMax`, `ProtectSystem=strict`, read-only input
+      `TimeoutStartSec=120s`/`TasksMax`, `ProtectSystem=strict`, read-only input
       binds, `SystemCallFilter`; fail-closed on kill.
 
 ### Generations
@@ -153,8 +153,23 @@ systemd-native substrate + the `aos metadata` agent + the unit graph.
       `aos-provisioning-pending-v1`; dry-run all devices, apply all devices,
       verify, then relabel it to `aos-provenance-operator-v1` or
       `aos-provenance-fallback-v1`. Only committed labels suppress future
-      mutation. Committed boots do not depend on metadata; any later stage-2
-      comparison may report drift but can never reopen disk mutation.
+      mutation. The root target is applied first so pending is durable before
+      any secondary device changes. Committed boots reacquire/evaluate
+      `host.nix`; `systemd-repart --dry-run` reports drift but can never reopen
+      disk mutation.
+- [x] **Durable evidence and recovery input.** Persist immutable first-commit
+      audit evidence and the normalized plan under
+      `/var/lib/aos-provisioning`; atomically persist the generated
+      per-device definitions for manual later-device provisioning. Cache
+      runtime input only after full evaluation succeeds and hash-check it
+      before last-known-good restoration.
+- [x] **Frozen-partition type isolation.** Build root-a with the
+      target-architecture DPS root GUID (and verity with the matching DPS
+      root-verity GUID), while operator data stays `linux-generic`. Reject all
+      frozen/reserved types in the host plan.
+- [x] **Complete initrd format closure.** Every admitted format has its
+      AOS-built tool in the repart unit (`e2fsprogs`, `dosfstools`, util-linux);
+      unsupported formats fail validation.
 - [ ] Net-new pieces (the rest is reuse): a **config-drive mount helper**
       (`blkid -L cidata|config-2|aos-metadata` + ISO9660/vfat mount — the one
       capability with no aos primitive); **vendor a YAML crate** (no
@@ -206,7 +221,7 @@ systemd-native substrate + the `aos metadata` agent + the unit graph.
 
 ### Trust & secrets
 
-- [ ] Provisioning trust policy: default `platform`; opt-in `signed` with a
+- [x] Provisioning trust policy: default `platform`; opt-in `signed` with a
       vendor/fleet root included in the measured image and initrd plus optional
       signed operator-key delegation. Authorize the exact `host.nix` bytes
       before restricted evaluation and bind stage-2 to their accepted hash.
@@ -264,7 +279,7 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
       pre-verification `authorized_keys` seeding from the facts channel.
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for
       DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
-- [ ] **Authenticated first-boot `host.nix` projection**: absent `host.nix`
+- [x] **Authenticated first-boot `host.nix` projection**: absent `host.nix`
       evaluates the base default `aos.provisioning.storage`; a present file is
       authenticated then partially evaluated in initrd, validated in Rust,
       rendered to transient `repart.d`, and committed once. Reject raw
@@ -293,8 +308,13 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.
 - **Provisioning:** `systemd-repart` applies the baked default or an
-  authenticated `host.nix` storage projection on first boot and is a no-op on reboot; invalid
-  declared plans stop before GPT mutation; `aos metadata` covers every
+  authenticated `host.nix` storage projection on first boot and is
+  mutation-frozen but dry-run checked on reboot; invalid declared plans stop
+  before GPT mutation; pending-marker recovery fails closed; operator and
+  fallback provenance, signed-policy exact-byte verification, multi-device
+  grouping/root-first ordering, recurring runtime evaluation, durable audit
+  state, measured-boot raw `/var`, and pre-provisioned/out-of-band marker
+  requirements have regression coverage; `aos metadata` covers every
   advertised offline and cloud channel natively; a single failing package yields
   `is-system-running = degraded` with `multi-user.target` reached and the box
   SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`).

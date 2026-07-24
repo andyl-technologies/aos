@@ -16,7 +16,6 @@
   exposeRenderer = import ../../pkgs/build-support/_expose-renderer.nix {
     inherit lib pkgs;
   };
-
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -50,6 +49,50 @@
     then throw "the stock system must emit aos-provisioning-eval.service"
     else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-repart.service"
+    else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
+    then throw "the stock system must persist provisioning audit evidence"
+    else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)
+    then throw "the stock system must restore its last fully evaluated host input"
+    else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
+    then throw "the stock system must cache fully evaluated host input"
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+      ? ConditionPathExists
+    then throw "metadata acquisition must run on provisioned boots"
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+      ? ConditionPathExists
+    then throw "the restricted storage projection must remain available as a post-commit advisory check"
+    else if
+      !(builtins.elem
+        "aos-host-config-restore.service"
+        system.config.systemd.services.aos-eval.requires)
+    then throw "aos-eval.service must restore the last known-good input before full evaluation"
+    else if
+      !(builtins.elem
+        "aos-eval.service"
+        system.config.systemd.services."aos-host-config-cache".after)
+    then throw "host input may only be cached after successful full evaluation"
+    else if
+      !(containsStr
+        "pending provisioning marker found; refusing automatic replay"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "aos-repart.service must fail closed on a pending marker"
+    else if
+      !(containsStr
+        "--dry-run=yes"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "committed storage must be compared without mutation"
+    else if
+      !(containsStr
+        "storage-coherence"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "committed storage comparison must publish an observable result"
+    else if
+      !(containsStr
+        (builtins.toString pkgs.dosfstools)
+        system.config.boot.initrd.systemd.services.aos-repart.environment.PATH)
+    then throw "every admitted vfat format must have its AOS-built initrd tool"
     else if
       !(builtins.elem
         "initrd-root-fs.target"

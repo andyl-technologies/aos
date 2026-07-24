@@ -132,13 +132,21 @@ are *specified here* so the tests are written before the code:
   reached, healthy packages live, box SSH-reachable; the committed gen is the
   **re-projected** (subset) manifest, still content-addressed.
 - **systemd-repart substrate** (`fleet`): explicit `systemctl status
-  systemd-repart-*` + idempotency (carve+grow on fresh VM, **no-op on reboot**) +
-  the destructive-op state-probe guards run once.
+  systemd-repart-*` + idempotency (carve+grow on fresh VM, **dry-run-only on
+  reboot**) + the destructive-op state-probe guards run once.
 - **`aos metadata` agent** (`checks` + `fleet`): per-platform fetch over recorded
   fixtures (offline channels first), exact host.nix/hash retention, platform-mode
   authorization, signed-mode initrd verification against public anchors,
   first-boot typed storage-plan validation/rendering, facts → `host.facts.*`,
   and the static-networking seed for DHCP-less clouds.
+- **Provisioning commit matrix** (`Rust` + `checks.eval` + `fleet`): operator
+  and no-input fallback arms; exact-byte signed acceptance/rejection; pending
+  marker fail-closed recovery; committed coherent/divergent/unavailable
+  dry-run outcomes; root-first multi-device rendering; grow-to-fill placement;
+  durable audit/definition state; last-known-good runtime-input restoration;
+  measured-boot raw `/var`; out-of-band disks carrying a baked committed
+  marker; and a second boot proving full runtime evaluation repeats while
+  partition sizes remain unchanged.
 - **Conscription / capability-scoped contribution** (`checks.eval`): a foreign
   `enable` write is rejected at resolve time (its paths are not a subset of the
   installed owner's contributable surface in `SystemRoots`); a contribution to an

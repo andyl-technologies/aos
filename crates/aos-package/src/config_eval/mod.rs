@@ -13,7 +13,8 @@
 //! - [`classify`] — the fragile string parse of stock-Nix throw strings into
 //!   the [`EvalClass`] seam (build-spec §2). P2 aos-nix replaces exactly this.
 //! - [`stock`] — the production [`NixEvaluator`] that renders `entry.nix`,
-//!   shells out to `nix eval --option restrict-eval true
+//!   shells out to `nix-instantiate --store dummy:// --eval --strict --json
+//!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` (NOT `--pure-eval`, which
 //!   would forbid importing the base-lib by store path), and classifies the
 //!   result, plus the registry-backed [`ConfigOutputFetcher`]. Builder-gated:
@@ -1022,9 +1023,8 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     );
     std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
 
-    let output = std::process::Command::new("nix")
-        .arg("eval")
-        .arg("--json")
+    let output = std::process::Command::new("nix-instantiate")
+        .args(["--store", "dummy://", "--eval", "--strict", "--json"])
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .arg("-I")
@@ -1033,7 +1033,6 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         .arg(&cmd.base_lib)
         .arg("-I")
         .arg(&cmd.host_nix)
-        .arg("-f")
         .arg(&entry)
         .output()
         .context("spawning restricted host package-selection evaluation")?;

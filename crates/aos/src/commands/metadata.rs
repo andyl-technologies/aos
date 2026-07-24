@@ -43,6 +43,7 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
             base_lib,
             eval_root,
             measured_boot,
+            committed_source,
         } => aos_package::metadata::eval_provisioning_main(
             &aos_package::metadata::EvalProvisioningOptions {
                 stash_dir: std::path::PathBuf::from(
@@ -51,10 +52,42 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
                 base_lib: base_lib.clone(),
                 eval_root: eval_root.clone(),
                 measured_boot: *measured_boot,
+                committed_source: committed_source.as_deref().map(str::parse).transpose()?,
             },
         ),
         MetadataCmd::VerifyBinding => aos_package::metadata::verify_binding_main(
             std::path::Path::new(aos_package::metadata::stash::DEFAULT_STASH_DIR),
         ),
+        MetadataCmd::PersistProvisioning {
+            state_dir,
+            module_abi,
+            image_version,
+        } => {
+            aos_package::metadata::state::persist_provisioning_state(
+                &aos_package::metadata::PersistProvisioningOptions {
+                    stash_dir: std::path::PathBuf::from(
+                        aos_package::metadata::stash::DEFAULT_STASH_DIR,
+                    ),
+                    state_dir: state_dir.clone(),
+                    module_abi: *module_abi,
+                    image_version: image_version.clone(),
+                },
+            )?;
+            Ok(())
+        }
+        MetadataCmd::CacheRuntime { state_dir } => {
+            aos_package::metadata::state::cache_runtime_input(
+                std::path::Path::new(aos_package::metadata::stash::DEFAULT_STASH_DIR),
+                state_dir,
+            )?;
+            Ok(())
+        }
+        MetadataCmd::RestoreRuntime { state_dir } => {
+            aos_package::metadata::state::restore_runtime_input(
+                std::path::Path::new(aos_package::metadata::stash::DEFAULT_STASH_DIR),
+                state_dir,
+            )?;
+            Ok(())
+        }
     }
 }

@@ -113,6 +113,14 @@
       target.succeed("test -e /sys/class/tpm/tpm0")
       # /var is up (plain) so the system is healthy pre-enrollment.
       assert var_source() != "", "/var not mounted on first boot"
+      target.succeed(
+          "test -e /dev/disk/by-partlabel/aos-provenance-fallback-v1"
+      )
+      target.succeed("test -s /var/lib/aos-provisioning/audit.json")
+      target.succeed(
+          "! grep -q '^Format=' "
+          "/var/lib/aos-provisioning/desired/repart.d/*/*-var.conf"
+      )
 
       # ════ 2. Enroll db → KEK → PK, reboot into enforcing SB ═══════════
       eu = "PATH=${pkgs.util-linux}/bin:$PATH ${pkgs.efitools}/bin/efi-updatevar"
@@ -125,6 +133,9 @@
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
       wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
+      target.succeed(
+          "test \"$(cat /run/aos-metadata/storage-coherence)\" = unavailable"
+      )
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
       # confirms it was sealed to the TPM. (luksDump prints "Version: 2",

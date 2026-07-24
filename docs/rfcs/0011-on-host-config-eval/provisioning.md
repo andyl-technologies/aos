@@ -36,6 +36,10 @@ authentication, and the boundary between the golden image and host policy.
 8. **No build on the host.** Early and full evaluation are pure value
    computation over the in-image base library and authenticated source. They
    cannot instantiate or realize derivations.
+9. **No provisioning enable switch.** Metadata, evaluation, validation,
+   repart/format tools, and trust anchors are structural image capabilities.
+   GPT state is the sole storage-mutation gate; an image provisioned
+   out-of-band must carry a committed provenance marker.
 
 ## Why a restricted initrd evaluation exists
 
@@ -50,13 +54,13 @@ registry fixpoint, network access, or `system.build` output. Stock Nix runs in
 the measured initrd with:
 
 ```text
-nix eval --json
+nix-instantiate --store dummy:// --eval --strict --json
   --option restrict-eval true
   --option allow-import-from-derivation false
   -I <eval-root>
   -I <base-lib>
   -I <authenticated-host.nix>
-  -f <eval-root>/entry.nix
+  <eval-root>/entry.nix
 ```
 
 The AOS module engine is intentionally non-strict for this projection:
@@ -85,7 +89,7 @@ The first public provisioning domain is storage:
     };
 
     var = {
-      type = "var";
+      type = "linux-generic";
       label = "var";
       sizeMin = "4G";
       grow = true;
@@ -105,7 +109,7 @@ The v1 partition contract contains:
 ```text
 device     null or a stable absolute /dev/disk/by-id path
 label      validated GPT label, defaulting to the logical attribute name
-type       linux-generic, var, swap, or a non-protected canonical raw GPT GUID
+type       linux-generic, swap, or a non-protected canonical raw GPT GUID
 sizeMin    systemd size string
 sizeMax    optional systemd size string
 weight     positive integer
@@ -137,6 +141,22 @@ The validator rejects:
 `aos-var-crypt` can create LUKS2 and enroll the TPM token. Unmeasured images
 format it as ext4. General filesystem mounts remain stage-2 configuration.
 
+The frozen image partitions occupy their own type space: root-a (and future
+root-b) use the target architecture's DPS root GUID, and a verity hash uses the
+matching DPS root-verity GUID. Operator data stays `linux-generic`. This avoids
+same-type matching collisions without enabling DPS discovery:
+`systemd-gpt-auto-generator` does not own AOS mounts; root and `/var` continue
+to mount explicitly by partlabel.
+
+The marker definition sorts before operator partitions, is a fixed 1 MiB, and
+sets a high repart `Priority=` so space pressure cannot drop the commit record.
+Every bounded partition sorts before the single grow-to-fill partition,
+regardless of its authored priority. The root-device target is emitted first;
+secondary devices follow. A device attached after the whole-machine commit is
+never auto-carved: the operator runs `systemd-repart` explicitly with the
+persisted definition directory under
+`/var/lib/aos-provisioning/desired/repart.d`.
+
 ## Metadata and trust
 
 The native metadata agent performs:
@@ -160,11 +180,17 @@ facts.json
 .metadata-result.json
 .provisioning-result.json     # trust evidence and host.nix hash
 provisioning-plan.json        # evaluated, normalized data
+repart-targets                # target to definition-directory index
 repart.d/                     # generated per-device definitions
 ```
 
 `/run` is moved across switch-root. Stage 2 verifies the recorded hash before
-evaluating the same `host.nix`; it never refetches mutable metadata.
+evaluating the same bytes. Metadata acquisition and full evaluation run again
+on every boot so runtime policy can change independently of the one-time
+storage commit. If fresh acquisition or authorization fails after provisioning,
+stage 2 restores the last fully evaluated, hash-checked input from
+`/var/lib/aos-provisioning/current`; it never promotes a partially fetched or
+unevaluated input.
 
 ### Platform policy
 
@@ -190,13 +216,15 @@ Neither policy may be selected or downgraded by `host.nix`.
 INITRD
   detect -> network if required -> fetch -> authorize exact host.nix
     |
-    +-- committed provenance marker present?
-    |     yes: skip metadata and provisioning; do not mutate
-    |
     +-- pending provenance marker present?
     |     yes: fail closed for explicit recovery
     |
-    `-- no:
+    +-- committed provenance marker present?
+    |     yes: evaluate current storage intent if authorized
+    |          -> systemd-repart dry-run only
+    |          -> report coherent/divergent/unavailable; never mutate
+    |
+    `-- no committed marker:
           host.nix present -> restricted aos.provisioning eval
           host.nix absent  -> restricted default provisioning eval
                     |
@@ -222,8 +250,11 @@ INITRD
          /var encryption/format -> mount -> switch-root
 
 STAGE 2
+  persist first-boot audit evidence and generated per-device definitions
+  restore last fully evaluated input if fresh metadata is unavailable
   verify host.nix byte binding
   full resolve/eval -> packages, /etc, units, networking, users
+  cache the input only after full evaluation produced a manifest
 ```
 
 The reserved GPT marker is whole-machine state on the root disk. Its labels are:
@@ -244,11 +275,22 @@ On the provisioning boot, authorization, evaluation, validation, preflight, or
 mutation failure blocks switch-root and emits a console diagnostic. The
 mutating `systemd-repart` exit status is always propagated.
 
-On later boots the committed GPT marker is sufficient: missing metadata cannot
-make a working host unavailable, and no automatic evaluation, dry-run, or
-mutating pass runs. A stage-2 administrative command may compare a newly
-supplied plan and report that factory reset is required, but it has no path
-back into initrd disk mutation.
+On later boots the committed GPT marker is a storage-mutation gate, not a
+configuration gate. Acquisition, authorization, the restricted projection,
+and full stage-2 evaluation run again. A valid current storage projection is
+compared with the live disks using `systemd-repart --dry-run`; pending work is
+reported as divergence and requires factory reset. Missing or invalid current
+metadata warns and falls back to the last fully evaluated runtime input.
+Neither case can reopen initrd disk mutation.
+
+After `/var` is mounted, AOS records immutable first-commit evidence at
+`/var/lib/aos-provisioning/audit.json` and `initial-plan.json`, including the
+source arm, plan and host hashes, trust mode/signer, platform, module ABI,
+image version, instance ID, facts hash, and commit time. The currently
+generated per-device definitions are copied atomically to
+`/var/lib/aos-provisioning/desired/`; an operator can use that directory for
+the explicit manual provisioning of a device attached after the whole-machine
+commit.
 
 ## Golden-image boundary
 

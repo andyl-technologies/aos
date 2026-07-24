@@ -153,7 +153,8 @@ manifest contains **no secret values** — credentials appear only as handles
 ### P1 — stock C++ Nix (already in the image)
 
 Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix eval` present and tested. P1 uses it directly.
+(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. P1
+uses it directly.
 Starting on stock Nix is not a compromise on the model: the module system is
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
@@ -162,12 +163,11 @@ Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
-nix eval --json \
-  --pure-eval \                                  # determinism; blocks currentTime/getEnv/currentSystem
+nix-instantiate --store dummy:// --eval --strict --json \
   --option restrict-eval true \                  # read only /run/aos-eval + the store
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
   -I /run/aos-eval \
-  -f /run/aos-eval/entry.nix manifest
+  -A manifest /run/aos-eval/entry.nix
 ```
 
 Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
@@ -223,19 +223,23 @@ registry trust, DNS, package modules, and the writable store are available.
    resolves a hash-pinned transport pointer).
 4. `aos-metadata-authorize.service` applies the image's `platform` or
    `signed` policy to those bytes.
-5. If no committed GPT provenance marker exists, the restricted evaluator
-   reads `aos.provisioning`, Rust validates the normalized plan, and the
-   renderer emits per-device `repart.d`. With no `host.nix`, the same path
-   evaluates the base default module. Present-but-invalid input never falls
-   through to defaults.
-6. `systemd-repart` preflights every target, applies the plan, and commits the
-   pending GPT provenance marker only after all devices verify. Later boots
-   never mutate automatically.
+5. The restricted evaluator reads `aos.provisioning`, Rust validates the
+   normalized plan, and the renderer emits per-device `repart.d`. With no
+   `host.nix` on an uncommitted host, the same path evaluates the base default
+   module. Present-but-invalid input never falls through to defaults. With a
+   committed marker, a valid current plan is advisory and invalid/unavailable
+   input warns rather than blocking a working host.
+6. On first boot, `systemd-repart` preflights every target, applies the root
+   target first so the pending marker precedes any secondary-device mutation,
+   and relabels the marker committed only after all devices verify. Later
+   boots run dry-run coherence checks but never mutate automatically.
 7. `aos-var-crypt`/`mount-var` → `nix-overlay-setup` →
    `aos-seed-profiles`
    (seeds **gen-0**) → `run-etc-setup`.
 8. The accepted host.nix and validation record survive under `/run`; registry
-   trust configuration comes from gen-0.
+   trust configuration comes from gen-0. After `/var` mounts, AOS persists the
+   initial audit evidence and generated definitions under
+   `/var/lib/aos-provisioning`.
 9. `etc-overlay-setup.service` — assembles the three-layer `/etc` overlay from
    the seed toplevel.
 10. `switch_root` → stage-2.
@@ -262,7 +266,7 @@ the config modules. Resolved by the **gen-0 seed**: baseline DHCP-on-all-`en*`
 baked in the image reaches the registry; config-driven networking (static IPs,
 VLANs, bonds from `host.nix`) takes effect only after the first eval
 materializes a generation and `activate.sh.in` swaps `/etc`. The path is:
-**DHCP seed → Ignition delivers host.nix → fetch config closures → eval →
+**DHCP seed → metadata agent delivers host.nix → fetch config closures → eval →
 materialize → activate (real net applied at swap).**
 
 ### gen-0 seed
@@ -292,12 +296,11 @@ never leave a half-applied configuration.
 
 ### Steady-state reconfiguration
 
-Ignition is idempotent and does not re-run on later boots (guarded by
-`/sysroot/var/etc/.ignition-result.json`), so a reboot alone does not re-eval.
-Re-eval is triggered by an explicit reconcile (`aos eval` / `apm upgrade
---system`) or a control-plane action (RFC-0004). A changed `host.nix` is
-re-applied through a normal activation: `activate.sh.in`'s `prepare` stage
-re-runs Ignition fetch+files into the candidate `/etc` lower
-(`modules/base/activate.sh.in:183-208`), so reconfiguration uses the same
-atomic swap and the same staged-exit-code safety, and is rollback-capable via
-the per-generation profile pointer.
+The metadata agent reacquires and authorizes `host.nix` on every boot, and
+stage 2 performs the full evaluation on every boot. The committed GPT marker
+freezes storage mutation only. A changed runtime declaration is therefore
+reconciled without rebuilding the golden image or resetting storage. When
+fresh metadata is unavailable or rejected, stage 2 verifies and restores the
+last input that previously produced a complete manifest; partial or failed
+inputs are never cached. Explicit reconcile and control-plane actions may use
+the same evaluator path between boots.

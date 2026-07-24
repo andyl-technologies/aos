@@ -9,7 +9,7 @@
 ##! evaluation projects `aos.provisioning`; full evaluation remains in stage 2.
 ##!
 ##! Units implement state detection, acquisition, authorization, and projection:
-##!   aos-provisioning-state durable GPT marker → one-time gate
+##!   aos-provisioning-state durable GPT marker → storage mutation gate
 ##!   aos-metadata-detect   DMI/ISO → platform.env
 ##!   aos-metadata-network  DHCP gate, cloud-only
 ##!   aos-metadata-fetch    platform → stash
@@ -118,10 +118,7 @@ in {
           "systemd-udevd.service"
           "systemd-udev-trigger.service"
         ];
-        unitConfig = {
-          DefaultDependencies = "no";
-          ConditionPathExists = "!${cfg.stashDir}/provisioned";
-        };
+        unitConfig.DefaultDependencies = "no";
         environment = {
           AOS_METADATA_BLKID = "${pkgs.util-linux}/sbin/blkid";
           AOS_METADATA_MOUNT = "${pkgs.util-linux}/bin/mount";
@@ -133,10 +130,19 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.aos}/bin/aos metadata detect";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
+        script = ''
+          if ${pkgs.aos}/bin/aos metadata detect; then
+            exit 0
+          fi
+          if [ -e ${cfg.stashDir}/provisioned ]; then
+            echo "aos-metadata: detection failed after provisioning; continuing with the active runtime generation" >&2
+            exit 0
+          fi
+          exit 1
+        '';
       };
 
       # 2. Bring up DHCP, cloud platforms only. detect drops
@@ -176,19 +182,23 @@ in {
           "aos-metadata-authorize.service"
           "initrd-root-fs.target"
         ];
-        unitConfig = {
-          DefaultDependencies = "no";
-          ConditionPathExists = "!${cfg.stashDir}/provisioned";
-        };
+        unitConfig.DefaultDependencies = "no";
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          EnvironmentFile = "${cfg.stashDir}/platform.env";
-          ExecStart = "${pkgs.aos}/bin/aos metadata fetch";
-          SuccessExitStatus = "0 1";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
+        script = ''
+          if ${pkgs.aos}/bin/aos metadata fetch; then
+            exit 0
+          fi
+          if [ -e ${cfg.stashDir}/provisioned ]; then
+            echo "aos-metadata: fetch failed after provisioning; continuing with the active runtime generation" >&2
+            exit 0
+          fi
+          exit 1
+        '';
       };
 
       # 4. Apply the trust policy to the exact fetched host.nix bytes.
@@ -201,21 +211,25 @@ in {
           "aos-provisioning-eval.service"
           "initrd-root-fs.target"
         ];
-        unitConfig = {
-          DefaultDependencies = "no";
-          ConditionPathExists = "!${cfg.stashDir}/provisioned";
-        };
+        unitConfig.DefaultDependencies = "no";
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart =
-            "${pkgs.aos}/bin/aos metadata authorize"
-            + " --trust ${trust}"
-            + lib.optionalString (trust == "signed")
-            " --trusted-config-keys-dir ${configTrustAnchors}";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
+        script = ''
+          if ${pkgs.aos}/bin/aos metadata authorize \
+            --trust ${trust} \
+            ${lib.optionalString (trust == "signed") "--trusted-config-keys-dir ${configTrustAnchors}"}; then
+            exit 0
+          fi
+          if [ -e ${cfg.stashDir}/provisioned ]; then
+            echo "aos-metadata: authorization failed after provisioning; ignoring the new input" >&2
+            exit 0
+          fi
+          exit 1
+        '';
       };
 
       # 5. Evaluate only aos.provisioning using the image's ABI-pinned base
@@ -230,10 +244,7 @@ in {
           "aos-repart.service"
           "initrd-root-fs.target"
         ];
-        unitConfig = {
-          DefaultDependencies = "no";
-          ConditionPathExists = "!${cfg.stashDir}/provisioned";
-        };
+        unitConfig.DefaultDependencies = "no";
         environment = {
           NIX_CONFIG = "experimental-features = nix-command";
           PATH = lib.makeBinPath [pkgs.nix pkgs.coreutils];
@@ -241,13 +252,35 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart =
-            "${pkgs.aos}/bin/aos metadata eval-provisioning"
-            + " --base-lib ${config.aos.config.evalAtBoot.baseLib}"
-            + lib.optionalString measured " --measured-boot";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };
+        script = ''
+          committed_arg=""
+          if [ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 ]; then
+            committed_arg="--committed-source operator"
+          elif [ -e /dev/disk/by-partlabel/aos-provenance-fallback-v1 ]; then
+            committed_arg="--committed-source fallback"
+          fi
+
+          if [ -n "$committed_arg" ] && [ ! -e ${cfg.stashDir}/host.nix ]; then
+            echo "aos-provisioning: no current authorized host.nix; skipping advisory storage drift evaluation" >&2
+            exit 0
+          fi
+
+          if ${pkgs.aos}/bin/aos metadata eval-provisioning \
+            --base-lib ${config.aos.config.evalAtBoot.baseLib} \
+            ${lib.optionalString measured "--measured-boot"} \
+            $committed_arg; then
+            exit 0
+          fi
+          if [ -n "$committed_arg" ]; then
+            echo "aos-provisioning: current storage intent is invalid or differs from committed provenance; factory reset is required to apply it" >&2
+            printf '%s\n' divergent > ${cfg.stashDir}/storage-coherence
+            exit 0
+          fi
+          exit 1
+        '';
       };
     };
   };

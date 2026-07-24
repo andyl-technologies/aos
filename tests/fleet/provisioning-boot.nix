@@ -44,6 +44,12 @@
         }
       '';
     };
+    fallback = {
+      system = systems.server-test;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
+    };
   };
 
   testScript =
@@ -56,9 +62,30 @@
       # -> mount-var -> aos-config-seed (empty /etc lower) -> overlays ->
       # switch-root -> stage-2 -> baked aos-test-agent.service answered.
       node.succeed("systemctl is-active multi-user.target")
+      node.wait_for_unit("aos-host-config-cache.service", timeout=120)
+      if node.succeed(
+          "if test -s /run/aos/manifest.json; then echo present; else echo missing; fi"
+      ).strip() != "present":
+          eval_log = node.succeed(
+              "journalctl -u aos-eval.service -u aos-host-config-cache.service "
+              "--no-pager --output=cat"
+          ).strip()
+          raise AssertionError(
+              "full host.nix evaluation did not emit a manifest:\n"
+              f"{eval_log}"
+          )
       node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
       node.succeed("test -s /run/aos-metadata/provisioning-plan.json")
       node.succeed("test -s /run/aos-metadata/repart-targets")
+      node.succeed("test -s /var/lib/aos-provisioning/audit.json")
+      node.succeed("test -s /var/lib/aos-provisioning/initial-plan.json")
+      node.succeed("test -s /var/lib/aos-provisioning/desired/provisioning-plan.json")
+      node.succeed("test -s /var/lib/aos-provisioning/desired/repart-targets")
+      node.succeed("test -s /var/lib/aos-provisioning/current/host.nix")
+      node.succeed(
+          "case \"$(cat /var/lib/aos-provisioning/audit.json)\" in "
+          "*'\"source\": \"operator\"'*) ;; *) exit 1 ;; esac"
+      )
       node.succeed(
           "case \"$(cat /run/aos-metadata/repart.d/*/*.conf)\" in "
           "*SizeMinBytes=1G*) ;; *) exit 1 ;; esac"
@@ -69,13 +96,13 @@
       assert hostname == "node", f"hostname is {hostname!r}, expected 'node'"
 
       hosts = node.succeed("cat /etc/hosts")
-      assert "192.168.50.10 node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
+      assert "192.168.50.11 node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
 
       # The .network baked by the identity module (MAC-matched) bound the
       # fleet IP. The guest has no `ip` tool, so read the kernel's local-route
       # trie (/proc/net/fib_trie lists configured addresses) and match the
       # address host-side. net.ifnames=0 is baked, so the NIC is eth0.
-      assert "192.168.50.10" in node.succeed(
+      assert "192.168.50.11" in node.succeed(
           "cat /proc/net/fib_trie"
       ), "the baked fleet address was not assigned to any interface"
 
@@ -90,6 +117,15 @@
       # reserved root-b slot is future A/B work — see modules/services/repart.nix.)
       for label in ("root-a", "swap", "var"):
           node.succeed(f"test -e /dev/disk/by-partlabel/{label}")
+      root_dev = node.succeed(
+          "readlink -f /dev/disk/by-partlabel/root-a"
+      ).strip()
+      root_type = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -no PARTTYPE {root_dev}"
+      ).strip().lower()
+      assert root_type == "4f68bce3-e8cd-4db1-96e7-fbcaf984b709", (
+          f"root-a has non-DPS or wrong-architecture type {root_type!r}"
+      )
 
       # host.nix requests a fixed 1 GiB swap partition, deliberately
       # different from the image's baked 2 GiB default. This proves repart
@@ -117,12 +153,19 @@
 
       node.succeed("test -e /dev/disk/by-partlabel/aos-provenance-operator-v1")
 
-      # A second boot must discover the durable marker, skip metadata and
-      # restricted evaluation, and freeze both host-defined partitions.
+      # A second boot must reacquire and fully evaluate host.nix, while the
+      # durable marker freezes both host-defined partitions. The restricted
+      # storage projection is advisory and repart reports coherence without
+      # mutating the committed layout.
       node.reboot()
       node.wait_until_succeeds(
           "systemctl is-active multi-user.target", timeout=120
       )
+      node.succeed("test -s /run/aos-metadata/host.nix")
+      node.succeed("test -s /run/aos-metadata/.metadata-result.json")
+      node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
+      node.succeed("test -s /run/aos/manifest.json")
+      node.succeed("test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent")
       swap_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/swap").strip()
       var_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/var").strip()
       swap_sectors_after = int(
@@ -135,5 +178,26 @@
       assert var_sectors_after == var_sectors, "var changed after provisioning commit"
       failed = node.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after provisioned reboot: {failed!r}"
+
+      # A host with no operator input takes the schema-default arm and records
+      # that choice both in GPT and in the durable audit record.
+      fallback.succeed("systemctl is-active multi-user.target")
+      fallback.succeed(
+          "test -e /dev/disk/by-partlabel/aos-provenance-fallback-v1"
+      )
+      fallback.succeed("test -s /var/lib/aos-provisioning/audit.json")
+      fallback.succeed(
+          "case \"$(cat /var/lib/aos-provisioning/audit.json)\" in "
+          "*'\"source\": \"fallback\"'*) ;; *) exit 1 ;; esac"
+      )
+      fallback.succeed(
+          "test -s /var/lib/aos-provisioning/desired/repart-targets"
+      )
+      fallback_failed = fallback.succeed(
+          "systemctl --failed --no-legend"
+      ).strip()
+      assert not fallback_failed, (
+          f"failed units on fallback provisioning boot: {fallback_failed!r}"
+      )
     '';
 }

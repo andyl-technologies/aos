@@ -877,12 +877,11 @@ Each iteration runs a **cold stock-Nix subprocess** (`architecture.md`
 §"The evaluator"):
 
 ```text
-nix eval --json \
-  --pure-eval \                                  # blocks currentTime/getEnv/currentSystem
+nix-instantiate --store dummy:// --eval --strict --json \
   --option restrict-eval true \                  # read only /run/aos-eval + the store
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
   -I /run/aos-eval \
-  -f /run/aos-eval/entry.nix manifest
+  -A manifest /run/aos-eval/entry.nix
 ```
 
 `entry.nix` is regenerated each iteration from the current `working_set`
@@ -1031,7 +1030,7 @@ for pkg in working_set:
 
 Properties the implementer must preserve:
 
-- The gate is **upstream of `nix eval`**: an ABI-incompatible config module
+- The gate is **upstream of `nix-instantiate --eval`**: an ABI-incompatible config module
   must never be placed into `entry.nix`, because a stale interface would throw
   a *misleading* undeclared/missing-option error that the fixpoint would
   misread as "fetch a provider" — fetching cannot fix an ABI skew. Gate first,
@@ -1428,6 +1427,9 @@ aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+ 
 aos metadata fetch       # platform → exact host.nix transport + facts
 aos metadata authorize   # platform|signed policy → exact accepted host.nix
 aos metadata eval-provisioning # restricted Nix → validated transient repart.d
+aos metadata persist-provisioning # first-commit evidence + reusable definitions
+aos metadata cache-runtime       # cache only an input that produced a manifest
+aos metadata restore-runtime     # hash-check and restore last evaluated input
 ```
 
 - `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env` and, for network-dependent platforms, touches the `need-network` flag the `aos-metadata-network` gate keys off (replacing today's `/run/ignition/need-network`).
@@ -1609,6 +1611,7 @@ The stash is a child of the initrd `/run` so it survives `mount --move /run /sys
 ├── provisioning-plan.json  # canonical validated early projection
 ├── repart-targets          # stable device → definition directory index
 ├── repart.d/               # rendered transient per-device definitions
+├── storage-coherence       # coherent | divergent | unavailable after commit
 ├── facts.json              # normalized Facts (see §2), serde_json
 ├── network/                # rendered networkd seed for DHCP-less clouds (see §6)
 │   └── 10-aos-seed.network
@@ -1645,6 +1648,26 @@ METADATA_DIR=/run/aos-metadata/media   # only for offline channels
 Stage-2 staging: `aos-eval.service` links `host.nix`, `facts.json`, and the
 validation record into `/run/aos-eval/`, confirms the accepted host hash, and
 renders `host-facts.nix` ([§5.1](#51-factsjson--host-factsnix)).
+
+The durable state directory is `/var/lib/aos-provisioning`:
+
+```text
+audit.json                    # immutable first-commit evidence
+initial-plan.json             # immutable normalized first-commit plan
+desired/provisioning-plan.json
+desired/repart-targets
+desired/repart.d/             # usable for explicit later-device provisioning
+current/host.nix
+current/host.nix.sig
+current/facts.json
+current/.metadata-result.json
+current/.provisioning-result.json
+```
+
+`desired/` is atomically replaced after a valid current projection.
+`current/` is atomically replaced only after full stage-2 evaluation produced
+a manifest. Restore verifies the recorded host hash before copying anything
+back into the runtime stash.
 
 ### 5.1 `facts.json` → `host-facts.nix`
 
@@ -1720,12 +1743,14 @@ durable-state-detect → metadata-fetch → authorize exact host.nix
 ```
 
 The renderer adds `aos-provisioning-pending-v1` using the reserved GPT type GUID
-in the same transaction as the root-disk definitions. Only after every device
-succeeds does the unit relabel it to `aos-provenance-operator-v1` or
+in the same transaction as the root-disk definitions and orders the root target
+before every secondary device. Only after every device succeeds does the unit
+relabel it to `aos-provenance-operator-v1` or
 `aos-provenance-fallback-v1`. A pending marker fails closed for recovery. A
-committed marker skips metadata, early evaluation, and all future disk
-mutation. With no host input, the same schema defaults are evaluated and
-committed as fallback provenance; there is no image-baked parallel layout.
+committed marker freezes all future disk mutation, while metadata acquisition,
+restricted advisory evaluation, dry-run comparison, and full runtime
+evaluation continue. With no host input, the same schema defaults are evaluated
+and committed as fallback provenance; there is no image-baked parallel layout.
 
 ## 8. Net-new pieces (the bounded build)
 

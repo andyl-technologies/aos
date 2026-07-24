@@ -30,6 +30,7 @@
 //! - [`stash`] — the `/run/aos-metadata` stash format.
 //! - [`provisioning`] — whole-input authorization and host extraction.
 //! - [`repart`] — typed storage validation and transient repart rendering.
+//! - [`state`] — durable provisioning evidence and last-known-good input.
 //!
 //! # Testability
 //!
@@ -49,6 +50,7 @@ pub mod offline;
 pub mod provisioning;
 pub mod repart;
 pub mod stash;
+pub mod state;
 pub mod staticnet;
 
 #[cfg(test)]
@@ -63,8 +65,11 @@ pub use facts_render::render_host_facts_nix;
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
 pub use mount::{BlkidProbe, ConfigDriveProbe};
-pub use provisioning::{AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust};
+pub use provisioning::{
+    AuthorizeOptions, EvalProvisioningOptions, ProvisioningSource, ProvisioningTrust,
+};
 pub use stash::{MetadataResult, PlatformEnv, Stash};
+pub use state::{PersistProvisioningOptions, ProvisioningAudit};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 
@@ -266,7 +271,7 @@ fn user_data_source(platform_id: &str) -> &'static str {
 /// Uses the system clock; the value is recorded, never used in a security
 /// decision, so a coarse seconds-resolution stamp is sufficient. Falls back to
 /// the Unix epoch when the clock is before it.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
