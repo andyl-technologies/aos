@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginInboundFrames",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-8"],
+  taskIds ? ["T-PLUG-8"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,8 +15,11 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoopInboundTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemDeliveryErrors = builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  shmemRingCoverage = builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -88,8 +91,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-8 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-8**";
+        label = "T-PLUG-8 is closed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-8**";
       }
       {
         label = "inbound frame polling wording";
@@ -217,9 +220,11 @@
         label = "idle inbound error path";
         needle = "IdleHotLoopError::InboundFrames";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
       {
         label = "ring-backed idle test";
-        needle = "idle_loop_with_inbound_rings_peeks_drains_and_republishes_running";
+        needle = "idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion";
       }
       {
         label = "late ring before direct advance test";
@@ -238,7 +243,7 @@
         needle = "idle_loop_rejects_raw_late_inbound_delivery_before_publishing";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC head delivery peek";
         needle = "pub fn peek_delivery_icount";
@@ -247,10 +252,14 @@
         label = "SPSC frame dequeue";
         needle = "pub fn dequeue";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
       {
         label = "frame delivery key";
         needle = "pub struct FrameDeliveryKey";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame delivery predicate";
         needle = "pub fn is_deliverable_at";
@@ -324,7 +333,7 @@ in
               --target-dir "$TMPDIR/crucible-plugin-inbound-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
-              idle_loop_with_inbound_rings_peeks_drains_and_republishes_running \
+              idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -378,7 +387,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
+            live_gate=checks.crucible.phase2.qemuLiveNetworkIo
             inbound_peek=non-consuming-min-head-delivery
             injection_order=delivery_icount,src_node,seq
             late_delivery=fails-before-direct-advance

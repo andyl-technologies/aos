@@ -646,6 +646,9 @@ fn validate_disabled_network_option(
     if value.trim() == "none" {
         return Ok(());
     }
+    if option_model(value) == "hubport" && is_hostless_hubport(value) {
+        return Ok(());
+    }
 
     let reason = if option_model(value) == "user" {
         "host-timing user networking"
@@ -653,6 +656,31 @@ fn validate_disabled_network_option(
         "host-timed or host-fed networking"
     };
     Err(host_source_argument(display_argument, reason))
+}
+
+/// Returns whether a hubport has only its local identity and emulated-hub id.
+///
+/// A `netdev=<backend>` sub-option would bridge the hub to another QEMU netdev
+/// and is therefore deliberately excluded.
+fn is_hostless_hubport(value: &str) -> bool {
+    let mut saw_id = false;
+    let mut saw_hub_id = false;
+    for option in value.split(',').skip(1) {
+        let Some((key, option_value)) = option.split_once('=') else {
+            return false;
+        };
+        if option_value.is_empty() {
+            return false;
+        }
+        match key {
+            "id" if !saw_id => saw_id = true,
+            "hubid" if !saw_hub_id && option_value.bytes().all(|byte| byte.is_ascii_digit()) => {
+                saw_hub_id = true;
+            }
+            _ => return false,
+        }
+    }
+    saw_id && saw_hub_id
 }
 
 fn validate_internal_chardev_option(

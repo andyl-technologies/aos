@@ -8,6 +8,7 @@
 mod control_channels;
 mod crucible_shmem_9p;
 mod crucible_shmem_block;
+mod crucible_shmem_network;
 mod entropy;
 mod modes;
 mod validation;
@@ -22,6 +23,10 @@ pub use crucible_shmem_9p::{
 };
 pub use crucible_shmem_block::{
     CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
+};
+pub use crucible_shmem_network::{
+    CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
+    DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC,
 };
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
@@ -613,6 +618,7 @@ pub struct QemuVmLaunchConfig {
     root_overlay_file_name: String,
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
     crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
+    crucible_shmem_network: Option<CrucibleShmemNetworkDevice>,
 }
 
 impl QemuVmLaunchConfig {
@@ -632,6 +638,7 @@ impl QemuVmLaunchConfig {
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
+            crucible_shmem_network: None,
         }
     }
 
@@ -655,6 +662,7 @@ impl QemuVmLaunchConfig {
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
+            crucible_shmem_network: None,
         }
     }
 
@@ -711,6 +719,22 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub const fn crucible_shmem_9p(&self) -> Option<&CrucibleShmem9pDevice> {
         self.crucible_shmem_9p.as_ref()
+    }
+
+    /// Returns a config that attaches a hostless Crucible virtio-net device.
+    ///
+    /// The loaded plugin intercepts guest TX and delivers scheduled RX through
+    /// shared-memory rings. The QEMU hub port has no external backend.
+    #[must_use]
+    pub fn with_crucible_shmem_network(mut self, device: CrucibleShmemNetworkDevice) -> Self {
+        self.crucible_shmem_network = Some(device);
+        self
+    }
+
+    /// Returns the attached Crucible network device, if any.
+    #[must_use]
+    pub const fn crucible_shmem_network(&self) -> Option<&CrucibleShmemNetworkDevice> {
+        self.crucible_shmem_network.as_ref()
     }
 
     /// Returns the static scenario node identifier.
@@ -792,6 +816,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_9p {
             device.append_hash_material(&mut lines);
         }
+        if let Some(device) = &self.crucible_shmem_network {
+            device.append_hash_material(&mut lines);
+        }
         lines.join("\n")
     }
 
@@ -821,6 +848,9 @@ impl QemuVmLaunchConfig {
         if let Some(device) = &self.crucible_shmem_9p {
             device.append_qemu_args(&mut args);
         }
+        if let Some(device) = &self.crucible_shmem_network {
+            device.append_qemu_args(&mut args);
+        }
         args
     }
 
@@ -841,6 +871,9 @@ impl QemuVmLaunchConfig {
             device.validate()?;
         }
         if let Some(device) = &self.crucible_shmem_9p {
+            device.validate()?;
+        }
+        if let Some(device) = &self.crucible_shmem_network {
             device.validate()?;
         }
         Ok(())

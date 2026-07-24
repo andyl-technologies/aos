@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNetworkRx",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-11"],
+  taskIds ? ["T-PLUG-11"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,8 +16,11 @@
   pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoopInboundTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemDeliveryErrors = builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  shmemRingCoverage = builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -92,8 +95,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-11 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-11**";
+        label = "T-PLUG-11 is closed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-11**";
       }
       {
         label = "network RX wording";
@@ -329,7 +332,7 @@
       }
       {
         label = "direct advance before RX injection";
-        needle = "let (advance, synchronous_drain) =\n            Self::advance_after_scheduler_wake";
+        needle = "let (advance, pending_advance) =\n            Self::advance_after_scheduler_wake";
       }
       {
         label = "previews inbound before RX queue";
@@ -359,9 +362,11 @@
         label = "idle RX error path";
         needle = "IdleHotLoopError::NetworkRxInjection";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
       {
         label = "idle RX ordering test";
-        needle = "idle_loop_rx_injection_runs_after_direct_advance_and_before_republish";
+        needle = "idle_loop_rx_injection_waits_for_qemu_completion";
       }
       {
         label = "idle RX queue failure no-commit test";
@@ -380,15 +385,19 @@
         needle = "ring.read_index(), 0";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame payload accessor";
         needle = "pub fn payload(&self)";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
       {
         label = "frame delivery key";
         needle = "pub struct FrameDeliveryKey";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC frame dequeue";
         needle = "pub fn dequeue";
@@ -470,7 +479,7 @@ in
               --target-dir "$TMPDIR/crucible-plugin-network-rx-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
-              idle_loop_rx_injection_runs_after_direct_advance_and_before_republish \
+              idle_loop_rx_injection_waits_for_qemu_completion \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -492,7 +501,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
+            live_gate=checks.crucible.phase2.qemuLiveNetworkIo
             rx_injection=idle-context-lossless-queue-and-flush
             qemu_rx_api=qemu_plugin_net_send,qemu_plugin_net_flush
             delivery_gate=floor-through-current-inclusive

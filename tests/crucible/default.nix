@@ -415,6 +415,7 @@ in rec {
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};
     qemuLive9pIo = import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;};
+    qemuLiveNetworkIo = import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;};
     qemuLivePluginQuantum = import ./phase2-qemu-live-plugin-quantum.nix {inherit pkgs lib;};
     qemuLivePluginFingerprint = import ./phase2-qemu-live-plugin-fingerprint.nix {inherit pkgs lib;};
     qemuLivePluginFingerprintSmp = import ./phase2-qemu-live-plugin-fingerprint-smp.nix {inherit pkgs lib;};

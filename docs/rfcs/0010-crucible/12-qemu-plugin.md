@@ -978,20 +978,33 @@ component that makes that purity true *inside* the QEMU process.
   primitive (replacing the qtest-only helper that spun under icount) with the
   reset-vs-advance completion drain in patch 0025, plus the plugin max-advance
   budget computed as `ceiling - logical_offset`.
-- [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
+- [x] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
   delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
+  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: a real Linux guest
+  emits a probe through virtio-net, the router reply enters the reserved inbound
+  ring at exactly +100,000,000 icount, and the plugin injects it before the
+  guest emits its acknowledgement. The exact router latency, frame bytes,
+  ordering, and sequences are identical under host CPU load; the gate records
+  raw probe and guest-ACK offsets separately as whole-guest diagnostics.
 - [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
-- [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
+- [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
   [PLUG-24], [PLUG-25]; spec §12.5.1.
-- [ ] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`, which observes the
+  loaded QEMU callback forward the guest's exact Ethernet probe to
+  `SLOT_NET_ROUTER` with its emission icount and sequence. The packaged plugin's
+  unit gate covers re-entry, oversize, and full-ring fail-loud behavior.
+- [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
+  Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: the router's
+  delivery-stamped reply traverses the inbound ring and QEMU's lossless send
+  and flush path, and the real guest proves receipt by emitting the exact ACK.
 - [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];

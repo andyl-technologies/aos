@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNetworkTx",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-10"],
+  taskIds ? ["T-PLUG-10"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,6 +16,8 @@
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  shmemRingCoverage = builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -75,8 +77,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-10 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-10**";
+        label = "T-PLUG-10 is closed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-10**";
       }
       {
         label = "network TX wording";
@@ -208,10 +210,14 @@
         label = "frame payload capacity";
         needle = "pub const MAX_FRAME_DATA";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame constructor";
         needle = "pub fn new(";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC enqueue";
         needle = "pub fn enqueue(";
@@ -291,7 +297,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
+            live_gate=checks.crucible.phase2.qemuLiveNetworkIo
             network_tx_ring=vm-slot-to-net-router
             emit_icount=stamped-in-delivery-icount
             sequence=per-ring-monotonic
