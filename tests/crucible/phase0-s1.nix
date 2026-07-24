@@ -398,16 +398,14 @@ in
           wait_for_guest_pass() {
             label="$1"
             serial="$TMPDIR/serial-$label.log"
-            waited=0
-            while [ "$waited" -lt 1200 ]; do
-              if [ -f "$serial" ] \
-                && grep -q "TEST_RESULT:PASS" "$serial" \
-                && grep -q "CRUCIBLE_S1_DONE" "$serial"; then
-                return 0
-              fi
-              sleep 0.5
-              waited=$((waited + 1))
-            done
+            if [ -f "$serial" ] \
+              && grep -q "TEST_RESULT:PASS" "$serial" \
+              && grep -q "CRUCIBLE_S1_DONE" "$serial"; then
+              return 0
+            fi
+            if [ -f "$serial" ]; then
+              cat "$serial" >&2
+            fi
             return 1
           }
 
@@ -451,8 +449,10 @@ in
 
           run_one() {
             label="$1"
-            qmp_socket="$TMPDIR/qmp-$label.sock"
-            rm -f "$qmp_socket"
+            qmp_socket="$TMPDIR/qmp-current.sock"
+            serial_path="$TMPDIR/serial-current.log"
+            trace_path="$TMPDIR/trace-current.jsonl"
+            rm -f "$qmp_socket" "$serial_path" "$trace_path"
 
             set -- qemu-system-x86_64 \
               -nodefaults \
@@ -471,10 +471,10 @@ in
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
               -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0" \
-              -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
+              -chardev file,id=serial0,path="$serial_path" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -plugin "$PLUGIN",out="$TMPDIR/trace-$label.jsonl",cadence="$CADENCE",stop_at="$HORIZON",extended=on,mem_events=on,vcpus=1 \
+              -plugin "$PLUGIN",out="$trace_path",cadence="$CADENCE",stop_at="$HORIZON",extended=on,mem_events=on,vcpus=1 \
               -no-shutdown \
               -no-reboot
 
@@ -493,7 +493,14 @@ in
             qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
             wait "$qemu_pid" || fail "guest $label QEMU exited unsuccessfully"
             qemu_pid=""
-            wait_for_guest_pass "$label" || fail "guest $label did not report TEST_RESULT:PASS before horizon"
+            cp "$serial_path" "$TMPDIR/serial-$label.log"
+            cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
+            if ! wait_for_guest_pass "$label"; then
+              if [ -f "$TMPDIR/trace-$label.jsonl" ]; then
+                tail -n 4 "$TMPDIR/trace-$label.jsonl" >&2
+              fi
+              fail "guest $label did not report TEST_RESULT:PASS before horizon"
+            fi
           }
 
           run_one a
@@ -517,13 +524,17 @@ in
                 and .device_event_hash != null
                 and .memory_events > 0
                 and .io_events > 0
-                and (.register_hashes | type == "array")
-                and (.register_hashes | length) == 1
+                and (.register_digests | type == "array")
+                and (.register_digests | length) == 1
                 and (.register_counts | type == "array")
                 and (.register_counts | length) == 1
                 and .register_counts[0] > 0
               ))
-              and any(.[]; .final != true and .retired == $horizon)
+              and any(.[]; (
+                .final != true
+                and .observed_icount == $horizon
+                and .stop_requested == true
+              ))
               and any(.[]; .final == true)
             ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
               || fail "trace $label failed structural S1 assertions"
@@ -560,10 +571,10 @@ in
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
                     elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
                     elif $left[0].register_counts != $right[0].register_counts then "register_counts[0]"
-                    elif $left[0].register_hash != $right[0].register_hash then "register_hashes[0]"
-                    elif $left[0].ram_hash != $right[0].ram_hash then "ram_hash"
+                    elif $left[0].register_digests != $right[0].register_digests then "register_digests[0]"
+                    elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                     elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
-                    elif $left[0].extended_hash != $right[0].extended_hash then "extended_hash"
+                    elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
                     else "unknown"
                     end;
                   component
@@ -654,10 +665,14 @@ in
 
           horizon_line=$(tail -1 "$TMPDIR/trace-a-cadence.jsonl")
           horizon_retired=$(printf '%s\n' "$horizon_line" | jq -r '.retired')
-          [ "$horizon_retired" = "$HORIZON" ] || fail "final cadence sample did not reach horizon: $horizon_retired"
-          horizon_extended_hash=$(printf '%s\n' "$horizon_line" | jq -r '.extended_hash')
-          horizon_register_hash=$(printf '%s\n' "$horizon_line" | jq -r '.register_hash')
-          horizon_ram_hash=$(printf '%s\n' "$horizon_line" | jq -r '.ram_hash')
+          horizon_observed_icount=$(printf '%s\n' "$horizon_line" | jq -r '.observed_icount')
+          [ "$horizon_observed_icount" = "$HORIZON" ] \
+            || fail "final cadence sample did not observe exact horizon: $horizon_observed_icount"
+          [ "$horizon_retired" -ge "$HORIZON" ] \
+            || fail "final cadence sample retired before horizon: $horizon_retired"
+          horizon_extended_hash=$(printf '%s\n' "$horizon_line" | jq -r '.diagnostic_extended_fnv')
+          horizon_register_hash=$(printf '%s\n' "$horizon_line" | jq -r '.register_digests[0]')
+          horizon_ram_hash=$(printf '%s\n' "$horizon_line" | jq -r '.ram_digest')
           horizon_ram_bytes=$(printf '%s\n' "$horizon_line" | jq -r '.ram_bytes')
           horizon_device_event_hash=$(printf '%s\n' "$horizon_line" | jq -r '.device_event_hash')
           horizon_memory_events=$(printf '%s\n' "$horizon_line" | jq -r '.memory_events')
@@ -674,9 +689,9 @@ in
             || fail "run b did not record a final plugin pause sample"
           pause_overshoot=$((pause_retired - HORIZON))
           [ "$pause_overshoot" -ge 0 ] || fail "pause retired before requested horizon: $pause_retired"
-          pause_extended_hash=$(printf '%s\n' "$pause_line" | jq -r '.extended_hash')
-          pause_register_hash=$(printf '%s\n' "$pause_line" | jq -r '.register_hash')
-          pause_ram_hash=$(printf '%s\n' "$pause_line" | jq -r '.ram_hash')
+          pause_extended_hash=$(printf '%s\n' "$pause_line" | jq -r '.diagnostic_extended_fnv')
+          pause_register_hash=$(printf '%s\n' "$pause_line" | jq -r '.register_digests[0]')
+          pause_ram_hash=$(printf '%s\n' "$pause_line" | jq -r '.ram_digest')
           pause_device_event_hash=$(printf '%s\n' "$pause_line" | jq -r '.device_event_hash')
           pause_memory_events=$(printf '%s\n' "$pause_line" | jq -r '.memory_events')
           pause_io_events=$(printf '%s\n' "$pause_line" | jq -r '.io_events')
@@ -708,6 +723,7 @@ in
             echo paused_migration_state_match=not_asserted
             echo samples="$samples_a"
             echo horizon_retired="$horizon_retired"
+            echo horizon_observed_icount="$horizon_observed_icount"
             echo horizon_extended_hash="$horizon_extended_hash"
             echo horizon_register_hash="$horizon_register_hash"
             echo horizon_ram_hash="$horizon_ram_hash"

@@ -132,8 +132,8 @@
         needle = ''-accel "$ACCELERATOR"'';
       }
       {
-        label = "S11 diffs full trace across jittered run";
-        needle = ''diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl"'';
+        label = "S11 diffs the authoritative trace through the exact horizon";
+        needle = ''"$TMPDIR/trace-authoritative-a.jsonl"'';
       }
       {
         label = "S11 localizes RR current-vCPU mismatches";
