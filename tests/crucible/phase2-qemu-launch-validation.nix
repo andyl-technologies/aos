@@ -47,8 +47,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-2 task traceability marker";
-        needle = "**T-QEMU-2**";
+        label = "T-QEMU-2 checklist complete";
+        needle = "- [x] **T-QEMU-2**";
       }
       {
         label = "QEMU-2 launch-configuration rejection";

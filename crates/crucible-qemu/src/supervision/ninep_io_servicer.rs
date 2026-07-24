@@ -108,6 +108,26 @@ impl QemuLive9pIoServicer {
         &mut self,
         guest_icount: u64,
     ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError> {
+        self.service_with_before_delivery(guest_icount, |_processed, _deadline| {})
+    }
+
+    /// Services one pass with a gate hook between COMPUTE and DELIVER.
+    ///
+    /// The hook lets the live certification gate inject wall-time delay after a
+    /// request's deterministic horizon is known but before its response becomes
+    /// visible. Production servicing uses [`Self::service`] and has no hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::service`].
+    pub(crate) fn service_with_before_delivery<F>(
+        &mut self,
+        guest_icount: u64,
+        before_delivery: F,
+    ) -> Result<QemuLive9pIoServiceStep, QemuLive9pIoServicerError>
+    where
+        F: FnOnce(usize, Option<u64>),
+    {
         let Self {
             region,
             device,
@@ -141,6 +161,13 @@ impl QemuLive9pIoServicer {
             .process_shmem_inbox(request_header, request_entries, node_slot)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
         *frames_processed += inbox.processed;
+        // Capture the COMPUTEd horizon before delivery. If host polling first
+        // observes a request after its deadline, this service call may also
+        // publish the response and leave no pending event afterward.
+        let computed_completion_icount = (inbox.processed > 0)
+            .then(|| device.core().next_exact_local_event())
+            .flatten();
+        before_delivery(inbox.processed, computed_completion_icount);
 
         let delivery = device
             .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
@@ -157,6 +184,8 @@ impl QemuLive9pIoServicer {
         Ok(QemuLive9pIoServiceStep {
             processed: inbox.processed,
             delivered: delivery.delivered,
+            first_request_icount: inbox.first_request_icount,
+            computed_completion_icount,
             next_completion_icount,
         })
     }
@@ -205,6 +234,10 @@ pub struct QemuLive9pIoServiceStep {
     pub processed: usize,
     /// Response frames published to the response ring this call.
     pub delivered: usize,
+    /// Submit icount carried by the first request drained this call.
+    pub first_request_icount: Option<u64>,
+    /// First completion horizon COMPUTEd from requests drained this call.
+    pub computed_completion_icount: Option<u64>,
     /// The device's next completion icount after this call, when one is pending.
     pub next_completion_icount: Option<u64>,
 }
@@ -255,10 +288,12 @@ impl NinepIoDiagnostics {
             self.frames_processed
                 .fetch_add(serviced.processed, Ordering::Relaxed);
             if !self.first_request_seen.swap(true, Ordering::Relaxed) {
-                self.first_request_icount
-                    .store(current_icount, Ordering::Relaxed);
+                self.first_request_icount.store(
+                    serviced.first_request_icount.unwrap_or(current_icount),
+                    Ordering::Relaxed,
+                );
                 self.first_completion_horizon.store(
-                    serviced.next_completion_icount.unwrap_or(0),
+                    serviced.computed_completion_icount.unwrap_or(0),
                     Ordering::Relaxed,
                 );
             }
@@ -335,10 +370,9 @@ fn deterministic_fs_tree() -> Result<FsTree, QemuLive9pIoServicerError> {
             content: b"hello".to_vec(),
         },
     );
-    FsTree::try_new(Node::Directory { children })
-        .map_err(|error| QemuLive9pIoServicerError::Tree {
-            message: error.to_string(),
-        })
+    FsTree::try_new(Node::Directory { children }).map_err(|error| QemuLive9pIoServicerError::Tree {
+        message: error.to_string(),
+    })
 }
 
 /// Error returned by the live 9p-I/O servicer.
@@ -394,10 +428,10 @@ mod tests {
     #[test]
     fn diagnostics_accumulate_as_a_pure_function_of_observations() {
         let observations = [
-            (10_u64, false, 0_u64, step(0, 0, None)),
-            (10, true, 1, step(1, 0, Some(1512))),
-            (900, true, 1512, step(0, 0, Some(1512))),
-            (1512, true, 1512, step(0, 1, None)),
+            (10_u64, false, 0_u64, step(0, 0, None, None)),
+            (10, true, 1, step(1, 0, Some(1512), Some(1512))),
+            (900, true, 1512, step(0, 0, None, Some(1512))),
+            (1512, true, 1512, step(0, 1, None, None)),
         ];
 
         let replay = || {
@@ -422,10 +456,17 @@ mod tests {
         assert!(a.last_device_io_active);
     }
 
-    fn step(processed: usize, delivered: usize, next: Option<u64>) -> QemuLive9pIoServiceStep {
+    fn step(
+        processed: usize,
+        delivered: usize,
+        computed: Option<u64>,
+        next: Option<u64>,
+    ) -> QemuLive9pIoServiceStep {
         QemuLive9pIoServiceStep {
             processed,
             delivered,
+            first_request_icount: (processed > 0).then_some(10),
+            computed_completion_icount: computed,
             next_completion_icount: next,
         }
     }

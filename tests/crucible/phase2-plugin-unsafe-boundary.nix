@@ -14,7 +14,9 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhitebox =
+    builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
@@ -51,8 +53,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-21 checklist remains open during boundary hardening";
-        needle = "- [ ] **T-PLUG-21**";
+        label = "T-PLUG-21 checklist is complete";
+        needle = "- [x] **T-PLUG-21**";
       }
       {
         label = "PLUG-46 unsafe boundary wording";
@@ -329,11 +331,18 @@ in
             while IFS= read -r file; do
               case "$file" in
                 crates/crucible-qemu-plugin/src/abi.rs|\
+                crates/crucible-qemu-plugin/src/abi/tests.rs|\
                 crates/crucible-qemu-plugin/src/coverage.rs|\
+                crates/crucible-qemu-plugin/src/coverage/tests.rs|\
+                crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
+                crates/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
+                crates/crucible-qemu-plugin/src/runtime/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests/support.rs|\
                 crates/crucible-qemu-plugin/src/setup.rs|\
+                crates/crucible-qemu-plugin/src/setup/tests.rs|\
                 crates/crucible-qemu-plugin/src/network_rx.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible-qemu-plugin/src/vcpu_introspection.rs)
@@ -430,8 +439,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
-            task_status=open
-            unsafe_boundary=abi,coverage,runtime,runtime-live-callbacks,test-support,setup,network-rx,network-tx,vcpu-introspection
+            task_status=complete
+            unsafe_boundary=abi,coverage,fingerprint,registration,runtime,runtime-live-callbacks,runtime-device-callbacks,test-support,setup,network-rx,network-tx,vcpu-introspection
             unsafe_comments=blocks-require-nearby-SAFETY-functions-require-Safety-contract
             callback_contract=single-threaded-round-robin-vcpu-thread
             setup_lifetimes=typed-descriptor-and-mmap-tokens

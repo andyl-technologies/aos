@@ -142,6 +142,8 @@ pub struct IoCoreSnapshot {
 pub struct ShmemInboxProcess {
     /// Number of request frames consumed and COMPUTEd.
     pub processed: usize,
+    /// Icount carried by the first request frame consumed in this pass.
+    pub first_request_icount: Option<u64>,
     /// Wake actions issued to the request producer as ring slots were freed.
     pub producer_wakes: Vec<WakeAction>,
 }
@@ -292,8 +294,10 @@ impl IoCore {
         D: IoSubNode,
     {
         let mut processed = 0;
+        let mut first_request_icount = None;
         let mut producer_wakes = Vec::new();
         while let Some(frame) = inbox.dequeue(inbox_entries)? {
+            first_request_icount.get_or_insert(frame.delivery_icount);
             let wake = producer_slot.wake_for_device_io_release()?;
             producer_wakes.push(wake);
             let request = request_from_frame(&frame)?;
@@ -302,6 +306,7 @@ impl IoCore {
         }
         Ok(ShmemInboxProcess {
             processed,
+            first_request_icount,
             producer_wakes,
         })
     }

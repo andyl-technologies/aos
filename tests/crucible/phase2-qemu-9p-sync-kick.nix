@@ -28,14 +28,17 @@
     indexes;
 
   failures =
-    lib.optionals (!(hasInfix "vdev->device_id == VIRTIO_ID_9P" patchSource)) [
+    lib.optionals (!(hasInfix "diff --git a/hw/virtio/virtio.c" patchSource)) [
+      "${patchName}: generic virtio queue-notify patch surface is absent"
+    ]
+    ++ lib.optionals (!(hasInfix "vdev->device_id == VIRTIO_ID_9P" patchSource)) [
       "${patchName}: virtio-9p device selection is absent"
     ]
-    ++ lib.optionals (!(hasInfix "vdev->device_id == VIRTIO_ID_RNG" patchSource)) [
-      "${patchName}: existing deterministic virtio-rng selection is not preserved"
+    ++ lib.optionals (!(hasInfix "vq->host_notifier_enabled &&" patchSource)) [
+      "${patchName}: host-notifier bypass is absent"
     ]
-    ++ lib.optionals (!(hasInfix "Block I/O keeps the" patchSource)) [
-      "${patchName}: block-I/O asynchronous-kick rationale is absent"
+    ++ lib.optionals (!(hasInfix "Block I/O and every non-sim launch retain" patchSource)) [
+      "${patchName}: non-9p preservation rationale is absent"
     ]
     ++ lib.optionals (
       builtins.length series.patchFiles <= 39
@@ -81,11 +84,11 @@ in
               patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
             done
 
-            extract_ioeventfd_function() {
+            extract_notify_function() {
               source="$1"
               destination="$2"
               gawk '
-                /^static bool virtio_pci_ioeventfd_enabled\(/ { capture = 1 }
+                /^void virtio_queue_notify\(/ { capture = 1 }
                 capture {
                   print
                   opens = gsub(/\{/, "{")
@@ -111,42 +114,39 @@ in
             #include <stdio.h>
             #include <string.h>
 
-            enum {
-                VIRTIO_ID_BLOCK = 2,
-                VIRTIO_ID_RNG = 4,
-                VIRTIO_ID_9P = 9,
-                VIRTIO_PCI_FLAG_USE_IOEVENTFD = 1,
+            #define unlikely(value) (value)
+            #define VIRTIO_ID_BLOCK 2
+            #define VIRTIO_ID_RNG 4
+            #define VIRTIO_ID_9P 9
+
+            typedef struct EventNotifier {
+                unsigned unused;
+            } EventNotifier;
+
+            typedef struct VirtIODevice VirtIODevice;
+            typedef struct VirtQueue VirtQueue;
+            typedef void (*VirtQueueHandler)(VirtIODevice *, VirtQueue *);
+
+            struct VirtQueue {
+                struct {
+                    void *desc;
+                } vring;
+                bool host_notifier_enabled;
+                EventNotifier host_notifier;
+                VirtQueueHandler handle_output;
             };
 
-            typedef struct VirtIODevice {
+            struct VirtIODevice {
+                VirtQueue *vq;
+                bool broken;
+                bool start_on_kick;
                 uint16_t device_id;
-            } VirtIODevice;
-
-            typedef struct VirtioBusState {
-                VirtIODevice *device;
-            } VirtioBusState;
-
-            typedef struct VirtIOPCIProxy {
-                unsigned flags;
-                VirtioBusState bus;
-            } VirtIOPCIProxy;
-
-            typedef struct DeviceState {
-                VirtIOPCIProxy *proxy;
-            } DeviceState;
+            };
 
             static bool fixture_icount_enabled;
             static const char *fixture_accel_name;
-
-            static VirtIOPCIProxy *to_virtio_pci_proxy(DeviceState *device)
-            {
-                return device->proxy;
-            }
-
-            static VirtIODevice *virtio_bus_get_device(VirtioBusState *bus)
-            {
-                return bus->device;
-            }
+            static unsigned fixture_notifier_calls;
+            static unsigned fixture_handler_calls;
 
             static bool icount_enabled(void)
             {
@@ -157,43 +157,83 @@ in
             {
                 return fixture_accel_name;
             }
+
+            static void trace_virtio_queue_notify(
+                VirtIODevice *vdev, long index, VirtQueue *vq)
+            {
+                (void)vdev;
+                (void)index;
+                (void)vq;
+            }
+
+            static void event_notifier_set(EventNotifier *notifier)
+            {
+                (void)notifier;
+                fixture_notifier_calls++;
+            }
+
+            static void fixture_handle_output(VirtIODevice *vdev, VirtQueue *vq)
+            {
+                (void)vdev;
+                (void)vq;
+                fixture_handler_calls++;
+            }
+
+            static void virtio_set_started(VirtIODevice *vdev, bool started)
+            {
+                (void)vdev;
+                (void)started;
+            }
             FIXTURE_PREFIX
 
               cat > "$fixture_source.suffix" <<'FIXTURE_SUFFIX'
             int main(int argc, char **argv)
             {
-                VirtIODevice virtio_device = { 0 };
-                VirtIOPCIProxy proxy = {
-                    .flags = VIRTIO_PCI_FLAG_USE_IOEVENTFD,
-                    .bus = { .device = &virtio_device },
+                VirtQueue queue = {
+                    .vring = { .desc = &queue },
+                    .host_notifier_enabled = true,
+                    .handle_output = fixture_handle_output,
                 };
-                DeviceState device = { .proxy = &proxy };
-                bool expected;
-                bool actual;
+                VirtIODevice device = {
+                    .vq = &queue,
+                };
+                unsigned expected_notifier;
+                unsigned expected_handler;
 
-                if (argc != 5) {
-                    fputs("usage: fixture ACCEL ICOUNT DEVICE EXPECTED\n", stderr);
+                if (argc != 6) {
+                    fputs(
+                        "usage: fixture ACCEL ICOUNT DEVICE NOTIFIER HANDLER\n",
+                        stderr);
                     return 2;
                 }
                 fixture_accel_name = argv[1];
                 fixture_icount_enabled = strcmp(argv[2], "1") == 0;
                 if (strcmp(argv[3], "9p") == 0) {
-                    virtio_device.device_id = VIRTIO_ID_9P;
+                    device.device_id = VIRTIO_ID_9P;
                 } else if (strcmp(argv[3], "rng") == 0) {
-                    virtio_device.device_id = VIRTIO_ID_RNG;
+                    device.device_id = VIRTIO_ID_RNG;
                 } else if (strcmp(argv[3], "block") == 0) {
-                    virtio_device.device_id = VIRTIO_ID_BLOCK;
+                    device.device_id = VIRTIO_ID_BLOCK;
                 } else {
                     fputs("unknown device\n", stderr);
                     return 2;
                 }
-                expected = strcmp(argv[4], "1") == 0;
-                actual = virtio_pci_ioeventfd_enabled(&device);
-                if (actual != expected) {
-                    fputs("unexpected ioeventfd selection\n", stderr);
+                expected_notifier = (unsigned)(argv[4][0] - '0');
+                expected_handler = (unsigned)(argv[5][0] - '0');
+                virtio_queue_notify(&device, 0);
+                if (fixture_notifier_calls != expected_notifier
+                    || fixture_handler_calls != expected_handler) {
+                    fprintf(
+                        stderr,
+                        "unexpected dispatch notifier=%u handler=%u\n",
+                        fixture_notifier_calls,
+                        fixture_handler_calls);
                     return 1;
                 }
-                printf("ioeventfd_enabled=%s\n", actual ? "true" : "false");
+                printf(
+                    "notifier_calls=%u handler_calls=%u\n",
+                    fixture_notifier_calls,
+                    fixture_handler_calls);
                 return 0;
             }
             FIXTURE_SUFFIX
@@ -204,38 +244,37 @@ in
                 "$fixture_source" -o "$fixture_source.bin"
             }
 
-            extract_ioeventfd_function hw/virtio/virtio-pci.c \
-              "$TMPDIR/ioeventfd-prefix.function.c"
-            write_fixture "$TMPDIR/ioeventfd-prefix.function.c" \
-              "$TMPDIR/ioeventfd-prefix.c"
+            extract_notify_function hw/virtio/virtio.c \
+              "$TMPDIR/notify-prefix.function.c"
+            write_fixture "$TMPDIR/notify-prefix.function.c" \
+              "$TMPDIR/notify-prefix.c"
 
             patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}"
-            grep -F -q 'vdev->device_id == VIRTIO_ID_9P' hw/virtio/virtio-pci.c
-            grep -F -q 'vdev->device_id == VIRTIO_ID_RNG' hw/virtio/virtio-pci.c
-            extract_ioeventfd_function hw/virtio/virtio-pci.c \
-              "$TMPDIR/ioeventfd-patched.function.c"
-            write_fixture "$TMPDIR/ioeventfd-patched.function.c" \
-              "$TMPDIR/ioeventfd-patched.c"
+            grep -F -q 'vdev->device_id == VIRTIO_ID_9P' hw/virtio/virtio.c
+            extract_notify_function hw/virtio/virtio.c \
+              "$TMPDIR/notify-patched.function.c"
+            write_fixture "$TMPDIR/notify-patched.function.c" \
+              "$TMPDIR/notify-patched.c"
 
-            "$TMPDIR/ioeventfd-prefix.c.bin" sim 1 9p 1 > "$out/prefix-sim-9p.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" sim 1 9p 0 > "$out/patched-sim-9p.txt"
-            "$TMPDIR/ioeventfd-prefix.c.bin" sim 1 rng 0 > "$out/prefix-sim-rng.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" sim 1 rng 0 > "$out/patched-sim-rng.txt"
-            "$TMPDIR/ioeventfd-prefix.c.bin" sim 1 block 1 > "$out/prefix-sim-block.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" sim 1 block 1 > "$out/patched-sim-block.txt"
-            "$TMPDIR/ioeventfd-prefix.c.bin" tcg 1 9p 1 > "$out/prefix-tcg-9p.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" tcg 1 9p 1 > "$out/patched-tcg-9p.txt"
-            "$TMPDIR/ioeventfd-prefix.c.bin" sim 0 9p 1 > "$out/prefix-sim-no-icount-9p.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" sim 0 9p 1 > "$out/patched-sim-no-icount-9p.txt"
+            "$TMPDIR/notify-prefix.c.bin" sim 1 9p 1 0 > "$out/prefix-sim-9p.txt"
+            "$TMPDIR/notify-patched.c.bin" sim 1 9p 0 1 > "$out/patched-sim-9p.txt"
+            "$TMPDIR/notify-prefix.c.bin" sim 1 rng 1 0 > "$out/prefix-sim-rng.txt"
+            "$TMPDIR/notify-patched.c.bin" sim 1 rng 1 0 > "$out/patched-sim-rng.txt"
+            "$TMPDIR/notify-prefix.c.bin" sim 1 block 1 0 > "$out/prefix-sim-block.txt"
+            "$TMPDIR/notify-patched.c.bin" sim 1 block 1 0 > "$out/patched-sim-block.txt"
+            "$TMPDIR/notify-prefix.c.bin" tcg 1 9p 1 0 > "$out/prefix-tcg-9p.txt"
+            "$TMPDIR/notify-patched.c.bin" tcg 1 9p 1 0 > "$out/patched-tcg-9p.txt"
+            "$TMPDIR/notify-prefix.c.bin" sim 0 9p 1 0 > "$out/prefix-sim-no-icount-9p.txt"
+            "$TMPDIR/notify-patched.c.bin" sim 0 9p 1 0 > "$out/patched-sim-no-icount-9p.txt"
 
             cmp -s "$out/prefix-sim-9p.txt" "$out/patched-sim-9p.txt" \
-              && fail "patched sim 9p selection did not differ from its prefix"
+              && fail "patched sim 9p dispatch did not differ from its prefix"
             diff -u "$out/prefix-sim-rng.txt" "$out/patched-sim-rng.txt"
             diff -u "$out/prefix-sim-block.txt" "$out/patched-sim-block.txt"
             diff -u "$out/prefix-tcg-9p.txt" "$out/patched-tcg-9p.txt"
             diff -u "$out/prefix-sim-no-icount-9p.txt" "$out/patched-sim-no-icount-9p.txt"
-            grep -Fxq 'ioeventfd_enabled=true' "$out/prefix-sim-9p.txt"
-            grep -Fxq 'ioeventfd_enabled=false' "$out/patched-sim-9p.txt"
+            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/prefix-sim-9p.txt"
+            grep -Fxq 'notifier_calls=0 handler_calls=1' "$out/patched-sim-9p.txt"
 
             cat > "$out/result" <<'RESULT'
             PASS
@@ -244,8 +283,8 @@ in
             prefix_negative_control=true
             patched_exact_source_fixture=true
             sim_icount_9p_kick_synchronous=true
-            rng_selection_preserved=true
-            block_selection_preserved=true
+            rng_dispatch_preserved=true
+            block_dispatch_preserved=true
             plain_tcg_9p_upstream_equivalent=true
             sim_without_icount_9p_upstream_equivalent=true
             qemu_package=${qemuPackage}

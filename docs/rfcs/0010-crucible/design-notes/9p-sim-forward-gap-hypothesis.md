@@ -1,9 +1,27 @@
-# 9p-under-sim forward gap — file:line hypothesis (read-only investigation)
+# 9p-under-sim forward gap — confirmed diagnosis and resolution
 
-Status: HYPOTHESIS from source reading + live observation. Not yet confirmed by a
-C-side probe (that needs a diagnostic QEMU build; deferred — series edits are
-window-gated). Author: CP5 continuation agent, 2026-07-14. Fix goes SECOND in the
-post-M2 window (after 0039).
+Status: CONFIRMED by diagnostic QEMU builds and closed by patch 0040 plus the
+live `SLOT_9P_IO` certification gate. The original hypothesis is retained below
+as investigation history.
+
+## Resolution
+
+The diagnostic build showed that changing
+`virtio_pci_ioeventfd_enabled` did not affect this queue:
+`virtio_queue_notify` still observed `VIRTIO_ID_9P` with
+`host_notifier_enabled = true`. Patch 0040 therefore applies at the actual
+dispatch point. It bypasses the host notifier only for
+sim+icount+`VIRTIO_ID_9P` and invokes the queue handler inline. Block, rng,
+plain TCG 9p, and sim-without-icount 9p retain their prior dispatch behavior.
+
+The exact-source `checks.crucible.phase2.qemu9pSyncKick` microtest proves that
+scope. `checks.crucible.phase2.qemuLive9pIo` then proves a real Linux
+`Tversion` crosses `SLOT_9P_IO`, completes with the same 821-icount modeled
+latency under host load and a 100 ms response-publication delay, releases the
+device hold, and lets the guest reach its scheduler ceiling. All temporary
+diagnostic logging was removed.
+
+## Historical investigation
 
 ## 1. Observed (live, builder-hil1-87eb5b00)
 

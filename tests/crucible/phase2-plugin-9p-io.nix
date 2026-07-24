@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNinePIo",
   taskIds ? [],
-  openTaskIds ? ["T-PLUG-13"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,7 +15,14 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemSources =
+    builtins.concatStringsSep "\n"
+    (map builtins.readFile [
+      ../../crates/crucible-shmem/src/lib.rs
+      ../../crates/crucible-shmem/src/shmem/frame_node.rs
+      ../../crates/crucible-shmem/src/shmem/region.rs
+      ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
+    ]);
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -75,8 +82,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-13 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-13**";
+        label = "T-PLUG-13 is closed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-13**";
+      }
+      {
+        label = "T-PLUG-13 cites its live completion gate";
+        needle = "Completed by `checks.crucible.phase2.qemuLive9pIo`";
       }
       {
         label = "9p callback wording";
@@ -319,7 +330,7 @@
         needle = "ninep_burst_done_rejects_pending_requests_and_keeps_hold_active";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src source tree" shmemSources [
       {
         label = "9p slot constant";
         needle = "pub const SLOT_9P_IO";

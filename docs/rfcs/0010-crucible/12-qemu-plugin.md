@@ -996,9 +996,16 @@ component that makes that purity true *inside* the QEMU process.
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.
-- [ ] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
+- [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
+  Completed by `checks.crucible.phase2.qemuLive9pIo`, with
+  `checks.crucible.phase2.qemu9pSyncKick` proving exact QEMU dispatch
+  attribution. A real Linux guest forwards `Tversion` through `SLOT_9P_IO`,
+  receives the modeled response at an 821-icount latency, releases the
+  burst-wide device hold, and progresses to the scheduler ceiling. The host-load
+  leg delays response publication by 100 ms while preserving the modeled
+  latency.
 - [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
   marker with the exact icount; ensure off-mode installs nothing and black-box is
@@ -1064,10 +1071,18 @@ component that makes that purity true *inside* the QEMU process.
   access (acquire loads / release stores matching the ABI) despite the
   single-threaded plugin side, and document that relaxed is only used for
   self-owned counters outside shmem. — satisfies [PLUG-45]; spec §12.10.1.
-- [ ] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
+- [x] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
   comment (single-vCPU serialization, mmap lifetime, descriptor validity,
   vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
   check all payload copies. — satisfies [PLUG-46], [PLUG-47]; spec §12.10.2.
+  Completed by `checks.crucible.phase2.qemuPluginUnsafeBoundary`, which confines
+  production unsafe operations to the audited QEMU ABI, setup/mapping,
+  coverage, fingerprint, runtime, and device callback adapters; requires a
+  nearby `SAFETY:` justification for every unsafe block and a `# Safety`
+  contract for every unsafe function; and rejects raw guest-address pointer
+  access. Focused tests prove descriptor and mapping lifetimes, callback
+  serialization, QEMU-API-only guest memory access, and bounds checks before
+  network, block, 9p, and white-box payload copies.
 - [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
   failure (broken IPC, missing capability, ABI mismatch, full ring, passed
   delivery icount) with a distinct diagnosable error that the divergence bisector

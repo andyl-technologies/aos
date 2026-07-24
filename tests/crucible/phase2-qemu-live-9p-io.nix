@@ -2,29 +2,20 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLive9pIo",
-  # The FIRST gate that drives real guest 9p I/O toward SLOT_9P_IO. It documents
-  # a currently-open gap: under the sim accelerator a guest's `mount -t 9p` does
-  # NOT reach the crucible SLOT_9P_IO substrate, even though the guest boots and
-  # the identical mount reaches QEMU's 9p device under TCG. Two legs pin the
-  # signature so the gap is caught by CI, not chat:
-  #   - reference (sim) leg: boots the guest with a crucible-shmem virtio-9p
-  #     device + a mount initrd on the sim+plugin raw hot path, services
-  #     SLOT_9P_IO, and observes frames_processed=0 while the guest boots
-  #     (idle-jumps to the ceiling once its mount blocks); run twice, the
-  #     icount-domain observations must match;
+  # Certifies real guest 9p I/O over SLOT_9P_IO:
+  #   - reference (sim) leg: boots a guest with a crucible-shmem virtio-9p
+  #     device + mount initrd, forwards requests to the host 9p sub-node, and
+  #     requires deterministic response delivery followed by guest progress;
+  #   - host-load sim leg: repeats with host CPU contention and a due response
+  #     deliberately delayed in wall time; modeled device latency must match;
   #   - TCG control leg: boots the same guest + 9p device under TCG with no
-  #     plugin and confirms the guest issues a real 9p op (QEMU's msize warning),
-  #     proving the sim-leg zero is a forward gap, not a guest that never mounts.
-  # When the C-side forward fix lands (SLOT_9P_IO starts receiving the op), the
-  # sim leg's frames_processed becomes nonzero and this gate flips RED on
-  # purpose, signalling that it must be upgraded to assert forwarding + post-0039
-  # guest progress. No checklist task flips here.
-  taskIds ? [],
+  #     plugin and independently confirms the guest issues a real 9p op.
+  taskIds ? ["T-PLUG-13"],
   openTaskIds ? [],
   # A busy ceiling above the diskless idle onset (~15.8M): the guest boots to
   # userspace and runs its mount workload before it touches 9p, so the op lands
   # far later than a virtio-blk realize-time probe.
-  busyCeiling ? "100000000",
+  busyCeiling ? "3200000000",
   ninepTimeoutSecs ? "60",
   secondRunLoad ? "1",
 }: let
@@ -142,20 +133,20 @@ in
           cat "$report"
           grep -Fxq PASS "$report"
           grep -Fxq 'gate=gate:live-9p-io' "$report"
-          grep -Fxq 'diagnostic=9p-forward-gap-under-sim' "$report"
+          grep -Fxq 'certification=9p-forward-and-completion-under-sim' "$report"
           grep -Fxq 'ninep_ring=SLOT_9P_IO' "$report"
-          # The pinned signature of the forward gap:
-          #   1. the sim leg processed ZERO 9p frames (the mount op does not
-          #      reach SLOT_9P_IO under sim) -- the run PASSing already asserts
-          #      frames_processed==0 in-process, this makes it visible;
-          #   2. the same guest DOES issue a 9p op under TCG (control), so the
-          #      zero is a forward gap, not a broken guest;
-          #   3. the two sim runs' icount-domain observations matched.
-          grep -Fxq 'sim_leg_forwarded=false' "$report"
-          grep -Eq '^frames_processed=0$' "$report"
+          grep -Fxq 'sim_leg_forwarded=true' "$report"
+          grep -Eq '^frames_processed=[1-9][0-9]*$' "$report"
+          grep -Eq '^frames_delivered=[1-9][0-9]*$' "$report"
+          grep -Eq '^first_request_icount=[0-9]+$' "$report"
+          grep -Eq '^first_completion_horizon=[1-9][0-9]*$' "$report"
+          grep -Fxq 'last_device_io_active=false' "$report"
+          grep -Fxq 'advance_outcome=reached-ceiling' "$report"
+          grep -Fxq 'guest_progressed_past_ninep_io=true' "$report"
           grep -Fxq 'tcg_control_issued_9p=true' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Fxq 'host_load_applied=true' "$report"
+          grep -Fxq 'delayed_response_applied=true' "$report"
 
           mkdir -p "$out"
           cp "$report" "$out/result"
@@ -163,9 +154,8 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'scope=diagnostic-9p-forward-gap-under-sim\n'
-            printf 'proven=tcg-control-issues-9p-op,sim-leg-frames-processed-zero,run-twice-observation-determinism\n'
-            printf 'documents=stock-virtio-9p-op-does-not-reach-SLOT_9P_IO-under-sim-accel\n'
+            printf 'scope=certifying-live-9p-forward-and-completion\n'
+            printf 'proven=live-SLOT_9P_IO-request-servicing,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism,tcg-workload-control\n'
           } >> "$out/result"
         '';
       }

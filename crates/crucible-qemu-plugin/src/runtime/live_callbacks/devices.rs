@@ -517,7 +517,9 @@ impl LiveVcpuTimeCallbackState {
     fn ninep_burst_start(&self) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.idle_advance_is_pending()? {
             return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance { family: "9p" },
+                LiveDeviceCallbackError::CallbackDuringIdleAdvance {
+                    family: "9p burst start",
+                },
             ));
         }
         self.lock_devices()?
@@ -533,7 +535,9 @@ impl LiveVcpuTimeCallbackState {
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.idle_advance_is_pending()? {
             return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance { family: "9p" },
+                LiveDeviceCallbackError::CallbackDuringIdleAdvance {
+                    family: "9p submit",
+                },
             ));
         }
         let current_icount = self.callback_current_icount()?;
@@ -563,11 +567,10 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn ninep_burst_done(&self) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.idle_advance_is_pending()? {
-            return Err(LiveVcpuTimeCallbackError::live_device(
-                LiveDeviceCallbackError::CallbackDuringIdleAdvance { family: "9p" },
-            ));
-        }
+        // Completion polling can finish from QEMU's main loop while an idle
+        // advance is still being retired. Burst-done only releases the existing
+        // device-I/O hold; it neither submits work nor observes guest time, so
+        // it must remain legal at that boundary.
         self.lock_devices()?
             .finish_ninep_burst(self.slot.get())
             .map_err(LiveVcpuTimeCallbackError::live_device)

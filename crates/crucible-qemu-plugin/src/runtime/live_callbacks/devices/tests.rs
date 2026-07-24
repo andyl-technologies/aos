@@ -164,6 +164,64 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     assert_eq!(slot.snapshot().device_io_active, 0);
 }
 
+#[test]
+fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
+        .unwrap_or_else(|error| panic!("test deadline should bind: {error}"));
+    let advance = crate::QueuedIdleAdvance::require(Some(test_advance))
+        .unwrap_or_else(|error| panic!("test advance should bind: {error}"));
+    let mut storage = DeviceRingStorage::new();
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
+    std::mem::forget(teardown_receiver);
+    let state = LiveVcpuTimeCallbackState::new(
+        62,
+        test_icount_raw,
+        1,
+        0,
+        0,
+        deadline,
+        advance,
+        &header,
+        &slot,
+        Arc::new(LiveCallbackQuiescence::new()),
+        teardown_sender,
+    )
+    .and_then(|state| state.attach_devices(0, block, ninep))
+    .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));
+
+    state
+        .ninep_burst_start()
+        .unwrap_or_else(|error| panic!("9p burst should start: {error}"));
+    let pending = advance
+        .enqueue(10)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(0, 10, pending)
+        .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    state
+        .ninep_burst_done()
+        .unwrap_or_else(|error| panic!("burst release should not observe guest time: {error}"));
+
+    assert_eq!(slot.snapshot().device_io_active, 0);
+    assert!(
+        state
+            .pending_idle_advance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    );
+}
+
 extern "C" fn test_deadline() -> i64 {
     -1
 }
