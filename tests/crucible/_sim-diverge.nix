@@ -34,6 +34,15 @@
   attrPath ? "drop-one-sim-diverge",
 }: let
   workload = import ./_sim-workload.nix {inherit pkgs lib;};
+  usesCanonicalTrace = builtins.elem index [3 37 38];
+  canonicalTrace =
+    if usesCanonicalTrace
+    then
+      import ./_drop-one-canonical-trace.nix {
+        inherit pkgs lib index buildDrv qemuPackage;
+        attrPath = "${attrPath}.canonicalTrace";
+      }
+    else null;
 in
   pkgs.mkDerivation {
     pname = "crucible-sim-diverge-${toString index}";
@@ -47,6 +56,10 @@ in
     MAX_RUNS = toString maxRuns;
     RTC_CLOCK = rtcClock;
     DROP_INDEX = toString index;
+    CANONICAL_TRACE =
+      if usesCanonicalTrace
+      then "${canonicalTrace}"
+      else "";
     phases = [
       {
         name = "sim-diverge-probe";
@@ -77,6 +90,36 @@ in
           probe_smp=1
 
           : > "$out/variant-fingerprints"
+
+          # Timer and terminal-observation patches change canonical execution
+          # state without necessarily changing the guest's simple serial
+          # observables. Compare the repository's exact-horizon SMP trace,
+          # normalizing only binary/argv identity fields.
+          if [ -n "$CANONICAL_TRACE" ]; then
+            cp "$CANONICAL_TRACE/result" "$out/result"
+            for artifact in \
+              variant-trace.result \
+              full-normalized.jsonl \
+              variant-a-normalized.jsonl \
+              full-vs-variant.diff \
+              full-a.tsv \
+              full-b.tsv \
+              variant-a.tsv \
+              variant-b.tsv \
+              full-a.marker \
+              full-b.marker \
+              variant-a.marker \
+              variant-b.marker \
+              full-a.sha256 \
+              full-b.sha256 \
+              variant-a.sha256 \
+              variant-b.sha256; do
+              if [ -f "$CANONICAL_TRACE/$artifact" ]; then
+                cp "$CANONICAL_TRACE/$artifact" "$out/$artifact"
+              fi
+            done
+            exit 0
+          fi
 
           # Patch 0008 is a fail-closed policy, not a deterministic-output
           # transform: without it, an unseeded sim guest consumes host entropy
@@ -112,24 +155,6 @@ in
           variant_max_runs=$MAX_RUNS
           RESULT
             exit 0
-          fi
-
-          # Patch 0038 suppresses QEMU's ordinary RR kick timer only when more
-          # than one vCPU exists. Establish an equivalent two-vCPU full-series
-          # baseline before probing the full-minus-0038 binary.
-          if [ "$DROP_INDEX" -eq 38 ]; then
-            probe_smp=2
-            full_smp_first=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" seeded "$probe_smp")
-            full_smp_second=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" seeded "$probe_smp")
-            test -n "$full_smp_first" || {
-              echo "FAIL: fully patched two-vCPU sim workload produced no fingerprint" >&2
-              exit 1
-            }
-            test "$full_smp_first" = "$full_smp_second" || {
-              echo "FAIL: fully patched two-vCPU sim workload diverged" >&2
-              exit 1
-            }
-            full_fp="$full_smp_first"
           fi
 
           diverged=false
