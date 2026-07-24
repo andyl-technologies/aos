@@ -12,8 +12,14 @@
 
 typedef struct CPUState CPUState;
 typedef struct NetClientState NetClientState;
+typedef struct AioContext AioContext;
 typedef void IOHandler(void *opaque);
+typedef bool AioPollFn(void *opaque);
 #define CRUCIBLE_IOHANDLER_DEFINED 1
+
+struct AioContext {
+  int marker;
+};
 
 struct CPUState {
   unsigned int cpu_index;
@@ -51,6 +57,8 @@ static int registered_wake_fd = -1;
 static int unregistered_wake_fd = -1;
 static IOHandler *registered_read;
 static void *registered_opaque;
+static AioContext main_aio_context = {.marker = 1};
+static AioContext *registered_aio_context;
 static unsigned int error_report_calls;
 static char last_error_report[160];
 static unsigned int cpu_kick_calls;
@@ -77,11 +85,21 @@ qemu_clock_advance_virtual_time(int64_t new_time)
   return new_time;
 }
 
+AioContext *
+qemu_get_aio_context(void)
+{
+  return &main_aio_context;
+}
+
 void
-qemu_set_fd_handler(int fd, IOHandler *fd_read, IOHandler *fd_write,
-                    void *opaque)
+aio_set_fd_handler(AioContext *ctx, int fd, IOHandler *fd_read,
+                   IOHandler *fd_write, AioPollFn *io_poll,
+                   IOHandler *io_poll_ready, void *opaque)
 {
   (void)fd_write;
+  (void)io_poll;
+  (void)io_poll_ready;
+  registered_aio_context = ctx;
   if (fd_read == NULL) {
     unregistered_wake_fd = fd;
     if (registered_wake_fd == fd) {
@@ -369,6 +387,7 @@ test_wake_fd_integrates_with_main_loop(void)
   unregistered_wake_fd = -1;
   registered_read = NULL;
   registered_opaque = NULL;
+  registered_aio_context = NULL;
   read_calls = 0;
   read_fd = -1;
   read_result_count = 0;
@@ -405,8 +424,8 @@ test_wake_fd_integrates_with_main_loop(void)
   fcntl_errno = 0;
   fcntl_result = O_NONBLOCK;
   if (qemu_plugin_register_wake_fd(55) != 0 || registered_wake_fd != 55 ||
-      registered_read == NULL) {
-    fprintf(stderr, "wake fd not registered\n");
+      registered_read == NULL || registered_aio_context != &main_aio_context) {
+    fprintf(stderr, "wake fd not registered on the main AioContext\n");
     return 1;
   }
   memcpy(read_results, drain_results, sizeof(drain_results));

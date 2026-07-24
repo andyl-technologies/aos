@@ -69,8 +69,8 @@
         needle = "qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0, 1)";
       }
       {
-        label = "CPU-work handoff";
-        needle = "async_run_on_cpu(first_cpu, qemu_plugin_advance_time__async";
+        label = "main-loop bottom-half handoff";
+        needle = "aio_bh_schedule_oneshot(qemu_get_aio_context(),";
       }
       {
         # The queued advance MUST use the icount-aware primitive, not the
@@ -187,7 +187,7 @@
       }
       {
         label = "queued timer dispatch assertion";
-        needle = "queued_worker_runs_virtual_timers=true";
+        needle = "queued_main_loop_worker_runs_virtual_timers=true";
       }
       {
         label = "main-loop BH handoff assertion";
@@ -584,7 +584,7 @@ in
             grep -q '^pending_predicate_tracks_completion_barrier=true$' "$out/result"
             grep -q '^negative_target_rejected_before_queue=true$' "$out/result"
             grep -q '^backward_target_reports_completion_failure=true$' "$out/result"
-            grep -q '^queued_worker_runs_virtual_timers=true$' "$out/result"
+            grep -q '^queued_main_loop_worker_runs_virtual_timers=true$' "$out/result"
             grep -q '^icount_bias_advance_converges_where_qtest_set_hangs=true$' "$out/result"
             grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/result"
             grep -q '^completion_uses_two_stage_bh_barrier=true$' "$out/result"
@@ -609,7 +609,7 @@ in
             qemu_time_control_public_predicate=true
             qemu_time_control_single_owner=true
             qemu_time_advance_callback_enqueue_only=true
-            qemu_time_advance_cpu_work_handoff=true
+            qemu_time_advance_main_loop_handoff=true
             qemu_time_advance_runs_virtual_timers=true
             qemu_time_advance_completion_bh=true
             qemu_time_advance_two_stage_bh_barrier=true

@@ -459,7 +459,7 @@ in
               "qemu_time_control_public_predicate=true" \
               "qemu_time_control_single_owner=true" \
               "qemu_time_advance_callback_enqueue_only=true" \
-              "qemu_time_advance_cpu_work_handoff=true" \
+              "qemu_time_advance_main_loop_handoff=true" \
               "qemu_time_advance_runs_virtual_timers=true" \
               "qemu_time_advance_completion_bh=true" \
               "qemu_time_advance_two_stage_bh_barrier=true" \

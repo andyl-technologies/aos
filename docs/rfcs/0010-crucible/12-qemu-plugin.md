@@ -347,8 +347,10 @@ observes a consistent `(ceiling, pending-inputs)` snapshot ([SCHED-36]).
 - **[PLUG-16]** When the plugin performs an idle jump it MUST enqueue exactly one
   authorized virtual-time target and return from the vCPU/plugin callback without
   mutating plugin clock or injection state. QEMU MUST advance the virtual clock
-  and dispatch due timers from queued vCPU work, then deliver completion through
-  the normal main loop only after timer-produced bottom halves. The plugin MUST
+  and dispatch due timers from queued normal-main-loop work, then deliver
+  completion through a later main-loop pass only after timer-produced bottom
+  halves. This work MUST remain runnable while the requesting vCPU is blocked
+  on deterministic device I/O. The plugin MUST
   validate that exact completion before advancing its clock, consuming inbound
   rings, injecting frames, or republishing the node as running. No next quantum
   may start while completion is pending. This two-stage barrier makes the wake

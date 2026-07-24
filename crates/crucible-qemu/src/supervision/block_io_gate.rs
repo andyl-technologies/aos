@@ -503,7 +503,10 @@ fn assert_runs_match(
             ),
         });
     }
-    if reference.diagnostics != second.diagnostics {
+    if !reference
+        .diagnostics
+        .deterministic_observation_eq(&second.diagnostics)
+    {
         return Err(QemuLiveBlockIoGateError::SecondRunDiverged {
             reason: format!(
                 "block observations differed: {:?} vs {:?}",

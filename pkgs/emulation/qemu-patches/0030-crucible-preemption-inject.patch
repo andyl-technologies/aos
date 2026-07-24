@@ -315,7 +315,7 @@ diff --git a/hw/intc/apic.c b/hw/intc/apic.c
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -959,6 +959,35 @@ void qemu_plugin_force_vcpu_exit(void);
+@@ -960,6 +960,35 @@ void qemu_plugin_force_vcpu_exit(void);
  QEMU_PLUGIN_API
  int qemu_plugin_crucible_single_threaded_rr(void);
  

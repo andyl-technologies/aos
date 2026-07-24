@@ -174,7 +174,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
   * @request_id: driver-assigned request id
-@@ -980,6 +996,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+@@ -981,6 +997,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
                                                qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
                                                void *userdata);
  

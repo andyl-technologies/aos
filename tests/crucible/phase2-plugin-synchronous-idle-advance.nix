@@ -142,7 +142,7 @@
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch" qemuIdleCallbacksPatch [
       {
-        label = "queued advance CPU-work handoff";
+        label = "queued idle-advance handoff";
         needle = "rr_crucible_sim_process_queued_idle_advance";
       }
       {

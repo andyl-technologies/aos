@@ -549,14 +549,15 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **Mechanism:** exposes `qemu_plugin_has_time_control()` and the callback-safe
   `qemu_plugin_advance_time_ns(ns)` request, paired with
   `qemu_plugin_register_time_advance_cb()` for completion delivery. The request
-  entry point only claims a single outstanding slot and queues work on the single RR vCPU. The queued
-  worker, outside the originating plugin/vCPU callback, advances
+  entry point only claims a single outstanding slot and queues work on the
+  normal main-loop AioContext. The queued bottom half, outside the originating
+  plugin/vCPU callback, advances
   `QEMU_CLOCK_VIRTUAL` and dispatches due virtual timers. A two-stage main-loop
   BH barrier then invokes the registered completion callback after BHs produced
   by those timers. The request path MUST NOT call `main_loop_wait`, `aio_poll`,
   or `aio_bh_poll`.
 - **Micro-test:** acquire time control, enqueue a known target, prove the callback
-  returns before clock movement, run the queued CPU work, and prove timer BHs run
+  returns before clock movement, run the queued main-loop work, and prove timer BHs run
   in the normal main loop before the completion callback. Negative controls
   reject missing ownership/callbacks, overlap, negative targets, and backwards
   targets with explicit status.
@@ -566,8 +567,9 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **[PATCH-18]** The series MUST export a plugin time-control surface that lets
   the plugin acquire ownership and enqueue one explicit absolute virtual-time
   target across an idle gap. The callback entry point MUST be enqueue-only; the
-  actual clock/timer work MUST execute from queued vCPU work and completion MUST
-  be handed to a normal main-loop callback. The series MUST also export the
+  actual clock/timer work MUST execute from queued normal-main-loop work and
+  completion MUST be handed to a later main-loop callback. The queued work MUST
+  remain runnable while a vCPU is blocked on device I/O. The series MUST also export the
   `has_time_control` predicate the warp patch keys on. *Gate:*
   `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.5; satisfies
   [TIME-23], [TIME-27], [INV-8].
@@ -596,11 +598,13 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 ### crucible-plugin-device-wake — resume device work from the wake handler
 
 - **Enforces:** [DET-1], [INV-10]; closes an I/O-completion-delivery-drift hole.
-- **Mechanism:** the registered scheduler wake fd is owned by QEMU's normal
-  iohandler. After draining it to `EAGAIN`, the handler notifies block and 9p
-  consumers. Block request coroutines resume from a locked, generation-guarded
-  `CoQueue`; a pending 9p PDU is repolled and completed exactly once. The wake
-  event enum and notifier lifetime API live in the internal
+- **Mechanism:** the registered scheduler wake fd is owned by QEMU's main
+  `AioContext`. It is therefore dispatched by both the outer main loop and the
+  nested `aio_poll()` used while synchronous block I/O holds the calling
+  thread. After draining it to `EAGAIN`, the handler notifies block and 9p
+  consumers. Block request coroutines resume from a locked,
+  generation-guarded `CoQueue`; a pending 9p PDU is repolled and completed
+  exactly once. The wake event enum and notifier lifetime API live in the internal
   `system/crucible-plugin-wake.h` header installed by the patch. Neither path
   spins, nests the main loop, nor depends on a host-time poll timer.
 - **Micro-test:** leave block and 9p requests pending, signal the scheduler wake
@@ -610,8 +614,9 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **Risk:** D.
 
 - **[PATCH-20]** The series MUST deliver scheduler/device completion through the
-  normal wake-fd iohandler and event-driven device handoffs. It MUST NOT expose
-  or use a plugin call that recursively runs or polls QEMU's main loop. *Gate:*
+  normal main-`AioContext` wake-fd handler and event-driven device handoffs. It
+  MUST NOT expose or use a plugin call that recursively runs or polls QEMU's
+  main loop. *Gate:*
   `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §11.5; satisfies
   [DET-1], [INV-10], references [DET-18] (E19).
 
@@ -812,17 +817,19 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **Mechanism:** exports `qemu_plugin_crucible_single_threaded_rr()` as a live
   proof that the sim accelerator is active with MTTCG disabled, plus
   `qemu_plugin_register_wake_fd(fd)` (rejects blocking descriptors, registers a
-  nonblocking eventfd or pipe through QEMU's iohandler/main-loop fd surface,
+  nonblocking eventfd or pipe on QEMU's main `AioContext`,
   accepts idempotent registration of the same descriptor but rejects replacement
   by a different descriptor while the owner is live,
   drains it through `EAGAIN`, synchronously notifies registered QEMU device
-  consumers, and reports+unregisters EOF or hard errors). The sim RR loop parks
-  the first vCPU with `qemu_cond_wait_bql(first_cpu->halt_cond)`, whose atomic
-  BQL release-and-wait lets the main thread keep servicing QMP, chardevs, and the
-  wake fd. After draining a scheduler wake, the main-loop handler kicks that
-  vCPU. No plugin callback enters `main_loop_wait` or `aio_poll`; QEMU's main
-  thread remains the sole event-loop owner and the scheduler remains the single
-  wake authority of [INV-8].
+  consumers, and reports+unregisters EOF or hard errors). Registration on the
+  main `AioContext` is essential: a synchronous block request can enter a
+  nested `aio_poll()` while waiting, and that poll must be able to drain the
+  scheduler wake and resume the block coroutine. The sim RR loop parks the
+  first vCPU with `qemu_cond_wait_bql(first_cpu->halt_cond)`, whose atomic BQL
+  release-and-wait lets normal QEMU event dispatch continue. After draining a
+  scheduler wake, the handler kicks that vCPU. No plugin callback enters
+  `main_loop_wait` or `aio_poll`; QEMU retains event-loop ownership and the
+  scheduler remains the single wake authority of [INV-8].
 - **Micro-test:** register a nonblocking wake fd, exercise interrupted and short
   reads through the terminal `EAGAIN`, and assert device notifiers and the vCPU
   kick happen only after the full drain. Assert spurious `EAGAIN` does not kick,
@@ -832,14 +839,15 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 - **Inertness:** [PATCH-3](c).
 - **Risk:** F (loud failure if broken).
 
-- **[PATCH-24]** The series MUST export wake-fd registration whose main-thread
-  handler drains scheduler wakes, notifies pending device consumers, and kicks
-  the vCPU parked on QEMU's BQL condition variable. It MUST NOT export or call a
-  blocking main-loop wait from plugin or vCPU callbacks. This integrates
-  cross-process wakes and QEMU's own fd handlers without transferring event-loop
-  ownership away from QEMU's main thread, keeping the scheduler the single wake
-  authority. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.5;
-  satisfies [SHM-26], [INV-8].
+- **[PATCH-24]** The series MUST export wake-fd registration on the main
+  `AioContext`; its handler drains scheduler wakes, notifies pending device
+  consumers, and kicks the vCPU parked on QEMU's BQL condition variable. It
+  MUST remain dispatchable from a synchronous block request's nested
+  `aio_poll()`, and MUST NOT export or call a blocking main-loop wait from
+  plugin or vCPU callbacks. This integrates cross-process wakes and QEMU's own
+  fd handlers without transferring event-loop ownership away from QEMU, keeping
+  the scheduler the single wake authority. *Gate:* `gate:layer1-injection`,
+  `gate:qemu-inert`. *Spec:* §11.5; satisfies [SHM-26], [INV-8].
 
 ### crucible-plugin-tcg-exec-cb — TCG-exec callback (coverage)
 
@@ -1144,11 +1152,12 @@ patches are dev-only and **not shipped**.
 ### crucible-sim-poll-immediate — wake-driven shmem completion (D)
 
 - **Enforces:** [DET-13], E19. A pending shmem block request parks on a `CoQueue`.
-  QEMU's normal scheduler-wake iohandler snapshots and resumes the current
-  waiters, which re-poll and requeue if still pending. A mutex plus monotonically
-  increasing wake generation prevents a scheduler wake racing between poll and
-  park from being lost. Wake-fd failure resumes all waiters with `-EIO`. No
-  device, plugin, or vCPU callback enters or polls the main loop.
+  QEMU's main-`AioContext` scheduler-wake handler snapshots and resumes the
+  current waiters, which re-poll and requeue if still pending. A mutex plus
+  monotonically increasing wake generation prevents a scheduler wake racing
+  between poll and park from being lost. Wake-fd failure resumes all waiters
+  with `-EIO`. No device, plugin, or vCPU callback enters or polls the main
+  loop.
 - **Micro-test:** assert a pending request parks once, a normal scheduler wake
   resumes and re-polls it, a wake immediately before park is observed through
   the generation check, and a terminal wake failure releases the waiter.
@@ -1447,8 +1456,8 @@ time-control primitives the whole design rests on.
   - Implemented patch slice: `0010-crucible-plugin-time-advance.patch` exports
     `qemu_plugin_has_time_control`, enqueue-only
     `qemu_plugin_advance_time_ns`, and completion registration. The focused
-    fixture proves exclusive ownership, overlap/backwards failure, queued CPU
-    work, the two-stage timer-BH ordering barrier, and absence of recursive
+    fixture proves exclusive ownership, overlap/backwards failure, queued
+    main-loop work, the two-stage timer-BH ordering barrier, and absence of recursive
     main-loop/AIO polling.
   - The queued advance is now icount-correct. Under `-accel sim` the virtual
     clock is icount-derived and the qtest-only `qemu_clock_advance_virtual_time`
@@ -1503,9 +1512,10 @@ time-control primitives the whole design rests on.
     `qemu_plugin_crucible_single_threaded_rr`; the
     patch-level fixture validates raw icount is bias-independent and
     disabled-safe, forced vCPU exit sets the current CPU's exit request, wake-fd
-    registration drains through QEMU's iohandler/main-loop surface, notifies
-    pending device consumers, and kicks the condition-waiting RR vCPU only after
-    the drain; EOF and hard errors unregister and request host-error shutdown.
+    registration drains through QEMU's main `AioContext`, including synchronous
+    block I/O's nested `aio_poll()`, notifies pending device consumers, and kicks
+    the condition-waiting RR vCPU only after the drain; EOF and hard errors
+    unregister and request host-error shutdown.
     The TCG exec callback fires after `icount_process_data()` while retaining a
     single disabled NULL-check. The full skewed-startup and QMP-service smoke
     scenarios remain layer-gate evidence rather than claims of this source-level
@@ -1631,7 +1641,7 @@ time-control primitives the whole design rests on.
     ceiling, and budget-clamp behavior, consumes
     `checks.crucible.phase1.simAccel` for the bit-identical cross-run fixed
     icount TB trace, consumes `checks.crucible.phase1.pluginTimeAdvance` for
-    enqueue-only CPU-work and normal-main-loop completion evidence, and publishes one per-patch
+    enqueue-only main-loop work and normal-main-loop completion evidence, and publishes one per-patch
     `gate:patch-microtests` result for each T-PATCH-16 patch.
 - [x] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
   determinism-preserving perf patch (fixed N, ceiling/timer discipline) gated by a

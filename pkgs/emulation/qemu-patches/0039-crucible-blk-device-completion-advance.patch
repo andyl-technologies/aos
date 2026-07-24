@@ -62,7 +62,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  #define QEMU_PLUGIN_BLK_OP_READ 0u
  #define QEMU_PLUGIN_BLK_OP_WRITE 1u
  #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
-@@ -1093,6 +1105,19 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+@@ -1094,6 +1106,19 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
                                   qemu_plugin_blk_poll_cb_t poll_cb,
                                   void *userdata);
  
@@ -85,7 +85,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -219,6 +219,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+@@ -218,6 +218,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
      if (cb) {
          cb(status, target, userdata);
      }

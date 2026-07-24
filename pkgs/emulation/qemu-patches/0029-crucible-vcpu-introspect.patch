@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1402,6 +1402,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1403,6 +1403,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  

@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -787,6 +787,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
+@@ -788,6 +788,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_icount_raw(void);
  
@@ -21,7 +21,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -241,6 +241,13 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -240,6 +240,13 @@ uint64_t qemu_plugin_icount_raw(void)
      return (uint64_t)raw_icount;
  }
  
