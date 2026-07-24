@@ -64,6 +64,8 @@ fn host_load_certification_requires_the_wall_delay() {
 fn deterministic_projection_excludes_poll_jitter() {
     let reference = certifying_outcome();
     let mut jittered = certifying_outcome();
+    jittered.diagnostics.frames_processed += 1;
+    jittered.diagnostics.frames_delivered += 1;
     jittered.diagnostics.service_calls += 50;
     jittered.diagnostics.last_current_icount += 1;
     jittered.diagnostics.max_current_icount += 1;
@@ -79,5 +81,13 @@ fn deterministic_projection_excludes_poll_jitter() {
     assert_eq!(
         deterministic_projection(&reference.diagnostics),
         deterministic_projection(&jittered.diagnostics)
+    );
+
+    let mut missing_forward = certifying_outcome();
+    missing_forward.diagnostics.frames_processed = 0;
+    assert_ne!(
+        deterministic_projection(&reference.diagnostics),
+        deterministic_projection(&missing_forward.diagnostics),
+        "the projection must still reject a run with no forwarded request"
     );
 }

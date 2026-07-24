@@ -782,22 +782,23 @@ fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
 /// Requires the load run to reproduce the reference run's deterministic 9p
 /// observations.
 ///
-/// Only the *icount-domain* observations are compared: how many 9p request
-/// frames the servicer processed and delivered, the icount at which the guest
-/// issued its first 9p request, the device-completion horizon computed for it,
-/// and whether the guest slot last advertised active device I/O. These are pure
-/// functions of the guest's icount-deterministic execution and the servicer's
-/// deterministic latency model, so they must match byte-for-byte across runs.
+/// Only the *icount-domain* observations are compared: whether a 9p request and
+/// response crossed the rings, the latency from the first request to its exact
+/// device-completion horizon, and whether the guest slot last advertised active
+/// device I/O. These are pure functions of the guest's icount-deterministic
+/// execution and the servicer's deterministic latency model, so they must match
+/// byte-for-byte across runs.
 ///
 /// Wall-clock-dependent fields are deliberately excluded: `service_calls` counts
 /// host poll iterations (a function of how fast the plugin advanced virtual time
-/// between polls), and the guest's resting icount / advance outcome can land on
-/// either side of the busy ceiling depending on which poll observes the idle
-/// jump. Those never reflect a determinism violation, so folding them into the
-/// comparison would make the gate flaky. (Unlike the block gate, whose guest
-/// freezes at icount 0 the instant it blocks -- making even its poll count
-/// converge -- a 9p guest boots to userspace before it mounts, so its poll count
-/// genuinely varies run to run.)
+/// between polls), the cumulative frame count can include a second request
+/// drained after the guest has already reached the terminal ceiling, and the
+/// guest's resting icount / advance outcome can land on either side of the busy
+/// ceiling depending on which poll observes the idle jump. Those never affect
+/// the certified first request/response or guest state within the horizon, so
+/// folding them into the comparison would make host polling part of canonical
+/// state. (Unlike the block gate, whose guest freezes at icount 0 the instant it
+/// blocks, a 9p guest boots to userspace before it mounts.)
 fn assert_runs_match(
     reference: &NinepIoRunOutcome,
     second: &NinepIoRunOutcome,

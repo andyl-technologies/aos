@@ -19,8 +19,8 @@ use crate::{CrucibleShmem9pDevice, QemuLaunchArtifact, QemuVmLaunchConfig};
 /// The determinism-relevant device subset of a run's 9p observations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NinepDeterministicObservations {
-    frames_processed: usize,
-    frames_delivered: usize,
+    forwarded_request: bool,
+    delivered_response: bool,
     first_completion_latency_icount: Option<u64>,
     last_device_io_active: bool,
 }
@@ -30,8 +30,8 @@ pub(super) fn deterministic_projection(
     snapshot: &NinepIoDiagnosticsSnapshot,
 ) -> NinepDeterministicObservations {
     NinepDeterministicObservations {
-        frames_processed: snapshot.frames_processed,
-        frames_delivered: snapshot.frames_delivered,
+        forwarded_request: snapshot.frames_processed > 0,
+        delivered_response: snapshot.frames_delivered > 0,
         first_completion_latency_icount: snapshot
             .first_request_icount
             .zip(snapshot.first_completion_horizon)

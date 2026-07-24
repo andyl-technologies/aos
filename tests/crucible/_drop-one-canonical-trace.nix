@@ -228,12 +228,16 @@
                 request="$2"
                 response="$3"
                 {
-                  sleep 0.1
+                  # Socket creation precedes QMP's ability to service commands.
+                  # Leave bounded host-scheduling slack so aggregate parallel
+                  # builds cannot turn control-plane startup into a false
+                  # semantic failure.
+                  sleep 1
                   printf '{"execute":"qmp_capabilities"}\r\n'
-                  sleep 0.1
+                  sleep 1
                   printf '%s\r\n' "$request"
-                  sleep 0.5
-                } | socat -T 3 - "UNIX-CONNECT:$socket" \
+                  sleep 2
+                } | socat -T 15 - "UNIX-CONNECT:$socket" \
                     > "$response" 2> "$response.err" || true
                 test -s "$response"
                 ! jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null
