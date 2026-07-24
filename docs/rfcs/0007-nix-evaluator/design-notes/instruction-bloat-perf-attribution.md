@@ -16,17 +16,32 @@ lookups where the serial heap already owns the address context, carrying the
 active lexical environment as a persistent frame-chain head, and returning
 already-WHNF node results before the lazy-identity helper, caching the
 native-stack floor used by recursive node-entry protection, and specializing
-the inline-capture allocation door, isolated cache-off
+the inline-capture allocation door, then compacting the common captured
+environment and thunk payload, isolated cache-off
 `systems.server.build.toplevel` evaluations retire
-**22.9732-22.9770B instructions at IPC 2.76-2.77**. Pinned C++ Nix 2.24.12
+**22.8920-22.8943B instructions at IPC 2.78-2.79**. Pinned C++ Nix 2.24.12
 retires **6.2186B at IPC 2.84** for byte-identical output. Function-call counts
 remain nearly identical (3.177M native versus 3.163M C++), so the current
-live-load gap is **3.69x in instructions and about 3.68x in
+live-load gap is **3.68x in instructions and about 3.66x in
 instructions/function-call**, with no IPC deficit that could explain it. A
 prior separate three-sample wall run measured 1.980s versus 0.554s, or
 **3.58x slower**; wall time on the shared builder remains secondary to retired
 instructions. The absolute gap has improved since the original audit; its
 uniform per-operation character has not changed.
+
+**2026-07-24 full-load stall audit.** A primed repeat of the same
+`systems.server.build.toplevel` load measured 2.79 CPU seconds in 2.80 wall
+seconds for Candidate C (99% CPU), versus 0.48 CPU seconds in 0.54 wall seconds
+for pinned C++. Candidate C reported 1.32 system seconds and 238,151 minor
+faults, versus 0.09 system seconds and 84,013 minor faults for C++; both had
+zero major faults and zero filesystem input. One-second `pidstat` samples
+showed 99-100% CPU, 0% wait, zero block-I/O throughput, and zero I/O delay.
+Thus the observed 5.2x wall sample was not file-I/O or scheduler waiting: it
+contained about 5.8x as much CPU time. Candidate C's excess page footprint is
+also a CPU cost through demand-zero minor faults, not merely a memory-score
+problem. A syscall trace showed only about 14ms in the one `nix-store
+--realise` child; the large cumulative `futex` duration came from idle runtime
+threads and must not be mistaken for main-thread evaluation CPU.
 
 ## 1. The finding that reopened the game
 

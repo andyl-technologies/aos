@@ -44,7 +44,7 @@ use crate::runtime::alloc::{
     AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
     RuntimeAllocatorRegionMark, RuntimeAllocatorTier,
 };
-use crate::runtime::builtins::Builtin;
+use crate::runtime::builtins::{Builtin, BuiltinKind};
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
@@ -157,26 +157,7 @@ pub(crate) enum EvalThunkKind {
         argument_value: Value,
     },
     /// Applies a forced function value to two lazy argument values.
-    Apply2 {
-        /// The IR node that produced the function.
-        function: EvalNodeRef,
-        /// The source span associated with the function.
-        function_span: Span,
-        /// The function value, forced only when this thunk is forced.
-        function_value: Value,
-        /// The IR node associated with the first argument.
-        first_argument: EvalNodeRef,
-        /// The source span associated with the first argument.
-        first_argument_span: Span,
-        /// The first lazy argument value.
-        first_argument_value: Value,
-        /// The IR node associated with the second argument.
-        second_argument: EvalNodeRef,
-        /// The source span associated with the second argument.
-        second_argument_span: Span,
-        /// The second lazy argument value.
-        second_argument_value: Value,
-    },
+    Apply2(Box<EvalApply2Thunk>),
     /// Selects an attribute path from an already allocated lazy receiver.
     Select {
         /// The IR select node that defines the path and diagnostic span.
@@ -190,8 +171,8 @@ pub(crate) enum EvalThunkKind {
     BuiltinAttr {
         /// The selected builtin attribute symbol.
         symbol: Symbol,
-        /// The selected builtin declaration.
-        builtin: Builtin,
+        /// Stable handle for the selected builtin declaration.
+        builtin: BuiltinKind,
     },
     /// The deferred work and captured environments were released after forcing.
     ///
@@ -203,6 +184,20 @@ pub(crate) enum EvalThunkKind {
     /// deferred work of a released thunk is an evaluator bug and every reader
     /// must fail loudly rather than guess.
     Released,
+}
+
+/// Rare two-argument application payload kept out of the uniform thunk enum.
+#[derive(Clone, Debug)]
+pub(crate) struct EvalApply2Thunk {
+    pub(crate) function: EvalNodeRef,
+    pub(crate) function_span: Span,
+    pub(crate) function_value: Value,
+    pub(crate) first_argument: EvalNodeRef,
+    pub(crate) first_argument_span: Span,
+    pub(crate) first_argument_value: Value,
+    pub(crate) second_argument: EvalNodeRef,
+    pub(crate) second_argument_span: Span,
+    pub(crate) second_argument_value: Value,
 }
 
 /// Non-lexical environments captured only when a thunk has dynamic scopes.
@@ -305,14 +300,21 @@ impl ThunkCellSlot {
 pub struct EvalThunk {
     kind: EvalThunkKind,
     cell: ThunkCellSlot,
-    force_storage_mode: EvalThunkForceStorageMode,
-    /// The evaluator-native parallel payload cell, attached only when parallel
-    /// thunk payloads are enabled. It is boxed because the cell is large (~648
-    /// bytes) and absent on the serial tree-walk path that allocates the vast
-    /// majority of thunks; keeping it out of line shrinks the common-case
-    /// `EvalThunk` roughly six-fold and avoids paying for the cell per thunk.
-    #[allow(dead_code)]
-    parallel_cell: Option<Arc<TreeWalkParallelThunkCell>>,
+    /// Storage used only by non-default forcing modes.
+    ///
+    /// The serial full-toplevel path allocates millions of thunks and never
+    /// populates this pointer. Single-entry and parallel modes are opt-in and
+    /// carry their side state out of line so the common record stays compact.
+    storage_extension: Option<Box<EvalThunkStorageExtension>>,
+}
+
+/// Force-storage state absent from the common serial thunk.
+#[derive(Clone, Debug)]
+enum EvalThunkStorageExtension {
+    /// The thunk is proven frame-local and used once.
+    SingleEntry,
+    /// The thunk participates in the evaluator-native parallel force protocol.
+    Parallel(Arc<TreeWalkParallelThunkCell>),
 }
 
 /// The force-storage cells currently attached to an [`EvalThunk`].

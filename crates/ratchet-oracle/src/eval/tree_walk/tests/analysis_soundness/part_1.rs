@@ -130,6 +130,33 @@ fn flat_capture_plans_replace_outer_frames_after_publication() {
 }
 
 #[test]
+fn oversized_configured_depth_preserves_conservative_capture() {
+    let mut ir = lower("let a = 1 + 1; in x: a + x");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let options = TreeWalkOptions::with_max_call_depth(usize::from(u16::MAX) + 1);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("lambda evaluates");
+    let lambda = evaluator
+        .heap()
+        .get_lambda(value)
+        .expect("root is a heap-owned lambda");
+    let env = lambda.env();
+
+    assert!(
+        env.flat_base().is_none(),
+        "depths outside the compact representation must disable flat capture"
+    );
+    assert_eq!(
+        env.frames().len(),
+        1,
+        "the conservative environment must retain the captured frame"
+    );
+    let campaign = evaluator.stats_snapshot().campaign();
+    assert_eq!(campaign.flat_env_captures, 0);
+    assert_eq!(campaign.flat_env_capture_values, 0);
+}
+
+#[test]
 fn recursive_assembly_flattens_only_after_publication() {
     let mut ir = lower("rec { a = 1; b = a; }");
     crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");

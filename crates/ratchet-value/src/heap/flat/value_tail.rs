@@ -18,7 +18,7 @@ use super::{
 
 const VALUE_TAIL_FLAG: usize = 1;
 const VALUE_TAIL_HANDLE_LEN_BITS: u32 = 4;
-const VALUE_TAIL_HANDLE_LEN_MASK: usize = (1 << VALUE_TAIL_HANDLE_LEN_BITS) - 1;
+const VALUE_TAIL_HANDLE_LEN_MASK: u32 = (1 << VALUE_TAIL_HANDLE_LEN_BITS) - 1;
 
 /// A compact prevalidated registry coordinate for one inline `Value` tail.
 ///
@@ -29,7 +29,7 @@ const VALUE_TAIL_HANDLE_LEN_MASK: usize = (1 << VALUE_TAIL_HANDLE_LEN_BITS) - 1;
 /// entry checks that pointer before any tail read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlatValueTailHandle {
-    index_and_len: usize,
+    index_and_len: u32,
 }
 
 /// The object allocation and compact handle produced by a `Value`-tail door.
@@ -44,22 +44,25 @@ pub struct FlatValueTailAllocation {
 
 impl FlatValueTailHandle {
     pub(super) fn new(store_index: usize, len: usize) -> Option<Self> {
+        let len = u32::try_from(len).ok()?;
         if len > VALUE_TAIL_HANDLE_LEN_MASK {
             return None;
         }
-        let index = store_index.checked_shl(VALUE_TAIL_HANDLE_LEN_BITS)?;
+        let index = u32::try_from(store_index)
+            .ok()?
+            .checked_shl(VALUE_TAIL_HANDLE_LEN_BITS)?;
         Some(Self {
             index_and_len: index | len,
         })
     }
 
     const fn store_index(self) -> usize {
-        self.index_and_len >> VALUE_TAIL_HANDLE_LEN_BITS
+        (self.index_and_len >> VALUE_TAIL_HANDLE_LEN_BITS) as usize
     }
 
     /// Returns the number of values in the tail.
     pub const fn len(self) -> usize {
-        self.index_and_len & VALUE_TAIL_HANDLE_LEN_MASK
+        (self.index_and_len & VALUE_TAIL_HANDLE_LEN_MASK) as usize
     }
 
     /// Returns whether the tail is empty.

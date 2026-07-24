@@ -388,15 +388,10 @@ fn collapse_thunk_fields(thunk: &mut EvalThunk, apply: &mut dyn FnMut(&mut Value
             apply(function_value);
             apply(argument_value);
         }
-        EvalThunkKind::Apply2 {
-            function_value,
-            first_argument_value,
-            second_argument_value,
-            ..
-        } => {
-            apply(function_value);
-            apply(first_argument_value);
-            apply(second_argument_value);
+        EvalThunkKind::Apply2(apply2) => {
+            apply(&mut apply2.function_value);
+            apply(&mut apply2.first_argument_value);
+            apply(&mut apply2.second_argument_value);
         }
         EvalThunkKind::Select { receiver, .. } => apply(receiver),
         EvalThunkKind::Node { .. }

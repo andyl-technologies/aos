@@ -100,6 +100,9 @@ impl TreeWalk {
         };
         let env = &pending.env;
         let frame_count = env.frame_count();
+        if !EvalFlatCapture::supports_frame_count(frame_count) {
+            return;
+        }
         let mut buffer = EvalFlatCaptureBuffer::new(pending.site, frame_count);
         for slot in slots {
             let Some(value) = self.captured_env_value_at_depth(

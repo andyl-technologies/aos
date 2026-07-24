@@ -588,3 +588,37 @@ header. The worker lane reaches 566,881,608 used bytes. A single largest enum
 variant and a generic hash/epoch-bearing header therefore tax every common
 node/apply thunk. Closing the memory and instruction targets requires a compact
 thunk-specific layout, not more annotations on the uniform payload.
+
+## Fifteenth exploration result
+
+The common closure representation is now compact without changing the value
+carrier or adding an unchecked dereference. `EvalEnv` uses one variant enum so
+the majority chain-plus-flat shape is inline instead of splitting its parts
+across a uniform outer layout. Its flat-tail registry coordinate is a checked
+28-bit index plus four-bit length, and its flat-prefix and linked-suffix depths
+are checked 16-bit counts. Evaluations configured above that depth disable the
+flat-capture optimization, and an unexpectedly deeper lexical environment
+falls back to the conservative chain rather than truncating. Non-default
+single-entry/parallel force storage is out of line,
+the 597 observed two-argument application forces use a boxed rare payload, and
+builtin-attribute thunks retain the stable `BuiltinKind` handle from which the
+exact declaration is reconstructed.
+
+These changes reduce `EvalEnv` from 64 to 48 bytes, `EvalThunk` and
+`FlatClosurePayload` from 120 to 96 bytes, and the complete flat closure from
+144 to 120 bytes. On the stats-enabled full toplevel, the worker heap's used
+bytes fell from 566,881,608 to 475,818,840 while the allocation count remained
+3,218,224 thunks / 4,313,668 total flat objects.
+
+Three fresh isolated-target, cache-off `systems.server.build.toplevel` runs
+retired 22.8920-22.8943B instructions at IPC 2.78-2.79, approximately **0.35%
+fewer** than the 22.9732-22.9770B baseline. Peak RSS improved
+from 857,588-858,096KiB to 763,468-769,716KiB (about 86-92MiB, 10.2-11.0%).
+Byte-level `.drv` closure parity
+passed. Against the pinned C++ count of 6.2186B, the remaining instruction
+ratio is **3.68x**.
+
+The result validates payload compaction as a substantial memory lever, but it
+does not close the memory target.
+Every closure still pays the generic three-word header and every thunk still
+carries a 24-byte `ThunkCellSlot`; those are the next representation targets.

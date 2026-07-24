@@ -94,7 +94,8 @@ fn shed_flat_thunk_retains_tail_inherited_by_conservative_descendant() {
         .expect("owner is a node thunk")
         .flat_base()
         .cloned();
-    let descendant_env = EvalEnv::capture_linked_with_flat_base(&[], inherited);
+    let descendant_env =
+        EvalEnv::capture_linked_with_flat_base(&[], inherited).expect("linked capture succeeds");
     let _descendant = heap
         .alloc_thunk(EvalThunk::with_env(
             EvalModuleId::ROOT,

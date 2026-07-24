@@ -497,13 +497,11 @@ impl EvalHeap {
 fn thunk_kind_has_reclaimable_captures(kind: &EvalThunkKind) -> bool {
     match kind {
         EvalThunkKind::Node {
-            env,
-            dynamic_env,
-            ..
+            env, dynamic_env, ..
         } => !env.is_empty() || dynamic_env.is_some(),
-        EvalThunkKind::Apply { .. }
-        | EvalThunkKind::Apply2 { .. }
-        | EvalThunkKind::Select { .. } => true,
+        EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2(_) | EvalThunkKind::Select { .. } => {
+            true
+        }
         EvalThunkKind::BuiltinAttr { .. } | EvalThunkKind::Released => false,
     }
 }

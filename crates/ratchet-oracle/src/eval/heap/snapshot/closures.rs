@@ -50,6 +50,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use ratchet_core::builtins::Builtin;
 use ratchet_value::heap::{ArenaIndex, ClosurePayload, FramePayload};
 
 use super::super::closure_code_ref::{
@@ -481,7 +482,8 @@ impl EvalHeap {
             .value_tail_handle_at(store_index, owner_ptr, fixup.tail_len as usize)
             .map_err(|_| malformed())?;
         let flat_base =
-            EvalFlatCapture::inline(fixup.site, fixup.plan_frames as usize, fixup.owner, handle);
+            EvalFlatCapture::inline(fixup.site, fixup.plan_frames as usize, fixup.owner, handle)
+                .map_err(EvalHeapSnapshotError::EnvFrameUnreadable)?;
         let env = EvalEnv::restore_parts(&fixup.frames, Some(flat_base))
             .map_err(EvalHeapSnapshotError::EnvFrameUnreadable)?;
         let ptr = self
@@ -611,28 +613,18 @@ fn encode_thunk(
             out.extend_from_slice(&node_ref(code, *argument)?.to_bytes());
             encode_word(&mut out, *argument_value);
         }
-        EvalThunkKind::Apply2 {
-            function,
-            function_span,
-            function_value,
-            first_argument,
-            first_argument_span,
-            first_argument_value,
-            second_argument,
-            second_argument_span,
-            second_argument_value,
-        } => {
+        EvalThunkKind::Apply2(apply) => {
             out.push(KIND_APPLY2_THUNK);
             out.push(single_entry);
-            out.extend_from_slice(&node_ref(code, *function)?.to_bytes());
-            encode_span(&mut out, *function_span);
-            encode_word(&mut out, *function_value);
-            out.extend_from_slice(&node_ref(code, *first_argument)?.to_bytes());
-            encode_span(&mut out, *first_argument_span);
-            encode_word(&mut out, *first_argument_value);
-            out.extend_from_slice(&node_ref(code, *second_argument)?.to_bytes());
-            encode_span(&mut out, *second_argument_span);
-            encode_word(&mut out, *second_argument_value);
+            out.extend_from_slice(&node_ref(code, apply.function)?.to_bytes());
+            encode_span(&mut out, apply.function_span);
+            encode_word(&mut out, apply.function_value);
+            out.extend_from_slice(&node_ref(code, apply.first_argument)?.to_bytes());
+            encode_span(&mut out, apply.first_argument_span);
+            encode_word(&mut out, apply.first_argument_value);
+            out.extend_from_slice(&node_ref(code, apply.second_argument)?.to_bytes());
+            encode_span(&mut out, apply.second_argument_span);
+            encode_word(&mut out, apply.second_argument_value);
         }
         EvalThunkKind::Select {
             select,
@@ -651,7 +643,7 @@ fn encode_thunk(
             out.extend_from_slice(&symbol.as_u32().to_le_bytes());
             out.extend_from_slice(&(PINNED_NIX_VERSION.len() as u32).to_le_bytes());
             out.extend_from_slice(PINNED_NIX_VERSION);
-            let name = builtin.name();
+            let name = Builtin::from_kind(*builtin).name();
             out.extend_from_slice(&(name.len() as u32).to_le_bytes());
             out.extend_from_slice(name);
         }

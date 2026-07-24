@@ -11,11 +11,12 @@ impl TreeWalk {
         span: Span,
     ) -> Result<EvalEnv, TreeWalkError> {
         if let Some((head, frames)) = self.env.linked_parts() {
-            return Ok(EvalEnv::capture_linked_head_with_flat_base(
+            return EvalEnv::capture_linked_head_with_flat_base(
                 head.cloned(),
                 frames,
                 self.flat_env.clone(),
-            ));
+            )
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span));
         }
         EvalEnv::capture_with_flat_base(&self.env.to_vec(), self.flat_env.clone())
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))

@@ -102,6 +102,16 @@ impl ActiveEvalFrames {
     pub(crate) fn push(&mut self, frame: Arc<EvalFrame>) {
         if let Some(frames) = &mut self.compatibility {
             frames.push(Arc::clone(&frame));
+        } else if self.head.as_ref().is_some_and(|head| {
+            !frame
+                .parent()
+                .is_some_and(|parent| Arc::ptr_eq(parent, head))
+        }) {
+            let mut frames = smallvec::SmallVec::new();
+            frames.extend(self.iter_innermost().cloned());
+            frames.reverse();
+            frames.push(Arc::clone(&frame));
+            self.compatibility = Some(frames);
         }
         self.head = Some(frame);
         self.len = self.len.saturating_add(1);

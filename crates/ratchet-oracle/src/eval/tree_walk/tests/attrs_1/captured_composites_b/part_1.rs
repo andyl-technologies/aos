@@ -197,7 +197,7 @@ fn synthetic_apply2_thunks_do_not_build_force_cache_subjects() {
             .heap()
             .get_thunk(thunk_value)
             .expect("synthetic apply2 thunk is heap-owned");
-        assert!(matches!(thunk.kind(), EvalThunkKind::Apply2 { .. }));
+        assert!(matches!(thunk.kind(), EvalThunkKind::Apply2(_)));
         evaluator
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
     };

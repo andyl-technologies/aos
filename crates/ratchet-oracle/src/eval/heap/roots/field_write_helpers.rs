@@ -410,12 +410,14 @@ pub(super) fn record_owned_heap_field_write_object(
                     EvalThunk::with_forced_cached_result_from(thunk, replacement),
                 ));
             }
-            Ok(HeapObjectValue::Thunk(EvalThunk {
-                kind: thunk.kind().clone(),
-                cell: ThunkCellSlot::Shared(Arc::new(ThunkCell::forced(replacement))),
-                force_storage_mode: thunk.force_storage_mode(),
+            let relocated = EvalThunk::from_relocated_parts(
+                thunk.kind().clone(),
+                ThunkCellSlot::Shared(Arc::new(ThunkCell::forced(replacement))),
+                thunk.force_storage_mode(),
                 parallel_cell,
-            }))
+            )
+            .ok_or(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource)?;
+            Ok(HeapObjectValue::Thunk(relocated))
         }
         (HeapObjectValue::Thunk(thunk), HeapEdgeSource::ThunkParallelPayloadValue) => {
             let Some(parallel_cell) = thunk.parallel_payload_cell() else {
@@ -431,15 +433,17 @@ pub(super) fn record_owned_heap_field_write_object(
             let parallel_cell = parallel_cell
                 .relocated_forced_value(replacement)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
-            Ok(HeapObjectValue::Thunk(EvalThunk {
-                kind: thunk.kind().clone(),
-                cell: ThunkCellSlot::Shared(Arc::new(
+            let relocated = EvalThunk::from_relocated_parts(
+                thunk.kind().clone(),
+                ThunkCellSlot::Shared(Arc::new(
                     clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                         .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
                 )),
-                force_storage_mode: thunk.force_storage_mode(),
-                parallel_cell: Some(Arc::new(parallel_cell)),
-            }))
+                thunk.force_storage_mode(),
+                Some(Arc::new(parallel_cell)),
+            )
+            .ok_or(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource)?;
+            Ok(HeapObjectValue::Thunk(relocated))
         }
         (HeapObjectValue::Thunk(thunk), source) => {
             rewrite_suspended_thunk_field(thunk, source, replacement)
@@ -516,15 +520,17 @@ pub(super) fn rebuild_thunk_for_heap_field_write(
     thunk: &EvalThunk,
     kind: EvalThunkKind,
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
-    Ok(HeapObjectValue::Thunk(EvalThunk {
+    let relocated = EvalThunk::from_relocated_parts(
         kind,
-        cell: ThunkCellSlot::Shared(Arc::new(
+        ThunkCellSlot::Shared(Arc::new(
             clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
         )),
-        force_storage_mode: thunk.force_storage_mode(),
-        parallel_cell: clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
-    }))
+        thunk.force_storage_mode(),
+        clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
+    )
+    .ok_or(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource)?;
+    Ok(HeapObjectValue::Thunk(relocated))
 }
 
 pub(super) fn thunk_supports_suspended_field_write(
@@ -568,7 +574,7 @@ pub(super) fn thunk_supports_suspended_field_write(
     ) || matches!(
         (thunk.kind(), source),
         (
-            EvalThunkKind::Apply2 { .. },
+            EvalThunkKind::Apply2(_),
             HeapEdgeSource::ThunkApply2Function
                 | HeapEdgeSource::ThunkApply2FirstArgument
                 | HeapEdgeSource::ThunkApply2SecondArgument,
@@ -623,10 +629,7 @@ pub(super) fn rewrite_suspended_thunk_field(
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    dynamic_env: EvalThunkDynamicEnv::new(
-                        with_env,
-                        dynamic.scoped_globals.clone(),
-                    ),
+                    dynamic_env: EvalThunkDynamicEnv::new(with_env, dynamic.scoped_globals.clone()),
                 },
             )
         }
@@ -656,10 +659,7 @@ pub(super) fn rewrite_suspended_thunk_field(
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    dynamic_env: EvalThunkDynamicEnv::new(
-                        dynamic.with_env.clone(),
-                        scoped_globals,
-                    ),
+                    dynamic_env: EvalThunkDynamicEnv::new(dynamic.with_env.clone(), scoped_globals),
                 },
             )
         }
@@ -701,87 +701,54 @@ pub(super) fn rewrite_suspended_thunk_field(
                 argument_value: replacement,
             },
         ),
-        (
-            EvalThunkKind::Apply2 {
-                function,
-                function_span,
-                first_argument,
-                first_argument_span,
-                first_argument_value,
-                second_argument,
-                second_argument_span,
-                second_argument_value,
-                ..
-            },
-            HeapEdgeSource::ThunkApply2Function,
-        ) => rebuild_thunk_for_heap_field_write(
-            thunk,
-            EvalThunkKind::Apply2 {
-                function: *function,
-                function_span: *function_span,
-                function_value: replacement,
-                first_argument: *first_argument,
-                first_argument_span: *first_argument_span,
-                first_argument_value: *first_argument_value,
-                second_argument: *second_argument,
-                second_argument_span: *second_argument_span,
-                second_argument_value: *second_argument_value,
-            },
-        ),
-        (
-            EvalThunkKind::Apply2 {
-                function,
-                function_span,
-                function_value,
-                first_argument,
-                first_argument_span,
-                second_argument,
-                second_argument_span,
-                second_argument_value,
-                ..
-            },
-            HeapEdgeSource::ThunkApply2FirstArgument,
-        ) => rebuild_thunk_for_heap_field_write(
-            thunk,
-            EvalThunkKind::Apply2 {
-                function: *function,
-                function_span: *function_span,
-                function_value: *function_value,
-                first_argument: *first_argument,
-                first_argument_span: *first_argument_span,
-                first_argument_value: replacement,
-                second_argument: *second_argument,
-                second_argument_span: *second_argument_span,
-                second_argument_value: *second_argument_value,
-            },
-        ),
-        (
-            EvalThunkKind::Apply2 {
-                function,
-                function_span,
-                function_value,
-                first_argument,
-                first_argument_span,
-                first_argument_value,
-                second_argument,
-                second_argument_span,
-                ..
-            },
-            HeapEdgeSource::ThunkApply2SecondArgument,
-        ) => rebuild_thunk_for_heap_field_write(
-            thunk,
-            EvalThunkKind::Apply2 {
-                function: *function,
-                function_span: *function_span,
-                function_value: *function_value,
-                first_argument: *first_argument,
-                first_argument_span: *first_argument_span,
-                first_argument_value: *first_argument_value,
-                second_argument: *second_argument,
-                second_argument_span: *second_argument_span,
-                second_argument_value: replacement,
-            },
-        ),
+        (EvalThunkKind::Apply2(apply2), HeapEdgeSource::ThunkApply2Function) => {
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Apply2(Box::new(EvalApply2Thunk {
+                    function: apply2.function,
+                    function_span: apply2.function_span,
+                    function_value: replacement,
+                    first_argument: apply2.first_argument,
+                    first_argument_span: apply2.first_argument_span,
+                    first_argument_value: apply2.first_argument_value,
+                    second_argument: apply2.second_argument,
+                    second_argument_span: apply2.second_argument_span,
+                    second_argument_value: apply2.second_argument_value,
+                })),
+            )
+        }
+        (EvalThunkKind::Apply2(apply2), HeapEdgeSource::ThunkApply2FirstArgument) => {
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Apply2(Box::new(EvalApply2Thunk {
+                    function: apply2.function,
+                    function_span: apply2.function_span,
+                    function_value: apply2.function_value,
+                    first_argument: apply2.first_argument,
+                    first_argument_span: apply2.first_argument_span,
+                    first_argument_value: replacement,
+                    second_argument: apply2.second_argument,
+                    second_argument_span: apply2.second_argument_span,
+                    second_argument_value: apply2.second_argument_value,
+                })),
+            )
+        }
+        (EvalThunkKind::Apply2(apply2), HeapEdgeSource::ThunkApply2SecondArgument) => {
+            rebuild_thunk_for_heap_field_write(
+                thunk,
+                EvalThunkKind::Apply2(Box::new(EvalApply2Thunk {
+                    function: apply2.function,
+                    function_span: apply2.function_span,
+                    function_value: apply2.function_value,
+                    first_argument: apply2.first_argument,
+                    first_argument_span: apply2.first_argument_span,
+                    first_argument_value: apply2.first_argument_value,
+                    second_argument: apply2.second_argument,
+                    second_argument_span: apply2.second_argument_span,
+                    second_argument_value: replacement,
+                })),
+            )
+        }
         (EvalThunkKind::Select { select, path, .. }, HeapEdgeSource::ThunkSelectReceiver) => {
             rebuild_thunk_for_heap_field_write(
                 thunk,
@@ -817,9 +784,7 @@ pub(super) fn push_thunk_kind_edges(
 ) -> Result<(), EvalHeapError> {
     match kind {
         EvalThunkKind::Node {
-            env,
-            dynamic_env,
-            ..
+            env, dynamic_env, ..
         } => {
             let (with_env, scoped_globals) = match dynamic_env.as_deref() {
                 Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
@@ -841,22 +806,21 @@ pub(super) fn push_thunk_kind_edges(
             push_heap_edge(edges, HeapEdgeSource::ThunkApplyFunction, *function_value)?;
             push_heap_edge(edges, HeapEdgeSource::ThunkApplyArgument, *argument_value)
         }
-        EvalThunkKind::Apply2 {
-            function_value,
-            first_argument_value,
-            second_argument_value,
-            ..
-        } => {
-            push_heap_edge(edges, HeapEdgeSource::ThunkApply2Function, *function_value)?;
+        EvalThunkKind::Apply2(apply2) => {
+            push_heap_edge(
+                edges,
+                HeapEdgeSource::ThunkApply2Function,
+                apply2.function_value,
+            )?;
             push_heap_edge(
                 edges,
                 HeapEdgeSource::ThunkApply2FirstArgument,
-                *first_argument_value,
+                apply2.first_argument_value,
             )?;
             push_heap_edge(
                 edges,
                 HeapEdgeSource::ThunkApply2SecondArgument,
-                *second_argument_value,
+                apply2.second_argument_value,
             )
         }
         EvalThunkKind::Select { receiver, .. } => {

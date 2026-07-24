@@ -292,6 +292,7 @@ impl TreeWalk {
         // flat-capture writeback protocol.
         if runtime_conversion_enabled
             && self.heap.supports_post_assembly_flat_capture()
+            && EvalFlatCapture::supports_frame_count(self.options.max_call_depth())
             && let Some(CapturePlan::Flat(slots)) = self.current_ir().facts.capture_plan(id)
         {
             if slots.is_empty() {
@@ -306,6 +307,10 @@ impl TreeWalk {
             capture_slots[..capture_len].copy_from_slice(slots);
             let allocation_site = EvalNodeRef::new(self.current_module, id);
             let frame_count = self.active_env_frame_count();
+            if !EvalFlatCapture::supports_frame_count(frame_count) {
+                let env = self.capture_active_env_snapshot(id, span)?;
+                return Ok((env, None));
+            }
             if self.order_sensitive_binding_depth != 0 {
                 let env = self.capture_active_env_snapshot(id, span)?;
                 let buffer =

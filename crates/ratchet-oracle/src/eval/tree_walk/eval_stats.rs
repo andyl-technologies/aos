@@ -650,10 +650,7 @@ impl TreeWalk {
     /// The single [`Instant`](std::time::Instant) captured here drives both the
     /// prelude-share timer and the [force-shape census](super::force_shape_census)
     /// self-time, so the census adds no extra clock reads.
-    pub(super) fn begin_force_accounting(
-        &mut self,
-        thunk: &EvalThunk,
-    ) -> Option<ForceAccounting> {
+    pub(super) fn begin_force_accounting(&mut self, thunk: &EvalThunk) -> Option<ForceAccounting> {
         if !self.options.eval_stats_dump() {
             return None;
         }
@@ -712,7 +709,7 @@ impl TreeWalk {
                 .body_ref()
                 .map_or("node", |body| self.node_shape_class(body)),
             EvalThunkKind::Apply { .. } => "apply",
-            EvalThunkKind::Apply2 { .. } => "apply2",
+            EvalThunkKind::Apply2(_) => "apply2",
             EvalThunkKind::Select { .. } => "select-thunk",
             EvalThunkKind::BuiltinAttr { .. } => "builtin-attr",
             EvalThunkKind::Released => "released",

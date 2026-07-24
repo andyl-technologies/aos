@@ -548,31 +548,23 @@ impl TreeWalk {
                     *argument_value,
                 )
             }),
-            EvalThunkKind::Apply2 {
-                function,
-                function_span,
-                function_value,
-                first_argument,
-                first_argument_span,
-                first_argument_value,
-                second_argument,
-                second_argument_span,
-                second_argument_value,
-            } => self.with_current_module(function.module(), |eval| {
-                eval.apply_lambda_value_2(
-                    id,
-                    span,
-                    function.id(),
-                    *function_value,
-                    *function_span,
-                    first_argument.id(),
-                    *first_argument_span,
-                    *first_argument_value,
-                    second_argument.id(),
-                    *second_argument_span,
-                    *second_argument_value,
-                )
-            }),
+            EvalThunkKind::Apply2(apply) => {
+                self.with_current_module(apply.function.module(), |eval| {
+                    eval.apply_lambda_value_2(
+                        id,
+                        span,
+                        apply.function.id(),
+                        apply.function_value,
+                        apply.function_span,
+                        apply.first_argument.id(),
+                        apply.first_argument_span,
+                        apply.first_argument_value,
+                        apply.second_argument.id(),
+                        apply.second_argument_span,
+                        apply.second_argument_value,
+                    )
+                })
+            }
             EvalThunkKind::Select {
                 select,
                 receiver,
@@ -598,7 +590,7 @@ impl TreeWalk {
                 eval.force_node_result(select.id(), span, value)
             }),
             EvalThunkKind::BuiltinAttr { symbol, builtin } => {
-                (*builtin).select(self, id, span, *symbol)
+                Builtin::from_kind(*builtin).select(self, id, span, *symbol)
             }
             // A shed thunk is already `Forced`, so every force re-entry
             // short-circuits on its cached result before reaching the body.

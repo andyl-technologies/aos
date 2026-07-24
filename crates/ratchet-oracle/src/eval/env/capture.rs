@@ -13,9 +13,10 @@ use crate::value::Value;
 #[derive(Clone, Debug)]
 pub(crate) struct EvalFlatCapture {
     allocation_site: EvalNodeRef,
-    frame_count: usize,
     owner: Value,
     tail: FlatValueTailHandle,
+    frame_count: u16,
+    linked_frame_count: u16,
 }
 
 impl EvalFlatCapture {
@@ -25,13 +26,35 @@ impl EvalFlatCapture {
         frame_count: usize,
         owner: Value,
         tail: FlatValueTailHandle,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EvalEnvError> {
+        let frame_count =
+            u16::try_from(frame_count).map_err(|_| EvalEnvError::CaptureAllocationFailed {
+                frames: frame_count,
+            })?;
+        Ok(Self {
             allocation_site,
-            frame_count,
             owner,
             tail,
-        }
+            frame_count,
+            linked_frame_count: 0,
+        })
+    }
+
+    /// Records the conservative linked suffix stored beside this flat prefix.
+    fn with_linked_frame_count(mut self, frames: usize) -> Result<Self, EvalEnvError> {
+        self.linked_frame_count =
+            u16::try_from(frames).map_err(|_| EvalEnvError::CaptureAllocationFailed { frames })?;
+        Ok(self)
+    }
+
+    /// Returns the conservative linked suffix stored beside this flat prefix.
+    const fn linked_frame_count(&self) -> usize {
+        self.linked_frame_count as usize
+    }
+
+    /// Returns whether a conceptual depth fits the compact capture metadata.
+    pub(crate) const fn supports_frame_count(frame_count: usize) -> bool {
+        frame_count <= u16::MAX as usize
     }
 
     /// Returns the module-qualified allocation site that owns the plan.
@@ -41,7 +64,7 @@ impl EvalFlatCapture {
 
     /// Returns the conceptual frame depth at the allocation site.
     pub(crate) const fn frame_count(&self) -> usize {
-        self.frame_count
+        self.frame_count as usize
     }
 
     /// Returns the number of values in the canonical capture order.
@@ -68,6 +91,7 @@ impl EvalFlatCapture {
     fn raw_eq(&self, other: &Self) -> bool {
         self.allocation_site == other.allocation_site
             && self.frame_count == other.frame_count
+            && self.linked_frame_count == other.linked_frame_count
             && self.owner.raw_eq(other.owner)
             && self.tail == other.tail
     }
@@ -156,37 +180,50 @@ impl EvalFlatCaptureBuffer {
 /// Storage for the conservative suffix of one captured environment.
 #[derive(Clone, Debug)]
 enum EvalEnvStorage {
-    /// Production persistent chain: capture clones one head pointer.
-    Chain {
-        head: Option<Arc<EvalFrame>>,
-        frames: usize,
-    },
+    /// No conservative frames or flat prefix are captured.
+    Empty,
+    /// Production persistent chain: capture clones one non-empty head pointer.
+    Chain { head: Arc<EvalFrame>, frames: u32 },
     /// Compatibility fallback for independently constructed, unlinked frames.
     Array(Arc<[Arc<EvalFrame>]>),
+    /// A statically selected flat prefix without conservative frames.
+    Flat(EvalFlatCapture),
+    /// A production chain following a statically selected flat prefix.
+    ChainFlat {
+        head: Arc<EvalFrame>,
+        flat: EvalFlatCapture,
+    },
+    /// A compatibility frame array following a statically selected flat prefix.
+    ArrayFlat {
+        frames: Arc<[Arc<EvalFrame>]>,
+        flat: EvalFlatCapture,
+    },
 }
 
 impl Default for EvalEnvStorage {
     fn default() -> Self {
-        Self::Chain {
-            head: None,
-            frames: 0,
-        }
+        Self::Empty
     }
 }
 
 impl EvalEnvStorage {
-    fn linked(head: Option<Arc<EvalFrame>>, frames: usize) -> Self {
+    fn linked(head: Option<Arc<EvalFrame>>, frames: usize) -> Result<Self, EvalEnvError> {
         debug_assert_eq!(head.is_some(), frames != 0);
-        Self::Chain { head, frames }
+        let frames =
+            u32::try_from(frames).map_err(|_| EvalEnvError::CaptureAllocationFailed { frames })?;
+        match head {
+            Some(head) => Ok(Self::Chain { head, frames }),
+            None => Ok(Self::Empty),
+        }
     }
 
-    fn capture_linked(frames: &[Arc<EvalFrame>]) -> Self {
+    fn capture_linked(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
         Self::linked(frames.last().cloned(), frames.len())
     }
 
     fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
         if frames_are_linked(frames) {
-            return Ok(Self::capture_linked(frames));
+            return Self::capture_linked(frames);
         }
 
         capture_stats::note_env_capture(frames.len());
@@ -200,23 +237,66 @@ impl EvalEnvStorage {
         Ok(Self::Array(captured.into()))
     }
 
+    fn with_flat_base(self, flat: Option<EvalFlatCapture>) -> Result<Self, EvalEnvError> {
+        let Some(flat) = flat else {
+            return Ok(self);
+        };
+        Ok(match self {
+            Self::Empty => Self::Flat(flat),
+            Self::Chain { head, frames } => Self::ChainFlat {
+                head,
+                flat: flat.with_linked_frame_count(frames as usize)?,
+            },
+            Self::Array(frames) => Self::ArrayFlat { frames, flat },
+            storage @ (Self::Flat(_) | Self::ChainFlat { .. } | Self::ArrayFlat { .. }) => {
+                debug_assert!(false, "flat base attached twice");
+                storage
+            }
+        })
+    }
+
     fn len(&self) -> usize {
         match self {
-            Self::Chain { frames, .. } => *frames,
-            Self::Array(frames) => frames.len(),
+            Self::Empty | Self::Flat(_) => 0,
+            Self::Chain { frames, .. } => *frames as usize,
+            Self::ChainFlat { flat, .. } => flat.linked_frame_count(),
+            Self::Array(frames) | Self::ArrayFlat { frames, .. } => frames.len(),
         }
     }
 
     fn frames(&self) -> EvalEnvFrames<'_> {
         match self {
-            Self::Chain { head, frames } => EvalEnvFrames::chain(head.as_ref(), *frames),
-            Self::Array(frames) => EvalEnvFrames::array(frames),
+            Self::Empty | Self::Flat(_) => EvalEnvFrames::chain(None, 0),
+            Self::Chain { head, frames } => EvalEnvFrames::chain(Some(head), *frames as usize),
+            Self::ChainFlat { head, flat } => {
+                EvalEnvFrames::chain(Some(head), flat.linked_frame_count())
+            }
+            Self::Array(frames) | Self::ArrayFlat { frames, .. } => EvalEnvFrames::array(frames),
+        }
+    }
+
+    const fn flat_base(&self) -> Option<&EvalFlatCapture> {
+        match self {
+            Self::Flat(flat) | Self::ChainFlat { flat, .. } | Self::ArrayFlat { flat, .. } => {
+                Some(flat)
+            }
+            Self::Empty | Self::Chain { .. } | Self::Array(_) => None,
+        }
+    }
+
+    fn linked_parts(&self) -> Option<(Option<&Arc<EvalFrame>>, usize)> {
+        match self {
+            Self::Empty | Self::Flat(_) => Some((None, 0)),
+            Self::Chain { head, frames } => Some((Some(head), *frames as usize)),
+            Self::ChainFlat { head, flat } => Some((Some(head), flat.linked_frame_count())),
+            Self::Array(_) | Self::ArrayFlat { .. } => None,
         }
     }
 
     /// Returns whether two storage snapshots share the same captured backing.
     fn raw_eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Empty, Self::Empty) => true,
             (
                 Self::Chain {
                     head: left,
@@ -226,15 +306,29 @@ impl EvalEnvStorage {
                     head: right,
                     frames: right_frames,
                 },
-            ) => {
-                left_frames == right_frames
-                    && match (left, right) {
-                        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-                        (None, None) => true,
-                        _ => false,
-                    }
-            }
+            ) => left_frames == right_frames && Arc::ptr_eq(left, right),
             (Self::Array(left), Self::Array(right)) => Arc::ptr_eq(left, right),
+            (Self::Flat(left), Self::Flat(right)) => left.raw_eq(right),
+            (
+                Self::ChainFlat {
+                    head: left_head,
+                    flat: left_flat,
+                },
+                Self::ChainFlat {
+                    head: right_head,
+                    flat: right_flat,
+                },
+            ) => Arc::ptr_eq(left_head, right_head) && left_flat.raw_eq(right_flat),
+            (
+                Self::ArrayFlat {
+                    frames: left_frames,
+                    flat: left_flat,
+                },
+                Self::ArrayFlat {
+                    frames: right_frames,
+                    flat: right_flat,
+                },
+            ) => Arc::ptr_eq(left_frames, right_frames) && left_flat.raw_eq(right_flat),
             _ => false,
         }
     }
@@ -257,18 +351,12 @@ fn frames_are_linked(frames: &[Arc<EvalFrame>]) -> bool {
 #[derive(Clone, Debug, Default)]
 pub struct EvalEnv {
     storage: EvalEnvStorage,
-    flat_base: Option<EvalFlatCapture>,
 }
 
 impl EvalEnv {
     /// Returns whether two snapshots share the same lexical and flat backing.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
         self.storage.raw_eq(&other.storage)
-            && match (&self.flat_base, &other.flat_base) {
-                (Some(left), Some(right)) => left.raw_eq(right),
-                (None, None) => true,
-                _ => false,
-            }
     }
 
     /// Captures the active frame stack.
@@ -280,7 +368,6 @@ impl EvalEnv {
     pub fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
         Ok(Self {
             storage: EvalEnvStorage::capture(frames)?,
-            flat_base: None,
         })
     }
 
@@ -295,8 +382,7 @@ impl EvalEnv {
         flat_base: Option<EvalFlatCapture>,
     ) -> Result<Self, EvalEnvError> {
         Ok(Self {
-            storage: EvalEnvStorage::capture(frames)?,
-            flat_base,
+            storage: EvalEnvStorage::capture(frames)?.with_flat_base(flat_base)?,
         })
     }
 
@@ -317,8 +403,7 @@ impl EvalEnv {
         flat_base: Option<EvalFlatCapture>,
     ) -> Result<Self, EvalEnvError> {
         Ok(Self {
-            storage: EvalEnvStorage::capture(frames)?,
-            flat_base,
+            storage: EvalEnvStorage::capture(frames)?.with_flat_base(flat_base)?,
         })
     }
 
@@ -327,11 +412,10 @@ impl EvalEnv {
         head: Option<Arc<EvalFrame>>,
         frames: usize,
         flat_base: Option<EvalFlatCapture>,
-    ) -> Self {
-        Self {
-            storage: EvalEnvStorage::linked(head, frames),
-            flat_base,
-        }
+    ) -> Result<Self, EvalEnvError> {
+        Ok(Self {
+            storage: EvalEnvStorage::linked(head, frames)?.with_flat_base(flat_base)?,
+        })
     }
 
     /// Captures a linked frame slice for tests that construct a flat prefix.
@@ -339,19 +423,15 @@ impl EvalEnv {
     pub(crate) fn capture_linked_with_flat_base(
         frames: &[Arc<EvalFrame>],
         flat_base: Option<EvalFlatCapture>,
-    ) -> Self {
-        Self {
-            storage: EvalEnvStorage::capture_linked(frames),
-            flat_base,
-        }
+    ) -> Result<Self, EvalEnvError> {
+        Ok(Self {
+            storage: EvalEnvStorage::capture_linked(frames)?.with_flat_base(flat_base)?,
+        })
     }
 
     /// Returns the persistent-chain head and frame count when storage is linked.
     pub(crate) fn linked_parts(&self) -> Option<(Option<&Arc<EvalFrame>>, usize)> {
-        match &self.storage {
-            EvalEnvStorage::Chain { head, frames } => Some((head.as_ref(), *frames)),
-            EvalEnvStorage::Array(_) => None,
-        }
+        self.storage.linked_parts()
     }
 
     /// Creates an environment referring to values in its owning flat object.
@@ -360,16 +440,15 @@ impl EvalEnv {
         frame_count: usize,
         owner: Value,
         tail: FlatValueTailHandle,
-    ) -> Self {
-        Self {
-            storage: EvalEnvStorage::default(),
-            flat_base: Some(EvalFlatCapture::inline(
+    ) -> Result<Self, EvalEnvError> {
+        Ok(Self {
+            storage: EvalEnvStorage::Flat(EvalFlatCapture::inline(
                 allocation_site,
                 frame_count,
                 owner,
                 tail,
-            )),
-        }
+            )?),
+        })
     }
 
     /// Returns the captured shared frames, ordered outermost to innermost.
@@ -379,13 +458,13 @@ impl EvalEnv {
 
     /// Returns the inherited flat captured-value base, when present.
     pub(crate) const fn flat_base(&self) -> Option<&EvalFlatCapture> {
-        self.flat_base.as_ref()
+        self.storage.flat_base()
     }
 
     /// Returns the conceptual frame count seen by lowered lexical coordinates.
     pub fn frame_count(&self) -> usize {
-        self.flat_base
-            .as_ref()
+        self.storage
+            .flat_base()
             .map_or(0, EvalFlatCapture::frame_count)
             .saturating_add(self.storage.len())
     }
@@ -394,8 +473,8 @@ impl EvalEnv {
     pub fn is_empty(&self) -> bool {
         self.storage.len() == 0
             && self
-                .flat_base
-                .as_ref()
+                .storage
+                .flat_base()
                 .is_none_or(EvalFlatCapture::is_empty)
     }
 }
@@ -601,7 +680,7 @@ mod tests {
         let frames = linked_chain(64);
         assert!(frames_are_linked(&frames));
 
-        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain = EvalEnvStorage::capture_linked(&frames).expect("linked capture succeeds");
         let chain_view = chain.frames();
         let array_view = EvalEnvFrames::array(&frames);
 
@@ -626,7 +705,7 @@ mod tests {
     fn deep_chain_clone_into_matches_array_view_order() {
         let frames = linked_chain(64);
 
-        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain = EvalEnvStorage::capture_linked(&frames).expect("linked capture succeeds");
         let chain_view = chain.frames();
         let array_view = EvalEnvFrames::array(&frames);
 
@@ -657,7 +736,7 @@ mod tests {
     #[test]
     fn deep_chain_indexed_access_matches_array_view() {
         let frames = linked_chain(64);
-        let chain = EvalEnvStorage::capture_linked(&frames);
+        let chain = EvalEnvStorage::capture_linked(&frames).expect("linked capture succeeds");
         let chain_view = chain.frames();
         let array_view = EvalEnvFrames::array(&frames);
 
@@ -684,7 +763,7 @@ mod tests {
         let full = linked_chain(4);
         let head = full.last().expect("innermost frame");
         let chain = EvalEnvStorage::Chain {
-            head: Some(Arc::clone(head)),
+            head: Arc::clone(head),
             frames: 2,
         };
         let view = chain.frames();

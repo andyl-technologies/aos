@@ -46,3 +46,17 @@ fn unlinked_active_frames_retain_compatibility_order() {
     assert!(Arc::ptr_eq(&frames.pop().expect("popped call"), &call));
     assert!(Arc::ptr_eq(frames.last().expect("restored inner"), &inner));
 }
+
+#[test]
+fn pushing_independent_frames_switches_to_compatibility_storage() {
+    let outer = EvalFrame::new(1).expect("outer frame");
+    let inner = EvalFrame::new(1).expect("independent inner frame");
+    let mut frames = ActiveEvalFrames::new();
+
+    frames.push(Arc::clone(&outer));
+    frames.push(Arc::clone(&inner));
+
+    assert!(frames.linked_parts().is_none());
+    assert!(Arc::ptr_eq(frames.get(0).expect("outer"), &outer));
+    assert!(Arc::ptr_eq(frames.get(1).expect("inner"), &inner));
+}

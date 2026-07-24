@@ -340,7 +340,7 @@ impl EvalHeap {
             buffer.frame_count(),
             value,
             handle,
-        );
+        )?;
         let (payload, tail) = match self
             .flat_closures
             .resolve_mut_with_value_tail_handle(ptr, handle, kind)
@@ -441,7 +441,7 @@ impl EvalHeap {
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
-            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle);
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle)?;
             let replaced = self.replace_unique_flat_closure_env(value, env)?;
             debug_assert!(replaced, "fresh flat thunk payload must be unique");
         }
@@ -502,7 +502,7 @@ impl EvalHeap {
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
-            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle);
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle)?;
             let replaced = self.replace_unique_flat_closure_env(value, env)?;
             debug_assert!(replaced, "fresh flat lambda payload must be unique");
         }

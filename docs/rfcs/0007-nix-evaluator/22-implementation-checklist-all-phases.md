@@ -12299,7 +12299,8 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `lambda-interp`, and 6.0GiB for `string-builder`. A fresh-process
       `systems.server.build.toplevel` run peaked at approximately 858MiB before
       the dynamic-capture layout reduction below and approximately 828MiB
-      after it, versus C++ Nix's 337MiB (2.46x current), despite the post-run-RSS
+      after it; the current compact-thunk build peaks at approximately
+      768-770MiB versus C++ Nix's 337MiB (2.28x), despite the post-run-RSS
       scoreboard reporting a much smaller retained value. Close this only when
       a production-enabled, root-complete mid-evaluation collector reclaims
       aggregate payloads and returns or reuses their storage while the full
@@ -12307,6 +12308,21 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       alone do not satisfy the item
       ([06](06-memory-management-and-gc.md) §4,
       [memory campaign](design-notes/memory-campaign-plan.md)).
+- [ ] **Discovered touched-page/system-time gap:** a primed, cache-off
+      `systems.server.build.toplevel` run of the compact Candidate-C evaluator
+      consumed 2.79 CPU seconds in 2.80 wall seconds (99% CPU), including
+      1.32 seconds of system time and 238,151 minor faults. The matched pinned
+      C++ run consumed 0.48 CPU seconds in 0.54 wall seconds, including
+      0.09 seconds of system time and 84,013 minor faults. Both reported zero
+      major faults and zero filesystem input; one-second `pidstat` samples
+      showed 99-100% CPU, 0% wait, zero read/write throughput, and zero I/O
+      delay throughout native evaluation. This rules out file-I/O stalls as
+      the source of the live-load gap and makes allocator/GC page footprint a
+      direct CPU concern: reduce pages faulted and zero-filled per live value,
+      then remeasure user/system time separately. Treat syscall-wall summaries
+      carefully: the native CLI's idle runtime threads accumulate blocked
+      `futex` duration under `strace -f`, but that blocked duration is not the
+      process's measured CPU time.
 - [x] **Common thunk dynamic-capture layout reduction:** store the persistent
       `with` and scoped-global heads out of line only when either stack is
       non-empty. On the full AOS `systems.server.build.toplevel` workload all
@@ -12349,10 +12365,14 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `heap_cheap_memory_advice_option_reports_after_tree_walk_eval` fail in two
       parallel full-suite runs while the same test passed alone. Its assertions
       observe process-global heap/hash-cons gauges that other tests can mutate,
-      so suite scheduling can create false regressions. Close by scoping the
-      advice inputs to the evaluated heap (preferred) or serializing every test
-      that touches the global gauges, then restore an independent Candidate-C
-      cell unit test and prove repeated parallel full-suite runs green.
+      so suite scheduling can create false regressions. The compact-thunk gate
+      independently reproduced the same class in
+      `ratchet_value::heap::gauges::dropping_an_arena_returns_live_bytes_to_the_pre_arena_level`:
+      concurrent arena tests changed the process gauge across its before/after
+      snapshots. Close by scoping the advice/gauge inputs to the evaluated heap
+      (preferred) or serializing every test that touches the global gauges,
+      then restore an independent Candidate-C cell unit test and prove repeated
+      parallel full-suite runs green.
 - [ ] **Discovered frozen source-size gate debt:** the mandatory
       `aos-nix/tests/source_file_size.rs` gate currently fails on three
       pre-existing `ratchet-oracle` files: `eval/env.rs` (1,012 lines),
@@ -12469,16 +12489,40 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       RSS, with byte-identical `.drv` closure output and all 2,674 active
       Candidate-C tests (37 ignored) plus doctests green
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
-- [ ] **Discovered oversized uniform flat-closure layout:** the live toplevel
-      allocates 3,218,224 thunks and drives the worker lane to 566,881,608 used
-      bytes. `EvalThunk` and the largest-variant `FlatClosurePayload` are each
-      120 bytes, and the generic flat header adds 24 bytes even though closure
-      hash and access-epoch words are cold/constant in the default evaluator.
-      Design a thunk-specific compact representation (including separate
-      treatment of rare large variants and only the metadata closure
-      resolution actually needs), preserve force identity/GC/snapshot
-      semantics, and accept it only with byte parity, the full Candidate-C
-      suite, and measured full-toplevel instruction and peak-RSS wins
+- [x] **Compact the common captured-environment and thunk layout:** before
+      this increment the live toplevel allocated 3,218,224 thunks and drove the
+      worker lane to 566,881,608 used bytes. Store the majority
+      chain-plus-flat environment inline; use checked compact flat-tail/depth
+      coordinates; move unused serial force-mode state out of line; box the
+      rare two-argument apply payload; and retain a stable builtin-kind handle
+      instead of the full declaration. `EvalEnv` fell from 64 to 48 bytes,
+      `EvalThunk` and `FlatClosurePayload` from 120 to 96 bytes, and the
+      complete flat object from 144 to 120 bytes. Worker used bytes fell to
+      475,818,840. Three clean full-toplevel runs improved from
+      22.9732-22.9770B to 22.8920-22.8943B instructions (0.35%); peak RSS
+      improved from 857,588-858,096KiB to 763,468-769,716KiB (about 86-92MiB,
+      10.2-11.0%). Byte parity
+      remained green
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Discovered active-frame compatibility transition bug:** pushing two
+      independently constructed frames into an initially empty persistent
+      active-frame stack incorrectly retained linked storage even though the
+      second frame had no parent edge to the first. Root scanning consequently
+      observed only the innermost frame and root writeback later indexed an
+      empty reconstructed stack. Detect the first broken parent link in
+      `ActiveEvalFrames::push`, preserve the existing chain in compatibility
+      order, and pin both the transition and the 22-root reverse-depth
+      writeback case with tests.
+- [ ] **Discovered residual uniform flat-closure overhead:** after common
+      payload compaction, every thunk still carries a 24-byte `ThunkCellSlot`,
+      and the generic flat header adds 24 bytes even though closure hash and
+      access-epoch words are cold/constant in the default evaluator. Design a
+      thunk-specific cell/header representation containing only metadata
+      closure resolution and force identity actually require, preserve
+      GC/snapshot semantics, and accept it only with byte parity, the full
+      Candidate-C suite, and measured full-toplevel instruction and peak-RSS
+      wins. The current 767.6-770.0MiB peak remains far above the `<0.5x` C++
+      target
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [ ] **Discovered oracle unsafe-fence drift:** `ratchet-oracle` is documented
       as the safe differential reference but currently carries local unsafe

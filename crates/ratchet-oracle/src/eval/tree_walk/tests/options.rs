@@ -381,19 +381,13 @@ fn apply2_thunk_values(evaluator: &TreeWalk, value: Value) -> (Value, Value, Val
         .heap()
         .get_thunk(value)
         .expect("apply2 result is a thunk");
-    let EvalThunkKind::Apply2 {
-        function_value,
-        first_argument_value,
-        second_argument_value,
-        ..
-    } = thunk.kind()
-    else {
+    let EvalThunkKind::Apply2(apply2) = thunk.kind() else {
         panic!("result is an apply2 thunk");
     };
     (
-        *function_value,
-        *first_argument_value,
-        *second_argument_value,
+        apply2.function_value,
+        apply2.first_argument_value,
+        apply2.second_argument_value,
     )
 }
 

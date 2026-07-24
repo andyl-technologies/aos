@@ -5,8 +5,8 @@
 //! free-variable value hashes, and memoization admission hints. Includes the
 //! first-class cacheable-impure-call classification for builtin executions.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 impl TreeWalk {
     pub(in crate::eval::tree_walk) fn force_cache_subject_for_thunk(
@@ -49,9 +49,8 @@ impl TreeWalk {
                     memoization_admission,
                 })
             }
-            EvalThunkKind::BuiltinAttr { symbol, builtin } => {
-                self.force_cache_subject_for_builtin_attr(site, *symbol, *builtin)
-            }
+            EvalThunkKind::BuiltinAttr { symbol, builtin } => self
+                .force_cache_subject_for_builtin_attr(site, *symbol, Builtin::from_kind(*builtin)),
             EvalThunkKind::Select {
                 select,
                 receiver,
@@ -60,9 +59,9 @@ impl TreeWalk {
             // Force-cache subjects are computed while forcing a claimed thunk,
             // before its captures can be shed; a released kind has no work to
             // cache and admits nothing.
-            EvalThunkKind::Apply { .. }
-            | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Released => None,
+            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2(_) | EvalThunkKind::Released => {
+                None
+            }
         }
     }
 
@@ -310,7 +309,7 @@ impl TreeWalk {
     fn thunk_is_builtin_nix_path(&self, thunk: &EvalThunk) -> bool {
         match thunk.kind() {
             EvalThunkKind::BuiltinAttr { builtin, .. } => {
-                builtin.execution() == BuiltinExecution::NixPathValue
+                Builtin::from_kind(*builtin).execution() == BuiltinExecution::NixPathValue
             }
             EvalThunkKind::Node { body, .. } => {
                 let symbols = &self.symbols;
@@ -326,7 +325,7 @@ impl TreeWalk {
                     })
             }
             EvalThunkKind::Apply { .. }
-            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::Released => false,
         }
