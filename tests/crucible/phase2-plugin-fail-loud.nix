@@ -22,7 +22,13 @@
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoop = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/support.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
+  ];
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
@@ -106,7 +112,7 @@
       content = pluginTimeControl;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
+      label = "crates/crucible-qemu-plugin/src/idle_loop module";
       content = pluginIdleLoop;
     }
     {
@@ -361,7 +367,7 @@
         needle = "inbound_frame_select_rejects_late_candidate_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
       {
         label = "idle exact deadline failure";
         needle = "IdleHotLoopError::ReadExactDeadline";
