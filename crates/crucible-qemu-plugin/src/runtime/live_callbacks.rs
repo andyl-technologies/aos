@@ -1183,6 +1183,22 @@ impl LiveVcpuTimeCallbackState {
         Ok(self.last_icount.load(Ordering::Acquire))
     }
 
+    /// Returns the logical icount for a device callback dispatched from QEMU's
+    /// main-loop timer boundary.
+    ///
+    /// QEMU runs timer-produced bottom halves before the queued idle-advance
+    /// completion callback. A device request dispatched in that slice belongs
+    /// to the already-reached advance target even though the plugin has not yet
+    /// committed the corresponding logical-icount offset.
+    fn device_callback_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        let pending = self.try_pending_idle_advance()?;
+        if let Some(pending) = pending.as_ref() {
+            return Ok(pending.target_icount);
+        }
+        drop(pending);
+        self.callback_current_icount()
+    }
+
     fn logical_icount_for_raw(&self, raw_icount: u64) -> Result<u64, LiveVcpuTimeCallbackError> {
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         raw_icount
