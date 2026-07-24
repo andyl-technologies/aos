@@ -293,6 +293,13 @@
       enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
       capability = "device-wait callback advances an I/O-blocked guest to its deterministic completion and resumes polling after commit";
     }
+    {
+      file = "0040-crucible-9p-sync-kick.patch";
+      catalogName = "crucible-9p-sync-kick";
+      class = "D";
+      enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
+      capability = "sim-mode virtio-9p kicks enter deterministic raw-message forwarding synchronously";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

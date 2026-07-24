@@ -275,6 +275,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0040-crucible-9p-sync-kick.patch";
+      check = import ./phase2-qemu-9p-sync-kick.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

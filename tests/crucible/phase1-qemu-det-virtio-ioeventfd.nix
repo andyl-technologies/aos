@@ -38,9 +38,10 @@
   # crucible-det-virtio-ioeventfd patch makes virtio_pci_ioeventfd_enabled()
   # return false under sim-mode icount for the virtio-rng device specifically,
   # so a guest-issued virtqueue kick is serviced synchronously on the requesting
-  # vCPU thread rather than via a host-scheduled main-loop dispatch (block/9p keep
-  # the stock async kick, whose determinism is anchored by the crucible blk/9p
-  # shmem substrate). This supplemental smoke proves only that the patched device
+  # vCPU thread rather than via a host-scheduled main-loop dispatch. This patch
+  # leaves block/9p unchanged; the later 0040 patch synchronizes 9p's initial
+  # kick after its shmem forwarding gap is characterized, while block retains its
+  # device-wait barrier. This supplemental smoke proves only that the patched device
   # realizes and QEMU executes; the exact-source fixture and the real `/dev/hwrng`
   # request in the paired det-rng-delivery gate exercise the dispatch decision.
   # The effective ioeventfd

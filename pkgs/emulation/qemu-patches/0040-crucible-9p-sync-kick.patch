@@ -1,0 +1,35 @@
+diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
+index b87732439..d2b66d5cb 100644
+--- a/hw/virtio/virtio-pci.c
++++ b/hw/virtio/virtio-pci.c
+@@ -327,18 +327,22 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+      * deterministic icount; synchronous completion without ioeventfd is
+      * ordinary QEMU device behaviour.  No QEMU record/replay (RFC-0010 NG-6).
+      *
+-     * Scope this to virtio-rng only.  virtio-rng's entropy completion has no
+-     * other deterministic anchor -- its delivery icount is the leak S6 hits --
+-     * whereas virtio-blk/9p completions are already pinned by the crucible
+-     * blk/9p shmem substrate (patches 0015-0019), which is built assuming the
+-     * stock async kick dispatch.  Forcing those devices synchronous here would
+-     * double-synchronize a kick path they rely on being async and perturb their
+-     * throttled-IO idle timing for no determinism gain, so leave them stock.
++     * Scope this to virtio-rng and virtio-9p.  virtio-rng's entropy completion
++     * has no other deterministic anchor -- its delivery icount is the leak S6
++     * hits.  The 9p shmem transport anchors completion delivery but still needs
++     * the guest's initial virtqueue kick to enter its synchronous raw-message
++     * forwarding path.  Keeping that kick on ioeventfd lets the sim vCPU run
++     * past the kick while the main loop waits, so a mounting guest can block
++     * without ever publishing a request to SLOT_9P_IO.  Block I/O keeps the
++     * stock async kick because its coroutine/device-wait path supplies the
++     * deterministic completion barrier.
+      */
+     if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {
+         VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
+ 
+-        if (vdev != NULL && vdev->device_id == VIRTIO_ID_RNG) {
++        if (vdev != NULL &&
++            (vdev->device_id == VIRTIO_ID_RNG ||
++             vdev->device_id == VIRTIO_ID_9P)) {
+             return false;
+         }
+     }

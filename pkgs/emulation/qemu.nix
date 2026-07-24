@@ -196,6 +196,7 @@
   # patch -p1 < ${./qemu-patches/0037-crucible-sim-freeze-warp-at-observation-boundary.patch}
   # patch -p1 < ${./qemu-patches/0038-crucible-sim-gate-rr-kick.patch}
   # patch -p1 < ${./qemu-patches/0039-crucible-blk-device-completion-advance.patch}
+  # patch -p1 < ${./qemu-patches/0040-crucible-9p-sync-kick.patch}
 in
   mkDerivation {
     inherit pname;
