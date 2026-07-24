@@ -20,6 +20,10 @@ pub const STORAGE_PLAN_FILE: &str = "provisioning-plan.json";
 pub const REPART_TARGETS_FILE: &str = "repart-targets";
 /// Temporary GPT marker created in the same repart transaction as storage.
 pub const PENDING_LABEL: &str = "aos-provisioning-pending-v1";
+/// Durable marker for a plan derived from operator `host.nix`.
+pub const OPERATOR_LABEL: &str = "aos-provenance-operator-v1";
+/// Durable marker for the image's provisioning defaults.
+pub const FALLBACK_LABEL: &str = "aos-provenance-fallback-v1";
 /// Type GUID reserved exclusively for the one-time provisioning marker.
 pub const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
 
@@ -101,8 +105,8 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
                 | "esp"
                 | "ESP"
                 | PENDING_LABEL
-                | "aos-provenance-operator-v1"
-                | "aos-provenance-fallback-v1"
+                | OPERATOR_LABEL
+                | FALLBACK_LABEL
         ) {
             bail!(
                 "partition label '{}' is reserved or protected",
@@ -169,8 +173,15 @@ pub fn render_provisioning_plan(
     stash_dir: &Path,
     plan: &ProvisioningPlan,
     measured_boot: bool,
+    marker_label: &str,
 ) -> Result<Vec<PathBuf>> {
     validate_provisioning_plan(plan, measured_boot)?;
+    if !matches!(
+        marker_label,
+        PENDING_LABEL | OPERATOR_LABEL | FALLBACK_LABEL
+    ) {
+        bail!("unsupported provisioning marker label '{marker_label}'");
+    }
     std::fs::write(
         stash_dir.join(STORAGE_PLAN_FILE),
         serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
@@ -193,8 +204,15 @@ pub fn render_provisioning_plan(
 
     let mut targets = String::new();
     let mut written = Vec::new();
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    // The root disk must commit its pending marker before another device can
+    // be changed. A crash after that point is therefore observable and cannot
+    // be mistaken for an untouched first boot.
+    groups.sort_by_key(|(device, _)| (*device != "root", *device));
     for (index, (device, mut partitions)) in groups.into_iter().enumerate() {
-        partitions.sort_by_key(|(name, partition)| (partition.priority, *name));
+        // A grow-to-fill partition must be placed after every bounded
+        // partition regardless of its authored priority.
+        partitions.sort_by_key(|(name, partition)| (partition.grow, partition.priority, *name));
         let dir_name = format!("{index:04}");
         let dir = root.join(&dir_name);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -210,11 +228,14 @@ pub fn render_provisioning_plan(
             written.push(path);
         }
         if device == "root" {
-            let sentinel = dir.join("9999-aos-provisioning-pending.conf");
+            // The marker is a fixed-size, high-priority definition placed
+            // before operator partitions. Priority prevents repart from
+            // dropping the commit record under space pressure.
+            let sentinel = dir.join("0000-aos-provisioning-marker.conf");
             std::fs::write(
                 &sentinel,
                 format!(
-                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={PENDING_LABEL}\nSizeMinBytes=1M\nSizeMaxBytes=1M\n"
+                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={marker_label}\nSizeMinBytes=1M\nSizeMaxBytes=1M\nPriority=1000000\n"
                 ),
             )
             .with_context(|| format!("writing {}", sentinel.display()))?;
@@ -270,7 +291,7 @@ fn validate_label(value: &str, kind: &str) -> Result<()> {
 }
 
 fn validate_partition_type(value: &str) -> Result<()> {
-    if matches!(value, "linux-generic" | "var" | "swap") {
+    if matches!(value, "linux-generic" | "swap") {
         return Ok(());
     }
     let lower = value.to_ascii_lowercase();
@@ -282,12 +303,18 @@ fn validate_partition_type(value: &str) -> Result<()> {
                 | "root-b"
                 | "root-verity"
                 | "root-verity-sig"
+                | "var"
                 | "esp"
                 | "xbootldr"
                 | "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
                 | "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
                 | "b921b045-1df0-41c3-af44-4c6f280d3fae"
+                | "44479540-f297-41b2-9af7-d131d5f0458a"
+                | "72ec70a6-cf74-40e6-bd49-4bda08e8f224"
                 | "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
+                | "df3300ce-d69f-4c92-978c-9bfb0f38d820"
+                | "d13c5d3b-b5d1-422a-b29f-9454fdc89d76"
+                | "b6ed5582-440b-4209-b8da-5ff7c419ea3d"
                 | "41092b05-9fc8-4523-994f-2def0408b176"
         )
     {

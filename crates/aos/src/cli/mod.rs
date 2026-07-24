@@ -285,9 +285,36 @@ pub enum MetadataCmd {
         /// Keep `/var` raw for measured-boot LUKS enrollment
         #[arg(long)]
         measured_boot: bool,
+        /// Existing committed arm for advisory post-provision drift evaluation
+        #[arg(long)]
+        committed_source: Option<String>,
     },
     /// Verify that stage 2 sees the exact host input accepted in initrd
     VerifyBinding,
+    /// Persist validated provisioning evidence and manual repart definitions
+    PersistProvisioning {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+        /// ABI of the base module library that evaluated the storage plan
+        #[arg(long)]
+        module_abi: u32,
+        /// Version of the image whose initrd evaluated the storage plan
+        #[arg(long)]
+        image_version: String,
+    },
+    /// Cache an authorized host input after full stage-2 evaluation succeeds
+    CacheRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+    },
+    /// Restore the last fully evaluated host input when metadata is unavailable
+    RestoreRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

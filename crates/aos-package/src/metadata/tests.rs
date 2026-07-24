@@ -786,7 +786,7 @@ fn storage_projection_is_strict_and_renders_pending_marker() {
         PartitionSpec {
             device: None,
             label: "var".into(),
-            partition_type: "var".into(),
+            partition_type: "linux-generic".into(),
             size_min: "4G".into(),
             size_max: None,
             weight: 1000,
@@ -803,7 +803,7 @@ fn storage_projection_is_strict_and_renders_pending_marker() {
     };
     validate_provisioning_plan(&plan, true).unwrap();
     let output = tempdir().unwrap();
-    let paths = render_provisioning_plan(output.path(), &plan, true).unwrap();
+    let paths = render_provisioning_plan(output.path(), &plan, true, PENDING_LABEL).unwrap();
     assert!(paths.iter().any(|path| {
         std::fs::read_to_string(path)
             .map(|contents| contents.contains(PENDING_LABEL))
@@ -824,6 +824,228 @@ fn storage_projection_rejects_unsafe_device_and_protected_type() {
         let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
         assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
     }
+}
+
+#[test]
+fn provisioning_state_persists_audit_definitions_and_runtime_input() {
+    use std::collections::BTreeMap;
+
+    use super::provisioning::{
+        PROVISIONING_RESULT_FILE, ProvisioningResult, ProvisioningSource, ProvisioningTrust,
+    };
+    use super::repart::{
+        OPERATOR_LABEL, PartitionSpec, ProvisioningPlan, StoragePlan, render_provisioning_plan,
+    };
+    use super::state::{
+        AUDIT_FILE, PersistProvisioningOptions, ProvisioningAudit, cache_runtime_input,
+        persist_provisioning_state, restore_runtime_input,
+    };
+
+    let stash = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let host = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"4G\"; }\n";
+    std::fs::write(stash.path().join("host.nix"), host).unwrap();
+    std::fs::write(
+        stash.path().join(PROVISIONING_RESULT_FILE),
+        serde_json::to_vec_pretty(&ProvisioningResult {
+            trust_mode: ProvisioningTrust::Platform,
+            platform_id: "aos-metadata".into(),
+            host_nix_sha256: super::stash::sha256_hex(host),
+            signer: None,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let facts = Facts {
+        instance_id: Some("instance-7".into()),
+        ..Default::default()
+    };
+    let facts_bytes = serde_json::to_vec_pretty(&facts).unwrap();
+    std::fs::write(stash.path().join("facts.json"), &facts_bytes).unwrap();
+    std::fs::write(
+        stash.path().join(".metadata-result.json"),
+        serde_json::to_vec_pretty(&MetadataResult {
+            platform_id: "aos-metadata".into(),
+            fetched_user_data: true,
+            user_data_source: "config-drive".into(),
+            user_data_sha256: Some(super::stash::sha256_hex(host)),
+            sig_present: false,
+            facts_hash: super::stash::sha256_hex(&facts_bytes),
+            network_seed_written: false,
+            timestamp: "2026-07-24T00:00:00Z".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(stash.path().join("provisioning-source"), "operator\n").unwrap();
+
+    let mut partitions = BTreeMap::new();
+    partitions.insert(
+        "var".into(),
+        PartitionSpec {
+            device: None,
+            label: "var".into(),
+            partition_type: "linux-generic".into(),
+            size_min: "4G".into(),
+            size_max: None,
+            weight: 1000,
+            format: None,
+            uuid: None,
+            grow: true,
+            grow_fs: true,
+            priority: 9000,
+        },
+    );
+    let plan = ProvisioningPlan {
+        schema: "aos.provisioning-plan/v1".into(),
+        storage: StoragePlan { partitions },
+    };
+    render_provisioning_plan(stash.path(), &plan, true, OPERATOR_LABEL).unwrap();
+
+    assert!(
+        persist_provisioning_state(&PersistProvisioningOptions {
+            stash_dir: stash.path().to_path_buf(),
+            state_dir: state.path().to_path_buf(),
+            module_abi: 7,
+            image_version: "test-image".into(),
+        })
+        .unwrap()
+    );
+    let audit: ProvisioningAudit =
+        serde_json::from_slice(&std::fs::read(state.path().join(AUDIT_FILE)).unwrap()).unwrap();
+    assert_eq!(audit.source, ProvisioningSource::Operator);
+    assert_eq!(audit.module_abi, 7);
+    assert_eq!(audit.instance_id.as_deref(), Some("instance-7"));
+    assert!(
+        state
+            .path()
+            .join("desired/repart.d/0000/0000-aos-provisioning-marker.conf")
+            .is_file()
+    );
+
+    assert!(cache_runtime_input(stash.path(), state.path()).unwrap());
+    std::fs::remove_file(stash.path().join("host.nix")).unwrap();
+    std::fs::remove_file(stash.path().join(PROVISIONING_RESULT_FILE)).unwrap();
+    std::fs::remove_file(state.path().join("current/facts.json")).unwrap();
+    std::fs::remove_file(state.path().join("current/.metadata-result.json")).unwrap();
+    std::fs::write(stash.path().join("facts.json"), b"{\"stale\":true}").unwrap();
+    assert!(restore_runtime_input(stash.path(), state.path()).unwrap());
+    assert_eq!(std::fs::read(stash.path().join("host.nix")).unwrap(), host);
+    assert!(!stash.path().join("facts.json").exists());
+}
+
+#[test]
+fn provisioning_marker_is_first_and_protected_from_space_pressure() {
+    use std::collections::BTreeMap;
+
+    use super::repart::{
+        PENDING_LABEL, PartitionSpec, ProvisioningPlan, StoragePlan, render_provisioning_plan,
+    };
+
+    let mut partitions = BTreeMap::new();
+    partitions.insert(
+        "var".into(),
+        PartitionSpec {
+            device: None,
+            label: "var".into(),
+            partition_type: "linux-generic".into(),
+            size_min: "4G".into(),
+            size_max: None,
+            weight: 1000,
+            format: None,
+            uuid: None,
+            grow: true,
+            grow_fs: true,
+            priority: 1,
+        },
+    );
+    let output = tempdir().unwrap();
+    render_provisioning_plan(
+        output.path(),
+        &ProvisioningPlan {
+            schema: "aos.provisioning-plan/v1".into(),
+            storage: StoragePlan { partitions },
+        },
+        true,
+        PENDING_LABEL,
+    )
+    .unwrap();
+    let marker = std::fs::read_to_string(
+        output
+            .path()
+            .join("repart.d/0000/0000-aos-provisioning-marker.conf"),
+    )
+    .unwrap();
+    assert!(marker.contains("Priority=1000000"));
+    assert!(output.path().join("repart.d/0000/0010-var.conf").is_file());
+}
+
+#[test]
+fn provisioning_renderer_groups_devices_and_places_growth_last() {
+    use std::collections::BTreeMap;
+
+    use super::repart::{
+        PENDING_LABEL, PartitionSpec, ProvisioningPlan, StoragePlan, render_provisioning_plan,
+    };
+
+    let partition =
+        |device: Option<&str>, label: &str, size_max: Option<&str>, grow: bool, priority: i64| {
+            PartitionSpec {
+                device: device.map(str::to_owned),
+                label: label.into(),
+                partition_type: "linux-generic".into(),
+                size_min: "1G".into(),
+                size_max: size_max.map(str::to_owned),
+                weight: 1000,
+                format: Some("ext4".into()),
+                uuid: None,
+                grow,
+                grow_fs: true,
+                priority,
+            }
+        };
+    let mut partitions = BTreeMap::new();
+    partitions.insert("var".into(), partition(None, "var", None, true, 1));
+    partitions.insert(
+        "logs".into(),
+        partition(None, "logs", Some("1G"), false, 9000),
+    );
+    partitions.insert(
+        "data".into(),
+        partition(
+            Some("/dev/disk/by-id/test-data"),
+            "data",
+            Some("1G"),
+            false,
+            1000,
+        ),
+    );
+    let output = tempdir().unwrap();
+    render_provisioning_plan(
+        output.path(),
+        &ProvisioningPlan {
+            schema: "aos.provisioning-plan/v1".into(),
+            storage: StoragePlan { partitions },
+        },
+        false,
+        PENDING_LABEL,
+    )
+    .unwrap();
+
+    let targets = std::fs::read_to_string(output.path().join("repart-targets")).unwrap();
+    assert!(targets.starts_with("root\t0000\n"));
+    assert!(targets.contains("/dev/disk/by-id/test-data\t"));
+    assert!(targets.contains("root\t"));
+    let root_dir = targets
+        .lines()
+        .find_map(|line| line.strip_prefix("root\t"))
+        .unwrap();
+    let root_files: Vec<_> = std::fs::read_dir(output.path().join("repart.d").join(root_dir))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(root_files.iter().any(|name| name == "0010-logs.conf"));
+    assert!(root_files.iter().any(|name| name == "0011-var.conf"));
 }
 
 // Keep StaticNetwork import used even if a future refactor drops a test.

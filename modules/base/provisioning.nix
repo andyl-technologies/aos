@@ -28,7 +28,7 @@
       type = lib.mkOption {
         type = lib.types.str;
         default = "linux-generic";
-        description = "Partition type: linux-generic, var, swap, or an allowed raw GPT GUID.";
+        description = "Partition type: linux-generic, swap, or an allowed raw GPT GUID.";
       };
 
       sizeMin = lib.mkOption {
@@ -84,13 +84,23 @@
     };
   });
 in {
-  options.aos.provisioning.storage.partitions = lib.mkOption {
-    type = lib.types.attrsOf partitionType;
-    default = {};
-    description = ''
-      Partitions committed exactly once during initial host provisioning.
-      Subsequent changes are reported as drift and require factory reset.
-    '';
+  options.aos.provisioning = {
+    stateDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/aos-provisioning";
+      internal = true;
+      readOnly = true;
+      description = "Durable provisioning evidence and manual definition state.";
+    };
+
+    storage.partitions = lib.mkOption {
+      type = lib.types.attrsOf partitionType;
+      default = {};
+      description = ''
+        Partitions committed exactly once during initial host provisioning.
+        Subsequent changes are reported as drift and require factory reset.
+      '';
+    };
   };
 
   config.aos.provisioning.storage.partitions = {
@@ -104,10 +114,9 @@ in {
     };
 
     var = {
-      # A distinct Discoverable Partitions Specification type prevents
-      # systemd-repart from matching this definition to the immutable
-      # generic-type root partition.
-      type = lib.mkDefault "var";
+      # root-a uses its architecture-specific DPS type, leaving the generic
+      # Linux data type exclusively for operator partitions.
+      type = lib.mkDefault "linux-generic";
       label = lib.mkDefault "var";
       sizeMin = lib.mkDefault "4G";
       grow = lib.mkDefault true;

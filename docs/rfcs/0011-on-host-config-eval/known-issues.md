@@ -86,7 +86,7 @@ rule either too strict or vacuous.
 | M-gen0key | Gen-0 SSH key seeded from unauthenticated IMDS before policy acceptance | **Removed** the carve-out. No `authorized_keys` is seeded from the facts channel before the selected provisioning trust policy accepts input; pre-eval reachability comes only from image-baked or accepted provisioning input. | provisioning.md |
 | M-repart-order / locus | Full host.nix eval cannot precede first-boot repart | Evaluate only the closed `aos.provisioning` projection from authenticated `host.nix` in initrd. Independently validate its pure JSON result, then render repart definitions. The full registry/package fixpoint remains stage 2. | provisioning.md |
 | M-dual-config-language | A JSON storage bundle duplicates `host.nix` and creates two sources of truth | Removed the bundle schema. Cloud user-data is literal `host.nix`; a minimal URL/hash/signature pointer is transport metadata only. All storage intent lives at `aos.provisioning.storage`. | provisioning.md |
-| M-provisioning-replay | Convergent repart on every boot lets later metadata changes mutate a committed host | Add a pending/committed GPT provenance protocol. Pending fails closed for recovery; committed boots skip metadata and all provisioning disk access. | provisioning.md |
+| M-provisioning-replay | Convergent repart on every boot lets later metadata changes mutate a committed host | Add a pending/committed GPT provenance protocol. Pending fails closed for recovery; committed boots still acquire/evaluate runtime configuration and dry-run the storage projection, but can never reopen disk mutation. | provisioning.md |
 | M-image-policy | Server/debug/workload policy was selected by the golden image despite host.nix being primary | Define an explicit image/host boundary; split mixed profiles and move roles, desired packages, identity, services, runtime security, and observability into host.nix. | image-host-boundary.md |
 | M-static-ip | DHCP-less metadata-network clouds deadlock | The initrd `aos metadata` agent parses platform network config and seeds **static `networkd`** into the gen-0 `/var/etc` lower, so stage-2 has a route without DHCP. | provisioning.md |
 | M-partial-commit | Degraded partial /etc ≠ hash(manifest) | The degraded generation is content-addressed over the **re-projected** manifest (full manifest minus un-fetched packages), re-hashed; the gen records the dropped set. Reproducible from (inputs + recorded drop-set). | orchestration.md, generations.md |
@@ -101,8 +101,8 @@ rule either too strict or vacuous.
   (Ignition removed). Reworded.
 - Evaluator identity: gen-0 ships **stock C++ Nix** (`pkgs/tools/nix.nix`) for P1,
   invoked by `aos`; "evaluator = pkgs.aos" clarified.
-- First-boot re-eval: a **new image's** first boot re-evals; a **plain reboot on
-  the same image** does not. Both stated explicitly.
+- Runtime re-eval: every boot reacquires/authorizes `host.nix` and performs
+  full evaluation; only storage mutation is first-boot-only.
 - `activate.sh.in` is **not** "reused unchanged": its `prepare` stage hard-codes
   the Ignition binary and must be retargeted to the `aos metadata` agent. Noted.
 - `-Dfirstboot=false` is build-**disabled** (not just stripped); prefer

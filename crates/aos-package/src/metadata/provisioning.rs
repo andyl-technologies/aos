@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
-use super::repart::{ProvisioningPlan, render_provisioning_plan};
+use super::repart::{
+    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, render_provisioning_plan,
+};
 use super::stash::{Stash, sha256_hex};
 
 /// Raw user-data filename written by the fetch phase.
@@ -92,6 +94,48 @@ pub struct EvalProvisioningOptions {
     pub eval_root: PathBuf,
     /// Whether measured boot requires `/var` to remain raw.
     pub measured_boot: bool,
+    /// Existing committed source when evaluating advisory post-commit drift.
+    pub committed_source: Option<ProvisioningSource>,
+}
+
+/// Provenance arm recorded in the durable GPT marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisioningSource {
+    /// Storage intent came from authenticated `host.nix`.
+    Operator,
+    /// No host input existed, so the image schema defaults were used.
+    Fallback,
+}
+
+impl ProvisioningSource {
+    /// Returns the stable source name used by files and CLI arguments.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::Fallback => "fallback",
+        }
+    }
+
+    /// Returns the durable GPT label for this source.
+    pub fn committed_label(self) -> &'static str {
+        match self {
+            Self::Operator => OPERATOR_LABEL,
+            Self::Fallback => FALLBACK_LABEL,
+        }
+    }
+}
+
+impl FromStr for ProvisioningSource {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "operator" => Ok(Self::Operator),
+            "fallback" => Ok(Self::Fallback),
+            _ => bail!("unknown provisioning source '{value}'"),
+        }
+    }
 }
 
 /// Authorizes fetched user-data as literal `host.nix`.
@@ -196,10 +240,9 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
     );
     std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
 
-    let mut command = Command::new("nix");
+    let mut command = Command::new("nix-instantiate");
     command
-        .arg("eval")
-        .arg("--json")
+        .args(["--store", "dummy://", "--eval", "--strict", "--json"])
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .arg("-I")
@@ -210,7 +253,6 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
         command.arg("-I").arg(&host_path);
     }
     let output = command
-        .arg("-f")
         .arg(&entry)
         .output()
         .context("spawning restricted provisioning evaluation")?;
@@ -222,14 +264,27 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
     }
     let plan: ProvisioningPlan =
         serde_json::from_slice(&output.stdout).context("parsing evaluated provisioning plan")?;
-    render_provisioning_plan(&opts.stash_dir, &plan, opts.measured_boot)?;
+    let source = if host_path.is_file() {
+        ProvisioningSource::Operator
+    } else {
+        ProvisioningSource::Fallback
+    };
+    if let Some(committed) = opts.committed_source
+        && committed != source
+    {
+        bail!(
+            "current storage source '{}' differs from committed source '{}'",
+            source.as_str(),
+            committed.as_str()
+        );
+    }
+    let marker_label = opts
+        .committed_source
+        .map_or(PENDING_LABEL, ProvisioningSource::committed_label);
+    render_provisioning_plan(&opts.stash_dir, &plan, opts.measured_boot, marker_label)?;
     std::fs::write(
         opts.stash_dir.join("provisioning-source"),
-        if host_path.is_file() {
-            "operator\n"
-        } else {
-            "fallback\n"
-        },
+        format!("{}\n", source.as_str()),
     )
     .context("writing provisioning source")?;
     Ok(plan)

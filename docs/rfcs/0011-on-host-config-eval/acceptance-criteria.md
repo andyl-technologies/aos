@@ -101,11 +101,11 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim with a
 - [ ] `module_abi`: bake the monotonic integer into `os-release`/toplevel; config modules declare `module_abi_compat`; resolver fail-closed refuses incompatible modules pre-eval (mirror `trust_ctx.enforce_totality()`).
   - **Done when** `checks.eval` (`lib/testing/rfc-0011-module-abi.nix`) asserts: the running image's `module_abi = K` is readable from `os-release`/toplevel (next to `aos.system.version`, `system.nix:124-141`) without network; a config module with `module_abi_compat = { min; max }` **excluding K** is **refused before any manifest is produced** (fail-closed, same shape as `trust_ctx.enforce_totality()`, `sysroot.rs:192-204`); and the produced config-gen records `module_abi_pinned = K`. A fleet assertion confirms the incompatible module leaves the **old config-gen live**.
 
-- [ ] `aos-eval.service` (stage-2, `After=network-online.target`, `Before=aos-install-packages.service`, `Type=oneshot`, best-effort) running sandboxed stock Nix (`--pure-eval --restrict-eval --allow-import-from-derivation=false`) → manifest.
+- [ ] `aos-eval.service` (stage-2, `After=network-online.target`, `Before=aos-install-packages.service`, `Type=oneshot`, best-effort) running sandboxed stock Nix (`nix-instantiate --store dummy:// --eval --strict --json`, `restrict-eval`, `allow-import-from-derivation=false`) → manifest.
   - **Done when** `tests/fleet/rfc-0011-on-host-eval.nix` asserts: the agent receives literal-Nix user-data, `aos-eval.service` runs at stage-2 with the correct ordering (`systemctl show` confirms `After=network-online.target`, `Before=aos-install-packages.service`, `Type=oneshot`), emits a manifest of the expected `etc`/`units`/`jobScripts`/`inputs` shape, and **eval-twice is byte-identical** (determinism gate). The off-host preflight `checks.config-eval` independently asserts succeeds + schema-valid + eval-twice-deterministic with the same sandbox flags.
 
-- [ ] Hardened transient eval scope: `MemoryMax=2G`/`MemoryHigh=1536M`/`RuntimeMaxSec=120`/`TasksMax`, `ProtectSystem=strict`, read-only input binds, `SystemCallFilter`; fail-closed on kill.
-  - **Done when** `tests/fleet/rfc-0011-eval-sandbox.nix` asserts: `systemctl show aos-eval.service` reports the exact directives (`MemoryMax=2G`, `MemoryHigh=1536M`, `RuntimeMaxSec=120`, `TasksMax=`, `ProtectSystem=strict`); an eval forced to allocate past `MemoryMax` (or exceed `RuntimeMaxSec`) is **killed and the unit fails-closed** (no partial manifest committed, old config-gen stays live, `systemctl --failed` shows the eval unit and `is-system-running` does not transition to a switched state); and a write attempt to a read-only input bind from inside eval is denied.
+- [ ] Hardened transient eval scope: `MemoryMax=2G`/`MemoryHigh=1536M`/`TimeoutStartSec=120s`/`TasksMax`, `ProtectSystem=strict`, read-only input binds, `SystemCallFilter`; fail-closed on kill.
+  - **Done when** `tests/fleet/rfc-0011-eval-sandbox.nix` asserts: `systemctl show aos-eval.service` reports the exact directives (`MemoryMax=2G`, `MemoryHigh=1536M`, `TimeoutStartUSec=2min`, `TasksMax=`, `ProtectSystem=strict`); an eval forced to allocate past `MemoryMax` (or exceed `TimeoutStartSec`) is **killed and the unit fails-closed** (no partial manifest committed, old config-gen stays live, `systemctl --failed` shows the eval unit and `is-system-running` does not transition to a switched state); and a write attempt to a read-only input bind from inside eval is denied.
 
 ---
 
@@ -153,9 +153,15 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim with a
     `host.nix` evaluates the same default Nix module; present invalid input
     reaches emergency before GPT mutation and does not fall back; a pending
     marker fails closed for explicit partial-commit recovery; only a committed
-    operator/fallback marker freezes mutation; reboot with missing metadata
-    skips provisioning and preserves the disk; and the mutating repart exit
-    status propagates.
+    operator/fallback marker freezes mutation; reboot reacquires and fully
+    evaluates runtime `host.nix`, dry-runs storage for
+    coherent/divergent/unavailable reporting, and preserves partition sizes;
+    missing metadata restores only a hash-checked input that previously
+    produced a manifest; root-first multi-device output makes partial commits
+    observable; durable audit evidence and reusable definitions land under
+    `/var/lib/aos-provisioning`; measured `/var` remains raw; baked/out-of-band
+    disks carry a committed marker; and the mutating repart exit status
+    propagates.
 
 - [ ] **Degraded commit = re-projected manifest** (full minus un-fetched), re-hashed, drop-set recorded — keeps the generation content-addressed.
   - **Done when** `tests/fleet/rfc-0011-degraded-boot.nix` (from `apm-system-activation-fail`) asserts: a single failing package fetch yields `is-system-running = degraded` with `multi-user.target` reached and the box SSH-reachable; healthy packages are live; and the **committed config-gen is the re-projected (full-minus-unfetched) manifest** — re-hashed to a new `manifest_hash`, with the drop-set recorded — so the degraded generation is still content-addressed (not the full manifest, not an uncommitted state).

@@ -214,8 +214,9 @@ ordering cycle.
 
 ## Reconfiguration (steady state)
 
-Reboot alone does not re-eval (Ignition/`aos-metadata` idempotency marker). An
-explicit `apm switch`/`upgrade` re-drives the same graph:
+Every boot reacquires/authorizes `host.nix` and re-drives evaluation. A
+committed GPT marker suppresses storage mutation, not runtime reconciliation.
+An explicit `apm switch`/`upgrade` re-drives the same graph between boots:
 
 1. `aos-eval` re-runs → new `manifest.json` + `graph.json`.
 2. `aos-graph-compile` **diffs old vs new manifest** (reusing the
