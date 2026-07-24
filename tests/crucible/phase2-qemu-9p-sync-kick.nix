@@ -9,7 +9,7 @@
   prefixPatchFiles =
     builtins.genList
     (index: builtins.elemAt series.patchFiles index)
-    (builtins.length series.patchFiles - 1);
+    39;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
 
   hasInfix = needle: haystack: let
@@ -37,8 +37,11 @@
     ++ lib.optionals (!(hasInfix "Block I/O keeps the" patchSource)) [
       "${patchName}: block-I/O asynchronous-kick rationale is absent"
     ]
-    ++ lib.optionals (builtins.elemAt series.patchFiles (builtins.length series.patchFiles - 1) != patchName) [
-      "${patchName}: 9p synchronous-kick patch is not the patch-series head"
+    ++ lib.optionals (
+      builtins.length series.patchFiles <= 39
+      || builtins.elemAt series.patchFiles 39 != patchName
+    ) [
+      "${patchName}: 9p synchronous-kick patch is not patch-series entry 40"
     ];
 in
   if failures != []

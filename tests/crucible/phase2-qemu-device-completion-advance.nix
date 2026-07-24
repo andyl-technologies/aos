@@ -39,8 +39,8 @@
     ++ lib.optionals (!(hasInfix "QEMU_PLUGIN_WAKE_EVENT_DRAINED" patchSource)) [
       "${patchName}: completed advance does not resume wake-fd-backed device waiters"
     ]
-    ++ lib.optionals (builtins.elemAt patchSeries.patchFiles (builtins.length patchSeries.patchFiles - 1) != patchName) [
-      "${patchName}: device-completion patch is not the patch-series head"
+    ++ lib.optionals (!(builtins.elem patchName patchSeries.patchFiles)) [
+      "${patchName}: device-completion patch is not carried by the patch series"
     ];
 in
   if failures != []

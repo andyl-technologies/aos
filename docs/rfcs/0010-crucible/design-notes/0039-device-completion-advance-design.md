@@ -1,4 +1,4 @@
-# 0039 (working name) crucible-blk-device-completion-advance — DESIGN
+# 0039 crucible-blk-device-completion-advance
 
 Status: IMPLEMENTED IN PATCH 0039; certifying live validation pending.
 Author: m4-cp2.
@@ -166,26 +166,36 @@ it end to end.
 
 ## 4. Inertness argument (satisfies [PATCH-1..], [INV-7])
 
-- The blk_wait callback is a pure additive plugin-API export; NULL by default;
-  only the crucible-shmem driver calls `maybe_fire`. The driver only exists in
-  sim mode (block/crucible-shmem.c, 0015). Out of sim mode: no registration, no
-  fire, classic `qemu_coroutine_yield()` — behaviorally identical to 0015 today.
-- The virtual-clock timer (B1) is armed only inside the crucible-shmem driver,
-  so it too is sim-mode-only and inert elsewhere.
+- The block-wait callback is a pure additive plugin-API export and is NULL by
+  default. Only the explicitly selected `crucible-shmem` driver consults it.
+  Without registration, that driver retains its wake-fd-backed event wait; every
+  other block driver and launch profile is unchanged.
+- The selected B2 mechanism reuses the existing plugin advance-completion
+  barrier and wake notifier. It adds no timer or polling path outside an active
+  registered Crucible block wait.
 - Classification: **determinism-critical** (it changes when/how a guest advances
   past device I/O — a Layer-0 timing behavior). Needs the strongest inertness
   argument + gate:qemu-inert + gate:layer0-determinism, plus a per-patch
   micro-test.
 
-## 5. Micro-test / inertness sketch (for m2's framework)
+## 5. Verification
+
+The standalone `checks.crucible.phase2.qemuDeviceCompletionAdvance` realization
+passes on the Linux builder against the complete 40-patch QEMU package. It:
+
+- compiles a stock-QEMU negative control for the block-wait API;
+- applies the authoritative series with zero patch fuzz;
+- compiles the patched callback declaration;
+- verifies the pending-poll wait hook and post-commit waiter resume in the
+  reconstructed source.
 
 - **Behavioral micro-test:** in sim mode with the plugin registered, a guest
   read of sector 0 must complete: assert the poll coroutine resumes, the block
   request delivers at exactly `delivery_icount`, and the guest progresses past
   the probe (guest_progressed_past_block_io=true, frames_delivered>=1),
-  run-twice byte-identical including post-I/O advance. This is the node-based
-  block harness (ruling 3) — retarget the existing block_io_gate observation
-  machinery onto a QemuNode.
+  run-twice byte-identical including post-I/O advance. The certifying live
+  block-I/O gate drives the mapped production hot path while servicing the
+  reserved block ring.
 - **R3 stress leg:** a deliberately-slowed servicer (wall delay before writing
   the response frame) must yield the byte-identical guest-visible poll sequence
   and fingerprint as the fast servicer — proves the host-side re-poll block
@@ -203,7 +213,5 @@ it end to end.
 
 ## 6. Sequencing / dependencies
 
-- Patch 0039 and its Rust callback trampoline are now present in the deterministic
-  patch stack. The remaining step is the certifying live node-harness run.
-- m2's 0017 write-sentinel is blocked on this (a write+flush also stalls at the
-  first I/O until Part A+B land).
+- Patch 0039 and its Rust callback trampoline are present in the deterministic
+  patch stack. The remaining step is the certifying live block-I/O run.
