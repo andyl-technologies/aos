@@ -51,6 +51,10 @@ use crate::error::DeviceError;
 use crate::inflight::{InflightQueue, PendingResponse};
 use crate::request::{LatencyModel, Request, Response};
 
+mod frame;
+
+use frame::{frame_from_pending_response, request_from_frame};
+
 /// A concrete I/O sub-node: the COMPUTE half of the uniform lifecycle.
 ///
 /// Implementors supply the device semantics — how a request maps to a response
@@ -601,23 +605,4 @@ impl IoCore {
             self.inflight.insert(pending);
         }
     }
-}
-
-/// Converts an inbound shmem frame into the uniform request shape.
-fn request_from_frame(frame: &FrameEntry) -> Result<Request, DeviceError> {
-    Ok(Request::new(
-        frame.delivery_icount,
-        frame.seq,
-        frame.payload()?.to_vec(),
-    ))
-}
-
-/// Converts a pending response into an outbound shmem frame.
-fn frame_from_pending_response(pending: &PendingResponse) -> Result<FrameEntry, DeviceError> {
-    Ok(FrameEntry::new(
-        pending.delivery_icount(),
-        pending.key.src_node,
-        pending.key.seq,
-        &pending.response.payload,
-    )?)
 }

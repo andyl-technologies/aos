@@ -13,18 +13,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crucible::{
-    Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
-    SchedulerSendAuthorizer,
-};
+use crucible::{Icount, NodeId};
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 use thiserror::Error;
 
+use self::support::{GateSendAuthorizer, HostLoad};
 use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServicer,
     QemuLiveBlockIoServicerError,
@@ -37,6 +33,8 @@ use crate::{
     QemuShmemHotPathChannel, QemuVmLaunchConfig, complete_qemu_host_plugin_setup,
     spawn_qemu_child_with_fds_in_directory,
 };
+
+mod support;
 
 /// Content-addressing domain for block-I/O launch artifacts.
 const GATE_DOMAIN: &str = "crucible.loaded-qemu-live-block-io.v1";
@@ -554,63 +552,6 @@ fn path_text(path: &Path) -> String {
 fn node_id(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
-}
-
-/// Send authorizer for the single-node block-I/O run.
-struct GateSendAuthorizer;
-
-impl SchedulerSendAuthorizer for GateSendAuthorizer {
-    fn authorize_cross_node_send(
-        &self,
-        producer: &SchedulerNodeId,
-        consumer: &SchedulerNodeId,
-    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
-        Ok(SchedulerSendAuthorization {
-            producer: producer.clone(),
-            consumer: consumer.clone(),
-            topology_epoch: 0,
-        })
     }
 }
 
