@@ -146,6 +146,11 @@ pub struct IoCoreSnapshot {
 pub struct ShmemInboxProcess {
     /// Number of request frames consumed and COMPUTEd.
     pub processed: usize,
+    /// First payload byte from each consumed request, or `None` for an empty payload.
+    ///
+    /// Device-specific servicers use this wire tag for live operation coverage
+    /// diagnostics without decoding or peeking at the SPSC ring separately.
+    pub request_kinds: Vec<Option<u8>>,
     /// Icount carried by the first request frame consumed in this pass.
     pub first_request_icount: Option<u64>,
     /// Wake actions issued to the request producer as ring slots were freed.
@@ -298,6 +303,7 @@ impl IoCore {
         D: IoSubNode,
     {
         let mut processed = 0;
+        let mut request_kinds = Vec::new();
         let mut first_request_icount = None;
         let mut producer_wakes = Vec::new();
         while let Some(frame) = inbox.dequeue(inbox_entries)? {
@@ -305,11 +311,13 @@ impl IoCore {
             let wake = producer_slot.wake_for_device_io_release()?;
             producer_wakes.push(wake);
             let request = request_from_frame(&frame)?;
+            request_kinds.push(request.payload.first().copied());
             self.compute_request(device, request)?;
             processed += 1;
         }
         Ok(ShmemInboxProcess {
             processed,
+            request_kinds,
             first_request_icount,
             producer_wakes,
         })

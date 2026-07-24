@@ -169,6 +169,11 @@ impl QemuLiveBlockIoServicer {
         let inbox = device
             .process_shmem_inbox(request_header, request_entries, node_slot)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let write_frames_processed = inbox
+            .request_kinds
+            .iter()
+            .filter(|kind| **kind == Some(1))
+            .count();
         *frames_processed += inbox.processed;
 
         let delivery = device
@@ -185,6 +190,7 @@ impl QemuLiveBlockIoServicer {
 
         Ok(QemuLiveBlockIoServiceStep {
             processed: inbox.processed,
+            write_frames_processed,
             delivered: delivery.delivered,
             next_completion_icount,
         })
@@ -236,6 +242,8 @@ impl QemuLiveBlockIoServicer {
 pub struct QemuLiveBlockIoServiceStep {
     /// Request frames drained and COMPUTEd this call.
     pub processed: usize,
+    /// Write request frames drained and COMPUTEd this call.
+    pub write_frames_processed: usize,
     /// Response frames published to the response ring this call.
     pub delivered: usize,
     /// The device's next completion icount after this call, when one is pending.
@@ -254,6 +262,7 @@ pub struct QemuLiveBlockIoServiceStep {
 #[derive(Debug, Default)]
 pub struct BlockIoDiagnostics {
     frames_processed: AtomicUsize,
+    write_frames_processed: AtomicUsize,
     frames_delivered: AtomicUsize,
     service_calls: AtomicUsize,
     first_request_seen: AtomicBool,
@@ -296,6 +305,10 @@ impl BlockIoDiagnostics {
                 );
             }
         }
+        if serviced.write_frames_processed > 0 {
+            self.write_frames_processed
+                .fetch_add(serviced.write_frames_processed, Ordering::Relaxed);
+        }
         if serviced.delivered > 0 {
             self.frames_delivered
                 .fetch_add(serviced.delivered, Ordering::Relaxed);
@@ -316,6 +329,7 @@ impl BlockIoDiagnostics {
         let saw_request = self.first_request_seen.load(Ordering::Relaxed);
         BlockIoDiagnosticsSnapshot {
             frames_processed: self.frames_processed.load(Ordering::Relaxed),
+            write_frames_processed: self.write_frames_processed.load(Ordering::Relaxed),
             frames_delivered: self.frames_delivered.load(Ordering::Relaxed),
             service_calls: self.service_calls.load(Ordering::Relaxed),
             first_request_icount: saw_request
@@ -337,6 +351,8 @@ impl BlockIoDiagnostics {
 pub struct BlockIoDiagnosticsSnapshot {
     /// Total request frames drained and COMPUTEd across the run.
     pub frames_processed: usize,
+    /// Total write request frames drained and COMPUTEd across the run.
+    pub write_frames_processed: usize,
     /// Total response frames published to the response ring across the run.
     pub frames_delivered: usize,
     /// Number of poll-loop servicing calls made across the run.
@@ -356,16 +372,14 @@ pub struct BlockIoDiagnosticsSnapshot {
 }
 
 impl BlockIoDiagnosticsSnapshot {
-    /// Compares guest-visible deterministic evidence, excluding host poll count.
+    /// Compares deterministic block traffic, excluding host poll sample points.
     pub(crate) fn deterministic_observation_eq(&self, other: &Self) -> bool {
         self.frames_processed == other.frames_processed
+            && self.write_frames_processed == other.write_frames_processed
             && self.frames_delivered == other.frames_delivered
             && self.first_request_icount == other.first_request_icount
             && self.first_completion_horizon == other.first_completion_horizon
-            && self.last_current_icount == other.last_current_icount
-            && self.max_current_icount == other.max_current_icount
             && self.last_device_io_active == other.last_device_io_active
-            && self.last_idle_wake_icount == other.last_idle_wake_icount
     }
 }
 
@@ -417,6 +431,7 @@ mod tests {
     fn deterministic_diagnostics_ignore_host_poll_cadence() {
         let first = BlockIoDiagnosticsSnapshot {
             frames_processed: 1,
+            write_frames_processed: 1,
             frames_delivered: 1,
             service_calls: 17,
             first_request_icount: Some(0),
