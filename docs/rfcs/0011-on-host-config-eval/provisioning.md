@@ -111,12 +111,12 @@ A config module **never imperatively performs** an operation; it declares
 **desired state**, and the materializer renders it to a systemd unit whose guard
 encodes the lifecycle:
 
-- **One-shot/destructive** (a privileged substrate-owning module):
-  `storage.disks."nvme0n1".partitions = [ … ]` / `storage.luks."data" = { … }`
-  → renders a `repart.d` drop-in (idempotent) **plus** any destructive step as
-  `Type=oneshot` + `RemainAfterExit` + a state-probe/`ConditionFirstBoot` guard,
-  **outside** the per-activation reconcile set. Re-running activation never
-  re-formats.
+- **One-shot/destructive** (a privileged substrate-owning module) renders a
+  guarded unit outside the per-activation reconcile set. This applies to
+  post-boot resources such as an additional data volume. The boot disk's
+  first-boot partitions are instead expressed only by the typed provisioning
+  plan below because they must exist before stage-2 evaluation. Re-running
+  activation never re-formats.
 - **Idempotent** (a normal config option): `nginx.virtualHosts."x".root = …`
   → renders into `manifest.etc["nginx/nginx.conf"]` + `manifest.units["nginx.service"]
   = { action = "reload"; }`, **inside** the reconcile loop, diffed and applied on
@@ -150,63 +150,118 @@ every boot idempotently (no-op once at target size). The image still ships only
 ESP + root-a (`modules/image/_builder.nix:260-262`); repart carves the rest on
 first boot with no operator config and no user-data.
 
-**First-boot substrate is image-only; host.nix cannot drive it (review
-M-repart-order / M-repart-locus).** `systemd-repart` runs in the **initrd**
-(everything downstream — mount-var → nix-overlay → seed → switch_root — needs
-`/var` carved first), but `host.nix` is fetched transport-only in initrd and only
-**evaluated in stage-2**, *after* substrate. So operator `repart.d` fragments
-derived from `host.nix` can neither be verified nor even be present in time for
-the first-boot repart run. Two consequences, both required:
+**First-boot storage is driven by a narrow provisioning plan, not by evaluating
+`host.nix` in initrd.** `systemd-repart` must run before `/var` is mounted, while
+full Nix evaluation intentionally remains in stage-2. The metadata agent bridges
+those constraints by accepting an optional typed `storage` object in the
+provisioning bundle, validating it in initrd, and rendering transient
+`repart.d` under `/run/aos-metadata/repart.d/`.
 
-- **First boot carves only the image-baked `/usr/lib/repart.d` convention**
-  (idempotent, no operator input, no unverified destructive partitioning).
-- **Custom topologies are a two-boot flow:** the stage-2 eval persists
-  operator-declared `repart.d` fragments to a known location on `/var`; on the
-  *next* boot the initrd repart run reads them (now operator-signed-and-verified,
-  since they came from a verified `host.nix`). Genuinely exotic layouts (ZFS) use
-  a dedicated guarded-one-shot unit. **A custom partition layout never takes
-  effect on first boot, and destructive substrate never runs from unverified
-  input.**
+The plan may add only allowlisted swap and `/var` partitions in free space on
+the parent disk of the booted root partition. It cannot select another device,
+modify or delete an existing partition, or target ESP, root, verity, or verity
+hash partition types. Labels are unique, sizes are bounded integer byte counts,
+formats are allowlisted, and at most one partition may grow. Raw operator
+`repart.d` text is never accepted.
+
+- If `storage` is absent, repart uses the image-baked
+  `/usr/lib/repart.d` convention above.
+- If `storage` is present, fetch, authorization, schema validation, or rendering
+  failure stops the initrd **before GPT mutation**. It never silently falls back
+  to the baked layout.
+- A valid plan takes effect on the first boot and remains convergent on reboot.
 
 ## The `aos metadata` agent
 
 The one Ignition-unique capability — reading cross-cloud user-data + instance
 metadata — moves to an `aos metadata` agent (a Rust subcommand + an initrd
-systemd service). The user-data **payload is the operator's literal `host.nix`**
-(plus a detached signature), not Ignition JSON.
+systemd service). The user-data payload is either the operator's literal
+`host.nix` or an `aos.provisioning/v1` bundle containing `host.nix` (inline or
+by pinned reference) and an optional first-boot storage plan. It is not
+Ignition JSON.
 
-### Transport-only in initrd; trust deferred to stage-2
+### Trust policy and the initrd authorization boundary
 
-The `trusted-config-keys.d` operator keys (RFC-0011 D14) live in the **measured
-`/etc` that is only assembled in stage-2**, not initrd. Therefore the initrd
-agent is **transport-only**: it fetches and stashes the *untrusted* bytes, and
-**signature verification happens in stage-2 `aos-eval.service`** where the trust
-anchors and the existing `apm verify` machinery are natively available. This
-preserves the measured-consumer property (a failed/missing signature ⇒ no
-`/run/aos-eval/host.nix` ⇒ `aos-eval` falls through to gen-0-only config — the
-failure-safe path).
+The image selects one of two configuration trust policies:
+
+- **`platform` (default):** successful acquisition from the detected cloud
+  metadata service or deployment-owned config drive authorizes the bundle. This
+  deliberately trusts the cloud control plane and requires no per-instance key
+  injection.
+- **`signed` (secure mode):** the exact provisioning-bundle bytes must have a
+  valid detached SSHSIG under the `aos-provisioning` namespace. The public
+  verification anchors are baked into the measured initrd; they are not secret
+  and do not make a golden image instance-specific.
+
+The policy is part of measured boot configuration, never a field in user-data.
+Consequently an entity controlling metadata cannot downgrade `signed` to
+`platform`. A fleet may bake the same public anchor set into every golden image;
+only deployments that opt into a signed-required measured profile enforce it.
+There is no automatic fallback from `signed` to `platform`.
+
+Authorization precedes storage validation and rendering because those outputs
+can mutate the partition table. Full `host.nix` evaluation still happens only
+in stage-2. The initrd passes the exact accepted bytes and hashes through
+`/run`; stage-2 checks that binding before evaluation rather than refetching or
+reinterpreting mutable metadata.
 
 ```text
 aos metadata detect    # DMI/SMBIOS → /run/aos-metadata/platform.env (+ need-network)
-aos metadata fetch     # platform → /run/aos-metadata/{host.nix, host.nix.sig, facts.json}
+aos metadata fetch     # platform → provisioning bundle or literal host.nix
+aos metadata authorize # trust policy + schema → bound host.nix + storage plan
+aos metadata render-storage # validated plan → transient repart.d
 ```
 
 Stash contract (a child of initrd `/run`, surviving `mount --move /run /sysroot/run`):
-`/run/aos-metadata/{platform.env, host.nix, host.nix.sig, facts.json,
-.metadata-result.json}`, then staged into the evaluator root `/run/aos-eval/`.
+`/run/aos-metadata/{platform.env, provisioning.json, provisioning.sig,
+host.nix, storage-plan.json, facts.json, .metadata-result.json}`, then staged
+into the evaluator root `/run/aos-eval/`. Optional files are absent when their
+corresponding inputs are absent. `.metadata-result.json` records the trust mode,
+bundle hash, host.nix hash, optional signer, and validation result.
 
 Reuses: `aos-net` (HTTP/IMDS, retry) for fetch; `aos-package/src/security.rs`
-`verify_payload_signature` (SSHSIG) + `TrustStore` (pointed at
-`trusted-config-keys.d`) for the stage-2 check; `aos-package/src/sshkey.rs`.
+`verify_payload_signature` (SSHSIG) + `TrustStore` for signed-mode bundle
+authorization; `aos-package/src/sshkey.rs`.
 
 ### Literal-Nix payload + URL-pointer
 
-user-data is **either** the inline `host.nix` source **or**, when it exceeds the
-platform cap (AWS 16 KB), a tiny pointer `{ host_nix_url, sha256, sig_url }`. The
-agent fetches the URL, checks the `sha256` content-pin (integrity before
-authenticity), and stashes payload + detached SSHSIG. The two checks are
-independent: the pin defends the fetch, the signature defends authenticity
-(verified in stage-2).
+For the simple case, user-data may be inline `host.nix`; this form has no early
+storage plan. The general form is an `aos.provisioning/v1` JSON bundle:
+
+```json
+{
+  "schema": "aos.provisioning/v1",
+  "host_nix": {
+    "url": "https://config.example/hosts/i-123.nix",
+    "sha256": "sha256-..."
+  },
+  "storage": {
+    "partitions": [
+      {
+        "label": "swap",
+        "type": "swap",
+        "size_min_bytes": 2147483648,
+        "size_max_bytes": 2147483648
+      },
+      {
+        "label": "var",
+        "type": "var",
+        "size_min_bytes": 4294967296,
+        "grow": true,
+        "format": "ext4"
+      }
+    ]
+  }
+}
+```
+
+`host_nix` contains exactly one of `inline` or `url`; a URL requires `sha256`.
+The bundle can itself be delivered through a small
+`{ provisioning_url, sha256, sig_url }` pointer when it exceeds a platform
+limit. The pointer pins the exact bundle bytes. In signed mode `sig_url` (or an
+offline sibling `provisioning.sig`) is required and authenticates the whole
+bundle, thereby binding the storage plan and referenced `host.nix` hash
+together. Unknown fields or schema versions are rejected.
 
 ### Platform parity surface (the honest cost)
 
@@ -238,14 +293,15 @@ decision the operator did not authorize. The agent does **not** write
 `/etc/hostname` or `authorized_keys` imperatively; those are manifest outputs so
 they participate in generations/rollback.
 
-> **No pre-verification SSH keys from the facts channel (review M-gen0key).** An
+> **No pre-authorization SSH keys from the facts channel (review M-gen0key).** An
 > earlier draft seeded `host.facts.ssh_authorized_keys` into `/var/etc` in initrd
 > for gen-0 reachability. That is **removed**: those keys come from
-> *unauthenticated* IMDS and would be applied *before* the stage-2 `host.nix`
-> signature check — letting an attacker who can answer IMDS plant a login key.
+> the separate IMDS facts channel and would be applied before the selected
+> provisioning policy authorizes operator input — letting an attacker who can
+> answer IMDS plant a login key.
 > Gen-0 reachability, if required before the first config-gen activates, comes
-> **only** from an image-baked key or one carried in the operator-signed
-> `host.nix` (verified before use), never from the platform facts channel.
+> **only** from an image-baked key or one carried in the provisioning input
+> accepted by the selected trust policy, never from the separate facts channel.
 
 **Networking on DHCP-less clouds (review M-static-ip).** On clouds with no DHCP
 server, where networking is delivered as metadata (DigitalOcean static/anchor
@@ -270,7 +326,7 @@ each provider's documented spec, not translated from Ignition source.
 |---|---|---|
 | HTTP GET/**PUT** + custom headers + plain-`http://` to IMDS | **reuse** | `aos-net` `TransferEngine` (`transfer.rs:61`) + `HttpProtocol` (`protocol/http.rs:26`), `TransferRequest::with_header` (`types.rs:218`); general, not registry-specific |
 | Retry / backoff | **reuse** | `aos-net/retry.rs` `RetryConfig` + `with_retry` (exponential + jitter); engine auto-retries transient errors |
-| Detached SSHSIG over `host.nix` | **reuse** | `security.rs:639` `verify_payload_signature` + `KeyStore` (`:73`) + `sshkey.rs`; point a `KeyStore` at `trusted-config-keys.d` (stage-2) |
+| Detached SSHSIG over the provisioning bundle | **reuse** | `security.rs:639` `verify_payload_signature` + `KeyStore` (`:73`) + `sshkey.rs`; signed mode points a `KeyStore` at initrd-baked public configuration anchors |
 | base64 / gzip / JSON / TOML | **reuse** | `base64 0.22`, `flate2`, `serde_json`, `toml` already in `Cargo.lock` |
 | CLI + initrd-service wiring | **reuse pattern** | clap variant in `crates/aos/src/cli/mod.rs`, impl `commands/metadata.rs`, dispatch in `main.rs`; `boot.initrd.systemd.services` |
 | **Config-drive mount** (`blkid -L`, ISO9660/vfat: `cidata`/`config-2`/`aos-metadata`) | **BUILD — the one real gap** | no Rust today; existing logic is Nix shell handling only the single `aos-metadata` label (`pkgs/boot/aos-platform-detect.nix:51`). Shell out to `pkgs.util-linux` `blkid`/`mount` or bind libblkid |
@@ -292,27 +348,9 @@ other.
 (`verify_commit_signature`/`verify_tag_signature`/`check_downgrade`); the S3/SFTP
 protocol handlers (scheme dispatch ignores them).
 
-## Phasing (do not big-bang; keep an Ignition-compat fallback)
+## Platform completeness
 
-- **Phase A — keep Ignition for fetch, change the payload.** Land the stage-2
-  on-host eval (the novel part) with Ignition still fetching, but its config
-  does nothing but `storage.files` the operator's `host.nix` + sig into
-  `/run/aos-metadata/`. The literal-Nix model works immediately through
-  Ignition's `file` write.
-- **Phase B — `aos metadata` for the channels AOS already exercises.** Ship
-  `aos metadata detect` (pure win — already AOS code) + `fetch` for the
-  offline/local transports AOS tests (the `aos-metadata` ISO, NoCloud,
-  config-drive, fw_cfg). Run alongside Ignition; use its payload if present,
-  else fall back. De-risks the cutover with a fleet-green gate.
-- **Phase C — cloud IMDS in `aos metadata`; retire Ignition.** Implement AWS
-  IMDSv2, GCP, DigitalOcean, OpenStack-IMDS behind per-platform fetcher traits
-  with recorded-fixture tests. Keep Azure-OVF, VMware-guestinfo, and the
-  long-tail vendors as the last Ignition fallback until each has a native
-  fetcher + a real test. Remove `pkgs.ignition`/`pkgs.butane`/
-  `lib/formats/ignition.nix` only when the fallback is unused.
-
-Rationale: the eval engine is the RFC's actual novelty and risk; Ignition's
-fetch layer is mundane but broad. Decoupling them (payload-change → transport-swap
-→ per-platform-incremental) means an untested IMDS path never blocks the eval
-work, and the parity cost (AWS token dance, Azure dual-channel) is paid down
-incrementally behind a working fallback.
+The end state contains only the native `aos metadata` path. Every supported
+offline and cloud transport must have recorded-fixture coverage before it is
+advertised. Ignition, Butane, their configuration format, and compatibility
+fallbacks are not part of the runtime or build closure.

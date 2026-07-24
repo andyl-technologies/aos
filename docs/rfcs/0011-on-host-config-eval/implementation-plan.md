@@ -121,8 +121,7 @@ job-script normalization, documented in the commit.
 
 ### Provisioning, substrate & orchestration (Ignition removal)
 
-systemd-native substrate + the `aos metadata` agent + the unit graph. Phased to
-keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Phasing).
+systemd-native substrate + the `aos metadata` agent + the unit graph.
 
 - [ ] **systemd-repart substrate.** Flip `-Drepart=enabled`/`-Dfdisk=enabled`
       in `pkgs/system/systemd.nix`; un-strip `systemd-repart` from the initrd
@@ -136,9 +135,10 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
       never guard convergent ops (repart/tmpfiles/sysusers).
 - [ ] **`aos metadata` agent.** `aos metadata detect` (port
       `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
-      `security.rs` SSHSIG + `TrustStore`. Transport-only in initrd; stash
-      `/run/aos-metadata/{host.nix,host.nix.sig,facts.json}`. Literal-Nix payload
-      + URL-pointer (`sha256` content-pin). Reuse surface in
+      `security.rs` SSHSIG + `TrustStore`; add `authorize` and
+      `render-storage`. Stash the exact provisioning bundle, accepted host.nix,
+      typed plan, facts, and validation record. Support inline literal Nix and
+      hash-pinned bundle/host pointers. Reuse surface in
       [`provisioning.md`](provisioning.md) §Implementation.
 - [ ] Net-new pieces (the rest is reuse): a **config-drive mount helper**
       (`blkid -L cidata|config-2|aos-metadata` + ISO9660/vfat mount — the one
@@ -161,21 +161,22 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
 - [ ] `Wants=` for package pulls (degraded, not failed boot); `Requires=`/
       `BindsTo=` reserved for substrate edges; `Restart=on-failure` on fetch;
       `aos-activate` is the single atomic commit.
-- [ ] Phase out Ignition: keep `ignition-fetch` (payload-only) → `aos metadata`
-      for offline channels (ISO/NoCloud/config-drive/fw_cfg) → cloud IMDS
-      (AWS/GCP/DO/OpenStack); drop `pkgs.ignition`/`pkgs.butane`/
-      `lib/formats/ignition.nix` when the fallback is unused.
+- [ ] Remove Ignition, Butane, and `lib/formats/ignition.nix`; every supported
+      offline and cloud transport is implemented natively by `aos metadata` and
+      covered by recorded fixtures.
 
 ### Trust & secrets
 
-- [ ] `trusted-config-keys.d/<op>.pub` baked into the image
-      (`modules/base/apm-registries.nix`); evaluator verifies the `host.nix`
-      operator signature **before** eval.
+- [ ] Provisioning trust policy: default `platform`; opt-in `signed` with
+      `trusted-config-keys.d/<op>.pub` included in the measured image and initrd.
+      Authorize the whole bundle before rendering a storage plan, and bind
+      stage-2 evaluation to the accepted host.nix hash.
 - [ ] `secretRef` opaque type + activation resolution contract (reuse
       `credential_artifact.rs::reconcile_desired_credentials`); credentials-by-
       handle only, no plaintext constructor in the option type.
-- [ ] `gen-attestation/v1` record (generation_id, manifest_hash, signed input
-      set) quoted alongside PCR 7/11; reuse `expected_pcr11` from the registry
+- [ ] `gen-attestation/v1` record (generation_id, manifest_hash, authenticated
+      input set including trust mode and optional signer) quoted alongside PCR
+      7/11; reuse `expected_pcr11` from the registry
       catalog.
 
 ### Operability & migration
@@ -224,8 +225,10 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
       pre-verification `authorized_keys` seeding from the facts channel.
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for
       DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
-- [ ] **First-boot substrate from image-baked `/usr/lib/repart.d` only**;
-      operator custom topologies via a two-boot (verify-then-apply) flow.
+- [ ] **Authenticated first-boot storage plan**: absent plan uses image-baked
+      defaults; a present typed plan is authorized and validated in initrd,
+      rendered to transient `repart.d`, and applied on first boot. Reject raw
+      fragments and invalid plans before GPT mutation with no fallback.
 - [ ] **Degraded commit = re-projected manifest** (full minus un-fetched),
       re-hashed, drop-set recorded — keeps the generation content-addressed.
 - [ ] **`gen-N/cfgsrc/<hash>` GC root** pinning the config-module source closure
@@ -249,11 +252,11 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
 - **P1:** `checks.config-eval` + `checks.config-parity` green; fleet
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.
-- **Provisioning:** `systemd-repart` carves/grows `/var` on a fresh VM and is a
-  no-op on reboot (idempotent); `aos metadata` fetches+stashes literal-Nix
-  user-data across the offline channels; a single failing package yields
+- **Provisioning:** `systemd-repart` applies the baked default or an
+  authenticated typed plan on first boot and is a no-op on reboot; invalid
+  declared plans stop before GPT mutation; `aos metadata` covers every
+  advertised offline and cloud channel natively; a single failing package yields
   `is-system-running = degraded` with `multi-user.target` reached and the box
-  SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`); Ignition fallback
-  path still green until each native fetcher lands.
+  SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`).
 - **P2:** byte-identical manifest vs P1 stock-Nix on the full fixture corpus
   (the aos-nix parity discipline), plus the P1 gates still green.

@@ -171,7 +171,7 @@ module's own `_file` is forgeable — a package can inject
 will eval it (`lib/modules.nix:637`), so keying priority on the engine's threaded
 `file` (`:669`) would let any package **forge operator priority** *and* defeat
 conscription detection. Instead the **resolver** stamps each def's provenance
-from where it was loaded — the verified `host.nix` store path vs. a signed
+from where it was loaded — the policy-accepted `host.nix` store path vs. a signed
 package identity — and the engine reads *that* (a resolver-supplied, non-module
 attribute) at the priority-assignment step (`:695`), ignoring any module-supplied
 `_file`. Same rule governs conscription (next sections).

@@ -80,14 +80,15 @@ sandboxing, slices) is image-baked and measured.
 failure-isolated); `┄▶` = `After=` only.
 
 ```text
-[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ systemd-repart ═▶ aos-var-crypt/mount-var
+[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ aos-provisioning-authorize
+          ═▶ aos-storage-plan-render ═▶ systemd-repart ═▶ aos-var-crypt/mount-var
           ═▶ nix-overlay-setup ═▶ aos-seed-profiles (gen-0) ═▶ etc-overlay-setup ═▶ switch_root
 
 [stage 2] networkd/resolved (gen-0 /etc) ┄▶ network-online.target
    │
    ▼
  aos-eval.service        After=network-online.target ; Type=oneshot, best-effort, hardened scope
-   verify host.nix sig → resolve↔eval fixpoint (fetch config-module closures) →
+   verify initrd binding → resolve↔eval fixpoint (fetch config-module closures) →
    PRODUCES /run/aos/manifest.json + /run/aos/graph.json     (NEVER calls activate)
    │
    ▼
@@ -152,7 +153,7 @@ outcomes — breaking the content-addressing model in
 **re-projected manifest**: the full manifest **restricted to the packages that
 actually materialized**, re-hashed, with the **dropped set recorded** in the
 generation. The degraded config-gen is therefore itself content-addressed and
-reproducible from `(signed inputs + the recorded drop-set)` — a verifier can
+reproducible from `(authenticated inputs + the recorded drop-set)` — a verifier can
 reproduce exactly what was committed. (Re-running fetch for the dropped packages
 later produces a *new* config-gen via the normal reconcile path, not a mutation
 of the degraded one.)
@@ -161,7 +162,8 @@ of the degraded one.)
 genuine substrate loss — never a single package — can pull the system out of
 multi-user:
 
-- substrate broken in initrd (repart/cryptsetup/mount-var, hard edges) → cannot
+- explicit storage plan unauthorized/invalid, or substrate broken in initrd
+  (repart/cryptsetup/mount-var, hard edges) → cannot
   reach `initrd-fs.target` → **`emergency.target`**;
 - stage-2 structural failure (`/etc` swap indeterminate, `EX_SWAP=4`) →
   **`rescue.target`**.
@@ -176,7 +178,8 @@ multi-user:
    inspectable and re-runnable without re-evaluating the manifest.
 3. **Re-eval** — `apm switch` / `apm upgrade --system` re-runs `aos-eval` →
    recompiles the graph → re-drives `aos-config.target`.
-4. **Manifest never produced** (no net, registry down, unsigned host.nix) —
+4. **Manifest never produced** (no net, registry down, provisioning policy
+   rejection) —
    `aos-eval` is best-effort and emits nothing; `aos-graph-compile`'s
    `ConditionPathExists=/run/aos/manifest.json` makes it a clean no-op; the box
    stays fully live on the **gen-0 seed**, reachable to fix `host.nix`.

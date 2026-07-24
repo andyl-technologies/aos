@@ -135,9 +135,10 @@ are *specified here* so the tests are written before the code:
   systemd-repart-*` + idempotency (carve+grow on fresh VM, **no-op on reboot**) +
   the destructive-op state-probe guards run once.
 - **`aos metadata` agent** (`checks` + `fleet`): per-platform fetch over recorded
-  fixtures (offline channels first), transport-only stash, **stage-2** signature
-  verification against `trusted-config-keys.d`, facts → `host.facts.*`,
-  static-networking seed for DHCP-less clouds.
+  fixtures (offline channels first), exact bundle/hash retention, platform-mode
+  authorization, signed-mode initrd verification against public anchors,
+  first-boot typed storage-plan validation/rendering, facts → `host.facts.*`,
+  and the static-networking seed for DHCP-less clouds.
 - **Conscription / capability-scoped contribution** (`checks.eval`): a foreign
   `enable` write is rejected at resolve time (its paths are not a subset of the
   installed owner's contributable surface in `SystemRoots`); a contribution to an
