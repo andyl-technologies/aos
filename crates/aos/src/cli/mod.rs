@@ -261,8 +261,22 @@ pub enum ProfileCmd {
 pub enum MetadataCmd {
     /// Detect the platform and probe offline config-drives
     Detect,
-    /// Fetch and stash untrusted user-data + instance facts
+    /// Fetch and stash exact user-data + instance facts
     Fetch,
+    /// Authorize user-data and render any typed first-boot storage plan
+    Authorize {
+        /// Measured provisioning trust policy: platform or signed
+        #[arg(long)]
+        trust: String,
+        /// Public configuration-key directory; repeatable
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+        /// Keep `/var` raw for measured-boot LUKS enrollment
+        #[arg(long)]
+        measured_boot: bool,
+    },
+    /// Verify that stage 2 sees the exact host input accepted in initrd
+    VerifyBinding,
 }
 
 #[derive(Subcommand)]

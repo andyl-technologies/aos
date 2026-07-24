@@ -12,11 +12,11 @@
 ##!     certificate(s) `apm` re-verifies cataloged UKIs against at
 ##!     download time (RFC-0006 phase 4). Distinct key, same delivery
 ##!     mechanism as the registry trust anchor, provisioned at install.
-##!   - `/etc/apm/trusted-config-keys.d/<op>.pub` — operator config-signing
-##!     key(s) (`aos.apm.configKeys`). Under signed host-configuration policy,
-##!     `aos-eval.service` verifies the `host.nix` detached SSHSIG against these
-##!     anchors before evaluation. They use the same baked-into-the-measured-
-##!     image delivery as `trusted-keys.d`.
+##!   - `/etc/apm/trusted-config-keys.d/<op>.pub` — provisioning-signing
+##!     key(s) (`aos.apm.configKeys`). Under signed provisioning policy, the
+##!     initrd verifies the complete input against the same public anchors
+##!     copied into its measured closure before extracting storage or host
+##!     configuration.
 ##!
 ##! This is the out-of-band root of trust: first contact with the
 ##! registry verifies against these keys, and all later key rotation
@@ -48,14 +48,16 @@ in {
   options.aos.apm.configKeys = lib.mkOption {
     default = {};
     description = ''
-      Operator config-signing keys for signed host-configuration policy, baked
+      Operator provisioning-signing keys for signed provisioning policy, baked
       into the image as
       `/etc/apm/trusted-config-keys.d/<op>.pub`. Each attribute name is an
       operator id; its value is a list of `<op>:Ed25519:<base64>` public key
-      lines (rotation overlap is a multi-element list). `aos-eval.service`
-      verifies the `host.nix` detached SSHSIG against these anchors in the
-      `aos-config` SSHSIG namespace before evaluation; an unsigned or
-      untrusted-key host.nix produces no manifest. Mirrors `trusted-keys.d`.
+      lines (rotation overlap is a multi-element list). In signed mode the
+      initrd verifies the exact provisioning input in the `aos-provisioning`
+      SSHSIG namespace before rendering a storage plan or exposing `host.nix`.
+      Missing or untrusted signatures fail closed. Explicit off-boot
+      `apm switch --require-signed-host-nix` operations use the same anchors
+      with the narrower `aos-config` namespace.
     '';
     type = lib.types.attrsOf (lib.types.listOf lib.types.str);
   };

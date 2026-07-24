@@ -1,13 +1,13 @@
 //! `aos metadata detect` — platform identification + config-drive probe.
 //!
-//! Ports the DMI/SMBIOS decision table from `pkgs/boot/aos-platform-detect.nix`
-//! (the asset-tag → vendor → bios → product order) into `std::fs` reads of
-//! `/sys/class/dmi/id/*`, and runs the config-drive probe first so an offline
+//! Applies the DMI/SMBIOS asset-tag → vendor → BIOS → product decision order
+//! over `std::fs` reads of `/sys/class/dmi/id/*`, and runs the config-drive
+//! probe first so an offline
 //! channel short-circuits the cloud path. The result is written to
 //! `/run/aos-metadata/platform.env` as `PLATFORM_ID` (+ `METADATA_DIR` for
 //! offline channels, + `NEED_NETWORK` for cloud platforms).
 //!
-//! Detection order (matching the legacy Nix script):
+//! Detection order:
 //!
 //! 1. **Config-drive probe** — `blkid -L {aos-metadata,cidata,config-2}`; a hit
 //!    mounts RO and short-circuits with `METADATA_DIR` set and no network.

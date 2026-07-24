@@ -47,8 +47,7 @@
             ExecStart=${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-disabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-disabled/boots'
           '';
         };
-        # The per-host preset is baked into the image /etc;
-        # previously delivered as an Ignition storage.files fragment).
+        # The per-host preset is baked directly into the image's /etc tree.
         environment.etc."systemd/system-preset/20-aos-host.preset".text = hostPreset;
       }
     ];

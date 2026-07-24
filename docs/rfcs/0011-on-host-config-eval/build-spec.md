@@ -1412,7 +1412,7 @@ Returning the drop-in RFC markdown contract.
 
 # `aos metadata` agent — implementation contract
 
-> Scope: this CONTRACT specifies the wire-level behavior an implementer must produce for the `aos metadata` Rust subcommand and its initrd phases (`detect`, `fetch`, `authorize`, `render-storage`). It pins the `PlatformFetcher` trait, one concrete fetcher contract per offline channel plus the AWS IMDSv2 cloud exemplar, the `/run/aos-metadata` stash format, the `facts.json` → `host.facts.*` rendering, the DHCP-less static-networking seed, and authenticated first-boot storage plans. It is the binding interface for [`provisioning.md`](provisioning.md).
+> Scope: this CONTRACT specifies the wire-level behavior an implementer must produce for the `aos metadata` Rust subcommand and its initrd phases (`detect`, `fetch`, and `authorize`, with typed storage rendering owned by authorization). It pins the `PlatformFetcher` trait, one concrete fetcher contract per offline channel plus the AWS IMDSv2 cloud exemplar, the `/run/aos-metadata` stash format, the `facts.json` → `host.facts.*` rendering, the DHCP-less static-networking seed, and authenticated first-boot storage plans. It is the binding interface for [`provisioning.md`](provisioning.md).
 
 The agent acquires bytes, applies the selected provisioning trust policy, and
 validates/renders only the narrow storage schema in initrd. It never evaluates
@@ -1426,16 +1426,18 @@ declared plan stops before disk mutation and never falls back.
 aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+ need-network, +cidata mount)
 aos metadata fetch       # platform → provisioning input + facts
 aos metadata authorize   # platform|signed policy → exact accepted input
-aos metadata render-storage # typed plan → /run/aos-metadata/repart.d/
 ```
 
 - `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env` and, for network-dependent platforms, touches the `need-network` flag the `aos-metadata-network` gate keys off (replacing today's `/run/ignition/need-network`).
 - `detect` also performs the **config-drive probe** (the net-new mount helper, [§8](#8-net-new-pieces)) so that an offline ISO/vfat channel short-circuits the cloud path exactly as `aos-platform-detect.nix:51` does today for the `aos-metadata` label.
 - `fetch` selects a `Box<dyn PlatformFetcher>` from `PLATFORM_ID` and writes only under `/run/aos-metadata`.
-- `authorize` accepts platform delivery by default or verifies the whole bundle with the `aos-provisioning` SSHSIG namespace in signed mode.
-- `render-storage` rejects unknown fields and raw fragments, confines additions to the booted root disk, and writes transient definitions only after authorization.
+- `authorize` accepts platform delivery by default or verifies the whole input with the `aos-provisioning` SSHSIG namespace in signed mode. It then rejects unknown storage fields and raw fragments and writes transient definitions only after authorization.
 
-Wiring mirrors the existing initrd graph: a `aos-metadata-detect.service` (replacing `aos-platform-detect.service`) ordered before `aos-metadata-network.service` (replacing `aos-ignition-network.service`), then `aos-metadata-fetch.service` (replacing `ignition-fetch.service`). Ordering, `DefaultDependencies=no`, `RemainAfterExit=yes`, and the `need-network` gate are carried over unchanged from `modules/services/ignition.nix:87–272`.
+The initrd graph is `aos-metadata-detect.service` →
+`aos-metadata-network.service` → `aos-metadata-fetch.service` →
+`aos-metadata-authorize.service` → `aos-repart.service`. Every phase uses
+`DefaultDependencies=no` and `RemainAfterExit=yes`; authorization failure is
+fatal before repart.
 
 ## 2. The `PlatformFetcher` trait
 
@@ -1550,7 +1552,7 @@ All offline channels resolve to a **mounted directory** under `/run/aos-metadata
 
 ### 3.4 QEMU `fw_cfg`
 
-- **Detect:** presence of `/sys/firmware/qemu_fw_cfg/by_name/opt/com.coreos/config/raw` (or `opt/org.andyl/host.nix`). `PLATFORM_ID=qemu`. No mount, no network.
+- **Detect:** QEMU DMI classification. `PLATFORM_ID=qemu`; no mount or network.
 - **`fetch_user_data`:** read the `fw_cfg` blob via `std::fs` from `/sys/firmware/qemu_fw_cfg/by_name/<name>/raw`. AOS convention: `opt/org.andyl/provisioning/raw` (bundle or literal host.nix) and `opt/org.andyl/provisioning.sig/raw` (optional SSHSIG).
 - **`fetch_facts`:** `Facts::default()` (fw_cfg carries no standard facts document); hostname/keys, if needed, ride in `host.nix`.
 
@@ -1588,15 +1590,16 @@ The stash is a child of the initrd `/run` so it survives `mount --move /run /sys
 ```text
 /run/aos-metadata/
 ├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>]  [need-network adjacent]
-├── provisioning.json       # exact bundle bytes, when bundle form is used
-├── provisioning.sig        # detached SSHSIG, required only in signed mode
+├── user-data               # exact acquired input bytes
+├── user-data.sig           # detached whole-input SSHSIG, when supplied
 ├── host.nix                # exact policy-accepted operator config
 ├── storage-plan.json       # canonical validated plan, when declared
 ├── repart.d/               # rendered transient definitions, when declared
 ├── facts.json              # normalized Facts (see §2), serde_json
 ├── network/                # rendered networkd seed for DHCP-less clouds (see §6)
 │   └── 10-aos-seed.network
-└── .metadata-result.json   # agent run record (analog of .ignition-result.json)
+├── .metadata-result.json   # acquisition record
+└── .provisioning-result.json # authorization and accepted-content record
 ```
 
 `platform.env` (consumed via systemd `EnvironmentFile`, same as today):
@@ -1606,27 +1609,24 @@ PLATFORM_ID=aws
 METADATA_DIR=/run/aos-metadata/media   # only for offline channels
 ```
 
-`.metadata-result.json` — the run marker (mirrors `/sysroot/var/etc/.ignition-result.json`):
+`.metadata-result.json` — the acquisition marker:
 
 ```json
 {
   "platform_id": "aws",
   "fetched_user_data": true,
   "user_data_source": "imds",
-  "trust_mode": "platform",
-  "bundle_sha256": "…",
-  "host_nix_sha256": "…",
-  "signer": null,
-  "storage_plan": "absent",
+  "user_data_sha256": "…",
+  "sig_present": false,
   "facts_hash": "…",
   "network_seed_written": false,
   "timestamp": "2026-06-26T00:00:00Z"
 }
 ```
 
-`facts_hash` is recorded in the manifest and attestation. `trust_mode`,
-`bundle_sha256`, `host_nix_sha256`, and `signer` bind stage-2 to the initrd
-decision.
+`.provisioning-result.json` records `trust_mode`, `platform_id`,
+`input_sha256`, `host_nix_sha256`, optional `signer`, and
+`storage_plan_rendered`. Those fields bind stage-2 to the initrd decision.
 
 Stage-2 staging: `aos-eval.service` links `host.nix`, `facts.json`, and the
 validation record into `/run/aos-eval/`, confirms the accepted host hash, and
@@ -1692,7 +1692,8 @@ The validator resolves the parent disk of the booted root partition and permits
 only additive allocation from that disk's free space. It rejects any attempt to
 select another device or alter/delete existing ESP, root, root-verity, or
 verity-hash partitions. There may be at most one grow partition. Measured-boot
-`var` remains unformatted for the existing LUKS path.
+`var` remains unformatted for the existing LUKS path; otherwise `var` must use
+`ext4`. Every present plan must include `var`.
 
 The hard ordering is:
 
@@ -1701,11 +1702,13 @@ metadata-fetch → provisioning-authorize → storage-validate/render
   → systemd-repart → aos-var-crypt/mount-var → switch_root → aos-eval
 ```
 
-Absent `storage` selects `/usr/lib/repart.d`. Present-but-invalid or
-unauthorized storage stops before `systemd-repart` and never falls back. A valid
-plan is rendered only under `/run/aos-metadata/repart.d/`, applies on first
-boot, and remains convergent on reboot. There is no persistent pending-plan or
-second-boot hand-off.
+Absent `storage` selects the image-baked repart definitions.
+Present-but-invalid or unauthorized storage stops before `systemd-repart` and
+never falls back. Repart dry-runs the complete definition set against the
+resolved boot disk before its mutating pass. A valid plan is rendered only
+under `/run/aos-metadata/repart.d/`, applies on first boot, and remains
+convergent on reboot. There is no persistent pending-plan or second-boot
+hand-off.
 
 ## 8. Net-new pieces (the bounded build)
 

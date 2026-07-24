@@ -112,9 +112,9 @@ in {
           root, ISO9660 metadata channel, USB mass storage
           (usb_storage/uas) for bare-metal IPMI virtual media,
           overlayfs for /etc, dm-crypt for encrypted swap,
-          qemu_fw_cfg for ignition's QEMU platform reader, and cloud
+          qemu_fw_cfg for the native QEMU metadata reader, and cloud
           NIC drivers (ena/gve/hv_netvsc/mlx5_core/mlx4_en) that
-          stage-1 ignition networking may need to DHCP for instance
+          stage-1 metadata networking may need to DHCP for instance
           metadata. Hardware-specific cloud NICs are left for
           udev/modalias autoload rather than force-loaded on every
           hypervisor. (af_packet is builtin — CONFIG_PACKET=y — so it
@@ -157,24 +157,6 @@ in {
   };
 
   config = {
-    assertions = [
-      {
-        assertion =
-          !(lib.any
-            (p: lib.hasPrefix "ignition.config.url=" p)
-            config.aos.boot.kernelParams);
-        message = ''
-          aos.boot.kernelParams must not contain `ignition.config.url=…`.
-
-          The UKI's .cmdline is baked into a signed binary; hardcoding a
-          config URL there would make every boot from the image fetch
-          from that URL, overriding platform detection. Provide per-
-          deployment ignition configs via the `aos-metadata` ISO9660
-          channel instead (see modules/services/ignition.nix).
-        '';
-      }
-    ];
-
     # Base initrd module manifest (see `baseInitrdModules` above). Contributed
     # as a def with `mkBefore` so feature modules append after it.
     aos.boot.initrd.modules = lib.mkBefore baseInitrdModules;

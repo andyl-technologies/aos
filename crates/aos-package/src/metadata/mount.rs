@@ -11,9 +11,8 @@
 //! The probe is behind the [`ConfigDriveProbe`] trait so tests never touch
 //! `blkid`/`mount` or require root:
 //!
-//! - [`BlkidProbe`] — production. Shells out to `pkgs.util-linux` `blkid -L`
-//!   and `mount -o ro`, exactly as the legacy `aos-platform-detect.nix:51-54`
-//!   does for the single `aos-metadata` label.
+//! - [`BlkidProbe`] — production. Shells out to the AOS-built
+//!   `pkgs.util-linux` `blkid -L` and `mount -o ro`.
 //! - [`FakeProbe`] — test double. Maps a label directly to a fixture
 //!   directory, modelling an already-mounted drive.
 //!
@@ -80,8 +79,8 @@ pub trait ConfigDriveProbe {
 /// Production probe: `blkid -L <label>` then `mount -o ro`.
 ///
 /// `blkid` and `mount` are resolved from `PATH` (the initrd unit wires
-/// `pkgs.util-linux` in, like the legacy detector); override the absolute
-/// paths with [`BlkidProbe::with_tools`] when `PATH` is not set.
+/// `pkgs.util-linux` in); override the absolute paths with
+/// [`BlkidProbe::with_tools`] when `PATH` is not set.
 pub struct BlkidProbe {
     blkid: PathBuf,
     mount: PathBuf,

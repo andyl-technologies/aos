@@ -43,9 +43,10 @@ in {
         instance.
 
         `signed` is the fail-closed mode for deployments that do not trust
-        their metadata transport. It requires a detached `host.nix.sig` that
-        verifies against a key in `aos.apm.configKeys`. Missing keys, missing
-        signatures, and invalid signatures all prevent evaluation.
+        their metadata transport. The initrd verifies the complete provisioning
+        input against `aos.apm.configKeys` before any storage mutation. Missing
+        keys, missing signatures, and invalid signatures all prevent boot-time
+        provisioning.
       '';
     };
 
@@ -134,12 +135,11 @@ in {
       script = ''
         set -u
         mkdir -p /run/aos-eval /run/aos
-        # Stage the metadata-agent-owned input into the hardened eval root.
-        # Signed mode authenticates the sibling SSHSIG before evaluation;
-        # platform mode relies on the deployment control plane that supplied
-        # the initrd metadata.
+        # Confirm that /run still contains the exact host bytes accepted by the
+        # initrd authorization step, then stage them into the hardened eval
+        # root. The trust decision itself precedes systemd-repart.
+        ${pkgs.aos}/bin/aos metadata verify-binding
         cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
-        cp -f "${cfg.hostNix}.sig" /run/aos-eval/host.nix.sig 2>/dev/null || true
 
         # Prefer the image's recorded module_abi; fall back to the option.
         module_abi="${toString cfg.moduleAbi}"
@@ -164,7 +164,6 @@ in {
           --module-abi "$module_abi" \
           --out "${cfg.manifest}" \
           --eval-root /run/aos-eval \
-          ${lib.optionalString (cfg.trust == "signed") "--require-signed-host-nix --trusted-config-keys-dir /etc/apm/trusted-config-keys.d"} \
           $desired_arg || exit 1
       '';
     };

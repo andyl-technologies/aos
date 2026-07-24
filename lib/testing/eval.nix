@@ -44,8 +44,30 @@
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-fetch.service"
+    else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-metadata-authorize.service"
     else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-repart.service"
+    else if
+      !(builtins.elem
+        "initrd-root-fs.target"
+        system.config.boot.initrd.systemd.services.aos-metadata-authorize.requiredBy)
+    then throw "initrd-root-fs.target must require provisioning authorization"
+    else if
+      !(builtins.elem
+        "initrd-root-fs.target"
+        system.config.boot.initrd.systemd.services.aos-repart.requiredBy)
+    then throw "initrd-root-fs.target must require repartitioning"
+    else if
+      !(builtins.elem
+        "aos-metadata-authorize.service"
+        system.config.boot.initrd.systemd.services.aos-repart.requires)
+    then throw "aos-repart.service must require provisioning authorization"
+    else if
+      !(builtins.elem
+        "aos-metadata-authorize.service"
+        system.config.boot.initrd.systemd.services.aos-repart.after)
+    then throw "aos-repart.service must run after provisioning authorization"
     else "ok";
 
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------

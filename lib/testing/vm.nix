@@ -39,8 +39,8 @@
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
   # Produces a single $out/disk.img with four partitions matching the
-  # production layout closely enough for the production initrd + ignition
-  # services to run unchanged against it:
+  # production layout closely enough for the production initrd and early-boot
+  # provisioning services to run unchanged against it:
   #
   #   1  boot  — 4 MiB, unformatted. Vestigial — kernel + initrd come in
   #              via `-kernel`/`-initrd`, partition 1 is never mounted.
@@ -280,8 +280,8 @@
         -f var/etc/ssh/ssh_host_ed25519_key </dev/null
 
       # NOTE: we deliberately do NOT seed /var/etc/os-release here.
-      # /var/etc is the highest-precedence /etc-overlay lower
-      # (modules/services/ignition.nix), so a var-seed os-release would
+      # /var/etc is the highest-precedence persistent /etc-overlay lower,
+      # so a var-seed os-release would
       # shadow the generation's EROFS os-release on every boot — masking
       # the real NAME/VERSION_ID and breaking upgrade tests that assert
       # the active generation's version. The toplevel's own os-release

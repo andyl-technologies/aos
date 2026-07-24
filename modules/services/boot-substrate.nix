@@ -130,9 +130,8 @@
     #
     #   lowerdir+=/var/etc                      — host-persistent allowlist
     #                                             (machine-id, ssh host keys)
-    #   lowerdir+=/run/etc/config-<gen>/etc   — per-gen files-backend lower
-    #                                             (Ignition storage.links, or
-    #                                             empty initial seed)
+    #   lowerdir+=/run/etc/config-<gen>/etc   — per-gen configuration lower
+    #                                             (empty initial seed)
     #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
     #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
     #                                              entries (metacopy)
@@ -194,13 +193,12 @@
         # of the moved /run rather than a child of it, so the
         # moved /run would shadow the whole subtree post-pivot.
         sys=/run/etc/system-$gen
-        ign=/run/etc/config-$gen
+        config_lower=/run/etc/config-$gen
         upper_root=/run/etc/upper-$gen
 
         mkdir -p "$sys/metadata" "$sys/content" \
                  "$upper_root/dir" "$upper_root/work"
-        # $ign/etc already exists from ignition-files.service's
-        # ExecStartPre.
+        # $config_lower/etc already exists from aos-config-seed.service.
 
         # $toplevel is a /nix/store/... path; prefix /sysroot
         # because the real root is still under /sysroot in the
@@ -226,7 +224,7 @@
         # vfsmount refs at mount time, so the literal source string
         # in the option line never gets re-resolved post-pivot.
         ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
-          nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
+          nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc
 
         # Inspection symlinks (relative targets so they survive
@@ -432,9 +430,7 @@
     # Seed /var/etc/machine-id on first boot, before
     # etc-overlay-setup mounts the overlay (so stage-2
     # systemd-machine-id-setup.service sees the file via the
-    # /var/etc lower and skips regeneration). Replaces the
-    # legacy rootfs-builder `touch /etc/machine-id` write. Stage-1
-    # placement avoids the race where stage-2's
+    # /var/etc lower and skips regeneration). Stage-1 placement avoids the race where stage-2's
     # systemd-machine-id-setup writes to the tmpfs upperdir,
     # regenerating the ID every reboot. Spec v12 §6.1.5.
     "aos-machine-id" = {

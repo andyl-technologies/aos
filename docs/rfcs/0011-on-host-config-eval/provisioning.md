@@ -169,13 +169,15 @@ formats are allowlisted, and at most one partition may grow. Raw operator
 - If `storage` is present, fetch, authorization, schema validation, or rendering
   failure stops the initrd **before GPT mutation**. It never silently falls back
   to the baked layout.
+- Repart performs a full dry-run against the resolved boot disk before the
+  mutating pass, so an impossible size/layout also fails before GPT mutation.
 - A valid plan takes effect on the first boot and remains convergent on reboot.
 
 ## The `aos metadata` agent
 
-The one Ignition-unique capability — reading cross-cloud user-data + instance
-metadata — moves to an `aos metadata` agent (a Rust subcommand + an initrd
-systemd service). The user-data payload is either the operator's literal
+Cross-cloud user-data and instance metadata are acquired by the native
+`aos metadata` agent (a Rust subcommand plus initrd systemd services). The
+user-data payload is either the operator's literal
 `host.nix` or an `aos.provisioning/v1` bundle containing `host.nix` (inline or
 by pinned reference) and an optional first-boot storage plan. It is not
 Ignition JSON.
@@ -209,18 +211,19 @@ reinterpreting mutable metadata.
 aos metadata detect    # DMI/SMBIOS → /run/aos-metadata/platform.env (+ need-network)
 aos metadata fetch     # platform → provisioning bundle or literal host.nix
 aos metadata authorize # trust policy + schema → bound host.nix + storage plan
-aos metadata render-storage # validated plan → transient repart.d
 ```
 
 Stash contract (a child of initrd `/run`, surviving `mount --move /run /sysroot/run`):
-`/run/aos-metadata/{platform.env, provisioning.json, provisioning.sig,
-host.nix, storage-plan.json, facts.json, .metadata-result.json}`, then staged
-into the evaluator root `/run/aos-eval/`. Optional files are absent when their
-corresponding inputs are absent. `.metadata-result.json` records the trust mode,
-bundle hash, host.nix hash, optional signer, and validation result.
+`/run/aos-metadata/{platform.env, user-data, user-data.sig, host.nix,
+storage-plan.json, repart.d, facts.json, .metadata-result.json,
+.provisioning-result.json}`, then staged into the evaluator root
+`/run/aos-eval/`. Optional files are absent when their corresponding inputs are
+absent. `.metadata-result.json` records acquisition; the separate
+`.provisioning-result.json` records the trust mode, accepted-input hash,
+host.nix hash, optional signer, and whether a storage plan was rendered.
 
 Reuses: `aos-net` (HTTP/IMDS, retry) for fetch; `aos-package/src/security.rs`
-`verify_payload_signature` (SSHSIG) + `TrustStore` for signed-mode bundle
+`verify_payload_signature` (SSHSIG) + `KeyStore` for signed-mode bundle
 authorization; `aos-package/src/sshkey.rs`.
 
 ### Literal-Nix payload + URL-pointer
@@ -263,6 +266,11 @@ offline sibling `provisioning.sig`) is required and authenticates the whole
 bundle, thereby binding the storage plan and referenced `host.nix` hash
 together. Unknown fields or schema versions are rejected.
 
+Storage is deliberately narrower than `systemd-repart` itself: a present plan
+must include `var`, may additionally include `swap`, and cannot name a disk or
+modify existing partitions. Unmeasured images require `var` to use `ext4`;
+measured-boot images require it to remain raw for LUKS enrollment.
+
 ### Platform parity surface (the honest cost)
 
 The offline/local transports are small and AOS already owns half of them; the
@@ -277,7 +285,7 @@ real surface is the cloud IMDS zoo:
 | DigitalOcean | IMDS `/metadata/v1/user-data` (plain) | static IP often via metadata, not DHCP |
 | Hetzner/Vultr/Scaleway/Oracle | per-vendor IMDS paths (Oracle needs `Bearer`) | bespoke endpoints |
 | NoCloud/config-drive | ISO `cidata`/`config-2`: `user-data`+`meta-data` | **closest to AOS's `aos-metadata` ISO** |
-| QEMU fw_cfg | `/sys/firmware/qemu_fw_cfg/.../opt/com.coreos/config` | already used by AOS fleet |
+| QEMU fw_cfg | `/sys/firmware/qemu_fw_cfg/.../opt/org.andyl/provisioning/raw` | native local channel |
 | bare-metal/PXE | kernel cmdline `…config.url=` | the pointer escape hatch |
 
 ### Instance facts → `host.facts.*`

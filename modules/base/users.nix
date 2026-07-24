@@ -2,7 +2,7 @@
 ##!
 ##! Declares system users and groups. Generates /etc/passwd, /etc/group,
 ##! and /etc/shadow entries. On an immutable system these are baked into
-##! the image; Ignition can layer additional users at first boot.
+##! the image; on-host configuration can layer additional users.
 ##!
 ##! Absorbed TOML config values:
 ##!   [users.*] uid, group, home, shell, description, extra_groups

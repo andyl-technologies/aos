@@ -14,13 +14,11 @@ use super::facts_render::render_host_facts_nix;
 use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
 use super::http::{RecordedHttp, RecordedMethod};
 use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
-use super::offline::{
-    AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher,
-};
+use super::offline::{AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher};
+use super::stash::{MetadataResult, PlatformEnv, Stash};
 use super::staticnet::{
     parse_netplan_network_config, parse_openstack_network_data, render_networkd,
 };
-use super::stash::{MetadataResult, PlatformEnv, Stash};
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -101,7 +99,10 @@ fn detect_config_drive_short_circuits_cloud() {
     let env = detect(dir.path(), &probe, Path::new("/unused")).unwrap();
     assert_eq!(env.platform_id, "nocloud");
     assert!(!env.need_network);
-    assert_eq!(env.metadata_dir.as_deref(), Some(media.path().to_str().unwrap()));
+    assert_eq!(
+        env.metadata_dir.as_deref(),
+        Some(media.path().to_str().unwrap())
+    );
 }
 
 #[test]
@@ -116,15 +117,23 @@ fn config_drive_labels_priority() {
 #[test]
 fn aos_metadata_fetcher_reads_host_nix_and_sig() {
     let dir = tempdir().unwrap();
-    std::fs::write(dir.path().join("host.nix"), b"{ services.x.enable = true; }").unwrap();
-    std::fs::write(dir.path().join("host.nix.sig"), "-----BEGIN SSH SIGNATURE-----\n").unwrap();
+    std::fs::write(
+        dir.path().join("host.nix"),
+        b"{ services.x.enable = true; }",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("provisioning.sig"),
+        "-----BEGIN SSH SIGNATURE-----\n",
+    )
+    .unwrap();
 
     let f = AosMetadataFetcher::new(dir.path());
     let http = RecordedHttp::new();
     let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
     match ud {
-        UserData::Inline { host_nix, sig } => {
-            assert_eq!(host_nix, b"{ services.x.enable = true; }");
+        UserData::Inline { payload, sig } => {
+            assert_eq!(payload, b"{ services.x.enable = true; }");
             assert!(sig.unwrap().starts_with("-----BEGIN SSH SIGNATURE"));
         }
         _ => panic!("expected inline"),
@@ -143,7 +152,11 @@ fn aos_metadata_fetcher_absent_user_data_is_none() {
 #[test]
 fn nocloud_fetcher_user_data_is_literal_host_nix() {
     let dir = tempdir().unwrap();
-    std::fs::write(dir.path().join("user-data"), b"#cloud-config-not-interpreted\n{ }").unwrap();
+    std::fs::write(
+        dir.path().join("user-data"),
+        b"#cloud-config-not-interpreted\n{ }",
+    )
+    .unwrap();
     std::fs::write(
         dir.path().join("meta-data"),
         "local-hostname: web-1\ninstance-id: i-123\n",
@@ -154,8 +167,8 @@ fn nocloud_fetcher_user_data_is_literal_host_nix() {
     let http = RecordedHttp::new();
     let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
     match ud {
-        UserData::Inline { host_nix, .. } => {
-            assert!(host_nix.starts_with(b"#cloud-config-not-interpreted"));
+        UserData::Inline { payload, .. } => {
+            assert!(payload.starts_with(b"#cloud-config-not-interpreted"));
         }
         _ => panic!("expected inline"),
     }
@@ -218,7 +231,7 @@ fn config_drive_fetcher_parses_openstack_metadata() {
 #[test]
 fn qemu_fwcfg_reads_blob() {
     let root = tempdir().unwrap();
-    let blob = root.path().join("opt/org.andyl/host.nix");
+    let blob = root.path().join("opt/org.andyl/provisioning");
     std::fs::create_dir_all(&blob).unwrap();
     std::fs::write(blob.join("raw"), b"{ qemu = true; }").unwrap();
 
@@ -226,7 +239,7 @@ fn qemu_fwcfg_reads_blob() {
     let http = RecordedHttp::new();
     let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
     match ud {
-        UserData::Inline { host_nix, .. } => assert_eq!(host_nix, b"{ qemu = true; }"),
+        UserData::Inline { payload, .. } => assert_eq!(payload, b"{ qemu = true; }"),
         _ => panic!("expected inline"),
     }
 }
@@ -301,8 +314,8 @@ fn aws_imdsv2_token_dance_and_facts() {
 
     let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
     match ud {
-        UserData::Inline { host_nix, .. } => {
-            assert_eq!(host_nix, b"{ services.web.enable = true; }");
+        UserData::Inline { payload, .. } => {
+            assert_eq!(payload, b"{ services.web.enable = true; }");
         }
         _ => panic!("expected inline host.nix"),
     }
@@ -315,41 +328,109 @@ fn aws_imdsv2_token_dance_and_facts() {
     assert_eq!(facts.ssh_authorized_keys, vec!["ssh-ed25519 AAAA op@host"]);
     assert_eq!(
         facts.mac_to_iface,
-        vec![MacIface { mac: "0a:1b:2c:3d:4e:5f".into(), iface: "eth0".into() }]
+        vec![MacIface {
+            mac: "0a:1b:2c:3d:4e:5f".into(),
+            iface: "eth0".into()
+        }]
     );
 }
 
 #[test]
 fn aws_imdsv2_404_user_data_is_none() {
     let http = RecordedHttp::new()
-        .on(RecordedMethod::Put, "http://169.254.169.254/latest/api/token", 200, b"T")
-        .on(RecordedMethod::Get, "http://169.254.169.254/latest/user-data", 404, b"");
+        .on(
+            RecordedMethod::Put,
+            "http://169.254.169.254/latest/api/token",
+            200,
+            b"T",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/user-data",
+            404,
+            b"",
+        );
     let f = super::aws::AwsImdsFetcher::default();
     assert!(block_on(f.fetch_user_data(&http)).unwrap().is_none());
 }
 
 #[test]
 fn aws_imdsv2_pointer_resolved_with_pin() {
-    let pin = super::stash::sha256_hex(b"big host.nix body");
+    let pin = super::stash::sha256_hex(b"big provisioning body");
     let pointer = format!(
-        r#"{{"host_nix_url":"https://cfg.example/host.nix","sha256":"{pin}","sig_url":"https://cfg.example/host.nix.sig"}}"#
+        r#"{{"provisioning_url":"https://cfg.example/provisioning.json","sha256":"{pin}","sig_url":"https://cfg.example/provisioning.sig"}}"#
     );
     let http = RecordedHttp::new()
-        .on(RecordedMethod::Put, "http://169.254.169.254/latest/api/token", 200, b"T")
+        .on(
+            RecordedMethod::Put,
+            "http://169.254.169.254/latest/api/token",
+            200,
+            b"T",
+        )
         .on(
             RecordedMethod::Get,
             "http://169.254.169.254/latest/user-data",
             200,
             pointer.as_bytes(),
         )
-        .on(RecordedMethod::Get, "https://cfg.example/host.nix", 200, b"big host.nix body")
-        .on(RecordedMethod::Get, "https://cfg.example/host.nix.sig", 200, b"SIG");
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/provisioning.json",
+            200,
+            b"big provisioning body",
+        )
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/provisioning.sig",
+            200,
+            b"SIG",
+        );
 
     let f = super::aws::AwsImdsFetcher::default();
     let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
     let resolved = block_on(ud.resolve(&http)).unwrap();
-    assert_eq!(resolved.host_nix, b"big host.nix body");
+    assert_eq!(resolved.payload, b"big provisioning body");
     assert_eq!(resolved.sig.as_deref(), Some("SIG"));
+}
+
+#[test]
+fn native_cloud_fetchers_acquire_provider_user_data() {
+    let cases: Vec<(Box<dyn PlatformFetcher>, &str, &[u8])> = vec![
+        (
+            Box::new(super::cloud::GcpFetcher),
+            "http://metadata.google.internal/computeMetadata/v1/instance/attributes/user-data",
+            b"{ gcp = true; }",
+        ),
+        (
+            Box::new(super::cloud::AzureFetcher),
+            "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text",
+            b"eyBhenVyZSA9IHRydWU7IH0=",
+        ),
+        (
+            Box::new(super::cloud::DigitalOceanFetcher),
+            "http://169.254.169.254/metadata/v1/user-data",
+            b"{ digitalocean = true; }",
+        ),
+        (
+            Box::new(super::cloud::OpenStackImdsFetcher),
+            "http://169.254.169.254/openstack/latest/user_data",
+            b"{ openstack = true; }",
+        ),
+    ];
+
+    for (fetcher, url, body) in cases {
+        let http = RecordedHttp::new().on(RecordedMethod::Get, url, 200, body);
+        let user_data = block_on(fetcher.fetch_user_data(&http)).unwrap().unwrap();
+        let UserData::Inline { payload, .. } = user_data else {
+            panic!("{} returned a pointer unexpectedly", fetcher.platform_id());
+        };
+        assert!(
+            payload.starts_with(b"{ "),
+            "{} did not return decoded literal input: {:?}",
+            fetcher.platform_id(),
+            payload
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +468,10 @@ fn facts_render_is_deterministic_and_typed() {
         region: Some("us-east-1".into()),
         availability_zone: Some("us-east-1a".into()),
         ssh_authorized_keys: vec!["ssh-ed25519 AAAA op@host".into()],
-        mac_to_iface: vec![MacIface { mac: "0a:1b:2c:3d:4e:5f".into(), iface: "ens5".into() }],
+        mac_to_iface: vec![MacIface {
+            mac: "0a:1b:2c:3d:4e:5f".into(),
+            iface: "ens5".into(),
+        }],
         disk_ids: vec!["nvme-Amazon_EBS_vol0abc".into()],
         network: None,
     };
@@ -424,7 +508,10 @@ fn facts_render_antiquotation_neutralized() {
         ..Facts::default()
     };
     let rendered = render_host_facts_nix(&facts);
-    assert!(rendered.contains("\\$"), "dollar must be escaped to neutralize ${{}}");
+    assert!(
+        rendered.contains("\\$"),
+        "dollar must be escaped to neutralize ${{}}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -482,19 +569,30 @@ fn run_fetch_offline_writes_full_stash() {
     ))
     .unwrap();
 
-    // host.nix + sig stashed.
+    // Exact user-data + signature are stashed; authorization owns host.nix.
     assert_eq!(
-        std::fs::read(stash_dir.path().join("host.nix")).unwrap(),
+        std::fs::read(stash_dir.path().join("user-data")).unwrap(),
         b"{ ok = true; }"
     );
-    assert!(stash_dir.path().join("host.nix.sig").exists());
+    assert!(stash_dir.path().join("user-data.sig").exists());
+    assert!(!stash_dir.path().join("host.nix").exists());
 
     // facts.json present.
     assert!(stash_dir.path().join("facts.json").exists());
 
     // network seed in stash AND in /var/etc lower.
-    assert!(stash_dir.path().join("network/10-aos-seed.network").exists());
-    assert!(var_etc.path().join("systemd/network/10-aos-seed.network").exists());
+    assert!(
+        stash_dir
+            .path()
+            .join("network/10-aos-seed.network")
+            .exists()
+    );
+    assert!(
+        var_etc
+            .path()
+            .join("systemd/network/10-aos-seed.network")
+            .exists()
+    );
 
     // run record reflects the run.
     let result: MetadataResult = serde_json::from_slice(
@@ -516,9 +614,16 @@ fn run_fetch_no_user_data_is_failure_safe() {
     let stash = Stash::open(stash_dir.path()).unwrap();
     let fetcher = AosMetadataFetcher::new(media.path());
     let http = RecordedHttp::new();
-    block_on(super::run_fetch_with(&stash, &fetcher, &http, None, "aos-metadata")).unwrap();
+    block_on(super::run_fetch_with(
+        &stash,
+        &fetcher,
+        &http,
+        None,
+        "aos-metadata",
+    ))
+    .unwrap();
 
-    assert!(!stash_dir.path().join("host.nix").exists());
+    assert!(!stash_dir.path().join("user-data").exists());
     let result: MetadataResult = serde_json::from_slice(
         &std::fs::read(stash_dir.path().join(".metadata-result.json")).unwrap(),
     )
@@ -528,31 +633,341 @@ fn run_fetch_no_user_data_is_failure_safe() {
 }
 
 // ---------------------------------------------------------------------------
-// two-boot repart persist seam
+// first-boot provisioning authorization + typed repart rendering
 // ---------------------------------------------------------------------------
 
 #[test]
-fn repart_persist_and_verified_gate() {
-    use super::repart::{RepartFragment, persist_operator_repart, verified_fragments_present};
-    let var = tempdir().unwrap();
-    assert!(!verified_fragments_present(var.path()));
+fn no_user_data_selects_baked_configuration_without_authorized_outputs() {
+    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
 
-    let frags = vec![RepartFragment {
-        name: "60-data.conf".into(),
-        contents: "[Partition]\nType=linux-generic\n".into(),
-    }];
-    let written = persist_operator_repart(var.path(), &frags).unwrap();
-    assert_eq!(written.len(), 1);
-    assert!(verified_fragments_present(var.path()));
-    assert!(var.path().join("var/lib/aos/repart.d/60-data.conf").is_file());
+    let stash_dir = tempdir().unwrap();
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "metal".into(),
+            metadata_dir: None,
+            need_network: false,
+        })
+        .unwrap();
+    stash
+        .write_result(&MetadataResult {
+            platform_id: "metal".into(),
+            fetched_user_data: false,
+            user_data_source: "imds".into(),
+            user_data_sha256: None,
+            sig_present: false,
+            facts_hash: "00".repeat(32),
+            network_seed_written: false,
+            timestamp: "1970-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+
+    let result = block_on(run_authorize(
+        &AuthorizeOptions {
+            stash_dir: stash_dir.path().to_path_buf(),
+            measured_boot: false,
+            trust: ProvisioningTrust::Platform,
+            trusted_config_key_dirs: Vec::new(),
+        },
+        &RecordedHttp::new(),
+    ))
+    .unwrap();
+    assert!(result.is_none());
+    assert!(!stash_dir.path().join("host.nix").exists());
+    assert!(!stash_dir.path().join("repart.d").exists());
 }
 
 #[test]
-fn repart_rejects_non_conf_name() {
-    use super::repart::{RepartFragment, persist_operator_repart};
-    let var = tempdir().unwrap();
-    let frags = vec![RepartFragment { name: "bad".into(), contents: "x".into() }];
-    assert!(persist_operator_repart(var.path(), &frags).is_err());
+fn platform_bundle_renders_first_boot_storage_and_host() {
+    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
+
+    let stash_dir = tempdir().unwrap();
+    let media = tempdir().unwrap();
+    let bundle = br#"{
+      "schema":"aos.provisioning/v1",
+      "host_nix":{"inline":"{ services.web.enable = true; }"},
+      "storage":{"partitions":[
+        {"label":"swap","type":"swap","size_min_bytes":2147483648,"size_max_bytes":2147483648},
+        {"label":"var","type":"var","size_min_bytes":4294967296,"grow":true,"format":"ext4"}
+      ]}
+    }"#;
+    std::fs::write(media.path().join("host.nix"), bundle).unwrap();
+
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aos-metadata".into(),
+            metadata_dir: Some(media.path().display().to_string()),
+            need_network: false,
+        })
+        .unwrap();
+    let fetcher = AosMetadataFetcher::new(media.path());
+    let http = RecordedHttp::new();
+    block_on(super::run_fetch_with(
+        &stash,
+        &fetcher,
+        &http,
+        None,
+        "aos-metadata",
+    ))
+    .unwrap();
+
+    let result = block_on(run_authorize(
+        &AuthorizeOptions {
+            stash_dir: stash_dir.path().to_path_buf(),
+            measured_boot: false,
+            trust: ProvisioningTrust::Platform,
+            trusted_config_key_dirs: Vec::new(),
+        },
+        &http,
+    ))
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read(stash_dir.path().join("host.nix")).unwrap(),
+        b"{ services.web.enable = true; }"
+    );
+    assert!(result.storage_plan_rendered);
+    let swap = std::fs::read_to_string(stash_dir.path().join("repart.d/50-swap.conf")).unwrap();
+    let var = std::fs::read_to_string(stash_dir.path().join("repart.d/60-var.conf")).unwrap();
+    assert!(swap.contains("Type=swap\n"));
+    assert!(swap.contains("SizeMaxBytes=2147483648\n"));
+    assert!(var.contains("Type=var\n"));
+    assert!(var.contains("Weight=1000\n"));
+    assert!(var.contains("Format=ext4\n"));
+    super::provisioning::verify_host_binding(stash_dir.path()).unwrap();
+}
+
+#[test]
+fn signed_bundle_verifies_whole_input_and_rejects_tampering() {
+    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
+    use crate::config_trust::PROVISIONING_SIGNATURE_NAMESPACE;
+    use crate::security::sign_payload_signature;
+    use crate::sshkey::Ed25519Keypair;
+
+    let stash_dir = tempdir().unwrap();
+    let media = tempdir().unwrap();
+    let keys = tempdir().unwrap();
+    let bundle = br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{ ok = true; }"}}"#;
+
+    let key = Ed25519Keypair::generate();
+    let private = keys.path().join("ops.key");
+    std::fs::write(&private, key.to_openssh_private_key("ops")).unwrap();
+    std::fs::write(
+        keys.path().join("ops.pub"),
+        format!("{}\n", key.trust_key_line("ops")),
+    )
+    .unwrap();
+    let signature =
+        sign_payload_signature(&private, PROVISIONING_SIGNATURE_NAMESPACE, bundle).unwrap();
+    std::fs::write(media.path().join("provisioning.json"), bundle).unwrap();
+    std::fs::write(media.path().join("provisioning.sig"), signature).unwrap();
+
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aos-metadata".into(),
+            metadata_dir: Some(media.path().display().to_string()),
+            need_network: false,
+        })
+        .unwrap();
+    let http = RecordedHttp::new();
+    block_on(super::run_fetch_with(
+        &stash,
+        &AosMetadataFetcher::new(media.path()),
+        &http,
+        None,
+        "aos-metadata",
+    ))
+    .unwrap();
+
+    let opts = AuthorizeOptions {
+        stash_dir: stash_dir.path().to_path_buf(),
+        measured_boot: false,
+        trust: ProvisioningTrust::Signed,
+        trusted_config_key_dirs: vec![keys.path().to_path_buf()],
+    };
+    let accepted = block_on(run_authorize(&opts, &http)).unwrap().unwrap();
+    assert!(accepted.signer.is_some());
+
+    std::fs::write(stash_dir.path().join("user-data"), b"tampered").unwrap();
+    assert!(block_on(run_authorize(&opts, &http)).is_err());
+    assert!(!stash_dir.path().join("host.nix").exists());
+}
+
+#[test]
+fn invalid_declared_plan_leaves_no_authorized_outputs() {
+    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
+
+    let stash_dir = tempdir().unwrap();
+    let media = tempdir().unwrap();
+    let bundle = br#"{
+      "schema":"aos.provisioning/v1",
+      "host_nix":{"inline":"{}"},
+      "storage":{"partitions":[
+        {"label":"root-a","type":"var","size_min_bytes":4096}
+      ]}
+    }"#;
+    std::fs::write(media.path().join("host.nix"), bundle).unwrap();
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aos-metadata".into(),
+            metadata_dir: Some(media.path().display().to_string()),
+            need_network: false,
+        })
+        .unwrap();
+    let http = RecordedHttp::new();
+    block_on(super::run_fetch_with(
+        &stash,
+        &AosMetadataFetcher::new(media.path()),
+        &http,
+        None,
+        "aos-metadata",
+    ))
+    .unwrap();
+
+    let err = block_on(run_authorize(
+        &AuthorizeOptions {
+            stash_dir: stash_dir.path().to_path_buf(),
+            measured_boot: false,
+            trust: ProvisioningTrust::Platform,
+            trusted_config_key_dirs: Vec::new(),
+        },
+        &http,
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("requires label 'var'"), "{err:#}");
+    assert!(!stash_dir.path().join("host.nix").exists());
+    assert!(!stash_dir.path().join("repart.d").exists());
+}
+
+#[test]
+fn storage_shaped_json_without_schema_is_rejected_before_rendering() {
+    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
+
+    let stash_dir = tempdir().unwrap();
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aos-metadata".into(),
+            metadata_dir: None,
+            need_network: false,
+        })
+        .unwrap();
+    stash
+        .write_user_data(
+            br#"{"host_nix":{"inline":"{}"},"storage":{"partitions":[]}}"#,
+            None,
+        )
+        .unwrap();
+    stash
+        .write_result(&MetadataResult {
+            platform_id: "aos-metadata".into(),
+            fetched_user_data: true,
+            user_data_source: "config-drive".into(),
+            user_data_sha256: Some("00".repeat(32)),
+            sig_present: false,
+            facts_hash: "00".repeat(32),
+            network_seed_written: false,
+            timestamp: "1970-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+
+    let result = block_on(run_authorize(
+        &AuthorizeOptions {
+            stash_dir: stash_dir.path().to_path_buf(),
+            measured_boot: false,
+            trust: ProvisioningTrust::Platform,
+            trusted_config_key_dirs: Vec::new(),
+        },
+        &RecordedHttp::new(),
+    ));
+    assert!(result.is_err());
+    assert!(!stash_dir.path().join("host.nix").exists());
+    assert!(!stash_dir.path().join("repart.d").exists());
+}
+
+#[test]
+fn measured_boot_rejects_formatted_var() {
+    use super::repart::{
+        PartitionFormat, PartitionSpec, PartitionType, StoragePlan, validate_storage_plan,
+    };
+    let plan = StoragePlan {
+        partitions: vec![PartitionSpec {
+            label: "var".into(),
+            partition_type: PartitionType::Var,
+            size_min_bytes: 4096,
+            size_max_bytes: None,
+            grow: true,
+            format: Some(PartitionFormat::Ext4),
+        }],
+    };
+    assert!(validate_storage_plan(&plan, true).is_err());
+}
+
+#[test]
+fn provisioning_schema_rejects_raw_repart_disk_targets_and_protected_types() {
+    use super::provisioning::ProvisioningBundle;
+
+    let invalid = [
+        br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{}"},"repart_d":"[Partition]"}"#
+            .as_slice(),
+        br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{}"},"storage":{"disk":"/dev/vdb","partitions":[]}}"#
+            .as_slice(),
+        br#"{"schema":"aos.provisioning/v1","host_nix":{"inline":"{}"},"storage":{"partitions":[{"label":"root-a","type":"root-a","size_min_bytes":4096}]}}"#
+            .as_slice(),
+    ];
+
+    for input in invalid {
+        assert!(
+            serde_json::from_slice::<ProvisioningBundle>(input).is_err(),
+            "unsafe storage input unexpectedly parsed: {}",
+            String::from_utf8_lossy(input)
+        );
+    }
+}
+
+#[test]
+fn storage_plan_rejects_invalid_sizes_and_multiple_growers() {
+    use super::repart::{
+        PartitionFormat, PartitionSpec, PartitionType, StoragePlan, validate_storage_plan,
+    };
+
+    let invalid_size = StoragePlan {
+        partitions: vec![PartitionSpec {
+            label: "var".into(),
+            partition_type: PartitionType::Var,
+            size_min_bytes: 0,
+            size_max_bytes: None,
+            grow: true,
+            format: Some(PartitionFormat::Ext4),
+        }],
+    };
+    assert!(validate_storage_plan(&invalid_size, false).is_err());
+
+    let multiple_growers = StoragePlan {
+        partitions: vec![
+            PartitionSpec {
+                label: "swap".into(),
+                partition_type: PartitionType::Swap,
+                size_min_bytes: 4096,
+                size_max_bytes: None,
+                grow: true,
+                format: None,
+            },
+            PartitionSpec {
+                label: "var".into(),
+                partition_type: PartitionType::Var,
+                size_min_bytes: 4096,
+                size_max_bytes: None,
+                grow: true,
+                format: Some(PartitionFormat::Ext4),
+            },
+        ],
+    };
+    assert!(validate_storage_plan(&multiple_growers, false).is_err());
 }
 
 // Keep StaticNetwork import used even if a future refactor drops a test.

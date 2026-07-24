@@ -103,23 +103,17 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                     f"machine {name!r}: missing 'metadata' (use null to omit)"
                 )
         else:
-            # Image boot: UEFI firmware is mandatory, and a metadata ISO
-            # is forbidden — its presence would flip platform detection
-            # to PLATFORM_ID=file and ignition would ignore fw_cfg.
+            # Image boot requires UEFI firmware. A metadata ISO is optional
+            # and, when present, drives native initrd provisioning.
             for required in ("firmware_code", "firmware_vars"):
                 if required not in m:
                     raise SystemExit(
                         f"machine {name!r}: image boot requires {required!r}"
                     )
-            if m.get("metadata") is not None:
-                raise SystemExit(
-                    f"machine {name!r}: image boot must not attach a"
-                    " metadata ISO (it forces PLATFORM_ID=file)"
-                )
         if transport == "qemu":
-            # A null metadata ISO is valid when kernel-boot
-            # machines bake identity into /etc (via extendModules) and carry no
-            # metadata channel. The driver omits the SCSI CD-ROM when it is None.
+            # A null metadata ISO is valid when identity is baked into /etc
+            # and no provisioning input is attached. The driver omits the
+            # SCSI CD-ROM when it is None.
             for required in ("mac", "ip"):
                 if required not in m:
                     raise SystemExit(
