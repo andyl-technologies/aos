@@ -134,6 +134,8 @@ in
           test -x "${qemuPackage}/bin/qemu-storage-daemon"
           nm -D --defined-only "$qemu" \
             | grep -q ' qemu_plugin_register_blk_cb$'
+          nm -D --defined-only "$qemu" \
+            | grep -q ' qemu_plugin_register_blk_wait_cb$'
 
           # Generated shmem ABI header is installed with the pinned hash.
           test -f "${qemuPackage}/${qemuPackage.passthru.shmemHeaderInstallPath}"

@@ -263,6 +263,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
         devices::crucible_qemu_plugin_live_block_poll_cb(0, std::ptr::null_mut(), 0, userdata,),
         -1
     );
+    crucible_qemu_plugin_live_block_wait_cb(0, userdata);
     devices::crucible_qemu_plugin_live_ninep_burst_start_cb(userdata);
     assert_eq!(
         devices::crucible_qemu_plugin_live_ninep_submit_cb(0, std::ptr::null(), 0, 0, userdata,),
@@ -425,6 +426,68 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
         .unwrap_or_else(|error| panic!("exact timer completion should commit: {error}"));
     assert_eq!(slot.snapshot().current_icount, 7);
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
+fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state
+        .on_block_wait(1)
+        .unwrap_or_else(|error| panic!("unpublished device deadline should defer: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+}
+
+#[test]
+fn live_block_wait_queues_and_commits_the_device_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.store_device_completion_deadline_icount(12);
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state
+        .on_block_wait(1)
+        .unwrap_or_else(|error| panic!("device wait should queue its deadline: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 12))
+        .unwrap_or_else(|error| panic!("device deadline completion should commit: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 12);
+}
+
+#[test]
+fn live_block_wait_preserves_an_earlier_timer_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.store_device_completion_deadline_icount(12);
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(7);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state
+        .on_block_wait(1)
+        .unwrap_or_else(|error| panic!("device wait should retain exact timer ordering: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
     TEST_CLOCK_DEADLINE_NS.set(-1);
 }
 
@@ -701,6 +764,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             net_send: Some(test_net_send),
             net_flush: Some(test_net_flush),
             register_block: Some(test_register_block),
+            register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
         },
     );
@@ -728,6 +792,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             net_send: Some(test_net_send),
             net_flush: Some(test_net_flush),
             register_block: Some(test_register_block),
+            register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
         },
     );
@@ -755,6 +820,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             net_send: Some(test_net_send),
             net_flush: Some(test_net_flush),
             register_block: Some(test_register_block),
+            register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
         },
     );
@@ -763,6 +829,34 @@ fn live_registrar_preflight_names_each_missing_capability() {
         Err(OwnedCallbackRegistrationError::LiveVcpuTime {
             source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
+            },
+        })
+    ));
+
+    let missing_block_wait = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        LiveVcpuTimeCallbackCapabilities {
+            icount_raw: test_icount_raw,
+            clock_deadline_ns: Some(test_clock_deadline_ns),
+            advance_time_ns: Some(test_queue_idle_advance),
+            register_vcpu_init: Some(test_register_vcpu_init),
+            register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_time_advance_cb: Some(test_register_time_advance_cb),
+            register_net_tx: Some(test_register_net_tx),
+            net_send: Some(test_net_send),
+            net_flush: Some(test_net_flush),
+            register_block: Some(test_register_block),
+            register_block_wait: None,
+            register_ninep: Some(test_register_ninep),
+        },
+    );
+    assert!(matches!(
+        missing_block_wait.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
             },
         })
     ));
@@ -804,6 +898,12 @@ extern "C" fn test_register_net_tx(
 extern "C" fn test_register_block(
     _submit: Option<crate::QemuBlkSubmitCbFn>,
     _poll: Option<crate::QemuBlkPollCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_block_wait(
+    _wait: Option<crate::QemuBlkWaitCbFn>,
     _userdata: *mut c_void,
 ) {
 }

@@ -286,6 +286,13 @@
       enforces = "DET-30";
       capability = "sim omits the redundant stock round-robin vCPU-kick timer for deterministic quantum switching";
     }
+    {
+      file = "0039-crucible-blk-device-completion-advance.patch";
+      catalogName = "crucible-blk-device-completion-advance";
+      class = "D";
+      enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
+      capability = "device-wait callback advances an I/O-blocked guest to its deterministic completion and resumes polling after commit";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

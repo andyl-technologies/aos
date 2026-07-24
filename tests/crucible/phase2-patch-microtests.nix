@@ -269,6 +269,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0039-crucible-blk-device-completion-advance.patch";
+      check = import ./phase2-qemu-device-completion-advance.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -408,6 +414,7 @@ in
               qemu_plugin_rr_cursor \
               qemu_plugin_inject_preemption \
               qemu_plugin_register_blk_cb \
+              qemu_plugin_register_blk_wait_cb \
               qemu_plugin_register_9p_cb
             do
               grep -E "[[:space:]]$symbol$" "$out/qemu-system-x86_64.dynamic-symbols"

@@ -1,7 +1,16 @@
 # 0039 (working name) crucible-blk-device-completion-advance — DESIGN
 
-Status: DESIGN ONLY. Do not apply to qemu-patches/ until the window opens
-(after m2's 38-patch aggregate + T-HARN-20 flip land). Author: m4-cp2.
+Status: IMPLEMENTED IN PATCH 0039; certifying live validation pending.
+Author: m4-cp2.
+
+Implementation resolution: Part A uses the dedicated block-wait callback. For
+R1, the driver re-fires that callback on every pending poll after the scheduler
+wake fd resumes the coroutine, so a deadline-publish race retries without
+guest-visible progress. Part B uses B2: after the normal-main-loop time-advance
+completion callback commits logical time, QEMU notifies its wake-fd-backed
+device waiters and then kicks the vCPU. A response that is still physically
+absent simply parks and retries at the same logical icount, satisfying R3
+without a second icount-to-nanosecond conversion in the block driver.
 
 ## 1. Problem (observed, live)
 
@@ -60,7 +69,7 @@ fires when the only outstanding work is a crucible block coroutine — but that
 entangles the well-tested 0025 idle path; a dedicated blk-wait callback is
 cleaner and independently inert.
 
-Plugin side (Rust, already staged): on the callback, read
+Plugin side (Rust implementation): on the callback, read
 `device_completion_deadline_icount` (via PluginShmemOrdering, reader landed) and
 enqueue an advance to it — the block_poll probe path I already proved is
 ACCEPTED by QEMU. The merge rule from commit 1e9679392 is reused verbatim for
@@ -86,9 +95,9 @@ never the guest-visible result. Say so explicitly in the header.
 ### Part B — completion resume at delivery_icount (delivery side)
 
 The yielded block coroutine must be re-entered when virtual time reaches
-`delivery_icount`. Two mechanisms, pick one:
+`delivery_icount`. Two mechanisms were evaluated:
 
-- **B1 (preferred): virtual-clock timer.** In `crucible_shmem_wait_one_poll()`,
+- **B1 (not selected): virtual-clock timer.** In `crucible_shmem_wait_one_poll()`,
   arm a `QEMU_CLOCK_VIRTUAL` timer at the host-published delivery deadline whose
   callback does `aio_co_wake(qemu_coroutine_self())`, then yield. When the
   plugin advances vtime to the deadline (Part A), the timer fires, the coroutine
@@ -97,11 +106,14 @@ The yielded block coroutine must be re-entered when virtual time reaches
   path (no new IRQ code needed — the vIRQ is virtio-blk's, we only unblock its
   completion). This keeps delivery ordering pinned to the deterministic
   `delivery_icount` the host already computes.
-- **B2: sim-advance-completion hook.** Wake the coroutine from the sim loop's
-  time-advance-completion path when the reached icount >= the pending request's
-  delivery_icount. More coupling to the accel; B1 is more local and testable.
+- **B2 (selected): sim-advance-completion hook.** Wake the coroutine from the
+  sim loop's time-advance-completion path when the reached icount >= the pending
+  request's delivery_icount. Patch 0039 orders this after the plugin completion
+  callback, which commits the logical-time offset, and uses the existing
+  wake-notifier path rather than introducing a second timer conversion.
 
-**R2 (REQUIRED): single icount<->ns domain-conversion definition.** The ABI
+**R2 (satisfied by avoiding a driver conversion): single icount<->ns
+domain-conversion definition.** The ABI
 field `device_completion_deadline_icount` is an ICOUNT; a QEMU_CLOCK_VIRTUAL
 timer arms in NS. If the driver's icount->ns conversion rounds even 1ns
 differently from the plugin's advance target, the timer deadline and the vtime
@@ -113,22 +125,20 @@ identical to the servicer's `vt()` that produced `delivery_icount`:
 established scale). State the single formula in the patch header and add a
 compile-time or startup micro-assert that the driver's conversion and the
 plugin's advance-target conversion agree (e.g. both derive ns from
-`icount << icount_shift`). No independent rounding on either side.
+`icount << icount_shift`). No independent rounding on either side. The selected
+B2 path keeps this conversion in the Rust plugin's existing queued-advance
+implementation; the QEMU block driver never converts the shared-memory icount
+deadline.
 
-**R3 (REQUIRED): guest-visible delivery invariant.** A poll at
-`icount >= delivery_icount` MUST return data, never PENDING. Sequence risk: the
-plugin advances vtime to the deadline, the timer fires and the coroutine
-re-polls, but the HOST servicer (wall-async) has not yet physically written the
-response frame — the poll would return PENDING again and the guest-visible poll
-sequence would differ run to run, exactly the nondeterminism Contract A forbids.
-Invariant: once virtual time has reached `delivery_icount`, the driver's re-poll
-MUST block HOST-SIDE (a futex/wake wait on the response ring head, invisible to
-the guest — the guest observes a single poll that returns data) until the
-response frame is present. The host-side block is wall-time only and never
-changes the icount at which the guest observes completion. Test: a deliberately
-slowed servicer (inject wall delay before writing the response) must produce the
-byte-identical guest-visible sequence as the fast servicer — a stress leg in the
-micro-test.
+**R3 (REQUIRED): guest-visible delivery invariant.** A response must become
+guest-visible at `delivery_icount`, independent of when its host-side ring write
+finishes. The selected implementation permits another internal PENDING poll
+after logical time reaches the deadline, but the coroutine immediately parks
+again without retiring a guest instruction or advancing virtual time. The
+host's next wake re-polls at the same icount, so wall timing changes only how
+long QEMU is parked and never the guest-visible completion point. Test: a
+deliberately slowed servicer must produce the byte-identical guest-visible
+sequence as the fast servicer.
 
 Minor (noted): the single slot field holds `min(next in-flight completions)`
 (`next_exact_local_event()`), which is exactly the earliest-due request — correct
@@ -193,11 +203,7 @@ it end to end.
 
 ## 6. Sequencing / dependencies
 
-- Do NOT touch qemu-patches/ until main opens the window (after m2's aggregate +
-  T-HARN-20 flip land; a series change now invalidates that validation run).
-- Rust side is ready: device_completion_deadline_icount field + reader landed;
-  merge semantics unit-tested (1e9679392); block_poll advance-enqueue proven
-  accepted. Once the patch lands, wire the blk_wait callback trampoline to the
-  existing advance path and validate on the node harness.
+- Patch 0039 and its Rust callback trampoline are now present in the deterministic
+  patch stack. The remaining step is the certifying live node-harness run.
 - m2's 0017 write-sentinel is blocked on this (a write+flush also stalls at the
   first I/O until Part A+B land).

@@ -226,6 +226,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0039-crucible-blk-device-completion-advance.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_register_blk_wait_cb"];
+    };
   };
 
   unclassified =

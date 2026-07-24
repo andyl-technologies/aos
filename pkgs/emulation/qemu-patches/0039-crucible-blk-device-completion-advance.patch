@@ -1,0 +1,104 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -39,6 +39,8 @@ typedef struct BDRVCrucibleShmemState {
+ static qemu_plugin_blk_submit_cb_t crucible_blk_submit_cb;
+ static qemu_plugin_blk_poll_cb_t crucible_blk_poll_cb;
+ static void *crucible_blk_userdata;
++static qemu_plugin_blk_wait_cb_t crucible_blk_wait_cb;
++static void *crucible_blk_wait_userdata;
+ 
+ static QemuOptsList crucible_shmem_runtime_opts = {
+     .name = "crucible-shmem",
+@@ -62,6 +64,13 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+     crucible_blk_submit_cb = submit_cb;
+ }
+ 
++void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
++                                      void *userdata)
++{
++    crucible_blk_wait_userdata = userdata;
++    crucible_blk_wait_cb = wait_cb;
++}
++
+ static bool crucible_blk_callbacks_ready(void)
+ {
+     return crucible_blk_submit_cb != NULL && crucible_blk_poll_cb != NULL;
+@@ -217,6 +226,15 @@ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+         if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
+             return ret;
+         }
++        if (crucible_blk_wait_cb) {
++            /*
++             * Re-fire for every pending poll.  If the host had not published
++             * the deterministic completion deadline at the first wait, its
++             * wake-fd notification resumes this coroutine and the next pass
++             * observes that deadline without exposing host timing to the guest.
++             */
++            crucible_blk_wait_cb(request_id, crucible_blk_wait_userdata);
++        }
+         crucible_shmem_wait_one_poll(bs, observed_generation);
+     }
+ }
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -240,6 +240,18 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+                                              size_t capacity,
+                                              void *userdata);
+ 
++/**
++ * typedef qemu_plugin_blk_wait_cb_t - shmem block device-wait callback
++ * @request_id: request id whose completion is not yet visible
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * The callback runs immediately before the crucible-shmem request coroutine
++ * parks after a pending poll.  A time-owning plugin uses this boundary to
++ * advance an I/O-blocked guest to the deterministic completion deadline.
++ */
++typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
++                                          void *userdata);
++
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+@@ -1093,6 +1105,19 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+                                  qemu_plugin_blk_poll_cb_t poll_cb,
+                                  void *userdata);
+ 
++/**
++ * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
++ * @wait_cb: callback fired before a pending block coroutine parks
++ * @userdata: opaque pointer passed to @wait_cb
++ *
++ * The hook is inert unless the crucible-shmem driver is selected and a block
++ * poll returns QEMU_PLUGIN_BLK_POLL_PENDING.  Passing NULL restores the classic
++ * event-driven wait behavior.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_blk_wait_cb(qemu_plugin_blk_wait_cb_t wait_cb,
++                                      void *userdata);
++
+ /**
+  * qemu_plugin_register_9p_cb() - register shmem 9p callbacks
+  * @burst_start_cb: burst-start callback, or NULL to disable shmem forwarding
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -219,6 +219,16 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+     if (cb) {
+         cb(status, target, userdata);
+     }
++    /*
++     * A Crucible block coroutine can be parked because the guest itself cannot
++     * retire instructions while waiting for device I/O.  Re-enter all
++     * wake-fd-backed device waiters only after the plugin has committed the
++     * completed logical-time advance.  A waiter whose response is still
++     * physically absent simply parks again; no guest instruction or virtual
++     * time can observe that host-side race.
++     */
++    notifier_list_notify(&qemu_plugin_wake_notifiers,
++                         (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+     if (first_cpu) {
+         qemu_cpu_kick(first_cpu);
+     }

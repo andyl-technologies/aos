@@ -218,6 +218,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    PATCH-34, SHM-1
   crucible-sim-freeze-warp-at-observation-boundary  freeze vclock at obs boundary  D    DET-8, DET-29
   crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
+  crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -919,6 +920,29 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   shmem block completions at bounded reproducible virtual-time offsets (no
   cross-run hangs, correct poll-response handling). *Gate:* `gate:layer1-injection`.
   *Spec:* §11.6; satisfies [DET-16], [DET-18] (E19).
+
+### crucible-blk-device-completion-advance — advance blocked block I/O
+
+- **Enforces:** [DET-16], [PATCH-27], [PLUG-21], [IO-31].
+- **Mechanism:** adds a block-wait registration hook that fires after a pending
+  shmem block poll and immediately before its coroutine parks. The time-owning
+  plugin combines the published device-completion deadline with the next exact
+  timer and scheduler ceiling, then queues the same normal-main-loop virtual-time
+  advance used for an idle vCPU. Only after the advance completion callback
+  commits logical time does QEMU notify wake-fd-backed device waiters and kick
+  the vCPU. If the host response has not physically arrived yet, the request
+  parks again at the same logical icount; host timing changes only wall-clock
+  wait duration.
+- **Micro-test:** require the registration export, pending-poll callback, and
+  post-completion waiter notification in the reconstructed patch prefix. The
+  live block-I/O gate additionally boots a real guest, services its block request
+  at a future delivery icount, and requires progress to the scheduler ceiling
+  with identical observations under host load and with the due response's
+  physical ring write deliberately delayed in wall time.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — the hook runs only for the selected
+  `crucible-shmem` driver and only when a plugin registers it; otherwise the
+  existing event-driven wait is unchanged.
+- **Risk:** D.
 
 ### crucible-blk-write-sentinel — explicit pending sentinel for writes/flush
 

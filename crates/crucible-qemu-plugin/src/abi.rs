@@ -83,6 +83,9 @@ pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake
 pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutdown";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
+/// QEMU plugin API symbol used to register the blocked-device wait callback.
+pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str =
+    "qemu_plugin_register_blk_wait_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
 /// QEMU plugin API symbol used to register the standard vCPU-init callback.
@@ -118,6 +121,8 @@ const QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
 const QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
 const QEMU_PLUGIN_INSN_SIZE_SYMBOL_C: &[u8] = b"qemu_plugin_insn_size\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
+const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_blk_wait_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
@@ -310,9 +315,13 @@ pub type QemuRegisterTcgExecCbFn = extern "C" fn(Option<QemuTcgExecCbFn>, *mut c
 pub type QemuBlkSubmitCbFn = extern "C" fn(u32, u32, u64, *const u8, usize, *mut c_void) -> c_int;
 /// Block completion poll callback body passed to QEMU's shmem block driver.
 pub type QemuBlkPollCbFn = extern "C" fn(u32, *mut u8, usize, *mut c_void) -> i64;
+/// Block device-wait callback body passed to QEMU's shmem block driver.
+pub type QemuBlkWaitCbFn = extern "C" fn(u32, *mut c_void);
 /// QEMU shmem block callback registration exported by `crucible-blk-shmem`.
 pub type QemuRegisterBlkCbFn =
     extern "C" fn(Option<QemuBlkSubmitCbFn>, Option<QemuBlkPollCbFn>, *mut c_void);
+/// QEMU shmem block wait registration exported by the device-completion patch.
+pub type QemuRegisterBlkWaitCbFn = extern "C" fn(Option<QemuBlkWaitCbFn>, *mut c_void);
 /// 9p burst callback body passed to QEMU's virtio-9p device.
 pub type QemuNinePBurstCbFn = extern "C" fn(*mut c_void);
 /// 9p submit callback body passed to QEMU's virtio-9p device.
@@ -1587,6 +1596,39 @@ pub const fn resolve_qemu_register_blk_cb_symbol() -> Option<QemuRegisterBlkCbFn
     None
 }
 
+/// Resolves QEMU's shmem block device-wait registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. Patch 0039 defines the exact
+    // `QemuRegisterBlkWaitCbFn` ABI; callers fail closed when it is absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address is the exact block-wait registration
+        // symbol whose C declaration matches `QemuRegisterBlkWaitCbFn`.
+        Some(unsafe {
+            std::mem::transmute::<*mut c_void, QemuRegisterBlkWaitCbFn>(symbol)
+        })
+    }
+}
+
+/// Reports that QEMU's shmem block device-wait registration is unavailable.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitCbFn> {
+    None
+}
+
 /// Resolves QEMU's shmem 9p callback registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -1859,6 +1901,7 @@ fn install_owned_boundary(
     let net_send = crate::resolve_qemu_net_send_symbol();
     let net_flush = crate::resolve_qemu_net_flush_symbol();
     let register_block = resolve_qemu_register_blk_cb_symbol();
+    let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
     let register_ninep = resolve_qemu_register_9p_cb_symbol();
     let state = install_required_runtime_api_scaffold(
         boundary.execution_model,
@@ -1900,6 +1943,7 @@ fn install_owned_boundary(
         net_send,
         net_flush,
         register_block,
+        register_block_wait,
         register_ninep,
     };
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
