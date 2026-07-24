@@ -755,7 +755,7 @@ determinism contract (04).
 > populate Phase 1–2 (the determinism/transport foundation and
 > the QEMU layer built on it).
 
-- [ ] **T-QEMU-1** Implement the launch-config builder: the TCG-derived `sim`
+- [x] **T-QEMU-1** Implement the launch-config builder: the TCG-derived `sim`
   accelerator + fixed `-icount shift=N`, `-accel sim,thread=single` with `-smp N`, fixed `-cpu` (no
   RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
   seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
@@ -774,7 +774,7 @@ determinism contract (04).
   material for scenario identity. Child ownership/fd-passing remains tracked by
   [T-QEMU-3] and [T-QEMU-7]; the N-vCPU launch extension remains tracked by
   [T-QEMU-15].
-- [ ] **T-QEMU-2** Implement launch-config validation that rejects stock TCG,
+- [x] **T-QEMU-2** Implement launch-config validation that rejects stock TCG,
   KVM, and every non-`sim` accelerator / `shift=auto` / missing-`-icount` /
   `thread=multi` (MTTCG) /
   unpinned `rr_switch_quantum` / `-cpu host` / host-timing-or-entropy flags,
@@ -849,7 +849,7 @@ determinism contract (04).
   close, QMP disconnect) surfaced as a typed crashed-node status distinct from an
   intended crash fault, localized rather than retried on gated paths. —
   satisfies [QEMU-32]; spec §10.6.
-- [ ] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
+- [x] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
   via launch config + sim mode, expose the black-box execution-fingerprint hook
   (periodic icount + register/memory/device digest via the plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],

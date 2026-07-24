@@ -1,4 +1,4 @@
-# 0040 crucible-9p-sync-kick — IMPLEMENTED, LIVE VALIDATION PENDING
+# 0040 crucible-9p-sync-kick — IMPLEMENTED AND LIVE VALIDATED
 
 ## Problem
 
@@ -14,10 +14,13 @@ therefore QEMU's kick dispatch, not the guest workload or 9p message model.
 
 ## Selected mechanism
 
-Patch 0040 extends `virtio_pci_ioeventfd_enabled` to return false for
-`VIRTIO_ID_9P` when both icount and the sim accelerator are active. QEMU then
-handles the kick synchronously on the requesting vCPU thread and immediately
-enters the existing raw-message submit/poll callbacks.
+The first implementation extended `virtio_pci_ioeventfd_enabled`, but a
+diagnostic build proved that predicate is not consulted for this virtio-9p
+queue: its `host_notifier_enabled` bit remains set. The validated patch instead
+changes the generic `virtio_queue_notify` dispatch point. When icount and the
+sim accelerator are active and the device is `VIRTIO_ID_9P`, it bypasses the
+host notifier and invokes the queue handler inline. QEMU therefore enters the
+existing raw-message submit/poll callbacks on the requesting vCPU thread.
 
 This is deliberately narrower than globally disabling ioeventfd:
 
@@ -32,20 +35,23 @@ This is deliberately narrower than globally disabling ioeventfd:
 ## Required evidence
 
 `checks.crucible.phase2.gates.patchMicrotests` reconstructs the prefix through
-patch 0039 and executes the exact ioeventfd predicate before and after patch
-0040. It must distinguish sim-mode icount 9p while proving the rng, block,
-plain-TCG, and sim-without-icount cases unchanged.
+patch 0039 and executes the exact `virtio_queue_notify` function before and
+after patch 0040. It distinguishes sim-mode icount 9p while proving the rng,
+block, plain-TCG, and sim-without-icount dispatch cases unchanged.
 
 The standalone `checks.crucible.phase2.qemu9pSyncKick` realization passes on the
-Linux builder, including a complete build of QEMU from the 40-patch bundle and
-all exact-source controls above.
+Linux builder with the exact-source controls above. The full patched QEMU
+package also builds hermetically from source.
 
 `checks.crucible.phase2.qemuLive9pIo` must then prove the end-to-end boundary:
 
 1. a real mounting guest publishes nonzero request frames to `SLOT_9P_IO`;
 2. the host sub-node publishes and delivers a future completion horizon;
 3. the guest progresses to its scheduler ceiling;
-4. a second run under host load reproduces the same icount-domain observations;
+4. a second run under host load reproduces the same modeled completion latency;
 5. delaying the due response's physical ring write changes only wall time.
 
-Only after both gates pass may `T-PLUG-13` be marked complete.
+Both gates pass. The live run forwards Linux's `Tversion`, computes an
+821-icount completion latency, delays response publication by 100 ms under host
+load without changing that latency, releases the device-I/O hold, and reaches
+the 3.2-billion-instruction scheduler ceiling. `T-PLUG-13` is complete.

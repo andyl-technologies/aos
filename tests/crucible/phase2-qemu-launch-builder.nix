@@ -46,8 +46,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-1 task traceability marker";
-        needle = "**T-QEMU-1**";
+        label = "T-QEMU-1 checklist complete";
+        needle = "- [x] **T-QEMU-1**";
       }
       {
         label = "T-QEMU-1 completion note names launch-command builder";
@@ -147,7 +147,7 @@
       }
       {
         label = "CoW disk policy material";
-        needle = "\"root_disk_policy=copy-on-write-overlay\".to_owned(),";
+        needle = "lines.push(\"root_disk_policy=copy-on-write-overlay\".to_owned());";
       }
       {
         label = "kernel argv";
