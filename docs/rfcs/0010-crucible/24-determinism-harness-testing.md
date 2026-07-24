@@ -1128,7 +1128,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   from the selected local replay identity with exit code 3, including QEMU build
   identity drift. This closes the shared mock artifact machine-profile route;
   physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
-- [ ] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
+- [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
   Completed by `checks.crucible.phase1.phaseGateOrdering`:

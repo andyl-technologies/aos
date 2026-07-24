@@ -13,7 +13,9 @@
   };
 
   modelLib = import ./_crucible-model-source.nix {inherit lib;};
-  crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crucibleLib =
+    builtins.readFile ../../crates/crucible/src/lib.rs
+    + builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;

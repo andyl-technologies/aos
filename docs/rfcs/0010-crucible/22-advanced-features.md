@@ -960,7 +960,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
 > are sequenced strictly after the determinism, save/restore-oracle, and
 > control-plane foundations they depend on ([ADV-1], [G-5], [PLAN-4]).
 
-- [ ] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
+- [x] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
   that the advanced-feature phases are sequenced exact-determinism →
   oracle-validated save/restore → fork → search → fuzzing, with no rung's tasks
   scheduled before the lower rung's gate is green. — satisfies [ADV-1], [ADV-2],
@@ -1140,7 +1140,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   fault-plan variation comes through the family density axis; durable DagStore
   corpus admission, pruning, persisted energy state, and throughput measurement
   were completed under the T-ADV-13 scope.
-- [ ] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
+- [x] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
   admission, seeded pruning/energy, each entry a reproduction artifact in the
   DagStore) and meet the fuzzing throughput target of 25 without weakening
   determinism or oracle validation. — satisfies [ADV-26], [ADV-27]; spec §22.7.2;

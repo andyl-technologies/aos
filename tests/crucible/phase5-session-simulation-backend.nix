@@ -14,7 +14,11 @@
   };
 
   backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
-  crucibleShmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  crucibleShmemLib =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   simBackendLib = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
   qemuNodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;

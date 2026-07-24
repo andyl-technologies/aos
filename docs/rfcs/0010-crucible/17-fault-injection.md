@@ -1075,7 +1075,7 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   re-encode `Rlerror` with the selected errno and original tag. Active bit-rate
   bandwidth and overlapping failure rates are folded into scheduler active-fault
   state so `MaterializedState` captures the live I/O fault set.
-- [ ] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
+- [x] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
   heal) as the body of the `Plan`, in virtual time, with build-time validation
   (declared refs, heal-tag injected somewhere, in-range params) and integer-bp
   content-addressing; activate/heal at exact virtual times in total order with the

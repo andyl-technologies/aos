@@ -1031,7 +1031,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
 > triggers, 18 assertions, 22 advanced features, 23 CLI) — the examples are the
 > end-to-end fixtures those layers' gates run against.
 
-- [ ] **T-WL-1** Implement and document the in-guest workload model: the supported
+- [x] **T-WL-1** Implement and document the in-guest workload model: the supported
   guest workload binaries (httpd, client loop, benchmark) selected by scenario
   parameter, with NO host-side traffic injector; add a lint/test that no
   application-traffic origination path exists in the engine. — satisfies [WL-1],
@@ -1088,7 +1088,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   rootfs/9p delivery, world validation rejects mutable/host-path/duplicate
   parameterization, and changed scalar or config-tree values produce distinct
   individually reproducible `ScenarioDef` material.
-- [ ] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
+- [x] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
   corpus fixture, authored with zero guest-side components; assert `run` PASSES and
   `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec
   §A.1.
@@ -1099,7 +1099,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   reproduction artifact with the canonical observation script in its schedule,
   is exercised by `crucible selftest`, and verifies five independent local
   reductions as byte-identical.
-- [ ] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
+- [x] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
   observable trigger graph (AllOf readiness + relative-timer heal + observable
   convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`
   and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
@@ -1111,7 +1111,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `no-split-brain`/`converges-after-heal`, captures a replayable multi-step
   reproduction schedule, is exercised by `crucible selftest`, and verifies five
   independent local reductions as byte-identical.
-- [ ] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
+- [x] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
   with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
   `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
   [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
@@ -1125,7 +1125,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   and `reconverges` as crash-triggered bounded liveness, is exercised by
   `crucible selftest`, and verifies five independent local reductions as
   byte-identical.
-- [ ] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
+- [x] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
   `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
   reduces to a self-contained artifact that `crucible replay` reproduces
   bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
@@ -1142,7 +1142,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   validates replay byte-identity through the unified temporal graph, and proves the
   pre-failure neighborhood can be saved, resumed, and forked through the same
   graph path. Generic file/hash fuzz execution remains tracked by T-CLI-13.
-- [ ] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
+- [x] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
   the divergence-bisection report (A.5): assert all examples are DETERMINISTIC
   under the hostile host matrix, and golden-test the divergence-report shape on a
   deliberately seeded divergence. — satisfies [EX-2], [EX-3]; spec §A.5; cross-ref

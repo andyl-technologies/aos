@@ -11,7 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  qemuLaunch =
+    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/modes.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
   qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;

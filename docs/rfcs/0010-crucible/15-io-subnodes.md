@@ -789,7 +789,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   truncating or extending the device.
   Summary: the base image is never mutated; all guest writes land only in the
   in-memory overlay.
-- [ ] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
+- [x] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
   fixed field order/endianness, reserved-byte rules, bounds-checked decode) and
   carry it over the `SLOT_BLK_IO` shmem rings with `delivery_icount` set to the
   computed completion. — satisfies [IO-8], [IO-9]; spec §15.2.2.
