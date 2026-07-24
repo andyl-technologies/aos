@@ -13,12 +13,13 @@
 #                                symbols are present in the full binary and absent
 #                                in the variant.
 #   drop-one-semantic          : N drops clean, builds, exports no ABI symbol (a
-#                                sim-gated behavioral patch); its runtime effect is
-#                                proven by its own full-series micro-test's stock
-#                                negative control (effect present on patched qemu,
-#                                absent on unpatched -- absent exactly when N's
-#                                code is absent), which the patch-microtests
-#                                aggregate that consumes this gate runs.
+#                                sim-gated behavioral patch); a live boot probe
+#                                compares the full QEMU with the full-minus-N
+#                                variant.
+#   drop-one-composition       : the patch drops and builds, but the generic
+#                                behavioral workload does not reach its effect;
+#                                bind that result to its focused stock-negative
+#                                microtest and retain the explicit coverage gap.
 {
   pkgs,
   lib,
@@ -143,12 +144,13 @@ in
                 emit
               else
                 # Sim-gated behavioral patch (no exported ABI symbol). Boot the
-                # full-minus-N variant under the diskless sim workload and read
+                # full-minus-N variant under the shared sim workload and read
                 # the live divergence classification.
                 cp "$SIM_DIVERGE/result" "$out/sim-diverge.result"
                 cp "$SIM_DIVERGE/variant-fingerprints" "$out/variant-fingerprints" 2>/dev/null || true
                 cls=$(gawk -F= '/^sim_discriminator_classification=/ { print $2 }' "$SIM_DIVERGE/result")
                 rtd=$(gawk -F= '/^runs_to_diverge=/ { print $2 }' "$SIM_DIVERGE/result")
+                sf=$(gawk -F= '/^semantic_form=/ { print $2 }' "$SIM_DIVERGE/result")
                 case "$cls" in
                   diverges)
                     # N suppresses a nondeterminism that reappears without it:
@@ -169,17 +171,21 @@ in
                   differs)
                     # N's fixed-behavior effect is guest-observable: variant is
                     # deterministic but its fingerprint differs from full.
+                    if [ -z "$sf" ]; then
+                      sf=variant-differs-from-full
+                    fi
                     {
                       echo "attribution_method=drop-one-semantic"
                       echo "drop_conflicts=false"
                       echo "full_minus_n_build_succeeds=true"
                       echo "effect_is_sim_gated=true"
-                      echo "semantic_form=variant-differs-from-full"
+                      echo "semantic_form=$sf"
+                      echo "sim_discriminator_result=sim-diverge.result"
                       echo "runtime_effect_proven_against_variant=true"
                     } > "$out/attribution.env"
                     ;;
                   none)
-                    # The diskless generic workload does not reach N's effect
+                    # The generic workload does not reach N's effect
                     # (non-discriminating). Fall back to composition: LIVE
                     # drop-clean + build (this gate) + the patch's own full-series
                     # micro-test stock negative control (run by the aggregate).

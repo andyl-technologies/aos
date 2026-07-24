@@ -18,6 +18,10 @@
 #   drop-one-semantic          : N drops clean, full-minus-N builds and exports
 #                                no ABI symbol; a sim-mode runtime probe shows N's
 #                                effect present in full and absent in the variant.
+#   drop-one-composition       : N drops and builds, but the generic runtime
+#                                probe does not reach its effect; the result is
+#                                bound to N's focused stock-negative microtest
+#                                and recorded as an explicit coverage gap.
 #
 # This is layered on top of the source-provenance attribution gate; together they
 # give every patch runtime-or-assembly load-bearing evidence, no bare needle.

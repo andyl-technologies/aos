@@ -1,5 +1,5 @@
 # Per-patch behavioral drop-one discriminator: boot the full-minus-N VARIANT
-# binary under the diskless sim workload up to MAX_RUNS times and classify N's
+# binary under the shared sim workload up to MAX_RUNS times and classify N's
 # runtime effect against the deterministic full baseline. Only meaningful when N
 # dropped clean and full-minus-N built (a sim-gated behavioral patch with no
 # exported ABI symbol).
@@ -12,7 +12,7 @@
 #   differs   : variant is deterministic but its fingerprint differs from the
 #               full baseline -> N's fixed-behavior effect is guest-observable and
 #               present in full, absent in the variant.
-#   none      : variant is deterministic and identical to full -> this diskless
+#   none      : variant is deterministic and identical to full -> this generic
 #               workload does not reach N's effect (non-discriminating); the
 #               caller records drop-one-composition + a latent-gap flag.
 #
@@ -42,6 +42,7 @@ in
     buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep qemuPackage];
     BUILD_DRV = "${buildDrv}";
     FULL_BASELINE = "${fullBaseline}";
+    FULL_QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
     FIRMWARE = "${qemuPackage}/share/qemu";
     MAX_RUNS = toString maxRuns;
     RTC_CLOCK = rtcClock;
@@ -73,15 +74,71 @@ in
           variant="$BUILD_DRV/variant-qemu-system-x86_64"
           test -x "$variant"
           full_fp=$(cat "$FULL_BASELINE/fingerprint")
+          probe_smp=1
 
           : > "$out/variant-fingerprints"
+
+          # Patch 0008 is a fail-closed policy, not a deterministic-output
+          # transform: without it, an unseeded sim guest consumes host entropy
+          # and boots; with it, QEMU rejects the same launch before guest
+          # execution. Exercise both full and full-minus-0008 binaries directly.
+          if [ "$DROP_INDEX" -eq 8 ]; then
+            full_unseeded=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" none)
+            variant_unseeded=$(sim_fingerprint "$variant" "$FIRMWARE" "$RTC_CLOCK" none)
+            test -z "$full_unseeded" || {
+              echo "FAIL: fully patched sim unexpectedly accepted an unseeded guest-random launch" >&2
+              exit 1
+            }
+            test -n "$variant_unseeded" || {
+              echo "FAIL: full-minus-0008 did not boot the unseeded negative-control workload" >&2
+              exit 1
+            }
+            printf 'run=1 fp=%s seed_mode=none\n' "$variant_unseeded" \
+              > "$out/variant-fingerprints"
+            cat > "$out/result" <<RESULT
+          PASS
+          check=${attrPath}
+          gate=gate:patch-microtests
+          drop_index=$DROP_INDEX
+          sim_discriminator_classification=differs
+          semantic_form=full-rejects-unseeded-variant-boots
+          full_unseeded_rejected=true
+          variant_unseeded_booted=true
+          variant_runs=1
+          variant_diverges=false
+          runs_to_diverge=0
+          variant_first_fingerprint=$variant_unseeded
+          full_baseline_fingerprint=$full_fp
+          variant_max_runs=$MAX_RUNS
+          RESULT
+            exit 0
+          fi
+
+          # Patch 0038 suppresses QEMU's ordinary RR kick timer only when more
+          # than one vCPU exists. Establish an equivalent two-vCPU full-series
+          # baseline before probing the full-minus-0038 binary.
+          if [ "$DROP_INDEX" -eq 38 ]; then
+            probe_smp=2
+            full_smp_first=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" seeded "$probe_smp")
+            full_smp_second=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE" "$RTC_CLOCK" seeded "$probe_smp")
+            test -n "$full_smp_first" || {
+              echo "FAIL: fully patched two-vCPU sim workload produced no fingerprint" >&2
+              exit 1
+            }
+            test "$full_smp_first" = "$full_smp_second" || {
+              echo "FAIL: fully patched two-vCPU sim workload diverged" >&2
+              exit 1
+            }
+            full_fp="$full_smp_first"
+          fi
+
           diverged=false
           runs_to_diverge=0
           run=0
           first=""
           while [ "$run" -lt "$MAX_RUNS" ]; do
             run=$((run + 1))
-            fp=$(sim_fingerprint "$variant" "$FIRMWARE" "$RTC_CLOCK")
+            fp=$(sim_fingerprint "$variant" "$FIRMWARE" "$RTC_CLOCK" seeded "$probe_smp")
             printf 'run=%s fp=%s\n' "$run" "$fp" >> "$out/variant-fingerprints"
             if [ "$run" -eq 1 ]; then
               first="$fp"
@@ -112,6 +169,7 @@ in
           variant_first_fingerprint=$first
           full_baseline_fingerprint=$full_fp
           variant_max_runs=$MAX_RUNS
+          probe_smp=$probe_smp
           RESULT
         '';
       }
