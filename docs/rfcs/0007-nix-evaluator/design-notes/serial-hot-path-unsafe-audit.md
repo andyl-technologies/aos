@@ -622,3 +622,47 @@ The result validates payload compaction as a substantial memory lever, but it
 does not close the memory target.
 Every closure still pays the generic three-word header and every thunk still
 carries a 24-byte `ThunkCellSlot`; those are the next representation targets.
+
+## Sixteenth implementation result
+
+Candidate C now uses its invalid-word space to collapse serial thunk state and
+the cached result into one atomic word. `u64::MAX` represents `Suspended`,
+`u64::MAX - 1` represents `Blackhole`, and every other private word is a
+validated Candidate-C `Value` representing the terminal forced state. The
+claim path therefore reads one atomic instead of a state word followed by a
+result cell. Reconstructing a forced `Value` uses one local unsafe operation;
+its invariant is closed because the private atomic is initialized only with
+the two sentinels and every non-sentinel write copies an already-validated
+`Value` word intact.
+
+The previous `ThunkCellSlot` enum was 24 bytes because it held either a
+16-byte cell or an `Arc` plus a discriminant. `EvalThunk` now keeps the compact
+cell inline and promotes the rare shared identity into the existing boxed
+force-storage extension. Record-table placement, relocation, and parallel
+storage preserve shared force identity; the common flat serial record neither
+allocates nor carries the enum discriminant. `EvalThunk` fell from 96 to 80
+bytes. `FlatClosurePayload` fell from 96 to 88 bytes rather than 80 because
+`EvalLambda` is now its largest variant, reducing a complete generic-header
+flat closure from 120 to 112 bytes.
+
+Two exact cache-off `systems.server.build.toplevel` runs retired 22.8943B and
+22.9036B instructions. This is effectively flat against the pushed
+22.8920-22.8943B range; the lower first-run IPC was host contention, not extra
+retired work. Peak RSS fell from 763,468-769,716KiB to
+732,156-732,468KiB, another 31-37MiB reduction, while stats-enabled worker
+used bytes fell from 475,818,840 to 445,464,584. Byte-level `.drv` closure
+parity passed. The serialized Candidate-C suite passed 2,677 active tests (37
+ignored), and the baseline suite passed 3,154 active tests (34 ignored), plus
+seven doctests in each configuration.
+
+The parallel Candidate-C suite also exposed an independent instrumentation
+race: flat-capture campaign counters are process-global atomics whose
+baseline/delta snapshots can include other evaluators' work. The affected
+conservative-capture test passes alone and with `--test-threads=1`; the RFC
+checklist now tracks making those counters evaluator-local or otherwise
+ownership-safe.
+
+The compact cell materially improves memory but not retired instructions. The
+next representation targets are therefore the 88-byte lambda that pins the
+closure union and the generic 24-byte hash/epoch header, rather than more
+force-cell unsafe code.

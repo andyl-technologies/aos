@@ -225,81 +225,14 @@ impl EvalThunkDynamicEnv {
     }
 }
 
-/// The serial force-state cell of an [`EvalThunk`], stored inline until sharing
-/// demands an `Arc` sidecar.
-///
-/// Every thunk constructor stores the cell [`Inline`](Self::Inline), so the vast
-/// majority of thunks — the serial flat store's per-eval millions — pay no
-/// `Arc<ThunkCell>` heap allocation at construction. The flat force path shares
-/// a thunk by moving its whole record into an `Arc<EvalThunk>`
-/// (`flat_share_thunk`), which shares the inline cell through the record `Arc`
-/// with no cell promotion. Only the record-table
-/// (GC-stress) and shared-backend (parallel) placements, which deep-clone the
-/// record to detach force handles, promote the cell to [`Shared`](Self::Shared)
-/// at allocation so those clones share one `Arc<ThunkCell>` — preserving the
-/// pre-inline behavior exactly on those paths. This extends the doc 15 §5.5
-/// cheap-thunk-clone lazy-`Arc` principle from first force back to construction.
-#[derive(Clone, Debug)]
-pub(crate) enum ThunkCellSlot {
-    /// The serial cell owned inline in the thunk record (no heap allocation).
-    Inline(ThunkCell),
-    /// The serial cell behind a shared `Arc`, so record clones share force state.
-    Shared(Arc<ThunkCell>),
-}
-
-impl ThunkCellSlot {
-    /// Creates an inline suspended serial cell.
-    const fn inline_suspended() -> Self {
-        Self::Inline(ThunkCell::new())
-    }
-
-    /// Creates an inline serial cell already forced with `value`.
-    fn inline_forced(value: Value) -> Self {
-        Self::Inline(ThunkCell::forced(value))
-    }
-
-    /// Borrows the serial cell regardless of inline or shared storage.
-    pub(crate) fn cell(&self) -> &ThunkCell {
-        match self {
-            Self::Inline(cell) => cell,
-            Self::Shared(cell) => cell,
-        }
-    }
-
-    /// Returns whether the cell is currently `Arc`-shared.
-    pub(crate) const fn is_shared(&self) -> bool {
-        matches!(self, Self::Shared(_))
-    }
-
-    /// Promotes an inline cell to a shared `Arc`, returning the shared handle.
-    ///
-    /// Idempotent: an already-shared cell returns an `Arc::clone` of the
-    /// existing handle. Promotion moves the inline cell into the `Arc` in place,
-    /// preserving its exact force state, so record clones taken afterward share
-    /// one cell.
-    pub(crate) fn share(&mut self) -> Arc<ThunkCell> {
-        match self {
-            Self::Shared(shared) => Arc::clone(shared),
-            Self::Inline(_) => {
-                let Self::Inline(cell) = std::mem::replace(self, Self::Inline(ThunkCell::new()))
-                else {
-                    unreachable!("matched Inline in the arm guard above")
-                };
-                let shared = Arc::new(cell);
-                *self = Self::Shared(Arc::clone(&shared));
-                shared
-            }
-        }
-    }
-}
-
 /// A suspended tree-walk thunk heap record.
 ///
 /// The record stores deferred tree-walk work and force-state storage.
 #[derive(Clone, Debug)]
 pub struct EvalThunk {
     kind: EvalThunkKind,
-    cell: ThunkCellSlot,
+    /// Inline serial force state for the common unshared path.
+    cell: ThunkCell,
     /// Storage used only by non-default forcing modes.
     ///
     /// The serial full-toplevel path allocates millions of thunks and never
@@ -310,7 +243,17 @@ pub struct EvalThunk {
 
 /// Force-storage state absent from the common serial thunk.
 #[derive(Clone, Debug)]
-enum EvalThunkStorageExtension {
+struct EvalThunkStorageExtension {
+    /// Shared serial identity used only by detached record clones.
+    shared_cell: Option<Arc<ThunkCell>>,
+    mode: EvalThunkStorageExtensionMode,
+}
+
+/// Non-common forcing mode carried in an out-of-line extension.
+#[derive(Clone, Debug)]
+enum EvalThunkStorageExtensionMode {
+    /// Serial forcing with only a promoted shared-cell identity.
+    Serial,
     /// The thunk is proven frame-local and used once.
     SingleEntry,
     /// The thunk participates in the evaluator-native parallel force protocol.

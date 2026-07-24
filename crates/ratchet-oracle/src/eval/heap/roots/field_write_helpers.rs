@@ -412,7 +412,7 @@ pub(super) fn record_owned_heap_field_write_object(
             }
             let relocated = EvalThunk::from_relocated_parts(
                 thunk.kind().clone(),
-                ThunkCellSlot::Shared(Arc::new(ThunkCell::forced(replacement))),
+                Arc::new(ThunkCell::forced(replacement)),
                 thunk.force_storage_mode(),
                 parallel_cell,
             )
@@ -435,10 +435,10 @@ pub(super) fn record_owned_heap_field_write_object(
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
             let relocated = EvalThunk::from_relocated_parts(
                 thunk.kind().clone(),
-                ThunkCellSlot::Shared(Arc::new(
+                Arc::new(
                     clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                         .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
-                )),
+                ),
                 thunk.force_storage_mode(),
                 Some(Arc::new(parallel_cell)),
             )
@@ -522,10 +522,10 @@ pub(super) fn rebuild_thunk_for_heap_field_write(
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
     let relocated = EvalThunk::from_relocated_parts(
         kind,
-        ThunkCellSlot::Shared(Arc::new(
+        Arc::new(
             clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
-        )),
+        ),
         thunk.force_storage_mode(),
         clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
     )

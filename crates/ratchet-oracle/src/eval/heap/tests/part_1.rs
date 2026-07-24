@@ -592,7 +592,7 @@ fn worker_region_pop_rejects_retained_edge_into_suffix() {
             EvalEnv::default(),
         ))
         .expect("forced value allocates above marker");
-    // Publish through the record's own serial cell: inline `ThunkCellSlot`
+    // Publish through the record's own inline serial cell
     // storage makes `clone_thunk` deep-copy the cell, so forcing a clone would
     // leave the heap record suspended and hide the cached-result edge under test.
     let retained_cell = heap

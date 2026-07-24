@@ -227,11 +227,11 @@ impl EvalHeap {
 
     /// Promotes a flat thunk's serial cell to a shared `Arc` and returns a clone.
     ///
-    /// Test-only bridge for exercising serial-cell lifetime under the inline
-    /// [`ThunkCellSlot`](super::ThunkCellSlot) storage: resolves the flat thunk
-    /// mutably, promotes its inline cell to `Shared`, and returns an
-    /// `Arc<ThunkCell>` sharing the record's now-promoted cell so a test can
-    /// force the record itself (a `clone_thunk` deep-copies the inline cell).
+    /// Test-only bridge for exercising serial-cell lifetime under the compact
+    /// inline storage: resolves the flat thunk mutably, moves its inline cell
+    /// into the out-of-line shared extension, and returns an `Arc<ThunkCell>`
+    /// sharing that promoted cell so a test can force the record itself (a
+    /// `clone_thunk` deep-copies an unshared inline cell).
     ///
     /// # Errors
     ///

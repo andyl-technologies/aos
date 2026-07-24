@@ -5,25 +5,31 @@
 //! representation. This module implements only the serial subset:
 //! `Suspended -> Blackhole -> Forced`.
 //!
-//! The cached result is stored in an [`AtomicValueCell`] published under the
-//! state word: the claiming owner writes the result while the cell is
-//! blackholed (it holds the exclusive claim), then release-stores `Forced`.
-//! Readers acquire-load the state word before touching the result, so a
-//! `Forced` observation always sees the matching cached value and the cell is
-//! [`Sync`] for the future shared demand graph. `Forced` is terminal: the
-//! result is never rewritten after publication.
+//! The baseline representation stores the cached result in an
+//! `AtomicValueCell` published under a separate state word. Candidate C instead
+//! reserves two invalid tagged-value words for suspended and blackholed, then
+//! publishes the forced value directly into that same atomic word. In both
+//! layouts readers acquire-load the publication word, and `Forced` is terminal:
+//! the result is never rewritten after publication.
 
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
+#[cfg(not(feature = "candidate_c_value"))]
 use super::env::AtomicValueCell;
 use crate::value::Value;
 
 const SUSPENDED: u64 = 0;
 const BLACKHOLE: u64 = 1;
 const FORCED: u64 = 2;
+
+/// Invalid Candidate-C value words reserved for the serial thunk state.
+#[cfg(feature = "candidate_c_value")]
+const COMPACT_SUSPENDED: u64 = u64::MAX;
+#[cfg(feature = "candidate_c_value")]
+const COMPACT_BLACKHOLE: u64 = u64::MAX - 1;
 
 /// The serial Phase-1 thunk state encoded in the atomic state word.
 #[repr(u64)]
@@ -183,10 +189,22 @@ impl ThunkResolveBarrier for DisabledThunkResolveBarrier {
 /// published under the atomic state word (see the module docs), so the cell is
 /// [`Send`] and [`Sync`] while keeping the serial
 /// `Suspended -> Blackhole -> Forced` protocol unchanged.
+#[cfg(not(feature = "candidate_c_value"))]
 #[derive(Debug)]
 pub struct ThunkCell {
     state: AtomicU64,
     result: AtomicValueCell,
+}
+
+/// A one-word serial thunk state/result cell for Candidate C.
+///
+/// Two invalid Candidate-C value encodings represent suspended and blackholed;
+/// every other stored word is a validated forced result. The atomically
+/// published result therefore carries the terminal state itself.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Debug)]
+pub struct ThunkCell {
+    word: AtomicU64,
 }
 
 impl Default for ThunkCell {
@@ -207,14 +225,23 @@ impl Clone for ThunkCell {
     /// `Blackhole` cell is unreachable in practice; were it to occur it would
     /// yield an independent blackholed cell rather than corrupt shared state.
     fn clone(&self) -> Self {
-        let state = self.state.load(Ordering::Acquire);
-        let result = match self.result.load() {
-            Ok(Some(value)) => AtomicValueCell::filled(value),
-            Ok(None) | Err(_) => AtomicValueCell::empty(),
-        };
-        Self {
-            state: AtomicU64::new(state),
-            result,
+        #[cfg(feature = "candidate_c_value")]
+        {
+            return Self {
+                word: AtomicU64::new(self.word.load(Ordering::Acquire)),
+            };
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            let state = self.state.load(Ordering::Acquire);
+            let result = match self.result.load() {
+                Ok(Some(value)) => AtomicValueCell::filled(value),
+                Ok(None) | Err(_) => AtomicValueCell::empty(),
+            };
+            Self {
+                state: AtomicU64::new(state),
+                result,
+            }
         }
     }
 }
@@ -222,17 +249,35 @@ impl Clone for ThunkCell {
 impl ThunkCell {
     /// Creates a suspended thunk cell with no cached result.
     pub const fn new() -> Self {
-        Self {
-            state: AtomicU64::new(SUSPENDED),
-            result: AtomicValueCell::empty(),
+        #[cfg(feature = "candidate_c_value")]
+        {
+            return Self {
+                word: AtomicU64::new(COMPACT_SUSPENDED),
+            };
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            Self {
+                state: AtomicU64::new(SUSPENDED),
+                result: AtomicValueCell::empty(),
+            }
         }
     }
 
     /// Creates a forced thunk cell with an already relocated cached result.
     pub(crate) fn forced(value: Value) -> Self {
-        Self {
-            state: AtomicU64::new(FORCED),
-            result: AtomicValueCell::filled(value),
+        #[cfg(feature = "candidate_c_value")]
+        {
+            return Self {
+                word: AtomicU64::new(value.word().raw()),
+            };
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            Self {
+                state: AtomicU64::new(FORCED),
+                result: AtomicValueCell::filled(value),
+            }
         }
     }
 
@@ -243,7 +288,18 @@ impl ThunkCell {
     /// Returns [`ForceError::InvalidStateWord`] if the private atomic state word
     /// somehow contains an unsupported encoding.
     pub fn state(&self) -> Result<ThunkState, ForceError> {
-        ThunkState::from_raw(self.state.load(Ordering::Acquire))
+        #[cfg(feature = "candidate_c_value")]
+        {
+            return Ok(match self.word.load(Ordering::Acquire) {
+                COMPACT_SUSPENDED => ThunkState::Suspended,
+                COMPACT_BLACKHOLE => ThunkState::Blackhole,
+                _ => ThunkState::Forced,
+            });
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            ThunkState::from_raw(self.state.load(Ordering::Acquire))
+        }
     }
 
     /// Returns the cached value when the thunk is forced.
@@ -254,12 +310,23 @@ impl ThunkCell {
     /// has an unsupported encoding. Returns [`ForceError::MissingForcedValue`]
     /// if the state says forced but no result has been installed.
     pub fn cached_value(&self) -> Result<Option<Value>, ForceError> {
-        if self.state()? != ThunkState::Forced {
-            return Ok(None);
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let word = self.word.load(Ordering::Acquire);
+            return match word {
+                COMPACT_SUSPENDED | COMPACT_BLACKHOLE => Ok(None),
+                _ => Ok(Some(compact_forced_value(word))),
+            };
         }
-        self.read_result()?
-            .map(Some)
-            .ok_or(ForceError::MissingForcedValue)
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            if self.state()? != ThunkState::Forced {
+                return Ok(None);
+            }
+            self.read_result()?
+                .map(Some)
+                .ok_or(ForceError::MissingForcedValue)
+        }
     }
 
     /// Reads the raw cached result cell.
@@ -269,6 +336,7 @@ impl ThunkCell {
     /// Returns [`ForceError::MissingForcedValue`] if the cell's stored words do
     /// not decode into a runtime value, which is unreachable through
     /// [`ThunkCell`]'s own publication path.
+    #[cfg(not(feature = "candidate_c_value"))]
     fn read_result(&self) -> Result<Option<Value>, ForceError> {
         self.result
             .load()
@@ -291,24 +359,59 @@ impl ThunkCell {
     /// [`ForceError::MissingForcedValue`] if the state says forced but no result
     /// has been installed.
     pub fn begin_force(&self) -> Result<ForceClaim<'_>, ForceError> {
-        loop {
-            match ThunkState::from_raw(self.state.load(Ordering::Acquire))? {
-                ThunkState::Suspended => {
-                    if self
-                        .state
-                        .compare_exchange(SUSPENDED, BLACKHOLE, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                    {
-                        return Ok(ForceClaim::Claimed(ForceGuard {
-                            thunk: self,
-                            active: true,
-                        }));
+        #[cfg(feature = "candidate_c_value")]
+        {
+            loop {
+                let word = self.word.load(Ordering::Acquire);
+                match word {
+                    COMPACT_SUSPENDED => {
+                        if self
+                            .word
+                            .compare_exchange(
+                                COMPACT_SUSPENDED,
+                                COMPACT_BLACKHOLE,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            return Ok(ForceClaim::Claimed(ForceGuard {
+                                thunk: self,
+                                active: true,
+                            }));
+                        }
                     }
+                    COMPACT_BLACKHOLE => return Err(ForceError::InfiniteRecursion),
+                    _ => return Ok(ForceClaim::AlreadyForced(compact_forced_value(word))),
                 }
-                ThunkState::Blackhole => return Err(ForceError::InfiniteRecursion),
-                ThunkState::Forced => {
-                    let value = self.read_result()?.ok_or(ForceError::MissingForcedValue)?;
-                    return Ok(ForceClaim::AlreadyForced(value));
+            }
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            loop {
+                match ThunkState::from_raw(self.state.load(Ordering::Acquire))? {
+                    ThunkState::Suspended => {
+                        if self
+                            .state
+                            .compare_exchange(
+                                SUSPENDED,
+                                BLACKHOLE,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            return Ok(ForceClaim::Claimed(ForceGuard {
+                                thunk: self,
+                                active: true,
+                            }));
+                        }
+                    }
+                    ThunkState::Blackhole => return Err(ForceError::InfiniteRecursion),
+                    ThunkState::Forced => {
+                        let value = self.read_result()?.ok_or(ForceError::MissingForcedValue)?;
+                        return Ok(ForceClaim::AlreadyForced(value));
+                    }
                 }
             }
         }
@@ -319,40 +422,83 @@ impl ThunkCell {
         value: Value,
         barrier: &mut impl ThunkResolveBarrier,
     ) -> Result<Value, ForceError> {
-        let actual = self.state()?;
-        if actual != ThunkState::Blackhole {
-            return Err(ForceError::UnexpectedState {
-                expected: ThunkState::Blackhole,
-                actual,
-            });
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let actual = self.state()?;
+            if actual != ThunkState::Blackhole {
+                return Err(ForceError::UnexpectedState {
+                    expected: ThunkState::Blackhole,
+                    actual,
+                });
+            }
+            barrier.before_publish_forced(value)?;
+            self.word.store(value.word().raw(), Ordering::Release);
+            return Ok(value);
         }
-        barrier.before_publish_forced(value)?;
-        // The state word is not re-read after the barrier: reaching this method
-        // means this thread holds the exclusive `Blackhole` claim minted by the
-        // `begin_force` CAS, and the `Blackhole -> {Forced, Suspended}`
-        // transitions are performed only by this guard's finish/abort on the
-        // claiming thread. The cell's `state`/`result` fields are private and
-        // their only mutators (`publish_forced_with_barrier`, `abort_claim`) are
-        // module-private, so no `ThunkResolveBarrier` — which is contractually
-        // forbidden from publishing and holds at most a shared `&ThunkCell` — can
-        // move the state. It therefore remains `Blackhole` across the call above.
-        self.result.store(value);
-        self.state.store(FORCED, Ordering::Release);
-        Ok(value)
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            let actual = self.state()?;
+            if actual != ThunkState::Blackhole {
+                return Err(ForceError::UnexpectedState {
+                    expected: ThunkState::Blackhole,
+                    actual,
+                });
+            }
+            barrier.before_publish_forced(value)?;
+            // The state word is not re-read after the barrier: reaching this method
+            // means this thread holds the exclusive `Blackhole` claim minted by the
+            // `begin_force` CAS, and the `Blackhole -> {Forced, Suspended}`
+            // transitions are performed only by this guard's finish/abort on the
+            // claiming thread. The cell's `state`/`result` fields are private and
+            // their only mutators (`publish_forced_with_barrier`, `abort_claim`) are
+            // module-private, so no `ThunkResolveBarrier` — which is contractually
+            // forbidden from publishing and holds at most a shared `&ThunkCell` — can
+            // move the state. It therefore remains `Blackhole` across the call above.
+            self.result.store(value);
+            self.state.store(FORCED, Ordering::Release);
+            Ok(value)
+        }
     }
 
     fn abort_claim(&self) -> Result<(), ForceError> {
-        let actual = self.state()?;
-        if actual != ThunkState::Blackhole {
-            return Err(ForceError::UnexpectedState {
-                expected: ThunkState::Blackhole,
-                actual,
-            });
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let actual = self.state()?;
+            if actual != ThunkState::Blackhole {
+                return Err(ForceError::UnexpectedState {
+                    expected: ThunkState::Blackhole,
+                    actual,
+                });
+            }
+            self.word.store(COMPACT_SUSPENDED, Ordering::Release);
+            return Ok(());
         }
-        self.result.clear();
-        self.state.store(SUSPENDED, Ordering::Release);
-        Ok(())
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            let actual = self.state()?;
+            if actual != ThunkState::Blackhole {
+                return Err(ForceError::UnexpectedState {
+                    expected: ThunkState::Blackhole,
+                    actual,
+                });
+            }
+            self.result.clear();
+            self.state.store(SUSPENDED, Ordering::Release);
+            Ok(())
+        }
     }
+}
+
+/// Rebuilds a forced Candidate-C value from a word written by this cell.
+#[cfg(feature = "candidate_c_value")]
+#[inline]
+#[allow(unsafe_code)]
+fn compact_forced_value(word: u64) -> Value {
+    debug_assert_ne!(word, COMPACT_SUSPENDED);
+    debug_assert_ne!(word, COMPACT_BLACKHOLE);
+    // SAFETY: the private word is initialized only to the two sentinels and
+    // every non-sentinel write copies a validated Candidate-C `Value` intact.
+    unsafe { Value::from_validated_raw_unchecked(word) }
 }
 
 /// A thunk forcing failure.
@@ -389,6 +535,18 @@ pub enum ForceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "candidate_c_value", target_pointer_width = "64"))]
+    #[test]
+    fn candidate_c_thunk_cell_is_one_word() {
+        assert_eq!(std::mem::size_of::<ThunkCell>(), 8);
+        assert!(
+            crate::value::compressed::CompressedValueWord::from_raw(COMPACT_SUSPENDED).is_err()
+        );
+        assert!(
+            crate::value::compressed::CompressedValueWord::from_raw(COMPACT_BLACKHOLE).is_err()
+        );
+    }
 
     fn assert_int(value: Value, expected: i64) {
         assert_eq!(value.as_int(), Ok(expected));

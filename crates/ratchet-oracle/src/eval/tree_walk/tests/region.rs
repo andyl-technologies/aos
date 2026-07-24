@@ -304,7 +304,7 @@ fn discard_worker_region_scope_retires_mark_after_retained_edge_error() {
                 ))
                 .expect("worker lambda allocates above marker");
             // Publish through the record's own serial cell: inline
-            // `ThunkCellSlot` storage makes `clone_thunk` deep-copy the cell, so
+            // Inline thunk-cell storage makes `clone_thunk` deep-copy the cell, so
             // forcing a clone would leave the heap record suspended and hide the
             // cached-result edge this region-pop rejection depends on.
             let retained_cell = eval

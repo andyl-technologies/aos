@@ -6,27 +6,32 @@ impl EvalThunk {
     /// Rebuilds a thunk from collector-relocated storage components.
     pub(in crate::eval::heap) fn from_relocated_parts(
         kind: EvalThunkKind,
-        cell: ThunkCellSlot,
+        shared_cell: Arc<ThunkCell>,
         mode: EvalThunkForceStorageMode,
         parallel_cell: Option<Arc<TreeWalkParallelThunkCell>>,
     ) -> Option<Self> {
-        let storage_extension = match mode {
-            EvalThunkForceStorageMode::Serial if parallel_cell.is_none() => None,
+        let mode = match mode {
+            EvalThunkForceStorageMode::Serial if parallel_cell.is_none() => {
+                EvalThunkStorageExtensionMode::Serial
+            }
             EvalThunkForceStorageMode::SingleEntry => {
                 if parallel_cell.is_some() {
                     return None;
                 }
-                Some(Box::new(EvalThunkStorageExtension::SingleEntry))
+                EvalThunkStorageExtensionMode::SingleEntry
             }
-            EvalThunkForceStorageMode::SerialWithParallelPayload => Some(Box::new(
-                EvalThunkStorageExtension::Parallel(parallel_cell?),
-            )),
+            EvalThunkForceStorageMode::SerialWithParallelPayload => {
+                EvalThunkStorageExtensionMode::Parallel(parallel_cell?)
+            }
             EvalThunkForceStorageMode::Serial => return None,
         };
         Some(Self {
             kind,
-            cell,
-            storage_extension,
+            cell: ThunkCell::new(),
+            storage_extension: Some(Box::new(EvalThunkStorageExtension {
+                shared_cell: Some(shared_cell),
+                mode,
+            })),
         })
     }
 
@@ -60,7 +65,7 @@ impl EvalThunk {
                 env,
                 dynamic_env: EvalThunkDynamicEnv::new(with_env, scoped_globals),
             },
-            cell: ThunkCellSlot::inline_suspended(),
+            cell: ThunkCell::new(),
             storage_extension: None,
         }
     }
@@ -77,7 +82,7 @@ impl EvalThunk {
     pub(crate) fn released_forced(result: Value) -> Self {
         Self {
             kind: EvalThunkKind::Released,
-            cell: ThunkCellSlot::inline_forced(result),
+            cell: ThunkCell::forced(result),
             storage_extension: None,
         }
     }
@@ -89,7 +94,10 @@ impl EvalThunk {
     /// the serial cell present for heap metadata compatibility, but the force
     /// path evaluates the body directly without publishing a cached result.
     pub(crate) fn into_single_entry(mut self) -> Self {
-        self.storage_extension = Some(Box::new(EvalThunkStorageExtension::SingleEntry));
+        self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
+            shared_cell: None,
+            mode: EvalThunkStorageExtensionMode::SingleEntry,
+        }));
         self
     }
 
@@ -111,7 +119,7 @@ impl EvalThunk {
                 argument: EvalNodeRef::new(argument_module, argument_id),
                 argument_value,
             },
-            cell: ThunkCellSlot::inline_suspended(),
+            cell: ThunkCell::new(),
             storage_extension: None,
         }
     }
@@ -144,7 +152,7 @@ impl EvalThunk {
                 second_argument_span,
                 second_argument_value,
             })),
-            cell: ThunkCellSlot::inline_suspended(),
+            cell: ThunkCell::new(),
             storage_extension: None,
         }
     }
@@ -162,7 +170,7 @@ impl EvalThunk {
                 receiver,
                 path,
             },
-            cell: ThunkCellSlot::inline_suspended(),
+            cell: ThunkCell::new(),
             storage_extension: None,
         }
     }
@@ -174,7 +182,7 @@ impl EvalThunk {
                 symbol,
                 builtin: builtin.kind(),
             },
-            cell: ThunkCellSlot::inline_suspended(),
+            cell: ThunkCell::new(),
             storage_extension: None,
         }
     }
@@ -183,7 +191,7 @@ impl EvalThunk {
     pub(crate) fn with_forced_cached_result_from(thunk: &Self, value: Value) -> Self {
         Self {
             kind: thunk.kind.clone(),
-            cell: ThunkCellSlot::inline_forced(value),
+            cell: ThunkCell::forced(value),
             storage_extension: None,
         }
     }
@@ -205,9 +213,15 @@ impl EvalThunk {
         cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
     ) -> Self {
         if self.storage_extension.is_none() {
-            self.storage_extension = Some(Box::new(EvalThunkStorageExtension::Parallel(Arc::new(
-                TreeWalkParallelThunkCell::with_cycle_registry(dropped_claim_error, cycle_registry),
-            ))));
+            self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
+                shared_cell: None,
+                mode: EvalThunkStorageExtensionMode::Parallel(Arc::new(
+                    TreeWalkParallelThunkCell::with_cycle_registry(
+                        dropped_claim_error,
+                        cycle_registry,
+                    ),
+                )),
+            }));
         }
         self
     }
@@ -314,7 +328,10 @@ impl EvalThunk {
 
     /// Returns the serial state/result cell for this thunk.
     pub fn cell(&self) -> &ThunkCell {
-        self.cell.cell()
+        self.storage_extension
+            .as_deref()
+            .and_then(|extension| extension.shared_cell.as_deref())
+            .unwrap_or(&self.cell)
     }
 
     /// Promotes this thunk's serial cell to a shared `Arc`, returning the handle.
@@ -322,9 +339,27 @@ impl EvalThunk {
     /// Record-table and shared-backend placements call this at allocation so the
     /// deep-clones their force paths take share one cell; flat thunks stay inline
     /// and share through the record `Arc` instead. Idempotent on an already
-    /// shared cell. See [`ThunkCellSlot`].
+    /// shared cell.
     pub(crate) fn share_cell(&mut self) -> Arc<ThunkCell> {
-        self.cell.share()
+        if let Some(shared) = self
+            .storage_extension
+            .as_deref()
+            .and_then(|extension| extension.shared_cell.as_ref())
+        {
+            return Arc::clone(shared);
+        }
+
+        let shared = Arc::new(std::mem::take(&mut self.cell));
+        match self.storage_extension.as_deref_mut() {
+            Some(extension) => extension.shared_cell = Some(Arc::clone(&shared)),
+            None => {
+                self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
+                    shared_cell: Some(Arc::clone(&shared)),
+                    mode: EvalThunkStorageExtensionMode::Serial,
+                }));
+            }
+        }
+        shared
     }
 
     /// Returns whether two payload snapshots share the same force-state
@@ -335,17 +370,21 @@ impl EvalThunk {
         // allocation for shared cells, or literally the same inline cell for a
         // record compared with itself. `std::ptr::eq` captures both uniformly
         // and matches the previous `Arc::ptr_eq` on the shared path.
-        std::ptr::eq(self.cell.cell(), other.cell.cell())
+        std::ptr::eq(self.cell(), other.cell())
             && match (&self.storage_extension, &other.storage_extension) {
                 (None, None) => true,
-                (Some(left), Some(right)) => match (left.as_ref(), right.as_ref()) {
+                (Some(left), Some(right)) => match (&left.mode, &right.mode) {
                     (
-                        EvalThunkStorageExtension::Parallel(left),
-                        EvalThunkStorageExtension::Parallel(right),
+                        EvalThunkStorageExtensionMode::Parallel(left),
+                        EvalThunkStorageExtensionMode::Parallel(right),
                     ) => Arc::ptr_eq(left, right),
                     (
-                        EvalThunkStorageExtension::SingleEntry,
-                        EvalThunkStorageExtension::SingleEntry,
+                        EvalThunkStorageExtensionMode::SingleEntry,
+                        EvalThunkStorageExtensionMode::SingleEntry,
+                    ) => true,
+                    (
+                        EvalThunkStorageExtensionMode::Serial,
+                        EvalThunkStorageExtensionMode::Serial,
                     ) => true,
                     _ => false,
                 },
@@ -359,10 +398,20 @@ impl EvalThunk {
     /// `Arc::clone` per record clone; an inline serial cell is deep-copied and
     /// costs none.
     pub(crate) fn state_arc_clone_count(&self) -> u64 {
-        let serial = if self.cell.is_shared() { 1 } else { 0 };
+        let serial = if self
+            .storage_extension
+            .as_deref()
+            .is_some_and(|extension| extension.shared_cell.is_some())
+        {
+            1
+        } else {
+            0
+        };
         let parallel = if matches!(
-            self.storage_extension.as_deref(),
-            Some(EvalThunkStorageExtension::Parallel(_))
+            self.storage_extension
+                .as_deref()
+                .map(|extension| &extension.mode),
+            Some(EvalThunkStorageExtensionMode::Parallel(_))
         ) {
             1
         } else {
@@ -376,10 +425,18 @@ impl EvalThunk {
     pub(crate) fn force_storage_mode(&self) -> EvalThunkForceStorageMode {
         match self.storage_extension.as_deref() {
             None => EvalThunkForceStorageMode::Serial,
-            Some(EvalThunkStorageExtension::SingleEntry) => EvalThunkForceStorageMode::SingleEntry,
-            Some(EvalThunkStorageExtension::Parallel(_)) => {
-                EvalThunkForceStorageMode::SerialWithParallelPayload
-            }
+            Some(EvalThunkStorageExtension {
+                mode: EvalThunkStorageExtensionMode::Serial,
+                ..
+            }) => EvalThunkForceStorageMode::Serial,
+            Some(EvalThunkStorageExtension {
+                mode: EvalThunkStorageExtensionMode::SingleEntry,
+                ..
+            }) => EvalThunkForceStorageMode::SingleEntry,
+            Some(EvalThunkStorageExtension {
+                mode: EvalThunkStorageExtensionMode::Parallel(_),
+                ..
+            }) => EvalThunkForceStorageMode::SerialWithParallelPayload,
         }
     }
 
@@ -390,15 +447,20 @@ impl EvalThunk {
     /// result to stand in for the captures), and thunks with a parallel
     /// payload cell are shared across workers, so only plain serial-storage
     /// thunks qualify.
-    pub(crate) const fn has_serial_only_force_storage(&self) -> bool {
-        self.storage_extension.is_none()
+    pub(crate) fn has_serial_only_force_storage(&self) -> bool {
+        match self.storage_extension.as_deref() {
+            None => true,
+            Some(extension) => matches!(extension.mode, EvalThunkStorageExtensionMode::Serial),
+        }
     }
 
     /// Returns whether this thunk uses the single-entry direct force path.
     pub(crate) fn is_single_entry_force_storage(&self) -> bool {
         matches!(
-            self.storage_extension.as_deref(),
-            Some(EvalThunkStorageExtension::SingleEntry)
+            self.storage_extension
+                .as_deref()
+                .map(|extension| &extension.mode),
+            Some(EvalThunkStorageExtensionMode::SingleEntry)
         )
     }
 
@@ -407,9 +469,15 @@ impl EvalThunk {
     /// This accessor is crate-internal so heap scanning, relocation, and future
     /// scheduler wiring can preserve the serial-cell authority boundary.
     pub(crate) fn parallel_payload_cell(&self) -> Option<&TreeWalkParallelThunkCell> {
-        match self.storage_extension.as_deref() {
-            Some(EvalThunkStorageExtension::Parallel(cell)) => Some(cell),
-            None | Some(EvalThunkStorageExtension::SingleEntry) => None,
+        match self
+            .storage_extension
+            .as_deref()
+            .map(|extension| &extension.mode)
+        {
+            Some(EvalThunkStorageExtensionMode::Parallel(cell)) => Some(cell),
+            None
+            | Some(EvalThunkStorageExtensionMode::Serial)
+            | Some(EvalThunkStorageExtensionMode::SingleEntry) => None,
         }
     }
 }
@@ -563,8 +631,8 @@ mod tests {
     #[test]
     fn candidate_c_common_closure_layout_stays_compact() {
         assert_eq!(std::mem::size_of::<EvalEnv>(), 6 * 8);
-        assert_eq!(std::mem::size_of::<EvalThunk>(), 12 * 8);
-        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 12 * 8);
+        assert_eq!(std::mem::size_of::<EvalThunk>(), 10 * 8);
+        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 11 * 8);
     }
 
     #[test]

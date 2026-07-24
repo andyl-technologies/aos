@@ -12513,17 +12513,41 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `ActiveEvalFrames::push`, preserve the existing chain in compatibility
       order, and pin both the transition and the 22-root reverse-depth
       writeback case with tests.
-- [ ] **Discovered residual uniform flat-closure overhead:** after common
-      payload compaction, every thunk still carries a 24-byte `ThunkCellSlot`,
-      and the generic flat header adds 24 bytes even though closure hash and
-      access-epoch words are cold/constant in the default evaluator. Design a
-      thunk-specific cell/header representation containing only metadata
-      closure resolution and force identity actually require, preserve
-      GC/snapshot semantics, and accept it only with byte parity, the full
-      Candidate-C suite, and measured full-toplevel instruction and peak-RSS
-      wins. The current 767.6-770.0MiB peak remains far above the `<0.5x` C++
-      target
+- [x] **Compact serial thunk state and rare shared identity:** Candidate C now
+      reserves two invalid tagged-value words for `Suspended` and `Blackhole`
+      and stores every forced result directly in the same `AtomicU64`.
+      `EvalThunk` fell from 96 to 80 bytes. The shared-cell identity required by
+      record-table/parallel/relocation paths moved into the already-rare boxed
+      force-storage extension; the common serial path remains allocation-free.
+      The largest `FlatClosurePayload` variant is now the 88-byte lambda, so
+      complete flat closures fell from 120 to 112 bytes. Two exact
+      full-toplevel samples retired 22.8943B and 22.9036B instructions
+      (effectively unchanged from 22.8920-22.8943B) while peak RSS fell to
+      732,156-732,468KiB (another 31-37MiB) and stats-enabled worker used
+      bytes fell from 475,818,840 to 445,464,584. Full byte parity, all 2,677
+      active serialized Candidate-C tests (37 ignored), and all 3,154 active
+      baseline tests (34 ignored), plus seven doctests in each configuration,
+      passed
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered residual uniform flat-closure overhead:** the generic flat
+      header still adds 24 bytes even though closure hash and access-epoch
+      words are cold/constant in the default evaluator, and the 88-byte lambda
+      now pins the shared closure-union size eight bytes above the compact
+      thunk. Design closure-specific header and lambda representations
+      containing only metadata resolution actually requires, preserve
+      GC/snapshot semantics, and accept them only with byte parity, the full
+      Candidate-C suite, and measured full-toplevel instruction and peak-RSS
+      wins. The current approximately 715MiB peak remains far above the
+      `<0.5x` C++ target
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered process-global capture-counter race:** evaluator campaign
+      snapshots subtract a baseline from process-global flat-capture atomics.
+      Parallel evaluator tests can increment those counters between another
+      evaluator's baseline and final snapshot, producing false nonzero
+      per-evaluator deltas. The conservative oversized-depth test reproduced
+      this under the parallel full suite and passed in isolation and with one
+      test thread. Make capture accounting evaluator-local or attach an
+      ownership/epoch scheme before treating these counters as concurrent-safe.
 - [ ] **Discovered oracle unsafe-fence drift:** `ratchet-oracle` is documented
       as the safe differential reference but currently carries local unsafe
       allowances for stable-arena dereference, trusted atomic-value decode, and

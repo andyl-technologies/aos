@@ -20,10 +20,10 @@ fn alloc_capturing_thunk(heap: &mut EvalHeap) -> (Value, Arc<EvalFrame>) {
 
 /// Forces `thunk` to `result` through the serial claim protocol.
 fn force_thunk_to(heap: &mut EvalHeap, thunk: Value, result: Value) {
-    // Publish through the heap record's own serial cell. Under the inline
-    // `ThunkCellSlot` storage a `clone_thunk` deep-copies the cell, so forcing a
-    // clone would leave the heap record suspended; promoting the flat cell to a
-    // shared `Arc` and forcing that handle publishes back into the record.
+    // Publish through the heap record's own serial cell. With inline thunk-cell
+    // storage a `clone_thunk` deep-copies the cell, so forcing a clone would
+    // leave the heap record suspended; promoting the flat cell to a shared
+    // `Arc` and forcing that handle publishes back into the record.
     let cell = heap.test_share_thunk_cell(thunk).expect("thunk resolves");
     let crate::eval::ForceClaim::Claimed(guard) = cell.begin_force().expect("claim succeeds")
     else {
@@ -268,7 +268,7 @@ fn sweep_drops_forced_thunk_captures_from_reachability() {
 fn sweep_rejects_unreachable_blackholed_thunk() {
     let mut heap = EvalHeap::new();
     let (thunk, _frame) = alloc_capturing_thunk(&mut heap);
-    // Blackhole the heap record's own serial cell: inline `ThunkCellSlot`
+    // Blackhole the heap record's own inline serial cell
     // storage makes `clone_thunk` deep-copy the cell, so blackholing a clone
     // would leave the record suspended and the sweep would not see the
     // in-flight force it must reject.
