@@ -584,12 +584,8 @@ fn encode_thunk(
     let single_entry = u8::from(thunk.is_single_entry_force_storage());
     let mut out = Vec::new();
     match thunk.kind() {
-        EvalThunkKind::Node {
-            body,
-            env,
-            dynamic_env,
-        } => {
-            let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+        EvalThunkKind::Node { body, env } => {
+            let (with_env, scoped_globals) = match thunk.dynamic_env() {
                 Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
                 None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
             };

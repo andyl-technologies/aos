@@ -74,7 +74,7 @@ impl EvalPrimOp {
     /// Creates an unapplied first-class builtin with its registry declaration.
     pub(crate) const fn registered(symbol: Symbol, builtin: Builtin) -> Self {
         Self {
-            builtin: Some(builtin),
+            builtin: Some(builtin.kind()),
             symbol,
             args: Vec::new(),
         }
@@ -87,7 +87,7 @@ impl EvalPrimOp {
         args: Vec<EvalPrimOpArg>,
     ) -> Self {
         Self {
-            builtin: Some(builtin),
+            builtin: Some(builtin.kind()),
             symbol,
             args,
         }
@@ -95,7 +95,10 @@ impl EvalPrimOp {
 
     /// Returns the registry declaration selected for this builtin.
     pub(crate) const fn builtin(&self) -> Option<Builtin> {
-        self.builtin
+        match self.builtin {
+            Some(kind) => Some(Builtin::from_kind(kind)),
+            None => None,
+        }
     }
 
     /// Returns the builtin symbol.

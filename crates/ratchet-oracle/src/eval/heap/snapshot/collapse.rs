@@ -345,9 +345,12 @@ fn collapse_payload_fields(
         }
         FlatClosurePayload::Lambda(lambda) => {
             drop(apply);
+            let Some(dynamic) = lambda.dynamic_env.as_deref_mut() else {
+                return changed;
+            };
             changed += collapse_scope_stacks(
-                Some(&mut lambda.with_env),
-                Some(&mut lambda.scoped_globals),
+                Some(&mut dynamic.with_env),
+                Some(&mut dynamic.scoped_globals),
                 rewrite,
             );
             return changed;
@@ -360,13 +363,12 @@ fn collapse_payload_fields(
         FlatClosurePayload::Retired(_) => {}
     }
     drop(apply);
-    // Thunk node kinds also carry `with`/scoped-global stacks.
+    // Thunk node storage extensions also carry `with`/scoped-global stacks.
     if let FlatClosurePayload::Thunk(thunk) = payload {
-        if let EvalThunkKind::Node {
-            dynamic_env: Some(dynamic),
-            ..
-        } = &mut thunk.kind
-        {
+        if matches!(thunk.kind, EvalThunkKind::Node { .. }) {
+            let Some(dynamic) = thunk.dynamic_env_mut() else {
+                return changed;
+            };
             changed += collapse_scope_stacks(
                 Some(&mut dynamic.with_env),
                 Some(&mut dynamic.scoped_globals),

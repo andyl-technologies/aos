@@ -10,8 +10,8 @@ impl EvalLambda {
             && self.body == other.body
             && self.frame == other.frame
             && self.env.raw_eq(&other.env)
-            && self.with_env.raw_eq(&other.with_env)
-            && self.scoped_globals.raw_eq(&other.scoped_globals)
+            && self.with_scope_env().raw_eq(other.with_scope_env())
+            && self.scoped_global_env().raw_eq(other.scoped_global_env())
     }
 
     /// Creates a lambda closure record.
@@ -43,8 +43,7 @@ impl EvalLambda {
             body,
             frame,
             env,
-            with_env,
-            scoped_globals,
+            dynamic_env: EvalClosureDynamicEnv::boxed(with_env, scoped_globals),
         }
     }
 
@@ -80,11 +79,17 @@ impl EvalLambda {
 
     /// Returns the dynamic `with` environment captured when this lambda was allocated.
     pub const fn with_scope_env(&self) -> &EvalWithEnv {
-        &self.with_env
+        match &self.dynamic_env {
+            Some(dynamic) => &dynamic.with_env,
+            None => EvalWithEnv::empty_ref(),
+        }
     }
 
     /// Returns the scoped-import global environment captured when this lambda was allocated.
     pub const fn scoped_global_env(&self) -> &EvalScopedGlobalEnv {
-        &self.scoped_globals
+        match &self.dynamic_env {
+            Some(dynamic) => &dynamic.scoped_globals,
+            None => EvalScopedGlobalEnv::empty_ref(),
+        }
     }
 }

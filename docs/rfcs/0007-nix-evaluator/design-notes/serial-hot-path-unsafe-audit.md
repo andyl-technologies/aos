@@ -666,3 +666,33 @@ The compact cell materially improves memory but not retired instructions. The
 next representation targets are therefore the 88-byte lambda that pins the
 closure union and the generic 24-byte hash/epoch header, rather than more
 force-cell unsafe code.
+
+## Seventeenth implementation result
+
+Rare dynamic-scope state now uses one shared `EvalClosureDynamicEnv` payload.
+Lambdas box it directly; node thunks place it in the existing out-of-line
+force-storage extension. Empty dynamic captures therefore add no word or
+allocation to either common closure. `EvalThunk` and `EvalLambda` are both 72
+bytes. `EvalPrimOp` now stores the stable `BuiltinKind` instead of copying the
+full static `Builtin` declaration, so no primop variant pins the union above
+those common records. `FlatClosurePayload` fell from 88 to 80 bytes and the
+complete generic-header flat closure from 112 to 104 bytes.
+
+Two exact cache-off `systems.server.build.toplevel` runs of the retained
+`BuiltinKind` form retired 22.936815651B and 22.936846621B instructions. That
+is a stable approximately 0.19% regression from the preceding
+22.8943B-class build, so this is a memory win rather than a CPU win. Peak RSS
+fell again to 710,244-712,668KiB, approximately 19-22MiB below the compact-cell
+build. A static builtin-declaration pointer alternative retained the layout
+but did not recover the instruction cost (22.943081284B) and was rejected.
+Shared-builder contention depressed IPC during these samples; retired
+instructions, not wall time or IPC, are the acceptance signal.
+
+The serialized Candidate-C suite passed 2,677 active tests (37 ignored), and
+the baseline suite passed 3,154 active tests (34 ignored), plus the doctest
+sets. The full daemon-primed native toplevel produced the same derivation path
+as pinned C++ Nix. Against the pinned 6.2186B C++ count, the remaining native
+instruction ratio is approximately 3.69x. The generic three-word flat-object
+header remains the next pure representation target; the measured 42.5M
+instruction increase from the dynamic-sidecar/builtin-handle change is also a
+small explicit recovery target.

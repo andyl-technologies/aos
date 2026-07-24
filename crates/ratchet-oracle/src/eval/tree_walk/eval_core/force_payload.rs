@@ -17,15 +17,10 @@ impl TreeWalk {
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
-        let EvalThunkKind::Node {
-            body,
-            env,
-            dynamic_env,
-        } = thunk.kind()
-        else {
+        let EvalThunkKind::Node { body, env } = thunk.kind() else {
             return None;
         };
-        if dynamic_env.is_some() {
+        if thunk.dynamic_env().is_some() {
             return None;
         }
         self.force_cache_payload_for_ir_node_with_env(
@@ -41,15 +36,10 @@ impl TreeWalk {
         thunk: &EvalThunk,
         depth: usize,
     ) -> Option<CachedExpressionValue> {
-        let EvalThunkKind::Node {
-            body,
-            env,
-            dynamic_env,
-        } = thunk.kind()
-        else {
+        let EvalThunkKind::Node { body, env } = thunk.kind() else {
             return None;
         };
-        if dynamic_env.is_some() {
+        if thunk.dynamic_env().is_some() {
             return None;
         }
         let module = self.modules.get(body.module().index())?;

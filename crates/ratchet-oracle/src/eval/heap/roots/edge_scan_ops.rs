@@ -66,7 +66,7 @@ impl EvalHeap {
             }
             HeapObjectValue::Thunk(thunk) => match thunk.cell().state()? {
                 ThunkState::Suspended | ThunkState::Blackhole => {
-                    push_thunk_kind_edges(&mut edges, thunk.kind())?;
+                    push_thunk_edges(&mut edges, thunk)?;
                     push_parallel_thunk_payload_edge(&mut edges, thunk)?;
                 }
                 ThunkState::Forced => {
@@ -169,7 +169,7 @@ impl EvalHeap {
             |edges: &mut Vec<HeapEdge>, thunk: &EvalThunk| -> Result<(), EvalHeapError> {
                 match thunk.cell().state()? {
                     ThunkState::Suspended | ThunkState::Blackhole => {
-                        push_thunk_kind_edges(edges, thunk.kind())?;
+                        push_thunk_edges(edges, thunk)?;
                         push_parallel_thunk_payload_edge(edges, thunk)?;
                     }
                     ThunkState::Forced => {

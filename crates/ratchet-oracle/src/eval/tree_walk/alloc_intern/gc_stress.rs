@@ -93,13 +93,8 @@ impl TreeWalk {
     fn is_gc_stress_uncaptured_node_thunk(thunk: &EvalThunk) -> bool {
         matches!(
             thunk.kind(),
-            EvalThunkKind::Node {
-                env,
-                dynamic_env,
-                ..
-            } if env.is_empty()
-                && dynamic_env.is_none()
-        )
+            EvalThunkKind::Node { env, .. } if env.is_empty()
+        ) && thunk.dynamic_env().is_none()
     }
 
     fn can_dispatch_gc_stress_root_allocation_safepoint(&self, id: IrId) -> bool {

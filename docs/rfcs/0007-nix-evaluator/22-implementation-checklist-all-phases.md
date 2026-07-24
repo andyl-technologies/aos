@@ -12299,8 +12299,8 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `lambda-interp`, and 6.0GiB for `string-builder`. A fresh-process
       `systems.server.build.toplevel` run peaked at approximately 858MiB before
       the dynamic-capture layout reduction below and approximately 828MiB
-      after it; the current compact-thunk build peaks at approximately
-      768-770MiB versus C++ Nix's 337MiB (2.28x), despite the post-run-RSS
+      after it; the current 104-byte flat-closure build peaks at approximately
+      710-713MiB versus C++ Nix's 337MiB (2.11x), despite the post-run-RSS
       scoreboard reporting a much smaller retained value. Close this only when
       a production-enabled, root-complete mid-evaluation collector reclaims
       aggregate payloads and returns or reuses their storage while the full
@@ -12333,6 +12333,24 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       (29.5MiB, 3.4%) and retired instructions from 24.790B to 24.757B (0.13%);
       byte parity and the 2,668-test Candidate-C oracle suite remained green.
       This is a measured layout win, not resolution of the production-GC gap.
+- [x] **Common flat-closure payload compaction:** move rare lambda and thunk
+      dynamic scopes into one optional out-of-line payload and store only
+      `BuiltinKind` in primop closures. `EvalThunk` and `EvalLambda` are now
+      72 bytes, `FlatClosurePayload` is 80 bytes, and the complete generic-header
+      flat object is 104 bytes. Exact full-toplevel peak RSS fell from
+      732,156-732,468KiB to 710,244-712,668KiB. Retired instructions rose from
+      the 22.8943B class to 22.9368B (approximately 0.19%), so this is retained
+      as a memory win and not recorded as a performance win. Serialized
+      Candidate-C and baseline suites passed 2,677/3,154 active tests plus
+      doctests; daemon-primed full-toplevel derivation output matched pinned
+      C++ Nix.
+- [ ] **Recover the common-closure compaction instruction cost:** attribute
+      the stable approximately 42.5M additional retired instructions introduced
+      by dynamic-sidecar access plus `BuiltinKind` reconstruction without
+      regrowing the 80-byte payload. A static builtin-declaration pointer kept
+      the compact layout but measured 22.9431B instructions and was rejected.
+      Accept only an exact full-toplevel result at or below the pushed
+      22.8943B-class baseline with byte parity and unchanged peak RSS.
 - [ ] **Discovered benchmark-representativeness gap:** the full
       `systems.server.build.toplevel` evaluation is the primary product
       benchmark (currently about 3.6x slower than stock Nix on the Linux

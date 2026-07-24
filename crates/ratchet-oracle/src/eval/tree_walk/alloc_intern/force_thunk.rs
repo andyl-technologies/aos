@@ -514,12 +514,8 @@ impl TreeWalk {
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
         match thunk.kind() {
-            EvalThunkKind::Node {
-                body,
-                env,
-                dynamic_env,
-            } => {
-                let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+            EvalThunkKind::Node { body, env } => {
+                let (with_env, scoped_globals) = match thunk.dynamic_env() {
                     Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
                     None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
                 };

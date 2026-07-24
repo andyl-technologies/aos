@@ -157,7 +157,7 @@ impl EvalHeap {
                     ));
                 }
             };
-            if !thunk_kind_has_reclaimable_captures(thunk.kind()) {
+            if !thunk_has_reclaimable_captures(thunk) {
                 return Ok(false);
             }
             if !thunk.has_serial_only_force_storage() {
@@ -198,7 +198,7 @@ impl EvalHeap {
                 ptr,
             ));
         };
-        if !thunk_kind_has_reclaimable_captures(thunk.kind()) {
+        if !thunk_has_reclaimable_captures(thunk) {
             return Ok(false);
         }
         if !thunk.has_serial_only_force_storage() {
@@ -494,11 +494,9 @@ impl EvalHeap {
 /// Environment-free `Node` kinds and `BuiltinAttr` kinds carry only IR ids
 /// and are skipped, keeping the per-publish cost off capture-free thunks.
 /// Already-released kinds are also skipped (shedding is idempotent).
-fn thunk_kind_has_reclaimable_captures(kind: &EvalThunkKind) -> bool {
-    match kind {
-        EvalThunkKind::Node {
-            env, dynamic_env, ..
-        } => !env.is_empty() || dynamic_env.is_some(),
+fn thunk_has_reclaimable_captures(thunk: &EvalThunk) -> bool {
+    match thunk.kind() {
+        EvalThunkKind::Node { env, .. } => !env.is_empty() || thunk.dynamic_env().is_some(),
         EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2(_) | EvalThunkKind::Select { .. } => {
             true
         }

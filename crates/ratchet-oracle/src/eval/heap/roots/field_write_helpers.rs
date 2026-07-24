@@ -341,11 +341,11 @@ pub(super) fn record_owned_heap_field_write_object(
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             *arg = EvalPrimOpArg::new_in_module(arg.module(), arg.id(), arg.span(), replacement);
-            Ok(HeapObjectValue::Primop(EvalPrimOp {
-                builtin: primop.builtin(),
-                symbol: primop.symbol(),
-                args,
-            }))
+            let rebuilt = match primop.builtin() {
+                Some(builtin) => EvalPrimOp::registered_with_args(primop.symbol(), builtin, args),
+                None => EvalPrimOp::with_args(primop.symbol(), args),
+            };
+            Ok(HeapObjectValue::Primop(rebuilt))
         }
         (
             HeapObjectValue::Lambda(lambda),
@@ -412,6 +412,7 @@ pub(super) fn record_owned_heap_field_write_object(
             }
             let relocated = EvalThunk::from_relocated_parts(
                 thunk.kind().clone(),
+                thunk.dynamic_env().cloned(),
                 Arc::new(ThunkCell::forced(replacement)),
                 thunk.force_storage_mode(),
                 parallel_cell,
@@ -435,6 +436,7 @@ pub(super) fn record_owned_heap_field_write_object(
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
             let relocated = EvalThunk::from_relocated_parts(
                 thunk.kind().clone(),
+                thunk.dynamic_env().cloned(),
                 Arc::new(
                     clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                         .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
@@ -520,8 +522,17 @@ pub(super) fn rebuild_thunk_for_heap_field_write(
     thunk: &EvalThunk,
     kind: EvalThunkKind,
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
+    rebuild_thunk_for_heap_field_write_with_dynamic(thunk, kind, thunk.dynamic_env().cloned())
+}
+
+fn rebuild_thunk_for_heap_field_write_with_dynamic(
+    thunk: &EvalThunk,
+    kind: EvalThunkKind,
+    dynamic_env: Option<EvalClosureDynamicEnv>,
+) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
     let relocated = EvalThunk::from_relocated_parts(
         kind,
+        dynamic_env,
         Arc::new(
             clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
@@ -541,51 +552,51 @@ pub(super) fn thunk_supports_suspended_field_write(
         return Ok(false);
     }
 
-    Ok(matches!(
-        (thunk.kind(), source),
-        (
-            EvalThunkKind::Node {
-                dynamic_env: Some(dynamic),
-                ..
-            },
-            HeapEdgeSource::CapturedWithScope {
-                owner: CapturedRootOwner::Thunk,
-                index,
-            },
-        ) if *index < dynamic.with_env.scopes().len()
-    ) || matches!(
-        (thunk.kind(), source),
-        (
-            EvalThunkKind::Node {
-                dynamic_env: Some(dynamic),
-                ..
-            },
-            HeapEdgeSource::CapturedScopedGlobal {
-                owner: CapturedRootOwner::Thunk,
-                index,
-            },
-        ) if *index < dynamic.scoped_globals.scopes().len()
-    ) || matches!(
-        (thunk.kind(), source),
-        (
-            EvalThunkKind::Apply { .. },
-            HeapEdgeSource::ThunkApplyFunction | HeapEdgeSource::ThunkApplyArgument,
+    let dynamic_env = thunk.dynamic_env();
+    let is_node = matches!(thunk.kind(), EvalThunkKind::Node { .. });
+    Ok(is_node
+        && (matches!(
+            (dynamic_env, source),
+            (
+                Some(dynamic),
+                HeapEdgeSource::CapturedWithScope {
+                    owner: CapturedRootOwner::Thunk,
+                    index,
+                },
+            ) if *index < dynamic.with_env.scopes().len()
+        ) || matches!(
+            (dynamic_env, source),
+            (
+                Some(dynamic),
+                HeapEdgeSource::CapturedScopedGlobal {
+                    owner: CapturedRootOwner::Thunk,
+                    index,
+                },
+            ) if *index < dynamic.scoped_globals.scopes().len()
+        ))
+        || matches!(
+            (thunk.kind(), source),
+            (
+                EvalThunkKind::Apply { .. },
+                HeapEdgeSource::ThunkApplyFunction | HeapEdgeSource::ThunkApplyArgument,
+            )
         )
-    ) || matches!(
-        (thunk.kind(), source),
-        (
-            EvalThunkKind::Apply2(_),
-            HeapEdgeSource::ThunkApply2Function
-                | HeapEdgeSource::ThunkApply2FirstArgument
-                | HeapEdgeSource::ThunkApply2SecondArgument,
+        || matches!(
+            (thunk.kind(), source),
+            (
+                EvalThunkKind::Apply2(_),
+                HeapEdgeSource::ThunkApply2Function
+                    | HeapEdgeSource::ThunkApply2FirstArgument
+                    | HeapEdgeSource::ThunkApply2SecondArgument,
+            )
         )
-    ) || matches!(
-        (thunk.kind(), source),
-        (
-            EvalThunkKind::Select { .. },
-            HeapEdgeSource::ThunkSelectReceiver
-        )
-    ))
+        || matches!(
+            (thunk.kind(), source),
+            (
+                EvalThunkKind::Select { .. },
+                HeapEdgeSource::ThunkSelectReceiver
+            )
+        ))
 }
 
 pub(super) fn rewrite_suspended_thunk_field(
@@ -604,17 +615,13 @@ pub(super) fn rewrite_suspended_thunk_field(
 
     match (thunk.kind(), source) {
         (
-            EvalThunkKind::Node {
-                body,
-                env,
-                dynamic_env,
-            },
+            EvalThunkKind::Node { body, env },
             HeapEdgeSource::CapturedWithScope {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
         ) => {
-            let Some(dynamic) = dynamic_env.as_deref() else {
+            let Some(dynamic) = thunk.dynamic_env() else {
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             let mut scopes = dynamic.with_env.scopes().to_vec();
@@ -624,27 +631,23 @@ pub(super) fn rewrite_suspended_thunk_field(
             *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
             let with_env = EvalWithEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            rebuild_thunk_for_heap_field_write(
+            rebuild_thunk_for_heap_field_write_with_dynamic(
                 thunk,
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    dynamic_env: EvalThunkDynamicEnv::new(with_env, dynamic.scoped_globals.clone()),
                 },
+                EvalClosureDynamicEnv::new(with_env, dynamic.scoped_globals.clone()),
             )
         }
         (
-            EvalThunkKind::Node {
-                body,
-                env,
-                dynamic_env,
-            },
+            EvalThunkKind::Node { body, env },
             HeapEdgeSource::CapturedScopedGlobal {
                 owner: CapturedRootOwner::Thunk,
                 index,
             },
         ) => {
-            let Some(dynamic) = dynamic_env.as_deref() else {
+            let Some(dynamic) = thunk.dynamic_env() else {
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             let mut scopes = dynamic.scoped_globals.scopes().to_vec();
@@ -654,13 +657,13 @@ pub(super) fn rewrite_suspended_thunk_field(
             *scope = replacement;
             let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            rebuild_thunk_for_heap_field_write(
+            rebuild_thunk_for_heap_field_write_with_dynamic(
                 thunk,
                 EvalThunkKind::Node {
                     body: *body,
                     env: env.clone(),
-                    dynamic_env: EvalThunkDynamicEnv::new(dynamic.with_env.clone(), scoped_globals),
                 },
+                EvalClosureDynamicEnv::new(dynamic.with_env.clone(), scoped_globals),
             )
         }
         (
@@ -778,15 +781,13 @@ pub(super) fn push_parallel_thunk_payload_edge(
     Ok(())
 }
 
-pub(super) fn push_thunk_kind_edges(
+pub(super) fn push_thunk_edges(
     edges: &mut Vec<HeapEdge>,
-    kind: &EvalThunkKind,
+    thunk: &EvalThunk,
 ) -> Result<(), EvalHeapError> {
-    match kind {
-        EvalThunkKind::Node {
-            env, dynamic_env, ..
-        } => {
-            let (with_env, scoped_globals) = match dynamic_env.as_deref() {
+    match thunk.kind() {
+        EvalThunkKind::Node { env, .. } => {
+            let (with_env, scoped_globals) = match thunk.dynamic_env() {
                 Some(dynamic) => (&dynamic.with_env, &dynamic.scoped_globals),
                 None => (EvalWithEnv::empty_ref(), EvalScopedGlobalEnv::empty_ref()),
             };

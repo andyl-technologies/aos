@@ -1,8 +1,8 @@
 //! Force-cache free-variable hashing, cache identities, and IR safety walks.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
 use crate::cache::CacheExprSourceHash;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::hashing::{
     ForceCapturePositionSourceHash, ForceCapturedValueHash, StaticSelectPositionHash,
 };
@@ -676,15 +676,10 @@ impl TreeWalk {
     }
 
     fn force_cache_suspended_capture_alias_target(&self, thunk: &EvalThunk) -> Option<Value> {
-        let EvalThunkKind::Node {
-            body,
-            env,
-            dynamic_env,
-        } = thunk.kind()
-        else {
+        let EvalThunkKind::Node { body, env } = thunk.kind() else {
             return None;
         };
-        if dynamic_env.is_some() {
+        if thunk.dynamic_env().is_some() {
             return None;
         }
         let module = self.modules.get(body.module().index())?;

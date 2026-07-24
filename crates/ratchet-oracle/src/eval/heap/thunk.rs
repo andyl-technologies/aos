@@ -6,6 +6,7 @@ impl EvalThunk {
     /// Rebuilds a thunk from collector-relocated storage components.
     pub(in crate::eval::heap) fn from_relocated_parts(
         kind: EvalThunkKind,
+        dynamic_env: Option<EvalClosureDynamicEnv>,
         shared_cell: Arc<ThunkCell>,
         mode: EvalThunkForceStorageMode,
         parallel_cell: Option<Arc<TreeWalkParallelThunkCell>>,
@@ -30,6 +31,7 @@ impl EvalThunk {
             cell: ThunkCell::new(),
             storage_extension: Some(Box::new(EvalThunkStorageExtension {
                 shared_cell: Some(shared_cell),
+                dynamic_env,
                 mode,
             })),
         })
@@ -59,14 +61,21 @@ impl EvalThunk {
         with_env: EvalWithEnv,
         scoped_globals: EvalScopedGlobalEnv,
     ) -> Self {
+        let storage_extension =
+            EvalClosureDynamicEnv::new(with_env, scoped_globals).map(|dynamic_env| {
+                Box::new(EvalThunkStorageExtension {
+                    shared_cell: None,
+                    dynamic_env: Some(dynamic_env),
+                    mode: EvalThunkStorageExtensionMode::Serial,
+                })
+            });
         Self {
             kind: EvalThunkKind::Node {
                 body: EvalNodeRef::new(module, body),
                 env,
-                dynamic_env: EvalThunkDynamicEnv::new(with_env, scoped_globals),
             },
             cell: ThunkCell::new(),
-            storage_extension: None,
+            storage_extension,
         }
     }
 
@@ -94,10 +103,16 @@ impl EvalThunk {
     /// the serial cell present for heap metadata compatibility, but the force
     /// path evaluates the body directly without publishing a cached result.
     pub(crate) fn into_single_entry(mut self) -> Self {
-        self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
-            shared_cell: None,
-            mode: EvalThunkStorageExtensionMode::SingleEntry,
-        }));
+        match self.storage_extension.as_deref_mut() {
+            Some(extension) => extension.mode = EvalThunkStorageExtensionMode::SingleEntry,
+            None => {
+                self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
+                    shared_cell: None,
+                    dynamic_env: None,
+                    mode: EvalThunkStorageExtensionMode::SingleEntry,
+                }));
+            }
+        }
         self
     }
 
@@ -189,10 +204,17 @@ impl EvalThunk {
 
     /// Rebuilds a forced thunk record with the same deferred-work metadata.
     pub(crate) fn with_forced_cached_result_from(thunk: &Self, value: Value) -> Self {
+        let storage_extension = thunk.dynamic_env().cloned().map(|dynamic_env| {
+            Box::new(EvalThunkStorageExtension {
+                shared_cell: None,
+                dynamic_env: Some(dynamic_env),
+                mode: EvalThunkStorageExtensionMode::Serial,
+            })
+        });
         Self {
             kind: thunk.kind.clone(),
             cell: ThunkCell::forced(value),
-            storage_extension: None,
+            storage_extension,
         }
     }
 
@@ -212,16 +234,23 @@ impl EvalThunk {
         dropped_claim_error: TreeWalkError,
         cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
     ) -> Self {
-        if self.storage_extension.is_none() {
-            self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
-                shared_cell: None,
-                mode: EvalThunkStorageExtensionMode::Parallel(Arc::new(
-                    TreeWalkParallelThunkCell::with_cycle_registry(
-                        dropped_claim_error,
-                        cycle_registry,
-                    ),
-                )),
-            }));
+        let cell = || {
+            EvalThunkStorageExtensionMode::Parallel(Arc::new(
+                TreeWalkParallelThunkCell::with_cycle_registry(dropped_claim_error, cycle_registry),
+            ))
+        };
+        match self.storage_extension.as_deref_mut() {
+            Some(extension) if matches!(extension.mode, EvalThunkStorageExtensionMode::Serial) => {
+                extension.mode = cell();
+            }
+            None => {
+                self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
+                    shared_cell: None,
+                    dynamic_env: None,
+                    mode: cell(),
+                }));
+            }
+            Some(_) => {}
         }
         self
     }
@@ -299,10 +328,10 @@ impl EvalThunk {
     /// Returns the captured dynamic `with` environment, if any.
     pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
         match &self.kind {
-            EvalThunkKind::Node { dynamic_env, .. } => match dynamic_env {
-                Some(dynamic) => Some(&dynamic.with_env),
-                None => Some(EvalWithEnv::empty_ref()),
-            },
+            EvalThunkKind::Node { .. } => Some(match self.dynamic_env() {
+                Some(dynamic) => &dynamic.with_env,
+                None => EvalWithEnv::empty_ref(),
+            }),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
@@ -314,16 +343,31 @@ impl EvalThunk {
     /// Returns the captured scoped-import global environment, if any.
     pub const fn scoped_global_env(&self) -> Option<&EvalScopedGlobalEnv> {
         match &self.kind {
-            EvalThunkKind::Node { dynamic_env, .. } => match dynamic_env {
-                Some(dynamic) => Some(&dynamic.scoped_globals),
-                None => Some(EvalScopedGlobalEnv::empty_ref()),
-            },
+            EvalThunkKind::Node { .. } => Some(match self.dynamic_env() {
+                Some(dynamic) => &dynamic.scoped_globals,
+                None => EvalScopedGlobalEnv::empty_ref(),
+            }),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
             | EvalThunkKind::Released => None,
         }
+    }
+
+    /// Returns the rare non-empty dynamic capture attached to this thunk.
+    pub(crate) const fn dynamic_env(&self) -> Option<&EvalClosureDynamicEnv> {
+        match &self.storage_extension {
+            Some(extension) => extension.dynamic_env.as_ref(),
+            None => None,
+        }
+    }
+
+    /// Returns the rare non-empty dynamic capture mutably.
+    pub(in crate::eval::heap) fn dynamic_env_mut(&mut self) -> Option<&mut EvalClosureDynamicEnv> {
+        self.storage_extension
+            .as_deref_mut()
+            .and_then(|extension| extension.dynamic_env.as_mut())
     }
 
     /// Returns the serial state/result cell for this thunk.
@@ -355,6 +399,7 @@ impl EvalThunk {
             None => {
                 self.storage_extension = Some(Box::new(EvalThunkStorageExtension {
                     shared_cell: Some(Arc::clone(&shared)),
+                    dynamic_env: None,
                     mode: EvalThunkStorageExtensionMode::Serial,
                 }));
             }
@@ -571,13 +616,8 @@ mod tests {
     #[test]
     fn eval_thunk_omits_empty_dynamic_captures_and_preserves_nonempty_captures() {
         let empty = EvalThunk::new(IrId::new(7));
-        assert!(matches!(
-            empty.kind(),
-            EvalThunkKind::Node {
-                dynamic_env: None,
-                ..
-            }
-        ));
+        assert!(matches!(empty.kind(), EvalThunkKind::Node { .. }));
+        assert!(empty.dynamic_env().is_none());
         assert!(
             empty
                 .with_scope_env()
@@ -601,13 +641,8 @@ mod tests {
             vec![with_scope].into(),
             vec![Value::int(13)].into(),
         );
-        assert!(matches!(
-            dynamic.kind(),
-            EvalThunkKind::Node {
-                dynamic_env: Some(_),
-                ..
-            }
-        ));
+        assert!(matches!(dynamic.kind(), EvalThunkKind::Node { .. }));
+        assert!(dynamic.dynamic_env().is_some());
         assert_eq!(
             dynamic
                 .with_scope_env()
@@ -631,8 +666,9 @@ mod tests {
     #[test]
     fn candidate_c_common_closure_layout_stays_compact() {
         assert_eq!(std::mem::size_of::<EvalEnv>(), 6 * 8);
-        assert_eq!(std::mem::size_of::<EvalThunk>(), 10 * 8);
-        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 11 * 8);
+        assert_eq!(std::mem::size_of::<EvalThunk>(), 9 * 8);
+        assert_eq!(std::mem::size_of::<EvalLambda>(), 9 * 8);
+        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 10 * 8);
     }
 
     #[test]

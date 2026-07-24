@@ -140,8 +140,6 @@ pub(crate) enum EvalThunkKind {
         body: EvalNodeRef,
         /// Captured lexical frames.
         env: EvalEnv,
-        /// Rare non-empty dynamic scopes, kept out of the common thunk body.
-        dynamic_env: Option<Box<EvalThunkDynamicEnv>>,
     },
     /// Applies a forced function value to a lazy argument value.
     Apply {
@@ -200,28 +198,33 @@ pub(crate) struct EvalApply2Thunk {
     pub(crate) second_argument_value: Value,
 }
 
-/// Non-lexical environments captured only when a thunk has dynamic scopes.
+/// Non-lexical environments captured only when a closure has dynamic scopes.
 ///
-/// The AOS module-system workload captures millions of node thunks while both
+/// The AOS module-system workload captures millions of closures while both
 /// stacks are empty. Keeping the two persistent-head handles out of line makes
-/// that common thunk record smaller without adding an allocation there.
+/// common thunk and lambda records smaller without adding an allocation there.
 #[derive(Clone, Debug)]
-pub(crate) struct EvalThunkDynamicEnv {
+pub(crate) struct EvalClosureDynamicEnv {
     pub(crate) with_env: EvalWithEnv,
     pub(crate) scoped_globals: EvalScopedGlobalEnv,
 }
 
-impl EvalThunkDynamicEnv {
+impl EvalClosureDynamicEnv {
     /// Builds an optional dynamic capture, omitting two empty stack handles.
-    fn new(with_env: EvalWithEnv, scoped_globals: EvalScopedGlobalEnv) -> Option<Box<Self>> {
+    fn new(with_env: EvalWithEnv, scoped_globals: EvalScopedGlobalEnv) -> Option<Self> {
         if with_env.scopes().is_empty() && scoped_globals.scopes().is_empty() {
             None
         } else {
-            Some(Box::new(Self {
+            Some(Self {
                 with_env,
                 scoped_globals,
-            }))
+            })
         }
+    }
+
+    /// Builds an optional boxed dynamic capture for a closure without another sidecar.
+    fn boxed(with_env: EvalWithEnv, scoped_globals: EvalScopedGlobalEnv) -> Option<Box<Self>> {
+        Self::new(with_env, scoped_globals).map(Box::new)
     }
 }
 
@@ -233,11 +236,12 @@ pub struct EvalThunk {
     kind: EvalThunkKind,
     /// Inline serial force state for the common unshared path.
     cell: ThunkCell,
-    /// Storage used only by non-default forcing modes.
+    /// Storage used only by rare captures or non-default forcing modes.
     ///
     /// The serial full-toplevel path allocates millions of thunks and never
-    /// populates this pointer. Single-entry and parallel modes are opt-in and
-    /// carry their side state out of line so the common record stays compact.
+    /// populates this pointer unless a source node captures a dynamic scope.
+    /// Dynamic scopes, single-entry state, and parallel state stay out of line
+    /// so the common record remains compact.
     storage_extension: Option<Box<EvalThunkStorageExtension>>,
 }
 
@@ -246,6 +250,8 @@ pub struct EvalThunk {
 struct EvalThunkStorageExtension {
     /// Shared serial identity used only by detached record clones.
     shared_cell: Option<Arc<ThunkCell>>,
+    /// Rare non-empty dynamic scopes captured by a source node thunk.
+    dynamic_env: Option<EvalClosureDynamicEnv>,
     mode: EvalThunkStorageExtensionMode,
 }
 
@@ -285,8 +291,8 @@ pub struct EvalLambda {
     body: IrId,
     frame: FrameId,
     env: EvalEnv,
-    with_env: EvalWithEnv,
-    scoped_globals: EvalScopedGlobalEnv,
+    /// Rare non-empty dynamic scopes, kept out of the common lambda body.
+    dynamic_env: Option<Box<EvalClosureDynamicEnv>>,
 }
 
 /// One lazy argument captured by the tree-walk `PrimopApp` equivalent.
@@ -308,7 +314,8 @@ pub struct EvalPrimOpArg {
 /// evaluator calls the builtin only after saturation.
 #[derive(Clone, Debug)]
 pub struct EvalPrimOp {
-    builtin: Option<Builtin>,
+    /// Stable handle for the selected registry declaration.
+    builtin: Option<BuiltinKind>,
     symbol: Symbol,
     args: Vec<EvalPrimOpArg>,
 }
