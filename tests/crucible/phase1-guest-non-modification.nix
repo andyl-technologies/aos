@@ -16,7 +16,9 @@
     + builtins.readFile ../../crates/crucible-qemu/src/launch/modes.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
-  qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  qemuTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;

@@ -12,10 +12,15 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  worldValidationTests =
+    builtins.readFile ../../crates/crucible/src/tests/world_validation.rs;
+  qemuLaunch =
+    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
-  qemuLaunchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  qemuLaunchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   replayOracleTest = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
@@ -98,7 +103,7 @@
       }
       {
         label = "binary parser validates world before plan";
-        needle = "let world = read_world_binary(reader)?;";
+        needle = "let world = read_world_binary(reader, includes_devices)?;";
       }
       {
         label = "binary parser validates plan against world";
@@ -114,7 +119,7 @@
       }
       {
         label = "world link validation";
-        needle = "fn validate_world_links(";
+        needle = "fn validate_world_links_for_node_defs(";
       }
       {
         label = "plan validation";
@@ -209,7 +214,7 @@
         needle = "icount_shift={}";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/src/tests/world_validation.rs" worldValidationTests [
       {
         label = "focused validation matrix test";
         needle = "fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()";

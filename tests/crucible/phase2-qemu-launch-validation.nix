@@ -14,7 +14,9 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   launchValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
-  launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  launchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 

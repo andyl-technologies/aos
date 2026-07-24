@@ -23,7 +23,9 @@
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
       (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
-  launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  launchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   risksSpikes = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
