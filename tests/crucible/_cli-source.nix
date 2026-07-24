@@ -1,18 +1,11 @@
 {lib}: let
-  readRustDirectory = directory: let
-    entries = builtins.readDir directory;
-    names = builtins.sort builtins.lessThan (builtins.attrNames entries);
-    rustFiles = builtins.filter (name:
-      entries.${name} == "regular" && lib.hasSuffix ".rs" name)
-    names;
-  in
-    builtins.concatStringsSep "\n" (map (name:
-      builtins.readFile (directory + "/${name}"))
-    rustFiles);
+  tree = import ./_rust-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/main.rs;
+    fragmentDirs = [
+      ../../crates/crucible-cli/src/cli
+      ../../crates/crucible-cli/src/tests
+    ];
+  };
 in
-  builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-cli/src/main.rs)
-    (readRustDirectory ../../crates/crucible-cli/src/cli)
-    (builtins.readFile ../../crates/crucible-cli/src/tests.rs)
-    (readRustDirectory ../../crates/crucible-cli/src/tests)
-  ]
+  tree + builtins.readFile ../../crates/crucible-cli/src/tests.rs
