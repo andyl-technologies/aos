@@ -2,9 +2,13 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
+  qemuDataDir ? "${qemuPackage}/share/qemu",
   qemuRuntimeDeps ? [],
   tracePluginPackage ? pkgs.crucible-qemu-trace-plugin,
+  execBoundaryPluginPackage ? null,
   accelerator ? "sim,thread=single",
+  rrSwitchQuantum ? 4096,
+  realtimeDeadlineProbe ? false,
   cadence ? 100000000,
   requireGuestPass ? true,
   # The finite four-vCPU workload completed at retired icount 3,215,171,189
@@ -17,9 +21,10 @@
   # This bounds host wall time only. The deterministic proof horizon remains
   # the content-addressed stopAt node-icount under all host load conditions.
   runTimeoutSeconds ? 2400,
+  # Drop-one probes need a successful derivation even when a full-minus-patch
+  # QEMU produces a divergent trace. The canonical gate keeps this false.
+  permitTraceMismatch ? false,
 }: let
-  rrSwitchQuantum = 4096;
-
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -347,12 +352,18 @@ in
         tracePluginPackage
         pkgs.socat
       ]
-      ++ qemuRuntimeDeps;
+      ++ qemuRuntimeDeps
+      ++ lib.optionals (execBoundaryPluginPackage != null) [execBoundaryPluginPackage];
 
     INITRAMFS = "${initramfs}/initrd.img";
     KERNEL = builtins.toString pkgs.linux;
     QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
+    QEMU_DATA_DIR = qemuDataDir;
     PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
+    EXEC_BOUNDARY_PLUGIN =
+      if execBoundaryPluginPackage == null
+      then ""
+      else "${execBoundaryPluginPackage}/lib/qemu/plugins/drop-one-exec-boundary-plugin.so";
     CADENCE = builtins.toString cadence;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
     VCPU_COUNT = builtins.toString vcpuCount;
@@ -380,6 +391,14 @@ in
       if detIpiProbe
       then "1"
       else "0";
+    PERMIT_TRACE_MISMATCH =
+      if permitTraceMismatch
+      then "1"
+      else "0";
+    REALTIME_DEADLINE_PROBE =
+      if realtimeDeadlineProbe
+      then "1"
+      else "0";
     # RR cursor / RR switch-quantum export is gated to `-accel sim` in the
     # patch stack; under plain TCG the plugin reports inert cursor fields and
     # emits no rr_switch rows.
@@ -397,11 +416,23 @@ in
           unset LD_LIBRARY_PATH || true
 
           active_qemu_pid=""
+          active_timer_sink_pid=""
+          active_hmp_client_pid=""
           cleanup_active_qemu() {
             if [ -n "$active_qemu_pid" ]; then
               kill "$active_qemu_pid" 2>/dev/null || true
               wait "$active_qemu_pid" 2>/dev/null || true
               active_qemu_pid=""
+            fi
+            if [ -n "$active_hmp_client_pid" ]; then
+              kill "$active_hmp_client_pid" 2>/dev/null || true
+              wait "$active_hmp_client_pid" 2>/dev/null || true
+              active_hmp_client_pid=""
+            fi
+            if [ -n "$active_timer_sink_pid" ]; then
+              kill "$active_timer_sink_pid" 2>/dev/null || true
+              wait "$active_timer_sink_pid" 2>/dev/null || true
+              active_timer_sink_pid=""
             fi
           }
 
@@ -445,6 +476,7 @@ in
             'plugin_mem_events=off' \
             "plugin_vcpus=$VCPU_COUNT" \
             "det_ipi_probe=$DET_IPI_PROBE" \
+            "realtime_deadline_probe=$REALTIME_DEADLINE_PROBE" \
             "sustain_workload=$SUSTAIN_WORKLOAD" \
             > "$TMPDIR/launch-definition.txt"
           launch_definition_digest=$(sha256sum "$TMPDIR/launch-definition.txt" | gawk '{ print $1 }')
@@ -547,6 +579,36 @@ in
             return 1
           }
 
+          wait_for_migration_active() {
+            socket="$1"
+            label="$2"
+            attempts=0
+            while [ "$attempts" -lt 100 ]; do
+              if qmp_cmd \
+                "$socket" \
+                '{"execute":"query-migrate"}' \
+                "$TMPDIR/qmp-migrate-$label.json"; then
+                status=$(
+                  jq -r -s \
+                    '[.[] | select(has("return"))][-1].return.status // empty' \
+                    "$TMPDIR/qmp-migrate-$label.json"
+                )
+                case "$status" in
+                  setup | active)
+                    return 0
+                    ;;
+                  failed | cancelled | completed)
+                    cat "$TMPDIR/qmp-migrate-$label.json" >&2
+                    return 1
+                    ;;
+                esac
+              fi
+              attempts=$((attempts + 1))
+              sleep 0.1
+            done
+            return 1
+          }
+
           trace_reached_stop_at() {
             trace="$TMPDIR/trace-current.jsonl"
             [ -s "$trace" ] || return 1
@@ -613,9 +675,18 @@ in
             label="$1"
             trace_path="$TMPDIR/trace-current.jsonl"
             serial_path="$TMPDIR/serial-current.log"
+            exec_boundary_path="$TMPDIR/exec-boundaries-current.tsv"
             plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
             qmp_socket="$TMPDIR/qmp-current.sock"
-            rm -f "$trace_path" "$serial_path" "$qmp_socket"
+            hmp_socket="$TMPDIR/hmp-current.sock"
+            migration_socket="$TMPDIR/migration-sink-current.sock"
+            rm -f \
+              "$trace_path" \
+              "$serial_path" \
+              "$exec_boundary_path" \
+              "$qmp_socket" \
+              "$hmp_socket" \
+              "$migration_socket"
 
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
               plugin_arg="$plugin_arg,det_ipi_probe=on"
@@ -627,10 +698,10 @@ in
             fi
 
             set -- "$QEMU" \
+              -L "$QEMU_DATA_DIR" \
               -nodefaults \
               -no-user-config \
               -display none \
-              -monitor none \
               -machine q35 \
               -accel "$ACCELERATOR" \
               -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
@@ -646,6 +717,26 @@ in
               -chardev file,id=serial0,path="$serial_path" \
               -serial chardev:serial0 \
               -plugin "$plugin_arg"
+
+            if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
+              set -- "$@" \
+                -plugin "$EXEC_BOUNDARY_PLUGIN,out=$exec_boundary_path"
+            fi
+
+            if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
+              socat \
+                "UNIX-LISTEN:$migration_socket,fork" \
+                "EXEC:${pkgs.coreutils}/bin/sleep 600" &
+              active_timer_sink_pid="$!"
+              wait_for_socket "$migration_socket" \
+                || fail "migration sink socket did not appear for guest $label"
+              set -- "$@" \
+                -monitor "unix:$hmp_socket,server=on,wait=off" \
+                -S
+            else
+              set -- "$@" \
+                -monitor none
+            fi
 
             if [ -n "$STOP_AT" ]; then
               set -- "$@" \
@@ -665,15 +756,43 @@ in
               timeout "$RUN_TIMEOUT_SECONDS" "$@" &
               active_qemu_pid="$!"
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
+              if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
+                wait_for_socket "$hmp_socket" \
+                  || fail "HMP socket did not appear for guest $label"
+                printf 'migrate unix:%s\n' "$migration_socket" \
+                  | socat - "UNIX-CONNECT:$hmp_socket" \
+                    > "$TMPDIR/hmp-migrate-$label.log" 2>&1 &
+                active_hmp_client_pid="$!"
+                wait_for_migration_active "$qmp_socket" "$label" \
+                  || fail "realtime-deadline migration did not become active for guest $label"
+                qmp_cmd \
+                  "$qmp_socket" \
+                  '{"execute":"cont"}' \
+                  "$TMPDIR/qmp-cont-$label.json" \
+                  || fail "failed to start realtime-deadline probe guest $label"
+              fi
               wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
               qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
               wait "$active_qemu_pid" || fail "QEMU guest $label exited unsuccessfully"
               active_qemu_pid=""
+              if [ -n "$active_hmp_client_pid" ]; then
+                kill "$active_hmp_client_pid" 2>/dev/null || true
+                wait "$active_hmp_client_pid" 2>/dev/null || true
+                active_hmp_client_pid=""
+              fi
+              if [ -n "$active_timer_sink_pid" ]; then
+                kill "$active_timer_sink_pid" 2>/dev/null || true
+                wait "$active_timer_sink_pid" 2>/dev/null || true
+                active_timer_sink_pid=""
+              fi
             else
               timeout 600 "$@"
             fi
             cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
             cp "$serial_path" "$TMPDIR/serial-$label.log"
+            if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
+              cp "$exec_boundary_path" "$TMPDIR/exec-boundaries-$label.tsv"
+            fi
           }
 
           run_one a
@@ -1093,8 +1212,27 @@ in
               "$TMPDIR/trace-authoritative-a.jsonl" \
               "$TMPDIR/trace-authoritative-b.jsonl" \
               "$out/first-difference.txt"
-            cat "$out/first-difference.txt" >&2
-            fail "authoritative extended fingerprint mismatch"
+            if [ "$PERMIT_TRACE_MISMATCH" -eq 1 ]; then
+              cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
+              cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
+              cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
+              cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
+              if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
+                cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
+                cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
+              fi
+              {
+                echo PASS
+                echo spike=multi-vcpu-rr-sim-tcg-fingerprint
+                echo extended_fingerprint_match=false
+                echo drop_one_mismatch_recorded=true
+                cat "$out/first-difference.txt"
+              } > "$out/result"
+              exit 0
+            else
+              cat "$out/first-difference.txt" >&2
+              fail "authoritative extended fingerprint mismatch"
+            fi
           fi
           [ "$rr_switch_trace_match" = true ] \
             || fail "RR switch projection differs despite equal raw traces"
@@ -1296,6 +1434,10 @@ in
           cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
           cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
           cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
+          if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
+            cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
+            cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
+          fi
           cp "$TMPDIR/rr-switch-trace-a.tsv" "$out/rr-switch-trace-a.tsv"
           cp "$TMPDIR/rr-switch-trace-b.tsv" "$out/rr-switch-trace-b.tsv"
           cp "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$out/per-vcpu-delta-trace-a.tsv"
