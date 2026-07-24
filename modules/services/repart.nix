@@ -1,8 +1,7 @@
 ##! modules/services/repart.nix — systemd-repart convention substrate
 ##!
 ##! Systemd-native substrate provisioning that carves and grows `/var` (and swap) in the
-##! initrd via convention `repart.d` drop-ins, replacing Ignition's
-##! `disks`/`aos-growfs`/`aos-gpt-relocate` for the zero-config cloud VM. It is
+##! initrd via convention `repart.d` drop-ins. It is
 ##! **idempotent by construction**: `systemd-repart` computes the delta between
 ##! declared and observed partitions and only *adds* missing partitions and
 ##! *grows* growable ones — running it every boot equals running it once, so it
@@ -11,11 +10,10 @@
 ##! It runs on every boot before `mount-var.service`; its additive partition
 ##! model makes an already-provisioned disk a no-op.
 ##!
-##! First-boot substrate is **image-only** (review M-repart-order): repart runs
-##! in the initrd, before host.nix is evaluated in stage-2, so only the
-##! image-baked convention drop-ins drive first-boot carving. Operator custom
-##! topologies are a documented two-boot flow (build-spec §7) and are not
-##! implemented here.
+##! The no-plan path uses image-baked convention drop-ins. An authenticated
+##! `aos.provisioning/v1` storage plan is validated and rendered under
+##! `/run/aos-metadata/repart.d` before this unit starts. Full `host.nix`
+##! evaluation remains in stage 2.
 ##!
 ##! Measured boot: the `var` partition is left **raw** (no `Format=`) so
 ##! `aos-var-crypt` (modules/base/secure-boot.nix) performs the LUKS2
@@ -91,7 +89,7 @@ in {
       # -Drepart=enabled.
       boot.initrd.systemd.services."aos-repart" = {
         description = "Provision substrate partitions (systemd-repart convention)";
-        wantedBy = ["initrd-root-fs.target"];
+        requiredBy = ["initrd-root-fs.target"];
         before = [
           "mount-var.service"
           "sysroot.mount"
@@ -101,12 +99,14 @@ in {
         # unit (pulled in early by initrd-root-fs.target) starts and evaluates
         # its ConditionPathExists before udev has created the
         # `/dev/disk/by-partlabel/root-a` symlink, skips, and the substrate is
-        # never carved. Mirrors aos-gpt-relocate on the Ignition path.
+        # never carved.
         requires = [
           "systemd-udevd.service"
           "dev-disk-by\\x2dpartlabel-root\\x2da.device"
+          "aos-metadata-authorize.service"
         ];
         after = [
+          "aos-metadata-authorize.service"
           "systemd-udevd.service"
           "systemd-udev-trigger.service"
           "systemd-udev-settle.service"
@@ -122,8 +122,7 @@ in {
         # partitions it creates: `mkswap` (util-linux, in sbin) for the swap
         # slot and `mkfs.ext4` (e2fsprogs, in sbin) for var. Both the bin and
         # sbin dirs must be on PATH or repart aborts with "mkswap binary not
-        # available" / "mkfs.ext4 binary not available". Mirrors the Ignition
-        # path's `makeSearchPath "sbin"`.
+        # available" / "mkfs.ext4 binary not available".
         environment.PATH = let
           repartTools = [
             pkgs.coreutils
@@ -159,8 +158,23 @@ in {
             klog "cannot resolve parent disk of $part"
             exit 1
           fi
+          definitions=${repartDefinitions}/repart.d
+          if [ -d /run/aos-metadata/repart.d ]; then
+            definitions=/run/aos-metadata/repart.d
+            klog "using authenticated provisioning storage plan"
+          else
+            klog "using image-baked storage convention"
+          fi
+          if ! systemd-repart \
+            --definitions="$definitions" \
+            --dry-run=yes \
+            --empty=allow \
+            "/dev/$disk" > /dev/kmsg 2>&1; then
+            klog "storage plan preflight failed; partition table left unchanged"
+            exit 1
+          fi
           systemd-repart \
-            --definitions=${repartDefinitions}/repart.d \
+            --definitions="$definitions" \
             --dry-run=no \
             --empty=allow \
             "/dev/$disk" > /dev/kmsg 2>&1
@@ -186,8 +200,7 @@ in {
       };
 
       # Order the existing /var consumer after repart carved the partition
-      # (additive: merges with the After= list declared in ignition.nix; harmless
-      # ordering only).
+      # (additive: merges with the unit's existing After= list).
       boot.initrd.systemd.services."mount-var".after = ["aos-repart.service"];
     }
 

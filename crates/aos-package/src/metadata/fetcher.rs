@@ -8,16 +8,14 @@
 //!
 //! # Trust boundary
 //!
-//! Everything a fetcher returns is **untrusted**. [`UserData`] bytes are
-//! stashed verbatim and verified only in stage-2 `aos-eval.service`; a fetcher
-//! must never verify a signature and must never promote a [`Facts`] field into
-//! a security decision. A failed or absent fetch resolves to "no user-data"
-//! ([`UserData`] absent ⇒ gen-0-only), the failure-safe path.
+//! Everything a fetcher returns is untrusted. [`UserData`] bytes are stashed
+//! verbatim; the following initrd authorization phase owns the trust decision.
+//! A fetcher must never promote a [`Facts`] field into a security decision.
 //!
 //! # Data shapes
 //!
-//! - [`UserData`] — the operator payload: literal `host.nix` (`Inline`) or a
-//!   size-cap escape-hatch `Pointer` resolved through the HTTP surface.
+//! - [`UserData`] — literal `host.nix`, an `aos.provisioning/v1` bundle, or a
+//!   size-cap bundle pointer resolved through the HTTP surface.
 //! - [`Facts`] — normalized, unauthenticated instance facts rendered to
 //!   `host-facts.nix` as `host.facts.*` ([`crate::metadata::facts_render`]).
 //! - [`StaticNetwork`] — the parsed DHCP-less network config seeded into
@@ -56,8 +54,8 @@ pub trait PlatformFetcher: Send + Sync {
     /// # Errors
     ///
     /// Returns `Err` only on transport failure after retries are exhausted, or
-    /// when a required local file is unreadable. Never verifies the signature
-    /// (that is stage-2's job).
+    /// when a required local file is unreadable. Acquisition never authorizes
+    /// the returned bytes.
     async fn fetch_user_data(&self, http: &dyn MetadataHttp) -> Result<Option<UserData>>;
 
     /// Acquire normalized instance facts.
@@ -73,39 +71,37 @@ pub trait PlatformFetcher: Send + Sync {
     async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts>;
 }
 
-/// Operator user-data: either inline Nix source, or a size-cap pointer.
+/// Operator user-data: exact inline bytes or a size-cap bundle pointer.
 ///
 /// The `Pointer` form is the escape hatch for platforms with a small user-data
-/// cap (AWS 16 KB): a tiny JSON document naming a URL, its `sha256`
-/// content-pin, and an optional detached-signature URL. [`UserData::resolve`]
-/// turns either form into the concrete bytes to stash.
+/// cap (AWS 16 KB): a tiny JSON document naming a provisioning-bundle URL, its
+/// `sha256` content-pin, and an optional detached-signature URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserData {
-    /// The literal `host.nix` bytes plus an optional detached SSHSIG (armored
-    /// PEM).
+    /// Exact literal `host.nix` or provisioning-bundle bytes.
     Inline {
-        /// Verbatim operator config source.
-        host_nix: Vec<u8>,
-        /// Detached SSHSIG over `host_nix`, if the platform carried one.
+        /// Verbatim user-data.
+        payload: Vec<u8>,
+        /// Detached SSHSIG over the complete payload, if carried separately.
         sig: Option<String>,
     },
     /// A pointer used when user-data exceeds the platform cap. The agent
-    /// resolves it: GET `host_nix_url` with `sha256` as a content-pin
+    /// resolves it: GET `provisioning_url` with `sha256` as a content-pin
     /// (integrity before authenticity), then GET `sig_url` if present.
     Pointer(PointerDoc),
 }
 
-/// The JSON pointer document an operator ships when `host.nix` exceeds the
+/// The JSON pointer document an operator ships when a provisioning bundle exceeds the
 /// platform user-data cap.
 ///
 /// ```json
-/// { "host_nix_url": "https://…/host.nix", "sha256": "…", "sig_url": "https://…/host.nix.sig" }
+/// { "provisioning_url": "https://…/provisioning.json", "sha256": "…", "sig_url": "https://…/provisioning.sig" }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PointerDoc {
-    /// URL of the full `host.nix` source.
-    pub host_nix_url: String,
+    /// URL of the complete provisioning input.
+    pub provisioning_url: String,
     /// Lowercase-hex SHA-256 content-pin enforced on the fetch.
     pub sha256: String,
     /// Optional URL of the detached SSHSIG.
@@ -116,10 +112,9 @@ pub struct PointerDoc {
 /// The concrete operator bytes after a [`UserData`] is resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedUserData {
-    /// The verbatim `host.nix` source bytes (untrusted).
-    pub host_nix: Vec<u8>,
-    /// Detached SSHSIG (armored PEM), if present. Absent ⇒ unsigned ⇒ stage-2
-    /// rejects.
+    /// Exact user-data bytes.
+    pub payload: Vec<u8>,
+    /// Detached SSHSIG over `payload`, if present.
     pub sig: Option<String>,
 }
 
@@ -127,7 +122,7 @@ impl UserData {
     /// Resolve to concrete bytes, fetching the pointer target if necessary.
     ///
     /// `Inline` is returned as-is. `Pointer` triggers a content-pinned GET of
-    /// `host_nix_url` (the pin is enforced by the HTTP surface) and, if
+    /// `provisioning_url` (the pin is enforced by the HTTP surface) and, if
     /// present, a GET of `sig_url`.
     ///
     /// # Errors
@@ -136,14 +131,21 @@ impl UserData {
     /// fails, or the signature URL is set but unreachable.
     pub async fn resolve(self, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
         match self {
-            Self::Inline { host_nix, sig } => Ok(ResolvedUserData { host_nix, sig }),
+            Self::Inline { payload, sig } => Ok(ResolvedUserData { payload, sig }),
             Self::Pointer(p) => {
                 let body = http
-                    .get_pinned(&p.host_nix_url, &p.sha256, &[])
+                    .get_pinned(&p.provisioning_url, &p.sha256, &[])
                     .await
-                    .with_context(|| format!("fetching host.nix pointer {}", p.host_nix_url))?
+                    .with_context(|| {
+                        format!("fetching provisioning pointer {}", p.provisioning_url)
+                    })?
                     .into_ok_body()
-                    .ok_or_else(|| anyhow!("host.nix pointer {} returned no body", p.host_nix_url))?;
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "provisioning pointer {} returned no body",
+                            p.provisioning_url
+                        )
+                    })?;
                 let sig = match &p.sig_url {
                     Some(url) => http
                         .get(url, &[])
@@ -153,10 +155,7 @@ impl UserData {
                         .and_then(|b| String::from_utf8(b).ok()),
                     None => None,
                 };
-                Ok(ResolvedUserData {
-                    host_nix: body,
-                    sig,
-                })
+                Ok(ResolvedUserData { payload: body, sig })
             }
         }
     }

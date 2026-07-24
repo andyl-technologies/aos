@@ -81,8 +81,8 @@ in {
 
       # Mask the sulogin-based recovery units in the initrd. The debug
       # shells below already run an always-on autologin root shell on
-      # every console (tty0/ttyS0). When a first-boot failure (e.g.
-      # ignition) drops stage-1 to maintenance, systemd ALSO starts
+      # every console (tty0/ttyS0). When a first-boot provisioning failure
+      # drops stage-1 to maintenance, systemd ALSO starts
       # emergency.service — sulogin on /dev/console. With the baked-in
       # cmdline `console=ttyS0 console=tty0`, /dev/console resolves to
       # the foreground VT (tty1), which is the very screen

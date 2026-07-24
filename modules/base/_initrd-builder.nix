@@ -613,12 +613,12 @@ in
                       "{}/lib/libnss_mymachines.so."*
                 # Keep: systemd (PID 1), systemd-udevd, systemd-journald,
                 #       systemd-executor, systemd-networkd + systemd-resolved
-                #       (ignition fetch needs HTTPS to platform metadata),
+                #       (metadata acquisition needs platform networking),
                 #       systemd-fsck, shutdown, and the generator helpers
                 #       invoked by the initrd units.
                 # systemd-creds and systemd-cryptenroll are deliberately KEPT
                 # (RFC-0006 phase 3): first-boot sealing of /var runs in the
-                # initrd (aos-var-crypt, after ignition-disks) and uses
+                # initrd (aos-var-crypt, after aos-repart) and uses
                 # systemd-cryptenroll --tpm2-*; the systemd-cryptsetup
                 # TPM2-token unlock on later boots also runs here.
                 # systemd-measure stays stripped: it is a build-time tool

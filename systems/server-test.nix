@@ -7,8 +7,8 @@
 ##! THIS variant instead of re-adding those affordances in every suite:
 ##!
 ##!   - bundles the `aos-test-agent` package, so the fleet harness can drive
-##!     non-baked (image/ignition) machines, whose agent arrives via the
-##!     package's ignition fragment rather than a baked /var seed
+##!     non-baked image machines, whose agent arrives via the bundled package
+##!     rather than a baked /var seed
 ##!     (lib/testing/fleet.nix);
 ##!   - puts the CLI tools fleet test scripts invoke by bare name back on
 ##!     PATH — git/sqlite/socat to hand-seed a registry, curl/jq to probe
@@ -22,7 +22,7 @@
 {pkgs, ...}: {
   imports = [./server.nix];
 
-  # Guest agent for image/ignition machines (baked machines also get it from
+  # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See
   # lib/testing/fleet.nix `mkMachinesWithIndex`. Bundling this exposed package
   # is safe on TPM-less test machines because aos-attest.service skips cleanly

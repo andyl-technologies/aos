@@ -115,7 +115,7 @@ is selected by image policy:
 - **`signed` (secure mode)** requires a detached SSHSIG over the exact
   provisioning-bundle bytes, verified against
   `trusted-config-keys.d/<op>.pub` via
-  `security.rs::verify_payload_signature` + `TrustStore`.
+  `security.rs::verify_payload_signature` + `KeyStore`.
 
 The selected policy is measured boot configuration and cannot be supplied or
 overridden by the provisioning bundle. `signed` never falls back to `platform`.

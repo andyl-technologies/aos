@@ -1,20 +1,18 @@
 ##! modules/services/aos-metadata.nix — the `aos metadata` agent
 ##!
-##! Initrd units for the transport-only `aos metadata` agent (a Rust subcommand
-##! in `pkgs.aos`). Every AOS system carries this provisioning path.
+##! Initrd units for the native `aos metadata` agent. Every AOS system carries
+##! this provisioning path.
 ##!
-##! The agent is **transport-only**: it fetches and stashes the
-##! operator `host.nix` (+ detached signature) and instance facts into
-##! `/run/aos-metadata/`. The default policy trusts metadata delivered by the
-##! deployment platform. Deployments using the signed policy defer signature
-##! verification to `aos-eval.service`, where the trust anchors live in the
-##! measured `/etc`. A failed or missing fetch leaves no `host.nix`, so the
-##! baked configuration remains active.
+##! Fetch stores exact user-data and facts under `/run/aos-metadata/`.
+##! Authorization then applies the measured `platform` or `signed` policy and
+##! is the only step allowed to produce `host.nix` or transient `repart.d`.
+##! Full Nix evaluation remains in stage 2.
 ##!
-##! Three units implement detection, conditional networking, and metadata fetch:
+##! Four units implement detection, networking, fetch, and authorization:
 ##!   aos-metadata-detect   DMI/ISO → platform.env
 ##!   aos-metadata-network  DHCP gate, cloud-only
 ##!   aos-metadata-fetch    platform → stash
+##!   aos-metadata-authorize trust + schema → host.nix + optional repart.d
 ##!
 {
   config,
@@ -23,6 +21,18 @@
   ...
 }: let
   cfg = config.aos.provisioning.metadataAgent;
+  trust = config.aos.config.evalAtBoot.trust;
+  measured = config.aos.boot.secureBoot.measuredBoot.enable;
+  configKeys = config.aos.apm.configKeys;
+  configTrustAnchors = pkgs.runCommand "aos-provisioning-trust-anchors" {} ''
+    mkdir -p $out
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (op: keys: ''
+        cat > $out/${op}.pub <<'KEYS'
+        ${lib.concatStringsSep "\n" keys}
+        KEYS
+      '')
+      configKeys)}
+  '';
 in {
   options.aos.provisioning.metadataAgent = {
     stashDir = lib.mkOption {
@@ -43,15 +53,20 @@ in {
   };
 
   config = {
+    aos.boot.initrd.extraPackages = [configTrustAnchors];
+
     boot.initrd.systemd.services = {
-      # 1. Platform detection + offline config-drive probe. Absorbs
-      #    aos-platform-detect: ports the DMI/SMBIOS decision table and probes
-      #    blkid -L {aos-metadata,cidata,config-2}. Writes platform.env (+ the
+      # 1. Platform detection + offline config-drive probe. Applies the
+      #    DMI/SMBIOS decision table and probes blkid -L
+      #    {aos-metadata,cidata,config-2}. Writes platform.env (+ the
       #    adjacent need-network flag for cloud platforms).
       "aos-metadata-detect" = {
         description = "Detect the metadata platform and configuration drive";
         wantedBy = ["initrd-root-fs.target"];
-        before = ["aos-metadata-fetch.service"];
+        before = [
+          "aos-metadata-fetch.service"
+          "aos-metadata-authorize.service"
+        ];
         requires = [
           "systemd-udevd.service"
           "systemd-udev-trigger.service"
@@ -61,6 +76,10 @@ in {
           "systemd-udev-trigger.service"
         ];
         unitConfig.DefaultDependencies = "no";
+        environment.PATH = lib.makeBinPath [
+          pkgs.coreutils
+          pkgs.util-linux
+        ];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -93,9 +112,8 @@ in {
         };
       };
 
-      # 3. Fetch + stash user-data + facts. Transport-only: no signature is
-      #    verified here. SuccessExitStatus=0 1 keeps a failed
-      #    fetch from wedging boot — the absent host.nix makes stage-2 a no-op.
+      # 3. Fetch exact user-data + facts. Authorization is a distinct step so
+      #    neither stage 2 nor repart can consume a partial acquisition.
       "aos-metadata-fetch" = {
         description = "Fetch operator configuration and instance facts";
         wantedBy = ["initrd-root-fs.target"];
@@ -104,7 +122,10 @@ in {
           "aos-metadata-detect.service"
           "aos-metadata-network.service"
         ];
-        before = ["initrd-root-fs.target"];
+        before = [
+          "aos-metadata-authorize.service"
+          "initrd-root-fs.target"
+        ];
         unitConfig.DefaultDependencies = "no";
         serviceConfig = {
           Type = "oneshot";
@@ -112,6 +133,34 @@ in {
           EnvironmentFile = "${cfg.stashDir}/platform.env";
           ExecStart = "${pkgs.aos}/bin/aos metadata fetch";
           SuccessExitStatus = "0 1";
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
+        };
+      };
+
+      # 4. Apply the measured trust policy, parse the closed provisioning
+      #    schema, content-pin any host.nix URL, and render transient repart
+      #    definitions. Unlike fetch, failure is fatal: a possibly declared
+      #    storage plan must never silently fall back to the baked layout.
+      "aos-metadata-authorize" = {
+        description = "Authorize first-boot provisioning input";
+        requiredBy = ["initrd-root-fs.target"];
+        requires = ["aos-metadata-fetch.service"];
+        after = ["aos-metadata-fetch.service"];
+        before = [
+          "aos-repart.service"
+          "initrd-root-fs.target"
+        ];
+        unitConfig.DefaultDependencies = "no";
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart =
+            "${pkgs.aos}/bin/aos metadata authorize"
+            + " --trust ${trust}"
+            + lib.optionalString (trust == "signed")
+            " --trusted-config-keys-dir ${configTrustAnchors}"
+            + lib.optionalString measured " --measured-boot";
           StandardOutput = "journal+console";
           StandardError = "journal+console";
         };

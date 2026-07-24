@@ -135,8 +135,8 @@ systemd-native substrate + the `aos metadata` agent + the unit graph.
       never guard convergent ops (repart/tmpfiles/sysusers).
 - [ ] **`aos metadata` agent.** `aos metadata detect` (port
       `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
-      `security.rs` SSHSIG + `TrustStore`; add `authorize` and
-      `render-storage`. Stash the exact provisioning bundle, accepted host.nix,
+      `security.rs` SSHSIG + `KeyStore`; add `authorize`, including typed
+      storage rendering. Stash the exact provisioning input, accepted host.nix,
       typed plan, facts, and validation record. Support inline literal Nix and
       hash-pinned bundle/host pointers. Reuse surface in
       [`provisioning.md`](provisioning.md) §Implementation.

@@ -2,23 +2,28 @@
 //!
 //! The stash is a child of the initrd `/run` so it survives
 //! `mount --move /run /sysroot/run` during switch_root; stage-2 stages it into
-//! the evaluator root `/run/aos-eval/`. Every byte in it is **untrusted** — the
-//! agent writes what it fetched, and signature verification happens in stage-2.
+//! the evaluator root `/run/aos-eval/`. Fetch writes raw user-data; only the
+//! initrd authorization phase may produce evaluator-visible `host.nix` or
+//! transient repart definitions.
 //!
 //! ```text
 //! /run/aos-metadata/
 //! ├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>]
-//! ├── host.nix                # untrusted operator config (absent ⇒ gen-0-only)
-//! ├── host.nix.sig            # detached SSHSIG (PEM); absent ⇒ unsigned
+//! ├── user-data               # exact fetched bytes
+//! ├── user-data.sig           # detached whole-input SSHSIG (optional)
+//! ├── host.nix                # policy-accepted operator config
+//! ├── storage-plan.json       # canonical validated plan (optional)
+//! ├── repart.d/               # transient rendered definitions (optional)
 //! ├── facts.json              # normalized Facts (serde_json)
 //! ├── network/10-aos-seed.network   # DHCP-less static seed (optional)
-//! └── .metadata-result.json   # agent run record
+//! ├── .metadata-result.json   # acquisition record
+//! └── .provisioning-result.json # authorization and binding record
 //! ```
 //!
 //! `platform.env` is consumed via systemd `EnvironmentFile`, so it is rendered
-//! as `KEY=value` lines. `.metadata-result.json` mirrors the legacy
-//! `.ignition-result.json` run marker and lets stage-2 fail safe (check
-//! `sig_present` / `host_nix_sha256`) without re-reading the payload bytes.
+//! as `KEY=value` lines. `.metadata-result.json` records acquisition.
+//! `.provisioning-result.json`
+//! records the later trust decision and accepted content hashes.
 
 use std::path::{Path, PathBuf};
 
@@ -82,7 +87,7 @@ impl PlatformEnv {
     }
 }
 
-/// The `.metadata-result.json` run record (analog of `.ignition-result.json`).
+/// The `.metadata-result.json` acquisition record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataResult {
@@ -92,9 +97,9 @@ pub struct MetadataResult {
     pub fetched_user_data: bool,
     /// Where the payload came from (`imds`, `config-drive`, `fw_cfg`, …).
     pub user_data_source: String,
-    /// Lowercase-hex SHA-256 of the stashed `host.nix`, if present.
+    /// Lowercase-hex SHA-256 of the exact fetched user-data, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_nix_sha256: Option<String>,
+    pub user_data_sha256: Option<String>,
     /// Whether a detached signature was stashed.
     pub sig_present: bool,
     /// SHA-256 of the canonical `facts.json` bytes.
@@ -157,19 +162,66 @@ impl Stash {
         Ok(PlatformEnv::parse(&text))
     }
 
-    /// Stash the untrusted `host.nix` bytes and optional detached signature.
+    /// Stash exact fetched user-data bytes and optional detached signature.
     ///
     /// Returns the lowercase-hex SHA-256 of the payload for the run record.
     ///
     /// # Errors
     ///
     /// Returns `Err` on any write failure.
-    pub fn write_host_nix(&self, host_nix: &[u8], sig: Option<&str>) -> Result<String> {
-        std::fs::write(self.dir.join("host.nix"), host_nix).context("writing host.nix")?;
+    pub fn write_user_data(&self, user_data: &[u8], sig: Option<&str>) -> Result<String> {
+        std::fs::write(self.dir.join("user-data"), user_data).context("writing user-data")?;
         if let Some(sig) = sig {
-            std::fs::write(self.dir.join("host.nix.sig"), sig).context("writing host.nix.sig")?;
+            std::fs::write(self.dir.join("user-data.sig"), sig).context("writing user-data.sig")?;
         }
-        Ok(sha256_hex(host_nix))
+        Ok(sha256_hex(user_data))
+    }
+
+    /// Remove outputs from a previous acquisition attempt.
+    ///
+    /// The run marker is removed first. If the new fetch fails, authorization
+    /// observes the missing marker and cannot reuse stale user-data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an existing output cannot be removed.
+    pub fn clear_fetch_outputs(&self) -> Result<()> {
+        for file in ["user-data", "user-data.sig", ".metadata-result.json"] {
+            let path = self.dir.join(file);
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing {}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove every output owned by the authorization phase.
+    ///
+    /// This runs before each authorization attempt so a failed re-run cannot
+    /// expose stale accepted configuration or repart definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an existing output cannot be removed.
+    pub fn clear_authorized_outputs(&self) -> Result<()> {
+        for file in [
+            "host.nix",
+            super::repart::STORAGE_PLAN_FILE,
+            super::provisioning::PROVISIONING_RESULT_FILE,
+        ] {
+            let path = self.dir.join(file);
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing {}", path.display()))?;
+            }
+        }
+        let repart = self.dir.join(super::repart::REPART_DIR);
+        if repart.exists() {
+            std::fs::remove_dir_all(&repart)
+                .with_context(|| format!("removing {}", repart.display()))?;
+        }
+        Ok(())
     }
 
     /// Serialize [`Facts`] to `facts.json` and return its SHA-256 (the
@@ -203,7 +255,8 @@ impl Stash {
     ///
     /// Returns `Err` on serialization or write failure.
     pub fn write_result(&self, result: &MetadataResult) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(result).context("serializing .metadata-result.json")?;
+        let bytes =
+            serde_json::to_vec_pretty(result).context("serializing .metadata-result.json")?;
         std::fs::write(self.dir.join(".metadata-result.json"), bytes)
             .context("writing .metadata-result.json")?;
         Ok(())

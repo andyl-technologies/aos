@@ -20,9 +20,9 @@
 
   # The server profile sets the test fixtures to `bundle = mkDefault false`
   # to keep them out of the production image. This is a test-only fixture
-  # system, so re-bundle the guest agent: the fleet harness delivers it to
-  # image-boot machines via the package's ignition fragment, which requires
-  # the payload to be present in the image (lib/testing/fleet.nix).
+  # system, so re-bundle the guest agent: the fleet harness activates it on
+  # image-boot machines, which requires the payload to be present in the image
+  # (lib/testing/fleet.nix).
   aos.packages.aos-test-agent.bundle = true;
 
   aos.boot.secureBoot = {

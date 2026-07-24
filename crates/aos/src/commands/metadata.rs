@@ -13,8 +13,8 @@ use crate::cli::MetadataCmd;
 /// Dispatch a parsed `aos metadata` subcommand to its agent entry point.
 ///
 /// `detect` writes `/run/aos-metadata/platform.env`; `fetch` selects the
-/// platform fetcher and stashes the untrusted payload + facts. Both are
-/// transport-only: no signature is verified here (stage-2's job).
+/// platform fetcher and stashes exact payload + facts; `authorize` applies the
+/// measured trust policy before producing host or storage outputs.
 ///
 /// # Errors
 ///
@@ -25,5 +25,23 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
     match command {
         MetadataCmd::Detect => aos_package::metadata::detect_main(),
         MetadataCmd::Fetch => aos_package::metadata::fetch_main().await,
+        MetadataCmd::Authorize {
+            trust,
+            trusted_config_keys_dir,
+            measured_boot,
+        } => {
+            let opts = aos_package::metadata::AuthorizeOptions {
+                stash_dir: std::path::PathBuf::from(
+                    aos_package::metadata::stash::DEFAULT_STASH_DIR,
+                ),
+                measured_boot: *measured_boot,
+                trust: trust.parse()?,
+                trusted_config_key_dirs: trusted_config_keys_dir.clone(),
+            };
+            aos_package::metadata::authorize_main(&opts).await
+        }
+        MetadataCmd::VerifyBinding => aos_package::metadata::verify_binding_main(
+            std::path::Path::new(aos_package::metadata::stash::DEFAULT_STASH_DIR),
+        ),
     }
 }

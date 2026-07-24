@@ -164,7 +164,7 @@ in {
                 `target` becomes a real directory in the EROFS image
                 and every descendant becomes its own composefs entry.
                 The recursion is what allows another lower (e.g.
-                ignition's per-generation writes) to merge files into
+                per-generation configuration writes) to merge files into
                 the same directory at runtime — overlayfs can only
                 merge two directory inodes, not a directory and a
                 symlink.

@@ -1,7 +1,6 @@
 ##! modules/base/config-seed.nix — on-host configuration files backend
 ##!
-##! The initrd "files" backend: the on-host config-eval path's replacement for
-##! Ignition's `ignition-files` stage. The neutral `/etc` overlay
+##! The initrd files backend for on-host configuration. The neutral `/etc` overlay
 ##! (`etc-overlay-setup.service`, in modules/services/boot-substrate.nix)
 ##! composes a per-generation lower at `/run/etc/config-<gen>/etc`; first-boot
 ##! `/etc` comes entirely from the baked system EROFS (gen-0) — the per-gen
@@ -42,8 +41,7 @@
         RemainAfterExit = true;
         # AOS_PROFILE_GEN is published by aos-seed-profiles.service.
         EnvironmentFile = "/run/aos-profile-gen.env";
-        # The Ignition path had ignition-files' ExecStartPre create this; on the
-        # the lower is intentionally empty on first boot.
+        # The lower is intentionally empty on first boot.
         ExecStart =
           "${pkgs.coreutils}/bin/mkdir -p "
           + "/run/etc/config-\${AOS_PROFILE_GEN}/etc";
