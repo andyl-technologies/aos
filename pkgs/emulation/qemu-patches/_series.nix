@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "eaf62153b1de4837d003a552a984f848ed7b7486cc35d30304945ff383196040";
+  patchBranchBundleSha256 = "4631697ac380e9346c973c394ca113f087a888cdb4bb514234179cc9f2ac9511";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "08389eff3f11ceb3a5082150eddcb44df36af911";
+  patchBranchHeadCommit = "eb0535b7740dde9c962716c2164b4abe95265bd4";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -366,6 +366,15 @@ let
       class = "D";
       enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
       capability = "device-wait callback advances an I/O-blocked guest to its deterministic completion and resumes polling after commit";
+    }
+    {
+      file = "0040-crucible-9p-sync-kick.patch";
+      branchCommit = "eb0535b7740dde9c962716c2164b4abe95265bd4";
+      branchTree = "82904d441c49f2594256374d797dbc07da1a2f35";
+      catalogName = "crucible-9p-sync-kick";
+      class = "D";
+      enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
+      capability = "sim-mode virtio-9p kicks enter deterministic raw-message forwarding synchronously";
     }
   ];
   catalogOnlyCapabilities = [

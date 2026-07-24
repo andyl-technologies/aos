@@ -219,6 +219,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-freeze-warp-at-observation-boundary  freeze vclock at obs boundary  D    DET-8, DET-29
   crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
   crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
+  crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -944,6 +945,28 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   existing event-driven wait is unchanged.
 - **Risk:** D.
 
+### crucible-9p-sync-kick — enter 9p forwarding synchronously
+
+- **Enforces:** [DET-16], [PATCH-29], [PLUG-22], [IO-32].
+- **Mechanism:** extends the sim-mode icount ioeventfd selection rule so
+  virtio-9p, like virtio-rng, handles the guest's virtqueue kick synchronously
+  on the requesting vCPU thread. This pins entry into the existing
+  `crucible-9p-shmem` raw-message forwarding path instead of leaving the initial
+  kick queued on a host-scheduled main-loop eventfd. Completion remains modeled
+  by the 9p I/O sub-node and delivered through the existing wake-fd notifier;
+  virtio-blk retains its asynchronous kick and the block-wait completion barrier.
+- **Micro-test:** reconstruct the exact QEMU prefix through patch 0039, compile
+  and execute the `virtio_pci_ioeventfd_enabled` predicate before and after this
+  patch, and require only sim-mode icount virtio-9p to change from asynchronous
+  to synchronous. The virtio-rng, virtio-blk, plain-TCG, and sim-without-icount
+  results remain unchanged. The live 9p gate additionally boots a mounting
+  guest, requires nonzero request and response frames on `SLOT_9P_IO`, reaches
+  the scheduler ceiling, and reproduces identical icount-domain observations
+  under host load with a deliberately late physical response write.
+- **Inertness:** [PATCH-3](a), [PATCH-3](c) — outside sim-mode icount the
+  upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
+- **Risk:** D.
+
 ### crucible-blk-write-sentinel — explicit pending sentinel for writes/flush
 
 - **Enforces:** [DET-16] correctness.
@@ -973,8 +996,10 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   device retains at most one pending PDU and repolls it once for each drained
   scheduler-wake readiness event delivered by the main-thread notifier; queue
   processing resumes only after that PDU completes. The upstream internal 9p
-  server path is taken when no callback is registered, and such a device does
-  not register a wake notifier.
+  server remains the fallback when callbacks are absent. Patch
+  `crucible-9p-sync-kick` additionally makes the sim-mode icount virtqueue kick
+  enter this forwarding path synchronously, so host main-loop scheduling cannot
+  suppress or delay publication of the initial request.
 - **Micro-test:** register a callback that echoes a canned 9p response; assert the
   guest's 9p read returns the exact bytes; assert the completion icount is
   deterministic; assert the internal server is used when no callback is registered.

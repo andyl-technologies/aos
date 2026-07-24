@@ -230,6 +230,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_register_blk_wait_cb"];
     };
+    "0040-crucible-9p-sync-kick.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

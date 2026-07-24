@@ -81,6 +81,7 @@
     "0039-crucible-blk-device-completion-advance.patch" = [
       "qemu_plugin_register_blk_wait_cb"
     ];
+    "0040-crucible-9p-sync-kick.patch" = [];
   };
 
   dropOnes =
