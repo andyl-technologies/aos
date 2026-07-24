@@ -424,6 +424,34 @@ in
                 free(ptr);
             }
 
+            static inline const char *g_strerror(int errnum)
+            {
+                return strerror(errnum);
+            }
+
+            static inline char *g_strdup_printf(const char *format, ...)
+            {
+                va_list args;
+                va_list copy;
+                int length;
+                char *message;
+
+                va_start(args, format);
+                va_copy(copy, args);
+                length = vsnprintf(NULL, 0, format, copy);
+                va_end(copy);
+                if (length < 0) {
+                    va_end(args);
+                    return NULL;
+                }
+                message = malloc((size_t)length + 1);
+                if (message != NULL) {
+                    (void)vsnprintf(message, (size_t)length + 1, format, args);
+                }
+                va_end(args);
+                return message;
+            }
+
             static inline void error_setg(Error **errp, const char *fmt, ...)
             {
                 static Error error;
