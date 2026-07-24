@@ -9,6 +9,8 @@ mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
 mod host_io_runtime;
+mod network_io_gate;
+mod network_io_servicer;
 mod ninep_io_gate;
 mod ninep_io_servicer;
 mod node_step_gate;
@@ -26,6 +28,16 @@ pub use block_node_gate::{
     QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
 };
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use network_io_gate::{
+    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
+    run_qemu_live_network_io_gate,
+};
+pub use network_io_servicer::{
+    LIVE_NETWORK_ACK_PAYLOAD, LIVE_NETWORK_ETHERTYPE, LIVE_NETWORK_PROBE_PAYLOAD,
+    LIVE_NETWORK_REPLY_LATENCY_ICOUNT, LIVE_NETWORK_REPLY_PAYLOAD, LiveNetworkIoServiceStep,
+    LiveNetworkIoSnapshot, LiveNetworkTxObservation, QemuLiveNetworkIoServicer,
+    QemuLiveNetworkIoServicerError,
+};
 pub use ninep_io_gate::{
     NinepIoAdvanceOutcome, QemuLive9pIoGateConfig, QemuLive9pIoGateError, QemuLive9pIoReport,
     run_qemu_live_9p_io_gate,

@@ -573,6 +573,35 @@ fn pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy() {
 }
 
 #[test]
+fn pre_spawn_launch_validation_accepts_only_an_unbridged_hubport() {
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args([
+        "-netdev",
+        "hubport,id=crucible-netdev0,hubid=0",
+    ]));
+    assert!(validate_pre_spawn_qemu_launch_args(&args).is_ok());
+
+    for value in [
+        "hubport,id=net0,hubid=0,netdev=tap0",
+        "hubport,id=net0",
+        "hubport,hubid=0",
+        "hubport,id=net0,hubid=not-a-number",
+    ] {
+        let mut args = default_profile().canonical_qemu_args();
+        args.extend(qemu_args(["-netdev", value]));
+        assert!(matches!(
+            validate_pre_spawn_qemu_launch_args(&args),
+            Err(
+                QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                    reason: "host-timed or host-fed networking",
+                    ..
+                }
+            )
+        ));
+    }
+}
+
+#[test]
 fn pre_spawn_launch_validation_rejects_host_input_bypass_forms() {
     let cases: &[(&[&str], &str, &str)] = &[
         (
