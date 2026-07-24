@@ -14,8 +14,8 @@
 //!
 //! # Data shapes
 //!
-//! - [`UserData`] — literal `host.nix`, an `aos.provisioning/v1` bundle, or a
-//!   size-cap bundle pointer resolved through the HTTP surface.
+//! - [`UserData`] — literal `host.nix`, or a size-cap transport pointer to the
+//!   exact `host.nix` bytes.
 //! - [`Facts`] — normalized, unauthenticated instance facts rendered to
 //!   `host-facts.nix` as `host.facts.*` ([`crate::metadata::facts_render`]).
 //! - [`StaticNetwork`] — the parsed DHCP-less network config seeded into
@@ -71,14 +71,14 @@ pub trait PlatformFetcher: Send + Sync {
     async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts>;
 }
 
-/// Operator user-data: exact inline bytes or a size-cap bundle pointer.
+/// Operator user-data: exact inline `host.nix` bytes or a size-cap pointer.
 ///
 /// The `Pointer` form is the escape hatch for platforms with a small user-data
-/// cap (AWS 16 KB): a tiny JSON document naming a provisioning-bundle URL, its
-/// `sha256` content-pin, and an optional detached-signature URL.
+/// cap (AWS 16 KB): a tiny JSON document naming a `host.nix` URL, its `sha256`
+/// content-pin, and an optional detached-signature URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserData {
-    /// Exact literal `host.nix` or provisioning-bundle bytes.
+    /// Exact literal `host.nix` bytes.
     Inline {
         /// Verbatim user-data.
         payload: Vec<u8>,
@@ -86,22 +86,21 @@ pub enum UserData {
         sig: Option<String>,
     },
     /// A pointer used when user-data exceeds the platform cap. The agent
-    /// resolves it: GET `provisioning_url` with `sha256` as a content-pin
+    /// resolves it: GET `host_nix_url` with `sha256` as a content-pin
     /// (integrity before authenticity), then GET `sig_url` if present.
     Pointer(PointerDoc),
 }
 
-/// The JSON pointer document an operator ships when a provisioning bundle exceeds the
-/// platform user-data cap.
+/// The JSON transport pointer used when `host.nix` exceeds a platform cap.
 ///
 /// ```json
-/// { "provisioning_url": "https://…/provisioning.json", "sha256": "…", "sig_url": "https://…/provisioning.sig" }
+/// { "host_nix_url": "https://…/host.nix", "sha256": "…", "sig_url": "https://…/host.nix.sig" }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PointerDoc {
-    /// URL of the complete provisioning input.
-    pub provisioning_url: String,
+    /// URL of the complete literal `host.nix`.
+    pub host_nix_url: String,
     /// Lowercase-hex SHA-256 content-pin enforced on the fetch.
     pub sha256: String,
     /// Optional URL of the detached SSHSIG.
@@ -122,7 +121,7 @@ impl UserData {
     /// Resolve to concrete bytes, fetching the pointer target if necessary.
     ///
     /// `Inline` is returned as-is. `Pointer` triggers a content-pinned GET of
-    /// `provisioning_url` (the pin is enforced by the HTTP surface) and, if
+    /// `host_nix_url` (the pin is enforced by the HTTP surface) and, if
     /// present, a GET of `sig_url`.
     ///
     /// # Errors
@@ -134,17 +133,12 @@ impl UserData {
             Self::Inline { payload, sig } => Ok(ResolvedUserData { payload, sig }),
             Self::Pointer(p) => {
                 let body = http
-                    .get_pinned(&p.provisioning_url, &p.sha256, &[])
+                    .get_pinned(&p.host_nix_url, &p.sha256, &[])
                     .await
-                    .with_context(|| {
-                        format!("fetching provisioning pointer {}", p.provisioning_url)
-                    })?
+                    .with_context(|| format!("fetching host.nix pointer {}", p.host_nix_url))?
                     .into_ok_body()
                     .ok_or_else(|| {
-                        anyhow!(
-                            "provisioning pointer {} returned no body",
-                            p.provisioning_url
-                        )
+                        anyhow!("host.nix pointer {} returned no body", p.host_nix_url)
                     })?;
                 let sig = match &p.sig_url {
                     Some(url) => http

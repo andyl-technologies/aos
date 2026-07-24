@@ -18,6 +18,9 @@
 }: {
   imports = [./server.nix];
 
+  # This is a test fixture, not the universal production image.
+  aos.roles.server.enable = true;
+
   # The server profile sets the test fixtures to `bundle = mkDefault false`
   # to keep them out of the production image. This is a test-only fixture
   # system, so re-bundle the guest agent: the fleet harness activates it on

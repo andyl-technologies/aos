@@ -15,7 +15,7 @@
 //! ```
 //!
 //! `fetch_user_data` GETs `/latest/user-data`: HTTP 200 is the literal
-//! complete provisioning input (or a pointer JSON, resolved with a
+//! complete literal `host.nix` (or a transport pointer JSON, resolved with a
 //! content-pin); HTTP 404 means
 //! no user-data attached (`Ok(None)`, *not* an error). `fetch_facts` reads
 //! `instance-id`, `placement/{region,availability-zone}`, `local-hostname`,

@@ -145,8 +145,17 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim with a
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
   - **Done when** `tests/fleet/rfc-0011-metadata-agent.nix` (DO/OpenStack recorded fixtures) asserts: the initrd `aos metadata` agent seeds static networking from platform metadata, and on a **DHCP-less** profile stage-2 reaches the registry (a fetch over the configured interface succeeds) where it would otherwise time out. The accepted provisioning input and its hashes survive switch-root unchanged.
 
-- [ ] **Authenticated first-boot storage plan** with the image-baked layout as the no-plan default.
-  - **Done when** `tests/fleet/provisioning-boot.nix` asserts: no `storage` member carves the baked swap+growable-`/var` convention; a valid typed custom plan is authorized, rendered, and applied on the **first boot**; raw `repart.d`, a second target disk, protected partition types, unknown fields, and invalid sizes are rejected; an invalid declared plan reaches emergency before any GPT change and does not fall back; ordering is authorize → validate/render → `systemd-repart` → mount `/var`; and reboot is idempotent.
+- [ ] **Authenticated first-boot `host.nix` provisioning projection** with the
+      base module default as the no-input fallback.
+  - **Done when** `tests/fleet/provisioning-boot.nix` asserts: literal
+    `host.nix` setting `aos.provisioning.storage` changes the first-boot
+    layout; no JSON provisioning/storage document is accepted; absent
+    `host.nix` evaluates the same default Nix module; present invalid input
+    reaches emergency before GPT mutation and does not fall back; a pending
+    marker fails closed for explicit partial-commit recovery; only a committed
+    operator/fallback marker freezes mutation; reboot with missing metadata
+    skips provisioning and preserves the disk; and the mutating repart exit
+    status propagates.
 
 - [ ] **Degraded commit = re-projected manifest** (full minus un-fetched), re-hashed, drop-set recorded — keeps the generation content-addressed.
   - **Done when** `tests/fleet/rfc-0011-degraded-boot.nix` (from `apm-system-activation-fail`) asserts: a single failing package fetch yields `is-system-running = degraded` with `multi-user.target` reached and the box SSH-reachable; healthy packages are live; and the **committed config-gen is the re-projected (full-minus-unfetched) manifest** — re-hashed to a new `manifest_hash`, with the drop-set recorded — so the degraded generation is still content-addressed (not the full manifest, not an uncommitted state).
@@ -183,8 +192,15 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim and an
 - [ ] **Lifecycle guards.** Render destructive ops as `Type=oneshot` + state-probe (`cryptsetup isLuks`/`blkid || mkfs`) / `ConditionFirstBoot=`; never guard convergent ops (repart/tmpfiles/sysusers).
   - **DoD — fleet (`tests/fleet/apm-substrate-idempotency.nix`):** boot, reboot, boot again; assert each destructive unit (mkfs `/var`, LUKS format/enroll) ran exactly **once** (`journalctl -u <unit> --boot=<n>`: ExecStart present on first boot, `Condition...was not met`/skipped on second), while `systemd-repart.service` and `systemd-tmpfiles-setup.service` ran on **both** boots (convergent, no guard). A grep of the rendered manifest units asserts no `ConditionFirstBoot=`/marker on any repart/tmpfiles/sysusers unit (anti-pattern lint, `checks.eval`).
 
-- [ ] **`aos metadata` agent.** `detect` + `fetch` + `authorize`, with typed storage rendering owned by authorization; reuse `aos-net` + `security.rs` SSHSIG + `KeyStore`. Stash the exact provisioning input, accepted host.nix, typed plan, facts, and validation record in `/run/aos-metadata/`.
-  - **DoD — Rust (`crates/aos/tests/metadata_*.rs`, recorded fixtures) + fleet (`apm-metadata-agent.nix`):** fixture tests cover each transport and byte-exact pointer hashes. `platform` mode accepts control-plane delivery without a per-instance signature. `signed` mode accepts a correctly signed whole bundle and rejects unsigned, modified, or wrong-key bundles in initrd. Stage-2 sees the same accepted `host.nix` hash. Unknown schema fields fail closed, and neither trust mode ever accepts raw `repart.d`.
+- [ ] **`aos metadata` agent.** `detect` + `fetch` + `authorize` exact
+      `host.nix`; reuse `aos-net` + `security.rs` SSHSIG + `KeyStore`. Stash
+      raw user-data, accepted `host.nix`, facts, and trust evidence.
+  - **DoD — Rust + fleet:** fixture tests cover each transport and byte-exact
+    pointer hashes. `platform` accepts control-plane delivery. `signed`
+    accepts a signature over the exact Nix bytes and rejects unsigned,
+    modified, or wrong-key input before evaluation. Stage 2 sees the same
+    hash. A JSON object containing `storage` is treated as Nix source and fails
+    Nix parsing; it is never interpreted as provisioning configuration.
 
 - [ ] Net-new pieces (config-drive mount helper; vendor a YAML crate; request-timeout shim; per-platform fetchers behind `PlatformFetcher`, recorded-fixture tested).
   - **DoD — Rust (`cargo test` in `crates/aos`):** config-drive helper mounts each of `cidata`/`config-2`/`aos-metadata` labelled ISO9660/vfat fixtures and reads `user-data` (one test per label). The vendored YAML crate is in `Cargo.lock` and parses a `meta-data` fixture (build proves no `serde_yaml`). Each `PlatformFetcher` impl (AWS IMDSv2 token-dance / GCP `Metadata-Flavor` / Azure / OpenStack / DO) passes a recorded-fixture round-trip test asserting the exact request shape (headers, PUT-token→GET order) and the parsed payload. The timeout shim test asserts an IMDS call wrapped in `tokio::time::timeout` returns a timeout `Err` against a non-responding fixture endpoint within the bound.
@@ -209,13 +225,22 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim and an
 ### Trust & secrets
 
 - [ ] Configurable provisioning trust: `platform` by default; `signed` with public configuration anchors in the measured image and initrd.
-  - **DoD — fleet (`apm-metadata-agent.nix`):** platform mode boots and evaluates unsigned control-plane user-data; signed mode accepts a correctly signed bundle and rejects missing/wrong signatures before any declared disk mutation. The same golden image serves all instances because only public verification material is baked in. Stage-2 refuses a host.nix whose bytes do not match the initrd validation record.
+  - **DoD — fleet (`apm-metadata-agent.nix`):** platform mode boots and
+    evaluates unsigned control-plane `host.nix`; signed mode accepts a
+    correctly signed file and rejects missing/wrong signatures before disk
+    mutation. A vendor/fleet root plus signed operator delegation lets one
+    golden image serve all instances. Stage 2 refuses bytes that do not match
+    the initrd authorization record.
 
 - [ ] `secretRef` opaque type + activation resolution contract; credentials-by-handle only, no plaintext constructor in the option type.
   - **DoD — `checks.eval` + Rust (`cargo test`):** a config module attempting a literal `value=`/`text=` on a credential **fails evaluation** with the allowed-keys error (type-level enforcement test). A `{pkg}.credentials.*` declaration renders to `LoadCredentialEncrypted=<name>:<source>` on the unit (golden-asserted) and the manifest JSON contains only `{name,source,encrypted,units,ref}` — a grep of the canonicalized manifest for any secret plaintext is empty (invariant test). Fleet: the credential bytes are placed at `source` (mode 0600) before the consuming unit starts and the unit is restarted on change (reuses `reconcile_desired_credentials`), asserted via `systemd-creds`/unit state in-VM.
 
 - [ ] `gen-attestation/v1` record (generation_id, manifest_hash, authenticated input set) quoted alongside PCR 7/11; reuse `expected_pcr11` from the registry catalog.
-  - **DoD — fleet (`measured-boot.nix`, attestation-extended) + attestation-verify oracle:** after a config-gen activates, the box emits an `aos.gen-attestation/v1` record + TPM2 quote over PCR 7/11(/15). An off-box verifier asserts: (a) PCR-7/11 equal the registry catalog's `expected_pcr11`; (b) `release_tag` is valid and not revoked; (c) `trust_mode`, provisioning/bundle hash, host.nix hash, platform identity, and optional signer satisfy the recorded policy; (d) `facts_hash` is present; and (e) re-running pure eval on the exact recorded tuple reproduces `manifest_hash`.
+  - **DoD — fleet (`measured-boot.nix`, attestation-extended) +
+    attestation-verify oracle:** after activation, the quote binds PCR 7/11,
+    release provenance, `trust_mode`, exact `host.nix` hash, platform identity,
+    optional signer/delegation, and `facts_hash`; re-running pure eval on the
+    recorded tuple reproduces `manifest_hash`.
 
 ---
 

@@ -3,8 +3,9 @@
 # The minimal end-to-end proof of the boot substrate. It exercises
 # metadata transport, repartitioning, config evaluation, and activation in one boot.
 #
-#   * the initrd authenticating a platform-provided provisioning bundle,
-#   * systemd-repart carving the bundle's typed swap + var plan in the
+#   * the initrd authenticating literal platform-provided host.nix,
+#   * restricted evaluation projecting its typed swap + var plan,
+#   * systemd-repart carving that plan in the
 #     trailing free space of the grown per-run image disk,
 #   * `aos-config-seed` scaffolding the empty per-gen /etc lower,
 #   * per-VM identity (hostname, /etc/hosts, the eth0 .network, the guest-agent
@@ -31,25 +32,17 @@
       bootMode = "image";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
-      metadata."provisioning.json" = builtins.toJSON {
-        schema = "aos.provisioning/v1";
-        host_nix.inline = "{}";
-        storage.partitions = [
-          {
-            label = "swap";
-            type = "swap";
-            size_min_bytes = 1073741824;
-            size_max_bytes = 1073741824;
-          }
-          {
-            label = "var";
-            type = "var";
-            size_min_bytes = 2147483648;
-            grow = true;
-            format = "ext4";
-          }
-        ];
-      };
+      metadata."host.nix" = ''
+        {
+          aos.provisioning.storage.partitions = {
+            swap = {
+              sizeMin = "1G";
+              sizeMax = "1G";
+            };
+            var.sizeMin = "2G";
+          };
+        }
+      '';
     };
   };
 
@@ -64,9 +57,12 @@
       # switch-root -> stage-2 -> baked aos-test-agent.service answered.
       node.succeed("systemctl is-active multi-user.target")
       node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
-      node.succeed("test -s /run/aos-metadata/storage-plan.json")
-      node.succeed("test -s /run/aos-metadata/repart.d/50-swap.conf")
-      node.succeed("test -s /run/aos-metadata/repart.d/60-var.conf")
+      node.succeed("test -s /run/aos-metadata/provisioning-plan.json")
+      node.succeed("test -s /run/aos-metadata/repart-targets")
+      node.succeed(
+          "case \"$(cat /run/aos-metadata/repart.d/*/*.conf)\" in "
+          "*SizeMinBytes=1G*) ;; *) exit 1 ;; esac"
+      )
 
       # Identity baked into the image /etc via extendModules.
       hostname = node.succeed("cat /etc/hostname").strip()
@@ -95,13 +91,13 @@
       for label in ("root-a", "swap", "var"):
           node.succeed(f"test -e /dev/disk/by-partlabel/{label}")
 
-      # The bundle requests a fixed 1 GiB swap partition, deliberately
+      # host.nix requests a fixed 1 GiB swap partition, deliberately
       # different from the image's baked 2 GiB default. This proves repart
       # consumed authenticated metadata before its first and only disk pass.
       swap_dev = node.succeed("readlink -f /dev/disk/by-partlabel/swap").strip()
       swap_sectors = int(node.succeed(f"cat /sys/class/block/{swap_dev.rsplit('/', 1)[-1]}/size"))
       assert swap_sectors * 512 == 1073741824, (
-          f"swap size is {swap_sectors * 512}, expected bundle-defined 1 GiB"
+          f"swap size is {swap_sectors * 512}, expected host-defined 1 GiB"
       )
 
       var_dev = node.succeed("readlink -f /dev/disk/by-partlabel/var").strip()
@@ -110,13 +106,23 @@
 
       # No failed units.
       failed = node.succeed("systemctl --failed --no-legend").strip()
-      assert not failed, f"failed units on provisioned boot: {failed!r}"
+      if failed:
+          eval_log = node.succeed(
+              "journalctl -u aos-eval.service --no-pager --output=cat"
+          ).strip()
+          raise AssertionError(
+              f"failed units on provisioned boot: {failed!r}\n"
+              f"aos-eval.service journal:\n{eval_log}"
+          )
 
-      # Repart is convergent, not first-boot guarded. A second boot must rerun
-      # it without changing either metadata-defined partition.
+      node.succeed("test -e /dev/disk/by-partlabel/aos-provenance-operator-v1")
+
+      # A second boot must discover the durable marker, skip metadata and
+      # restricted evaluation, and freeze both host-defined partitions.
       node.reboot()
-      node.succeed("systemctl is-active multi-user.target")
-      node.succeed("systemctl is-active aos-repart.service")
+      node.wait_until_succeeds(
+          "systemctl is-active multi-user.target", timeout=120
+      )
       swap_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/swap").strip()
       var_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/var").strip()
       swap_sectors_after = int(
@@ -125,8 +131,8 @@
       var_sectors_after = int(
           node.succeed(f"cat /sys/class/block/{var_dev_after.rsplit('/', 1)[-1]}/size")
       )
-      assert swap_sectors_after == swap_sectors, "swap changed across idempotent repart"
-      assert var_sectors_after == var_sectors, "var changed across idempotent repart"
+      assert swap_sectors_after == swap_sectors, "swap changed after provisioning commit"
+      assert var_sectors_after == var_sectors, "var changed after provisioning commit"
       failed = node.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after provisioned reboot: {failed!r}"
     '';

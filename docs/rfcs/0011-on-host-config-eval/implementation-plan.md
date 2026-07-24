@@ -133,13 +133,28 @@ systemd-native substrate + the `aos metadata` agent + the unit graph.
 - [ ] **Lifecycle guards.** Render destructive ops as `Type=oneshot` +
       state-probe (`cryptsetup isLuks`/`blkid || mkfs`) / `ConditionFirstBoot=`;
       never guard convergent ops (repart/tmpfiles/sysusers).
-- [ ] **`aos metadata` agent.** `aos metadata detect` (port
-      `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
-      `security.rs` SSHSIG + `KeyStore`; add `authorize`, including typed
-      storage rendering. Stash the exact provisioning input, accepted host.nix,
-      typed plan, facts, and validation record. Support inline literal Nix and
-      hash-pinned bundle/host pointers. Reuse surface in
-      [`provisioning.md`](provisioning.md) §Implementation.
+- [x] **`aos metadata` agent.** `aos metadata detect` + `fetch`; reuse
+      `aos-net` + `security.rs` SSHSIG + `KeyStore`; add `authorize` for the
+      exact literal `host.nix` bytes. Stash raw user-data, accepted `host.nix`,
+      facts, and trust evidence. Support a hash-pinned URL/signature pointer
+      only as transport metadata; remove `aos.provisioning/v1` and every
+      storage field outside `host.nix`.
+- [x] **Restricted provisioning eval.** Add
+      `baseLib.evalProvisioningConfig`, which declares only
+      `aos.provisioning`, runs in initrd under restrict-eval/no-IFD, and emits
+      `aos.provisioning-plan/v1` pure JSON. Add the undeclared-throw regression
+      that locks the non-strict/no-global-freeform invariant.
+- [x] **Typed storage renderer.** Deserialize the evaluated plan into a strict
+      Rust contract, reject unsafe devices/types/labels/formats/sizes, group by
+      device, and render generated per-device repart definitions. The
+      no-host.nix fallback evaluates the same default Nix module and uses the
+      same validator/renderer.
+- [x] **One-time provisioning commit.** Reserve a GPT marker as
+      `aos-provisioning-pending-v1`; dry-run all devices, apply all devices,
+      verify, then relabel it to `aos-provenance-operator-v1` or
+      `aos-provenance-fallback-v1`. Only committed labels suppress future
+      mutation. Committed boots do not depend on metadata; any later stage-2
+      comparison may report drift but can never reopen disk mutation.
 - [ ] Net-new pieces (the rest is reuse): a **config-drive mount helper**
       (`blkid -L cidata|config-2|aos-metadata` + ISO9660/vfat mount — the one
       capability with no aos primitive); **vendor a YAML crate** (no
@@ -165,12 +180,36 @@ systemd-native substrate + the `aos metadata` agent + the unit graph.
       offline and cloud transport is implemented natively by `aos metadata` and
       covered by recorded fixtures.
 
+### Golden-image / host-policy boundary
+
+- [ ] Split mixed server/edge/debug profiles into immutable image-capability
+      modules and runtime role modules bundled in the base library. Production
+      systems select no workload/debug role; `host.nix` selects
+      `aos.roles.server`/`edge` as needed.
+- [x] Remove production passwordless root autologin. Keep any initrd recovery
+      shell as an explicit image capability; make runtime diagnostics ordinary
+      desired packages selected by authenticated `host.nix`.
+- [ ] Replace image package declarations/presets with
+      `aos.apm.desiredPackages = [ <registry-name> ... ]`. Only
+      boot/eval/fetch/verify/activate/recovery packages are bundled by default.
+      Workload users, D-Bus policy, units, and files come from each resolved
+      package's config module.
+- [ ] Move hostname, locale, timezone, host state version, networking, users,
+      SSH, chrony, runtime security, firewall, audit, journald, monitoring,
+      PAM, runtime PKI, and registry routing to the host manifest. Keep image
+      version/module ABI, UKI/kernel/initrd settings, verity, measured boot,
+      and initial trust roots image-owned.
+- [ ] Replace config-dependent frozen artifacts with manifest/runtime
+      materialization: PAM limits as `/etc` text, extra CA roots as runtime
+      bundle inputs, package-derived D-Bus policy from the resolved package
+      set, and desired package profiles/presets from `host.nix`.
+
 ### Trust & secrets
 
-- [ ] Provisioning trust policy: default `platform`; opt-in `signed` with
-      `trusted-config-keys.d/<op>.pub` included in the measured image and initrd.
-      Authorize the whole bundle before rendering a storage plan, and bind
-      stage-2 evaluation to the accepted host.nix hash.
+- [ ] Provisioning trust policy: default `platform`; opt-in `signed` with a
+      vendor/fleet root included in the measured image and initrd plus optional
+      signed operator-key delegation. Authorize the exact `host.nix` bytes
+      before restricted evaluation and bind stage-2 to their accepted hash.
 - [ ] `secretRef` opaque type + activation resolution contract (reuse
       `credential_artifact.rs::reconcile_desired_credentials`); credentials-by-
       handle only, no plaintext constructor in the option type.
@@ -225,9 +264,10 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
       pre-verification `authorized_keys` seeding from the facts channel.
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for
       DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
-- [ ] **Authenticated first-boot storage plan**: absent plan uses image-baked
-      defaults; a present typed plan is authorized and validated in initrd,
-      rendered to transient `repart.d`, and applied on first boot. Reject raw
+- [ ] **Authenticated first-boot `host.nix` projection**: absent `host.nix`
+      evaluates the base default `aos.provisioning.storage`; a present file is
+      authenticated then partially evaluated in initrd, validated in Rust,
+      rendered to transient `repart.d`, and committed once. Reject raw
       fragments and invalid plans before GPT mutation with no fallback.
 - [ ] **Degraded commit = re-projected manifest** (full minus un-fetched),
       re-hashed, drop-set recorded — keeps the generation content-addressed.
@@ -253,7 +293,7 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.
 - **Provisioning:** `systemd-repart` applies the baked default or an
-  authenticated typed plan on first boot and is a no-op on reboot; invalid
+  authenticated `host.nix` storage projection on first boot and is a no-op on reboot; invalid
   declared plans stop before GPT mutation; `aos metadata` covers every
   advertised offline and cloud channel natively; a single failing package yields
   `is-system-running = degraded` with `multi-user.target` reached and the box

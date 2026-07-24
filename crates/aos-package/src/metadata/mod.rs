@@ -2,14 +2,15 @@
 //!
 //! Initrd phases own cross-cloud acquisition and the narrow first-boot trust
 //! boundary. Fetch stores exact bytes. Authorization applies the measured
-//! `platform` or `signed` policy and is the only phase allowed to produce
-//! `host.nix` or transient repart definitions. Full Nix evaluation remains in
-//! stage 2.
+//! `platform` or `signed` policy and is the only phase allowed to produce exact
+//! `host.nix`. Restricted evaluation then projects one-time provisioning and
+//! renders transient repart definitions. Full evaluation remains in stage 2.
 //!
 //! ```text
 //! aos metadata detect   # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env
 //! aos metadata fetch    # platform → exact user-data + facts
-//! aos metadata authorize # trust policy → host.nix + optional repart.d
+//! aos metadata authorize # trust policy → exact host.nix
+//! aos metadata eval-provisioning # restricted projection → repart.d
 //! ```
 //!
 //! # Module map
@@ -62,7 +63,7 @@ pub use facts_render::render_host_facts_nix;
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
 pub use mount::{BlkidProbe, ConfigDriveProbe};
-pub use provisioning::{AuthorizeOptions, ProvisioningTrust};
+pub use provisioning::{AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust};
 pub use stash::{MetadataResult, PlatformEnv, Stash};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
@@ -226,9 +227,18 @@ pub(crate) async fn run_fetch_with(
 /// Returns an error for trust, schema, content-pin, validation, or stash
 /// failures. Errors are intentionally fatal to the initrd ordering chain.
 pub async fn authorize_main(opts: &AuthorizeOptions) -> Result<()> {
-    let engine = TransferEngine::new(TransferEngineConfig::default());
-    let http = EngineHttp::new(engine);
-    provisioning::run_authorize(opts, &http).await?;
+    provisioning::run_authorize(opts)?;
+    Ok(())
+}
+
+/// Runs the restricted initrd provisioning projection and renderer.
+///
+/// # Errors
+///
+/// Returns an error when Nix evaluation, strict validation, or rendering
+/// fails. The caller must treat this as fatal before disk mutation.
+pub fn eval_provisioning_main(opts: &EvalProvisioningOptions) -> Result<()> {
+    provisioning::run_eval_provisioning(opts)?;
     Ok(())
 }
 

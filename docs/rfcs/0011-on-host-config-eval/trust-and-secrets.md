@@ -103,38 +103,37 @@ the attestation record below.
 ## Provisioning and host.nix authenticity
 
 `host.nix` is operator-supplied and per-host — an input to the trusted
-computation but not in the image. It is delivered as literal Nix or as an exact
-inline/pinned member of an `aos.provisioning/v1` bundle fetched by the
-`aos metadata` agent (see [`provisioning.md`](provisioning.md)). Authentication
-is selected by image policy:
+computation but not in the image. The `aos metadata` agent fetches its exact
+literal Nix bytes (or resolves a URL+hash transport pointer used only for
+provider size limits). Authentication is selected by image policy:
 
 - **`platform` (default)** treats successful delivery through the detected
   cloud metadata service or deployment-owned config drive as authorization.
   This is the zero-touch golden-image path: the cloud control plane already
   controls instance creation, disk attachment, and user-data.
 - **`signed` (secure mode)** requires a detached SSHSIG over the exact
-  provisioning-bundle bytes, verified against
+  `host.nix` bytes, verified against
   `trusted-config-keys.d/<op>.pub` via
   `security.rs::verify_payload_signature` + `KeyStore`.
 
 The selected policy is measured boot configuration and cannot be supplied or
-overridden by the provisioning bundle. `signed` never falls back to `platform`.
-The public anchor set may be common to every copy of a golden image; only the
-private signing key remains outside the image.
+overridden by `host.nix`. `signed` never falls back to `platform`. A universal
+golden image carries a vendor/fleet root; operator-specific keys may be
+introduced by a delegation signed by that root. The delegation is
+authentication material, not a second configuration language.
 
-When a bundle contains a storage plan, authorization happens in initrd before
-the plan is rendered or `systemd-repart` may mutate GPT. Signed-mode public
-anchors are therefore copied into the measured initrd. Public verification keys
-are safe to share across every deployment of one golden image; per-instance
-secret injection is neither necessary nor desirable. The bundle authenticates
-the storage plan and the `host.nix` content hash as one object.
+Authorization happens in initrd before the restricted
+`aos.provisioning` projection is evaluated or `systemd-repart` may mutate GPT.
+Signed-mode public anchors are therefore copied into the measured initrd.
+Public verification keys are safe to share; per-instance secret injection is
+neither necessary nor desirable.
 
-Full Nix evaluation remains in stage-2. The evaluator consumes the exact
-accepted `host.nix` bytes carried through `/run` and confirms their recorded
-hash before eval. A platform-mode authorization failure or a signed-mode
-missing/bad signature fails closed. For a declared storage plan this is an
-initrd failure before disk mutation; for host configuration without an early
-plan, no manifest is produced and the box stays on gen-0.
+The restricted initrd evaluator and the full stage-2 evaluator consume the same
+accepted `host.nix` bytes carried through `/run` and confirm their recorded
+hash. On an unprovisioned machine, a platform authorization failure or a
+signed-mode missing/bad signature fails closed before disk mutation. After the
+GPT provenance record is committed, early metadata/eval failures warn and
+continue with the existing disk layout and last committed config generation.
 
 **Per-host config does not break attestation** — it breaks whole-image
 attestation (no single golden manifest hash fleet-wide), but not
@@ -164,8 +163,7 @@ argument **fails unless it is recorded**. Therefore:
 
 The operator-authored input and the platform-facts input are distinct recorded
 inputs. In `platform` mode both rely on the platform binding; in `signed` mode
-the provisioning bundle has an independent signer while facts remain
-platform-supplied.
+`host.nix` has an independent signer while facts remain platform-supplied.
 
 ## Generation-attestation record
 
@@ -192,7 +190,6 @@ generation-attestation (extended into / quoted alongside PCR 7 + 11, e.g. app PC
       realization    = <hash of the signed store/ graph subset consumed>
     host_nix:
       content_hash   = <sha256 of the operator config>
-      bundle_hash    = <sha256 of the accepted provisioning bundle, if used>
       trust_mode     = <platform|signed>
       platform       = <aws|gcp|...>             # required for platform mode
       signer_key     = <config-key fingerprint>  # present only in signed mode

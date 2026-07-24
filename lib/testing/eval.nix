@@ -46,6 +46,8 @@
     then throw "the stock system must emit aos-metadata-fetch.service"
     else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-authorize.service"
+    else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-provisioning-eval.service"
     else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-repart.service"
     else if
@@ -60,14 +62,82 @@
     then throw "initrd-root-fs.target must require repartitioning"
     else if
       !(builtins.elem
-        "aos-metadata-authorize.service"
+        "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.requires)
-    then throw "aos-repart.service must require provisioning authorization"
+    then throw "aos-repart.service must require restricted provisioning evaluation"
     else if
       !(builtins.elem
-        "aos-metadata-authorize.service"
+        "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.after)
-    then throw "aos-repart.service must run after provisioning authorization"
+    then throw "aos-repart.service must run after restricted provisioning evaluation"
+    else "ok";
+
+  # The early projection declares only aos.provisioning. An unrelated runtime
+  # definition can contain a throw and must remain unforced, while a storage
+  # override from the same operator module is visible.
+  provisioningProjection = lib.evalModules {
+    modules = [
+      ../../modules/base/provisioning.nix
+      {
+        aos.provisioning.storage.partitions.var.sizeMin = "8G";
+        services.notPartOfEarlyProjection.enable =
+          throw "restricted provisioning evaluation forced an unrelated runtime field";
+      }
+    ];
+    pkgs = {};
+    inherit lib;
+  };
+  provisioningProjectionIsClosed =
+    if provisioningProjection.config.aos.provisioning.storage.partitions.var.sizeMin
+    != "8G"
+    then throw "restricted provisioning evaluation did not apply host storage"
+    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.type
+    != "swap"
+    then throw "partial host storage overrides discarded default partition fields"
+    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.format
+    != "swap"
+    then throw "partial host storage overrides discarded the default swap format"
+    else "ok";
+  provisioningProjectionJson =
+    builtins.toJSON
+    (builtins.mapAttrs
+      (_: partition: {
+        inherit
+          (partition)
+          device
+          label
+          type
+          sizeMin
+          sizeMax
+          weight
+          format
+          uuid
+          grow
+          growFs
+          priority
+          ;
+      })
+      provisioningProjection.config.aos.provisioning.storage.partitions);
+  provisioningProjectionHasNoModuleInternals =
+    if builtins.match ".*_module.*" provisioningProjectionJson != null
+    then throw "restricted provisioning JSON leaked module-engine internals"
+    else "ok";
+
+  hostSelectionProjection = lib.evalModules {
+    modules = [../../modules/base/host-selection.nix];
+    pkgs = {};
+    inherit lib;
+    operatorModules = [
+      {
+        aos.apm.desiredPackages = ["k3s-worker"];
+        networking.notPartOfSelection =
+          throw "host package selection forced unrelated runtime policy";
+      }
+    ];
+  };
+  hostSelectionProjectionIsClosed =
+    if hostSelectionProjection.config.aos.apm.desiredPackages != ["k3s-worker"]
+    then throw "closed host selection did not apply desired package names"
     else "ok";
 
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------
@@ -506,7 +576,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
-        echo "configuration pipeline: structural default (${structuralConfiguration})"
+        echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

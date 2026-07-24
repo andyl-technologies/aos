@@ -51,11 +51,14 @@ in {
     };
 
     baseLib = lib.mkOption {
-      type = lib.types.str;
-      default = "";
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      internal = true;
+      readOnly = true;
       description = ''
         Store path of the in-image, ABI-pinned module library passed to the
-        evaluator as `--base-lib`.
+        evaluator as `--base-lib`. This is image-owned and cannot be replaced
+        by host.nix.
       '';
     };
 
@@ -85,7 +88,7 @@ in {
   config = {
     assertions = [
       {
-        assertion = cfg.baseLib != "";
+        assertion = cfg.baseLib != null;
         message = "aos.config.evalAtBoot.baseLib must be set to the in-image base library store path.";
       }
       {
@@ -122,6 +125,10 @@ in {
         MemoryMax = "2G";
         MemoryHigh = "1536M";
         TasksMax = 4096;
+        # These paths must exist before systemd constructs the service's mount
+        # namespace for ReadWritePaths. They are runtime state, not image
+        # contents, so create them for every boot.
+        RuntimeDirectory = ["aos" "aos-eval"];
         # Hardened scope: inputs read-only, only /run/aos* writable.
         ProtectSystem = "strict";
         ProtectHome = true;

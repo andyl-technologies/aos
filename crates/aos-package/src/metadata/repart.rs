@@ -1,251 +1,322 @@
-//! Typed first-boot storage plans and `systemd-repart` rendering.
+//! Strict validation and `systemd-repart` rendering for the evaluated
+//! `aos.provisioning.storage` projection.
 //!
-//! The initrd does not evaluate `host.nix`. Instead, an authenticated
-//! provisioning bundle may carry a deliberately small storage schema. This
-//! module validates that schema and renders additive `repart.d` definitions
-//! under `/run`; it never accepts raw INI fragments or a caller-selected disk.
-//! The boot unit independently resolves the parent disk of the booted
-//! `root-a` partition.
-//!
-//! ```json
-//! {
-//!   "partitions": [
-//!     {
-//!       "label": "swap",
-//!       "type": "swap",
-//!       "size_min_bytes": 2147483648,
-//!       "size_max_bytes": 2147483648
-//!     },
-//!     {
-//!       "label": "var",
-//!       "type": "var",
-//!       "size_min_bytes": 4294967296,
-//!       "grow": true,
-//!       "format": "ext4"
-//!     }
-//!   ]
-//! }
-//! ```
+//! Nix supplies defaults and merges operator definitions. Rust treats the
+//! resulting JSON as an untrusted data contract: unknown fields, unsafe device
+//! paths, protected partition types, malformed sizes and ambiguous growth all
+//! fail before `systemd-repart` is allowed to mutate a disk.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// Directory name below the metadata stash for rendered definitions.
+/// Directory below the metadata stash for rendered definitions.
 pub const REPART_DIR: &str = "repart.d";
-/// Canonical validated storage-plan filename below the metadata stash.
-pub const STORAGE_PLAN_FILE: &str = "storage-plan.json";
+/// Canonical validated projection below the metadata stash.
+pub const STORAGE_PLAN_FILE: &str = "provisioning-plan.json";
+/// Tab-separated target and definition-directory index.
+pub const REPART_TARGETS_FILE: &str = "repart-targets";
+/// Temporary GPT marker created in the same repart transaction as storage.
+pub const PENDING_LABEL: &str = "aos-provisioning-pending-v1";
+/// Type GUID reserved exclusively for the one-time provisioning marker.
+pub const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
 
-/// A closed, typed first-boot storage plan.
+/// Closed JSON product of restricted initrd evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningPlan {
+    /// Must equal `aos.provisioning-plan/v1`.
+    pub schema: String,
+    /// One-time storage declaration.
+    pub storage: StoragePlan,
+}
+
+/// Evaluated storage configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoragePlan {
-    /// Additive partitions to create.
-    pub partitions: Vec<PartitionSpec>,
+    /// Logical partition name to definition.
+    pub partitions: BTreeMap<String, PartitionSpec>,
 }
 
-/// One additive partition on the booted root disk.
+/// One additive partition definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PartitionSpec {
-    /// GPT partition label. Must match the selected partition type.
+    /// Stable `/dev/disk/by-id/...` target, or `null` for the root disk.
+    pub device: Option<String>,
+    /// GPT partition label.
     pub label: String,
-    /// Allowlisted discoverable partition type.
+    /// Semantic type or canonical raw GUID.
     #[serde(rename = "type")]
-    pub partition_type: PartitionType,
-    /// Minimum partition size in bytes.
-    pub size_min_bytes: u64,
-    /// Optional maximum partition size in bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size_max_bytes: Option<u64>,
+    pub partition_type: String,
+    /// Minimum size in systemd size syntax.
+    pub size_min: String,
+    /// Optional maximum size.
+    pub size_max: Option<String>,
+    /// Relative free-space allocation weight.
+    pub weight: i64,
+    /// Optional initial filesystem format.
+    pub format: Option<String>,
+    /// Optional deterministic partition UUID.
+    pub uuid: Option<String>,
     /// Whether this partition consumes remaining free space.
-    #[serde(default)]
     pub grow: bool,
-    /// Optional filesystem format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<PartitionFormat>,
+    /// Whether an existing filesystem may grow.
+    pub grow_fs: bool,
+    /// Stable placement priority.
+    pub priority: i64,
 }
 
-/// Partition types the first-boot plan may add.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PartitionType {
-    /// Swap partition.
-    Swap,
-    /// Discoverable `/var` partition.
-    Var,
-}
-
-impl PartitionType {
-    fn repart_type(self) -> &'static str {
-        match self {
-            Self::Swap => "swap",
-            Self::Var => "var",
-        }
-    }
-
-    fn required_label(self) -> &'static str {
-        self.repart_type()
-    }
-}
-
-/// Filesystem formats the first-boot plan may request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PartitionFormat {
-    /// ext4 filesystem.
-    Ext4,
-}
-
-impl PartitionFormat {
-    fn repart_format(self) -> &'static str {
-        match self {
-            Self::Ext4 => "ext4",
-        }
-    }
-}
-
-/// Validate a storage plan before any partition-table mutation.
-///
-/// The schema can describe only new swap and `/var` partitions. Labels and
-/// types must be unique, sizes must be sensible, and at most one partition may
-/// grow. Under measured boot `/var` must remain raw for the TPM-bound LUKS
-/// setup.
+/// Validates the complete evaluated provisioning plan.
 ///
 /// # Errors
 ///
-/// Returns an error for an empty plan, duplicate labels or types, mismatched
-/// labels, a missing `/var` partition, zero or inverted size bounds, more than
-/// one grow partition, a bounded grow partition, formatting swap, or a `/var`
-/// format inconsistent with the measured-boot policy.
-pub fn validate_storage_plan(plan: &StoragePlan, measured_boot: bool) -> Result<()> {
-    if plan.partitions.is_empty() {
-        bail!("storage.partitions must contain at least one partition");
+/// Returns an error for an unsupported schema, invalid or duplicated labels,
+/// unstable device paths, protected types, malformed sizes or UUIDs, unsafe
+/// formatting, multiple grow partitions per device, or a missing root-disk
+/// `var` partition.
+pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) -> Result<()> {
+    if plan.schema != "aos.provisioning-plan/v1" {
+        bail!("unsupported provisioning plan schema '{}'", plan.schema);
+    }
+    if plan.storage.partitions.is_empty() {
+        bail!("aos.provisioning.storage.partitions must not be empty");
     }
 
     let mut labels = BTreeSet::new();
-    let mut types = BTreeSet::new();
-    let mut grow_count = 0usize;
-
-    for partition in &plan.partitions {
-        if partition.label != partition.partition_type.required_label() {
+    let mut grow_devices = BTreeSet::new();
+    let mut root_var = false;
+    for (name, partition) in &plan.storage.partitions {
+        validate_label(name, "logical partition name")?;
+        validate_label(&partition.label, "GPT partition label")?;
+        if matches!(
+            partition.label.as_str(),
+            "root-a"
+                | "root-b"
+                | "root-a-hash"
+                | "root-b-hash"
+                | "esp"
+                | "ESP"
+                | PENDING_LABEL
+                | "aos-provenance-operator-v1"
+                | "aos-provenance-fallback-v1"
+        ) {
             bail!(
-                "partition type '{}' requires label '{}', got '{}'",
-                partition.partition_type.repart_type(),
-                partition.partition_type.required_label(),
+                "partition label '{}' is reserved or protected",
                 partition.label
             );
         }
         if !labels.insert(partition.label.as_str()) {
-            bail!("duplicate partition label '{}'", partition.label);
+            bail!("duplicate GPT partition label '{}'", partition.label);
         }
-        if !types.insert(partition.partition_type) {
-            bail!(
-                "duplicate partition type '{}'",
-                partition.partition_type.repart_type()
-            );
+        let device = partition.device.as_deref().unwrap_or("root");
+        if device != "root" && !device.starts_with("/dev/disk/by-id/") {
+            bail!("partition '{name}' device must be null or /dev/disk/by-id/...");
         }
-        if partition.size_min_bytes == 0 {
-            bail!(
-                "partition '{}' size_min_bytes must be positive",
-                partition.label
-            );
+        validate_partition_type(&partition.partition_type)?;
+        validate_size(&partition.size_min, "sizeMin", name)?;
+        if let Some(max) = partition.size_max.as_deref() {
+            validate_size(max, "sizeMax", name)?;
         }
-        if let Some(max) = partition.size_max_bytes {
-            if max < partition.size_min_bytes {
-                bail!(
-                    "partition '{}' size_max_bytes is smaller than size_min_bytes",
-                    partition.label
-                );
-            }
+        if partition.weight <= 0 {
+            bail!("partition '{name}' weight must be positive");
         }
-        if partition.grow {
-            grow_count += 1;
-            if partition.size_max_bytes.is_some() {
-                bail!(
-                    "grow partition '{}' must not set size_max_bytes",
-                    partition.label
-                );
-            }
+        if partition.priority < 0 {
+            bail!("partition '{name}' priority must be non-negative");
         }
-        if partition.partition_type == PartitionType::Swap && partition.format.is_some() {
-            bail!("swap format is implicit and must not be specified");
+        if let Some(uuid) = partition.uuid.as_deref() {
+            validate_uuid(uuid).with_context(|| format!("partition '{name}' uuid"))?;
         }
-        if partition.partition_type == PartitionType::Var {
+        if partition.grow && !grow_devices.insert(device) {
+            bail!("device '{device}' has more than one grow partition");
+        }
+        if partition.partition_type == "swap" && partition.format.as_deref() != Some("swap") {
+            bail!("swap partition '{name}' must use format = \"swap\"");
+        }
+        if !matches!(
+            partition.format.as_deref(),
+            None | Some("ext4" | "vfat" | "swap")
+        ) {
+            bail!("partition '{name}' uses an unsupported format");
+        }
+        if partition.label == "var" && partition.device.is_none() {
+            root_var = true;
             if measured_boot && partition.format.is_some() {
-                bail!("measured boot requires the var partition to remain raw");
-            }
-            if !measured_boot && partition.format != Some(PartitionFormat::Ext4) {
-                bail!("unmeasured boot requires the var partition format to be ext4");
+                bail!("measured boot requires root-disk var to remain raw");
             }
         }
     }
-
-    if !types.contains(&PartitionType::Var) {
-        bail!("storage plan must declare a var partition");
-    }
-    if grow_count > 1 {
-        bail!("at most one storage partition may set grow=true");
+    if !root_var {
+        bail!("storage plan must declare label 'var' on the root disk");
     }
     Ok(())
 }
 
-/// Render a validated plan to transient `repart.d` definitions.
+/// Renders a validated plan into per-device transient repart definitions.
 ///
-/// Existing output is replaced as one set. Filenames are generated from the
-/// allowlisted partition types and labels; no operator-provided path or INI
-/// text is consumed.
+/// The root-disk definition set also contains a pending marker. The initrd
+/// relabels that marker only after every planned device succeeds, making the
+/// one-time commit durable and crash-observable.
 ///
 /// # Errors
 ///
-/// Returns an error if validation fails or the output cannot be replaced.
-pub fn render_storage_plan(
+/// Returns an error when validation fails or outputs cannot be atomically
+/// replaced.
+pub fn render_provisioning_plan(
     stash_dir: &Path,
-    plan: &StoragePlan,
+    plan: &ProvisioningPlan,
     measured_boot: bool,
 ) -> Result<Vec<PathBuf>> {
-    validate_storage_plan(plan, measured_boot)?;
+    validate_provisioning_plan(plan, measured_boot)?;
+    std::fs::write(
+        stash_dir.join(STORAGE_PLAN_FILE),
+        serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
+    )
+    .context("writing provisioning-plan.json")?;
 
-    let canonical =
-        serde_json::to_vec_pretty(plan).context("serializing validated storage plan")?;
-    std::fs::write(stash_dir.join(STORAGE_PLAN_FILE), canonical)
-        .context("writing storage-plan.json")?;
-
-    let dir = stash_dir.join(REPART_DIR);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
+    let root = stash_dir.join(REPART_DIR);
+    if root.exists() {
+        std::fs::remove_dir_all(&root).with_context(|| format!("clearing {}", root.display()))?;
     }
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
 
-    let mut written = Vec::with_capacity(plan.partitions.len());
-    for partition in &plan.partitions {
-        let priority = match partition.partition_type {
-            PartitionType::Swap => 50,
-            PartitionType::Var => 60,
-        };
-        let path = dir.join(format!("{priority}-{}.conf", partition.label));
-        let mut contents = format!(
-            "[Partition]\nType={}\nLabel={}\nSizeMinBytes={}\n",
-            partition.partition_type.repart_type(),
-            partition.label,
-            partition.size_min_bytes
-        );
-        if let Some(max) = partition
-            .size_max_bytes
-            .or((!partition.grow).then_some(partition.size_min_bytes))
-        {
-            contents.push_str(&format!("SizeMaxBytes={max}\n"));
-        }
-        if partition.grow {
-            contents.push_str("Weight=1000\n");
-        }
-        if let Some(format) = partition.format {
-            contents.push_str(&format!("Format={}\n", format.repart_format()));
-        }
-        std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
-        written.push(path);
+    let mut groups: BTreeMap<&str, Vec<(&str, &PartitionSpec)>> = BTreeMap::new();
+    for (name, partition) in &plan.storage.partitions {
+        groups
+            .entry(partition.device.as_deref().unwrap_or("root"))
+            .or_default()
+            .push((name, partition));
     }
+
+    let mut targets = String::new();
+    let mut written = Vec::new();
+    for (index, (device, mut partitions)) in groups.into_iter().enumerate() {
+        partitions.sort_by_key(|(name, partition)| (partition.priority, *name));
+        let dir_name = format!("{index:04}");
+        let dir = root.join(&dir_name);
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        targets.push_str(device);
+        targets.push('\t');
+        targets.push_str(&dir_name);
+        targets.push('\n');
+
+        for (position, (name, partition)) in partitions.into_iter().enumerate() {
+            let path = dir.join(format!("{:04}-{name}.conf", position + 10));
+            std::fs::write(&path, render_partition(partition, measured_boot))
+                .with_context(|| format!("writing {}", path.display()))?;
+            written.push(path);
+        }
+        if device == "root" {
+            let sentinel = dir.join("9999-aos-provisioning-pending.conf");
+            std::fs::write(
+                &sentinel,
+                format!(
+                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={PENDING_LABEL}\nSizeMinBytes=1M\nSizeMaxBytes=1M\n"
+                ),
+            )
+            .with_context(|| format!("writing {}", sentinel.display()))?;
+            written.push(sentinel);
+        }
+    }
+    std::fs::write(stash_dir.join(REPART_TARGETS_FILE), targets)
+        .context("writing repart target index")?;
     Ok(written)
+}
+
+fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
+    let partition_type = match partition.partition_type.as_str() {
+        "linux-generic" => "linux-generic",
+        other => other,
+    };
+    let mut result = format!(
+        "[Partition]\nType={partition_type}\nLabel={}\nSizeMinBytes={}\nWeight={}\nGrowFileSystem={}\n",
+        partition.label,
+        partition.size_min,
+        partition.weight,
+        if partition.grow_fs { "yes" } else { "no" },
+    );
+    if let Some(max) = partition.size_max.as_deref() {
+        result.push_str(&format!("SizeMaxBytes={max}\n"));
+    } else if !partition.grow {
+        result.push_str(&format!("SizeMaxBytes={}\n", partition.size_min));
+    }
+    let format = if partition.label == "var" && !measured_boot && partition.format.is_none() {
+        Some("ext4")
+    } else {
+        partition.format.as_deref()
+    };
+    if let Some(format) = format {
+        result.push_str(&format!("Format={format}\n"));
+    }
+    if let Some(uuid) = partition.uuid.as_deref() {
+        result.push_str(&format!("UUID={uuid}\n"));
+    }
+    result
+}
+
+fn validate_label(value: &str, kind: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 36
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("{kind} '{value}' must be 1-36 ASCII letters, digits, '.', '_' or '-'");
+    }
+    Ok(())
+}
+
+fn validate_partition_type(value: &str) -> Result<()> {
+    if matches!(value, "linux-generic" | "var" | "swap") {
+        return Ok(());
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower == SENTINEL_TYPE_GUID
+        || matches!(
+            lower.as_str(),
+            "root"
+                | "root-a"
+                | "root-b"
+                | "root-verity"
+                | "root-verity-sig"
+                | "esp"
+                | "xbootldr"
+                | "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+                | "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+                | "b921b045-1df0-41c3-af44-4c6f280d3fae"
+                | "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
+                | "41092b05-9fc8-4523-994f-2def0408b176"
+        )
+    {
+        bail!("partition type '{value}' is reserved or protected");
+    }
+    validate_uuid(value).context("raw partition type GUID")
+}
+
+fn validate_size(value: &str, field: &str, name: &str) -> Result<()> {
+    let digit_count = value.bytes().take_while(u8::is_ascii_digit).count();
+    let suffix = &value[digit_count..];
+    if digit_count == 0
+        || value[..digit_count].bytes().all(|byte| byte == b'0')
+        || !matches!(suffix, "" | "K" | "M" | "G" | "T" | "P")
+    {
+        bail!("partition '{name}' {field} must be a positive integer with K/M/G/T/P suffix");
+    }
+    Ok(())
+}
+
+fn validate_uuid(value: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || !bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23) && *byte == b'-'
+                || !matches!(index, 8 | 13 | 18 | 23) && byte.is_ascii_hexdigit()
+        })
+    {
+        bail!("'{value}' is not a canonical UUID");
+    }
+    Ok(())
 }

@@ -28,8 +28,7 @@
 //!                        root_verity_roothash, root_verity_uuid? }
 //!     evaluator:       { store_path }
 //!     config_modules:  { registry, release_tag, tag_signer_key, realization }
-//!     host_nix:        { content_hash, bundle_hash?, trust_mode,
-//!                        platform?, signer_key? }
+//!     host_nix:        { content_hash, trust_mode, platform?, signer_key? }
 //!     instance_facts:  { facts_hash, platform }
 //!   eval_mode       : "pure-eval"
 //!   quote           : "<hex of the TPM2 quote blob>"
@@ -154,9 +153,6 @@ pub struct ConfigModulesAttInput {
 pub struct HostNixAttInput {
     /// `sha256:<hex>` of the exact `host.nix` bytes fed to the evaluator.
     pub content_hash: String,
-    /// SHA-256 of the complete provisioning bundle, when an envelope was used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bundle_hash: Option<String>,
     /// Image-selected authorization policy: `platform` or `signed`.
     pub trust_mode: String,
     /// Detected control-plane identity in platform mode.
@@ -284,12 +280,9 @@ pub fn compute_gen_attestation(
     match inputs.host_nix.trust_mode.as_str() {
         "platform"
             if inputs.host_nix.platform.is_some() && inputs.host_nix.signer_key.is_none() => {}
-        "signed"
-            if inputs.host_nix.signer_key.is_some() && inputs.host_nix.platform.is_none() => {}
+        "signed" if inputs.host_nix.signer_key.is_some() && inputs.host_nix.platform.is_none() => {}
         mode => {
-            anyhow::bail!(
-                "host.nix authorization evidence is incomplete for trust mode '{mode}'"
-            );
+            anyhow::bail!("host.nix authorization evidence is incomplete for trust mode '{mode}'");
         }
     }
     if !is_verity_roothash(&inputs.base_lib.root_verity_roothash) {
@@ -316,7 +309,9 @@ pub fn compute_gen_attestation(
 
 /// Whether `s` is a 64-character lowercase-hex string (a dm-verity roothash).
 pub fn is_verity_roothash(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 // ---------------------------------------------------------------------------
@@ -378,12 +373,12 @@ impl std::fmt::Display for GenAttestationFailure {
                 "PCR 15 does not bind this record (record-binding check failed)"
             }
             GenAttestationFailure::SbState => "PCR 7 does not match the catalog SB-state pin",
-            GenAttestationFailure::Pcr11 => "PCR 11 does not match the expected measured-boot value",
+            GenAttestationFailure::Pcr11 => {
+                "PCR 11 does not match the expected measured-boot value"
+            }
             GenAttestationFailure::RootVerity => "F1 root-verity roothash binding failed",
             GenAttestationFailure::Tag => "release tag is unsigned, revoked, or off-roster",
-            GenAttestationFailure::HostNixTrust => {
-                "host.nix authorization evidence is untrusted"
-            }
+            GenAttestationFailure::HostNixTrust => "host.nix authorization evidence is untrusted",
             GenAttestationFailure::EvalMode => "eval_mode is not 'pure-eval'",
             GenAttestationFailure::Rederive => "re-derived manifest hash does not match the record",
         };
@@ -596,7 +591,6 @@ mod tests {
             },
             host_nix: HostNixAttInput {
                 content_hash: "sha256:dd".to_string(),
-                bundle_hash: Some("sha256:bundle".to_string()),
                 trust_mode: "signed".to_string(),
                 platform: None,
                 signer_key: Some("0badf00d".to_string()),
@@ -625,8 +619,14 @@ mod tests {
             pcr7: PCR7_HEX.to_string(),
             pcr11: PCR11_HEX.to_string(),
         };
-        compute_gen_attestation("gen-7-cafe", "sha256:abc", sample_inputs(), &tpm, b"nonce-xyz")
-            .expect("compute")
+        compute_gen_attestation(
+            "gen-7-cafe",
+            "sha256:abc",
+            sample_inputs(),
+            &tpm,
+            b"nonce-xyz",
+        )
+        .expect("compute")
     }
 
     #[test]
@@ -665,7 +665,8 @@ mod tests {
     #[test]
     fn verifies_a_well_formed_record() {
         let record = computed();
-        let res = verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        let res =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
         assert!(res.is_ok(), "got {res:?}");
     }
 
@@ -673,8 +674,9 @@ mod tests {
     fn rejects_wrong_schema() {
         let mut record = computed();
         record.schema = "aos.gen-attestation/v2".to_string();
-        let err = verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
-            .unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err();
         assert_eq!(err, GenAttestationFailure::Schema);
     }
 
@@ -682,8 +684,8 @@ mod tests {
     fn rejects_wrong_nonce() {
         let record = computed();
         // A different nonce makes the mock checker reject the quote (step 2).
-        let err =
-            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"WRONG", None).unwrap_err();
+        let err = verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"WRONG", None)
+            .unwrap_err();
         assert_eq!(err, GenAttestationFailure::Quote);
     }
 
@@ -693,8 +695,9 @@ mod tests {
         // Tampering any covered field changes record_hash, so the quoted PCR15
         // (taken over the original) no longer binds it.
         record.manifest_hash = "sha256:tampered".to_string();
-        let err = verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
-            .unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err();
         assert_eq!(err, GenAttestationFailure::RecordBinding);
     }
 
@@ -703,7 +706,8 @@ mod tests {
         let record = computed();
         let mut policy = sample_policy();
         policy.expected_pcr7 = "00".repeat(32);
-        let err = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
         assert_eq!(err, GenAttestationFailure::SbState);
     }
 
@@ -712,7 +716,8 @@ mod tests {
         let record = computed();
         let mut policy = sample_policy();
         policy.expected_pcr11 = format!("sha256:{}", "22".repeat(32));
-        let err = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
         assert_eq!(err, GenAttestationFailure::Pcr11);
     }
 
@@ -721,7 +726,8 @@ mod tests {
         let record = computed();
         let mut policy = sample_policy();
         policy.expected_root_roothash = "00".repeat(32);
-        let err = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
         assert_eq!(err, GenAttestationFailure::RootVerity);
     }
 
@@ -730,7 +736,8 @@ mod tests {
         let record = computed();
         let mut policy = sample_policy();
         policy.roster_fingerprints = vec!["feedface".to_string()];
-        let err = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
         assert_eq!(err, GenAttestationFailure::Tag);
     }
 
@@ -739,7 +746,8 @@ mod tests {
         let record = computed();
         let mut policy = sample_policy();
         policy.trusted_config_keys = vec!["abadcafe".to_string()];
-        let err = verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
+        let err =
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err();
         assert_eq!(err, GenAttestationFailure::HostNixTrust);
     }
 
