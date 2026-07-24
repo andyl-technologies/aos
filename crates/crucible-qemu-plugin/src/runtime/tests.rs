@@ -504,9 +504,10 @@ static LIVE_SIM_DISPATCH_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static LIVE_NETWORK_TX_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static LIVE_BLOCK_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+static LIVE_BLOCK_WAIT_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static LIVE_NINEP_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 
-fn live_registration_counts() -> [u64; 7] {
+fn live_registration_counts() -> [u64; 8] {
     [
         LIVE_VCPU_INIT_REGISTRATIONS.load(Ordering::SeqCst),
         LIVE_IDLE_RESUME_REGISTRATIONS.load(Ordering::SeqCst),
@@ -514,6 +515,7 @@ fn live_registration_counts() -> [u64; 7] {
         LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.load(Ordering::SeqCst),
         LIVE_NETWORK_TX_REGISTRATIONS.load(Ordering::SeqCst),
         LIVE_BLOCK_REGISTRATIONS.load(Ordering::SeqCst),
+        LIVE_BLOCK_WAIT_REGISTRATIONS.load(Ordering::SeqCst),
         LIVE_NINEP_REGISTRATIONS.load(Ordering::SeqCst),
     ]
 }
@@ -610,6 +612,15 @@ extern "C" fn capture_block_registration(
     assert!(poll.is_some());
     assert!(!userdata.is_null());
     LIVE_BLOCK_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
+}
+
+extern "C" fn capture_block_wait_registration(
+    wait: Option<crate::QemuBlkWaitCbFn>,
+    userdata: *mut std::ffi::c_void,
+) {
+    assert!(wait.is_some());
+    assert!(!userdata.is_null());
+    LIVE_BLOCK_WAIT_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
 extern "C" fn capture_ninep_registration(
@@ -861,6 +872,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 net_send: Some(live_network_send_ok),
                 net_flush: Some(live_network_flush_ok),
                 register_block: Some(capture_block_registration),
+                register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
             },
         ),
@@ -1091,6 +1103,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.net_send = Some(live_network_send_ok);
     capabilities.net_flush = Some(live_network_flush_ok);
     capabilities.register_block = Some(capture_block_registration);
+    capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,

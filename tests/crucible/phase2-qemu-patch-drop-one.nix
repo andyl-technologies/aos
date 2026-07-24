@@ -78,6 +78,9 @@
       "qemu_plugin_crucible_vmstate_snapshot_free"
       "qemu_plugin_crucible_vmstate_snapshot_size"
     ];
+    "0039-crucible-blk-device-completion-advance.patch" = [
+      "qemu_plugin_register_blk_wait_cb"
+    ];
   };
 
   dropOnes =

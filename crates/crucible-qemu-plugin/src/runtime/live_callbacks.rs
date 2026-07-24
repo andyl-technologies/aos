@@ -25,14 +25,16 @@ use crate::{
     NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
     PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering, PluginShutdownRequested,
     QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
     QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeNsFn, QemuClockDeadlineFn,
     QemuIcountRawFn, QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId,
-    QemuPluginNetFlushFn, QemuPluginNetSendFn, QemuRegisterBlkCbFn, QemuRegisterNetTxCbFn,
-    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
-    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
+    QemuPluginNetFlushFn, QemuPluginNetSendFn, QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn,
+    QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
+    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
+    QueuedIdleAdvance,
     QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion, compute_idle_wake_plan,
     handle_network_rx_idle_callback,
 };
@@ -64,6 +66,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) net_send: Option<QemuPluginNetSendFn>,
     pub(crate) net_flush: Option<QemuPluginNetFlushFn>,
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
+    pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<QemuRegisterNinePCbFn>,
 }
 
@@ -130,6 +133,11 @@ impl LiveVcpuTimeCallbackRegistrar {
                 symbol: QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
             },
         )?;
+        let register_block_wait = self.capabilities.register_block_wait.ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
+            },
+        )?;
         let register_ninep = self.capabilities.register_ninep.ok_or(
             LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
@@ -152,6 +160,7 @@ impl LiveVcpuTimeCallbackRegistrar {
             register_net_tx,
             network_rx,
             register_block,
+            register_block_wait,
             register_ninep,
         })
     }
@@ -239,6 +248,10 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(devices::crucible_qemu_plugin_live_block_poll_cb),
             callback_state.cast(),
         );
+        (capabilities.register_block_wait)(
+            Some(crucible_qemu_plugin_live_block_wait_cb),
+            callback_state.cast(),
+        );
         (capabilities.register_ninep)(
             Some(devices::crucible_qemu_plugin_live_ninep_burst_start_cb),
             Some(devices::crucible_qemu_plugin_live_ninep_submit_cb),
@@ -262,6 +275,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_net_tx: QemuRegisterNetTxCbFn,
     network_rx: QemuLosslessNetworkRxQueue,
     register_block: QemuRegisterBlkCbFn,
+    register_block_wait: QemuRegisterBlkWaitCbFn,
     register_ninep: QemuRegisterNinePCbFn,
 }
 
@@ -1109,6 +1123,63 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })
     }
 
+    fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
+        let pending = self.try_pending_idle_advance()?;
+        if pending.is_some() {
+            return Ok(());
+        }
+        drop(pending);
+
+        let current_icount = self.callback_current_icount()?;
+        let device_deadline =
+            PluginShmemOrdering::device_completion_deadline_icount(self.slot.get());
+        if device_deadline == 0 {
+            // The host publishes the deterministic deadline before signalling
+            // the wake fd. QEMU re-fires this callback after that wake, so this
+            // wall-time race changes only how long the coroutine stays parked.
+            return Ok(());
+        }
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let exact_deadline = self
+            .exact_deadline
+            .read_next_deadline()
+            .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
+        let plan = compute_idle_wake_plan(
+            current_icount,
+            self.icount_shift,
+            exact_deadline,
+            None,
+            SchedulerCeiling::new(ceiling_icount),
+            true,
+            Some(device_deadline),
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
+        let target_icount = plan.desired_wake_icount();
+        if target_icount <= current_icount {
+            // Virtual time already admits the response. If its ring write is
+            // still physically pending, the next host wake retries the poll at
+            // this same icount without exposing host timing to the guest.
+            return Ok(());
+        }
+        let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
+            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
+                target_icount,
+                icount_shift: self.icount_shift,
+            },
+        )?;
+        let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
+            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
+                target_icount,
+                icount_shift: self.icount_shift,
+            },
+        )?;
+        let pending = self
+            .queued_idle_advance
+            .enqueue(target_virtual_ns)
+            .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
+        self.arm_idle_advance((self.icount_raw)(), target_icount, pending)
+    }
+
     fn callback_current_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         self.publish_current_icount((self.icount_raw)())?;
         Ok(self.last_icount.load(Ordering::Acquire))
@@ -1279,6 +1350,19 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
     if let Err(error) =
         state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(status, target_virtual_ns))
     {
+        abort_live_callback(error);
+    }
+}
+
+pub(crate) extern "C" fn crucible_qemu_plugin_live_block_wait_cb(
+    request_id: u32,
+    userdata: *mut c_void,
+) {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return;
+    };
+    if let Err(error) = state.on_block_wait(request_id) {
         abort_live_callback(error);
     }
 }

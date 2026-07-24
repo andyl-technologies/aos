@@ -1,12 +1,12 @@
-//! Runs the diagnostic live block-I/O gate over `SLOT_BLK_IO`.
+//! Runs the certifying live block-I/O gate over `SLOT_BLK_IO`.
 //!
 //! Boots the diskless-firmware guest with a `crucible-shmem` virtio-blk device,
 //! stands up a live node whose host-I/O runtime services `SLOT_BLK_IO`, advances
 //! the node once toward a busy ceiling, and prints what the servicing observed:
 //! how many block requests were serviced, the device completion horizon for the
-//! first request, whether the guest reached the ceiling or stalled, and the guest
-//! slot's published device-I/O state. The run repeats under host load and the two
-//! runs' block observations must match.
+//! first request, and the guest slot's published device-I/O state. The guest must
+//! advance through that completion and reach its scheduler ceiling. The run
+//! repeats under host load and the two runs' block observations must match.
 //!
 //! Positional arguments: `QEMU PLUGIN KERNEL FIRMWARE RUN_DIRECTORY [INITRD]`.
 //! Tuning is read from the environment:
@@ -131,6 +131,10 @@ fn run() -> Result<(), String> {
         report.deterministic_under_host_load
     );
     println!("host_load_applied={}", report.host_load_applied);
+    println!(
+        "delayed_response_applied={}",
+        report.delayed_response_applied
+    );
     Ok(())
 }
 

@@ -1,21 +1,15 @@
-//! Diagnostic live block-I/O gate for a QEMU node over `SLOT_BLK_IO`.
+//! Certifying live block-I/O gate for QEMU over `SLOT_BLK_IO`.
 //!
-//! This is the first gate that drives real guest block I/O through a live
-//! [`QemuNode`]. It attaches a `crucible-shmem` virtio-blk device to the diskless
-//! guest, stands the node up exactly as the M4 node-step gate does (boot-barrier
-//! priming, wake-signalling runtime, QMP), but wires a [`QemuLiveBlockIoServicer`]
-//! into the runtime's advance poll loop so the guest's virtio-blk probe reads on
-//! `SLOT_BLK_IO` are actually serviced.
+//! The gate attaches a `crucible-shmem` virtio-blk device to a diskless guest,
+//! completes the production-plugin handshake, and drives the mapped quantum
+//! hot path while a [`QemuLiveBlockIoServicer`] services the guest's probe reads.
 //!
-//! It is deliberately *diagnostic*: rather than assume the plugin already
-//! idle-jumps a guest blocked on device I/O to the host-computed completion
-//! icount, it advances the node once toward a busy ceiling and REPORTS what
-//! happened -- how many request frames were serviced, the device completion
-//! horizon computed for the first request, whether the guest progressed to the
-//! ceiling or stalled, and the guest slot's published device-I/O state. That
-//! turns the open device-horizon question into an observed outcome. The whole
-//! run is repeated (the second time under host CPU load) and the two runs' block
-//! observations must match, per the servicer's determinism invariant.
+//! The plugin must advance an I/O-blocked guest to the host-published completion
+//! horizon, expose the response, and continue to the scheduler ceiling. A second
+//! run adds host CPU load and deliberately delays the due response's physical
+//! ring write after logical time reaches its horizon. Both runs must produce
+//! identical block observations, proving host timing changes only wall-clock
+//! parking duration.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -63,12 +57,14 @@ const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Consecutive no-progress polls (at [`PRIME_POLL_INTERVAL`]) before the drive
 /// declares the guest stalled on device I/O rather than merely executing slowly.
 const DRIVE_STALL_POLLS: u64 = 5_000;
+/// Wall delay injected after virtual time reaches a pending response horizon.
+const DELAYED_RESPONSE_WALL_TIME: Duration = Duration::from_millis(100);
 /// Default crucible-shmem device length: 4 MiB, a whole sector multiple.
 const DEFAULT_DEVICE_SIZE_BYTES: u64 = 4 * 1024 * 1024;
 /// Default busy-window ceiling the run advances the node toward.
 const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 12_000_000;
 
-/// Inputs for one diagnostic live block-I/O gate run.
+/// Inputs for one certifying live block-I/O gate run.
 #[derive(Clone, Debug)]
 pub struct QemuLiveBlockIoGateConfig {
     qemu_executable: PathBuf,
@@ -172,15 +168,16 @@ pub enum BlockIoAdvanceOutcome {
     },
 }
 
-/// The diagnostic outcome of one full block-I/O run.
+/// The outcome of one full block-I/O run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BlockIoRunOutcome {
     advance: BlockIoAdvanceOutcome,
     diagnostics: BlockIoDiagnosticsSnapshot,
     orderly_child_exit: bool,
+    response_delay_applied: bool,
 }
 
-/// Diagnostic evidence from the live block-I/O gate.
+/// Certifying evidence from the live block-I/O gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoReport {
     /// How the reference run's advance terminated.
@@ -193,9 +190,11 @@ pub struct QemuLiveBlockIoReport {
     pub deterministic_under_host_load: bool,
     /// Host CPU load was actually applied during the second run.
     pub host_load_applied: bool,
+    /// The second run delayed a due host response without changing observations.
+    pub delayed_response_applied: bool,
 }
 
-/// Drives the diagnostic live block-I/O gate and reports the observed behaviour.
+/// Drives the certifying live block-I/O gate and reports the observed behaviour.
 ///
 /// Boots the diskless-firmware guest with a `crucible-shmem` virtio-blk device,
 /// stands up a live node whose host-I/O runtime services `SLOT_BLK_IO`, advances
@@ -206,8 +205,8 @@ pub struct QemuLiveBlockIoReport {
 /// # Errors
 ///
 /// Returns [`QemuLiveBlockIoGateError`] when launch preparation, the plugin
-/// handshake, the host-I/O runtime, QMP, or node assembly fails, or when the two
-/// runs' block observations diverge.
+/// handshake, the host-I/O runtime, shared-memory driving, or child supervision
+/// fails, or when the two runs' block observations diverge.
 pub fn run_qemu_live_block_io_gate(
     config: &QemuLiveBlockIoGateConfig,
 ) -> Result<QemuLiveBlockIoReport, QemuLiveBlockIoGateError> {
@@ -226,6 +225,7 @@ pub fn run_qemu_live_block_io_gate(
         orderly_child_exit: reference.orderly_child_exit,
         deterministic_under_host_load: true,
         host_load_applied,
+        delayed_response_applied: second.response_delay_applied,
     })
 }
 
@@ -248,6 +248,13 @@ impl RunRole {
 
     const fn applies_host_load(self) -> bool {
         matches!(self, Self::HostLoad)
+    }
+
+    const fn response_wall_delay(self) -> Duration {
+        match self {
+            Self::HostLoad => DELAYED_RESPONSE_WALL_TIME,
+            Self::Reference | Self::Repeat => Duration::ZERO,
+        }
     }
 }
 
@@ -282,7 +289,7 @@ fn run_one_scenario(
         })?;
 
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    // No QMP and no QemuNode here: this diagnostic drives a raw hot path so the
+    // No QMP and no QemuNode here: this gate drives a raw hot path so the
     // block ring can be serviced concurrently with getting the guest off the boot
     // barrier. With a block device attached, unserviced SLOT_BLK_IO blocks the
     // guest in early boot, so the node-step priming quantum (which does not
@@ -335,7 +342,7 @@ fn run_one_scenario(
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
         .map_err(|source| QemuLiveBlockIoGateError::DriveHotPath { source })?;
 
-    let advance = drive_and_service(
+    let (advance, response_delay_applied) = drive_and_service(
         &mut hot_path,
         &mut servicer,
         &diagnostics,
@@ -343,6 +350,7 @@ fn run_one_scenario(
         &mut child,
         config.busy_ceiling_icount,
         config.completion_timeout,
+        role.response_wall_delay(),
     )?;
 
     // Teardown: ask the plugin to quit, then reap. Dropping the child force-kills
@@ -359,6 +367,7 @@ fn run_one_scenario(
         advance,
         diagnostics: diagnostics.snapshot(),
         orderly_child_exit,
+        response_delay_applied,
     })
 }
 
@@ -370,7 +379,7 @@ fn run_one_scenario(
 /// terminates when the guest reaches the ceiling, stalls (no icount progress for
 /// [`DRIVE_STALL_POLLS`] polls, i.e. blocked on device I/O the plugin never
 /// advances past), the child exits, or the poll budget lapses. A stall is
-/// returned as an outcome, never an error -- observing it IS the diagnostic.
+/// returned as an outcome so the certifying caller can report the exact stall.
 ///
 /// # Errors
 ///
@@ -384,7 +393,8 @@ fn drive_and_service(
     child: &mut QemuNodeChild,
     ceiling: u64,
     timeout: Duration,
-) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
+    response_wall_delay: Duration,
+) -> Result<(BlockIoAdvanceOutcome, bool), QemuLiveBlockIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
@@ -396,12 +406,25 @@ fn drive_and_service(
     let max_polls = bounded_drive_polls(timeout);
     let mut last_icount = 0_u64;
     let mut stall_polls = 0_u64;
+    let mut response_delay_applied = false;
     let mut outcome = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
     for _ in 0..max_polls {
         let _ = setup.signal_plugin_wake();
         let snapshot = servicer
             .vm_node_snapshot()
             .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+        if !response_delay_applied
+            && !response_wall_delay.is_zero()
+            && servicer
+                .next_completion_icount()
+                .is_some_and(|deadline| snapshot.current_icount >= deadline)
+        {
+            // This wall-only delay forces QEMU to re-poll at an already reached
+            // delivery icount before the response ring write becomes visible.
+            // The guest remains parked at the same logical time throughout.
+            thread::sleep(response_wall_delay);
+            response_delay_applied = true;
+        }
         let serviced = servicer
             .service(snapshot.current_icount)
             .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
@@ -443,7 +466,7 @@ fn drive_and_service(
     }
 
     let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
-    Ok(outcome)
+    Ok((outcome, response_delay_applied))
 }
 
 /// Reaps the child within a bounded poll budget, force-killing on drop otherwise.
@@ -580,7 +603,7 @@ impl SchedulerSendAuthorizer for GateSendAuthorizer {
     }
 }
 
-/// Error returned by the diagnostic live block-I/O gate.
+/// Error returned by the certifying live block-I/O gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveBlockIoGateError {
     /// The run subdirectory could not be created.

@@ -687,6 +687,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) net_send: Option<crate::QemuPluginNetSendFn>,
     pub(crate) net_flush: Option<crate::QemuPluginNetFlushFn>,
     pub(crate) register_block: Option<crate::QemuRegisterBlkCbFn>,
+    pub(crate) register_block_wait: Option<crate::QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<crate::QemuRegisterNinePCbFn>,
 }
 
@@ -878,6 +879,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     net_send: capabilities.net_send,
                     net_flush: capabilities.net_flush,
                     register_block: capabilities.register_block,
+                    register_block_wait: capabilities.register_block_wait,
                     register_ninep: capabilities.register_ninep,
                 },
             ),

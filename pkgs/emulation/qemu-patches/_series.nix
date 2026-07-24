@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "4afb57eb92cc058b3f0f4721be488afe6bef087ae2a5376d337fd9b495bffff6";
+  patchBranchBundleSha256 = "eaf62153b1de4837d003a552a984f848ed7b7486cc35d30304945ff383196040";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "3ea2f4afd7def3f7216af4f350eba59651331d69";
+  patchBranchHeadCommit = "08389eff3f11ceb3a5082150eddcb44df36af911";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -357,6 +357,15 @@ let
       class = "D";
       enforces = "DET-30";
       capability = "sim omits the redundant stock round-robin vCPU-kick timer for deterministic quantum switching";
+    }
+    {
+      file = "0039-crucible-blk-device-completion-advance.patch";
+      branchCommit = "08389eff3f11ceb3a5082150eddcb44df36af911";
+      branchTree = "6f0cc08c1f17767f3b4382d3827f42a2123b2fda";
+      catalogName = "crucible-blk-device-completion-advance";
+      class = "D";
+      enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
+      capability = "device-wait callback advances an I/O-blocked guest to its deterministic completion and resumes polling after commit";
     }
   ];
   catalogOnlyCapabilities = [
