@@ -1903,7 +1903,9 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
         true);
   }
 
-  if (last_valid_rr_current_vcpu >= tracked_vcpus) {
+  const bool rr_cursor_required =
+      tracked_vcpus > 1 || qemu_plugin_crucible_rr_switch_quantum() != 0;
+  if (!last_valid_rr_cursor_available && rr_cursor_required) {
     qemu_plugin_outs(
         "crucible-qemu-trace-plugin: missing exact-boundary RR cursor\n");
     stop_requested = true;
@@ -1916,7 +1918,11 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
     stop_requested = true;
     qemu_plugin_crucible_pause_vm();
   }
-  record_sample((unsigned int)last_valid_rr_current_vcpu, false);
+  record_sample(
+      last_valid_rr_cursor_available
+          ? (unsigned int)last_valid_rr_current_vcpu
+          : 0,
+      false);
   if (horizon_due) {
     horizon_emitted = true;
   }

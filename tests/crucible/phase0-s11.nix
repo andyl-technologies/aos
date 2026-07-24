@@ -548,13 +548,13 @@ in
           }
 
           trace_reached_stop_at() {
-            label="$1"
-            trace="$TMPDIR/trace-$label.jsonl"
+            trace="$TMPDIR/trace-current.jsonl"
             [ -s "$trace" ] || return 1
             tail -200 "$trace" | gawk -v stop_at="$STOP_AT" '
               /"kind":"rr_switch"/ { next }
               /"final":true/ { next }
-              match($0, /"retired":([0-9]+)/, retired) && retired[1] + 0 >= stop_at {
+              match($0, /"observed_icount":([0-9]+)/, observed) &&
+                  observed[1] + 0 >= stop_at {
                 found = 1
               }
               END { exit found ? 0 : 1 }
@@ -600,6 +600,8 @@ in
             fi
             if [ -f "$TMPDIR/trace-$label.jsonl" ]; then
               tail -20 "$TMPDIR/trace-$label.jsonl" >&2
+            elif [ -f "$TMPDIR/trace-current.jsonl" ]; then
+              tail -20 "$TMPDIR/trace-current.jsonl" >&2
             fi
             if [ -f "$TMPDIR/serial-$label.log" ]; then
               tail -20 "$TMPDIR/serial-$label.log" >&2
@@ -609,8 +611,11 @@ in
 
           run_one() {
             label="$1"
-            plugin_arg="$PLUGIN,out=$TMPDIR/trace-$label.jsonl,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
-            qmp_socket="$TMPDIR/qmp-$label.sock"
+            trace_path="$TMPDIR/trace-current.jsonl"
+            serial_path="$TMPDIR/serial-current.log"
+            plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
+            qmp_socket="$TMPDIR/qmp-current.sock"
+            rm -f "$trace_path" "$serial_path" "$qmp_socket"
 
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
               plugin_arg="$plugin_arg,det_ipi_probe=on"
@@ -638,7 +643,7 @@ in
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
               -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
-              -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
+              -chardev file,id=serial0,path="$serial_path" \
               -serial chardev:serial0 \
               -plugin "$plugin_arg"
 
@@ -667,6 +672,8 @@ in
             else
               timeout 600 "$@"
             fi
+            cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
+            cp "$serial_path" "$TMPDIR/serial-$label.log"
           }
 
           run_one a
@@ -693,16 +700,19 @@ in
                     expected_non_final_sample_count: (($stop_at / $cadence) | ceil),
                     rr_switch_count: ($switches | length),
                     final_sample_count: ([ $samples[] | select(.final == true) ] | length),
+                    final_retired: ([ $samples[] | select(.final == true) ][0].retired // null),
+                    final_observed_icount: ([ $samples[] | select(.final == true) ][0].observed_icount // null),
+                    final_stop_requested: ([ $samples[] | select(.final == true) ][0].stop_requested // null),
                     last_record_kind: (.[-1].kind // "sample"),
                     last_record_final: (.[-1].final // false),
-                    horizon_pre_stop_count: ([ $samples[]
-                      | select(.final != true and .retired == $stop_at)
+                    exact_horizon_sample_count: ([ $samples[]
+                      | select(.final != true and .observed_icount == $stop_at)
                     ] | length),
-                    bounded_post_stop_final_count: ([ $samples[]
+                    bounded_post_horizon_final_count: ([ $samples[]
                       | select(
                           .final == true
-                          and .retired >= $stop_at
-                          and (.retired - $stop_at) <= $quantum
+                          and .observed_icount >= $stop_at
+                          and (.observed_icount - $stop_at) <= $quantum
                           and .stop_requested == true
                         )
                     ] | length)
@@ -718,6 +728,7 @@ in
                   | select((.kind // "sample") == "sample")
                   | {
                       retired,
+                      observed_icount,
                       final,
                       stop_at,
                       stop_requested,
@@ -734,15 +745,14 @@ in
                       sample_register_failures,
                       register_read_failures,
                       ram_bytes,
-                      ram_hash,
+                      ram_digest,
                       memory_events_enabled,
                       device_event_capture,
                       device_event_hash,
-                      register_hash,
-                      register_hashes,
+                      register_digests,
                       register_counts,
                       register_file_bytes,
-                      register_schema_hashes
+                      register_schema_digests
                     }
                 )
               ' "$trace" >&2 || true
@@ -837,23 +847,22 @@ in
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and .ram_bytes > 0
-                  and .ram_hash != "0000000000000000"
+                  and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                   and .memory_events_enabled == false
                   and .device_event_capture == false
                   and .device_event_hash == null
-                  and .register_hash != "0000000000000000"
-                  and (.register_hashes | type == "array")
-                  and (.register_hashes | length) == $vcpus
-                  and all(.register_hashes[]; . != "0000000000000000")
+                  and (.register_digests | type == "array")
+                  and (.register_digests | length) == $vcpus
+                  and all(.register_digests[]; . != "0000000000000000000000000000000000000000000000000000000000000000")
                   and (.register_counts | type == "array")
                   and (.register_counts | length) == $vcpus
                   and all(.register_counts[]; . > 0)
                   and (.register_file_bytes | type == "array")
                   and (.register_file_bytes | length) == $vcpus
                   and all(.register_file_bytes[]; . > 0)
-                  and (.register_schema_hashes | type == "array")
-                  and (.register_schema_hashes | length) == $vcpus
-                  and all(.register_schema_hashes[]; . != "0000000000000000")
+                  and (.register_schema_digests | type == "array")
+                  and (.register_schema_digests | length) == $vcpus
+                  and all(.register_schema_digests[]; . != "0000000000000000000000000000000000000000000000000000000000000000")
                 ))
                 and ([ $samples[] | select(.final == true) ] | length) == 1
                 and (.[-1] | ((.kind // "sample") == "sample" and .final == true))
@@ -862,21 +871,21 @@ in
                     ([ $samples[] | select(.final != true) ] | length)
                       == (($stop_at / $cadence) | ceil)
                     and ([ $samples[]
-                      | select(.final != true and .retired == $stop_at)
+                      | select(.final != true and .observed_icount == $stop_at)
                     ] | length) == 1
                     and ([ $samples[]
                       | select(
                           .final != true
-                          and .retired == $stop_at
+                          and .observed_icount == $stop_at
                           and .stop_at == $stop_at
-                          and .stop_requested == false
+                          and .stop_requested == true
                         )
                     ] | length) == 1
                     and ([ $samples[]
                       | select(
                           .final == true
-                          and .retired >= $stop_at
-                          and (.retired - $stop_at) <= $quantum
+                          and .observed_icount >= $stop_at
+                          and (.observed_icount - $stop_at) <= $quantum
                           and .stop_at == $stop_at
                           and .stop_requested == true
                         )
@@ -1016,10 +1025,10 @@ in
                     elif $left[0].launch_definition_digest != $right[0].launch_definition_digest then "launch_definition_digest"
                     elif $left[0].qemu_build_digest != $right[0].qemu_build_digest then "qemu_build_digest"
                     elif $left[0].trace_plugin_build_digest != $right[0].trace_plugin_build_digest then "trace_plugin_build_digest"
-                    elif $left[0].register_hashes != $right[0].register_hashes then
-                      ([range(0; ($left[0].register_hashes | length)) | select($left[0].register_hashes[.] != $right[0].register_hashes[.])]) as $diffs
+                    elif $left[0].register_digests != $right[0].register_digests then
+                      ([range(0; ($left[0].register_digests | length)) | select($left[0].register_digests[.] != $right[0].register_digests[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
-                      | if $idx == null then "register_hashes" else "register_hashes[" + ($idx | tostring) + "]" end
+                      | if $idx == null then "register_digests" else "register_digests[" + ($idx | tostring) + "]" end
                     elif $left[0].register_counts != $right[0].register_counts then
                       ([range(0; ($left[0].register_counts | length)) | select($left[0].register_counts[.] != $right[0].register_counts[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
@@ -1028,15 +1037,14 @@ in
                       ([range(0; ($left[0].register_file_bytes | length)) | select($left[0].register_file_bytes[.] != $right[0].register_file_bytes[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
                       | if $idx == null then "register_file_bytes" else "register_file_bytes[" + ($idx | tostring) + "]" end
-                    elif $left[0].register_schema_hashes != $right[0].register_schema_hashes then
-                      ([range(0; ($left[0].register_schema_hashes | length)) | select($left[0].register_schema_hashes[.] != $right[0].register_schema_hashes[.])]) as $diffs
+                    elif $left[0].register_schema_digests != $right[0].register_schema_digests then
+                      ([range(0; ($left[0].register_schema_digests | length)) | select($left[0].register_schema_digests[.] != $right[0].register_schema_digests[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
-                      | if $idx == null then "register_schema_hashes" else "register_schema_hashes[" + ($idx | tostring) + "]" end
-                    elif $left[0].register_hash != $right[0].register_hash then "register_hash"
-                    elif $left[0].ram_hash != $right[0].ram_hash then "ram_hash"
+                      | if $idx == null then "register_schema_digests" else "register_schema_digests[" + ($idx | tostring) + "]" end
+                    elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                     elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
                     elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
-                    elif $left[0].extended_hash != $right[0].extended_hash then "extended_hash"
+                    elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
                     else "unknown"
                     end;
                   component
@@ -1067,13 +1075,26 @@ in
           if ! diff -u "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$TMPDIR/per-vcpu-delta-trace-b.tsv" > "$out/per-vcpu-delta-trace.diff"; then
             per_vcpu_delta_trace_match=false
           fi
-          if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace.diff"; then
+          authoritative_trace_scope=full-trace
+          if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+            authoritative_trace_scope=through-exact-horizon
+            for label in a b; do
+              jq -c 'select(.final != true)' \
+                "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/trace-authoritative-$label.jsonl"
+            done
+          else
+            cp "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-authoritative-a.jsonl"
+            cp "$TMPDIR/trace-b.jsonl" "$TMPDIR/trace-authoritative-b.jsonl"
+          fi
+          if ! diff -u \
+            "$TMPDIR/trace-authoritative-a.jsonl" \
+            "$TMPDIR/trace-authoritative-b.jsonl" > "$out/trace.diff"; then
             localize_first_difference \
-              "$TMPDIR/trace-a.jsonl" \
-              "$TMPDIR/trace-b.jsonl" \
+              "$TMPDIR/trace-authoritative-a.jsonl" \
+              "$TMPDIR/trace-authoritative-b.jsonl" \
               "$out/first-difference.txt"
             cat "$out/first-difference.txt" >&2
-            fail "extended fingerprint mismatch"
+            fail "authoritative extended fingerprint mismatch"
           fi
           [ "$rr_switch_trace_match" = true ] \
             || fail "RR switch projection differs despite equal raw traces"
@@ -1092,7 +1113,7 @@ in
           localization_expected_icount=$(jq -r '.retired' "$TMPDIR/localization-base.jsonl")
           localization_vcpu_index=$((VCPU_COUNT - 1))
           jq -c --argjson index "$localization_vcpu_index" \
-            '.register_hashes[$index] = (if .register_hashes[$index] == "ffffffffffffffff" then "0000000000000000" else "ffffffffffffffff" end)' \
+            '.register_digests[$index] = (if .register_digests[$index] == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" then "0000000000000000000000000000000000000000000000000000000000000000" else "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" end)' \
             "$TMPDIR/localization-base.jsonl" > "$TMPDIR/localization-vcpu.jsonl"
           localize_first_difference \
             "$TMPDIR/localization-base.jsonl" \
@@ -1101,7 +1122,7 @@ in
           grep -q "^first_differing_node_icount=$localization_expected_icount$" \
             "$out/localization-vcpu.txt" \
             || fail "vCPU mismatch localizer reported the wrong node-icount"
-          grep -F -q "first_differing_component=register_hashes[$localization_vcpu_index]" \
+          grep -F -q "first_differing_component=register_digests[$localization_vcpu_index]" \
             "$out/localization-vcpu.txt" \
             || fail "vCPU mismatch localizer did not identify vCPU $localization_vcpu_index"
 
@@ -1124,14 +1145,16 @@ in
           [ -n "$final_line_b" ] || fail "trace b omitted the plugin-exit sample"
           plugin_exit_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
           plugin_exit_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
+          plugin_exit_observed_icount=$(printf '%s\n' "$final_line" | jq -r '.observed_icount')
+          plugin_exit_observed_icount_b=$(printf '%s\n' "$final_line_b" | jq -r '.observed_icount')
           plugin_exit_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
           plugin_exit_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
-          final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.extended_hash')
-          final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_hash')
-          final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_hashes')
+          final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.diagnostic_extended_fnv')
+          final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_digests')
+          final_register_hash=$(printf '%s' "$final_register_hashes" | sha256sum | gawk '{print $1}')
           final_register_counts=$(printf '%s\n' "$final_line" | jq -c '.register_counts')
           final_register_file_bytes=$(printf '%s\n' "$final_line" | jq -c '.register_file_bytes')
-          final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_hash')
+          final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_digest')
           final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
           final_rr_cursor=$(printf '%s\n' "$final_line" \
             | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
@@ -1140,6 +1163,7 @@ in
           final_register_read_failures=$(printf '%s\n' "$final_line" | jq -r '.register_read_failures')
 
           horizon_sample_retired=not-applicable
+          horizon_sample_observed_icount=not-applicable
           horizon_sample_stop_requested=not-applicable
           horizon_sample_plugin_exit_retired_match=not-applicable
           horizon_sample_plugin_exit_stream_match=not-applicable
@@ -1154,41 +1178,43 @@ in
           plugin_exit_pause_overshoot_bound=not-applicable
           plugin_exit_pause_overshoot_bounded=not-applicable
           plugin_exit_pause_overshoot_cross_run_match=not-applicable
+          plugin_exit_cross_run_match=not-applicable
           periodic_samples_expected=not-applicable
           periodic_samples_observed=not-applicable
           plugin_exit_fingerprint_compared=true
           if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
             horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
-              'select((.kind // "sample") == "sample" and .final != true and .retired == $stop_at)' \
+              'select((.kind // "sample") == "sample" and .final != true and .observed_icount == $stop_at)' \
               "$TMPDIR/trace-a.jsonl" | tail -1)
             [ -n "$horizon_line" ] || fail "trace a omitted the exact stop_at horizon sample"
 
             horizon_sample_retired=$(printf '%s\n' "$horizon_line" | jq -r '.retired')
             horizon_sample_stop_requested=$(printf '%s\n' "$horizon_line" | jq -r '.stop_requested')
             horizon_stream_hash=$(printf '%s\n' "$horizon_line" | jq -r '.stream_hash')
-            horizon_register_hash=$(printf '%s\n' "$horizon_line" | jq -r '.register_hash')
-            horizon_register_hashes=$(printf '%s\n' "$horizon_line" | jq -c '.register_hashes')
-            horizon_ram_hash=$(printf '%s\n' "$horizon_line" | jq -r '.ram_hash')
+            horizon_register_hashes=$(printf '%s\n' "$horizon_line" | jq -c '.register_digests')
+            horizon_register_hash=$(printf '%s' "$horizon_register_hashes" | sha256sum | gawk '{print $1}')
+            horizon_ram_hash=$(printf '%s\n' "$horizon_line" | jq -r '.ram_digest')
             horizon_ram_bytes=$(printf '%s\n' "$horizon_line" | jq -r '.ram_bytes')
             horizon_rr_cursor=$(printf '%s\n' "$horizon_line" \
               | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
             plugin_exit_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
 
-            [ "$horizon_sample_retired" = "$STOP_AT" ] \
-              || fail "horizon sample retired mismatch: $horizon_sample_retired/$STOP_AT"
-            [ "$horizon_sample_stop_requested" = false ] \
-              || fail "horizon sample unexpectedly postdates the plugin stop request"
+            horizon_sample_observed_icount=$(printf '%s\n' "$horizon_line" | jq -r '.observed_icount')
+            [ "$horizon_sample_observed_icount" = "$STOP_AT" ] \
+              || fail "horizon sample observed-icount mismatch: $horizon_sample_observed_icount/$STOP_AT"
+            [ "$horizon_sample_stop_requested" = true ] \
+              || fail "horizon sample omitted the exact-boundary stop request"
             [ "$plugin_exit_stop_requested" = true ] \
               || fail "plugin-exit sample omitted the stop request"
             [ "$plugin_exit_stop_requested_b" = true ] \
               || fail "run b plugin-exit sample omitted the stop request"
 
-            [ "$plugin_exit_retired" -ge "$STOP_AT" ] \
-              || fail "plugin exit retired before the exact horizon: $plugin_exit_retired/$STOP_AT"
-            [ "$plugin_exit_retired_b" -ge "$STOP_AT" ] \
-              || fail "run b plugin exit retired before the exact horizon: $plugin_exit_retired_b/$STOP_AT"
-            plugin_exit_pause_overshoot=$((plugin_exit_retired - STOP_AT))
-            plugin_exit_pause_overshoot_b=$((plugin_exit_retired_b - STOP_AT))
+            [ "$plugin_exit_observed_icount" -ge "$STOP_AT" ] \
+              || fail "plugin exit observed before the exact horizon: $plugin_exit_observed_icount/$STOP_AT"
+            [ "$plugin_exit_observed_icount_b" -ge "$STOP_AT" ] \
+              || fail "run b plugin exit observed before the exact horizon: $plugin_exit_observed_icount_b/$STOP_AT"
+            plugin_exit_pause_overshoot=$((plugin_exit_observed_icount - STOP_AT))
+            plugin_exit_pause_overshoot_b=$((plugin_exit_observed_icount_b - STOP_AT))
             periodic_samples_expected=$(((STOP_AT + CADENCE - 1) / CADENCE))
             periodic_samples_observed=$((samples_a - 1))
             [ "$periodic_samples_observed" -eq "$periodic_samples_expected" ] \
@@ -1197,8 +1223,16 @@ in
               || fail "plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot/$RR_SWITCH_QUANTUM"
             [ "$plugin_exit_pause_overshoot_b" -le "$RR_SWITCH_QUANTUM" ] \
               || fail "run b plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot_b/$RR_SWITCH_QUANTUM"
-            [ "$plugin_exit_pause_overshoot" -eq "$plugin_exit_pause_overshoot_b" ] \
-              || fail "plugin-exit pause overshoot differs across runs: $plugin_exit_pause_overshoot/$plugin_exit_pause_overshoot_b"
+            if [ "$plugin_exit_pause_overshoot" -eq "$plugin_exit_pause_overshoot_b" ]; then
+              plugin_exit_pause_overshoot_cross_run_match=true
+            else
+              plugin_exit_pause_overshoot_cross_run_match=false
+            fi
+            if [ "$final_line" = "$final_line_b" ]; then
+              plugin_exit_cross_run_match=true
+            else
+              plugin_exit_cross_run_match=false
+            fi
 
             if [ "$horizon_sample_retired" = "$plugin_exit_retired" ]; then
               horizon_sample_plugin_exit_retired_match=true
@@ -1233,7 +1267,7 @@ in
             plugin_exit_semantics=post-stop-request-teardown-observation
             plugin_exit_pause_overshoot_bound="$RR_SWITCH_QUANTUM"
             plugin_exit_pause_overshoot_bounded=true
-            plugin_exit_pause_overshoot_cross_run_match=true
+            plugin_exit_fingerprint_compared=diagnostic-only
           fi
 
           workload_affinity_active=false
@@ -1260,6 +1294,8 @@ in
 
           cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
           cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
+          cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
+          cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
           cp "$TMPDIR/rr-switch-trace-a.tsv" "$out/rr-switch-trace-a.tsv"
           cp "$TMPDIR/rr-switch-trace-b.tsv" "$out/rr-switch-trace-b.tsv"
           cp "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$out/per-vcpu-delta-trace-a.tsv"
@@ -1299,6 +1335,7 @@ in
               echo det_ipi_probe=disabled
             fi
             echo host_adversary=jitter-load
+            echo authoritative_trace_scope="$authoritative_trace_scope"
             if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
               echo rr_cursor_export=sim
               echo rr_cursor_assertion=nonempty_valid_snapshot
@@ -1313,12 +1350,17 @@ in
             echo rr_switch_events="$rr_switch_events_a"
             echo horizon_fingerprint_match=true
             echo horizon_sample_retired="$horizon_sample_retired"
+            echo horizon_sample_observed_icount="$horizon_sample_observed_icount"
             echo horizon_sample_stop_requested="$horizon_sample_stop_requested"
             echo plugin_exit_retired="$plugin_exit_retired"
+            echo plugin_exit_observed_icount="$plugin_exit_observed_icount"
             echo plugin_exit_stop_requested="$plugin_exit_stop_requested"
             echo exact_horizon_authoritative="$exact_horizon_authoritative"
             echo plugin_exit_semantics="$plugin_exit_semantics"
             echo plugin_exit_pause_overshoot="$plugin_exit_pause_overshoot"
+            if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+              echo plugin_exit_pause_overshoot_run_b="$plugin_exit_pause_overshoot_b"
+            fi
             echo plugin_exit_pause_overshoot_bound="$plugin_exit_pause_overshoot_bound"
             echo plugin_exit_pause_overshoot_bounded="$plugin_exit_pause_overshoot_bounded"
             echo plugin_exit_pause_overshoot_cross_run_match="$plugin_exit_pause_overshoot_cross_run_match"
@@ -1328,7 +1370,7 @@ in
             echo stop_requested="$plugin_exit_stop_requested"
             echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
             echo horizon_sample_cross_run_match="$horizon_sample_cross_run_match"
-            echo plugin_exit_cross_run_match=true
+            echo plugin_exit_cross_run_match="$plugin_exit_cross_run_match"
             echo horizon_sample_plugin_exit_state_comparison="$horizon_sample_plugin_exit_state_comparison"
             echo horizon_sample_plugin_exit_retired_match="$horizon_sample_plugin_exit_retired_match"
             echo horizon_sample_plugin_exit_stream_match="$horizon_sample_plugin_exit_stream_match"

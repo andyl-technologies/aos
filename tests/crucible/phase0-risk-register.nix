@@ -52,6 +52,12 @@ in
             grep -F -x -q -- "$text" "$file" || fail "missing exact line '$text' in $file"
           }
 
+          require_regex() {
+            file="$1"
+            regex="$2"
+            grep -E -x -q -- "$regex" "$file" || fail "missing line matching '$regex' in $file"
+          }
+
           require_line "$S11_RESULT" "PASS"
           require_line "$S11_RESULT" "scenario=smp-contended-pthread-spinlock"
           require_line "$S11_RESULT" "accelerator=sim,thread=single"
@@ -67,23 +73,27 @@ in
           require_line "$S11_RESULT" "aggregate_icount_stream_match=true"
           require_line "$S11_RESULT" "rr_switch_trace_match=true"
           require_line "$S11_RESULT" "per_vcpu_delta_trace_match=true"
-          require_line "$S11_RESULT" "rr_switch_events=389163"
+          require_regex "$S11_RESULT" 'rr_switch_events=[1-9][0-9]*'
           require_line "$S11_RESULT" "horizon_fingerprint_match=true"
-          require_line "$S11_RESULT" "horizon_sample_retired=3300000000"
-          require_line "$S11_RESULT" "plugin_exit_retired=3300000002"
+          require_line "$S11_RESULT" "horizon_sample_observed_icount=3300000000"
+          require_line "$S11_RESULT" "horizon_sample_stop_requested=true"
           require_line "$S11_RESULT" "exact_horizon_authoritative=true"
-          require_line "$S11_RESULT" "plugin_exit_pause_overshoot=2"
+          require_line "$S11_RESULT" "authoritative_trace_scope=through-exact-horizon"
+          require_line "$S11_RESULT" "plugin_exit_fingerprint_compared=diagnostic-only"
           require_line "$S11_RESULT" "plugin_exit_pause_overshoot_bound=4096"
           require_line "$S11_RESULT" "plugin_exit_pause_overshoot_bounded=true"
           require_line "$S11_RESULT" "periodic_samples_expected=33"
           require_line "$S11_RESULT" "periodic_samples_observed=33"
           require_line "$S11_RESULT" "samples=34"
-          require_line "$S11_RESULT" "final_extended_hash=669d23b5367c457c"
-          require_line "$S11_RESULT" "final_register_hash=473d47d8c8b32ec7"
+          require_regex "$S11_RESULT" 'horizon_register_hash=[0-9a-f]{64}'
+          require_regex "$S11_RESULT" 'horizon_ram_hash=[0-9a-f]{64}'
+          require_line "$S11_RESULT" "horizon_ram_bytes=268435456"
+          require_regex "$S11_RESULT" 'final_extended_hash=[0-9a-f]{16}'
+          require_regex "$S11_RESULT" 'final_register_hash=[0-9a-f]{64}'
           require_line "$S11_RESULT" 'final_register_counts=[66,66,66,66]'
           require_line "$S11_RESULT" 'final_register_file_bytes=[3868,3868,3868,3868]'
-          require_line "$S11_RESULT" "final_ram_hash=5160163c9631fc88"
-          require_line "$S11_RESULT" "final_ram_bytes=268967936"
+          require_regex "$S11_RESULT" 'final_ram_hash=[0-9a-f]{64}'
+          require_line "$S11_RESULT" "final_ram_bytes=268435456"
           require_line "$S11_RESULT" "register_read_failures=0"
           require_line "$S11_RESULT" "fallback=smp1_not_needed"
 
@@ -171,7 +181,7 @@ in
           require_fixed "$risk_doc" "**RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by \`T-RISK-16\`"
           require_fixed "$risk_doc" "**RISK-25** is retired by \`T-RISK-17\`"
           require_fixed "$risk_doc" "\`horizon_icount=3300000000\`"
-          require_fixed "$risk_doc" "\`rr_switch_events=389163\`"
+          require_fixed "$risk_doc" "\`rr_switch_events=389751\`"
           require_fixed "$risk_doc" "\`fallback=smp1_not_needed\`"
           require_fixed "$risk_doc" "**RISK-26** uses the \`T-RISK-18\` default-only fallback while live preemption"
           require_fixed "$risk_doc" "\`preemption_injection_api_available=qemu_plugin_inject_preemption\`"

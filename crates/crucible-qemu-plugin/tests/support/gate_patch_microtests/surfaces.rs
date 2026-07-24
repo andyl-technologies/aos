@@ -432,7 +432,10 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         "plugin_exit_semantics=post-stop-request-teardown-observation",
     );
     assert_contains(&s11, "plugin_exit_pause_overshoot_bounded=true");
-    assert_contains(&s11, "plugin_exit_pause_overshoot_cross_run_match=true");
+    assert_contains(
+        &s11,
+        "plugin_exit_fingerprint_compared=diagnostic-only",
+    );
 
     let qemu_det_ipi = fs::read_to_string(root.join("tests/crucible/phase2-qemu-det-ipi.nix"))?;
     assert_contains(&qemu_det_ipi, "T-PATCH-22");

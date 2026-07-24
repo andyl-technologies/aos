@@ -1603,11 +1603,16 @@ host-jitter run, with `vcpus=4`, `rr_switch_quantum=4096`,
 `cadence=100000000`, and an exact `horizon_icount=3300000000`. The sustained
 pthread spinlock workload reported affinity on vCPUs `0,1,2,3`; both runs
 produced 33 periodic samples plus a sole final teardown record,
-`rr_switch_events=389163`, identical aggregate/per-vCPU/RR traces, four nonempty
+`rr_switch_events=389751`, identical aggregate/per-vCPU/RR traces through the
+exact horizon, four nonempty
 3868-byte register files with 66 descriptors each, and a nonzero 256 MiB RAM
-hash. The exact horizon sample is authoritative; the plugin-exit observation retired at
-3300000002, a two-instruction pause overshoot bounded by the 4096-instruction RR
-quantum. The run reported `extended_fingerprint_match=true`,
+digest. The sample at `observed_icount=3300000000` is authoritative. The two
+plugin-exit observations occurred 11 and 4 instructions after that boundary
+while processing QMP teardown. They are retained as non-authoritative
+diagnostics and each is bounded by the 4096-instruction RR quantum, rather than
+being treated as execution past the requested horizon. The run reported
+`extended_fingerprint_match=true`,
+`plugin_exit_fingerprint_compared=diagnostic-only`,
 `register_read_failures=0`, and `fallback=smp1_not_needed`.
 
 **RISK-26** uses the `T-RISK-18` default-only fallback while live preemption
