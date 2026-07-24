@@ -27,7 +27,9 @@
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
       (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
-  launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  launchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;

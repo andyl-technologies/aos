@@ -13,11 +13,18 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateTests = builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
   publicTest = builtins.readFile ../../crates/crucible/tests/time_clock_skew.rs;
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  qemuLaunch =
+    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qemuValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
-  qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  qemuValidation =
+    builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/validation/values.rs;
+  qemuTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -172,6 +179,8 @@
         label = "node clock skew export";
         needle = "NodeClockSkew";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/tests/model_core.rs" crateTests [
       {
         label = "guest-visible-only unit test";
         needle = "clock_skew_applies_fixed_point_drift_to_guest_reads_only";

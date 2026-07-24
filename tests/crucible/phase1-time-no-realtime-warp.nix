@@ -17,7 +17,9 @@
   icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
 
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  qemuTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;

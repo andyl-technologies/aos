@@ -34,7 +34,9 @@
     (map (relative: builtins.readFile (root + "/${relative}"))
       (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
   launchLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  launchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
   defaultChecks = builtins.readFile ./default.nix;

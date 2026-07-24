@@ -13,8 +13,12 @@
   };
 
   launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  validationLib = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
-  launchTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+  validationLib =
+    builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/validation/values.rs;
+  launchTest =
+    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   spatialSpec = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
