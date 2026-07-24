@@ -84,8 +84,7 @@ pub const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL: &str = "qemu_plugin_request_shutd
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
 /// QEMU plugin API symbol used to register the blocked-device wait callback.
-pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str =
-    "qemu_plugin_register_blk_wait_cb";
+pub const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL: &str = "qemu_plugin_register_blk_wait_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
 /// QEMU plugin API symbol used to register the standard vCPU-init callback.
@@ -121,8 +120,7 @@ const QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
 const QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
 const QEMU_PLUGIN_INSN_SIZE_SYMBOL_C: &[u8] = b"qemu_plugin_insn_size\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
-const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] =
-    b"qemu_plugin_register_blk_wait_cb\0";
+const QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_wait_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
@@ -1606,9 +1604,7 @@ pub fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitC
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C
-                .as_ptr()
-                .cast(),
+            QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL_C.as_ptr().cast(),
         )
     };
     if symbol.is_null() {
@@ -1616,9 +1612,7 @@ pub fn resolve_qemu_register_blk_wait_cb_symbol() -> Option<QemuRegisterBlkWaitC
     } else {
         // SAFETY: the non-null address is the exact block-wait registration
         // symbol whose C declaration matches `QemuRegisterBlkWaitCbFn`.
-        Some(unsafe {
-            std::mem::transmute::<*mut c_void, QemuRegisterBlkWaitCbFn>(symbol)
-        })
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterBlkWaitCbFn>(symbol) })
     }
 }
 
