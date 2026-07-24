@@ -17,13 +17,7 @@
   blockTimeoutSecs ? "60",
   secondRunLoad ? "1",
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
-    src = crucibleSrc;
-    sourceRoot = "source/crates";
-    hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
-  };
-
+  liveIoRunner = import ./_live-io-runner.nix {inherit pkgs lib;};
   blockWriteInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -32,15 +26,14 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-live-block-io";
     version = "0";
-    src = crucibleSrc;
+    src = null;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.crucible-qemu-plugin
       pkgs.grep
       pkgs.qemu-crucible
-      pkgs.rust
-      pkgs.sed
+      liveIoRunner
     ];
 
     GUEST_KERNEL = builtins.toString pkgs.linux;
@@ -56,54 +49,18 @@ in
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-live-block-io";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
           vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
-
-          cargo build \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-block-io-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --example crucible-qemu-live-block-io
 
           run_dir="$TMPDIR/live-block-io-run"
           mkdir -p "$run_dir"
           report="$TMPDIR/live-block-io.result"
           # Arg order: QEMU PLUGIN KERNEL FIRMWARE RUN_DIRECTORY [INITRD].
           timeout -k 15 590 \
-            "$TMPDIR/live-block-io-target/debug/examples/crucible-qemu-live-block-io" \
+            "${liveIoRunner}/bin/crucible-qemu-live-block-io" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
             "$vmlinuz" \

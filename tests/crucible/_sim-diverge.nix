@@ -34,7 +34,7 @@
   attrPath ? "drop-one-sim-diverge",
 }: let
   workload = import ./_sim-workload.nix {inherit pkgs lib;};
-  usesCanonicalTrace = builtins.elem index [3 37 38];
+  usesCanonicalTrace = builtins.elem index [3 17 19 37 38 40];
   canonicalTrace =
     if usesCanonicalTrace
     then

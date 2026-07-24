@@ -140,14 +140,25 @@
               run_probe "$variant" variant-a
               run_probe "$variant" variant-b
 
-              cmp "$out/full-a.tsv" "$out/full-b.tsv"
-              cmp "$out/variant-a.tsv" "$out/variant-b.tsv"
-              if cmp -s "$out/full-a.tsv" "$out/variant-a.tsv"; then
+              # request_shutdown() is asynchronous: callbacks already queued
+              # after the requested first-event horizon may still reach the
+              # plugin. Compare the first event that defines this probe, not
+              # the incidental shutdown tail.
+              head -1 "$out/full-a.tsv" > "$out/full-a.boundary"
+              head -1 "$out/full-b.tsv" > "$out/full-b.boundary"
+              head -1 "$out/variant-a.tsv" > "$out/variant-a.boundary"
+              head -1 "$out/variant-b.tsv" > "$out/variant-b.boundary"
+              cmp "$out/full-a.boundary" "$out/full-b.boundary"
+              cmp "$out/variant-a.boundary" "$out/variant-b.boundary"
+              cut -f1-3 "$out/full-a.boundary" > "$out/full-prefix"
+              cut -f1-3 "$out/variant-a.boundary" > "$out/variant-prefix"
+              cmp "$out/full-prefix" "$out/variant-prefix"
+              if cmp -s "$out/full-a.boundary" "$out/variant-a.boundary"; then
                 echo "RR kick deadline is identical with patch 0038 dropped" >&2
                 exit 1
               fi
-              full_deadline=$(head -1 "$out/full-a.tsv" | cut -f4)
-              variant_deadline=$(head -1 "$out/variant-a.tsv" | cut -f4)
+              full_deadline=$(cut -f4 "$out/full-a.boundary")
+              variant_deadline=$(cut -f4 "$out/variant-a.boundary")
               test "$full_deadline" -ge 0
               test "$variant_deadline" -ge 0
               test "$variant_deadline" -lt "$full_deadline"
@@ -161,7 +172,7 @@
               semantic_form=stock-rr-kick-virtual-deadline-present-only-in-variant
               full_rr_kick_deadline=$full_deadline
               variant_rr_kick_deadline=$variant_deadline
-              full_run_twice_identical=true
+              full_boundary_run_twice_identical=true
               variant_runs=2
               variant_diverges=false
               runs_to_diverge=0
@@ -397,6 +408,23 @@
         ];
       }
     else null;
+  liveIoProbe =
+    if builtins.elem index [17 19]
+    then
+      import ./_drop-one-live-io.nix {
+        inherit pkgs lib index qemuPackage buildDrv;
+        attrPath = "${attrPath}.liveIo";
+      }
+    else null;
+  ninepSyncKickProbe =
+    if index == 40
+    then
+      import ./_drop-one-9p-sync-kick.nix {
+        inherit pkgs lib qemuPackage buildDrv;
+        attrPath = "${attrPath}.ninepSyncKick";
+      }
+    else null;
+  usesFocusedProbe = builtins.elem index [17 19 37 38 40];
   traceStopAt =
     if index == 3
     then 500000000
@@ -422,11 +450,11 @@
     rrSwitchQuantum = traceQuantum;
   };
   fullTrace =
-    if builtins.elem index [37 38]
+    if usesFocusedProbe
     then null
     else import ./phase0-s11.nix traceArgs;
   variantTrace =
-    if builtins.elem index [37 38]
+    if usesFocusedProbe
     then null
     else
       import ./phase0-s11.nix (traceArgs
@@ -443,11 +471,11 @@ in
     src = null;
     buildDeps = [pkgs.coreutils pkgs.diffutils pkgs.gawk pkgs.jq];
     FULL_TRACE =
-      if builtins.elem index [37 38]
+      if usesFocusedProbe
       then ""
       else "${fullTrace}";
     VARIANT_TRACE =
-      if builtins.elem index [37 38]
+      if usesFocusedProbe
       then ""
       else "${variantTrace}";
     FOCUSED_PROBE =
@@ -455,6 +483,10 @@ in
       then "${rrKickProbe}"
       else if index == 37
       then "${warpFreezeProbe}"
+      else if builtins.elem index [17 19]
+      then "${liveIoProbe}"
+      else if index == 40
+      then "${ninepSyncKickProbe}"
       else "";
     DROP_INDEX = toString index;
     phases = [
