@@ -421,7 +421,10 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &s11,
         "limit(10;\n                  inputs\n                  | select(.kind == \"rr_switch\")",
     );
-    assert_contains(&s11, "and (.retired - $stop_at) <= $quantum");
+    assert_contains(
+        &s11,
+        "and (.observed_icount - $stop_at) <= $quantum",
+    );
     assert_contains(
         &s11,
         "and (.[-1] | ((.kind // \"sample\") == \"sample\" and .final == true))",
