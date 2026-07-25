@@ -1986,13 +1986,12 @@ in rec {
         phase6.basicBlockCoverage
       ];
     };
-    guidanceSignals = redBeforeAdvance {
+    guidanceSignals = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.guidanceSignals";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.guidanceSignals";
-        taskIds = [];
-        openTaskIds = ["T-ADV-17"];
+        taskIds = ["T-ADV-17"];
         gateName = "gate:guidance-signals";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -2007,11 +2006,6 @@ in rec {
         phase6.searchStrategies
         phase6.coverageFeedback
       ];
-      phase = "phase6";
-      reason = "guidance lacks owned rarity/proximity state and integrated deterministic search ordering";
-      taskIds = ["T-ADV-17"];
-      gateName = "gate:guidance-signals";
-      owner = "crucible";
     };
     adaptiveStrategies = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.adaptiveStrategies";

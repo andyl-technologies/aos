@@ -31,19 +31,19 @@
     {
       T-ADV-17 = {
         testFilter = "gate_guidance_signals_are_fixed_point_readers_only";
-        result = "partial_guidance=fixed-point-scaffolding-only";
+        result = "guidance=integrated-fixed-point-coverage+rarity+assertion-proximity";
         docNeedles = [
           {
-            label = "T-ADV-17 remains open";
-            needle = "- [ ] **T-ADV-17**";
+            label = "T-ADV-17 is complete";
+            needle = "- [x] **T-ADV-17**";
           }
           {
-            label = "guidance partial-evidence note";
-            needle = "Partial evidence from `checks.crucible.phase6.guidanceSignals`";
+            label = "guidance completion note";
+            needle = "Completed by `checks.crucible.phase6.guidanceSignals`";
           }
           {
-            label = "guidance owned-rarity-table blocker";
-            needle = "owned, deterministically maintained rarity table";
+            label = "guidance integrated search proof";
+            needle = "`TemporalGraph::search_with_guidance` applies";
           }
         ];
         modelNeedles = [
@@ -67,6 +67,14 @@
             label = "coverage search key";
             needle = "pub fn search_order_key";
           }
+          {
+            label = "guidance search state";
+            needle = "pub struct GuidanceSearchState";
+          }
+          {
+            label = "integrated guidance search";
+            needle = "pub fn search_with_guidance";
+          }
         ];
         libNeedles = [
           {
@@ -82,6 +90,10 @@
           {
             label = "fixed-point assertion";
             needle = "GuidanceScore";
+          }
+          {
+            label = "integrated search test";
+            needle = "gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search";
           }
         ];
       };
