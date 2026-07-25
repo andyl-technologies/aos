@@ -1,12 +1,30 @@
-##! modules/security/verity.nix — dm-verity integrity verification module
+##! modules/security/verity.nix — dm-verity root anchoring
 ##!
-##! Configures dm-verity for transparent block-level integrity verification
-##! of the root filesystem. dm-verity provides tamper-evident protection by
-##! computing a Merkle hash tree over the data device and verifying each
-##! block on read against the hash device.
+##! Anchors the read-only erofs root (carrying the base lib + on-host evaluator
+##! closure) to measured boot via dm-verity. The Merkle root hash of the root
+##! image is produced at build time (lib/build/rootfs.nix `verity = true`), baked
+##! into the UKI `.cmdline` section as `roothash=<hex>` (pkgs/boot/aos-uki.nix),
+##! and thereby measured into PCR 11 and covered by the whole-PE Authenticode
+##! signature. Tampering the root either fails dm-verity at read time (boot fails
+##! closed) or requires a new root hash → a new `.cmdline` → a new PCR 11 the
+##! sealed-/var policy will not bless and the db-signed UKI signature will not
+##! cover.
+##!
+##! This module owns the *eval-side* wiring only (kernel params + initrd module +
+##! root device retarget). The build-side hash-tree, the `root-a-hash` GPT
+##! partition, and the cmdline `roothash=` append are gated on
+##! `aos.security.verity.enable` inside lib/build/rootfs.nix,
+##! modules/image/_builder.nix, and pkgs/boot/aos-uki.nix respectively.
+##!
+##! systemd assembles `/dev/mapper/root` from the union of:
+##!   * the `roothash=<hex>` token on the kernel command line (build-injected),
+##!   * `systemd.verity_root_data=` / `systemd.verity_root_hash=` device hints,
+##! via `systemd-veritysetup-generator` (confirmed present + unstripped in the
+##! initrd: lib/testing/systemd-verity.nix). `root=` then follows the mapper
+##! device through `aos.filesystems.rootDevice`.
 ##!
 ##! Options under aos.security.verity:
-##!   enable, dataDevice, hashDevice, rootHash
+##!   enable, dataDevice, hashDevice
 {
   config,
   pkgs,
@@ -16,76 +34,90 @@
   cfg = config.aos.security.verity;
 in {
   options.aos.security.verity = {
-    ## Enable dm-verity for root filesystem integrity verification.
+    ## Enable dm-verity root anchoring for the immutable erofs root.
+    ##
+    ## Opt-in. When false (the default, and every ext4/VM-test system) this
+    ## module is completely inert: no kernel params, no initrd module, no root
+    ## device change, and the build-side hash tree / partition / cmdline append
+    ## stay gated off. Enable it only on a measured-boot production variant whose
+    ## root filesystem is `erofs` (a writable ext4 root must never be verity-
+    ## protected — it would be mutated and break the root hash).
     ##
     ## # See Also
-    ## - `aos.security.verity.dataDevice`, `aos.security.verity.rootHash`
+    ## - `aos.security.verity.dataDevice`, `aos.security.verity.hashDevice`
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable dm-verity for root filesystem integrity verification. When
-        enabled, the kernel verifies each block read from the data device
-        against a Merkle hash tree stored on the hash device. Any tampering
-        with the root filesystem will be detected and the read will fail.
+        Enable dm-verity root anchoring. When enabled, the build
+        produces a Merkle hash tree over the read-only erofs root, ships it in a
+        dedicated `root-a-hash` GPT partition, and bakes the root hash into the
+        measured UKI `.cmdline`. At boot, systemd-veritysetup-generator assembles
+        `/dev/mapper/root` and the kernel verifies every block on read. Requires
+        an `erofs` root filesystem.
       '';
     };
 
-    ## Block device containing the read-only root filesystem data.
+    ## Block device carrying the read-only root filesystem data (verity lower).
     dataDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/vda2";
+      default = "/dev/disk/by-partlabel/root-a";
       description = ''
-        Block device containing the read-only root filesystem data.
-        This is the device that dm-verity will verify on every read.
+        Block device containing the read-only root filesystem data — the device
+        dm-verity verifies on every read. Discovered by GPT partlabel so it is
+        stable across disk renaming (vda vs. nvme0n1); matches the `root-a`
+        partition the image builder writes.
       '';
     };
 
-    ## Block device containing the dm-verity Merkle hash tree.
+    ## Block device carrying the dm-verity Merkle hash tree.
     hashDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/vda3";
+      default = "/dev/disk/by-partlabel/root-a-hash";
       description = ''
-        Block device containing the dm-verity hash tree (Merkle tree).
-        This device stores the pre-computed hashes used to verify the
-        integrity of the data device. Typically a small dedicated
-        partition.
-      '';
-    };
-
-    ## Root hash of the dm-verity Merkle tree.
-    rootHash = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      description = ''
-        Root hash of the dm-verity Merkle tree. This is the single hash
-        value at the top of the tree that anchors the chain of trust.
-        It must be passed to the kernel at boot time (typically embedded
-        in the kernel command line or UKI). An empty string disables
-        verity hash verification at boot.
+        Block device containing the dm-verity hash tree (Merkle tree). This is
+        the `root-a-hash` partition the image builder places immediately after
+        `root-a`, sized from the build-time `root-verity-size-bytes`.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    # Add dm-verity kernel command line parameters.
-    # The kernel's dm-verity target uses these to set up the verified
-    # root device before mounting the root filesystem.
-    aos.boot.kernelParams =
-      [
-        "verity.data=${cfg.dataDevice}"
-        "verity.hash=${cfg.hashDevice}"
-      ]
-      ++ lib.optional (cfg.rootHash != "") "verity.roothash=${cfg.rootHash}";
+    assertions = [
+      {
+        assertion = config.aos.filesystems.rootFsType == "erofs";
+        message = ''
+          aos.security.verity.enable requires aos.filesystems.rootFsType = "erofs".
 
-    # Include dm-verity kernel module in the initrd so the verified
-    # root device can be assembled before the root filesystem is mounted.
-    aos.boot.initrd.modules = [
-      "virtio_blk"
-      "virtio_pci"
-      "ext4"
-      "overlay"
-      "dm_verity"
+          dm-verity protects an immutable, build-time-hashed root. A writable
+          ext4 root is mutated at runtime (grow-root, journal) and would break
+          the Merkle root hash on the first write.
+        '';
+      }
     ];
+
+    # systemd-veritysetup-generator parameters. The generator unions the
+    # `roothash=<hex>` token (baked into the measured .cmdline at build time by
+    # pkgs/boot/aos-uki.nix) with these device hints to assemble
+    # `/dev/mapper/root`. NOTE: the dracut-style verity.data=/verity.hash=
+    # /verity.roothash= params are wrong for a systemd initrd and are gone.
+    aos.boot.kernelParams = [
+      "systemd.verity=yes"
+      "systemd.verity_root_data=${cfg.dataDevice}"
+      "systemd.verity_root_hash=${cfg.hashDevice}"
+    ];
+
+    # Make root= (modules/base/boot.nix) and the fstab `/` entry
+    # (modules/base/filesystems.nix) follow the verity-assembled mapper device.
+    # Both read aos.filesystems.rootDevice, so this single override retargets
+    # them without mkForce list surgery on kernelParams.
+    aos.filesystems.rootDevice = "/dev/mapper/root";
+
+    # dm_verity must be loadable before the root is assembled. Appended to the
+    # base initrd module manifest (modules/base/boot.nix contributes the base
+    # set with mkBefore so this merges rather than clobbering); since dm_verity
+    # is not a hardware-autoloaded NIC, boot.nix's loadModules default also
+    # force-loads it via /etc/modules-load.d/initrd.conf.
+    aos.boot.initrd.modules = ["dm_verity"];
   };
 }

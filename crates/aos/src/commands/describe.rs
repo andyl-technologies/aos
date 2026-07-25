@@ -6,8 +6,6 @@
 //! values that cannot be determined are reported as `unknown` rather
 //! than failing the command.
 
-use std::process::Command;
-
 use anyhow::Result;
 
 use aos_core::nix::NixRunner;
@@ -21,9 +19,10 @@ use aos_core::output::Printer;
 /// degrade to `unknown` on failure; the `Result` only propagates output
 /// plumbing errors.
 pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
-    let git_commit = git_rev().unwrap_or_else(|| "unknown".to_string());
-    let git_branch = git_branch().unwrap_or_else(|| "unknown".to_string());
-    let git_dirty = git_dirty();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| nix.root().to_path_buf());
+    let (commit, branch, git_dirty) = aos_package::local_git_info(&cwd);
+    let git_commit = commit.unwrap_or_else(|| "unknown".to_string());
+    let git_branch = branch.unwrap_or_else(|| "unknown".to_string());
 
     // Try to count packages by evaluating the package set attribute names.
     let pkg_count = nix
@@ -61,41 +60,4 @@ pub fn run(nix: &NixRunner, printer: &Printer) -> Result<()> {
     printer.kv("Packages", &pkg_count);
 
     Ok(())
-}
-
-/// Short commit hash of `HEAD`, or `None` if git is unavailable.
-fn git_rev() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
-}
-
-/// Current branch name, or `None` if git is unavailable.
-fn git_branch() -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
-}
-
-/// Whether the working tree has uncommitted changes (false on any error).
-fn git_dirty() -> bool {
-    Command::new("git")
-        .args(["diff", "--quiet", "HEAD"])
-        .status()
-        .map(|s| !s.success())
-        .unwrap_or(false)
 }

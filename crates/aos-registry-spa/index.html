@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<!--
+  Trunk source document for the registry web-surface SPA.
+
+  This is NOT the page a registry serves: `apr web generate` emits the
+  content-bearing, no-JS `index.html` (and `browse/<name>.html`) that the
+  SPA progressively enhances. Trunk uses this file only to discover the
+  WASM bin and CSS and to stamp the hash-named asset names. `trunk build
+  --release` produces, under `dist/`:
+
+      app-<hash>.js        wasm-bindgen glue       (immutable)
+      app-<hash>_bg.wasm   the compiled SPA        (immutable)
+      style-<hash>.css     the bundled stylesheet  (immutable)
+
+  Those three files are what `apr web generate` ships under `web/`; the
+  loader <script type="module"> that boots them is injected into the
+  generated `index.html` by webgen (see `aos_package::registry::webgen`).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AOS registry</title>
+    <link data-trunk rel="rust" data-bin="aos-registry-spa" data-type="main" />
+    <link data-trunk rel="css" href="assets/app.css" data-no-minify />
+  </head>
+  <body></body>
+</html>

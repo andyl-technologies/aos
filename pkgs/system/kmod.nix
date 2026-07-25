@@ -18,9 +18,15 @@ in
 
     src = fetchurl {
       urls = [
-        "https://cdn.kernel.org/pub/linux/utils/kernel/kmod/kmod-${version}.tar.xz"
+        # kernel.org retired /pub/linux/utils/kernel/kmod/ (kmod moved
+        # to github.com/kmod-project, which publishes no dist tarball
+        # assets); the whole directory 404s now. The cgit snapshot
+        # service still serves per-tag archives (same source nixpkgs
+        # uses), and kmod >= 33 is meson-native so the git tree builds
+        # like the dist tarball.
+        "https://git.kernel.org/pub/scm/utils/kernel/kmod/kmod.git/snapshot/kmod-${version}.tar.gz"
       ];
-      hash = "sha256-EueIRIQVH71DK2pSAXDqGFwVn0OTx6LCqIarggMTFJo=";
+      hash = "sha256-y0e+STZrWW5FVO7rdZWxKP6yYWGcdnVgPgBLB8XrvVs=";
     };
 
     buildDeps = [

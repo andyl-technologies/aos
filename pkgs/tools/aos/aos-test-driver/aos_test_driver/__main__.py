@@ -11,6 +11,7 @@ named after each machine's ``name`` (e.g. ``vm``, ``controlplane``,
 """
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -36,9 +37,15 @@ NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 def _configure_stdio() -> None:
     """Keep driver/test output visible while Nix is still running the check."""
     for stream in (sys.stdout, sys.stderr):
+        # reconfigure() lives on TextIOWrapper; sys.stdout/stderr are typed
+        # as the broader TextIO, so narrow before calling. The isinstance
+        # check also covers the runtime case where stdio was replaced with
+        # a non-wrapper stream. ValueError guards an already-detached stream.
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
         try:
             stream.reconfigure(line_buffering=True, write_through=True)
-        except (AttributeError, ValueError):
+        except ValueError:
             pass
 
 
@@ -96,24 +103,17 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                     f"machine {name!r}: missing 'metadata' (use null to omit)"
                 )
         else:
-            # Image boot: UEFI firmware is mandatory, and a metadata ISO
-            # is forbidden — its presence would flip platform detection
-            # to PLATFORM_ID=file and ignition would ignore fw_cfg.
+            # Image boot requires UEFI firmware. A metadata ISO is optional
+            # and, when present, drives native initrd provisioning.
             for required in ("firmware_code", "firmware_vars"):
                 if required not in m:
                     raise SystemExit(
                         f"machine {name!r}: image boot requires {required!r}"
                     )
-            if m.get("metadata") is not None:
-                raise SystemExit(
-                    f"machine {name!r}: image boot must not attach a"
-                    " metadata ISO (it forces PLATFORM_ID=file)"
-                )
         if transport == "qemu":
-            if boot == "kernel" and m["metadata"] is None:
-                raise SystemExit(
-                    f"machine {name!r}: qemu kernel boot requires non-null metadata"
-                )
+            # A null metadata ISO is valid when identity is baked into /etc
+            # and no provisioning input is attached. The driver omits the
+            # SCSI CD-ROM when it is None.
             for required in ("mac", "ip"):
                 if required not in m:
                     raise SystemExit(
@@ -131,7 +131,7 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
     transport: str = entry["transport"]
     if transport == "firecracker":
-        return FirecrackerMachine(
+        machine = FirecrackerMachine(
             name=entry["name"],
             kernel=entry["kernel"],
             initrd=entry["initrd"],
@@ -141,25 +141,30 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             vcpu_count=entry["vcpu_count"],
             tmpdir=str(tmpdir),
         )
-    return QemuMachine(
-        name=entry["name"],
-        boot=entry.get("boot", "kernel"),
-        kernel=entry.get("kernel"),
-        initrd=entry.get("initrd"),
-        disk=entry["disk"],
-        metadata=entry.get("metadata"),
-        firmware_code=entry.get("firmware_code"),
-        firmware_vars=entry.get("firmware_vars"),
-        fw_cfg=entry.get("fw_cfg"),
-        disk_size_mib=entry.get("disk_size_mib"),
-        tpm=entry.get("tpm", False),
-        swtpm_bin=entry.get("swtpm_bin"),
-        memory_mib=entry["memory_mib"],
-        vcpu_count=entry["vcpu_count"],
-        mac=entry["mac"],
-        ip=entry["ip"],
-        tmpdir=str(tmpdir),
-    )
+    else:
+        machine = QemuMachine(
+            name=entry["name"],
+            boot=entry.get("boot", "kernel"),
+            kernel=entry.get("kernel"),
+            initrd=entry.get("initrd"),
+            disk=entry["disk"],
+            metadata=entry.get("metadata"),
+            firmware_code=entry.get("firmware_code"),
+            firmware_vars=entry.get("firmware_vars"),
+            fw_cfg=entry.get("fw_cfg"),
+            disk_size_mib=entry.get("disk_size_mib"),
+            var_size_mib=entry.get("var_size_mib"),
+            extra_disks=entry.get("extra_disks", []),
+            tpm=entry.get("tpm", False),
+            swtpm_bin=entry.get("swtpm_bin"),
+            memory_mib=entry["memory_mib"],
+            vcpu_count=entry["vcpu_count"],
+            mac=entry["mac"],
+            ip=entry["ip"],
+            tmpdir=str(tmpdir),
+        )
+    machine.expect_agent = entry.get("expect_agent", True)
+    return machine
 
 
 def _dump_serial_logs(machines: list[Machine]) -> None:
@@ -200,6 +205,9 @@ DEFAULT_SYSTEM_READY_TIMEOUT: float = 60.0
 
 def _wait_agents(machines: list[Machine], deadline: float) -> None:
     for m in machines:
+        if not m.expect_agent:
+            log.info("Skipping agent wait for expected fail-closed machine %s", m.name)
+            continue
         log.info("Waiting for %s agent...", m.name)
         # wait_ready blocks until the agent answers a PING (raising
         # RuntimeError on the deadline). For the qemu transport it also
@@ -230,6 +238,8 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
         "systemctl is-system-running"
     ).format(t=timeout)
     for m in machines:
+        if not m.expect_agent:
+            continue
         log.info("Waiting for %s system to finish booting...", m.name)
         try:
             exit_code, stdout, _ = m.execute(cmd, timeout=timeout + 10)

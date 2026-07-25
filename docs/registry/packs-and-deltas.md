@@ -5,8 +5,8 @@
 > the **full pack** anchored at every `X.Y.0` release, the **guaranteed, walkable
 > thin-delta graph** the producer commits to, **client resolution** (which delta
 > or pack to fetch) and **client retention** (which object trees to keep), the
-> **`git pack-objects` / `index-pack --fix-thin`** mechanics, the
-> **expensive-producer** tuning levers, and the **zstd** compression trick.
+> libgit2 full-pack generation, pure-Rust thin-pack generation, local pack
+> indexing, and **zstd** compression for thin-delta transport.
 >
 > This is the transport that carries the registry's **git objects** (the
 > package-TOML tree) over dumb HTTP. It is **not** the NAR/blob substitution path
@@ -53,7 +53,7 @@ universality:
 |---|---|---|---|
 | **Loose objects** | `/objects/<xx>/<62-hex>` (central root only — every release) | any dumb-HTTP git client | **always complete** — correctness fallback |
 | **Full pack** | `pack-<sha256>.pack` (+ `.idx`) at `X.Y.0` anchors | stock git (listed in `info/packs`) + AOS | self-contained |
-| **Thin delta pack** | `delta-<from-semver>.pack` (`.zst`) | **AOS only** (not listed in `info/packs`) | needs base; cheapest |
+| **Thin delta pack** | `delta-<from-semver>.pack.zst` | **AOS only** (not listed in `info/packs`) | needs base; cheapest |
 
 The design philosophy is **asymmetric cost**: *make publishing as expensive as
 possible so consumption is as cheap as possible*. The producer pays once (large
@@ -63,8 +63,8 @@ benefits with a small, fast fetch. Loose objects guarantee that even a stock
 as pure speed layers on top.
 
 > **No separate ref-bearing transport envelope.** The ref namespace is signed
-> tag objects, so the transport payload is bare `*.pack`/`*.pack.zst` files plus
-> the root loose-object store.
+> tag objects, so the transport payload is bare full-pack `*.pack`/`*.idx` files,
+> thin-delta `*.pack.zst` files, plus the root loose-object store.
 
 ---
 
@@ -82,8 +82,8 @@ Every **major or minor** release — any version whose patch component is `0`
   in that release's `objects/info/packs`**, so a stock dumb-HTTP git client
   discovers and uses it. We use **only** this name — there is no separate
   semantic `full.pack` alias.
-- The `.idx` **is** shipped for full packs (they are self-contained, so the index
-  can be precomputed by the producer).
+- The `.idx` **is** shipped for full packs so stock dumb Git can consume the pack.
+  AOS clients regenerate and verify the index locally when they fetch the pack.
 - A full pack is built **non-thin** — it references no objects outside itself.
 
 Patch releases (`X.Y.Z`, `Z>0`) deliberately ship **no full pack**; a stock
@@ -97,8 +97,8 @@ objects (from the central root `/objects/`, see
 
 The producer **commits to producing exactly** the delta packs below for each
 release class. Because the set is guaranteed, a client can *plan* a fetch knowing
-which deltas will exist. All deltas are **thin** (`delta-<from-semver>.pack`,
-not listed in `info/packs`, completed on the client with `--fix-thin`).
+which deltas will exist. All deltas are **thin** (`delta-<from-semver>.pack.zst`,
+not listed in `info/packs`, decompressed and completed on the client).
 
 | Release class | Full pack? | Delta packs shipped |
 |---|---|---|
@@ -253,9 +253,10 @@ of releases). Object correctness is the root `/objects/` store's job.
 `crates/aos-package/src/registry/pack.rs` implements the core pack primitives:
 
 - release-kind classification and the guaranteed delta-base scheme;
-- full-pack and thin-delta `git pack-objects` wrappers;
-- zstd compression/decompression wrappers;
-- `git index-pack` and `--fix-thin` wrappers.
+- libgit2 full-pack generation plus producer-side `.idx` emission;
+- pure-Rust thin-delta generation for the guaranteed delta graph;
+- zstd compression/decompression wrappers for thin-delta transport;
+- libgit2 pack indexing for full packs and completed thin packs.
 
 `registry::objectstore` implements the complementary static-object layout:
 sha256 object-format checks, release object-dir mapping, root loose-object path
@@ -301,101 +302,68 @@ for local debugging and parameter experiments.
 
 ---
 
-## 8. TARGET: pack generation (producer)
+## 8. CURRENT: pack generation (producer)
 
-All generation is plain `git pack-objects` reading a revision list on stdin; no
-separate transport envelope and no smart-HTTP server.
+Generation is libgit2-native for full packs and Rust-native for thin packs; no
+separate transport envelope and no smart-HTTP server are involved.
 
 **Write layout.** The producer writes **loose objects to the central root
 `/objects/`** (every release's loose objects land there, never under
 `/releases/`). Packs go under each release's pack-only
-`/releases/<M>/<m>/<patch...>/objects/pack/`, which holds `info/packs`,
-`pack/pack-<sha256>.pack(.idx)`, and `pack/delta-<from>.pack` — and **no** loose
-`<xx>/<..>` objects and **no** per-release `info/alternates`.
+`/releases/<M>/<m>/<patch...>/objects/pack/`, which holds
+`pack/pack-<sha256>.pack(.idx)` and `pack/delta-<from>.pack.zst` — and **no**
+loose `<xx>/<..>` objects and **no** per-release `info/alternates`.
 
 ### 8.1 Deltas (thin)
 
-```sh
-# objects in <to> not in <from>; deltas MAY reference <from>'s objects
-printf '%s\n^%s\n' "<to-commit>" "<from-commit>" \
-  | git pack-objects --revs --thin --stdout \
-      --no-reuse-object --no-reuse-delta \
-      --window=350 --depth=50 --threads=0 \
-      > delta-<from-semver>.pack
-```
-
-`--thin` lets the pack delta-encode new objects against objects in `<from>` that
-are **not** included in the pack — making it small, at the cost of being
-incomplete until the client supplies the base. `--revs` with the `^<from>`
-exclusion is what selects “objects in `<to>` not in `<from>`”.
+`registry::thinpack` writes a thin pack equivalent to
+`git pack-objects --thin` over `to ^from`: objects in `<to>` but not `<from>`,
+with deltas allowed to reference base-release objects that are **not** included
+in the pack. It tries whole-object, same-path, and bounded windowed delta-base
+strategies, zstd-probes the candidates, and keeps the smallest transport result.
+The artifact published by `apr release` is `delta-<from-semver>.pack.zst`.
 
 ### 8.2 Full packs (non-thin)
 
-```sh
-# self-contained pack over the release commit's full closure
-echo "<release-commit>" \
-  | git pack-objects --revs --no-reuse-object --no-reuse-delta \
-        --window=350 --depth=50 --threads=0 --compression=0 \
-        pack/pack
-# → pack/pack-<sha256>.pack + pack/pack-<sha256>.idx
-```
-
-A full pack is built **without** `--thin`, so it references nothing outside
-itself. `--compression=0` keeps the pack git-valid while leaving the bytes
-uncompressed so the zstd trick ([§9](#9-target-the-zstd-trick)) can entropy-code
-the whole stream. Emit it directly as `pack-<sha256>.pack` (+ `.idx`) into the
-release's `objects/pack/` and add it to `objects/info/packs`.
+`registry::pack::full_pack` uses libgit2's `PackBuilder` over the release
+commit's reachable object graph, then libgit2's `Indexer` writes
+`pack-<sha256>.pack` plus `pack-<sha256>.idx`. A full pack is non-thin: it
+references nothing outside itself. `apr release` emits it directly into the
+release's `objects/pack/` and adds it to `objects/info/packs`.
 
 ### 8.3 Client completion
 
-Thin deltas ship as `.pack` (or `.pack.zst`) **only** — no `.idx`. The client
-builds the index and stitches in the base while indexing:
+Thin deltas ship as `.pack.zst` **only** — no `.idx`. The client decompresses the
+transport artifact, builds the index, and stitches in the base while indexing:
 
 ```sh
-git index-pack --fix-thin --stdin < delta-<from-semver>.pack
-# (with the <from> base already present locally; --fix-thin appends the
-#  referenced base objects so the resulting pack is self-contained + indexed)
+zstd -d delta-<from-semver>.pack.zst
+# then index the resulting delta-<from-semver>.pack with libgit2's pack writer
+# while the <from> base is already present locally.
 ```
 
 ### 8.4 Expensive-producer tuning
 
-The producer deliberately spends CPU so consumers don't have to:
+The old plan described literal `git pack-objects` tuning flags. In the libgit2
+implementation those flags are no longer the public contract; the contract is the
+artifact shape above plus producer-side effort to keep thin deltas small.
 
-| Flag | Purpose | Note |
-|---|---|---|
-| `--no-reuse-object` | recompress every object from scratch | ignore prior pack encodings |
-| `--no-reuse-delta` | recompute every delta from scratch | find better bases than git's cache |
-| `--window=350` | how many candidate objects to compare for delta bases | **the free lever** — large is fine, producer-side cost only |
-| `--depth=50` | max delta chain length | **moderate / capped** — deep chains cost the **consumer** CPU to reconstruct |
-| `--threads=0` | use all cores | producer-side only |
-
-> **Cap depth, not window.** Window is producer-only effort; depth directly taxes
-> consumer reconstruction. Keep `--window` large and `--depth` moderate. The
-> producer **may also try multiple delta bases** for a release and ship the
-> smallest resulting pack.
+`registry::thinpack` keeps delta chains shallow enough for cheap local
+reconstruction and spends producer CPU comparing candidate encodings. Future
+tuning should adjust those Rust strategies directly instead of documenting
+unimplemented `pack-objects` flags as current behavior.
 
 ---
 
-## 9. TARGET: the zstd trick
+## 9. CURRENT: thin-delta zstd transport
 
-Git's pack format **hard-codes zlib per object**, so naively running `zstd` over a
-normally-compressed (`--compression=9`) pack is near-useless — the bytes are
-already DEFLATEd and won't compress further. The working trick decouples git's
-**delta encoding** from its **entropy coding**:
+Git's pack format **hard-codes zlib per object**, so naively running `zstd` over
+a normally-compressed pack is near-useless. The working trick still applies to
+thin deltas: `registry::thinpack` emits stored zlib entries, equivalent to
+`pack-objects --compression=0`, and `zstd --ultra -22 --long=27` entropy-codes
+the whole delta-encoded stream.
 
-```sh
-# 1) pack with delta encoding but NO entropy coding (level 0 = "stored",
-#    valid zlib framing, but git's delta encoding is STILL applied)
-printf '%s\n^%s\n' "<to>" "<from>" \
-  | git pack-objects --revs --thin --stdout --compression=0 \
-      --no-reuse-object --no-reuse-delta --window=350 --depth=50 --threads=0 \
-      > delta-<from>.pack
-
-# 2) let zstd do the entropy coding over the delta-encoded stream
-zstd --ultra -22 --long=27 delta-<from>.pack -o delta-<from>.pack.zst
-```
-
-- `--compression=0` keeps the pack **git-valid** (proper zlib framing) while
+- Stored zlib entries keep the pack **git-valid** (proper zlib framing) while
   emitting *stored* (uncompressed) object payloads — git's inter-object **delta
   encoding is preserved**.
 - `zstd --ultra -22 --long=27` then entropy-codes the whole delta-encoded `.pack`,
@@ -405,11 +373,13 @@ zstd --ultra -22 --long=27 delta-<from>.pack -o delta-<from>.pack.zst
 **Serve `.pack.zst`. The client reverses it before indexing:**
 
 ```sh
-zstd -d < delta-<from>.pack.zst | git index-pack --fix-thin --stdin
+zstd -d delta-<from>.pack.zst
+# AOS then completes and indexes delta-<from>.pack with libgit2's pack writer.
 ```
 
-The intermediate `.pack` is always valid git, so a client that can't or won't
-handle `.zst` can fetch the plain `.pack` (or fall back to loose objects).
+The intermediate `.pack` is always valid git. The static origin currently serves
+the compressed thin-delta transport form; clients that cannot handle it fall back
+to a full pack or the loose-object floor.
 
 > **Optional: trained dictionary.** A zstd **trained dictionary** across a release
 > line's many small delta packs is a further win (the small packs share a lot of
@@ -418,16 +388,16 @@ handle `.zst` can fetch the plain `.pack` (or fall back to loose objects).
 
 ### 9.1 What ships per release
 
-| Release class | `pack-<sha>.pack` + `.idx` | `delta-<base>.pack[.zst]` (no `.idx`) | In `info/packs`? |
+| Release class | `pack-<sha>.pack` + `.idx` | `delta-<base>.pack.zst` (no `.idx`) | In `info/packs`? |
 |---|---|---|---|
 | `X.0.0` major | yes | `delta-<(X-1).0.0>` | full pack only |
 | `X.Y.0` minor | yes | `delta-<X.(Y-1).0>`, `delta-<X.0.0>` | full pack only |
 | `X.Y.Z` patch | **no** | `delta-<X.Y.(Z-1..3)>`, `delta-<X.Y.0>` | none (deltas never listed) |
 
-The `.idx` is shipped **only** for self-contained full packs. Thin delta packs
-are `.pack[.zst]` only; the client's `--fix-thin` builds their index. Both full
-packs and thin deltas are produced with `--compression=0` so the
-[zstd trick](#9-target-the-zstd-trick) can entropy-code the delta-encoded stream.
+The `.idx` is shipped **only** for self-contained full packs, primarily for
+stock dumb Git. Thin delta packs are `.pack.zst` only; the client's local pack
+indexing builds their index. The `--compression=0`/zstd trick is current for thin
+deltas; full packs are libgit2-generated plain `.pack` files.
 
 ---
 
@@ -438,10 +408,10 @@ PRODUCER (pays once, expensively)              CONSUMER (cheap, every host)
 ┌──────────────────────────────────┐          ┌────────────────────────────────────┐
 │ commit metadata tree             │          │ resolve C → T (§4)                  │
 │ tag + sign release (semver)      │          │  prefer retained-base delta         │
-│ pack-objects:                    │   HTTP   │  else walk back / full pack         │
-│  full   (--revs, non-thin)       │  ──────▶ │  else loose from root /objects/     │
-│  deltas (--revs --thin,          │   .pack  │ fetch .pack.zst                     │
-│          --compression=0)        │   .zst   │  zstd -d | index-pack --fix-thin    │
+│ libgit2 full pack + .idx         │   HTTP   │  else walk back / full pack         │
+│ thinpack delta + zstd            │  ──────▶ │  else loose from root /objects/     │
+│                                  │   .pack  │ fetch .pack.zst                     │
+│                                  │   .zst   │  zstd -d | local pack indexing      │
 │ zstd --ultra -22 the .pack       │          │ retain X.0.0 / X.Y.0 / X.Y.Z (§5)   │
 │ write info/packs + info/alternates│          │ verify signed tag chain (separate)  │
 └──────────────────────────────────┘          └────────────────────────────────────┘

@@ -178,6 +178,48 @@ in {
     '';
   };
 
+  # Pure render/assemble split: the unit-body data that the
+  # `systemdSystemUnits` derivation is the imperative materialization of.
+  # `generateUnits` is intentionally left untouched (so the built unit
+  # directory stays byte-for-byte identical except the documented F2-A
+  # job-script ExecStart change); this value surfaces the same rendered
+  # bodies as host-portable data for `system.build.configManifest`. The
+  # `text` here is the *manifest* form: job-script store paths are replaced
+  # by `#aos-jobscript:<key>#` placeholders. (replaceStrings does not strip
+  # string-context, so the value still carries the job-script drvs in context;
+  # toJSON drops context and nothing forces this, so the manifest serializes
+  # with no derivation — the placeholder swap is for the host-portable text,
+  # not a context guarantee.)
+  options.system.build.systemdUnitBodies = lib.mkOption {
+    # Free-form `attrs` values (not a submodule) so the rendered data stays
+    # plain JSON with no injected `_module` key. Each value is
+    # `{ text; enable; aliases; wantedBy; requiredBy; upheldBy; }` where
+    # `text` is the manifest-form unit body (or null when masked).
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    default = {};
+    description = ''
+      Pure render of every systemd unit body keyed by full unit name, the
+      data contract behind `system.build.systemdSystemUnits`.
+    '';
+  };
+
+  # Every job script's text, keyed `"<unit>:<slot>.<index>"`,
+  # folded across all services. Consumed by `system.build.configManifest`
+  # (`manifest.jobScripts`); the materializer writes each `text` to a
+  # generation-local `aos-job-scripts/<key>` path and rewrites the matching
+  # `#aos-jobscript:<key>#` placeholder in the unit body to point there.
+  options.system.build.systemdJobScripts = lib.mkOption {
+    # Free-form `attrs` values (not a submodule) to avoid an injected
+    # `_module` key in the manifest JSON. Each value is
+    # `{ text; mode; name; }` (verbatim body incl. shebang, octal mode,
+    # sanitized short name for logs).
+    type = lib.types.attrsOf lib.types.attrs;
+    internal = true;
+    default = {};
+    description = "Job-script texts keyed by `<unit>:<slot>.<index>`.";
+  };
+
   config = let
     # --- X-* contract eval-time guards (spec §7.3) ---------------------
     #
@@ -287,7 +329,7 @@ in {
     # below; the composefs dump script (spec v12 §5.2) recurses into
     # the directory so it lands as a real directory of symlinks
     # rather than a single symlink (which would be shadowed by the
-    # ignition role lower at runtime).
+    # per-generation config lower at runtime).
     system.build.systemdSystemUnits = systemdLib.generateUnits {
       type = "system";
       units = config.systemd.units;
@@ -301,11 +343,50 @@ in {
       package = config.systemd.package;
     };
 
+    # --- Pure render values ---------------------------------------------
+    #
+    # Fold every service's F2-A job-script records into the flat
+    # `systemdJobScripts` map, and build the manifest-form unit bodies by
+    # rewriting each build-side job-script store path to its placeholder.
+    # The build-side `generateUnits` derivation is untouched, so this is
+    # purely additive data — it does not affect `systemdSystemUnits`.
+    system.build.systemdJobScripts = let
+      allJobScripts =
+        lib.concatLists (lib.mapAttrsToList (_: svc: svc.jobScripts) config.systemd.services);
+    in
+      lib.listToAttrs (builtins.map (j:
+        lib.nameValuePair j.key {
+          text = j.body;
+          inherit (j) mode;
+          name = j.scriptName;
+        })
+      allJobScripts);
+
+    # `config.systemd.units.<u>.text` carries the
+    # `#aos-jobscript:<key>#` placeholders natively (the `Exec*=` directives
+    # embed the placeholder, not the build-side store path — see
+    # `lib/modules/systemd/unit-options.nix`). So the manifest body is just
+    # `u.text` verbatim: no `replaceStrings` over job-script paths, and crucially
+    # nothing here forces a job-script derivation. That is what lets the on-host
+    # eval-only evaluator compute these bodies under a `pkgs` with no builder
+    # functions during on-host evaluation. The build-side `systemdSystemUnits`
+    # derivation restores the real paths in `makeUnit`, so it stays
+    # byte-for-byte identical.
+    system.build.systemdUnitBodies =
+      lib.mapAttrs (_unitName: u: {
+        inherit (u) text enable;
+        aliases = u.aliases or [];
+        wantedBy = u.wantedBy or [];
+        requiredBy = u.requiredBy or [];
+        upheldBy = u.upheldBy or [];
+      })
+      config.systemd.units;
+
     # Route the rendered unit directory through environment.etc so
     # the EROFS image carries it as a real directory of symlinks (the
     # composefs dump script's `mode == "symlink"` + `os.path.isdir(source)`
     # branch recurses — spec v12 §5.2). At runtime, this directory
-    # merges with the ignition role lower's `/etc/systemd/system/`
+    # merges with the per-generation config lower's `/etc/systemd/system/`
     # without one side shadowing the other.
     environment.etc."systemd/system" = {
       source = config.system.build.systemdSystemUnits;

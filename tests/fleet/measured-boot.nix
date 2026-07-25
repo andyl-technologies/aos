@@ -17,69 +17,12 @@
 #      policy still unseals, and PCR 7 is unchanged.
 #
 # Single image-boot machine with a vTPM (server-measured-boot: server +
-# SB-signed + PCR-policy-signed image + the bundled aos-test-agent role).
+# SB-signed + PCR-policy-signed image + the bundled aos-test-agent package).
 {
   lib,
   pkgs,
   systems,
-}: let
-  # Same A/B + swap layout as the other image-boot tests, except /var is
-  # NOT formatted by ignition: aos-var-crypt owns it (plain on the Setup
-  # boot, then LUKS2 once enforcing).
-  rootSizeMiB = 6144;
-  swapSizeMiB = 1024;
-  diskProvision = {
-    storage = {
-      disks = [
-        {
-          device = "/dev/vda";
-          wipeTable = false;
-          partitions = [
-            {
-              number = 2;
-              label = "root-a";
-              sizeMiB = rootSizeMiB;
-              resize = true;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 3;
-              label = "root-b";
-              sizeMiB = rootSizeMiB;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 4;
-              label = "swap";
-              sizeMiB = swapSizeMiB;
-              typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-            }
-            {
-              number = 5;
-              label = "var";
-              sizeMiB = 0; # rest of the disk
-            }
-          ];
-        }
-      ];
-      filesystems = [
-        {
-          device = "/dev/disk/by-partlabel/root-b";
-          format = "ext4";
-          label = "aos-root-b";
-          wipeFilesystem = false;
-        }
-        # /var is deliberately NOT formatted by ignition. aos-var-crypt
-        # owns its filesystem: plain ext4 on the Setup boot, LUKS2 once
-        # enforcing. If ignition managed /var (format=ext4,
-        # wipeFilesystem=false), it would FAIL on the unlock reboot — the
-        # partition is then crypto_LUKS, not the ext4 it expects — and that
-        # failure cascades (aos-var-crypt/mount-var require ignition-disks)
-        # into a stuck initrd.
-      ];
-    };
-  };
-in {
+}: {
   name = "measured-boot";
   # Image boot + enroll + three reboots (enforcing seal, then unattended
   # unlock). Budget like secure-boot plus an extra reboot.
@@ -91,16 +34,15 @@ in {
   bootTimeout = 600;
 
   machines = {
+    # systemd-repart carves swap and var. /var is left raw (repart
+    # omits Format= under measured boot) — aos-var-crypt owns its filesystem:
+    # plain ext4 on the Setup boot, LUKS2 once enforcing.
     target = {
       system = systems.server-measured-boot;
       bootMode = "image";
       imageDiskMiB = 16384;
       tpm = true;
-      roles = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = diskProvision;
-      };
+      packages = ["aos-test-agent"];
     };
   };
 
@@ -142,6 +84,17 @@ in {
               )
           except Exception:
               print(f"=== {label}: multi-user.target stalled — diagnostics ===")
+              failed = target.succeed("systemctl --failed --no-legend 2>&1 || true").strip()
+              if failed:
+                  print("--- failed units ---")
+                  print(failed)
+                  for line in failed.splitlines():
+                      fields = line.split()
+                      unit = fields[1] if fields and fields[0] == "*" else fields[0]
+                      print(f"--- journalctl -u {unit} -b ---")
+                      print(target.succeed(
+                          f"journalctl -u {unit} -b --no-pager -n 120 2>&1 || true"
+                      ))
               for cmd in (
                   "systemctl list-jobs --no-pager",
                   "systemctl --failed --no-pager",
@@ -160,6 +113,14 @@ in {
       target.succeed("test -e /sys/class/tpm/tpm0")
       # /var is up (plain) so the system is healthy pre-enrollment.
       assert var_source() != "", "/var not mounted on first boot"
+      target.succeed(
+          "test -e /dev/disk/by-partlabel/aos-provenance-fallback-v1"
+      )
+      target.succeed("test -s /var/lib/aos-provisioning/audit.json")
+      target.succeed(
+          "! grep -q '^Format=' "
+          "/var/lib/aos-provisioning/desired/repart.d/*/*-var.conf"
+      )
 
       # ════ 2. Enroll db → KEK → PK, reboot into enforcing SB ═══════════
       eu = "PATH=${pkgs.util-linux}/bin:$PATH ${pkgs.efitools}/bin/efi-updatevar"
@@ -172,6 +133,9 @@ in {
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
       wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
+      target.succeed(
+          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
+      )
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
       # confirms it was sealed to the TPM. (luksDump prints "Version: 2",

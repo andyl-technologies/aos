@@ -54,7 +54,7 @@ const SHARE_SKIP_SUBDIRS: &[&str] = &["man"];
 
 /// Directories in the generation root that belong to the profile bookkeeping
 /// rather than the FHS merge tree.  `clear_fhs_tree` preserves these.
-const PRESERVED_DIRS: &[&str] = &["usr", "src", "meta"];
+const PRESERVED_DIRS: &[&str] = &["usr", "src", "expose", "expose-images", "meta"];
 
 /// Result of building the FHS merge tree.
 pub struct MergeResult {
@@ -190,8 +190,9 @@ fn ordered_generation_roots(generation: &Generation) -> Result<Vec<(String, Path
 
 /// Remove the FHS tree (all merged symlink directories) from a generation.
 ///
-/// Preserves `usr/`, `src/`, and `meta/` directories (GC roots, source roots,
-/// and per-generation package metadata).
+/// Preserves `usr/`, `src/`, `expose/`, `expose-images/`, and `meta/`
+/// directories (GC roots, source roots, rendered expose-artifact roots,
+/// exposed image roots, and per-generation package metadata).
 ///
 /// # Errors
 ///
@@ -363,6 +364,12 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
         fs::write(

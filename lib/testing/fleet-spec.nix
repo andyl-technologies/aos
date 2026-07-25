@@ -3,37 +3,21 @@
 # Each spec file under `tests/fleet/` is a function of `{ lib, pkgs,
 # systems }` returning one attrset; the discoverer in `default.nix`
 # evaluates the attrset against `fleetSpecType` here so eval-time
-# mistakes (typos in field names, malformed ignition, role-name typos)
+# mistakes (typos in field names and package names)
 # surface as `evalModules` errors rather than runtime failures inside
 # the harness.
 #
-# `fleetMachineType.options.roles`'s `enum` is derived from this
-# machine's chosen `system.config.aos.roles`, filtered to roles where
-# `bundle = true` on that system — only bundled roles are listable,
-# since a role not bundled on the host has no ignition fragment at
-# `/etc/aos/ignition-roles/<name>` for the synthesised merge entry to
-# point at. The type is forced lazily — only when a `roles` value is
-# type-checked, by which time `config.system` has been merged from the
-# user's definition.
+# `fleetMachineType.options.packages` derives its enum from this machine's
+# chosen system config, filtered to entries where `bundle = true` on that
+# system. Only bundled packages are listable: the payload and rendered expose
+# artifact must already be baked into the machine image. The type is forced
+# lazily — only when a value is type-checked, by which time `config.system` has
+# been merged from the user's definition.
 {
   lib,
   pkgs,
 }: let
   inherit (lib) types mkOption;
-
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-
-  # Image-boot machines run ignition's disks stage for real — their
-  # instanceMetadata legitimately carries storage.disks /
-  # storage.filesystems (that's the install). Kernel-boot machines keep
-  # the restrictive profile.
-  ignitionFullFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = true;
-  };
 
   # `types.unspecified` (nixpkgs name): a no-op type that accepts any
   # value with `lastValue` merge. AOS's lib doesn't ship one, so we
@@ -48,6 +32,18 @@
   };
 
   positiveInt = types.addCheck types.int (v: v > 0);
+  extraDiskType = types.submodule {
+    options = {
+      serial = mkOption {
+        type = types.str;
+        description = "Stable virtio serial exposed below /dev/disk/by-id.";
+      };
+      sizeMiB = mkOption {
+        type = positiveInt;
+        description = "Capacity of the empty additional disk in MiB.";
+      };
+    };
+  };
 
   fleetMachineType = types.submodule ({config, ...}: {
     options = {
@@ -56,38 +52,52 @@
         description = ''
           The evaluated system attrset (e.g. `systems.server` in the
           discovered top-level `systems` attrset). The harness reads
-          `.config.system.build.{kernel,initrd}` and `.config.aos.roles`
+          `.config.system.build.{kernel,initrd}` and `.config.aos.packages`
           off this value; passing anything else fails fast with a clear
           message at the use site.
         '';
       };
 
-      roles = mkOption {
-        # Type-level enum derived from this machine's chosen system,
-        # restricted to roles where `bundle = true` — only bundled
-        # roles have a fragment at `/etc/aos/ignition-roles/<name>` on
-        # the running host for the synthesised
-        # `ignition.config.merge` entry to resolve. `availableRoles`
-        # is forced lazily — only when a `roles` value is type-checked,
-        # by which time `config.system` has been merged from the
-        # user's definition.
+      packages = mkOption {
         type = let
-          availableRoles = builtins.attrNames (
+          availablePackages = builtins.attrNames (
             lib.filterAttrs
-            (_: role: role.bundle)
-            (config.system.config.aos.roles or {})
+            (_: package: package.bundle)
+            (config.system.config.aos.packages or {})
           );
         in
-          types.listOf (types.enum availableRoles);
+          types.listOf (types.enum availablePackages);
         default = [];
         description = ''
-          Names of `aos.roles.<name>` to activate at runtime on this
-          machine. Each name is converted into a
-          `{ source = "file:///etc/aos/ignition-roles/<name>"; }`
-          entry on the machine's `ignition.config.merge` list. The
-          listed roles must have `bundle = true` on the chosen system
-          — otherwise the fragment is not on disk and the merge would
-          fail at first boot.
+          Names of `aos.packages.<name>` to activate at runtime on this
+          machine. Each package must have `bundle = true` on the chosen
+          system so the package payload and rendered expose artifact are
+          already present in the image. The fleet harness seeds the
+          per-machine system package profile before stage 2, and APM
+          reconciliation attaches and presets the selected package target.
+        '';
+      };
+
+      extraModules = mkOption {
+        type = types.listOf unspecifiedType;
+        default = [];
+        description = ''
+          Extra NixOS-style module fragments overlaid onto this machine's
+          system via `extendModules`. The mechanism the fleet
+          harness uses to bake per-VM configuration into the image `/etc` in
+          place of runtime file injection — e.g. a k3s node's
+          `/etc/rancher/k3s/config.yaml` and token env.
+        '';
+      };
+
+      metadata = mkOption {
+        type = types.attrsOf types.str;
+        default = {};
+        description = ''
+          Files exposed to the initrd on a read-only ISO labelled
+          `aos-metadata`. Attribute names are plain file names such as
+          `host.nix` and values are their exact contents. Use this
+          to exercise the production cloud-metadata provisioning path.
         '';
       };
 
@@ -95,17 +105,13 @@
         type = types.enum ["kernel" "image"];
         default = "kernel";
         description = ''
-          How this machine boots. `kernel` (default) is the original
-          fleet path: direct kernel boot (`-kernel`/`-initrd`) with the
-          ignition config on a metadata ISO. `image` boots the
-          machine's `system.build.image.raw` under OVMF — UEFI →
-          sd-boot → UKI → ignition — with the ignition config delivered
-          over `-fw_cfg name=opt/com.coreos/config` (no metadata ISO; the
-          ISO would force PLATFORM_ID=file). Image machines accept the
-          FULL ignition profile in `instanceMetadata.config`, including
-          `storage.disks`/`storage.filesystems` — exercising the
-          first-boot install path is the point
-          (tests/fleet/install-from-image.nix, RFC-0003).
+          How this machine boots. `kernel` (default) is direct kernel boot
+          (`-kernel`/`-initrd`); /var is a baked test disk, so no on-boot
+          disk carving is needed. `image` boots the machine's
+          `system.build.image.raw` under OVMF — UEFI → sd-boot → UKI →
+          systemd initrd — where systemd-repart carves swap/var from the
+          trailing free space on first boot (tests/fleet/install-from-image.nix,
+          image installation tests).
         '';
       };
 
@@ -115,10 +121,31 @@
         description = ''
           Image-boot machines only: size in MiB the per-run copy of the
           raw image is grown to before boot (sparse truncate +
-          `sgdisk -e` backup-header relocation). Must be large enough
-          for the partitions the machine's ignition `storage.disks`
-          config declares; the docs' A/B layout (16 GiB root-a/root-b +
-          4 GiB swap + var) needs the default 40 GiB.
+          `sgdisk -e` backup-header relocation). Must be large enough for
+          the partitions systemd-repart carves in the trailing free space
+          (swap + var); the default 40 GiB has ample headroom.
+        '';
+      };
+
+      extraDisks = mkOption {
+        type = types.listOf extraDiskType;
+        default = [];
+        description = ''
+          Empty virtio block devices attached in addition to the root disk.
+          Their serials appear as /dev/disk/by-id/virtio-<serial>, allowing
+          multi-device provisioning tests to use the production stable-path
+          contract.
+        '';
+      };
+
+      expectAgent = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether the harness waits for the guest agent during initial boot.
+          Set false only for a negative boot test that intentionally fails
+          closed before switch-root; its test body must assert the serial
+          diagnostic and on-disk outcome directly.
         '';
       };
 
@@ -146,6 +173,22 @@
         '';
       };
 
+      memoryMiB = mkOption {
+        type = positiveInt;
+        default = 2048;
+        description = ''
+          RAM in MiB handed to this machine's QEMU (`-m`). The default
+          fits a full systemd boot plus the role under test; the
+          gzip-compressed initrd unpacks into a tmpfs that is freed at
+          switch-root, so peak boot footprint stays well under it. Raise
+          it only for machines that run a memory-hungry workload in the
+          guest (e.g. a k3s control plane). Lower it for lean single-role
+          machines where host RAM is the constraint and many VMs run at
+          once. Both the sandboxed driver and the interactive launcher
+          honor this value.
+        '';
+      };
+
       varSizeMiB = mkOption {
         type = positiveInt;
         default = 256;
@@ -154,39 +197,27 @@
           per-test state; raise it for machines that stage large payloads
           under /var, e.g. a registry peer generating a static binary
           cache of a full system closure (tests/fleet/
-          apm-registry-upgrade.nix).
+          apm-registry-upgrade.nix). With `varProvisioning = "baked"`
+          (the default) this sizes the partition baked into the disk image;
+          with `varProvisioning = "repart"` it is the size the driver grows
+          the per-run disk by, into which systemd-repart carves /var at first
+          boot.
         '';
       };
 
-      instanceMetadata = mkOption {
-        type = types.nullOr (types.submodule {
-          options = {
-            format = mkOption {
-              type = types.enum ["ignition"];
-              default = "ignition";
-            };
-            config = mkOption {
-              # Image-boot machines opt into the full profile (storage
-              # hardware allowed); evaluated lazily, by which time
-              # `config.bootMode` has merged.
-              type =
-                (
-                  if config.bootMode == "image"
-                  then ignitionFullFormat
-                  else ignitionFormat
-                )
-                .type;
-              default = {};
-            };
-          };
-        });
-        default = null;
+      varProvisioning = mkOption {
+        type = types.enum ["baked" "repart"];
+        default = "baked";
         description = ''
-          Raw ignition config delivered to this machine via the
-          `aos-metadata` ISO. If both `roles` and
-          `instanceMetadata.config.ignition.config.merge` are populated,
-          the harness prepends role merge entries to the
-          test-supplied merge list.
+          How this machine's /var comes to exist (kernel-boot machines
+          only). `baked` (default) ships /var as a pre-formatted, seeded
+          partition inside the disk image. `repart` ships no /var partition:
+          the driver grows the per-run copy by `varSizeMiB`, and
+          systemd-repart carves /var (and swap) in the trailing free space at
+          first boot. With no baked /var seed the guest agent arrives via a
+          baked `systemd.services.aos-test-agent` unit — the harness adds that
+          package automatically (lib/testing/fleet.nix), so tests need not
+          list it.
         '';
       };
     };

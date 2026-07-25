@@ -31,7 +31,9 @@
 
   machines = {
     # Python global `vm`.
-    vm = {system = systems.server;};
+    vm = {
+      system = systems.server;
+    };
   };
 
   testScript =

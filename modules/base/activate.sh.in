@@ -25,7 +25,7 @@ export PATH=
 # the exit code and the cleanup action. $STAGE is reassigned as the
 # script advances; only these constants are readonly.
 declare -r STAGE_PREFLIGHT=preflight  # arg + env checks, before any mount
-declare -r STAGE_PREPARE=prepare      # render the new gen's ignition lower
+declare -r STAGE_PREPARE=prepare      # render the new gen's config lower
 declare -r STAGE_COMPOSE=compose      # build the candidate /etc overlay
 declare -r STAGE_PRESWAP=preswap      # stop old units + write reconcile plan
 declare -r STAGE_SWAP=swap            # mount-move-beneath + lazy-umount of /etc
@@ -57,12 +57,17 @@ STAGE="$STAGE_PREFLIGHT"
 cleanup_partial_gen() {
   # Best-effort teardown of a half-built generation. All guarded with
   # `|| true` + `:-` so the trap never fails inside itself.
+  #
+  # The upper (/run/etc/upper-${N}/dir) is deliberately NOT removed. Uppers
+  # are now persistent per-generation (see the compose stage), so when this
+  # activation is a rollback INTO an existing gen N, wiping upper-N here would
+  # destroy the runtime /etc writes preserved from N's earlier life this boot.
+  # A leftover fresh-empty upper from a never-completed new gen is harmless;
+  # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
-  @util-linux@/bin/umount --lazy "${upper_root:-/nonexistent}"   2>/dev/null || true
   @coreutils@/bin/rm -rf "/run/etc/system-${N:-_}" \
-                         "/run/etc/ignition-${N:-_}" \
-                         "/run/etc/upper-${N:-_}" 2>/dev/null || true
+                         "/run/etc/config-${N:-_}" 2>/dev/null || true
 }
 
 on_err() {
@@ -100,25 +105,16 @@ N=$1
 new_top=$(@coreutils@/bin/readlink /var/lib/profiles/system/gen-${N}/toplevel)
 
 sys=/run/etc/system-${N}
-ign=/run/etc/ignition-${N}
+ign=/run/etc/config-${N}
 # Declared in preflight (not Phase B-pre) so cleanup_partial_gen can
 # reference it if Phase A fails before the tmpfs is mounted.
 upper_root=/run/etc/upper-${N}
 
-# Source platform env. Required vars: PLATFORM_ID, optionally
-# IGNITION_CONFIG_FILE (the `platform=file` provider needs this).
+# Determine the config backend for this generation's per-host /etc.
 #
-# /run/ignition/platform.env is written at first boot by
-# aos-platform-detect (pkgs/boot/aos-platform-detect.nix) into the
-# initrd's /run, which systemd-initrd moves to stage-2's /run across
-# switch_root, so it persists for the whole boot. A live upgrade runs in
-# that same boot, so the file is present. Fail loudly if it isn't,
-# rather than running ignition with an empty PLATFORM_ID.
-if [ ! -r /run/ignition/platform.env ]; then
-  echo "activate: /run/ignition/platform.env missing; cannot determine platform" >&2
-  exit "$EX_PREFLIGHT"
-fi
-. /run/ignition/platform.env
+# Per-host /etc comes from the on-host configuration manifest
+# (/run/aos/manifest.json), applied by `apm __materialize` below. When the
+# manifest is absent the generation's /etc is exactly the baked image /etc.
 
 @coreutils@/bin/mkdir -p /run/apm
 @coreutils@/bin/chmod 0700 /run/apm
@@ -128,21 +124,35 @@ if ! @util-linux@/bin/flock -n "$LOCK_FD"; then
   exit "$EX_PREFLIGHT"
 fi
 
+# Warn if the currently-live generation has runtime /etc writes in its
+# overlay upper that aren't backed by the /var/etc allowlist. Per-gen
+# uppers persist for the life of the boot, so these writes stay with the
+# current generation (and are restored if it is re-activated this boot) but
+# do NOT follow the switch into gen $N. A dirty upper usually means some
+# process wrote under /etc outside the persistence allowlist; the durable
+# fix is to add the path to /var/etc (storage.links), not to lean on the
+# ephemeral upper. Detection uses bash globbing (nullglob+dotglob) so it
+# needs no external tool; any immediate child of dir/ — file, subdir, or
+# overlay whiteout — counts as dirty.
+cur_upper=$(@coreutils@/bin/readlink -f /run/etc/upper 2>/dev/null || true)
+if [ -n "$cur_upper" ] && [ -d "$cur_upper/dir" ]; then
+  shopt -s nullglob dotglob
+  cur_writes=("$cur_upper"/dir/*)
+  shopt -u nullglob dotglob
+  if [ "${#cur_writes[@]}" -gt 0 ]; then
+    echo "activate: WARNING: the live generation's /etc overlay upper" >&2
+    echo "activate:   ($cur_upper/dir) holds ${#cur_writes[@]} runtime write(s)" >&2
+    echo "activate:   not captured in /var/etc. They stay with that generation" >&2
+    echo "activate:   (restored if you switch back to it this boot) but do NOT" >&2
+    echo "activate:   carry into gen $N. Persist anything that must survive via" >&2
+    echo "activate:   the /var/etc allowlist (storage.links)." >&2
+  fi
+fi
+
 # --- prepare ---
 # From here a failure maps to activate exit 1 (EX_PREPARE): the ERR trap
 # tears down the partial generation and the previous gen stays live.
 STAGE="$STAGE_PREPARE"
-
-# Belt-and-suspenders: re-mount the userdata ISO if it's gone. (The
-# systemd auto-cleanup of /run mounts is bounded by the lifetime of the
-# mounting unit; if the metadata mount was reaped, restore it here so
-# ignition's file provider can read /run/aos-metadata/config.json.)
-if [ "$PLATFORM_ID" = "file" ] && \
-   ! @util-linux@/bin/mountpoint -q /run/aos-metadata; then
-  @coreutils@/bin/mkdir -p /run/aos-metadata
-  @util-linux@/bin/mount -t iso9660 -o ro,nodev,nosuid \
-    /dev/disk/by-label/aos-metadata /run/aos-metadata
-fi
 
 @coreutils@/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
 @util-linux@/bin/mount --bind \
@@ -150,66 +160,19 @@ fi
 @util-linux@/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
-# Re-run ignition's fetch + files stages with the new gen's role bundle
-# visible at the canonical /etc/aos/ignition-roles path.
+# Render this generation's per-host /etc writes into the candidate lower
+# ($ign/etc).
 #
-# WHY unshare --mount + mount --make-rprivate /:
-#   The role merge entries in the instance metadata are fixed URLs of
-#   the form `file:///etc/aos/ignition-roles/<role>`. Ignition resolves
-#   them against that literal path. But on the live system
-#   /etc/aos/ignition-roles currently points at the OLD gen's bundle
-#   (it's an environment.etc entry → the live /etc overlay). We need
-#   ignition to read the NEW gen's bundle without disturbing the live
-#   system's view of that path — other processes, and the rest of this
-#   very script, must keep seeing the real live /etc.
-#
-#   `unshare --mount` gives the ignition child its own mount namespace:
-#   the bind-mount of $new_top/ignition-roles over
-#   /etc/aos/ignition-roles is visible ONLY to that child, and vanishes
-#   when it exits. The live mount table is untouched.
-#
-#   `mount --make-rprivate /` severs mount-event propagation across the
-#   namespace boundary in BOTH directions. systemd marks `/` as
-#   MS_SHARED by default, so without this a mount or (worse) an unmount
-#   inside the child could propagate back to the host and either briefly
-#   repoint or tear down the live binding. util-linux `unshare --mount`
-#   already defaults to --propagation=private (equivalent to rprivate);
-#   the explicit call is belt-and-suspenders in case that default ever
-#   changes.
-#
-# A fresh --config-cache avoids colliding with /run/ignition.json
-# written by the first-boot fetch.
-#
-# IGNITION_CONFIG_FILE is forwarded explicitly: for `platform=file` it
-# carries /run/aos-metadata/config.json (see
-# pkgs/boot/aos-platform-detect.nix), and ignition's file provider reads
-# it from the environment. `env` uses an absolute path so it doesn't
-# rely on the inherited PATH (which we cleared).
-@coreutils@/bin/env -i \
-    new_top="$new_top" \
-    ign="$ign" \
-    N="$N" \
-    PLATFORM_ID="$PLATFORM_ID" \
-    IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-    MOUNT="@util-linux@/bin/mount" \
-    IGNITION="@ignition@/bin/ignition" \
-    PATH="@coreutils@/bin" \
-  @util-linux@/bin/unshare --mount \
-  @bash@/bin/bash -eu <<'EOF'
-  "$MOUNT" --make-rprivate /
-  "$MOUNT" --bind --read-only \
-    "$new_top/ignition-roles" \
-    /etc/aos/ignition-roles
-
-  "$IGNITION" --root="$ign" \
-              --config-cache="/run/aos-ignition-$N.json" \
-              --platform="$PLATFORM_ID" --stage=fetch \
-              --log-to-stdout
-  "$IGNITION" --root="$ign" \
-              --config-cache="/run/aos-ignition-$N.json" \
-              --platform="$PLATFORM_ID" --stage=files \
-              --log-to-stdout
-EOF
+# When a converged configuration manifest exists, apply it with
+# `apm __materialize`, which writes the manifest's text/symlink /etc entries
+# and job scripts into $ign/etc and rewrites unit-body job-script
+# placeholders. When the manifest is absent, $ign/etc stays empty and the
+# generation's /etc is exactly the baked image /etc.
+if [ -f /run/aos/manifest.json ]; then
+  @apm@/bin/apm __materialize \
+    --manifest /run/aos/manifest.json \
+    --etc-root "$ign/etc"
+fi
 
 # --- compose ---
 # From here a failure maps to activate exit 2 (EX_COMPOSE: the candidate
@@ -217,16 +180,22 @@ EOF
 # gen stays live.
 STAGE="$STAGE_COMPOSE"
 
-# $upper_root was declared during preflight; mount its tmpfs now. It is
-# a FRESH, empty tmpfs — the candidate overlay deliberately does not
-# inherit the live system's runtime /etc writes (those live in the old
-# gen's upper). This matches reboot semantics: the /etc upper is
-# ephemeral; persistent host state lives in /var/etc (a shared lower
-# present in both the old and candidate overlay).
-@coreutils@/bin/mkdir -p "$upper_root"
-@util-linux@/bin/mount -t tmpfs -o nosuid,nodev,mode=755 \
-  tmpfs "$upper_root"
-@coreutils@/bin/mkdir -p "$upper_root/upper" "$upper_root/work"
+# $upper_root was declared during preflight. Create the upper + work dirs
+# as plain directories inside the /run/etc tmpfs — there is no dedicated
+# per-gen tmpfs mount: the parent /run/etc is already tmpfs (nosuid,nodev,
+# mode=755), so a subdirectory inherits the same backing and flags. This
+# also matches how the boot path (etc-overlay-setup.service) creates it.
+#
+# `mkdir -p` is deliberately content-preserving. Per-generation uppers are
+# NOT torn down on switch-away (see the cleanup stage), so re-activating a
+# generation this boot — a rollback or a roll-forward — reuses the upper it
+# left behind and restores that generation's runtime /etc writes. A gen
+# never activated this boot has no upper-<N> yet, so it starts empty,
+# matching fresh-boot semantics. Persistent host state still lives in
+# /var/etc (a shared lower in every generation's overlay); the upper holds
+# only writes that escaped that allowlist, and it is wiped on reboot
+# (tmpfs) regardless.
+@coreutils@/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
 
 tmpEtc=$(@coreutils@/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
 @util-linux@/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
@@ -240,7 +209,7 @@ lowerdir+=/var/etc,\
 lowerdir+="$ign/etc",\
 lowerdir+="$sys/metadata",\
 datadir+="$sys/content",\
-upperdir="$upper_root/upper",\
+upperdir="$upper_root/dir",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
@@ -302,7 +271,7 @@ done
 prev_gen=$(@coreutils@/bin/readlink /run/etc/system \
            | @coreutils@/bin/cut -d- -f2-)
 @coreutils@/bin/ln -sfn system-${N}   /run/etc/system
-@coreutils@/bin/ln -sfn ignition-${N} /run/etc/ignition
+@coreutils@/bin/ln -sfn config-${N} /run/etc/config
 @coreutils@/bin/ln -sfn upper-${N}    /run/etc/upper
 
 # --- post-swap reconcile ---
@@ -327,13 +296,22 @@ esac
 # maps 5 to a successful upgrade.
 STAGE="$STAGE_CLEANUP"
 
+# Tear down the previous generation's LOWER stack only (EROFS metadata +
+# content bind, and the rendered config lower). These are rebuilt from the
+# toplevel by the prepare stage on every activation, so a later switch back
+# to $prev_gen reconstructs them cheaply.
+#
+# The previous gen's upper (/run/etc/upper-${prev_gen}) is deliberately
+# PRESERVED — uppers are per-generation and persist for the life of the boot
+# so switching back restores that gen's runtime /etc writes. Nothing is
+# unmounted for the upper either: it is a plain directory in the /run/etc
+# tmpfs now, not its own mount. Stale uppers are reclaimed by generation GC
+# (when apm prunes the generation) and by reboot (tmpfs), never here.
 if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
   @util-linux@/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
   @util-linux@/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
-  @util-linux@/bin/umount --lazy "/run/etc/upper-${prev_gen}"           || true
   @coreutils@/bin/rm -rf "/run/etc/system-${prev_gen}" \
-                         "/run/etc/ignition-${prev_gen}" \
-                         "/run/etc/upper-${prev_gen}"
+                         "/run/etc/config-${prev_gen}"
 fi
 
 # All phases succeeded. If reconcile reported failed units the switch

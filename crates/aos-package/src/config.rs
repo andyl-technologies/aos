@@ -130,10 +130,18 @@ impl ApmConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when `[settings].parallel_downloads` is zero.
+    /// Returns an error when `[settings].parallel_downloads` is zero or the
+    /// credential PCR public key path is relative.
     fn validate_settings(settings: &ApmSettings) -> Result<()> {
         if settings.parallel_downloads == 0 {
             anyhow::bail!("apm.conf: [settings].parallel_downloads must be at least 1");
+        }
+        if let Some(path) = &settings.credential_pcr_public_key
+            && !Path::new(path).is_absolute()
+        {
+            anyhow::bail!(
+                "apm.conf: [settings].credential_pcr_public_key must be an absolute path"
+            );
         }
 
         Ok(())
@@ -574,6 +582,22 @@ parallel_downloads = 0
     }
 
     #[test]
+    fn load_settings_rejects_relative_credential_pcr_public_key() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "apm.conf",
+            r#"
+[settings]
+credential_pcr_public_key = "keys/pcr.pem"
+"#,
+        );
+
+        let err = ApmConfig::load_settings(&layers(&[&tmp])).unwrap_err();
+        assert!(err.to_string().contains("credential_pcr_public_key"));
+    }
+
+    #[test]
     fn load_registries_from_dir() {
         let tmp = TempDir::new().unwrap();
         write_file(
@@ -827,7 +851,7 @@ priority = 300
     #[test]
     fn blank_seed_file_is_ignored() {
         let seed = TempDir::new().unwrap();
-        // An emptied seed (the operator blanked it via Ignition) contributes
+        // An emptied seed (the operator blanked it through host.nix) contributes
         // nothing and is never an error.
         write_file(seed.path(), "registries.d/aos-core.toml", "\n");
         let registries = ApmConfig::load_registries(&layers(&[&seed])).unwrap();

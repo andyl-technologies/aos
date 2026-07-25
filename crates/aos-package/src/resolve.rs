@@ -20,10 +20,10 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::registry::{RegistrySet, store_path_hash};
-use super::types::PackageMeta;
+use super::types::{ConfigModuleMeta, ModuleAbiCompat, PackageMeta};
 use aos_core::error::AosError;
 
 // ---------------------------------------------------------------------------
@@ -221,10 +221,10 @@ fn visit_dependencies_first(
 // Multi-package resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve multiple packages, producing independent closures.
+/// Resolve multiple packages and package-level exposure dependencies.
 ///
-/// Does NOT deduplicate across closures -- that happens at download time
-/// via [`collect_unique_metas`].
+/// Package roots are deduplicated by name while resolving. Store-path members
+/// are still deduplicated later by [`collect_unique_metas`].
 ///
 /// # Errors
 ///
@@ -235,13 +235,82 @@ pub fn resolve_multiple(
     names: &[String],
     registry_filter: Option<&str>,
 ) -> Result<Vec<ResolvedClosure>> {
-    let mut closures = Vec::with_capacity(names.len());
+    let mut closures = Vec::new();
+    let mut resolved = HashSet::new();
+    let mut stack = Vec::new();
+
     for name in names {
-        let c = resolve_closure(registries, name, registry_filter)
-            .with_context(|| format!("resolving package '{name}'"))?;
-        closures.push(c);
+        resolve_with_requires(
+            registries,
+            name,
+            registry_filter,
+            &mut resolved,
+            &mut stack,
+            &mut closures,
+        )?;
     }
     Ok(closures)
+}
+
+fn resolve_with_requires(
+    registries: &RegistrySet,
+    name: &str,
+    registry_filter: Option<&str>,
+    resolved: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    closures: &mut Vec<ResolvedClosure>,
+) -> Result<()> {
+    if resolved.contains(name) {
+        return Ok(());
+    }
+
+    if let Some(position) = stack.iter().position(|entry| entry == name) {
+        let mut cycle = stack[position..].to_vec();
+        cycle.push(name.to_string());
+        bail!("package requires cycle: {}", cycle.join(" -> "));
+    }
+
+    stack.push(name.to_string());
+    let closure = resolve_closure(registries, name, registry_filter)
+        .with_context(|| format!("resolving package '{name}'"))?;
+
+    let expose_dependencies = expose_dependencies(&closure.root);
+    for required in &expose_dependencies {
+        resolve_with_requires(
+            registries,
+            required,
+            registry_filter,
+            resolved,
+            stack,
+            closures,
+        )
+        .with_context(|| format!("resolving required package '{required}' for '{name}'"))?;
+    }
+
+    let popped = stack.pop();
+    debug_assert_eq!(popped.as_deref(), Some(name));
+    resolved.insert(name.to_string());
+    closures.push(closure);
+    Ok(())
+}
+
+fn expose_dependencies(meta: &PackageMeta) -> Vec<String> {
+    let Some(expose) = meta.expose.as_ref() else {
+        return Vec::new();
+    };
+    let mut dependencies = Vec::new();
+    let mut seen = HashSet::new();
+    for required in &expose.requires {
+        if seen.insert(required.as_str()) {
+            dependencies.push(required.clone());
+        }
+    }
+    for route in &expose.uses {
+        if route.provider != meta.name && seen.insert(route.provider.as_str()) {
+            dependencies.push(route.provider.clone());
+        }
+    }
+    dependencies
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +338,70 @@ pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
 }
 
 // ---------------------------------------------------------------------------
+// Module-ABI pre-evaluation gate.
+// ---------------------------------------------------------------------------
+
+/// One config module presented to the [`module_abi`] resolver gate.
+///
+/// The full fixpoint resolver is not yet built; this carries the
+/// minimum a gate needs — the package identity and its declared
+/// [`ModuleAbiCompat`] band — so the gate can be wired ahead of the loop and
+/// tested in isolation.
+///
+/// [`module_abi`]: enforce_module_abi_compat
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedConfigModule<'a> {
+    /// Provider package name.
+    pub package: &'a str,
+    /// Provider package version.
+    pub version: &'a str,
+    /// The module's base-lib ABI compatibility band.
+    pub module_abi_compat: ModuleAbiCompat,
+}
+
+impl<'a> GatedConfigModule<'a> {
+    /// Build a gate input from a package name/version and its [`ConfigModuleMeta`].
+    pub fn from_meta(package: &'a str, version: &'a str, module: &ConfigModuleMeta) -> Self {
+        Self {
+            package,
+            version,
+            module_abi_compat: module.module_abi_compat,
+        }
+    }
+}
+
+/// Fail-closed `module_abi` compatibility gate, run **before** any eval.
+///
+/// For every configuration module `M` in the
+/// resolved set, `M.module_abi_compat.min <= K <= M.module_abi_compat.max` must
+/// hold, where `K` is the running image's `module_abi`. The first module whose
+/// band excludes `K` aborts resolution before a manifest is produced, so an
+/// ABI-incompatible module never reaches `entry.nix` (where a stale interface
+/// would throw a misleading missing-option error the fixpoint would misread as
+/// "fetch a provider"). This mirrors the fail-closed `enforce_totality` trust
+/// gate: a terminal error here is a no-op on the live system, leaving the old
+/// config generation live.
+///
+/// # Errors
+///
+/// Returns an error naming the first module whose compatibility band excludes
+/// `image_abi`.
+pub fn enforce_module_abi_compat(modules: &[GatedConfigModule<'_>], image_abi: u32) -> Result<()> {
+    for module in modules {
+        if !module.module_abi_compat.admits(image_abi) {
+            bail!(
+                "config module '{}@{}' requires module_abi in [{},{}], running image is {image_abi}",
+                module.package,
+                module.version,
+                module.module_abi_compat.min,
+                module.module_abi_compat.max,
+            );
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -282,6 +415,156 @@ mod tests {
     use crate::registry::tests::{
         curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
     };
+
+    const PROVIDER_TOML: &str = r#"
+[package]
+name = "provider"
+description = "Required provider"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/providerhash-provider-1.0.0"
+nar_hash = "sha256:provider"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+references = []
+"#;
+
+    const CONSUMER_TOML: &str = r#"
+[package]
+name = "consumer"
+description = "Requires provider"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/consumerhash-consumer-1.0.0"
+nar_hash = "sha256:consumer"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/consumer.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-consumer.target"
+requires = ["provider"]
+"#;
+
+    const CONSUMER_USES_TOML: &str = r#"
+[package]
+name = "consumer-uses"
+description = "Consumes provider capability"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/consumeruseshash-consumer-uses-1.0.0"
+nar_hash = "sha256:consumeruses"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/consumer-uses.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "capability-routes-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-consumer-uses.target"
+units = ["consumer-uses.service"]
+
+[[versions.platforms.x86_64-linux.expose.uses]]
+provider = "provider"
+name = "data"
+kind = "directory"
+unit = "consumer-uses.service"
+"#;
+
+    const CYCLE_A_TOML: &str = r#"
+[package]
+name = "cycle-a"
+description = "Cycle A"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/cycleahash-cycle-a-1.0.0"
+nar_hash = "sha256:cyclea"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/cycle-a.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-cycle-a.target"
+requires = ["cycle-b"]
+"#;
+
+    const CYCLE_B_TOML: &str = r#"
+[package]
+name = "cycle-b"
+description = "Cycle B"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/cyclebhash-cycle-b-1.0.0"
+nar_hash = "sha256:cycleb"
+nar_size = 1
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/cycle-b.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
+
+[versions.platforms.x86_64-linux.expose]
+target = "aos-pkg-cycle-b.target"
+requires = ["cycle-a"]
+"#;
 
     // 1. Resolving a single package with deps produces a closure containing
     //    both the root and its resolvable dependency.
@@ -359,6 +642,89 @@ mod tests {
         assert_eq!(closures.len(), 2);
         assert_eq!(closures[0].root.name, "curl");
         assert_eq!(closures[1].root.name, "zlib");
+    }
+
+    #[test]
+    fn resolve_multiple_pulls_in_expose_requires() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("consumer", CONSUMER_TOML), ("provider", PROVIDER_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(&set, &["consumer".to_string()], None).unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_multiple_pulls_in_expose_uses_providers() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[
+                ("consumer-uses", CONSUMER_USES_TOML),
+                ("provider", PROVIDER_TOML),
+            ],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(&set, &["consumer-uses".to_string()], None).unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer-uses"]);
+    }
+
+    #[test]
+    fn resolve_multiple_deduplicates_explicit_requires() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("consumer", CONSUMER_TOML), ("provider", PROVIDER_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let closures = resolve_multiple(
+            &set,
+            &["consumer".to_string(), "provider".to_string()],
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = closures
+            .iter()
+            .map(|closure| closure.root.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["provider", "consumer"]);
+    }
+
+    #[test]
+    fn resolve_multiple_rejects_requires_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let core = make_registry(
+            &tmp,
+            "aos-core",
+            500,
+            &[("cycle-a", CYCLE_A_TOML), ("cycle-b", CYCLE_B_TOML)],
+        );
+        let set = RegistrySet::new(vec![core]);
+
+        let err = resolve_multiple(&set, &["cycle-a".to_string()], None).unwrap_err();
+        assert!(format!("{err:#}").contains("package requires cycle"));
     }
 
     // 5. collect_unique_metas deduplicates across closures.
@@ -524,4 +890,81 @@ mod tests {
         assert!(names.contains(&"curl"));
         assert!(names.contains(&"zlib"));
     }
+
+    // ----------------------------------------------------------------------
+    // Module-ABI gate.
+    // ----------------------------------------------------------------------
+
+    fn gated(package: &'static str, min: u32, max: u32) -> GatedConfigModule<'static> {
+        GatedConfigModule {
+            package,
+            version: "1.0.0",
+            module_abi_compat: ModuleAbiCompat { min, max },
+        }
+    }
+
+    // 14. module_abi gate: table-driven admit/refuse decisions.
+    #[test]
+    fn module_abi_gate_admits_and_refuses() {
+        struct Case {
+            name: &'static str,
+            modules: Vec<GatedConfigModule<'static>>,
+            image_abi: u32,
+            ok: bool,
+        }
+        let cases = [
+            Case {
+                name: "in-band",
+                modules: vec![gated("a", 1, 2)],
+                image_abi: 1,
+                ok: true,
+            },
+            Case {
+                name: "at-max",
+                modules: vec![gated("a", 1, 2)],
+                image_abi: 2,
+                ok: true,
+            },
+            Case {
+                name: "below-min",
+                modules: vec![gated("a", 2, 3)],
+                image_abi: 1,
+                ok: false,
+            },
+            Case {
+                name: "above-max",
+                modules: vec![gated("a", 1, 2)],
+                image_abi: 3,
+                ok: false,
+            },
+            Case {
+                name: "empty-set",
+                modules: vec![],
+                image_abi: 9,
+                ok: true,
+            },
+            Case {
+                name: "one-incompatible-of-many",
+                modules: vec![gated("a", 1, 3), gated("b", 2, 2)],
+                image_abi: 1,
+                ok: false,
+            },
+        ];
+        for case in cases {
+            let result = enforce_module_abi_compat(&case.modules, case.image_abi);
+            assert_eq!(result.is_ok(), case.ok, "case {}", case.name);
+        }
+    }
+
+    // 15. The refusal message names the offending module and band.
+    #[test]
+    fn module_abi_gate_message_is_actionable() {
+        let err =
+            enforce_module_abi_compat(&[gated("firewall", 2, 4)], 1).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("firewall@1.0.0"), "{msg}");
+        assert!(msg.contains("[2,4]"), "{msg}");
+        assert!(msg.contains("running image is 1"), "{msg}");
+    }
+
 }

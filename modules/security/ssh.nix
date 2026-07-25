@@ -370,10 +370,10 @@ in {
             ssh_output = vm.succeed(
                 textwrap.dedent(r"""
                     set -e
-                    ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
+                    ${pkgs.openssh}/bin/ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
                     cat /tmp/aos-test-key.pub > /etc/ssh/authorized_keys/root
                     systemctl is-active --quiet sshd || systemctl start sshd
-                    ssh -i /tmp/aos-test-key \
+                    ${pkgs.openssh}/bin/ssh -i /tmp/aos-test-key \
                       -o StrictHostKeyChecking=no \
                       -o UserKnownHostsFile=/dev/null \
                       -o BatchMode=yes \
@@ -388,8 +388,6 @@ in {
         }
       ];
     };
-
-    environment.systemPackages = [pkgs.openssh];
 
     aos.pam.services.sshd = lib.mkIf cfg.usePAM {
       unixAuth = cfg.passwordAuthentication;

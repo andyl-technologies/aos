@@ -1,0 +1,15 @@
+diff --git a/elf/Makefile b/elf/Makefile
+index 4e8003f..5431f4a 100644
+--- a/elf/Makefile
++++ b/elf/Makefile
+@@ -201,8 +201,10 @@
+ modules-nodlopen-yes = nodlopenmod nodlopenmod2
+ modules-execstack-yes = tst-execstack-mod
++ifeq (yes,$(build-shared))
+ extra-objs += $(addsuffix .os,$(strip $(modules-names)))
+ # We need this variable to be sure the test modules get the right CPPFLAGS.
+ test-extras += $(modules-names)
++endif
+ 
+ include ../Rules
+ 

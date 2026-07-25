@@ -37,37 +37,52 @@ in {
     {
       # Security: debug level (permissive SELinux, core dumps, no lockdown)
       aos.security.level = lib.mkDefault "debug";
-
-      # Debug and diagnostic tools
-      environment.systemPackages = [
-        pkgs.strace
-        pkgs.tcpdump
-        pkgs.lsof
-        pkgs.hdparm
-        pkgs.smartmontools
-        pkgs.procps-ng
-        pkgs.conntrack-tools
-        pkgs.iproute2
-        pkgs.ethtool
-        pkgs.curl
-        pkgs.jq
-      ];
     }
 
     (lib.mkIf cfg.autologin (let
       # agetty invokes --login-program as `PROG -f USER`, matching
       # /bin/login's calling convention. Passing bash directly makes
       # bash interpret `-f` as its own flag and `USER` as a script
-      # path — it exits 126. Tiny shim drops the args and execs an
+      # path — it exits 126. This shim drops those args and execs an
       # interactive root shell instead.
-      autologinShell = pkgs.writeShellScriptBin "autologin-shell" ''
-        exec ${pkgs.bash}/bin/bash -l
-      '';
+      #
+      # It also seeds the session environment that /bin/login would
+      # have exported from root's passwd entry. AOS ships no
+      # /bin/login (util-linux is built --disable-login), and bash
+      # does not synthesize HOME itself, so without this HOME/USER/
+      # LOGNAME come up empty on every autologin console. (sshd
+      # exports these itself, so SSH sessions are unaffected.)
+      # Hardcoded to root: every agetty unit below autologins root,
+      # and these values hold identically in the stage-1 initrd,
+      # which has no NSS to resolve a passwd lookup through.
+      #
+      # This shim is an image-fixed artifact (pure function
+      # of pkgs, not host.nix). Reference the resolved artifact so the on-host
+      # eval-only evaluator uses the stage-1-frozen store path instead of
+      # rebuilding it (`pkgs.writeShellScriptBin` is absent from the stage-2
+      # frozen pkgs). On a normal build `frozenArtifacts` is empty, so this
+      # resolves to the same derivation as before (byte-identical).
+      autologinShell = config.aos.config.artifacts.autologin-shell;
     in {
+      # Register the autologin shim as an image-fixed config artifact, guarded
+      # so the stage-2 frozen pkgs never evaluates the builder.
+      aos.config._artifactSources.autologin-shell =
+        if config.aos.config.frozenArtifacts ? "autologin-shell"
+        then null
+        else
+          pkgs.writeShellScriptBin "autologin-shell" ''
+            export USER=root
+            export LOGNAME=root
+            export HOME=/root
+            export SHELL=${pkgs.bash}/bin/bash
+            cd "$HOME" 2>/dev/null || true
+            exec ${pkgs.bash}/bin/bash -l
+          '';
+
       # Mask the sulogin-based recovery units in the initrd. The debug
       # shells below already run an always-on autologin root shell on
-      # every console (tty0/ttyS0). When a first-boot failure (e.g.
-      # ignition) drops stage-1 to maintenance, systemd ALSO starts
+      # every console (tty0/ttyS0). When a first-boot provisioning failure
+      # drops stage-1 to maintenance, systemd ALSO starts
       # emergency.service — sulogin on /dev/console. With the baked-in
       # cmdline `console=ttyS0 console=tty0`, /dev/console resolves to
       # the foreground VT (tty1), which is the very screen

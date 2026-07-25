@@ -30,10 +30,12 @@
   in
     {
       compiler = crossCompiler;
-      buildDeps = [
-        crossGccStage2
-        crossBinutils
-      ] ++ userBuildDeps;
+      buildDeps =
+        [
+          crossGccStage2
+          crossBinutils
+        ]
+        ++ userBuildDeps;
       gccVersion = "4.8.5";
       cc = "${crossGccStage2}/bin/${hostPlatform.config}-gcc";
       cxx = "${crossGccStage2}/bin/${hostPlatform.config}-g++";
@@ -65,16 +67,18 @@
 
         ${userConfigureEnv}
       '';
-      meta = {
-        build = {
-          os = "linux";
-          cpu = [buildPlatform.parsed.cpu.name];
-        };
-        execute = {
-          os = "linux";
-          cpu = [hostPlatform.parsed.cpu.name];
-        };
-      } // userMeta;
+      meta =
+        {
+          build = {
+            os = "linux";
+            cpu = [buildPlatform.parsed.cpu.name];
+          };
+          execute = {
+            os = "linux";
+            cpu = [hostPlatform.parsed.cpu.name];
+          };
+        }
+        // userMeta;
     }
     // passthruAttrs;
 
@@ -107,10 +111,10 @@ in {
       export PATH="$TMPDIR/fakebin:$PATH"
     '';
     postFreeze = ''
-      sed -i '/^int lastpipe_opt = 0;/a\
-#if !defined (JOB_CONTROL)\
-#  define job_control 0\
-#endif' execute_cmd.c
+            sed -i '/^int lastpipe_opt = 0;/a\
+      #if !defined (JOB_CONTROL)\
+      #  define job_control 0\
+      #endif' execute_cmd.c
     '';
     buildScript = ''
       make -j1 ${autotoolsVars}

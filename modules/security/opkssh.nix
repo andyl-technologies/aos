@@ -181,9 +181,6 @@ in {
     aos.services.ssh.authorizedKeysCommand = "${pkgs.opkssh}/bin/opkssh verify %u %k %t";
     aos.services.ssh.authorizedKeysCommandUser = "opksshuser";
 
-    # Install the opkssh binary.
-    environment.systemPackages = [pkgs.opkssh];
-
     # /etc/opk/providers — OIDC provider list.
     environment.etc."opk/providers" = {
       text = providersText + "\n";

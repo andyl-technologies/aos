@@ -99,6 +99,22 @@ in
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
 
+      # Enumerate every shipped language descriptor directly because the early
+      # bootstrap shell does not expand gcc/*/config-lang.in reliably. The
+      # second configure scan needs disabled languages too so it can remove
+      # their target libraries from the build.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-explicit-cxx-lto-frontends.patch}
+
+      # Native GCC builds normally derive BUILD_CXXFLAGS from ALL_CXXFLAGS and
+      # ignore CXXFLAGS_FOR_BUILD. Make the native path honor the dedicated
+      # build-generator flags, matching GCC's existing cross-build behavior.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-native-build-cxxflags.patch}
+
+      # Emit synchronous stage markers from gengtype even when GCC is built
+      # without ENABLE_CHECKING so a remote bootstrap crash has a precise last
+      # successful operation in the captured build log.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-gengtype-stage-trace.patch}
+
       # Disable split-stack support in libgcc: this glibc lacks NPTL pthread.h.
       ${prev.sed}/bin/sed -i '/t-stack/d' libgcc/config.host
 
@@ -167,6 +183,13 @@ in
       ''} "$TMPDIR/header-overlay/linux/types.h"
     '';
     preConfigure = ''
+      for frontend in ada c cp fortran go java lto objc objcp; do
+        test -f "$TMPDIR/gcc-4.8.5/gcc/$frontend/config-lang.in" || {
+          echo "GCC 4.8.5 $frontend frontend source is missing" >&2
+          exit 1
+        }
+      done
+
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<'AOS_GCC_CC'
       #!${prev.bash}/bin/bash
@@ -217,6 +240,12 @@ in
       ''CFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CXXFLAGS="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CFLAGS_FOR_BUILD="-O2 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
+      # The freshly linked build/gengtype segfaults while producing gtype.state
+      # with both optimized and unoptimized objects. Keep it unoptimized so its
+      # debug trace is not distorted while the bootstrap fault is diagnosed.
+      # The native-build patch above routes this value into BUILD_CXXFLAGS while
+      # leaving CXXFLAGS in charge of the host compiler itself.
+      ''CXXFLAGS_FOR_BUILD="-O0 -isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CPPFLAGS="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''CPPFLAGS_FOR_BUILD="-isystem $TMPDIR/header-overlay -isystem ${prev.glibc}/include"''
       ''LDFLAGS="-static"''
@@ -298,6 +327,20 @@ in
       if [ ! -f "$LIBGCC_DIR/libgcc_eh.a" ]; then
         cp "$LIBGCC_DIR/libgcc.a" "$LIBGCC_DIR/libgcc_eh.a"
       fi
+
+      cat > "$TMPDIR/gcc-installed-smoke.c" <<'AOS_GCC_SMOKE'
+      #include <sys/time.h>
+      #include <time.h>
+      int main(void) {
+        struct timeval tv;
+        time_t now;
+        return gettimeofday(&tv, 0) != 0 || time(&now) == (time_t) -1;
+      }
+      AOS_GCC_SMOKE
+      "$out/bin/gcc" -O2 -static "$TMPDIR/gcc-installed-smoke.c" \
+        -o "$TMPDIR/gcc-installed-smoke" -isystem ${prev.glibc}/include \
+        -B${prev.glibc}/lib -L${prev.glibc}/lib
+      "$TMPDIR/gcc-installed-smoke"
     '';
     finalMessage = "GCC 4.8.5 installed to $out";
     meta = {

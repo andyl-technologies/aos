@@ -37,7 +37,8 @@
 //!   a retirement); [`run_trust`] manages the consumer-side pinned trust
 //!   store.
 //! - **Distribution**: [`run_cache`] generates and uploads the static Nix
-//!   binary cache; [`run_origin`] uploads the static git origin files.
+//!   binary cache; [`run_origin`] uploads the static git origin files;
+//!   [`run_web`] generates and uploads the static no-JS web surface.
 //!
 //! After any operation that adds commits or moves refs, the static
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
@@ -55,12 +56,16 @@ use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
 use clap::ValueEnum as _;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
-use crate::gitcmd;
+use crate::provenance::{
+    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
+    sha256_hex_payload, sign_statement_dsse_jsonl,
+};
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::membership::{CacheMembership, HeadMembership};
@@ -71,25 +76,75 @@ use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
+use crate::registry::tuf;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
+use crate::registry::webgen::{self, WebConfig};
 use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
-    validate_channel_name, validate_git_ref_name, validate_package_name, validate_platform_name,
+    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfigModuleMeta, ConfinementClass,
+    ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
+    FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
+    RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
+    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
+    validate_branch_name, validate_channel_name, validate_config_module_meta,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
     validate_registry_name,
 };
 use crate::{
-    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
-    SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField,
+    BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
+    OriginCommand, SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField, WebCommand,
 };
+
+#[cfg(not(test))]
+const CHECKMODULE_ENV: &str = "AOS_CHECKMODULE";
+#[cfg(not(test))]
+const SEMODULE_PACKAGE_ENV: &str = "AOS_SEMODULE_PACKAGE";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishExposeManifest {
+    expose: ExposeMeta,
+    permissions: PermissionsMeta,
+    #[serde(default)]
+    mac: Option<PublishMacProfileManifest>,
+    #[serde(default, rename = "kernel")]
+    _kernel: Option<Value>,
+    #[serde(default, rename = "firewall")]
+    _firewall: Option<Value>,
+    #[serde(default, rename = "confinement")]
+    _confinement: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishMacProfileManifest {
+    version: u32,
+    package: String,
+    backend: String,
+    #[serde(rename = "securityLabel")]
+    security_label: String,
+    #[serde(rename = "defaultDeny")]
+    default_deny: bool,
+    #[serde(rename = "profilePath")]
+    profile_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct CompiledSelinuxProfile {
+    module: Vec<u8>,
+    profile: Vec<u8>,
+}
 
 /// Resolve the registry storage directory for a given registry name.
 fn registry_dir(config: &ApmConfig, registry: Option<&str>) -> Result<PathBuf> {
@@ -156,20 +211,11 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
 /// Runs hermetically (see [`crate::gitcmd`]): host git configuration is
 /// hidden. Network transport commands must use [`git_transport`] instead.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -179,55 +225,22 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 /// Unlike [`git`], the host configuration stays visible: credential
 /// helpers, proxies, and URL rewrites live there.
 fn git_transport(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = gitcmd::transport()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Run a git command in the registry directory, returning raw stdout bytes.
 fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            git_failure_details(&output)
-        );
+    if !output.success {
+        bail!("git {} failed: {}", args.join(" "), output.stderr);
     }
-
     Ok(output.stdout)
-}
-
-/// Render the useful part of a failed Git invocation.
-fn git_failure_details(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => output.status.to_string(),
-        (false, true) => stdout.to_string(),
-        (true, false) => stderr.to_string(),
-        (false, false) => format!("{stdout}\n{stderr}"),
-    }
 }
 
 /// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
@@ -240,15 +253,10 @@ fn nix_command(program: &str) -> Command {
 /// Run a git command that is allowed to fail, returning (success, stdout, stderr).
 #[allow(dead_code)]
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String, String)> {
-    let output = gitcmd::hermetic()
-        .args(args)
-        .current_dir(dir)
-        .output()
+    let output = crate::registry::porcelain::dispatch(dir, args)
         .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))?;
-
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Ok((output.status.success(), stdout, stderr))
+    Ok((output.success, stdout, output.stderr.trim().to_string()))
 }
 
 /// A registry clone present in the scope's registry-storage directory but
@@ -934,12 +942,43 @@ fn env_commit_identity() -> bool {
 /// Registry commits record who published, so a missing identity is a setup
 /// error, not something to paper over with a placeholder.
 fn host_identity_value(key: &str) -> Result<String> {
-    gitcmd::host_config_value(key).ok_or_else(|| {
+    host_global_config_value(key).ok_or_else(|| {
         anyhow::anyhow!(
             "registry commits record the maintainer's identity, but git {key} is not set.\n\
              Set it with `git config --global {key} <value>`."
         )
     })
+}
+
+/// Read `key` from the host's global git configuration, returning `None`
+/// when the config or key is absent or empty.
+///
+/// "Global" matches what `git config --global` resolves, which is *two*
+/// files: the classic `~/.gitconfig` and the XDG
+/// `$XDG_CONFIG_HOME/git/config` (defaulting to `~/.config/git/config`).
+/// libgit2's [`git2::Config::find_global`] locates only the former, so the
+/// XDG file is loaded explicitly via [`git2::Config::find_xdg`]. Skipping it
+/// makes identities kept solely under `~/.config/git/config` — the
+/// home-manager default — invisible. When both files set `key`, the `global`
+/// level outranks `xdg`, exactly as git prioritizes the two.
+fn host_global_config_value(key: &str) -> Option<String> {
+    let mut config = git2::Config::new().ok()?;
+    let mut loaded = false;
+    if let Ok(path) = git2::Config::find_xdg() {
+        loaded |= config
+            .add_file(&path, git2::ConfigLevel::XDG, false)
+            .is_ok();
+    }
+    if let Ok(path) = git2::Config::find_global() {
+        loaded |= config
+            .add_file(&path, git2::ConfigLevel::Global, false)
+            .is_ok();
+    }
+    if !loaded {
+        return None;
+    }
+    let value = config.get_string(key).ok()?;
+    (!value.is_empty()).then_some(value)
 }
 
 /// Check that a commit identity is available, without touching any repo.
@@ -994,31 +1033,88 @@ fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
 /// Commit whatever is currently staged, SSH-signing the commit when
 /// `signing_key` points at an OpenSSH private key.
 fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
+    validate_staged_package_toml_provenance_requirements(dir)?;
+    if staged_package_provenance_transparency_validation_needed(dir)? {
+        validate_staged_package_provenance_transparency_log(dir)?;
+    }
+
     match signing_key {
-        Some(key) => {
-            let signing_key_config = format!("user.signingkey={key}");
-            let mut command = gitcmd::hermetic();
-            command.arg("-c").arg("gpg.format=ssh");
-            gitcmd::add_ssh_program_config(&mut command);
-            command
-                .arg("-c")
-                .arg(signing_key_config)
-                .arg("commit")
-                .arg("-S")
-                .arg("-m")
-                .arg(message)
-                .current_dir(dir);
-            let output = command
-                .output()
-                .with_context(|| format!("signing registry commit in {}", dir.display()))?;
-            if !output.status.success() {
-                bail!("git commit -S failed: {}", git_failure_details(&output));
-            }
-        }
+        Some(key) => create_signed_commit(dir, message, key)?,
         None => {
             git(dir, &["commit", "-m", message])?;
         }
     }
+    Ok(())
+}
+
+/// Create an SSH-signed commit of the current index, attaching the armored
+/// signature in the `gpgsig-sha256` header git uses for SHA-256 repositories.
+///
+/// The signed payload is the commit object without the signature header, which
+/// is exactly what [`crate::security::verify_commit_signature`] reconstructs.
+fn create_signed_commit(dir: &Path, message: &str, signing_key: &str) -> Result<()> {
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let mut index = repo.index().context("opening index")?;
+    let tree_oid = index.write_tree().context("writing tree")?;
+    let tree = repo.find_tree(tree_oid).context("reading tree")?;
+    let sig = git2_identity(&repo)?;
+    let parents = match repo.head() {
+        Ok(head) => vec![head.peel_to_commit().context("reading HEAD commit")?],
+        Err(_) => Vec::new(),
+    };
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+
+    let buffer = repo
+        .commit_create_buffer(&sig, &sig, message, &tree, &parent_refs)
+        .context("building commit object")?;
+    let buffer_str = std::str::from_utf8(&buffer).context("commit object is not valid UTF-8")?;
+    let armored = crate::security::sign_payload_signature(
+        Path::new(signing_key),
+        "git",
+        buffer_str.as_bytes(),
+    )?;
+    let commit_oid = repo
+        .commit_signed(buffer_str, &armored, Some("gpgsig-sha256"))
+        .context("writing signed commit")?;
+
+    // commit_signed writes the object but does not move any ref.
+    update_head_target(&repo, commit_oid)?;
+    Ok(())
+}
+
+/// Resolve the commit/tagger identity the way git does: repository (and
+/// global) config first, then the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` environment
+/// variables that [`ensure_commit_identity`] leaves in place rather than
+/// copying into config.
+fn git2_identity(repo: &git2::Repository) -> Result<git2::Signature<'static>> {
+    if let Ok(sig) = repo.signature() {
+        return Ok(sig);
+    }
+    let name = std::env::var("GIT_AUTHOR_NAME")
+        .or_else(|_| std::env::var("GIT_COMMITTER_NAME"))
+        .map_err(|_| anyhow::anyhow!("no commit identity configured (user.name unset)"))?;
+    let email = std::env::var("GIT_AUTHOR_EMAIL")
+        .or_else(|_| std::env::var("GIT_COMMITTER_EMAIL"))
+        .map_err(|_| anyhow::anyhow!("no commit identity configured (user.email unset)"))?;
+    git2::Signature::now(&name, &email).context("building commit identity")
+}
+
+/// Point the current branch (or the unborn HEAD's target) at `oid`.
+fn update_head_target(repo: &git2::Repository, oid: git2::Oid) -> Result<()> {
+    let refname = match repo.head() {
+        Ok(head) => head.name().context("HEAD has no name")?.to_string(),
+        Err(_) => repo
+            .find_reference("HEAD")
+            .context("reading HEAD")?
+            .symbolic_target()
+            .context("reading HEAD symbolic target")?
+            .context("HEAD is not symbolic")?
+            .to_string(),
+    };
+    repo.reference(&refname, oid, true, "apr signed commit")
+        .with_context(|| format!("updating {refname}"))?;
     Ok(())
 }
 
@@ -1033,6 +1129,7 @@ fn commit_registry_paths(
         bail!("no registry paths supplied for commit");
     }
 
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     ensure_commit_identity(dir)?;
 
     let relative_paths = paths
@@ -1040,24 +1137,15 @@ fn commit_registry_paths(
         .map(|path| registry_relative_path(dir, path))
         .collect::<Result<Vec<_>>>()?;
 
-    let output = gitcmd::hermetic()
-        .arg("add")
-        .arg("-A")
-        .arg("--")
-        .args(&relative_paths)
-        .current_dir(dir)
-        .output()
-        .with_context(|| {
-            format!(
-                "running git add for {} constrained path(s) in {}",
-                relative_paths.len(),
-                dir.display()
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git add failed: {}", stderr.trim());
-    }
+    let mut args: Vec<&str> = vec!["add", "-A", "--"];
+    args.extend(relative_paths.iter().map(String::as_str));
+    git(dir, &args).with_context(|| {
+        format!(
+            "running git add for {} constrained path(s) in {}",
+            relative_paths.len(),
+            dir.display()
+        )
+    })?;
 
     commit_staged_registry(dir, message, signing_key)
 }
@@ -1070,6 +1158,7 @@ fn commit_registry_paths(
 /// commits on registries with a non-empty trust roster should always be
 /// signed.
 fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     ensure_commit_identity(dir)?;
     git(dir, &["add", "-A"])?;
     commit_staged_registry(dir, message, signing_key)
@@ -1131,12 +1220,13 @@ fn registry_content_addressed(dir: &Path) -> bool {
 
 /// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
 ///
-/// Returns the `[[caches]]` entries sorted by descending priority, or an
-/// empty list when the file is missing, unparsable, or lists no caches.
+/// Flattens the committed `[caches]` cache stack (or a legacy `[[caches]]`
+/// array) and returns the entries sorted by descending priority, or an empty
+/// list when the file is missing, unparsable, or lists no caches.
 pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
-        Ok(Some(config)) if !config.caches.is_empty() => {
-            let mut caches = config.caches;
+        Ok(Some(config)) => {
+            let mut caches = config.cache_entries();
             caches.sort_by(|a, b| b.priority.cmp(&a.priority));
             caches
         }
@@ -1338,6 +1428,10 @@ description = ""
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
+/// `--expose-manifest` records the RFC-0001 expose and permission metadata
+/// rendered by the package builder. Exposed packages also emit DSSE-wrapped
+/// provenance, so they must be published with `--key-id`; a raw `--key` has
+/// no stable roster id for the DSSE builder identity.
 ///
 /// # Errors
 ///
@@ -1345,8 +1439,9 @@ description = ""
 /// package name is not safe for registry package paths, when the platform
 /// name is not safe for package metadata, when `--image` and
 /// `--image-format` are not given in pairs, when the `nix path-info` /
-/// `nix-store` queries fail for the store path, or when a file write, the
-/// commit, or the object-store refresh fails.
+/// `nix-store` queries fail for the store path, when `--expose-manifest`
+/// cannot be parsed or validated, or when a file write, the commit, or the
+/// object-store refresh fails.
 ///
 /// # Panics
 ///
@@ -1368,6 +1463,7 @@ pub async fn publish(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    expose_manifest_path: Option<&str>,
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -1433,6 +1529,27 @@ pub async fn publish(
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
     validate_platform_name(&platform)?;
+    let expose_manifest = expose_manifest_path
+        .map(|path| read_publish_expose_manifest(path, pkg_name))
+        .transpose()?;
+    let expose_artifact_info = expose_manifest_path
+        .map(infer_publish_expose_artifact)
+        .transpose()?;
+    let expose_manifest_digest = expose_manifest_path
+        .map(|path| read_publish_manifest_digest(Path::new(path)))
+        .transpose()?;
+    let provenance_signer = if expose_manifest_path.is_some() {
+        Some(resolve_package_provenance_signer(
+            &dir,
+            &name,
+            signing_key.as_ref(),
+            key_id,
+        )?)
+    } else {
+        None
+    };
+
+    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1462,14 +1579,76 @@ pub async fn publish(
         previous,
         &image_infos,
         source_info.as_ref(),
+        expose_manifest.as_ref(),
+        expose_artifact_info.as_ref(),
+        expose_manifest_digest.as_deref(),
     )?;
+    let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
+        (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+            &name,
+            pkg_name,
+            pkg_version,
+            &platform,
+            &info,
+            source_info.as_ref(),
+            manifest,
+            manifest_digest,
+            provenance_signer
+                .as_ref()
+                .context("provenance signer missing for exposed package")?,
+        )?,
+        _ => None,
+    };
 
     std::fs::write(&toml_path, &new_content)?;
+    let provenance_path = if let Some(artifact) = &provenance_artifact {
+        let path = dir.join(&artifact.path);
+        let parent = path
+            .parent()
+            .with_context(|| format!("provenance path has no parent: {}", path.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating provenance directory {}", parent.display()))?;
+        std::fs::write(&path, &artifact.jsonl)
+            .with_context(|| format!("writing provenance artifact {}", path.display()))?;
+        Some(path)
+    } else {
+        None
+    };
 
     printer.step(3, 4, "Computing realisation graph...");
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
     let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
         .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
+    let expose_store_report = if let Some(artifact) = &expose_artifact_info {
+        Some(
+            write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
+                .with_context(|| {
+                    format!(
+                        "writing store/ realisation graph for expose artifact {}",
+                        artifact.path
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let transparency_log_path = if let Some(artifact) = &provenance_artifact {
+        let provenance_file_path = provenance_path
+            .as_ref()
+            .context("provenance artifact path missing before transparency log append")?;
+        Some(append_package_provenance_transparency_log(
+            &dir,
+            pkg_name,
+            pkg_version,
+            &platform,
+            &info,
+            source_info.as_ref(),
+            artifact,
+            provenance_file_path,
+        )?)
+    } else {
+        None
+    };
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1480,6 +1659,25 @@ pub async fn publish(
     printer.kv("NAR size", &format_size(info.nar_size));
     printer.kv("Closure size", &format_size(info.closure_size));
     printer.kv("Store graph", &store_report.summary());
+    if let Some(artifact) = &expose_artifact_info {
+        printer.kv("Expose artifact", &artifact.path);
+    }
+    if let Some(report) = &expose_store_report {
+        printer.kv("Expose artifact graph", &report.summary());
+    }
+    if let Some(artifact) = &provenance_artifact {
+        printer.kv("Provenance", &artifact.path);
+    }
+    if let Some(path) = &transparency_log_path {
+        printer.kv(
+            "Transparency log",
+            &path
+                .strip_prefix(&dir)
+                .unwrap_or(path)
+                .display()
+                .to_string(),
+        );
+    }
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -1501,7 +1699,13 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        let staged_paths = [toml_path.clone(), dir.join(store::STORE_DIR)];
+        let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
+        if let Some(path) = &provenance_path {
+            staged_paths.push(path.clone());
+        }
+        if let Some(path) = &transparency_log_path {
+            staged_paths.push(path.clone());
+        }
         commit_registry_paths(
             &dir,
             msg,
@@ -1558,6 +1762,24 @@ pub async fn publish(
                 "unchanged": store_report.unchanged,
                 "content_addressed": store_report.content_addressed,
             },
+            "expose_artifact": expose_artifact_info.as_ref().map(|artifact| serde_json::json!({
+                "store_path": artifact.path.as_str(),
+                "nar_hash": artifact.nar_hash.as_str(),
+                "nar_size": artifact.nar_size,
+            })),
+            "expose_artifact_graph": expose_store_report.as_ref().map(|report| serde_json::json!({
+                "created": report.created,
+                "blessed": report.blessed,
+                "unchanged": report.unchanged,
+                "content_addressed": report.content_addressed,
+            })),
+            "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
+            "transparency_log": transparency_log_path.as_ref().map(|path| {
+                path.strip_prefix(&dir)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            }),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -1620,6 +1842,9 @@ fn build_package_toml(
     previous: Option<&str>,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_info: Option<&StorePathInfo>,
+    expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact_info: Option<&StorePathInfo>,
+    expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -1630,7 +1855,18 @@ fn build_package_toml(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
-    let platform_table = package_platform_table(info, image_infos, source_drv, source_nar_hash);
+    let platform_table = package_platform_table(
+        name,
+        version,
+        platform,
+        info,
+        image_infos,
+        source_drv,
+        source_nar_hash,
+        expose_manifest,
+        expose_artifact_info,
+        expose_manifest_digest,
+    )?;
 
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
@@ -1734,6 +1970,430 @@ fn build_package_toml(
 
         Ok(toml::to_string_pretty(&toml_val)?)
     }
+}
+
+fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<PublishExposeManifest> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading expose manifest {path}"))?;
+    let mut manifest: PublishExposeManifest = serde_json::from_str(&content)
+        .with_context(|| format!("parsing expose manifest {path}"))?;
+
+    validate_expose_meta_for_package(package_name, &manifest.expose)
+        .with_context(|| format!("validating expose manifest for package '{package_name}'"))?;
+    if manifest.permissions.confinement.is_none() {
+        manifest.permissions.confinement = Some(manifest.permissions.computed_confinement());
+    }
+    validate_permissions_meta(package_name, &manifest.permissions)
+        .with_context(|| format!("validating permissions manifest for package '{package_name}'"))?;
+    if let Some(mac) = &manifest.mac {
+        validate_publish_mac_profile_manifest(package_name, &manifest.permissions, mac)
+            .with_context(|| {
+                format!("validating MAC profile manifest for package '{package_name}'")
+            })?;
+        validate_publish_mac_profile_artifacts(Path::new(path), package_name, mac)?;
+    }
+
+    Ok(manifest)
+}
+
+fn read_publish_manifest_digest(path: &Path) -> Result<String> {
+    let bytes =
+        fs::read(path).with_context(|| format!("reading expose manifest {}", path.display()))?;
+    Ok(crate::package_attestation::package_manifest_digest_bytes(
+        &bytes,
+    ))
+}
+
+fn validate_publish_mac_profile_manifest(
+    package_name: &str,
+    permissions: &PermissionsMeta,
+    mac: &PublishMacProfileManifest,
+) -> Result<()> {
+    let expected_label = permissions
+        .security_label
+        .clone()
+        .unwrap_or_else(|| format!("aos-pkg-{package_name}"));
+    let expected_default_deny = permissions
+        .confinement
+        .as_ref()
+        .map(|confinement| confinement.class != ConfinementClass::Unconfined)
+        .unwrap_or_else(|| {
+            permissions.computed_confinement().class != ConfinementClass::Unconfined
+        });
+    let expected_profile_path =
+        expected_default_deny.then(|| expected_publish_selinux_profile_path(&expected_label));
+
+    if mac.version != 1 {
+        bail!(
+            "MAC profile manifest for package '{}' has unsupported version {}",
+            package_name,
+            mac.version
+        );
+    }
+    if mac.package != package_name {
+        bail!(
+            "MAC profile manifest package mismatch: expected '{}', got '{}'",
+            package_name,
+            mac.package
+        );
+    }
+    if mac.backend != "selinux" {
+        bail!(
+            "MAC profile manifest backend mismatch for package '{}'",
+            package_name
+        );
+    }
+    if mac.security_label != expected_label {
+        bail!(
+            "MAC profile manifest security label mismatch for package '{}'",
+            package_name
+        );
+    }
+    if mac.default_deny != expected_default_deny
+        || mac.profile_path.as_deref() != expected_profile_path.as_deref()
+    {
+        bail!(
+            "MAC profile manifest confinement mode mismatch for package '{}'",
+            package_name
+        );
+    }
+    Ok(())
+}
+
+fn validate_publish_mac_profile_artifacts(
+    manifest_path: &Path,
+    package_name: &str,
+    mac: &PublishMacProfileManifest,
+) -> Result<()> {
+    let artifact_root = manifest_path.parent().with_context(|| {
+        format!(
+            "expose manifest path has no parent: {}",
+            manifest_path.display()
+        )
+    })?;
+    let mac_path = artifact_root.join("mac-profile.json");
+    let artifact_mac: PublishMacProfileManifest = read_publish_mac_profile_file(&mac_path)
+        .with_context(|| {
+            format!(
+                "validating MAC profile artifact for package '{}' at {}",
+                package_name,
+                mac_path.display()
+            )
+        })?;
+    if &artifact_mac != mac {
+        bail!(
+            "MAC profile artifact for package '{}' does not match manifest.mac",
+            package_name
+        );
+    }
+
+    let Some(profile_path) = &mac.profile_path else {
+        return Ok(());
+    };
+    let profile_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_root, Path::new(profile_path))
+            .with_context(|| format!("reading MAC profile file {}", profile_path))?;
+    if profile_bytes.is_empty() {
+        bail!(
+            "MAC profile file for package '{}' is empty: {}",
+            package_name,
+            profile_path
+        );
+    }
+    let module_name = publish_selinux_identifier_for_label(&mac.security_label);
+    let module_path = format!("mac/selinux/{module_name}.mod");
+    let module_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_root, Path::new(&module_path))
+            .with_context(|| format!("reading MAC module file {}", module_path))?;
+    if module_bytes.is_empty() {
+        bail!(
+            "MAC module file for package '{}' is empty: {}",
+            package_name,
+            module_path
+        );
+    }
+    let source_path = format!("mac/selinux/{module_name}.te");
+    let source_text = read_artifact_regular_file_no_symlink(artifact_root, Path::new(&source_path))
+        .with_context(|| format!("reading MAC source file {}", source_path))?;
+    let expected_profile = expected_publish_selinux_profile(&mac.security_label);
+    if source_text.trim_end() != expected_profile.trim_end() {
+        bail!(
+            "MAC source file for package '{}' does not match the expected default-deny scaffold",
+            package_name
+        );
+    }
+    validate_publish_compiled_selinux_profile(
+        package_name,
+        &source_text,
+        &module_name,
+        &module_path,
+        &module_bytes,
+        profile_path,
+        &profile_bytes,
+    )?;
+    Ok(())
+}
+
+fn validate_publish_compiled_selinux_profile(
+    package_name: &str,
+    source_text: &str,
+    module_name: &str,
+    module_path: &str,
+    module_bytes: &[u8],
+    profile_path: &str,
+    profile_bytes: &[u8],
+) -> Result<()> {
+    let expected = compile_publish_selinux_profile(source_text, module_name)
+        .with_context(|| format!("rebuilding SELinux profile for package '{package_name}'"))?;
+    if module_bytes != expected.module {
+        bail!(
+            "MAC module file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            module_path
+        );
+    }
+    if profile_bytes != expected.profile {
+        bail!(
+            "MAC profile file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            profile_path
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn compile_publish_selinux_profile(
+    source_text: &str,
+    _module_name: &str,
+) -> Result<CompiledSelinuxProfile> {
+    Ok(CompiledSelinuxProfile {
+        module: format!("compiled-module\n{source_text}").into_bytes(),
+        profile: format!("compiled-policy\n{source_text}").into_bytes(),
+    })
+}
+
+#[cfg(not(test))]
+fn compile_publish_selinux_profile(
+    source_text: &str,
+    module_name: &str,
+) -> Result<CompiledSelinuxProfile> {
+    let checkmodule = trusted_publish_checkmodule_path()?;
+    let semodule_package = trusted_publish_semodule_package_path()?;
+    let tmp = tempfile::TempDir::new().context("creating SELinux policy validation tempdir")?;
+    let source_path = tmp.path().join(format!("{module_name}.te"));
+    let module_path = tmp.path().join(format!("{module_name}.mod"));
+    let profile_path = tmp.path().join(format!("{module_name}.pp"));
+    fs::write(&source_path, source_text)
+        .with_context(|| format!("writing {}", source_path.display()))?;
+    run_selinux_policy_tool(
+        &checkmodule,
+        &[
+            std::ffi::OsStr::new("-M"),
+            std::ffi::OsStr::new("-m"),
+            std::ffi::OsStr::new("-o"),
+            module_path.as_os_str(),
+            source_path.as_os_str(),
+        ],
+    )?;
+    run_selinux_policy_tool(
+        &semodule_package,
+        &[
+            std::ffi::OsStr::new("-o"),
+            profile_path.as_os_str(),
+            std::ffi::OsStr::new("-m"),
+            module_path.as_os_str(),
+        ],
+    )?;
+    Ok(CompiledSelinuxProfile {
+        module: fs::read(&module_path)
+            .with_context(|| format!("reading {}", module_path.display()))?,
+        profile: fs::read(&profile_path)
+            .with_context(|| format!("reading {}", profile_path.display()))?,
+    })
+}
+
+#[cfg(not(test))]
+fn run_selinux_policy_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed with status {}: {}{}",
+            program,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn read_publish_mac_profile_file(path: &Path) -> Result<PublishMacProfileManifest> {
+    let content = read_regular_file_no_symlink(path)?;
+    serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<String> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn read_artifact_regular_bytes_no_symlink(root: &Path, relative_path: &Path) -> Result<Vec<u8>> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<PathBuf> {
+    let mut components = relative_path.components().peekable();
+    if components.peek().is_none() {
+        bail!("artifact-relative path is empty");
+    }
+
+    let mut current = root.to_path_buf();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(component) = component else {
+            bail!(
+                "artifact-relative path contains unsupported component: {}",
+                relative_path.display()
+            );
+        };
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current)
+            .with_context(|| format!("checking {}", current.display()))?;
+        if components.peek().is_some() {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                bail!(
+                    "artifact path component is not a non-symlink directory: {}",
+                    current.display()
+                );
+            }
+        } else if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            bail!(
+                "artifact path is not a non-symlink regular file: {}",
+                current.display()
+            );
+        }
+    }
+
+    Ok(current)
+}
+
+fn read_regular_file_no_symlink(path: &Path) -> Result<String> {
+    let metadata =
+        std::fs::symlink_metadata(path).with_context(|| format!("checking {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        bail!("path is not a regular file: {}", path.display());
+    }
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+#[cfg(not(test))]
+fn trusted_publish_checkmodule_path() -> Result<String> {
+    if let Ok(path) = std::env::var(CHECKMODULE_ENV) {
+        if path.is_empty() {
+            bail!("{CHECKMODULE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/checkmodule") {
+            bail!("{CHECKMODULE_ENV} must point to an absolute checkmodule binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{CHECKMODULE_ENV} is not configured for MAC policy validation");
+}
+
+#[cfg(not(test))]
+fn trusted_publish_semodule_package_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SEMODULE_PACKAGE_ENV) {
+        if path.is_empty() {
+            bail!("{SEMODULE_PACKAGE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/semodule_package") {
+            bail!("{SEMODULE_PACKAGE_ENV} must point to an absolute semodule_package binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{SEMODULE_PACKAGE_ENV} is not configured for MAC policy validation");
+}
+
+fn expected_publish_selinux_profile_path(label: &str) -> String {
+    format!(
+        "mac/selinux/{}.pp",
+        publish_selinux_identifier_for_label(label)
+    )
+}
+
+fn publish_selinux_identifier_for_label(label: &str) -> String {
+    let mut normalized = String::with_capacity(label.len());
+    for byte in label.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            normalized.push(byte as char);
+        } else {
+            normalized.push_str(&format!("_x{byte:02x}"));
+        }
+    }
+    if normalized
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        normalized
+    } else {
+        format!("aos_pkg_{normalized}")
+    }
+}
+
+fn publish_selinux_type_for_label(label: &str) -> String {
+    format!("{}_t", publish_selinux_identifier_for_label(label))
+}
+
+fn expected_publish_selinux_profile(label: &str) -> String {
+    let module_name = publish_selinux_identifier_for_label(label);
+    let type_name = publish_selinux_type_for_label(label);
+    format!(
+        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package SELinux default-deny module.\nmodule {module_name} 1.0;\n\nrequire {{\n  type init_t;\n  type kernel_t;\n  type root_t;\n  type tmp_t;\n  type tmpfs_t;\n  type unlabeled_t;\n  type var_lib_t;\n  type var_t;\n  attribute domain;\n  attribute file_type;\n  role system_r;\n  class dir {{ getattr open read search }};\n  class fd use;\n  class file {{ execute execute_no_trans execmod getattr map open read }};\n  class lnk_file {{ getattr read }};\n  class process {{ dyntransition execmem execstack execheap }};\n  class process2 {{ nnp_transition nosuid_transition }};\n}}\n\ntype {type_name};\ntypeattribute {type_name} domain;\nrole system_r types {type_name};\n\nallow {type_name} init_t:fd use;\nallow init_t {type_name}:process dyntransition;\nallow init_t {type_name}:process2 {{ nnp_transition nosuid_transition }};\nallow {type_name} kernel_t:fd use;\nallow kernel_t {type_name}:process dyntransition;\nallow kernel_t {type_name}:process2 {{ nnp_transition nosuid_transition }};\nallow {type_name} self:process {{ execmem execstack execheap }};\nallow {type_name} self:process2 {{ nnp_transition nosuid_transition }};\nallow {type_name} file_type:file execmod;\nallow {type_name} root_t:dir {{ getattr open read search }};\nallow {type_name} tmp_t:dir {{ getattr open read search }};\nallow {type_name} tmp_t:lnk_file {{ getattr read }};\nallow {type_name} tmpfs_t:dir {{ getattr open read search }};\nallow {type_name} tmpfs_t:lnk_file {{ getattr read }};\nallow {type_name} unlabeled_t:dir {{ getattr open read search }};\nallow {type_name} unlabeled_t:file {{ execute execute_no_trans execmod getattr map open read }};\nallow {type_name} unlabeled_t:lnk_file {{ getattr read }};\nallow {type_name} var_t:dir {{ getattr open read search }};\nallow {type_name} var_t:lnk_file {{ getattr read }};\nallow {type_name} var_lib_t:dir {{ getattr open read search }};\nallow {type_name} var_lib_t:lnk_file {{ getattr read }};\n"
+    )
+}
+
+/// Infer the rendered expose artifact from a manifest produced by
+/// `_expose-renderer.nix`.
+fn infer_publish_expose_artifact(path: &str) -> Result<StorePathInfo> {
+    let manifest_path = Path::new(path);
+    let Some(parent) = manifest_path.parent() else {
+        bail!("expose manifest path has no parent: {path}");
+    };
+    let Some(parent_str) = parent.to_str() else {
+        bail!(
+            "expose manifest parent path is not UTF-8: {}",
+            parent.display()
+        );
+    };
+    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json") {
+        bail!("expose manifest must be named manifest.json: {path}");
+    }
+    if store_dir_from_store_path(parent_str).is_none() {
+        bail!("expose manifest must live directly in a Nix store artifact: {path}");
+    }
+    if !parent.join("units").is_dir() {
+        bail!(
+            "expose artifact {} is missing required units/ directory",
+            parent.display()
+        );
+    }
+
+    let info = introspect_store_path(parent_str)
+        .with_context(|| format!("introspecting expose artifact {parent_str}"))?;
+    let artifact = ExposeArtifactMeta {
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+    };
+    validate_expose_artifact_meta(&artifact)?;
+    Ok(info)
 }
 
 /// Secure Boot facts extracted from a signed UKI at publish time.
@@ -2509,12 +3169,1910 @@ fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbF
     })
 }
 
+fn publish_attestation_meta(
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    manifest: &PublishExposeManifest,
+    expose_manifest_digest: Option<&str>,
+) -> Result<Option<AttestationMeta>> {
+    let image = manifest
+        .expose
+        .images
+        .iter()
+        .find(|image| image.root_hash.is_some() || image.root_hash_sig.is_some());
+    let manifest_digest = expose_manifest_digest
+        .context("package root attestation requires an expose manifest digest")?;
+    let root_hash = image
+        .map(|image| {
+            image
+                .root_hash
+                .clone()
+                .context("verity package root image is missing root_hash")
+        })
+        .transpose()?;
+    let root_hash_sig = image
+        .map(|image| {
+            image
+                .root_hash_sig
+                .clone()
+                .context("verity package root image is missing root_hash_sig")
+        })
+        .transpose()?;
+    let root_digest = root_hash
+        .clone()
+        .unwrap_or_else(|| package_nar_root_digest(&info.nar_hash));
+    let measurement = crate::package_attestation::package_measurement_digest(
+        name,
+        version,
+        &root_digest,
+        manifest_digest,
+    );
+    let provenance = Some(publish_provenance_ref(name, platform, &measurement)?);
+    let meta = AttestationMeta {
+        root_digest: Some(root_digest),
+        root_hash,
+        root_hash_sig,
+        provenance,
+        measurement: Some(measurement),
+    };
+    validate_attestation_meta(&meta)?;
+    Ok(Some(meta))
+}
+
+fn package_nar_root_digest(nar_hash: &str) -> String {
+    if let Some(hex) = sha256_hex_payload(nar_hash) {
+        format!("sha256:{hex}")
+    } else {
+        format!("sha256:{}", sha256_hex(nar_hash.as_bytes()))
+    }
+}
+
+const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
+const PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA: &str =
+    "https://andyl.com/aos/transparency/package-provenance/v1";
+const PACKAGE_PROVENANCE_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
+const PACKAGE_PROVENANCE_PREDICATE_TYPE: &str = "https://slsa.dev/provenance/v1";
+const PACKAGE_PROVENANCE_BUILD_TYPE: &str = "https://andyl.com/aos/apr-publish/v1";
+
+/// Exclusive on-disk lock (`.git/apr-publish.lock`) serializing publication
+/// critical sections that update append-only registry state.
+struct RegistryPublishLock {
+    path: PathBuf,
+    owned: bool,
+}
+
+impl RegistryPublishLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, false)
+    }
+
+    fn acquire_or_join_current_process(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, true)
+    }
+
+    fn acquire_inner(dir: &Path, join_current_process: bool) -> Result<Self> {
+        let git_dir = objectstore::repo_git_dir(dir)?;
+        let path = git_dir.join("apr-publish.lock");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .or_else(|err| {
+                if join_current_process && err.kind() == std::io::ErrorKind::AlreadyExists {
+                    let content = fs::read_to_string(&path)?;
+                    if content
+                        .lines()
+                        .any(|line| line.trim() == format!("pid={}", std::process::id()))
+                    {
+                        return Ok(OpenOptions::new().read(true).open(&path)?);
+                    }
+                }
+                Err(err)
+            })
+            .with_context(|| {
+                format!(
+                    "acquiring publish lock {}; another publisher may be running",
+                    path.display()
+                )
+            })?;
+        let owned = file
+            .metadata()
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(false);
+        if !owned {
+            return Ok(Self { path, owned });
+        }
+        writeln!(file, "pid={}", std::process::id())
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(Self { path, owned })
+    }
+}
+
+impl Drop for RegistryPublishLock {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct PublishProvenanceArtifact {
+    path: String,
+    jsonl: String,
+    attestation: AttestationMeta,
+}
+
+struct PackageProvenanceSigner {
+    key_id: String,
+    key_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyLogEntry {
+    body: PackageProvenanceTransparencyLogBody,
+    entry_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyLogBody {
+    schema: String,
+    sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_entry_hash: Option<String>,
+    package: String,
+    version: String,
+    platform: String,
+    store_path: String,
+    nar_hash: String,
+    nar_size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_hash_sig: Option<String>,
+    provenance: String,
+    measurement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<PackageProvenanceTransparencySource>,
+    statement: PackageProvenanceTransparencyStatement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencySource {
+    store_path: String,
+    nar_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyStatement {
+    path: String,
+    jsonl_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagedPackageProvenanceMeta {
+    path: String,
+    package: String,
+    version: String,
+    platform: String,
+    store_path: String,
+    source_drv: String,
+    source_nar_hash: String,
+    root_digest: String,
+    root_hash: Option<String>,
+    root_hash_sig: Option<String>,
+    provenance: String,
+    measurement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PackageTomlPlatformKey {
+    package: String,
+    version: String,
+    platform: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StagedPackageRfc0001Meta {
+    #[serde(default)]
+    expose: Option<ExposeMeta>,
+    #[serde(default)]
+    expose_artifact: Option<ExposeArtifactMeta>,
+    #[serde(default)]
+    permissions: PermissionsMeta,
+    #[serde(default, rename = "bpf_lsm")]
+    bpf_lsm: Option<BpfLsmPolicyMeta>,
+}
+
+fn publish_provenance_artifact(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+    signer: &PackageProvenanceSigner,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    let Some(attestation) = publish_attestation_meta(
+        name,
+        version,
+        platform,
+        info,
+        manifest,
+        Some(manifest_digest),
+    )?
+    else {
+        return Ok(None);
+    };
+    let provenance = attestation.provenance.as_deref().map(str::to_string);
+    let Some(provenance) = provenance else {
+        return Ok(None);
+    };
+    let statement = publish_provenance_statement(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest_digest,
+        &attestation,
+        &signer.key_id,
+    )?;
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(Some(PublishProvenanceArtifact {
+        path: provenance,
+        jsonl,
+        attestation,
+    }))
+}
+
+fn resolve_package_provenance_signer(
+    dir: &Path,
+    registry_name: &str,
+    signing_key: Option<&ResolvedSigningKey>,
+    key_id: Option<&str>,
+) -> Result<PackageProvenanceSigner> {
+    let key_id = key_id.context(
+        "publishing RFC-0001 exposed package provenance requires --key-id so the DSSE builder \
+         identity is tied to keys.toml",
+    )?;
+    validate_roster_key_id(key_id)?;
+    let signing_key = signing_key.context(
+        "publishing RFC-0001 exposed package provenance requires a resolved signing key",
+    )?;
+    let roster = load_committed_roster(dir)?;
+    if keys::is_revoked(&roster, key_id) {
+        bail!("provenance signing key id '{key_id}' is revoked in keys.toml");
+    }
+    let active = keys::active_key_by_id(&roster, key_id).ok_or_else(|| {
+        anyhow::anyhow!("provenance signing key id '{key_id}' is not active in keys.toml")
+    })?;
+    let derived = derive_trust_key(registry_name, signing_key.path())?;
+    if derived != active.key {
+        bail!(
+            "provenance signing key id '{key_id}' derives '{derived}', but keys.toml declares '{}'",
+            active.key
+        );
+    }
+    Ok(PackageProvenanceSigner {
+        key_id: key_id.to_string(),
+        key_path: PathBuf::from(signing_key.path()),
+    })
+}
+
+fn package_provenance_trusted_keys(dir: &Path) -> Result<(String, Vec<TrustedProvenanceKey>)> {
+    let registry_name = read_registry_toml(dir)?
+        .map(|config| config.registry.name)
+        .context("package provenance DSSE verification requires registry.toml [registry].name")?;
+    let roster = load_committed_roster(dir)?;
+    if roster.active.is_empty() {
+        bail!("package provenance DSSE verification requires at least one active key in keys.toml");
+    }
+    let mut trusted = Vec::with_capacity(roster.active.len());
+    for entry in &roster.active {
+        if keys::is_revoked(&roster, &entry.id) {
+            bail!(
+                "package provenance DSSE key id '{}' is both active and revoked in keys.toml",
+                entry.id
+            );
+        }
+        let (entry_registry, _algorithm, _public_key) = parse_signing_key(&entry.key)
+            .with_context(|| format!("invalid package provenance DSSE key id '{}'", entry.id))?;
+        if entry_registry != registry_name {
+            bail!(
+                "package provenance DSSE key id '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: entry.key.clone(),
+            retired_before_sequence: None,
+        });
+    }
+    for entry in &roster.revoked {
+        let Some(key) = entry.key.as_ref() else {
+            continue;
+        };
+        let retired_before_sequence = entry.provenance_before_sequence.with_context(|| {
+            format!(
+                "revoked package provenance DSSE key id '{}' declares key material without provenance-before-sequence",
+                entry.id
+            )
+        })?;
+        let (entry_registry, _algorithm, _public_key) =
+            parse_signing_key(key).with_context(|| {
+                format!(
+                    "invalid revoked package provenance DSSE key id '{}'",
+                    entry.id
+                )
+            })?;
+        if entry_registry != registry_name {
+            bail!(
+                "revoked package provenance DSSE key id '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: key.clone(),
+            retired_before_sequence: Some(retired_before_sequence),
+        });
+    }
+    Ok((registry_name, trusted))
+}
+
+fn append_package_provenance_transparency_log(
+    dir: &Path,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    artifact: &PublishProvenanceArtifact,
+    provenance_file_path: &Path,
+) -> Result<PathBuf> {
+    let path = dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+    ensure_package_provenance_transparency_log_extends_head(dir, &path)?;
+    let (sequence, previous_entry_hash) = read_package_provenance_transparency_log_state(&path)?;
+    let root_digest = artifact
+        .attestation
+        .root_digest
+        .as_deref()
+        .context("package transparency entry missing root_digest")?;
+    let root_hash = artifact.attestation.root_hash.clone();
+    let root_hash_sig = artifact.attestation.root_hash_sig.clone();
+    if root_hash.is_some() != root_hash_sig.is_some() {
+        bail!("package transparency entry root_hash and root_hash_sig must be declared together");
+    }
+    let provenance = artifact
+        .attestation
+        .provenance
+        .as_deref()
+        .context("package transparency entry missing provenance")?;
+    if artifact.path != provenance {
+        bail!(
+            "package transparency entry provenance path mismatch: expected '{}', got '{}'",
+            provenance,
+            artifact.path
+        );
+    }
+    let provenance_file_ref = registry_relative_path(dir, provenance_file_path)?;
+    if provenance_file_ref != artifact.path {
+        bail!(
+            "package transparency entry provenance file mismatch: expected '{}', got '{}'",
+            artifact.path,
+            provenance_file_ref
+        );
+    }
+    ensure_safe_package_provenance_statement_path(&provenance_file_ref)?;
+    let provenance_file = fs::read(provenance_file_path).with_context(|| {
+        format!(
+            "reading provenance artifact {}",
+            provenance_file_path.display()
+        )
+    })?;
+    let measurement = artifact
+        .attestation
+        .measurement
+        .as_deref()
+        .context("package transparency entry missing measurement")?;
+    let body = PackageProvenanceTransparencyLogBody {
+        schema: PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA.to_string(),
+        sequence,
+        previous_entry_hash,
+        package: name.to_string(),
+        version: version.to_string(),
+        platform: platform.to_string(),
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+        root_digest: Some(root_digest.to_string()),
+        root_hash,
+        root_hash_sig,
+        provenance: provenance.to_string(),
+        measurement: measurement.to_string(),
+        source: source_info.map(|source| PackageProvenanceTransparencySource {
+            store_path: source.path.clone(),
+            nar_hash: source.nar_hash.clone(),
+        }),
+        statement: PackageProvenanceTransparencyStatement {
+            path: artifact.path.clone(),
+            jsonl_sha256: format!("sha256:{}", sha256_hex(&provenance_file)),
+        },
+    };
+    let entry_hash = package_provenance_transparency_entry_hash(&body)?;
+    let entry = PackageProvenanceTransparencyLogEntry { body, entry_hash };
+    let parent = path
+        .parent()
+        .with_context(|| format!("transparency log path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let line =
+        serde_json::to_string(&entry).context("serializing package transparency log entry")?;
+    writeln!(file, "{line}").with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+fn read_package_provenance_transparency_log_state(path: &Path) -> Result<(u64, Option<String>)> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((0, None));
+        }
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let (next_sequence, previous_entry_hash, _) =
+        parse_package_provenance_transparency_log(&content, &path.display().to_string())?;
+    Ok((next_sequence, previous_entry_hash))
+}
+
+fn parse_package_provenance_transparency_log(
+    content: &str,
+    source: &str,
+) -> Result<(
+    u64,
+    Option<String>,
+    Vec<PackageProvenanceTransparencyLogEntry>,
+)> {
+    let mut next_sequence = 0u64;
+    let mut previous_entry_hash: Option<String> = None;
+    let mut entries = Vec::new();
+    for (line_index, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let entry: PackageProvenanceTransparencyLogEntry = serde_json::from_str(line)
+            .with_context(|| {
+                format!(
+                    "deserializing package transparency log entry {} in {}",
+                    line_index + 1,
+                    source
+                )
+            })?;
+        if entry.body.schema != PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA {
+            bail!(
+                "package transparency log entry {} has unsupported schema '{}'",
+                line_index + 1,
+                entry.body.schema
+            );
+        }
+        if entry.body.sequence != next_sequence {
+            bail!(
+                "package transparency log entry {} sequence mismatch: expected {}, got {}",
+                line_index + 1,
+                next_sequence,
+                entry.body.sequence
+            );
+        }
+        if entry.body.previous_entry_hash != previous_entry_hash {
+            bail!(
+                "package transparency log entry {} previous hash mismatch",
+                line_index + 1
+            );
+        }
+        let expected_entry_hash = package_provenance_transparency_entry_hash(&entry.body)
+            .with_context(|| {
+                format!(
+                    "hashing package transparency log entry {} in {}",
+                    line_index + 1,
+                    source
+                )
+            })?;
+        if entry.entry_hash != expected_entry_hash {
+            bail!(
+                "package transparency log entry {} hash mismatch: expected '{}', got '{}'",
+                line_index + 1,
+                expected_entry_hash,
+                entry.entry_hash
+            );
+        }
+        previous_entry_hash = Some(entry.entry_hash.clone());
+        next_sequence = next_sequence
+            .checked_add(1)
+            .context("package transparency log sequence overflow")?;
+        entries.push(entry);
+    }
+    Ok((next_sequence, previous_entry_hash, entries))
+}
+
+fn ensure_package_provenance_transparency_log_extends_head(dir: &Path, path: &Path) -> Result<()> {
+    let Some(head_log) = head_package_provenance_transparency_log(dir)? else {
+        return Ok(());
+    };
+    let current = match fs::read(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    ensure_package_provenance_transparency_bytes_extend_head(
+        dir,
+        &current,
+        &head_log,
+        &path.display().to_string(),
+    )
+}
+
+fn ensure_package_provenance_transparency_bytes_extend_head(
+    dir: &Path,
+    current: &[u8],
+    head_log: &[u8],
+    source: &str,
+) -> Result<()> {
+    if !current.starts_with(head_log) {
+        bail!(
+            "package transparency log {source} does not extend committed HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}; restore the committed prefix before publishing"
+        );
+    }
+    let head_text = std::str::from_utf8(head_log)
+        .with_context(|| format!("decoding HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG} as UTF-8"))?;
+    parse_package_provenance_transparency_log(
+        head_text,
+        &format!("HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+    )
+    .with_context(|| {
+        format!(
+            "validating HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG} in {}",
+            dir.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn head_package_provenance_transparency_log(dir: &Path) -> Result<Option<Vec<u8>>> {
+    let (is_repo, _, _) = git_try(dir, &["rev-parse", "--is-inside-work-tree"])?;
+    if !is_repo {
+        return Ok(None);
+    }
+    let (has_head, _, _) = git_try(dir, &["rev-parse", "--verify", "HEAD"])?;
+    if !has_head {
+        return Ok(None);
+    }
+    git_tree_file_bytes(dir, "HEAD", PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+}
+
+fn git_index_file_bytes(dir: &Path, path: &str) -> Result<Option<Vec<u8>>> {
+    ensure_safe_git_jsonl_index_path(path)?;
+    git_index_safe_file_bytes(dir, path)
+}
+
+fn git_index_safe_file_bytes(dir: &Path, path: &str) -> Result<Option<Vec<u8>>> {
+    ensure_safe_git_index_path(path)?;
+    git_tree_file_bytes(dir, "", path)
+}
+
+fn git_tree_file_bytes(dir: &Path, treeish: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    let spec = if treeish.is_empty() {
+        format!(":{path}")
+    } else {
+        format!("{treeish}:{path}")
+    };
+    let (exists, _, _) = git_try(dir, &["cat-file", "-e", &spec])?;
+    if !exists {
+        return Ok(None);
+    }
+    git_raw(dir, &["show", &spec]).map(Some)
+}
+
+fn staged_package_provenance_transparency_validation_needed(dir: &Path) -> Result<bool> {
+    let changed = git(dir, &["diff", "--cached", "--name-only"])?;
+    let log_changed = changed
+        .lines()
+        .any(|line| line.trim() == PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+    if log_changed {
+        return Ok(true);
+    }
+    if !staged_package_toml_provenance_entries(dir)?.is_empty() {
+        return Ok(true);
+    }
+    let provenance_statement_changed = changed.lines().any(|line| {
+        let path = line.trim();
+        path.starts_with("provenance/") && path.ends_with(".intoto.jsonl")
+    });
+    if provenance_statement_changed {
+        return Ok(true);
+    }
+    let store_record_changed = changed
+        .lines()
+        .any(|line| line.trim().starts_with("store/"));
+    if store_record_changed && !indexed_package_toml_provenance_entries(dir)?.is_empty() {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn validate_staged_package_provenance_transparency_log(dir: &Path) -> Result<()> {
+    let log = git_index_file_bytes(dir, PACKAGE_PROVENANCE_TRANSPARENCY_LOG)?
+        .context("staged package provenance transparency log is missing")?;
+    if let Some(head_log) = head_package_provenance_transparency_log(dir)? {
+        ensure_package_provenance_transparency_bytes_extend_head(
+            dir,
+            &log,
+            &head_log,
+            &format!("index:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+        )?;
+    }
+    let log_text = std::str::from_utf8(&log)
+        .context("decoding staged package provenance transparency log as UTF-8")?;
+    let (_, _, entries) = parse_package_provenance_transparency_log(
+        log_text,
+        &format!("index:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+    )?;
+    validate_staged_package_toml_provenance_entries(dir, &entries)?;
+    validate_staged_store_provenance_entries(dir, &entries)?;
+    let (registry_name, trusted_keys) = package_provenance_trusted_keys(dir)?;
+    for entry in &entries {
+        ensure_safe_package_provenance_statement_path(&entry.body.statement.path)?;
+        let statement_bytes =
+            git_index_file_bytes(dir, &entry.body.statement.path)?.with_context(|| {
+                format!(
+                    "staged package provenance statement '{}' is missing",
+                    entry.body.statement.path
+                )
+            })?;
+        let actual = format!("sha256:{}", sha256_hex(&statement_bytes));
+        if actual != entry.body.statement.jsonl_sha256 {
+            bail!(
+                "staged package provenance statement '{}' digest mismatch: expected '{}', got '{}'",
+                entry.body.statement.path,
+                entry.body.statement.jsonl_sha256,
+                actual
+            );
+        }
+        let statement_text = std::str::from_utf8(&statement_bytes).with_context(|| {
+            format!(
+                "decoding package provenance statement '{}' as UTF-8",
+                entry.body.statement.path
+            )
+        })?;
+        let (statement, key_id) =
+            crate::provenance::verify_statement_dsse_jsonl(statement_text, &trusted_keys)
+                .with_context(|| {
+                    format!(
+                        "verifying package provenance DSSE envelope '{}'",
+                        entry.body.statement.path
+                    )
+                })?;
+        crate::provenance::verify_key_allowed_for_transparency_sequence(
+            &trusted_keys,
+            &key_id,
+            entry.body.sequence,
+        )
+        .with_context(|| {
+            format!(
+                "verifying package provenance key lifetime for '{}'",
+                entry.body.statement.path
+            )
+        })?;
+        validate_package_provenance_transparency_statement(
+            entry,
+            &statement,
+            &registry_name,
+            &key_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_staged_package_toml_provenance_entries(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+) -> Result<()> {
+    for meta in staged_package_toml_provenance_entries(dir)? {
+        let entry = unique_staged_package_transparency_entry(log_entries, &meta)?;
+        ensure_staged_package_matches_transparency_entry(&meta, entry)?;
+    }
+    Ok(())
+}
+
+fn validate_staged_package_toml_provenance_requirements(dir: &Path) -> Result<()> {
+    for path in staged_changed_paths(dir)? {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing staged package metadata {path}"))?;
+        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "staged")? {
+            ensure_staged_package_rfc0001_provenance(&path, &key, platform_entry)?;
+        }
+    }
+    Ok(())
+}
+
+fn staged_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    package_toml_provenance_entries_from_paths(dir, staged_changed_paths(dir)?, true)
+}
+
+fn indexed_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    package_toml_provenance_entries_from_paths(dir, git_ls_files(dir, "packages")?, false)
+}
+
+fn head_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    let mut metas = Vec::new();
+    for path in git_ls_tree_files(dir, "HEAD", "packages")? {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_tree_file_bytes(dir, "HEAD", &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding HEAD package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing HEAD package metadata {path}"))?;
+        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "HEAD")? {
+            let Some(provenance) = platform_entry
+                .get("provenance")
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            metas.push(StagedPackageProvenanceMeta {
+                path: path.clone(),
+                package: key.package.clone(),
+                version: key.version.clone(),
+                platform: key.platform.clone(),
+                store_path: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "store_path",
+                )?,
+                source_drv: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_drv",
+                )?,
+                source_nar_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_nar_hash",
+                )?,
+                root_digest: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_digest",
+                )?,
+                root_hash: staged_package_optional_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash",
+                )?,
+                root_hash_sig: staged_package_optional_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash_sig",
+                )?,
+                provenance: provenance.to_string(),
+                measurement: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "measurement",
+                )?,
+            });
+        }
+    }
+    Ok(metas)
+}
+
+fn package_toml_provenance_entries_from_paths(
+    dir: &Path,
+    paths: Vec<String>,
+    check_downgrade: bool,
+) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    let mut metas = Vec::new();
+    for path in paths {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing staged package metadata {path}"))?;
+        let staged_entries = package_toml_platform_entries(&path, &value, "staged")?;
+        if check_downgrade {
+            ensure_staged_package_provenance_not_downgraded(dir, &path, &staged_entries)?;
+        }
+        for (key, platform_entry) in staged_entries {
+            let Some(provenance) = platform_entry
+                .get("provenance")
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            metas.push(StagedPackageProvenanceMeta {
+                path: path.clone(),
+                package: key.package.clone(),
+                version: key.version.clone(),
+                platform: key.platform.clone(),
+                store_path: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "store_path",
+                )?,
+                source_drv: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_drv",
+                )?,
+                source_nar_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_nar_hash",
+                )?,
+                root_digest: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_digest",
+                )?,
+                root_hash: staged_package_optional_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash",
+                )?,
+                root_hash_sig: staged_package_optional_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash_sig",
+                )?,
+                provenance: provenance.to_string(),
+                measurement: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "measurement",
+                )?,
+            });
+        }
+    }
+    Ok(metas)
+}
+
+fn ensure_staged_package_rfc0001_provenance(
+    path: &str,
+    key: &PackageTomlPlatformKey,
+    entry: &toml::Value,
+) -> Result<()> {
+    let meta: StagedPackageRfc0001Meta = entry.clone().try_into().with_context(|| {
+        format!(
+            "parsing staged package metadata {path} {} {} {} RFC-0001 fields",
+            key.package, key.version, key.platform
+        )
+    })?;
+    let requires_provenance = rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    );
+    if !requires_provenance {
+        return Ok(());
+    }
+    match entry.get("provenance") {
+        Some(provenance) if provenance.is_str() => Ok(()),
+        Some(_) => bail!(
+            "staged package metadata {path} {} {} {} provenance must be a string",
+            key.package,
+            key.version,
+            key.platform
+        ),
+        None => bail!(
+            "staged package metadata {path} {} {} {} uses RFC-0001 exposed or permission metadata without attestation provenance",
+            key.package,
+            key.version,
+            key.platform
+        ),
+    }
+}
+
+fn ensure_staged_package_provenance_not_downgraded(
+    dir: &Path,
+    path: &str,
+    staged_entries: &[(PackageTomlPlatformKey, &toml::Value)],
+) -> Result<()> {
+    let staged_by_key = staged_entries
+        .iter()
+        .map(|(key, entry)| (key.clone(), *entry))
+        .collect::<BTreeMap<_, _>>();
+    for (key, entry) in &staged_by_key {
+        if let Some(provenance) = entry.get("provenance")
+            && !provenance.is_str()
+        {
+            bail!(
+                "staged package metadata {path} {} {} {} provenance must be a string",
+                key.package,
+                key.version,
+                key.platform
+            );
+        }
+    }
+    let Some(head_bytes) = git_tree_file_bytes(dir, "HEAD", path)? else {
+        return Ok(());
+    };
+    let head_text = std::str::from_utf8(&head_bytes)
+        .with_context(|| format!("decoding HEAD package metadata {path} as UTF-8"))?;
+    let head_value: toml::Value = toml::from_str(head_text)
+        .with_context(|| format!("parsing HEAD package metadata {path}"))?;
+    for (key, head_entry) in package_toml_platform_entries(path, &head_value, "HEAD")? {
+        let Some(head_provenance) = head_entry.get("provenance").and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(staged_entry) = staged_by_key.get(&key) else {
+            continue;
+        };
+        if staged_entry
+            .get("provenance")
+            .and_then(toml::Value::as_str)
+            .is_none()
+        {
+            bail!(
+                "staged package metadata {path} {} {} {} removes committed provenance '{}'",
+                key.package,
+                key.version,
+                key.platform,
+                head_provenance
+            );
+        }
+    }
+    Ok(())
+}
+
+fn package_toml_platform_entries<'a>(
+    path: &str,
+    value: &'a toml::Value,
+    source: &str,
+) -> Result<Vec<(PackageTomlPlatformKey, &'a toml::Value)>> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    let package = value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("{source} package metadata {path} missing package.name"))?;
+    let Some(versions_value) = value.get("versions") else {
+        return Ok(entries);
+    };
+    let versions = versions_value
+        .as_array()
+        .with_context(|| format!("{source} package metadata {path} versions must be an array"))?;
+    for version_entry in versions {
+        let version = version_entry
+            .get("version")
+            .and_then(toml::Value::as_str)
+            .with_context(|| {
+                format!("{source} package metadata {path} has a version missing version")
+            })?;
+        let Some(platforms_value) = version_entry.get("platforms") else {
+            continue;
+        };
+        let platforms = platforms_value.as_table().with_context(|| {
+            format!("{source} package metadata {path} version {version} platforms must be a table")
+        })?;
+        for (platform, platform_entry) in platforms {
+            let key = PackageTomlPlatformKey {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+            };
+            if !seen.insert(key.clone()) {
+                bail!(
+                    "{source} package metadata {path} has duplicate {} {} {} platform entries",
+                    key.package,
+                    key.version,
+                    key.platform
+                );
+            }
+            entries.push((key, platform_entry));
+        }
+    }
+    Ok(entries)
+}
+
+fn validate_staged_store_provenance_entries(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+) -> Result<()> {
+    let changed_ias = staged_store_record_ia_hashes(dir)?;
+    let package_metas = indexed_package_toml_provenance_entries(dir)?;
+    for meta in &package_metas {
+        validate_staged_store_record_for_package(dir, log_entries, meta)?;
+    }
+
+    if changed_ias.is_empty() {
+        return Ok(());
+    }
+
+    let protected_roots = head_package_toml_provenance_entries(dir)?
+        .into_iter()
+        .map(|meta| extract_hash(&meta.store_path).to_string())
+        .collect::<HashSet<_>>();
+    for root_meta in &package_metas {
+        let root_ia = extract_hash(&root_meta.store_path);
+        if !protected_roots.contains(root_ia) {
+            continue;
+        }
+        let reachable = staged_store_reachable_ias(dir, root_ia)?;
+        for changed_ia in changed_ias.intersection(&reachable) {
+            let mut bound = false;
+            for meta in package_metas
+                .iter()
+                .filter(|meta| extract_hash(&meta.store_path) == changed_ia.as_str())
+            {
+                bound = true;
+                validate_staged_store_record_for_package(dir, log_entries, meta)?;
+            }
+            if !bound {
+                let record_path =
+                    registry_relative_path(dir, &store::entry_path(dir, changed_ia)?)?;
+                bail!(
+                    "staged store record {record_path} changes a reachable dependency of provenanced package {} {} {} without its own package provenance transparency binding",
+                    root_meta.package,
+                    root_meta.version,
+                    root_meta.platform
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_staged_store_record_for_package(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+    meta: &StagedPackageProvenanceMeta,
+) -> Result<()> {
+    let ia_hash = extract_hash(&meta.store_path);
+    let entry = unique_staged_package_transparency_entry(log_entries, meta)?;
+    ensure_staged_package_matches_transparency_entry(meta, entry)?;
+    let record_path = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    let bytes = git_index_safe_file_bytes(dir, &record_path)?.with_context(|| {
+        format!(
+            "staged store record {record_path} for provenanced package {} {} {} is missing",
+            meta.package, meta.version, meta.platform
+        )
+    })?;
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("decoding staged store record {record_path} as UTF-8"))?;
+    let store_entry = store::parse_entry(text)
+        .with_context(|| format!("parsing staged store record {record_path}"))?;
+    let expected_nar = NarBytes::from_hash(&entry.body.nar_hash, entry.body.nar_size)
+        .with_context(|| {
+            format!(
+                "normalizing transparency log NAR hash for {} {} {}",
+                meta.package, meta.version, meta.platform
+            )
+        })?;
+    let mut matched = false;
+    for nar in store_entry.blessed_nars() {
+        if nar == expected_nar {
+            matched = true;
+            continue;
+        }
+        bail!(
+            "staged store record {record_path} blesses NAR sha256:{}:{} for provenanced package {} {} {}, but transparency log entry {} covers '{}:{}'",
+            nar.sha256_nix32,
+            nar.size,
+            meta.package,
+            meta.version,
+            meta.platform,
+            entry.body.sequence,
+            entry.body.nar_hash,
+            entry.body.nar_size
+        );
+    }
+    if !matched {
+        bail!(
+            "staged store record {record_path} for provenanced package {} {} {} is missing transparency-log NAR '{}:{}'",
+            meta.package,
+            meta.version,
+            meta.platform,
+            entry.body.nar_hash,
+            entry.body.nar_size
+        );
+    }
+    Ok(())
+}
+
+fn staged_store_reachable_ias(dir: &Path, root_ia: &str) -> Result<HashSet<String>> {
+    let mut reachable = HashSet::new();
+    let mut stack = vec![root_ia.to_string()];
+    while let Some(ia_hash) = stack.pop() {
+        if !reachable.insert(ia_hash.clone()) {
+            continue;
+        }
+        let Some(entry) = staged_store_entry(dir, &ia_hash)? else {
+            continue;
+        };
+        stack.extend(entry.dep_ias());
+    }
+    Ok(reachable)
+}
+
+fn staged_store_entry(dir: &Path, ia_hash: &str) -> Result<Option<store::StoreEntry>> {
+    let path = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("decoding staged store record {path} as UTF-8"))?;
+    store::parse_entry(text)
+        .map(Some)
+        .with_context(|| format!("parsing staged store record {path}"))
+}
+
+fn staged_store_record_ia_hashes(dir: &Path) -> Result<HashSet<String>> {
+    let mut hashes = HashSet::new();
+    for path in staged_changed_paths(dir)? {
+        let Some(ia_hash) = store_record_ia_hash_from_index_path(dir, &path)? else {
+            continue;
+        };
+        hashes.insert(ia_hash);
+    }
+    Ok(hashes)
+}
+
+fn store_record_ia_hash_from_index_path(dir: &Path, path: &str) -> Result<Option<String>> {
+    if !path.starts_with("store/") {
+        return Ok(None);
+    }
+    ensure_safe_git_index_path(path)?;
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!("staged store record path '{path}' must use store/<shard>/<hash>");
+    }
+    let ia_hash = parts[2];
+    let expected = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    if path != expected {
+        bail!("staged store record path '{path}' is misfiled; expected '{expected}'");
+    }
+    Ok(Some(ia_hash.to_string()))
+}
+
+fn unique_staged_package_transparency_entry<'a>(
+    log_entries: &'a [PackageProvenanceTransparencyLogEntry],
+    meta: &StagedPackageProvenanceMeta,
+) -> Result<&'a PackageProvenanceTransparencyLogEntry> {
+    let mut matches = log_entries
+        .iter()
+        .filter(|entry| entry.body.provenance == meta.provenance);
+    let entry = matches.next().with_context(|| {
+        format!(
+            "staged package metadata {} declares provenance '{}' with no transparency log entry",
+            meta.path, meta.provenance
+        )
+    })?;
+    if matches.next().is_some() {
+        bail!(
+            "staged package metadata {} declares provenance '{}' with duplicate transparency log entries",
+            meta.path,
+            meta.provenance
+        );
+    }
+    Ok(entry)
+}
+
+fn ensure_staged_package_matches_transparency_entry(
+    meta: &StagedPackageProvenanceMeta,
+    entry: &PackageProvenanceTransparencyLogEntry,
+) -> Result<()> {
+    ensure_staged_package_field(meta, "package", &entry.body.package, &meta.package)?;
+    ensure_staged_package_field(meta, "version", &entry.body.version, &meta.version)?;
+    ensure_staged_package_field(meta, "platform", &entry.body.platform, &meta.platform)?;
+    ensure_staged_package_field(meta, "store_path", &entry.body.store_path, &meta.store_path)?;
+    let entry_root_digest = entry
+        .body
+        .root_digest
+        .as_deref()
+        .or(entry.body.root_hash.as_deref())
+        .context("package transparency entry missing root_digest")?;
+    ensure_staged_package_field(meta, "root_digest", entry_root_digest, &meta.root_digest)?;
+    ensure_staged_package_optional_field(
+        meta,
+        "root_hash",
+        entry.body.root_hash.as_deref(),
+        meta.root_hash.as_deref(),
+    )?;
+    ensure_staged_package_optional_field(
+        meta,
+        "root_hash_sig",
+        entry.body.root_hash_sig.as_deref(),
+        meta.root_hash_sig.as_deref(),
+    )?;
+    ensure_staged_package_field(
+        meta,
+        "measurement",
+        &entry.body.measurement,
+        &meta.measurement,
+    )?;
+    ensure_staged_package_source(meta, entry)
+}
+
+fn ensure_staged_package_source(
+    meta: &StagedPackageProvenanceMeta,
+    entry: &PackageProvenanceTransparencyLogEntry,
+) -> Result<()> {
+    if let Some(source) = &entry.body.source {
+        ensure_staged_package_field(meta, "source_drv", &source.store_path, &meta.source_drv)?;
+        ensure_staged_package_field(
+            meta,
+            "source_nar_hash",
+            &source.nar_hash,
+            &meta.source_nar_hash,
+        )?;
+        return Ok(());
+    }
+    if !meta.source_drv.is_empty() || !meta.source_nar_hash.is_empty() {
+        bail!(
+            "staged package metadata {} {} {} {} declares source metadata but transparency log entry has no source dependency",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform
+        );
+    }
+    Ok(())
+}
+
+fn staged_changed_paths(dir: &Path) -> Result<Vec<String>> {
+    Ok(git(dir, &["diff", "--cached", "--name-only"])?
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn git_ls_files(dir: &Path, pathspec: &str) -> Result<Vec<String>> {
+    Ok(git(dir, &["ls-files", "--", pathspec])?
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn git_ls_tree_files(dir: &Path, treeish: &str, pathspec: &str) -> Result<Vec<String>> {
+    let (ok, stdout, _) = git_try(
+        dir,
+        &["ls-tree", "-r", "--name-only", treeish, "--", pathspec],
+    )?;
+    if !ok {
+        return Ok(Vec::new());
+    }
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn is_package_toml_path(path: &str) -> bool {
+    path.starts_with("packages/")
+        && path.ends_with(".toml")
+        && ensure_safe_git_index_path(path).is_ok()
+}
+
+fn staged_package_string_field(
+    path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    entry: &toml::Value,
+    field: &str,
+) -> Result<String> {
+    entry
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(ToString::to_string)
+        .with_context(|| {
+            format!("staged package metadata {path} {package} {version} {platform} missing {field}")
+        })
+}
+
+fn staged_package_optional_string_field(
+    path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    entry: &toml::Value,
+    field: &str,
+) -> Result<Option<String>> {
+    match entry.get(field) {
+        Some(value) => value
+            .as_str()
+            .map(|value| Some(value.to_string()))
+            .with_context(|| {
+                format!(
+                    "staged package metadata {path} {package} {version} {platform} {field} must be a string"
+                )
+            }),
+        None => Ok(None),
+    }
+}
+
+fn ensure_staged_package_field(
+    meta: &StagedPackageProvenanceMeta,
+    field: &str,
+    expected: &str,
+    actual: &str,
+) -> Result<()> {
+    if expected != actual {
+        bail!(
+            "staged package metadata {} {} {} {} {field} mismatch: expected '{}', got '{}'",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform,
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn ensure_staged_package_optional_field(
+    meta: &StagedPackageProvenanceMeta,
+    field: &str,
+    expected: Option<&str>,
+    actual: Option<&str>,
+) -> Result<()> {
+    if expected != actual {
+        bail!(
+            "staged package metadata {} {} {} {} {field} mismatch: expected '{}', got '{}'",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform,
+            expected.unwrap_or("<absent>"),
+            actual.unwrap_or("<absent>")
+        );
+    }
+    Ok(())
+}
+
+fn validate_package_provenance_transparency_statement(
+    entry: &PackageProvenanceTransparencyLogEntry,
+    statement: &Value,
+    registry_name: &str,
+    key_id: &str,
+) -> Result<()> {
+    if entry.body.statement.path != entry.body.provenance {
+        bail!(
+            "package transparency log entry {} statement path '{}' does not match provenance '{}'",
+            entry.body.sequence,
+            entry.body.statement.path,
+            entry.body.provenance
+        );
+    }
+    ensure_json_string(
+        statement,
+        "_type",
+        PACKAGE_PROVENANCE_STATEMENT_TYPE,
+        "statement _type",
+    )?;
+    ensure_json_string(
+        statement,
+        "predicateType",
+        PACKAGE_PROVENANCE_PREDICATE_TYPE,
+        "statement predicateType",
+    )?;
+
+    let predicate = json_object(&statement, "predicate")?;
+    let build_definition = json_object(predicate, "buildDefinition")?;
+    let run_details = json_object(predicate, "runDetails")?;
+    let builder = json_object(run_details, "builder")?;
+    ensure_json_string(
+        builder,
+        "id",
+        &provenance_builder_id(registry_name, key_id),
+        "runDetails.builder.id",
+    )?;
+    ensure_json_string(
+        build_definition,
+        "buildType",
+        PACKAGE_PROVENANCE_BUILD_TYPE,
+        "statement buildType",
+    )?;
+    let params = json_object(build_definition, "externalParameters")?;
+    ensure_json_string(
+        params,
+        "package",
+        &entry.body.package,
+        "externalParameters.package",
+    )?;
+    ensure_json_string(
+        params,
+        "version",
+        &entry.body.version,
+        "externalParameters.version",
+    )?;
+    ensure_json_string(
+        params,
+        "platform",
+        &entry.body.platform,
+        "externalParameters.platform",
+    )?;
+    ensure_json_string(
+        params,
+        "store_path",
+        &entry.body.store_path,
+        "externalParameters.store_path",
+    )?;
+    ensure_json_string(
+        params,
+        "root_digest",
+        entry
+            .body
+            .root_digest
+            .as_deref()
+            .or(entry.body.root_hash.as_deref())
+            .context("package transparency entry missing root_digest")?,
+        "externalParameters.root_digest",
+    )?;
+    ensure_json_optional_string(
+        params,
+        "root_hash",
+        entry.body.root_hash.as_deref(),
+        "externalParameters.root_hash",
+    )?;
+    ensure_json_optional_string(
+        params,
+        "root_hash_sig",
+        entry.body.root_hash_sig.as_deref(),
+        "externalParameters.root_hash_sig",
+    )?;
+    ensure_json_string(
+        params,
+        "provenance",
+        &entry.body.provenance,
+        "externalParameters.provenance",
+    )?;
+
+    let package_subject = provenance_statement_named_object(
+        json_array(statement, "subject")?,
+        &entry.body.store_path,
+    )
+    .with_context(|| {
+        format!(
+            "locating package subject '{}' for transparency log entry {}",
+            entry.body.store_path, entry.body.sequence
+        )
+    })?;
+    ensure_json_value(
+        package_subject,
+        "digest",
+        &provenance_digest_map(&entry.body.nar_hash),
+        "package subject digest",
+    )?;
+
+    let manifest_subject_name = format!(
+        "aos:permissions-manifest:{}:{}:{}",
+        entry.body.package, entry.body.version, entry.body.platform
+    );
+    let manifest_subject = provenance_statement_named_object(
+        json_array(statement, "subject")?,
+        &manifest_subject_name,
+    )
+    .with_context(|| {
+        format!(
+            "locating permissions manifest subject '{}' for transparency log entry {}",
+            manifest_subject_name, entry.body.sequence
+        )
+    })?;
+    let manifest_digest = sha256_digest_from_statement_digest(
+        manifest_subject.get("digest").with_context(|| {
+            format!("permissions manifest subject '{manifest_subject_name}' missing digest")
+        })?,
+        "permissions manifest subject digest",
+    )?;
+    let expected_measurement = crate::package_attestation::package_measurement_digest(
+        &entry.body.package,
+        &entry.body.version,
+        entry
+            .body
+            .root_digest
+            .as_deref()
+            .or(entry.body.root_hash.as_deref())
+            .context("package transparency entry missing root_digest")?,
+        &manifest_digest,
+    );
+    if expected_measurement != entry.body.measurement {
+        bail!(
+            "package transparency log entry {} measurement does not match permissions manifest digest",
+            entry.body.sequence
+        );
+    }
+
+    let measurement_subject_name = format!(
+        "aos:package-measurement:{}:{}:{}",
+        entry.body.package, entry.body.version, entry.body.platform
+    );
+    let measurement_subject = provenance_statement_named_object(
+        json_array(statement, "subject")?,
+        &measurement_subject_name,
+    )
+    .with_context(|| {
+        format!(
+            "locating measurement subject '{}' for transparency log entry {}",
+            measurement_subject_name, entry.body.sequence
+        )
+    })?;
+    ensure_json_value(
+        measurement_subject,
+        "digest",
+        &provenance_digest_map(&entry.body.measurement),
+        "measurement subject digest",
+    )?;
+
+    if let Some(source) = &entry.body.source {
+        let source_uri = format!("nix:{}", source.store_path);
+        let dependencies = json_array(build_definition, "resolvedDependencies")?;
+        let dependency =
+            provenance_statement_named_uri(dependencies, &source_uri).with_context(|| {
+                format!(
+                    "locating source dependency '{}' for transparency log entry {}",
+                    source_uri, entry.body.sequence
+                )
+            })?;
+        ensure_json_value(
+            dependency,
+            "digest",
+            &provenance_digest_map(&source.nar_hash),
+            "source dependency digest",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn provenance_statement_named_object<'a>(objects: &'a [Value], name: &str) -> Result<&'a Value> {
+    let mut matches = objects.iter().filter(|object| {
+        object
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual == name)
+    });
+    let value = matches
+        .next()
+        .with_context(|| format!("provenance statement missing object named '{name}'"))?;
+    if matches.next().is_some() {
+        bail!("provenance statement has duplicate object named '{name}'");
+    }
+    Ok(value)
+}
+
+fn provenance_statement_named_uri<'a>(objects: &'a [Value], uri: &str) -> Result<&'a Value> {
+    let mut matches = objects.iter().filter(|object| {
+        object
+            .get("uri")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual == uri)
+    });
+    let value = matches
+        .next()
+        .with_context(|| format!("provenance statement missing dependency uri '{uri}'"))?;
+    if matches.next().is_some() {
+        bail!("provenance statement has duplicate dependency uri '{uri}'");
+    }
+    Ok(value)
+}
+
+fn json_object<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
+    value
+        .get(key)
+        .filter(|value| value.is_object())
+        .with_context(|| format!("provenance statement missing object field '{key}'"))
+}
+
+fn json_array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value]> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .with_context(|| format!("provenance statement missing array field '{key}'"))
+}
+
+fn ensure_json_string(object: &Value, key: &str, expected: &str, label: &str) -> Result<()> {
+    let actual = object
+        .get(key)
+        .and_then(Value::as_str)
+        .with_context(|| format!("provenance statement missing string field '{label}'"))?;
+    if actual != expected {
+        bail!("provenance statement {label} mismatch: expected '{expected}', got '{actual}'");
+    }
+    Ok(())
+}
+
+fn ensure_json_optional_string(
+    object: &Value,
+    key: &str,
+    expected: Option<&str>,
+    label: &str,
+) -> Result<()> {
+    let actual = object.get(key).and_then(Value::as_str);
+    if actual != expected {
+        bail!(
+            "provenance statement {label} mismatch: expected '{}', got '{}'",
+            expected.unwrap_or("<absent>"),
+            actual.unwrap_or("<absent>")
+        );
+    }
+    Ok(())
+}
+
+fn ensure_json_value(object: &Value, key: &str, expected: &Value, label: &str) -> Result<()> {
+    let actual = object
+        .get(key)
+        .with_context(|| format!("provenance statement missing field '{label}'"))?;
+    if actual != expected {
+        bail!("provenance statement {label} mismatch");
+    }
+    Ok(())
+}
+
+fn sha256_digest_from_statement_digest(digest: &Value, label: &str) -> Result<String> {
+    let sha256 = digest
+        .get("sha256")
+        .and_then(Value::as_str)
+        .with_context(|| format!("provenance statement {label} missing sha256"))?;
+    if sha256.len() != 64 || !sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("provenance statement {label} has invalid sha256 digest '{sha256}'");
+    }
+    Ok(format!("sha256:{}", sha256.to_ascii_lowercase()))
+}
+
+fn ensure_safe_package_provenance_statement_path(path: &str) -> Result<()> {
+    ensure_safe_git_jsonl_index_path(path)?;
+    if !path.starts_with("provenance/") || !path.ends_with(".intoto.jsonl") {
+        bail!(
+            "package provenance statement path '{path}' must use the generated provenance/*.intoto.jsonl layout"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_safe_git_jsonl_index_path(path: &str) -> Result<()> {
+    ensure_safe_git_index_path(path)?;
+    if !path.ends_with(".jsonl") {
+        bail!("package provenance statement path '{path}' must be a relative *.jsonl path");
+    }
+    Ok(())
+}
+
+fn ensure_safe_git_index_path(path: &str) -> Result<()> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.contains(':')
+        || path.bytes().any(|byte| byte.is_ascii_control())
+    {
+        bail!("git index path '{path}' must be relative and must not contain revspec punctuation");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => {
+                bail!(
+                    "package provenance statement path '{path}' must not contain '.', '..', or prefixes"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn package_provenance_transparency_entry_hash(
+    body: &PackageProvenanceTransparencyLogBody,
+) -> Result<String> {
+    let payload = serde_json::to_vec(body)
+        .context("serializing package transparency log entry body for hashing")?;
+    Ok(format!("sha256:{}", sha256_hex(&payload)))
+}
+
+fn publish_provenance_statement(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest_digest: &str,
+    attestation: &AttestationMeta,
+    key_id: &str,
+) -> Result<serde_json::Value> {
+    let root_digest = attestation
+        .root_digest
+        .as_deref()
+        .context("package attestation root_digest missing")?;
+    let measurement = attestation
+        .measurement
+        .as_deref()
+        .context("package attestation measurement missing")?;
+    let provenance = attestation
+        .provenance
+        .as_deref()
+        .context("package attestation provenance missing")?;
+    if attestation.root_hash.is_some() != attestation.root_hash_sig.is_some() {
+        bail!("package attestation root_hash and root_hash_sig must be declared together");
+    }
+    let resolved_dependencies = source_info
+        .into_iter()
+        .map(|source| {
+            serde_json::json!({
+                "uri": format!("nix:{}", source.path.as_str()),
+                "digest": provenance_digest_map(&source.nar_hash),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut external_parameters = serde_json::Map::new();
+    external_parameters.insert("package".to_string(), serde_json::json!(name));
+    external_parameters.insert("version".to_string(), serde_json::json!(version));
+    external_parameters.insert("platform".to_string(), serde_json::json!(platform));
+    external_parameters.insert(
+        "store_path".to_string(),
+        serde_json::json!(info.path.as_str()),
+    );
+    external_parameters.insert("root_digest".to_string(), serde_json::json!(root_digest));
+    if let Some(root_hash) = attestation.root_hash.as_deref() {
+        external_parameters.insert("root_hash".to_string(), serde_json::json!(root_hash));
+    }
+    if let Some(root_hash_sig) = attestation.root_hash_sig.as_deref() {
+        external_parameters.insert(
+            "root_hash_sig".to_string(),
+            serde_json::json!(root_hash_sig),
+        );
+    }
+    external_parameters.insert("provenance".to_string(), serde_json::json!(provenance));
+
+    Ok(serde_json::json!({
+        "_type": PACKAGE_PROVENANCE_STATEMENT_TYPE,
+        "subject": [
+            {
+                "name": info.path.as_str(),
+                "digest": provenance_digest_map(&info.nar_hash),
+            },
+            {
+                "name": format!("aos:permissions-manifest:{name}:{version}:{platform}"),
+                "digest": provenance_digest_map(manifest_digest),
+            },
+            {
+                "name": format!("aos:package-measurement:{name}:{version}:{platform}"),
+                "digest": provenance_digest_map(measurement),
+            },
+        ],
+        "predicateType": PACKAGE_PROVENANCE_PREDICATE_TYPE,
+        "predicate": {
+            "buildDefinition": {
+                "buildType": PACKAGE_PROVENANCE_BUILD_TYPE,
+                "externalParameters": external_parameters,
+                "internalParameters": {},
+                "resolvedDependencies": resolved_dependencies,
+            },
+            "runDetails": {
+                "builder": {
+                    "id": provenance_builder_id(registry_name, key_id),
+                },
+                "metadata": {
+                    "invocationId": format!("apr-publish:{name}:{version}:{platform}"),
+                },
+            },
+        },
+    }))
+}
+
+fn publish_provenance_ref(name: &str, platform: &str, measurement: &str) -> Result<String> {
+    validate_package_name(name)?;
+    validate_platform_name(platform)?;
+    let measurement_hex = sha256_hex_payload(measurement).with_context(|| {
+        format!("package measurement must be a sha256 digest with 64 hex characters: {measurement}")
+    })?;
+    Ok(format!(
+        "provenance/{}/{name}/{platform}/{measurement_hex}.intoto.jsonl",
+        package_name_bucket(name)
+    ))
+}
+
 fn package_platform_table(
+    name: &str,
+    version: &str,
+    platform: &str,
     info: &StorePathInfo,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
     source_nar_hash: &str,
-) -> toml::Value {
+    expose_manifest: Option<&PublishExposeManifest>,
+    expose_artifact_info: Option<&StorePathInfo>,
+    expose_manifest_digest: Option<&str>,
+) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
     // No nar_hash/nar_size/references here: the output's content binding and
@@ -2583,7 +5141,156 @@ fn package_platform_table(
         table.insert("images".into(), toml::Value::Array(images));
     }
 
-    toml::Value::Table(table)
+    if let Some(manifest) = expose_manifest {
+        let artifact = expose_artifact_info
+            .context("expose manifest requires rendered expose artifact metadata")?;
+        let attestation = publish_attestation_meta(
+            name,
+            version,
+            platform,
+            info,
+            manifest,
+            expose_manifest_digest,
+        )
+        .with_context(|| format!("deriving package attestation metadata for package '{name}'"))?;
+        table.insert(
+            "min-format".into(),
+            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+        );
+        let mut required_features = vec![
+            toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
+            toml::Value::String(FEATURE_EXPOSE_ARTIFACT_V1.to_string()),
+            toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
+            toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()),
+        ];
+        if !manifest.expose.requires.is_empty() {
+            required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
+        }
+        if !manifest.expose.config.is_empty() {
+            required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
+        }
+        if manifest.expose.config.has_unit_reconciliation() {
+            required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
+        }
+        if !manifest.expose.provides.is_empty() || !manifest.expose.uses.is_empty() {
+            required_features.push(toml::Value::String(
+                FEATURE_CAPABILITY_ROUTES_V1.to_string(),
+            ));
+        }
+        let ebpf_unit = format!("aos-pkg-{name}-ebpf.service");
+        if manifest.expose.units.iter().any(|unit| unit == &ebpf_unit) {
+            required_features.push(toml::Value::String(FEATURE_EBPF_NET_POLICY_V1.to_string()));
+        }
+        if manifest.mac.is_some() {
+            required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
+        }
+        if attestation.is_some() {
+            required_features.push(toml::Value::String(FEATURE_ATTESTATION_V1.to_string()));
+        }
+        table.insert(
+            "requires-features".into(),
+            toml::Value::Array(required_features.clone()),
+        );
+        let mut references = toml::map::Map::new();
+        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
+        references.insert(
+            "min-format".into(),
+            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+        );
+        references.insert(
+            "requires-features".into(),
+            toml::Value::Array(required_features.clone()),
+        );
+        table.insert("references".into(), toml::Value::Table(references));
+        table.insert(
+            "expose".into(),
+            toml::Value::try_from(&manifest.expose)
+                .context("serializing expose manifest metadata")?,
+        );
+        let artifact = ExposeArtifactMeta {
+            store_path: artifact.path.clone(),
+            nar_hash: artifact.nar_hash.clone(),
+            nar_size: artifact.nar_size,
+        };
+        validate_expose_artifact_meta(&artifact)?;
+        table.insert(
+            "expose_artifact".into(),
+            toml::Value::try_from(&artifact).context("serializing expose artifact metadata")?,
+        );
+        table.insert(
+            "permissions".into(),
+            toml::Value::try_from(&manifest.permissions)
+                .context("serializing permissions manifest metadata")?,
+        );
+        if let Some(attestation) = attestation {
+            if let Some(root_digest) = attestation.root_digest {
+                table.insert("root_digest".into(), toml::Value::String(root_digest));
+            }
+            if let Some(root_hash) = attestation.root_hash {
+                table.insert("root_hash".into(), toml::Value::String(root_hash));
+            }
+            if let Some(root_hash_sig) = attestation.root_hash_sig {
+                table.insert("root_hash_sig".into(), toml::Value::String(root_hash_sig));
+            }
+            if let Some(provenance) = attestation.provenance {
+                table.insert("provenance".into(), toml::Value::String(provenance));
+            }
+            table.insert(
+                "measurement".into(),
+                toml::Value::String(
+                    attestation
+                        .measurement
+                        .context("package attestation measurement missing")?,
+                ),
+            );
+        }
+    }
+
+    Ok(toml::Value::Table(table))
+}
+
+/// Records a `config_module` block in a package platform TOML table.
+///
+/// This is the publish-side data path / seam for the second `config` package
+/// output. It validates `module`, serializes it under
+/// the `config_module` key of `table`, and appends [`FEATURE_CONFIG_MODULE_V1`]
+/// to `required_features` so older clients fail closed. The caller is
+/// responsible for ensuring the platform table also carries the structural
+/// `references` gate and an attestation provenance reference (a config module is
+/// privileged metadata; see `validate_supported_package_meta_with`).
+///
+/// # Wiring TODO (later changeset)
+///
+/// The publish command does not yet expose a `--config-module-manifest` flag
+/// (analogous to `--expose-manifest`); when it does, it will derive the
+/// authoritative `declares` / `owns_roots` / `contributes` /
+/// `provides_capabilities` via an options-only eval of the module in isolation
+/// (the *populate path*, `module-system.md` §"Provides — derived, not
+/// declared"), build a [`ConfigModuleMeta`], and call this helper.
+///
+/// # Errors
+///
+/// Returns an error when `module` fails [`validate_config_module_meta`] or its
+/// TOML serialization fails.
+// Publish-side seam: exercised by tests and called once the publish command
+// grows a `--config-module-manifest` flag (see TODO above). Marked `allow` so
+// the unwired state does not warn in the non-test build.
+#[allow(dead_code)]
+pub(crate) fn record_config_module_platform_fields(
+    table: &mut toml::map::Map<String, toml::Value>,
+    required_features: &mut Vec<toml::Value>,
+    module: &ConfigModuleMeta,
+) -> Result<()> {
+    validate_config_module_meta(module).context("validating config-module metadata for publish")?;
+    let feature = toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string());
+    if !required_features.contains(&feature) {
+        required_features.push(feature);
+    }
+    table.insert(
+        "config_module".into(),
+        toml::Value::try_from(module).context("serializing config-module metadata")?,
+    );
+    Ok(())
 }
 
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
@@ -2630,6 +5337,7 @@ pub async fn unpublish(
     } else {
         None
     };
+    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -3307,18 +6015,24 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        // `clean` must come from the name-status entries, not `output`: with
+        // `--stat`, libgit2's diffstat emits a `0 files changed, ...` summary
+        // line even when nothing changed, so `output.is_empty()` is never true
+        // for a stat diff and would wrongly report a clean tree as dirty.
+        let changed_files = diff_name_status_entries(&dir, Some((&base, "HEAD")))?;
+        let clean = changed_files.is_empty();
         if printer.mode() == OutputMode::Json {
             printer.json(&serde_json::json!({
                 "remote": true,
                 "base": base,
                 "stat": stat,
-                "clean": output.is_empty(),
-                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "clean": clean,
+                "changed_files": changed_files,
                 "output": output,
             }));
             return Ok(());
         }
-        if output.is_empty() {
+        if clean {
             printer.info("No pending changes.");
         } else {
             printer.plain(&output);
@@ -4431,6 +7145,273 @@ pub async fn run_channel(
     }
 }
 
+/// The remote ref namespace a hub writes git-backed config change requests to.
+///
+/// A change request lives at `refs/hub/changes/<id>` — a ref, not a branch, so
+/// consumers (who follow only signed tags and partitions) never see it. `apr
+/// change` fetches these into a local `refs/hub/changes/*` mirror.
+const HUB_CHANGES_NS: &str = "refs/hub/changes/";
+
+/// The `AOS-Change-Id` commit-message trailer a hub stamps on draft commits.
+const CHANGE_ID_TRAILER: &str = "AOS-Change-Id";
+
+/// Dispatch the `apr change` subcommands (RFC-0004 "Configuration management",
+/// git-backed change requests).
+///
+/// A hub commits web edits to committed config as change requests under
+/// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key. These
+/// subcommands let a maintainer review and **promote** them locally:
+///
+/// - `list` fetches the remote's `refs/hub/changes/*` and lists each draft.
+/// - `show` fetches one draft and diffs it against the current branch HEAD.
+/// - `merge` fetches one draft, verifies it is a fast-forward of HEAD, replays
+///   its tree as a new commit re-signed with a roster key, and pushes — the
+///   draft (hub-signed, non-roster) becomes roster-signed state consumers
+///   accept. The hub's draft-signing key is **not** a roster key, so a draft
+///   never verifies for consumers until this promotion.
+///
+/// # Errors
+///
+/// Returns an error on a missing registry/clone, a fetch/push failure, an
+/// unknown change id, a non-fast-forwardable draft, a missing signing key, or
+/// any underlying git failure.
+pub async fn run_change(
+    config: &ApmConfig,
+    command: &ChangeCommand,
+    printer: &Printer,
+) -> Result<()> {
+    match command {
+        ChangeCommand::List { registry } => change_list(config, registry.as_deref(), printer).await,
+        ChangeCommand::Show { id, stat, registry } => {
+            change_show(config, id, *stat, registry.as_deref(), printer).await
+        }
+        ChangeCommand::Merge {
+            id,
+            key,
+            key_id,
+            registry,
+        } => {
+            change_merge(
+                config,
+                id,
+                key.as_deref(),
+                key_id.as_deref(),
+                registry.as_deref(),
+                printer,
+            )
+            .await
+        }
+    }
+}
+
+/// Fetch the remote's `refs/hub/changes/*` into the local clone, mirroring them
+/// under the same namespace. Returns nothing; the refs are then readable
+/// locally with `git for-each-ref`/`git log`.
+fn fetch_change_refs(dir: &Path) -> Result<()> {
+    let refspec = format!("+{HUB_CHANGES_NS}*:{HUB_CHANGES_NS}*");
+    git_transport(dir, &["fetch", "origin", &refspec, "--force"])?;
+    Ok(())
+}
+
+/// The local ref path for change request `id`.
+fn change_ref(id: &str) -> String {
+    format!("{HUB_CHANGES_NS}{id}")
+}
+
+/// One change request discovered in the local `refs/hub/changes/*` mirror.
+struct DiscoveredChange {
+    id: String,
+    commit: String,
+    summary: String,
+    change_id_trailer: Option<String>,
+}
+
+/// List the change requests mirrored under `refs/hub/changes/*`.
+fn discover_changes(dir: &Path) -> Result<Vec<DiscoveredChange>> {
+    let listing = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(contents:subject)",
+            HUB_CHANGES_NS,
+        ],
+    )?;
+    let mut out = Vec::new();
+    for line in listing.lines().filter(|l| !l.trim().is_empty()) {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(refname), Some(commit)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let summary = parts.next().unwrap_or("").to_string();
+        let id = refname
+            .strip_prefix(HUB_CHANGES_NS)
+            .unwrap_or(refname)
+            .to_string();
+        let body = git(dir, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
+        let change_id_trailer = body.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix(&format!("{CHANGE_ID_TRAILER}:"))
+                .map(|rest| rest.trim().to_string())
+        });
+        out.push(DiscoveredChange {
+            id,
+            commit: commit.to_string(),
+            summary,
+            change_id_trailer,
+        });
+    }
+    Ok(out)
+}
+
+/// `apr change list` — fetch and list the registry's open change requests.
+async fn change_list(config: &ApmConfig, registry: Option<&str>, printer: &Printer) -> Result<()> {
+    let dir = registry_dir(config, registry)?;
+    fetch_change_refs(&dir)?;
+    let changes = discover_changes(&dir)?;
+
+    if printer.mode() == OutputMode::Json {
+        let rows: Vec<_> = changes
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "commit": c.commit,
+                    "summary": c.summary,
+                    "change_id": c.change_id_trailer,
+                })
+            })
+            .collect();
+        printer.json(&serde_json::json!({ "change_requests": rows }));
+        return Ok(());
+    }
+    if changes.is_empty() {
+        printer.info("No open change requests.");
+        return Ok(());
+    }
+    for change in &changes {
+        printer.plain(&format!(
+            "{}  {}  {}",
+            &change.commit[..change.commit.len().min(12)],
+            change.id,
+            change.summary
+        ));
+    }
+    Ok(())
+}
+
+/// `apr change show <id>` — diff a change request vs the current branch HEAD.
+async fn change_show(
+    config: &ApmConfig,
+    id: &str,
+    stat: bool,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let dir = registry_dir(config, registry)?;
+    fetch_change_refs(&dir)?;
+    let reference = change_ref(id);
+    if !git_ref_exists(&dir, &reference)? {
+        bail!("no change request '{id}' (looked for {reference})");
+    }
+    let mut args = vec!["diff", "HEAD", reference.as_str()];
+    if stat {
+        args.push("--stat");
+    }
+    let output = git(&dir, &args)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "id": id,
+            "ref": reference,
+            "stat": stat,
+            "clean": output.is_empty(),
+            "output": output,
+        }));
+        return Ok(());
+    }
+    if output.is_empty() {
+        printer.info("Change request matches the current branch (no diff).");
+    } else {
+        printer.plain(&output);
+    }
+    Ok(())
+}
+
+/// `apr change merge <id>` — promote a change request onto the tracked branch.
+///
+/// Fetches the draft, verifies it is a fast-forward of the current HEAD (so its
+/// tree cleanly replaces the branch tip), replays its tree as a new commit
+/// re-signed with the maintainer's roster key, refreshes the static object
+/// store, and pushes. The promotion turns a non-roster, hub-signed draft into
+/// roster-signed state consumers accept.
+async fn change_merge(
+    config: &ApmConfig,
+    id: &str,
+    key: Option<&str>,
+    key_id: Option<&str>,
+    registry: Option<&str>,
+    printer: &Printer,
+) -> Result<()> {
+    let registry_name = resolve_registry_name(config, registry)?;
+    let dir = config.scope.registries_path().join(&registry_name);
+    fetch_change_refs(&dir)?;
+    let reference = change_ref(id);
+    if !git_ref_exists(&dir, &reference)? {
+        bail!("no change request '{id}' (looked for {reference})");
+    }
+
+    // The draft must be a fast-forward of HEAD: the current tip is an ancestor
+    // of the draft, so replaying its tree is an unambiguous promotion (not a
+    // merge). A stale draft (HEAD moved on past its base) is rejected.
+    let (is_ancestor, _, _) = git_try(&dir, &["merge-base", "--is-ancestor", "HEAD", &reference])?;
+    if !is_ancestor {
+        bail!(
+            "change request '{id}' is not a fast-forward of the current branch HEAD; \
+             it was branched from an older commit — re-create the change against the \
+             current tip before merging"
+        );
+    }
+
+    // Show the diff so the maintainer reviews exactly what they are signing.
+    let diff = git(&dir, &["diff", "HEAD", &reference])?;
+    if !diff.is_empty() {
+        printer.plain(&diff);
+    }
+
+    // Resolve the roster signing key (the same producer signing path the rest
+    // of `apr` uses).
+    let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+
+    // Replay the draft's tree onto the working tree + index, then commit it as a
+    // fresh, roster-signed child of HEAD (a cherry-pick of the change).
+    let change_commit = git(&dir, &["rev-parse", &reference])?;
+    git(&dir, &["read-tree", "-u", "--reset", &change_commit])?;
+    let subject = git(&dir, &["log", "-1", "--format=%s", &reference])?;
+    let message = format!("{subject}\n\npromoted from change request {id}");
+    commit_staged_registry(&dir, &message, Some(signing_key.path()))?;
+
+    // Refresh the dumb-HTTP object store so the new commit is fetchable, then
+    // push the branch.
+    refresh_registry_object_store(&dir)?;
+    let branch = current_git_branch(&dir)?;
+    git_transport(&dir, &["push", "origin", &branch])?;
+
+    let new_commit = git(&dir, &["rev-parse", "HEAD"])?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "id": id,
+            "branch": branch,
+            "commit": new_commit,
+            "promoted_from": change_commit,
+        }));
+        return Ok(());
+    }
+    printer.info(&format!(
+        "Promoted change request {id} as {} on {branch} (pushed).",
+        &new_commit[..new_commit.len().min(12)]
+    ));
+    Ok(())
+}
+
 /// `apr cache` subcommands for the static Nix binary cache.
 ///
 /// `generate` renders the registry's published store paths into a static
@@ -4480,6 +7461,7 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             // Bless the whole closure of the path (records every member).
             let report = write_store_files(&dir, store_path, content_addressed, true, printer)
@@ -4534,6 +7516,7 @@ pub async fn run_store(
             ensure_writable_registry_clone(&registry_name, &dir)?;
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let ia_hash = extract_hash(store_path);
             if !store::remove_realisations(&dir, ia_hash, realisation.as_deref())? {
@@ -4592,6 +7575,7 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let roots = collect_package_store_paths(&dir)?;
             if roots.is_empty() {
@@ -4922,6 +7906,78 @@ pub async fn run_cache(
                     output.display(),
                 ));
             }
+            Ok(())
+        }
+    }
+}
+
+/// `apr web` subcommands for the static on-CDN web surface.
+///
+/// `generate` renders the committed registry tree into the no-JS web
+/// surface — `index.html`, `web/config.json`, `web/index.json`, per-package
+/// `web/packages/<name>.json` snapshots, and `browse/<name>.html` static
+/// pages — into `--output` (defaulting to a `web` directory beside the
+/// registry clone), then optionally uploads it to each `--upload-url`
+/// (falling back to the `upload_urls` persisted by `apr origin config` when
+/// no flag is given), reusing the same static-upload path as
+/// `apr cache generate` / `apr origin upload`.
+///
+/// The SPA dist (the WASM app) is out of scope here: this command emits the
+/// content-bearing no-JS floor that the SPA progressively enhances when it
+/// is dropped in alongside.
+///
+/// # Errors
+///
+/// Fails when web-surface generation or an upload fails.
+pub async fn run_web(config: &ApmConfig, command: &WebCommand, printer: &Printer) -> Result<()> {
+    match command {
+        WebCommand::Generate {
+            output,
+            name,
+            hub_url,
+            accent,
+            spa_dist,
+            upload_urls,
+            auth,
+            registry,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let dir = config.scope.registries_path().join(&registry_name);
+            let output_dir = output.clone().unwrap_or_else(|| dir.join("web"));
+            let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+
+            let web_config = WebConfig {
+                name: name.clone().unwrap_or_default(),
+                accent: accent.clone(),
+                hub_url: hub_url.clone(),
+                spa_dist: spa_dist.clone(),
+            };
+            let written = webgen::generate_web_surface(&dir, &output_dir, web_config)?;
+
+            printer.success(&format!(
+                "Generated web surface: {} file(s) in {}",
+                written.len(),
+                output_dir.display(),
+            ));
+
+            if !upload_urls.is_empty() {
+                let auth = auth
+                    .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+                webgen::upload_web_surface_to_all(&output_dir, &upload_urls, &auth, printer)
+                    .await?;
+            }
+
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "web_generate",
+                    "registry": registry_name,
+                    "output_dir": output_dir.to_string_lossy().to_string(),
+                    "files": written.len(),
+                    "upload_urls": upload_urls,
+                    "uploaded": !upload_urls.is_empty(),
+                }));
+            }
+
             Ok(())
         }
     }
@@ -5600,7 +8656,17 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
             let roster_before = roster.clone();
-            let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            let provenance_before_sequence = read_package_provenance_transparency_log_state(
+                &dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
+            )?
+            .0;
+            let vouching_id = retire_roster_key(
+                &mut roster,
+                id,
+                reason.as_deref(),
+                vouched_by,
+                provenance_before_sequence,
+            )?;
             // The vouching survivor signs the retirement by default; the
             // key resolution runs against the pre-retire roster, where the
             // voucher is still active. Re-signing also needs this key, so
@@ -6248,28 +9314,13 @@ fn tag_message_without_signature(payload: &str) -> Option<String> {
 
 /// Write a tag object payload into the object database, returning its id.
 fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
-    use std::process::Stdio;
-    let mut child = gitcmd::hermetic()
-        .args(["hash-object", "-w", "-t", "tag", "--stdin"])
-        .current_dir(dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawning git hash-object")?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        std::io::Write::write_all(stdin, payload).context("writing tag payload to hash-object")?;
-    }
-    let output = child
-        .wait_with_output()
-        .context("running git hash-object")?;
-    if !output.status.success() {
-        bail!(
-            "git hash-object failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let odb = repo.odb().context("opening object database")?;
+    let oid = odb
+        .write(git2::ObjectType::Tag, payload)
+        .context("writing tag object")?;
+    Ok(oid.to_string())
 }
 
 /// Load the committed `keys.toml` roster, defaulting to an empty roster
@@ -6519,34 +9570,14 @@ fn register_roster_key(
 }
 
 /// Derive the `registry:Ed25519:<base64>` trust line for the private key at
-/// `key_path` by shelling out to `ssh-keygen -y`.
+/// `key_path`.
 ///
-/// `ssh-keygen -y` reads a private key and prints its public half as
-/// `ssh-ed25519 <base64> [comment]`; the base64 field is exactly the SSH
-/// wire-format blob that the trust line carries.
+/// The base64 field is the SSH wire-format public key the trust line carries,
+/// read from the private key with the `ssh-key` crate (see
+/// [`crate::security::public_ed25519_blob`]).
 fn derive_trust_key(registry_name: &str, key_path: &str) -> Result<String> {
-    let output = gitcmd::ssh_keygen()
-        .arg("-y")
-        .arg("-f")
-        .arg(key_path)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("running `ssh-keygen -y` to derive the public key")?;
-    if !output.status.success() {
-        bail!(
-            "`ssh-keygen -y` failed for the provided key: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let mut fields = line.split_whitespace();
-    let algorithm = fields.next().unwrap_or_default();
-    if algorithm != "ssh-ed25519" {
-        bail!("unsupported signing key type '{algorithm}'; registry keys must be Ed25519");
-    }
-    let blob = fields
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("`ssh-keygen -y` produced no public key material"))?;
+    let blob = crate::security::public_ed25519_blob(Path::new(key_path))
+        .context("deriving the public key from the signing key")?;
     Ok(format!("{registry_name}:Ed25519:{blob}"))
 }
 
@@ -6637,6 +9668,7 @@ fn retire_roster_key(
     id: &str,
     reason: Option<&str>,
     vouched_by: &Option<String>,
+    provenance_before_sequence: u64,
 ) -> Result<String> {
     validate_roster_key_id(id)?;
     let Some(position) = roster.active.iter().position(|entry| entry.id == id) else {
@@ -6674,20 +9706,30 @@ fn retire_roster_key(
         ),
     };
 
-    roster.active.remove(position);
-    upsert_revoked_key(roster, id, reason);
+    let retired_key = roster.active.remove(position).key;
+    upsert_revoked_key(roster, id, retired_key, provenance_before_sequence, reason);
     Ok(vouching_id)
 }
 
 /// Record `id` in the revoked list, updating the reason if it is already
 /// there.
-fn upsert_revoked_key(roster: &mut KeysToml, id: &str, reason: Option<&str>) {
+fn upsert_revoked_key(
+    roster: &mut KeysToml,
+    id: &str,
+    key: String,
+    provenance_before_sequence: u64,
+    reason: Option<&str>,
+) {
     let reason = reason.map(str::to_string);
     if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
+        entry.key = Some(key);
+        entry.provenance_before_sequence = Some(provenance_before_sequence);
         entry.reason = reason;
     } else {
         roster.revoked.push(RevokedKey {
             id: id.to_string(),
+            key: Some(key),
+            provenance_before_sequence: Some(provenance_before_sequence),
             reason,
         });
     }
@@ -7147,6 +10189,7 @@ async fn channel_advance(
     let mut map = read_channel_partition_map(&dir, channel_name)?;
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    ensure_channel_advance_fix_forward(&map, &selected, version)?;
     if selected.is_empty() {
         if printer.mode() == OutputMode::Json {
             let frontier = channel::compute_frontier(&map);
@@ -7422,6 +10465,8 @@ pub struct ReleaseTreeOptions {
     pub version: semver::Version,
     /// Path to the OpenSSH Ed25519 private key used for tags and commits.
     pub signing_key: String,
+    /// OpenSSH keys available for TUF role signatures.
+    pub tuf_signing_keys: Vec<tuf::MetadataSigningKey>,
     /// Channel to initialize or advance after tagging, if any.
     pub channel: Option<String>,
     /// Initialize all 256 channel partitions instead of advancing a subset.
@@ -7586,6 +10631,7 @@ pub async fn release(
     partitions: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
+    rotate_from: Option<&Path>,
     cache_key: Option<&Path>,
     cache_url: Option<&str>,
     cache_priority: Option<u32>,
@@ -7606,6 +10652,8 @@ pub async fn release(
         bail!("registry directory does not exist: {}", dir.display());
     }
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let (_tuf_key_owners, tuf_signing_keys) =
+        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key, rotate_from)?;
 
     let upload_auth =
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
@@ -7635,6 +10683,7 @@ pub async fn release(
     let options = ReleaseTreeOptions {
         version,
         signing_key: signing_key.path().to_string(),
+        tuf_signing_keys,
         channel: channel.map(ToString::to_string),
         init_channel,
         count,
@@ -7660,18 +10709,24 @@ pub async fn release(
     Ok(())
 }
 
+/// Publish a release's `--store-path` into the registry tree.
+///
+/// The published package version is **not** the release tag. Like a plain
+/// `apr publish`, the version is taken from the store-path basename (the
+/// package derivation's `version`), so a registry release tag and the package
+/// versions it snapshots are independent. The `version_override` argument to
+/// [`publish`] is therefore left `None`; `--store-path` carries the version
+/// already.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
-    version: &semver::Version,
     signing_key: &str,
     printer: &Printer,
 ) -> Result<()> {
-    let release_version = version.to_string();
     publish(
         &publish_opts.config,
         &publish_opts.store_path,
         publish_opts.name.as_deref(),
-        Some(release_version.as_str()),
+        None,
         publish_opts.platform.as_deref(),
         publish_opts.description.as_deref(),
         publish_opts.homepage.as_deref(),
@@ -7682,6 +10737,7 @@ async fn publish_release_store_path(
         publish_opts.source_drv.as_deref(),
         &publish_opts.image_paths,
         &publish_opts.image_formats,
+        None,
         publish_opts.bless,
         false,
         false,
@@ -7696,12 +10752,15 @@ async fn publish_release_store_path(
 
 /// Executes the release workflow against a registry directory.
 ///
-/// Under an exclusive release lock, this: optionally commits a
-/// `registry.toml` cache pointer; creates the signed semver release tag at
-/// HEAD (or reuses an existing tag there when `resume` is set); generates
-/// the release pack artifacts under `.git/releases/<version>/` — a full
-/// pack for major/minor releases plus zstd-compressed thin deltas from the
-/// prior releases selected by the delta scheme; optionally generates the
+/// Under an exclusive release lock, this: rejects up front a release whose
+/// tag already exists (unless `resume`), so a doomed release fails before any
+/// mutating work; optionally publishes `--store-path` (whose package version
+/// comes from the store path, independent of the release tag); optionally
+/// commits a `registry.toml` cache pointer; creates the signed semver release
+/// tag at HEAD (or reuses an existing tag there when `resume` is set);
+/// generates the release pack artifacts under `.git/releases/<version>/` — a
+/// full pack for major/minor releases plus zstd-compressed thin deltas from
+/// the prior releases selected by the delta scheme; optionally generates the
 /// static Nix cache; initializes or advances the rollout channel; and
 /// uploads the static origin files. The dumb-HTTP object store is
 /// refreshed after each ref-moving step. With `dry_run`, the plan is
@@ -7743,10 +10802,10 @@ pub async fn release_registry_tree(
     let _lock = ReleaseLock::acquire(dir)?;
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
+    ensure_release_tag_available(dir, &options.version, options.resume)?;
 
     if let Some(publish) = &options.store_publish {
-        publish_release_store_path(publish, &options.version, &options.signing_key, printer)
-            .await?;
+        publish_release_store_path(publish, &options.signing_key, printer).await?;
     }
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
@@ -7816,6 +10875,24 @@ pub async fn release_registry_tree(
             )?;
         }
         cache_report = Some(generated);
+    }
+
+    let release_tag_exists = existing_release_tag_commit(dir, &options.version)?.is_some();
+    if !release_tag_exists {
+        let tuf_changed = write_tuf_release_metadata(dir, registry_name, options, printer)?;
+        if tuf_changed {
+            commit_registry_paths(
+                dir,
+                "registry: update TUF release metadata",
+                &[dir.join(tuf::TUF_DIR)],
+                Some(&options.signing_key),
+            )?;
+        }
+    } else if options.resume {
+        printer.info(&format!(
+            "Release tag {} already exists; leaving committed TUF metadata unchanged.",
+            options.version,
+        ));
     }
 
     let head = git(dir, &["rev-parse", "HEAD"])?;
@@ -7894,6 +10971,162 @@ pub async fn release_registry_tree(
         warn_on_cache_gc(&cache.output_dir, options.cache_max_age_days, printer);
     }
     Ok(report)
+}
+
+fn write_tuf_release_metadata(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<bool> {
+    let tuf_signing_keys = if options.tuf_signing_keys.is_empty() {
+        let trust_key = derive_trust_key(registry_name, &options.signing_key)?;
+        vec![tuf::MetadataSigningKey {
+            key_id: tuf_signing_key_id(dir, &trust_key)?,
+            key_path: PathBuf::from(&options.signing_key),
+            key: trust_key,
+            role_key: true,
+        }]
+    } else {
+        options.tuf_signing_keys.clone()
+    };
+    let changed = tuf::write_release_metadata_worktree(
+        dir,
+        registry_name,
+        &options.version,
+        &tuf_signing_keys,
+    )?;
+    if changed {
+        printer.success("Updated TUF release metadata.");
+    }
+    Ok(changed)
+}
+
+fn tuf_signing_key_id(dir: &Path, trust_key: &str) -> Result<String> {
+    if let Some(roster) = keys::load_keys_toml(dir)? {
+        if let Some(entry) = roster.active.iter().find(|entry| entry.key == trust_key) {
+            return Ok(entry.id.clone());
+        }
+    }
+    let (_registry, _algorithm, public_key) = parse_signing_key(trust_key)?;
+    Ok(format!("key-{}", key_fingerprint(&public_key)))
+}
+
+fn resolve_tuf_metadata_signing_keys(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    primary: &ResolvedSigningKey,
+    rotate_from: Option<&Path>,
+) -> Result<(Vec<ResolvedSigningKey>, Vec<tuf::MetadataSigningKey>)> {
+    let primary_trust_key = derive_trust_key(registry_name, primary.path())?;
+    let primary_key = tuf::MetadataSigningKey {
+        key_id: tuf_signing_key_id(dir, &primary_trust_key)?,
+        key_path: PathBuf::from(primary.path()),
+        key: primary_trust_key.clone(),
+        role_key: true,
+    };
+    let mut metadata_keys = vec![primary_key];
+    let mut owners = Vec::new();
+
+    // An operator rotating the root signing key supplies the previous root key
+    // explicitly with `--rotate-from`; it co-signs the new root so the
+    // previous-root-role authorization check accepts the transition. It is not
+    // a member of the new root policy (role_key=false). Its id must be a key id
+    // in the *current* (previous) root role, matched by public key — a freshly
+    // derived id would not satisfy the previous-root authorization check.
+    if let Some(rotate_from) = rotate_from {
+        let rotate_from_str = rotate_from.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--rotate-from path is not valid UTF-8: {}",
+                rotate_from.display()
+            )
+        })?;
+        let rotate_public = derive_trust_key(registry_name, rotate_from_str)?;
+        if rotate_public == primary_trust_key {
+            bail!(
+                "--rotate-from key is the same as the release signing key; \
+                 omit --rotate-from when not rotating the root key"
+            );
+        }
+        let previous_key_id = tuf::worktree_root_role_keys(dir)?
+            .into_iter()
+            .find(|(_, public)| *public == rotate_public)
+            .map(|(key_id, _)| key_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--rotate-from key is not a current root-role key; \
+                     pass the previous root key being rotated away from"
+                )
+            })?;
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id: previous_key_id,
+            key_path: rotate_from.to_path_buf(),
+            key: rotate_public,
+            role_key: false,
+        });
+    }
+
+    let Some(roster) = keys::load_keys_toml(dir)? else {
+        return Ok((owners, metadata_keys));
+    };
+    let Some(registry_config) = registry_config_by_name(config, registry_name) else {
+        return Ok((owners, metadata_keys));
+    };
+    let active_key_ids = roster
+        .active
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<HashSet<_>>();
+    for entry in &roster.active {
+        if metadata_keys.iter().any(|key| key.key == entry.key) {
+            continue;
+        }
+        let Some(source) = registry_config.signing_keys.get(&entry.id) else {
+            continue;
+        };
+        let resolved = resolve_signing_key_source(&entry.id, source)?;
+        let trust_key = derive_trust_key(registry_name, resolved.path())?;
+        if trust_key != entry.key {
+            bail!(
+                "configured private key for signing key id '{}' derives '{}', but keys.toml declares '{}'",
+                entry.id,
+                trust_key,
+                entry.key,
+            );
+        }
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id: entry.id.clone(),
+            key_path: PathBuf::from(resolved.path()),
+            key: trust_key,
+            role_key: true,
+        });
+        owners.push(resolved);
+    }
+    for key_id in tuf::worktree_root_role_key_ids(dir)? {
+        if active_key_ids.contains(&key_id) || metadata_keys.iter().any(|key| key.key_id == key_id)
+        {
+            continue;
+        }
+        let Some(source) = registry_config.signing_keys.get(&key_id) else {
+            continue;
+        };
+        let resolved = resolve_signing_key_source(&key_id, source)?;
+        let trust_key = derive_trust_key(registry_name, resolved.path())?;
+        if metadata_keys.iter().any(|key| key.key == trust_key) {
+            owners.push(resolved);
+            continue;
+        }
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id,
+            key_path: PathBuf::from(resolved.path()),
+            key: trust_key,
+            role_key: false,
+        });
+        owners.push(resolved);
+    }
+
+    Ok((owners, metadata_keys))
 }
 
 /// Reject invalid `apr release` flag combinations before any work happens.
@@ -8146,6 +11379,38 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
     Ok(Some(commit))
 }
 
+/// Reject a release whose tag already exists, before any mutating work.
+///
+/// This is a best-effort preflight, not a lock. It runs before the store-path
+/// publish and the static-cache generation/upload so that the common mistake —
+/// re-using a version that is already released — fails fast and leaves the
+/// registry untouched, instead of bailing only at tag-creation time after a
+/// publish commit and a cache upload have already landed.
+///
+/// It is deliberately *not* sufficient on its own: the authoritative collision
+/// check still happens in [`ensure_release_tag`] under the release lock, since
+/// a concurrent producer working from a different clone can create the same
+/// tag after this check passes. That residual race resolves when the losing
+/// producer pushes to the shared origin. Passing `resume` skips the preflight,
+/// since resuming an interrupted release legitimately reuses an existing tag.
+///
+/// # Errors
+///
+/// Returns an error when `resume` is false and the release tag already exists,
+/// or when probing the tag fails (for example, a non-annotated tag of the same
+/// name).
+fn ensure_release_tag_available(dir: &Path, version: &semver::Version, resume: bool) -> Result<()> {
+    if resume {
+        return Ok(());
+    }
+    if let Some(existing) = existing_release_tag_commit(dir, version)? {
+        bail!(
+            "release tag {version} already exists at {existing}; choose an unused version or pass --resume to resume that release"
+        );
+    }
+    Ok(())
+}
+
 /// Generate the pack artifacts for a release under
 /// `.git/releases/<version>/`.
 ///
@@ -8217,6 +11482,13 @@ async fn write_full_pack_artifact(
 ) -> Result<String> {
     if let Some(existing) = existing_full_pack(pack_dir)? {
         if resume {
+            let idx = pack_dir.join(existing.trim_end_matches(".pack").to_string() + ".idx");
+            if !idx.exists() {
+                bail!(
+                    "full pack {existing} exists but its index {} is missing; rerun without --resume to regenerate it",
+                    idx.display()
+                );
+            }
             printer.info(&format!("Full pack {existing} already exists; resuming."));
             return Ok(existing);
         }
@@ -8232,11 +11504,12 @@ async fn write_full_pack_artifact(
     fs::copy(&pack_path, pack_dir.join(&pack_name))
         .with_context(|| format!("copying {}", pack_path.display()))?;
     let idx_path = pack_path.with_extension("idx");
-    if idx_path.exists() {
-        let idx_name = file_name_string(&idx_path)?;
-        fs::copy(&idx_path, pack_dir.join(idx_name))
-            .with_context(|| format!("copying {}", idx_path.display()))?;
+    if !idx_path.exists() {
+        bail!("full pack index was not generated: {}", idx_path.display());
     }
+    let idx_name = file_name_string(&idx_path)?;
+    fs::copy(&idx_path, pack_dir.join(idx_name))
+        .with_context(|| format!("copying {}", idx_path.display()))?;
     printer.success(&format!("Generated full pack {pack_name}."));
     Ok(pack_name)
 }
@@ -8352,6 +11625,7 @@ fn channel_advance_dir(
     let mut map = read_channel_partition_map(dir, channel_name)?;
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    ensure_channel_advance_fix_forward(&map, &selected, version)?;
     if selected.is_empty() {
         printer.info("No partitions selected for advancement.");
         return Ok(0);
@@ -8520,6 +11794,29 @@ fn select_partitions_for_advance(
     }
 }
 
+/// Refuse producer-side channel rewrites that would lower any selected
+/// partition's semver target.
+fn ensure_channel_advance_fix_forward(
+    map: &PartitionMap,
+    selected: &[u8],
+    version: &semver::Version,
+) -> Result<()> {
+    for bucket in selected {
+        let Some(current) = map.get(*bucket) else {
+            continue;
+        };
+        if version < current {
+            bail!(
+                "channel advance would decrement partition {} from {} to {}; publish a newer fix-forward release instead",
+                channel::bucket_hex(*bucket),
+                current,
+                version,
+            );
+        }
+    }
+    Ok(())
+}
+
 fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
     let mut buckets = Vec::new();
     for raw in spec.split(',') {
@@ -8662,7 +11959,12 @@ fn update_channel_frontier(dir: &Path, channel_name: &str, map: &PartitionMap) -
     Ok(())
 }
 
-/// Sign an annotated tag object with git's SSH signing support.
+/// Create an SSH-signed annotated tag object.
+///
+/// Builds the tag object directly and appends the armored SSH signature after
+/// the message — the same on-disk layout `git tag -s` produces and that
+/// [`crate::security::verify_tag_signature`] verifies (the signed payload is
+/// everything before the signature block).
 fn sign_tag(
     dir: &Path,
     tag_name: &str,
@@ -8674,38 +11976,59 @@ fn sign_tag(
     validate_git_ref_name(tag_name)?;
     let message = message.unwrap_or("AOS registry release");
     ensure_commit_identity(dir)?;
-    let signing_key_config = format!("user.signingkey={signing_key}");
-    let mut command = gitcmd::hermetic();
-    command.arg("-c").arg("gpg.format=ssh");
-    gitcmd::add_ssh_program_config(&mut command);
-    command
-        .arg("-c")
-        .arg(signing_key_config)
-        .arg("tag")
-        .arg("-s");
-    if force {
-        command.arg("-f");
-    }
-    command
-        .arg("-m")
-        .arg(message)
-        .arg("--")
-        .arg(tag_name)
-        .arg(target)
-        .current_dir(dir);
 
-    let output = command
-        .output()
-        .with_context(|| format!("signing tag '{tag_name}' in {}", dir.display()))?;
-    if !output.status.success() {
-        bail!(
-            "git tag -s failed for '{}': {}",
-            tag_name,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let target_object = repo
+        .revparse_single(target)
+        .with_context(|| format!("resolving tag target {target}"))?;
+    let target_type = match target_object.kind() {
+        Some(git2::ObjectType::Commit) => "commit",
+        Some(git2::ObjectType::Tag) => "tag",
+        Some(git2::ObjectType::Tree) => "tree",
+        Some(git2::ObjectType::Blob) => "blob",
+        _ => bail!("cannot tag object {} of unknown type", target_object.id()),
+    };
+    let tagger = git2_identity(&repo)?;
 
+    // Build the unsigned tag payload, then sign exactly those bytes.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(format!("object {}\n", target_object.id()).as_bytes());
+    payload.extend_from_slice(format!("type {target_type}\n").as_bytes());
+    payload.extend_from_slice(format!("tag {tag_name}\n").as_bytes());
+    payload.extend_from_slice(
+        format!(
+            "tagger {} <{}> {} {}\n",
+            tagger.name().unwrap_or(""),
+            tagger.email().unwrap_or(""),
+            tagger.when().seconds(),
+            format_git_tz(tagger.when()),
+        )
+        .as_bytes(),
+    );
+    payload.push(b'\n');
+    payload.extend_from_slice(message.as_bytes());
+    payload.push(b'\n');
+
+    let armored = crate::security::sign_payload_signature(Path::new(signing_key), "git", &payload)?;
+    payload.extend_from_slice(armored.as_bytes());
+
+    let odb = repo.odb().context("opening object database")?;
+    let oid = odb
+        .write(git2::ObjectType::Tag, &payload)
+        .context("writing tag object")?;
+    let refname = format!("refs/tags/{tag_name}");
+    repo.reference(&refname, oid, force, &format!("apr tag {tag_name}"))
+        .with_context(|| format!("creating tag ref '{tag_name}'"))?;
     Ok(())
+}
+
+/// Format a git timezone offset (`+HHMM`/`-HHMM`) from a [`git2::Time`].
+fn format_git_tz(when: git2::Time) -> String {
+    let offset = when.offset_minutes();
+    let sign = if offset < 0 { '-' } else { '+' };
+    let abs = offset.abs();
+    format!("{sign}{:02}{:02}", abs / 60, abs % 60)
 }
 
 // ---------------------------------------------------------------------------
@@ -8737,9 +12060,53 @@ mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
     use crate::testutil;
-    use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
+    use crate::types::{
+        ApmSettings, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, ProfileScope, RegistryConfig,
+        RegistryUploadAuthConfig,
+    };
     use std::fs;
     use tempfile::TempDir;
+
+    fn config_module_fixture() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
+                    .to_string(),
+                nar_hash: "sha256:cc".to_string(),
+                nar_size: 2048,
+                references: vec![],
+            },
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec!["firewall.allowedTCPPorts".to_string()],
+            owns_roots: vec![OwnedRoot {
+                root: "firewall".to_string(),
+                interface_abi: 1,
+                contributable: vec!["allowedTCPPorts".to_string()],
+            }],
+            contributes: vec![],
+            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
+        }
+    }
+
+    #[test]
+    fn record_config_module_emits_table_and_feature() {
+        let mut table = toml::map::Map::new();
+        let mut features = Vec::new();
+        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+            .expect("records config module");
+        assert!(table.contains_key("config_module"));
+        assert!(features.contains(&toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string())));
+        // Idempotent feature append.
+        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+            .expect("re-records");
+        assert_eq!(
+            features
+                .iter()
+                .filter(|f| **f == toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string()))
+                .count(),
+            1
+        );
+    }
 
     fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
         ReleaseTreeOptions {
@@ -8749,6 +12116,7 @@ mod tests {
                 .join("signing.key")
                 .to_string_lossy()
                 .into_owned(),
+            tuf_signing_keys: Vec::new(),
             channel: None,
             init_channel: false,
             count: None,
@@ -8768,6 +12136,56 @@ mod tests {
             jobs: None,
             store_publish: None,
             cache_max_age_days: 30,
+        }
+    }
+
+    fn write_publish_selinux_artifacts(root: &Path, label: &str) {
+        let module_name = publish_selinux_identifier_for_label(label);
+        let source_text = expected_publish_selinux_profile(label);
+        let compiled = compile_publish_selinux_profile(&source_text, &module_name).unwrap();
+        let profile_path = root.join(format!("mac/selinux/{module_name}.pp"));
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::write(&profile_path, compiled.profile).unwrap();
+        fs::write(
+            root.join(format!("mac/selinux/{module_name}.mod")),
+            compiled.module,
+        )
+        .unwrap();
+        fs::write(
+            root.join(format!("mac/selinux/{module_name}.te")),
+            source_text,
+        )
+        .unwrap();
+    }
+
+    fn verity_expose_manifest(root_hash: &str) -> PublishExposeManifest {
+        PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: vec![crate::types::SysrootImageEntry {
+                    format: "ext4-verity".into(),
+                    store_path: "/nix/store/imagehash111-webapp-root".into(),
+                    nar_hash: "sha256:image".into(),
+                    nar_size: 4096,
+                    sb_signer_cert_sha256: None,
+                    sbat: Vec::new(),
+                    expected_pcr11: None,
+                    root_image: Some("root.img".into()),
+                    root_verity: Some("root.verity".into()),
+                    root_hash: Some(root_hash.into()),
+                    root_hash_sig: Some("root.roothash.p7s".into()),
+                }],
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
         }
     }
 
@@ -9191,6 +12609,61 @@ mod tests {
             format!("{:#}", validate_release_options(&options).unwrap_err())
                 .contains("cache flags require registry store paths")
         );
+    }
+
+    #[test]
+    fn release_tag_preflight_rejects_existing_tag_unless_resume() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        git(
+            tmp.path(),
+            &[
+                "init",
+                "--object-format=sha256",
+                "--initial-branch=main",
+                repo.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(&repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            "[registry]\nname = \"aos-core\"\n",
+        )
+        .unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "init"]).unwrap();
+        // Create the annotated release tag the way production does, via
+        // `sign_tag` (libgit2). The `git()` porcelain dispatcher only supports
+        // `tag --list` / `tag -d`, so `git tag -a` is an unsupported invocation.
+        let signing = write_test_signing_key(tmp.path(), "aos-core");
+        sign_tag(
+            &repo,
+            "1.0.0",
+            "HEAD",
+            Some("release 1.0.0"),
+            signing.private_key.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+
+        let taken = semver::Version::parse("1.0.0").unwrap();
+        let unused = semver::Version::parse("2.0.0").unwrap();
+
+        // A version already released is rejected before any mutating work.
+        let err = ensure_release_tag_available(&repo, &taken, false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("already exists"),
+            "unexpected error: {err:#}"
+        );
+
+        // An unused version passes the preflight.
+        ensure_release_tag_available(&repo, &unused, false).unwrap();
+
+        // `resume` legitimately reuses an existing tag, so the preflight is skipped.
+        ensure_release_tag_available(&repo, &taken, true).unwrap();
     }
 
     #[test]
@@ -9637,6 +13110,55 @@ mod tests {
         }
     }
 
+    struct TestProvenanceSigner {
+        _tmp: TempDir,
+        signer: PackageProvenanceSigner,
+        trusted_key: String,
+    }
+
+    const TEST_PROVENANCE_REGISTRY: &str = "test";
+    const TEST_PROVENANCE_KEY_ID: &str = "builder";
+
+    fn test_provenance_signer() -> TestProvenanceSigner {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(
+            tmp.path(),
+            TEST_PROVENANCE_REGISTRY,
+            [42_u8; 32],
+            TEST_PROVENANCE_KEY_ID,
+        );
+        TestProvenanceSigner {
+            signer: PackageProvenanceSigner {
+                key_id: TEST_PROVENANCE_KEY_ID.to_string(),
+                key_path: key.private_key.clone(),
+            },
+            trusted_key: key.trusted_key,
+            _tmp: tmp,
+        }
+    }
+
+    fn signed_provenance_statement(artifact: &PublishProvenanceArtifact) -> serde_json::Value {
+        let trusted = vec![TrustedProvenanceKey {
+            key_id: TEST_PROVENANCE_KEY_ID.to_string(),
+            key: test_provenance_signer().trusted_key,
+            retired_before_sequence: None,
+        }];
+        let (statement, key_id) =
+            crate::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
+        assert_eq!(key_id, TEST_PROVENANCE_KEY_ID);
+        statement
+    }
+
+    fn sign_test_provenance_statement(statement: &Value) -> String {
+        let signer = test_provenance_signer();
+        sign_statement_dsse_jsonl(
+            statement,
+            TEST_PROVENANCE_KEY_ID,
+            signer.signer.key_path.as_path(),
+        )
+        .unwrap()
+    }
+
     fn write_test_roster(
         dir: &Path,
         key_id: &str,
@@ -9652,6 +13174,8 @@ mod tests {
                 .iter()
                 .map(|id| RevokedKey {
                     id: (*id).to_string(),
+                    key: None,
+                    provenance_before_sequence: None,
                     reason: Some("test".into()),
                 })
                 .collect(),
@@ -9683,6 +13207,36 @@ mod tests {
             trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
+    }
+
+    #[test]
+    fn retire_roster_key_preserves_provenance_key_cutoff() {
+        let mut roster = KeysToml {
+            active: vec![
+                RosterKey {
+                    id: "old".to_string(),
+                    key: "aos-core:Ed25519:YWJjZA==".to_string(),
+                },
+                RosterKey {
+                    id: "new".to_string(),
+                    key: "aos-core:Ed25519:ZWZnaA==".to_string(),
+                },
+            ],
+            ..KeysToml::default()
+        };
+
+        let vouching_id =
+            retire_roster_key(&mut roster, "old", Some("planned"), &None, 4).expect("retire key");
+
+        assert_eq!(vouching_id, "new");
+        assert!(roster.active.iter().all(|entry| entry.id != "old"));
+        assert_eq!(roster.revoked.len(), 1);
+        assert_eq!(roster.revoked[0].id, "old");
+        assert_eq!(
+            roster.revoked[0].key.as_deref(),
+            Some("aos-core:Ed25519:YWJjZA==")
+        );
+        assert_eq!(roster.revoked[0].provenance_before_sequence, Some(4));
     }
 
     #[test]
@@ -9849,6 +13403,21 @@ mod tests {
     }
 
     #[test]
+    fn channel_advance_rejects_selected_partition_decrement() {
+        let mut map = PartitionMap::all(semver::Version::parse("1.1.0").unwrap());
+        map.set(2, semver::Version::parse("1.0.0").unwrap())
+            .unwrap();
+        let older = semver::Version::parse("1.0.0").unwrap();
+        let same = semver::Version::parse("1.1.0").unwrap();
+        let newer = semver::Version::parse("1.2.0").unwrap();
+
+        let err = ensure_channel_advance_fix_forward(&map, &[0], &older).unwrap_err();
+        assert!(format!("{err:#}").contains("decrement partition 00 from 1.1.0 to 1.0.0"));
+        ensure_channel_advance_fix_forward(&map, &[0], &same).unwrap();
+        ensure_channel_advance_fix_forward(&map, &[0, 2], &newer).unwrap();
+    }
+
+    #[test]
     fn store_dir_from_store_path_accepts_alternate_stores() {
         assert_eq!(
             store_dir_from_store_path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-curl-8.5.0"),
@@ -9889,6 +13458,9 @@ mod tests {
             false,
             None,
             &[],
+            None,
+            None,
+            None,
             None,
         )
         .unwrap();
@@ -9933,10 +13505,2452 @@ mod tests {
             None,
             &[],
             Some(&source_info),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(content.contains("source_drv = \"/nix/store/drv123-curl-8.5.0.drv\""));
         assert!(content.contains("source_nar_hash = \"sha256:source\""));
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_accepts_renderer_mac_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "selinux",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "kernel": {
+                "modules": [],
+            },
+            "firewall": {
+                "enabled": false,
+            },
+            "mac": mac,
+            "confinement": {
+                "class": "sandboxed",
+                "label": "sandboxed",
+                "holes": [],
+            },
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        write_publish_selinux_artifacts(tmp.path(), "aos-pkg-webapp");
+
+        let parsed = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap();
+        let mac = parsed.mac.as_ref().unwrap();
+
+        assert_eq!(mac.backend, "selinux");
+        assert_eq!(mac.security_label, "aos-pkg-webapp");
+        assert_eq!(
+            mac.profile_path.as_deref(),
+            Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp")
+        );
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_rejects_target_bound_to_other_package() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-other.target",
+                "units": ["webapp.service"],
+            },
+            "permissions": {},
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn read_publish_manifest_digest_tracks_manifest_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        fs::write(&path, br#"{"permissions":{"network":"private"}}"#).unwrap();
+        let first = read_publish_manifest_digest(&path).unwrap();
+
+        fs::write(&path, br#"{"permissions":{"network":"host"}}"#).unwrap();
+        let second = read_publish_manifest_digest(&path).unwrap();
+
+        assert_eq!(
+            first,
+            crate::package_attestation::package_manifest_digest_bytes(
+                br#"{"permissions":{"network":"private"}}"#
+            )
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn publish_selinux_identifiers_escape_label_punctuation_without_collisions() {
+        let labels = ["a.b", "a-b", "a_b", "a+b", "a=b"];
+        let identifiers = labels
+            .iter()
+            .map(|label| publish_selinux_identifier_for_label(label))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(identifiers.len(), labels.len());
+        assert_eq!(
+            publish_selinux_identifier_for_label("aos-pkg-webapp"),
+            "aos_x2dpkg_x2dwebapp"
+        );
+        assert_eq!(
+            publish_selinux_identifier_for_label("1webapp"),
+            "aos_pkg_1webapp"
+        );
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_rejects_mac_profile_payload_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "selinux",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": mac,
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        write_publish_selinux_artifacts(tmp.path(), "aos-pkg-webapp");
+        fs::write(
+            tmp.path().join("mac/selinux/aos_x2dpkg_x2dwebapp.pp"),
+            b"permissive compiled policy",
+        )
+        .unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("does not match the validated SELinux source"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_rejects_missing_mac_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": {
+                "version": 1,
+                "package": "webapp",
+                "backend": "selinux",
+                "securityLabel": "aos-pkg-webapp",
+                "defaultDeny": true,
+                "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
+            },
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("validating MAC profile artifact for package 'webapp'")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_publish_expose_manifest_rejects_mac_profile_parent_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "selinux",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": mac,
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        let external_mac = tmp.path().join("external-mac");
+        let external_profile = external_mac.join("selinux/aos_x2dpkg_x2dwebapp.pp");
+        fs::create_dir_all(external_profile.parent().unwrap()).unwrap();
+        fs::write(&external_profile, b"compiled-policy").unwrap();
+        std::os::unix::fs::symlink(&external_mac, tmp.path().join("mac")).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("not a non-symlink directory"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn build_package_toml_records_expose_manifest_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let mut permissions = PermissionsMeta {
+            network: Some(crate::types::NetworkPermission::PrivateOutbound),
+            tcp_bind: vec![8080],
+            tcp_connect: vec![443],
+            capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+            ..PermissionsMeta::default()
+        };
+        permissions.confinement = Some(permissions.computed_confinement());
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-mac.service".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: vec!["zlib".into()],
+                config: crate::types::ExposeConfigMeta {
+                    artifacts: vec![crate::types::ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: crate::types::ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["webapp.service".into()],
+                        reload: crate::types::ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: vec![crate::types::ProvidedCapabilityMeta {
+                    name: "data".into(),
+                    kind: crate::types::CapabilityKind::Directory,
+                    path: Some("/var/lib/webapp/data".into()),
+                    unit: None,
+                }],
+                uses: vec![crate::types::RequiredCapabilityMeta {
+                    provider: "zlib".into(),
+                    name: "headers".into(),
+                    kind: crate::types::CapabilityKind::Directory,
+                    unit: "webapp.service".into(),
+                }],
+            },
+            permissions,
+            mac: Some(PublishMacProfileManifest {
+                version: 1,
+                package: "webapp".into(),
+                backend: "selinux".into(),
+                security_label: "aos-pkg-webapp".into(),
+                default_deny: true,
+                profile_path: Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp".into()),
+            }),
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            &manifest_digest,
+        );
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+            Some(&manifest_digest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        assert_eq!(
+            platform.get("min-format").and_then(toml::Value::as_integer),
+            Some(i64::from(PACKAGE_META_FORMAT))
+        );
+        assert_eq!(
+            platform
+                .get("requires-features")
+                .and_then(toml::Value::as_array)
+                .map(|features| {
+                    features
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap(),
+            vec![
+                FEATURE_EXPOSE_V1,
+                FEATURE_EXPOSE_ARTIFACT_V1,
+                FEATURE_PERMISSIONS_V1,
+                FEATURE_NETWORK_POLICY_V1,
+                FEATURE_REQUIRES_V1,
+                FEATURE_CONFIG_V1,
+                FEATURE_RELOAD_V1,
+                FEATURE_CAPABILITY_ROUTES_V1,
+                FEATURE_EBPF_NET_POLICY_V1,
+                FEATURE_MAC_PROFILE_V1,
+                FEATURE_ATTESTATION_V1,
+            ]
+        );
+        assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
+        );
+        assert_eq!(
+            platform
+                .get("references")
+                .and_then(|references| references.get("min-format"))
+                .and_then(toml::Value::as_integer),
+            Some(i64::from(PACKAGE_META_FORMAT))
+        );
+        assert_eq!(
+            platform
+                .get("expose")
+                .and_then(|expose| expose.get("target"))
+                .and_then(toml::Value::as_str),
+            Some("aos-pkg-webapp.target")
+        );
+        assert_eq!(
+            platform
+                .get("expose_artifact")
+                .and_then(|artifact| artifact.get("store_path"))
+                .and_then(toml::Value::as_str),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("network"))
+                .and_then(toml::Value::as_str),
+            Some("private-outbound")
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("tcp-bind"))
+                .and_then(toml::Value::as_array)
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter_map(toml::Value::as_integer)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![8080])
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("tcp-connect"))
+                .and_then(toml::Value::as_array)
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter_map(toml::Value::as_integer)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![443])
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("confinement"))
+                .and_then(|confinement| confinement.get("label"))
+                .and_then(toml::Value::as_str),
+            Some(
+                "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE)",
+            )
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.expose.as_ref().map(|expose| expose.target.as_str()),
+            Some("aos-pkg-webapp.target")
+        );
+        assert_eq!(
+            parsed
+                .expose_artifact
+                .as_ref()
+                .map(|artifact| artifact.store_path.as_str()),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            parsed.permissions.network,
+            Some(crate::types::NetworkPermission::PrivateOutbound)
+        );
+        assert_eq!(parsed.permissions.tcp_bind, vec![8080]);
+        assert_eq!(parsed.permissions.tcp_connect, vec![443]);
+    }
+
+    #[test]
+    fn build_package_toml_detects_ebpf_feature_from_package_name() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+            Some(&manifest_digest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let features = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .and_then(|platform| platform.get("requires-features"))
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_EBPF_NET_POLICY_V1));
+    }
+
+    #[test]
+    fn build_package_toml_rejects_expose_manifest_without_artifact() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+
+        let err = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("requires rendered expose artifact"));
+    }
+
+    #[test]
+    fn build_package_toml_records_expose_artifact_metadata() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            &manifest_digest,
+        );
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+            Some(&manifest_digest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        let features = platform
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_EXPOSE_ARTIFACT_V1));
+        assert!(features.contains(&FEATURE_NETWORK_POLICY_V1));
+        assert!(features.contains(&FEATURE_ATTESTATION_V1));
+        assert_eq!(
+            platform
+                .get("expose_artifact")
+                .and_then(|artifact| artifact.get("store_path"))
+                .and_then(toml::Value::as_str),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(platform.get("root_hash"), None);
+        assert_eq!(platform.get("root_hash_sig"), None);
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
+        assert_eq!(
+            platform.get("provenance").and_then(toml::Value::as_str),
+            Some(expected_provenance.as_str())
+        );
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed
+                .expose_artifact
+                .as_ref()
+                .map(|artifact| artifact.store_path.as_str()),
+            Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            parsed.attestation.root_digest.as_deref(),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            parsed.attestation.provenance.as_deref(),
+            Some(expected_provenance.as_str())
+        );
+        assert_eq!(
+            parsed.attestation.measurement.as_deref(),
+            Some(expected_measurement.as_str())
+        );
+    }
+
+    #[test]
+    fn build_package_toml_records_package_attestation_measurement() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target"},"permissions":{}}"#,
+        );
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &manifest_digest,
+        );
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+            Some(&manifest_digest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        let features = platform
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_ATTESTATION_V1));
+        assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(root_hash)
+        );
+        assert_eq!(
+            platform.get("root_hash").and_then(toml::Value::as_str),
+            Some(root_hash)
+        );
+        assert_eq!(
+            platform.get("root_hash_sig").and_then(toml::Value::as_str),
+            Some("root.roothash.p7s")
+        );
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
+        assert_eq!(
+            platform.get("provenance").and_then(toml::Value::as_str),
+            Some(expected_provenance.as_str())
+        );
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.attestation.root_digest.as_deref(), Some(root_hash));
+        assert_eq!(parsed.attestation.root_hash.as_deref(), Some(root_hash));
+        assert_eq!(
+            parsed.attestation.root_hash_sig.as_deref(),
+            Some("root.roothash.p7s")
+        );
+        assert_eq!(
+            parsed.attestation.provenance.as_deref(),
+            Some(expected_provenance.as_str())
+        );
+        assert_eq!(
+            parsed.attestation.measurement.as_deref(),
+            Some(expected_measurement.as_str())
+        );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_binds_nar_manifest_measurement_and_source() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            manifest_digest,
+        );
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+
+        let signer = test_provenance_signer();
+        let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+            &signer.signer,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        assert_eq!(artifact.path, expected_provenance);
+        assert!(artifact.path.contains("/x86_64-linux/"));
+        let statement = signed_provenance_statement(&artifact);
+        assert_eq!(statement["_type"], "https://in-toto.io/Statement/v1");
+        assert_eq!(statement["predicateType"], "https://slsa.dev/provenance/v1");
+        assert_eq!(
+            statement["subject"][0]["name"].as_str(),
+            Some(info.path.as_str())
+        );
+        assert_eq!(
+            statement["subject"][0]["digest"]["sha256"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            statement["subject"][1]["digest"]["sha256"],
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        );
+        assert_eq!(
+            statement["subject"][2]["digest"]["sha256"],
+            measurement.trim_start_matches("sha256:")
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["root_digest"].as_str(),
+            Some(root_hash)
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["root_hash"].as_str(),
+            Some(root_hash)
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["provenance"].as_str(),
+            Some(expected_provenance.as_str())
+        );
+        let expected_source_uri = format!("nix:{}", source.path);
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["uri"].as_str(),
+            Some(expected_source_uri.as_str())
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                ["sha256"]
+                .as_str(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_binds_non_verity_root_digest() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            manifest_digest,
+        );
+
+        let signer = test_provenance_signer();
+        let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            None,
+            &manifest,
+            manifest_digest,
+            &signer.signer,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        assert_eq!(artifact.attestation.root_hash, None);
+        assert_eq!(artifact.attestation.root_hash_sig, None);
+        assert_eq!(
+            artifact.attestation.root_digest.as_deref(),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            artifact.attestation.measurement.as_deref(),
+            Some(measurement.as_str())
+        );
+        let statement = signed_provenance_statement(&artifact);
+        let params = &statement["predicate"]["buildDefinition"]["externalParameters"];
+        assert_eq!(
+            params["root_digest"].as_str(),
+            Some(expected_root_digest.as_str())
+        );
+        assert!(params.get("root_hash").is_none());
+        assert!(params.get("root_hash_sig").is_none());
+    }
+
+    #[test]
+    fn publish_provenance_paths_are_platform_scoped() {
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        );
+
+        let x86 = publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+        let arm = publish_provenance_ref("webapp", "aarch64-linux", &measurement).unwrap();
+
+        assert_ne!(x86, arm);
+        assert!(x86.contains("/x86_64-linux/"));
+        assert!(arm.contains("/aarch64-linux/"));
+    }
+
+    #[test]
+    fn publish_provenance_ref_rejects_malformed_measurements() {
+        assert!(publish_provenance_ref("webapp", "x86_64-linux", "not-a-digest").is_err());
+        assert!(publish_provenance_ref("webapp", "x86_64-linux", "sha256:abcd").is_err());
+        assert!(
+            publish_provenance_ref(
+                "webapp",
+                "x86_64-linux",
+                "sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_preserves_sri_nar_hashes_as_nix_digests() {
+        let package_nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let source_nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: package_nar_hash.into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: source_nar_hash.into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+        let signer = test_provenance_signer();
+        let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+            &signer.signer,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        let statement = signed_provenance_statement(&artifact);
+        assert_eq!(
+            statement["subject"][0]["digest"]["nix:narHash"].as_str(),
+            Some(package_nar_hash)
+        );
+        assert!(statement["subject"][0]["digest"].get("sha256").is_none());
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                ["nix:narHash"]
+                .as_str(),
+            Some(source_nar_hash)
+        );
+        assert!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                .get("sha256")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_records_hash_chain() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            log_path,
+            tmp.path().join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+        );
+        let content = fs::read_to_string(&log_path).unwrap();
+        let entries = content
+            .lines()
+            .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].body.sequence, 0);
+        assert_eq!(entries[0].body.previous_entry_hash, None);
+        assert_eq!(entries[0].body.package, "webapp");
+        assert_eq!(entries[0].body.version, "1.0.0");
+        assert_eq!(entries[0].body.platform, "x86_64-linux");
+        assert_eq!(entries[0].body.store_path, info.path);
+        assert_eq!(
+            entries[0].body.root_digest.as_deref(),
+            artifact.attestation.root_digest.as_deref()
+        );
+        assert_eq!(
+            entries[0].body.root_hash.as_deref(),
+            artifact.attestation.root_hash.as_deref()
+        );
+        assert_eq!(
+            entries[0].body.statement.jsonl_sha256,
+            format!("sha256:{}", sha256_hex(artifact.jsonl.as_bytes()))
+        );
+        assert_eq!(
+            entries[0].entry_hash,
+            package_provenance_transparency_entry_hash(&entries[0].body).unwrap()
+        );
+        assert_eq!(entries[1].body.sequence, 1);
+        assert_eq!(
+            entries[1].body.previous_entry_hash.as_deref(),
+            Some(entries[0].entry_hash.as_str())
+        );
+        assert_eq!(
+            read_package_provenance_transparency_log_state(&log_path).unwrap(),
+            (2, Some(entries[1].entry_hash.clone()))
+        );
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_corrupt_history() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.entry_hash = format!("sha256:{}", "0".repeat(64));
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+
+        let err = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("hash mismatch"));
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_broken_previous_link() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entries = content
+            .lines()
+            .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries[1].body.previous_entry_hash = Some(format!("sha256:{}", "1".repeat(64)));
+        entries[1].entry_hash =
+            package_provenance_transparency_entry_hash(&entries[1].body).unwrap();
+        let rewritten = entries
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        fs::write(&log_path, format!("{rewritten}\n")).unwrap();
+
+        let err = read_package_provenance_transparency_log_state(&log_path).unwrap_err();
+
+        assert!(format!("{err:#}").contains("previous hash mismatch"));
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_head_rewrite() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+        fs::write(&log_path, "").unwrap();
+
+        let err = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("does not extend committed HEAD"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_statement_digest_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        fs::write(&provenance_path, "{}\n").unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_prestaged_bad_transparency_log() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.entry_hash = format!("sha256:{}", "0".repeat(64));
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(&repo, &["add", PACKAGE_PROVENANCE_TRANSPARENCY_LOG]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("does not extend committed HEAD"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_prestaged_statement_change_without_log_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        fs::write(&provenance_path, "{}\n").unwrap();
+        git(&repo, &["add", artifact.path.as_str()]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_first_provenance_statement_without_log() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (_, _, artifact) = sample_transparency_provenance();
+        write_sample_provenance_artifact(&repo, &artifact);
+        git(&repo, &["add", artifact.path.as_str()]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("transparency log is missing"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_rfc0001_package_without_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"webapp\"\n\
+             description = \"\"\n\
+             \n\
+             [[versions]]\n\
+             version = \"1.0.0\"\n\
+             \n\
+             [versions.platforms.x86_64-linux]\n\
+             store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+             closure_size = 1\n\
+             source_drv = \"\"\n\
+             source_nar_hash = \"\"\n\
+             \n\
+             [versions.platforms.x86_64-linux.expose]\n\
+             target = \"aos-pkg-webapp.target\"\n",
+        )
+        .unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("without attestation provenance"));
+    }
+
+    #[test]
+    fn commit_registry_paths_allows_package_toml_without_versions() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("s").join("stub.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"stub\"\n\
+             description = \"\"\n\
+             license = \"MIT\"\n\
+             maintainer = \"aos-team\"\n",
+        )
+        .unwrap();
+
+        commit_registry_paths(&repo, "publish stub", &[package_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
+    }
+
+    #[test]
+    fn commit_registry_paths_allows_semantically_empty_rfc0001_tables_without_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"webapp\"\n\
+             description = \"\"\n\
+             license = \"MIT\"\n\
+             maintainer = \"aos-team\"\n\
+             \n\
+             [[versions]]\n\
+             version = \"1.0.0\"\n\
+             \n\
+             [versions.platforms.x86_64-linux]\n\
+             store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+             closure_size = 1\n\
+             source_drv = \"\"\n\
+             source_nar_hash = \"\"\n\
+             \n\
+             [versions.platforms.x86_64-linux.permissions]\n\
+             capabilities = []\n\
+             cgroup-delegate = false\n\
+             \n\
+             [versions.platforms.x86_64-linux.bpf_lsm]\n\
+             policies = []\n",
+        )
+        .unwrap();
+
+        commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
+    }
+
+    #[test]
+    fn commit_registry_paths_joins_current_process_publish_lock() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let _publish_lock = RegistryPublishLock::acquire(&repo).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
+    }
+
+    #[test]
+    fn commit_registry_paths_fails_before_staging_when_publish_lock_is_foreign() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        fs::write(repo.join(".git").join("apr-publish.lock"), "pid=999999\n").unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("another publisher may be running"));
+        assert_eq!(
+            git(&repo, &["diff", "--cached", "--name-only"]).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_statement_body_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.body.package = "other".to_string();
+        entry.entry_hash = package_provenance_transparency_entry_hash(&entry.body).unwrap();
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("externalParameters.package mismatch"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurement_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let mut statement = signed_provenance_statement(&artifact);
+        let subjects = statement
+            .get_mut("subject")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let manifest_subject = subjects
+            .iter_mut()
+            .find(|subject| {
+                subject.get("name").and_then(Value::as_str)
+                    == Some("aos:permissions-manifest:webapp:1.0.0:x86_64-linux")
+            })
+            .unwrap();
+        manifest_subject["digest"]["sha256"] = Value::String("e".repeat(64));
+        let statement_jsonl = sign_test_provenance_statement(&statement);
+        fs::write(&provenance_path, &statement_jsonl).unwrap();
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.body.statement.jsonl_sha256 =
+            format!("sha256:{}", sha256_hex(statement_jsonl.as_bytes()));
+        entry.entry_hash = package_provenance_transparency_entry_hash(&entry.body).unwrap();
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("measurement does not match permissions manifest"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_accepts_matching_package_toml() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        validate_staged_package_provenance_transparency_log(&repo).unwrap();
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_package_toml_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let bad_measurement = format!("sha256:{}", "f".repeat(64));
+        let package_toml =
+            write_sample_package_toml(&repo, &info, &source, &artifact, Some(&bad_measurement));
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("measurement mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_provenance_removal() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&package_toml).unwrap();
+        let without_provenance = content
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("provenance = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&package_toml, format!("{without_provenance}\n")).unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("removes committed provenance"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_provenance_type_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let provenance = artifact.attestation.provenance.as_deref().unwrap();
+        let content = fs::read_to_string(&package_toml).unwrap();
+        fs::write(
+            &package_toml,
+            content.replace(&format!("provenance = \"{provenance}\""), "provenance = []"),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("provenance must be a string"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_source_nar_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&package_toml).unwrap();
+        fs::write(
+            &package_toml,
+            content.replace(
+                &format!("source_nar_hash = \"{}\"", source.nar_hash),
+                &format!("source_nar_hash = \"sha256:{}\"", "f".repeat(64)),
+            ),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("source_nar_hash mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_unlogged_provenanced_store_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let bad_nar_hash = format!("sha256:{}", "e".repeat(64));
+        write_sample_store_record(&repo, &info, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_new_provenanced_root_unlogged_store_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let bad_nar_hash = format!("sha256:{}", "e".repeat(64));
+        let store_record = write_sample_store_record(&repo, &info, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_new_provenanced_root_without_store_record() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("store record"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_duplicate_package_platform() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&package_toml)
+            .unwrap()
+            .write_all(
+                b"\n[[versions]]\n\
+                  version = \"1.0.0\"\n\
+                  \n\
+                  [versions.platforms.x86_64-linux]\n\
+                  store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+                  closure_size = 1\n\
+                  source_drv = \"\"\n\
+                  source_nar_hash = \"\"\n",
+            )
+            .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("duplicate webapp 1.0.0 x86_64-linux"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_provenanced_store_nar_size_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        write_sample_store_record(&repo, &info, Some(&info.nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_reachable_dependency_store_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let dep = StorePathInfo {
+            path: "/nix/store/lib123-runtime-1.0".into(),
+            nar_hash: format!("sha256:{}", "1".repeat(64)),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let root_record = write_sample_store_record_with_deps(&repo, &info, &[&dep.path], None);
+        let dep_record = write_sample_store_record(&repo, &dep, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                root_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                dep_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let bad_nar_hash = format!("sha256:{}", "2".repeat(64));
+        write_sample_store_record(&repo, &dep, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                dep_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("reachable dependency"));
+    }
+
+    #[test]
+    fn package_provenance_statement_path_rejects_git_revspec_punctuation() {
+        assert!(ensure_safe_package_provenance_statement_path("0:foo.intoto.jsonl").is_err());
+        assert!(
+            ensure_safe_package_provenance_statement_path(
+                "provenance/w/web/x86_64-linux/bad:path.intoto.jsonl"
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_safe_package_provenance_statement_path(
+                "provenance/w/web/x86_64-linux/good.intoto.jsonl"
+            )
+            .is_ok()
+        );
+    }
+
+    fn sample_transparency_provenance() -> (StorePathInfo, StorePathInfo, PublishProvenanceArtifact)
+    {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let signer = test_provenance_signer();
+        let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+            &signer.signer,
+        )
+        .unwrap()
+        .unwrap();
+        (info, source, artifact)
+    }
+
+    fn write_sample_provenance_artifact(
+        root: &Path,
+        artifact: &PublishProvenanceArtifact,
+    ) -> PathBuf {
+        let path = root.join(&artifact.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &artifact.jsonl).unwrap();
+        path
+    }
+
+    fn write_sample_store_record(
+        root: &Path,
+        info: &StorePathInfo,
+        extra_nar_hash: Option<&str>,
+    ) -> PathBuf {
+        write_sample_store_record_with_deps(root, info, &[], extra_nar_hash)
+    }
+
+    fn write_sample_store_record_with_deps(
+        root: &Path,
+        info: &StorePathInfo,
+        deps: &[&str],
+        extra_nar_hash: Option<&str>,
+    ) -> PathBuf {
+        let ia_hash = extract_hash(&info.path);
+        let path = store::entry_path(root, ia_hash).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dep_edges = deps
+            .iter()
+            .map(|dep| DepEdge {
+                dep_ia: extract_hash(dep).to_string(),
+                dep_ca: None,
+            })
+            .collect::<Vec<_>>();
+        let mut entry = store::StoreEntry {
+            realisations: vec![Realisation {
+                nar: NarBytes::from_hash(&info.nar_hash, info.nar_size).unwrap(),
+                ca: None,
+                deps: dep_edges,
+            }],
+        };
+        if let Some(nar_hash) = extra_nar_hash {
+            entry.realisations.push(Realisation {
+                nar: NarBytes::from_hash(nar_hash, info.nar_size + 1).unwrap(),
+                ca: Some(store::normalize_digest(nar_hash).unwrap()),
+                deps: Vec::new(),
+            });
+        }
+        fs::write(&path, store::serialize_entry(&entry)).unwrap();
+        path
+    }
+
+    fn write_sample_package_toml(
+        root: &Path,
+        info: &StorePathInfo,
+        source: &StorePathInfo,
+        artifact: &PublishProvenanceArtifact,
+        measurement_override: Option<&str>,
+    ) -> PathBuf {
+        let path = root.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let root_digest = artifact.attestation.root_digest.as_deref().unwrap();
+        let root_hash = artifact.attestation.root_hash.as_deref().unwrap();
+        let root_hash_sig = artifact.attestation.root_hash_sig.as_deref().unwrap();
+        let provenance = artifact.attestation.provenance.as_deref().unwrap();
+        let measurement = measurement_override
+            .or(artifact.attestation.measurement.as_deref())
+            .unwrap();
+        fs::write(
+            &path,
+            format!(
+                "[package]\n\
+                 name = \"webapp\"\n\
+                 description = \"\"\n\
+                 \n\
+                 [[versions]]\n\
+                 version = \"1.0.0\"\n\
+                 \n\
+                 [versions.platforms.x86_64-linux]\n\
+                 store_path = \"{}\"\n\
+                 closure_size = 1\n\
+                 source_drv = \"{}\"\n\
+                 source_nar_hash = \"{}\"\n\
+                 root_digest = \"{}\"\n\
+                 root_hash = \"{}\"\n\
+                 root_hash_sig = \"{}\"\n\
+                 provenance = \"{}\"\n\
+                 measurement = \"{}\"\n",
+                info.path,
+                source.path,
+                source.nar_hash,
+                root_digest,
+                root_hash,
+                root_hash_sig,
+                provenance,
+                measurement
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    fn init_test_transparency_repo(repo: &Path) {
+        git(
+            repo,
+            &["init", "--object-format=sha256", "--initial-branch=main"],
+        )
+        .unwrap();
+        git(repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            format!("[registry]\nname = \"{TEST_PROVENANCE_REGISTRY}\"\n"),
+        )
+        .unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+        keys::write_keys_toml(
+            repo,
+            &KeysToml {
+                active: vec![RosterKey {
+                    id: TEST_PROVENANCE_KEY_ID.to_string(),
+                    key: keypair.trust_key_line(TEST_PROVENANCE_REGISTRY),
+                }],
+                ..KeysToml::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn package_attestation_measurement_changes_when_manifest_digest_changes() {
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let first = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &crate::package_attestation::package_manifest_digest_bytes(br#"{"network":"private"}"#),
+        );
+        let second = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &crate::package_attestation::package_manifest_digest_bytes(br#"{"network":"host"}"#),
+        );
+
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -9980,6 +15994,9 @@ references = []
             None,
             &[],
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -10022,6 +16039,9 @@ references = []
             Some("2026.03"),
             &[("raw".to_string(), img_info, SbFacts::default())],
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -10060,6 +16080,9 @@ references = []
             false,
             Some("0.9.0+build\"meta"),
             &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
+            None,
+            None,
             None,
         )
         .unwrap();

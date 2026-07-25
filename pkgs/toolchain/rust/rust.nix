@@ -87,6 +87,11 @@ in
           profiler = true
           cargo = "${rust-1_92}/bin/cargo"
           rustc = "${rust-1_92}/bin/rustc"
+          # Build std for the native host plus the bare wasm32 target. The
+          # wasm32-unknown-unknown std (core + alloc, with the wasm shims; it
+          # has no full libstd, which is expected) lets cargo cross-compile the
+          # aos-registry-worker crate to a Cloudflare Worker hermetically.
+          target = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
           [install]
           prefix = "$out"
@@ -98,6 +103,14 @@ in
           rpath = true
           omit-git-hash = true
           download-rustc = false
+          # `lld = false`: x.py refuses `rust.lld = true` when configured with an
+          # external `llvm-config` (it has no bundled llvm-project to build lld
+          # from). The wasm32-unknown-unknown target nonetheless needs `rust-lld`
+          # (wasm has no system linker), so the install phase symlinks it from
+          # the AOS LLVM's own `lld` driver instead. `use-lld = false` keeps the
+          # host (x86_64) target on GCC's `ld` — rust-lld as the default host
+          # linker chokes on the zlib-compressed debug sections in GCC 14's
+          # libgcc.a.
           lld = false
           use-lld = false
 
@@ -106,6 +119,14 @@ in
 
           [target.aarch64-unknown-linux-gnu]
           llvm-config = "${llvm}/bin/llvm-config"
+
+          # The bare wasm32 target needs no external C toolchain or llvm-config;
+          # rustc's own LLVM backend emits the wasm directly. Use the pure-Rust
+          # compiler-builtins (not the optimized C source), so x.py does not
+          # demand Clang to cross-compile compiler-rt C for wasm — we only ship
+          # gcc as the host cc, which x.py rejects for wasm C builds.
+          [target.wasm32-unknown-unknown]
+          optimized-compiler-builtins = false
           TOML
         '';
       }
@@ -137,6 +158,19 @@ in
                   # matches a docs step, and panics on the absent doc dir
                   # (docs = false).
                   python3 x.py install
+
+                  # Supply `rust-lld` for wasm32-unknown-unknown. rustc links the
+                  # bare wasm target with the self-contained `rust-lld` found at
+                  # lib/rustlib/<host>/bin/rust-lld, invoked as `rust-lld -flavor
+                  # wasm` — but x.py cannot build rust-lld against an external
+                  # llvm-config (see [rust] lld above). The AOS LLVM ships the
+                  # universal `lld` driver, which dispatches on `-flavor wasm`
+                  # exactly like wasm-ld, so point rust-lld at it. Without this,
+                  # `cargo build --target wasm32-unknown-unknown` fails with
+                  # "linker `rust-lld` not found".
+                  RUSTLIB_BIN="$out/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+                  mkdir -p "$RUSTLIB_BIN"
+                  ln -sf ${llvm}/bin/lld "$RUSTLIB_BIN/rust-lld"
 
                   # No patchelf available — use wrapper scripts
                   LIB_PATH="$out/lib:$out/lib/rustlib/x86_64-unknown-linux-gnu/lib:${llvm}/lib:${openssl}/lib:${zlib}/lib"

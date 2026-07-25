@@ -100,8 +100,8 @@ roster-modifying commits are signed.
 ```toml
 schema = 1
 
-# Currently-valid signing keys (name:Ed25519:<base64>, the parse_signing_key format).
-# The model is >=2 OVERLAPPING active keys (no role field, no "root" tier).
+# Currently-valid git signing keys (name:Ed25519:<base64>, the parse_signing_key format).
+# TUF role membership and thresholds live in tuf/root.json, not in keys.toml.
 [[keys]]
 id     = "aos-core-2026a"
 key    = "aos-core:Ed25519:<base64>"
@@ -115,10 +115,13 @@ id     = "aos-core-2025"
 reason = "rotated"
 ```
 
-**Trust model (decided — design-brief §14, §16.8):** **≥2 overlapping active keys.**
-There is **no** offline-root / operational two-tier and **no** TUF-style root role — the
-**git lineage** (signed tag → commit → parent chain) provides the continuity, so a
-separate root tier is unnecessary.
+**Trust model:** the out-of-band anchor and signed git lineage still authenticate
+the first accepted registry commit and the `keys.toml` roster. Moving-ref release
+commits must carry `tuf/root.json`, `tuf/targets.json`, `tuf/snapshot.json`, and
+`tuf/timestamp.json`; clients verify those role thresholds, metadata versions,
+catalog hashes, and signed timestamp expiry before extracting package metadata.
+Explicit commit/tag/version pins still verify the same signed metadata and hashes
+when TUF exists without expiring old immutable release snapshots.
 
 **Rotation:** use `apr keys add <new-id> <new-key>` to update `keys.toml` so it
 lists both old and new keys (an overlap window), then publish the resulting

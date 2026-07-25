@@ -47,6 +47,7 @@
   mkOption = {
     type ? types.anything,
     default ? _noDefault,
+    defaultText ? null,
     description ? "",
     example ? null,
     readOnly ? false,
@@ -58,17 +59,37 @@
     # stored but otherwise ignored. Ports of nixpkgs code frequently
     # set this on `*.unit` / `*.jobScripts` fields.
     internal ? false,
+    # `contributable` is the capability-scoped contribution
+    # surface" marker. It is a *pure declaration field* — the merge engine
+    # (phases 3-6) completely ignores it, so setting it never changes how an
+    # option's value is computed. Its sole purpose is to let a shared-root
+    # OWNER curate which sub-paths NON-OWNER packages may write into: the
+    # owner sets `contributable = true` on the curated extension points
+    # (e.g. `nginx.virtualHosts`, `nginx.upstreams`) and leaves the root
+    # node, `enable`, and global owner-only fields unmarked (the default,
+    # `false`). For `attrsOf (submodule …)` the marker sits on the `attrsOf`
+    # option node and is understood to inherit to every dynamic child; an
+    # inner submodule option may re-declare `contributable = false` to punch
+    # an owner-only hole. The flag is surfaced verbatim on the option record
+    # (and via `evalModules`' `_optionDecls` result field) so the
+    # publish-time options-only eval can fold it into the registry inverted
+    # index; the actual provenance + reject ENFORCEMENT is resolver-side
+    # (CS5), this engine only exposes the declared surface. Defaults `false`
+    # so every existing option is owner-only and inert under this primitive.
+    contributable ? false,
   }: {
     _type = "option";
     inherit
       type
       default
+      defaultText
       description
       example
       readOnly
       apply
       visible
       internal
+      contributable
       ;
   };
 
@@ -293,9 +314,18 @@
   # ---------------------------------------------------------------------------
   # Internal: collect definitions at a path, traversing mkIf and mkMerge nodes
   # ---------------------------------------------------------------------------
-  collectDefsAtPath = path: config: file:
+  #
+  # `provenance` is the engine-stamped, resolver-supplied origin marker for
+  # the module this def came from (`null` for ordinary modules, `"operator"`
+  # for a host.nix module the resolver passed via `operatorModules`). It is
+  # threaded onto every emitted def UNCHANGED — exactly like `file` — and is
+  # read ONLY at the priority-assignment step (phase 4) to lift operator defs
+  # to the reserved tier-75 band. It is deliberately NOT derived from any
+  # module-supplied attribute (`_file` / a module-body `_provenance`), so it
+  # cannot be forged by a package (review M-forgeable-file).
+  collectDefsAtPath = path: config: file: provenance:
     if isMkMerge config
-    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file) config._values)
+    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance) config._values)
     else if isMkIf config
     then
       builtins.map (
@@ -307,11 +337,11 @@
               then d.condition && config._condition
               else config._condition;
           }
-      ) (collectDefsAtPath path config._value file)
+      ) (collectDefsAtPath path config._value file provenance)
     else if builtins.length path == 0
     then [
       {
-        inherit file;
+        inherit file provenance;
         value = config;
       }
     ]
@@ -321,7 +351,7 @@
       rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
     in
       if builtins.hasAttr key config
-      then collectDefsAtPath rest config.${key} file
+      then collectDefsAtPath rest config.${key} file provenance
       else []
     else [];
 
@@ -542,6 +572,22 @@
     lib ? {},
     extraArgs ? {},
     specialArgs ? {},
+    # `operatorModules` contains modules the
+    # RESOLVER has authenticated as operator-provenance (the verified
+    # `host.nix` store path). Every def these modules contribute is stamped
+    # with `_provenance = "operator"` and lifted to the reserved priority-75
+    # band (between `mkForce` and normal package contributions) at the
+    # priority-assignment step, so the operator deterministically beats any
+    # package contribution regardless of module order. Provenance is keyed to
+    # a module's POSITION in this resolver-controlled list, NOT to its
+    # forgeable `_file`, and does NOT propagate through `imports` — a package
+    # cannot inject itself here, cannot forge `_provenance` in its own body
+    # (the engine overwrites it), and cannot smuggle operator priority
+    # through an imported child. Defaults `[]`, so with no `host.nix` the
+    # second collect produces no modules and nothing is ever lifted —
+    # behaviour is byte-identical to before this primitive. CS5 wires the
+    # resolver to populate this from the verified host.nix path.
+    operatorModules ? [],
   }: let
     moduleLib =
       if lib == {}
@@ -618,7 +664,16 @@
         config._module.args = extraArgs // specialArgs;
       };
 
-      collectModules = mods:
+      # `collectModules provenance mods` recursively evaluates `mods`,
+      # stamping each DIRECT member with the given `_provenance`. Imported
+      # children are always collected with `null` provenance, so operator
+      # provenance is confined to the exact modules the resolver supplied and
+      # never leaks through an `imports` edge (review M-forgeable-file). The
+      # `evaled // { _provenance = provenance; }` overwrite is what makes the
+      # marker non-forgeable: any `_provenance` a module sets in its own body
+      # is discarded here, and `collectDefsAtPath` later reads only this
+      # engine-stamped value, never a module-body attribute.
+      collectModules = provenance: mods:
         builtins.concatLists (
           builtins.map (
             mod: let
@@ -632,12 +687,17 @@
                 }
                 mod;
             in
-              collectModules evaled.imports ++ [evaled]
+              collectModules null evaled.imports ++ [(evaled // {_provenance = provenance;})]
           )
           mods
         );
 
-      evaluatedModules = collectModules ([internalModule] ++ modules);
+      # Ordinary modules carry `null` provenance; operator (host.nix) modules
+      # carry `"operator"`. Appended last so their tier-75 defs also win any
+      # `lastValue` tie at equal priority, matching "the operator overrides".
+      evaluatedModules =
+        collectModules null ([internalModule] ++ modules)
+        ++ collectModules "operator" operatorModules;
 
       # Nested options tree, built from mergedOptions and fed back to
       # module functions via evalModule's `options` arg. This is the
@@ -664,7 +724,7 @@
       # --- Phase 3: Collect config definitions for each option ---
       configForOption = decl:
         builtins.concatLists (
-          builtins.map (m: collectDefsAtPath decl.path m.config m._file) evaluatedModules
+          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null)) evaluatedModules
         );
 
       # --- Phase 4: Merge config values for each option ---
@@ -679,7 +739,21 @@
             # Filter out conditional definitions whose condition is false
             activeDefs = builtins.filter (d: !(d ? condition) || d.condition) defs;
 
-            # Unwrap override markers and assign priorities
+            # Unwrap override markers and assign priorities.
+            #
+            # A BARE def (no explicit `mkOverride`/`mkForce`/`mkDefault`) is
+            # normally priority 100. The one exception is the
+            # operator tier: a bare def whose engine-stamped provenance is
+            # `"operator"` (it came from a resolver-supplied `host.nix`
+            # module) is lifted to the reserved priority-75 band, so the
+            # operator deterministically beats any package's normal-tier
+            # contribution regardless of module order — without subtree-
+            # wrapping (the `collectDefsAtPath` override-marker trap). An
+            # operator def that DOES carry an explicit override marker keeps
+            # that explicit priority (the operator can still `mkForce`/
+            # `mkDefault` deliberately). With the default empty
+            # `operatorModules`, no def ever has `"operator"` provenance, so
+            # every bare def gets 100 exactly as before.
             unwrappedDefs =
               builtins.map (
                 d:
@@ -690,7 +764,14 @@
                       value = d.value._value;
                       _priority = d.value._priority;
                     }
-                  else d // {_priority = 100;}
+                  else
+                    d
+                    // {
+                      _priority =
+                        if (d.provenance or null) == "operator"
+                        then 75
+                        else 100;
+                    }
               )
               activeDefs;
 
@@ -789,16 +870,23 @@
       # --- Phase 6: freeform / strict enforcement ---
       #
       # Opt-in per evaluation. When both `_module.freeformType` and
-      # `_module.strict` are at their defaults (null / false), this
-      # phase reduces to the pre-freeform `deepMerge allConfigMerged
-      # finalConfig` path — no config walk runs, no values at
-      # undeclared paths are forced. Existing callers (the main system
-      # eval, every stock module) rely on that laziness to keep broken-
-      # config paths inspectable without firing throws wired into
-      # unrelated options (see `lib/testing/module-enforcement.nix`'s
-      # Option B semantics — forcing `system.build.toplevel` triggers
-      # assertion enforcement, but forcing any other config path must
-      # not).
+      # `_module.strict` are at their defaults (null / false), `config` is
+      # exactly `finalConfig` — the per-option merge of every DECLARED option
+      # (each option resolves its own mkIf/mkMerge via `collectDefsAtPath`).
+      #
+      # We deliberately do NOT fold in `allConfigMerged` here. That value is a
+      # structural `deepMerge` of the raw module configs (via `resolveIfs`),
+      # and its only effect on the result is to surface config set at
+      # *undeclared* paths — which a well-formed module set never has. But
+      # building it forces every config leaf to WHNF (to resolve mkIf markers),
+      # including toplevel-only builders like `system.build.etcBasedir =
+      # pkgs.runCommand …`. Forcing one declared option (e.g.
+      # `system.build.configManifest`) would then force every sibling builder —
+      # fatal under the on-host eval-only `pkgs`, which has no builder
+      # functions. Using `finalConfig` keeps the result lazy per-option (so
+      # broken-config paths stay inspectable, and the eval-only manifest never
+      # touches the build graph) while remaining identical for any config whose
+      # paths are all declared.
       #
       # When strict-mode or a freeformType is set, the walk runs and
       # collects every path in the raw module configs that has no
@@ -810,7 +898,7 @@
 
       configWithFreeform =
         if freeformType == null && !isStrict
-        then deepMerge allConfigMerged finalConfig
+        then finalConfig
         else let
           declaredLeafSet = optionMap;
 
@@ -928,6 +1016,42 @@
       options = optionsTree;
       _modules = evaluatedModules;
       _type = "evaluatedModules";
+
+      # Re-evaluate this module set with additional modules appended (matching
+      # nixpkgs' `result.extendModules`). Used to overlay a fragment onto an
+      # already-evaluated system without threading its original module list
+      # back to the caller — e.g. the fleet test harness bakes per-VM identity
+      # (`environment.etc` for hostname/network/ssh key) onto a machine's
+      # system. `pkgs`/`lib`/`extraArgs`/`specialArgs`/`operatorModules` are
+      # inherited from this evaluation unless overridden.
+      extendModules = args: let
+        extraModules = args.modules or [];
+      in
+        evalModules ({
+            modules = modules ++ extraModules;
+            inherit pkgs lib extraArgs specialArgs operatorModules;
+          }
+          // builtins.removeAttrs args ["modules"]);
+
+      # The declared contributable option surface, flattened to one record
+      # per declared option path, carrying the `contributable` marker. This
+      # is the data the publish-time options-only eval folds into the
+      # registry inverted index (`option-path → {owner@version,
+      # contributable}`) so the resolver can authorize foreign writes
+      # (CS5). It is a lazy, additive field — forced only when a publish
+      # tool reads it — and is derived purely from `optionMap` (declarations),
+      # never forcing any `config` value. `contributable` defaults `false`
+      # (owner-only) for every option that does not opt in. `lib.optionSurface`
+      # / `lib.contributableSurface` are the public accessors.
+      _optionDecls = builtins.map (
+        key: let
+          decl = optionMap.${key};
+        in {
+          path = decl.path;
+          pathStr = key;
+          contributable = decl.option.contributable or false;
+        }
+      ) (builtins.attrNames optionMap);
 
       # Assertions and warnings from modules
       assertions = configWithFreeform.assertions or [];

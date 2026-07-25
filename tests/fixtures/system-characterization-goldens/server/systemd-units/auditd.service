@@ -1,0 +1,14 @@
+[Unit]
+After=local-fs.target systemd-tmpfiles-setup.service
+Description=Linux Audit Daemon
+
+[Service]
+Environment="PATH=/nix/store/<HASH>-coreutils-9.5/bin:/nix/store/<HASH>-findutils-4.10.0/bin:/nix/store/<HASH>-grep-3.11/bin:/nix/store/<HASH>-sed-4.9/bin:/nix/store/<HASH>-systemd-259.1/bin:/nix/store/<HASH>-coreutils-9.5/sbin:/nix/store/<HASH>-findutils-4.10.0/sbin:/nix/store/<HASH>-grep-3.11/sbin:/nix/store/<HASH>-sed-4.9/sbin:/nix/store/<HASH>-systemd-259.1/sbin"
+ExecReload=/nix/store/<HASH>-coreutils-9.5/bin/kill -HUP $MAINPID
+ExecStart=/nix/store/<HASH>-audit-4.0.2/sbin/auditd -n
+Restart=on-failure
+RestartSec=5s
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

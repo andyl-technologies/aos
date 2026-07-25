@@ -8,7 +8,7 @@
   crucible-qemu-plugin,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
+  cargoDepsHash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
   releaseManifest = import ./_release-manifest.nix {

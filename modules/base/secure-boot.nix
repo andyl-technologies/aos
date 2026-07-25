@@ -300,24 +300,25 @@ in {
 
       # Ship the PCR public key into the initrd for first-boot sealing.
       aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
+      environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
 
       # First boot: LUKS2-format /var and enroll a TPM2 token sealed to
       # the signed PCR policy (PCR 11, signature-flexible) plus PCR 7
       # pinned by value, and a recovery key escrowed off the volume.
       # Later boots: unlock via the TPM2 token, no passphrase. Ordered
-      # after ignition-disks (which creates the partition) and before
-      # mount-var (which mounts /dev/mapper/var — see ignition.nix).
+      # after aos-repart (which creates the partition) and before
+      # mount-var (which mounts /dev/mapper/var).
       boot.initrd.systemd.services."aos-var-crypt" = {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         wantedBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
-        # Only ORDER after ignition-disks, don't Require it: on a reboot
-        # (var already provisioned) ignition-disks is condition-skipped, and
-        # Requires would not pull it in. No ConditionPathExists on the var
-        # device either — for a crypto_LUKS partition udev surfaces
-        # /dev/disk/by-partlabel/var late, which would condition-skip this
-        # whole unit on the unlock boot; the script waits for it instead.
-        after = ["ignition-disks.service" "systemd-udev-settle.service"];
+        # Only ORDER after the disk carver (aos-repart), don't Require it: on a
+        # reboot (var already provisioned) repart is a no-op. No
+        # ConditionPathExists on the var device either — for a crypto_LUKS
+        # partition udev surfaces /dev/disk/by-partlabel/var late, which would
+        # condition-skip this whole unit on the unlock boot; the script waits
+        # for it instead.
+        after = ["aos-repart.service" "systemd-udev-settle.service"];
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"
@@ -413,8 +414,8 @@ in {
             # up a temporary PLAIN ext4 /var so the system reaches
             # multi-user and an operator/test can enroll PK/KEK/db; the
             # first enforcing boot below replaces it with the sealed volume.
-            # ignition does NOT format /var (that would make ignition-disks
-            # fail once /var becomes LUKS2), so create the filesystem here.
+            # The measured-boot repart plan leaves /var raw, so create the
+            # temporary filesystem here.
             # -F forces past any stale signature in the freshly-carved
             # partition.
             klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"

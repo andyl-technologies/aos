@@ -25,8 +25,11 @@ in
       gnumake
       perl
       binutils
+      # Kernel UAPI headers are compile-time only; in runtimeDeps they would
+      # ride into the closure of everything that links libcap (a dead RPATH,
+      # since linux-headers ships no shared library).
+      linux-headers
     ];
-    runtimeDeps = [linux-headers];
     propagatedDeps = [];
 
     phases = [

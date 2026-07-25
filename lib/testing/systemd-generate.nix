@@ -87,7 +87,10 @@
     builtins.match ".*${lib.escapeRegex needle}.*" haystack != null;
 
   evalAssertions =
-    # hello-world.service: script compiled → ExecStart points at store path
+    # hello-world.service: script compiled → ExecStart carries the job-script
+    # placeholder at evaluation time. The placeholder is
+    # substituted for the real store path in the built unit file, asserted at
+    # build time below (`ExecStart=/nix/store/`).
     lib.throwIfNot
     (containsStr "Description=Hello world stage-3 service" helloService)
     "systemd-generate: hello-world.service missing Description="
@@ -95,8 +98,8 @@
       (containsStr "After=network.target" helloService)
       "systemd-generate: hello-world.service missing After=network.target"
       (lib.throwIfNot
-        (containsStr "ExecStart=/nix/store/" helloService)
-        "systemd-generate: hello-world.service ExecStart is not a store path"
+        (containsStr "ExecStart=#aos-jobscript:" helloService)
+        "systemd-generate: hello-world.service ExecStart should be a job-script placeholder at eval time"
         (lib.throwIfNot
           (containsStr "Type=oneshot" helloService)
           "systemd-generate: hello-world.service missing Type=oneshot"
@@ -153,6 +156,21 @@ in
               exit 1
             fi
           done
+
+          # The eval-time unit body carries a
+          # `#aos-jobscript:<key>#` placeholder, but `makeUnit` substitutes it
+          # for the real job-script store path when materializing the unit
+          # file. Verify the built hello-world.service has the resolved path
+          # (and no leftover placeholder) so the gen-0 image is bootable.
+          hw="$(cat "$units_dir/hello-world.service")"
+          case "$hw" in
+            *"ExecStart=/nix/store/"*) ;;
+            *) echo "FAIL: built hello-world.service ExecStart is not a resolved store path"; exit 1 ;;
+          esac
+          case "$hw" in
+            *"#aos-jobscript:"*) echo "FAIL: built hello-world.service still contains a job-script placeholder"; exit 1 ;;
+            *) ;;
+          esac
 
           # wantedBy symlinks must appear in the right .wants dirs.
           # hello-world.service + with-requires.service both declare

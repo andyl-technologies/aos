@@ -284,6 +284,146 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     Ok(())
 }
 
+/// Creates the configuration-generation GC roots: `cfg/` (manifest outputs)
+/// and `cfgsrc/` (config-module source closure + `host.nix`).
+///
+/// Extends the per-generation symlink farm written by [`create_gc_roots`] with
+/// the two roots the on-host config evaluator needs (build-spec §2). Each is a
+/// directory of `<hash> -> <store path>` symlinks `nix-store --gc` honors:
+///
+/// - `gen_dir/cfg/<hash>` pins the realized **manifest outputs** — rendered
+///   `/etc` trees, unit files, job-script texts, the toplevel — so a same-ABI
+///   rollback is a pure pointer switch (the output is already on disk).
+/// - `gen_dir/cfgsrc/<hash>` pins the eval **inputs**: the config-module
+///   *source* closure and the `host.nix` store path. This is the load-bearing
+///   addition (review M-gc-inputs): `cfg/` pins outputs, which reference
+///   package *runtime* closures, **not** the config-module source NARs nor
+///   `host.nix`; without `cfgsrc/` a plain `apm gc` would collect the inputs
+///   and break cross-ABI re-eval.
+///
+/// Both `cfg_outputs` and `cfgsrc_inputs` are absolute store paths. The two
+/// directories live inside `gen_dir`, so [`crate::profile::Profile::prune_generations`]
+/// (which removes the whole `gen-N/` directory) drops them together with the
+/// generation.
+///
+/// # Errors
+///
+/// Returns an error if either directory cannot be created or a symlink cannot
+/// be created or renamed into place.
+pub fn create_config_gc_roots(
+    gen_dir: &Path,
+    cfg_outputs: &[String],
+    cfgsrc_inputs: &[String],
+) -> Result<()> {
+    write_store_path_roots(&gen_dir.join("cfg"), cfg_outputs)?;
+    write_store_path_roots(&gen_dir.join("cfgsrc"), cfgsrc_inputs)?;
+    Ok(())
+}
+
+/// Create the image-scoped `image-gen-N/baselib/<module_abi>` GC root
+/// retained by the active configuration generations.
+///
+/// Pins **only** the base-lib + evaluator closure of one image-generation —
+/// not the kernel/initrd/whole UKI — keyed by the image's `module_abi`. This is
+/// the per-image-gen retention root that keeps ≥1 prior base lib alive on
+/// `/var` independent of the ESP ×2 UKI slot count, so cross-pruned-image
+/// rollback re-eval is always satisfiable without re-download.
+///
+/// `image_gen_dir` is the `image-gen-N/` directory; `evaluator_ref` is the
+/// store path of the base-lib + evaluator closure
+/// ([`crate::types::ImageGeneration::evaluator_ref`]).
+///
+/// # Errors
+///
+/// Returns an error if the `baselib/` directory cannot be created or the
+/// symlink cannot be written.
+pub fn create_baselib_gc_root(
+    image_gen_dir: &Path,
+    module_abi: u32,
+    evaluator_ref: &str,
+) -> Result<()> {
+    let baselib_dir = image_gen_dir.join("baselib");
+    std::fs::create_dir_all(&baselib_dir)
+        .with_context(|| format!("creating {}", baselib_dir.display()))?;
+    let link = baselib_dir.join(module_abi.to_string());
+    atomic_symlink(evaluator_ref, &link).with_context(|| {
+        format!(
+            "creating baselib GC root {} -> {evaluator_ref}",
+            link.display()
+        )
+    })
+}
+
+/// Computes which `baselib/<module_abi>` roots to retain across
+/// §4, OQ1 — "keep ≥1 prior base lib on `/var`, never re-download").
+///
+/// A base-lib root for `module_abi = K` is retained iff **either** (a) `K` is
+/// one of the ESP-resident image-gens (the A/B slots), **or** (b) at least one
+/// retained config-gen records `module_abi_pinned == K`. On top of that an
+/// absolute **floor** applies: at least one *prior distinct* ABI (a candidate
+/// `!= running`) must survive, so cross-ABI rollback re-eval is always
+/// satisfiable from `/var`. When (a)/(b) alone leave no prior ABI, the most
+/// recent prior candidate (highest ABI below `running`, else the highest
+/// distinct candidate) is added to honor the floor.
+///
+/// - `candidates` — every image-gen `module_abi` that currently has a base-lib
+///   closure on disk.
+/// - `esp_resident` — the `module_abi`s of the ESP-resident (A/B) image-gens.
+/// - `pinned_by_configgens` — the `module_abi_pinned` of every *retained*
+///   config-gen.
+/// - `running` — the running image's `module_abi`.
+///
+/// Returns the set of `module_abi`s whose `baselib/` root must be kept; any
+/// candidate outside the returned set is collectable.
+pub fn baselib_retention_set(
+    candidates: &[u32],
+    esp_resident: &std::collections::BTreeSet<u32>,
+    pinned_by_configgens: &std::collections::BTreeSet<u32>,
+    running: u32,
+) -> std::collections::BTreeSet<u32> {
+    let mut keep = std::collections::BTreeSet::new();
+    for &abi in candidates {
+        if esp_resident.contains(&abi) || pinned_by_configgens.contains(&abi) {
+            keep.insert(abi);
+        }
+    }
+
+    // Floor: guarantee at least one retained *prior* ABI (distinct from the
+    // running one) so a cross-ABI rollback can always re-eval from /var.
+    let has_prior = keep.iter().any(|&abi| abi != running);
+    if !has_prior {
+        // Prefer the most recent prior ABI (highest candidate below running);
+        // otherwise the highest distinct candidate at all.
+        let prior = candidates
+            .iter()
+            .copied()
+            .filter(|&abi| abi < running)
+            .max()
+            .or_else(|| candidates.iter().copied().filter(|&abi| abi != running).max());
+        if let Some(abi) = prior {
+            keep.insert(abi);
+        }
+    }
+
+    keep
+}
+
+/// Write a `<hash> -> <store path>` symlink farm under `dir`, creating `dir`.
+///
+/// Shared by the `cfg/` and `cfgsrc/` root writers. Each input is an absolute
+/// store path; its 32-character store-path hash names the symlink. Duplicate
+/// paths collapse to one symlink (idempotent via [`atomic_symlink`]).
+fn write_store_path_roots(dir: &Path, paths: &[String]) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    for path in paths {
+        let hash = store_path_hash(path);
+        let link = dir.join(hash);
+        atomic_symlink(path, &link)
+            .with_context(|| format!("creating GC root {} -> {path}", link.display()))?;
+    }
+    Ok(())
+}
+
 /// Remove GC roots for the given store path hashes from a generation.
 ///
 /// Removes `gen_dir/usr/{hash}` and `gen_dir/src/{hash}` symlinks.  Silently
@@ -456,6 +596,14 @@ mod tests {
             sysroot: false,
             previous: None,
             images: vec![],
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         }
     }
 
@@ -840,5 +988,117 @@ mod tests {
 
         let target = std::fs::read_link(&link).unwrap();
         assert_eq!(target.to_string_lossy(), "/same/target");
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuration-generation GC roots (cfg/ and cfgsrc/) and base-library retention.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_gc_roots_write_cfg_and_cfgsrc() {
+        let tmp = TempDir::new().unwrap();
+        let gen_dir = tmp.path().join("gen-7");
+
+        let cfg = vec!["/var/lib/store/cfghash000000-etc-tree".to_string()];
+        let cfgsrc = vec![
+            "/var/lib/store/srchash0000000-web-config".to_string(),
+            "/var/lib/store/hostnix0000000-host.nix".to_string(),
+        ];
+
+        create_config_gc_roots(&gen_dir, &cfg, &cfgsrc).unwrap();
+
+        // cfg/ pins the manifest output.
+        assert!(gen_dir.join("cfg").is_dir());
+        let cfg_link = gen_dir.join("cfg").join("cfghash000000");
+        assert_eq!(
+            std::fs::read_link(&cfg_link).unwrap().to_string_lossy(),
+            "/var/lib/store/cfghash000000-etc-tree"
+        );
+
+        // cfgsrc/ pins both the config-module source closure and host.nix.
+        // The targets are absent on disk in the test, so check the symlink
+        // itself (symlink_metadata) rather than following it (exists).
+        assert!(gen_dir.join("cfgsrc").is_dir());
+        assert!(
+            gen_dir
+                .join("cfgsrc")
+                .join("srchash0000000")
+                .symlink_metadata()
+                .is_ok()
+        );
+        assert_eq!(
+            std::fs::read_link(gen_dir.join("cfgsrc").join("hostnix0000000"))
+                .unwrap()
+                .to_string_lossy(),
+            "/var/lib/store/hostnix0000000-host.nix"
+        );
+    }
+
+    #[test]
+    fn prune_drops_cfg_and_cfgsrc_with_generation() {
+        // The cfg/ and cfgsrc/ roots live inside gen-N/, so removing the
+        // generation directory (what prune_generations does) drops them.
+        let tmp = TempDir::new().unwrap();
+        let gen_dir = tmp.path().join("gen-7");
+        create_config_gc_roots(
+            &gen_dir,
+            &["/var/lib/store/cfghash000000-etc".to_string()],
+            &["/var/lib/store/srchash0000000-cfg".to_string()],
+        )
+        .unwrap();
+        assert!(gen_dir.join("cfg").exists());
+        assert!(gen_dir.join("cfgsrc").exists());
+
+        std::fs::remove_dir_all(&gen_dir).unwrap();
+        assert!(!gen_dir.join("cfg").exists());
+        assert!(!gen_dir.join("cfgsrc").exists());
+    }
+
+    #[test]
+    fn baselib_gc_root_keyed_by_module_abi() {
+        let tmp = TempDir::new().unwrap();
+        let image_gen_dir = tmp.path().join("image-gen-3");
+
+        create_baselib_gc_root(&image_gen_dir, 2, "/var/lib/store/baselib0000000-aos-base-lib")
+            .unwrap();
+
+        let link = image_gen_dir.join("baselib").join("2");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap().to_string_lossy(),
+            "/var/lib/store/baselib0000000-aos-base-lib"
+        );
+    }
+
+    #[test]
+    fn baselib_retention_keeps_esp_and_pinned_and_floor() {
+        use std::collections::BTreeSet;
+
+        let candidates = [1u32, 2, 3];
+        let esp: BTreeSet<u32> = [3].into_iter().collect(); // running A/B slot
+        let pinned: BTreeSet<u32> = [2].into_iter().collect(); // a retained config-gen
+        let running = 3;
+
+        let keep = baselib_retention_set(&candidates, &esp, &pinned, running);
+        // 3 (ESP) and 2 (pinned). 2 also satisfies the prior-ABI floor.
+        assert!(keep.contains(&3));
+        assert!(keep.contains(&2));
+        assert!(!keep.contains(&1));
+    }
+
+    #[test]
+    fn baselib_retention_floor_adds_prior_when_only_running_kept() {
+        use std::collections::BTreeSet;
+
+        let candidates = [1u32, 2, 3];
+        let esp: BTreeSet<u32> = [3].into_iter().collect();
+        let pinned: BTreeSet<u32> = BTreeSet::new(); // no config-gen pins a prior ABI
+        let running = 3;
+
+        let keep = baselib_retention_set(&candidates, &esp, &pinned, running);
+        // Only the running ABI (3) qualifies via (a)/(b); the floor forces the
+        // most recent prior ABI (2) to be retained for cross-ABI re-eval.
+        assert!(keep.contains(&3));
+        assert!(keep.contains(&2));
+        assert!(!keep.contains(&1));
     }
 }

@@ -85,6 +85,8 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
+        ${lib.freezeAutotoolsMtimes}
+
         # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
         ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 

@@ -39,7 +39,6 @@ in {
           system = systemProxy;
           groupName = name;
           checks = spec.checks;
-          instanceMetadata = spec.instanceMetadata;
         }
     )
     config.system.checks;

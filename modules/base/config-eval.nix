@@ -1,0 +1,250 @@
+##! modules/base/config-eval.nix — on-host configuration evaluation
+##!
+##! Authors `aos-eval.service`: the stage-2 systemd unit that drives the
+##! resolve↔eval fixpoint (`apm __eval`) over the in-image base library, the
+##! per-package `config` modules fetched from the registry, and the delivered
+##! leaf `host.nix`. It emits ONLY a manifest (`/run/aos/manifest.json`) and
+##! never activates — a failed eval or fetch leaves the baked or previously
+##! activated configuration running for the operator to fix `host.nix`.
+##!
+##! This is a structural boot service. Every AOS system carries the evaluator;
+##! `ConditionPathExists` makes hosts without a delivered `host.nix` a clean
+##! no-op on the baked generation.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.config.evalAtBoot;
+  provisioningStateDir = config.aos.provisioning.stateDir;
+in {
+  options.aos.config.evalAtBoot = {
+    hostNix = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/aos-metadata/host.nix";
+      description = ''
+        Path to the leaf `host.nix` delivered by the initrd metadata agent. The
+        metadata stash lives under `/run`, which is moved into the real root
+        during switch_root. The service is `ConditionPathExists`-guarded on
+        this path, so with no `host.nix` the eval is a clean no-op.
+      '';
+    };
+
+    trust = lib.mkOption {
+      type = lib.types.enum ["platform" "signed"];
+      default = "platform";
+      description = ''
+        Authentication policy for the delivered `host.nix`.
+
+        `platform` trusts configuration obtained by the initrd metadata agent
+        from the deployment platform. This is the default for cloud images:
+        control of instance user-data is already part of the cloud control
+        plane's authority, so one unmodified golden image can configure every
+        instance.
+
+        `signed` is the fail-closed mode for deployments that do not trust
+        their metadata transport. The initrd verifies the complete provisioning
+        input against `aos.apm.configKeys` before any storage mutation. Missing
+        keys, missing signatures, and invalid signatures all prevent boot-time
+        provisioning.
+      '';
+    };
+
+    baseLib = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      internal = true;
+      readOnly = true;
+      description = ''
+        Store path of the in-image, ABI-pinned module library passed to the
+        evaluator as `--base-lib`. This is image-owned and cannot be replaced
+        by host.nix.
+      '';
+    };
+
+    moduleAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 1;
+      description = ''
+        Fallback base-lib `module_abi` used when `/etc/os-release` does not
+        carry `AOS_MODULE_ABI`. The resolver gates every config module against
+        this value before it enters the eval.
+      '';
+    };
+
+    desired = lib.mkOption {
+      type = lib.types.str;
+      default = "/etc/aos/packages.d/desired.toml";
+      description = "Desired-package TOML whose `packages` seed the working set.";
+    };
+
+    manifest = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/aos/manifest.json";
+      description = "Where the converged manifest is written (only on success).";
+    };
+  };
+
+  config = {
+    assertions = [
+      {
+        assertion = cfg.baseLib != null;
+        message = "aos.config.evalAtBoot.baseLib must be set to the in-image base library store path.";
+      }
+      {
+        assertion =
+          cfg.trust != "signed"
+          || builtins.attrNames config.aos.apm.configKeys != [];
+        message = "aos.config.evalAtBoot.trust = \"signed\" requires at least one aos.apm.configKeys trust anchor.";
+      }
+    ];
+
+    systemd.services.aos-provisioning-persist = {
+      description = "Persist provisioning evidence and manual repart definitions";
+      wantedBy = ["multi-user.target"];
+      requires = ["local-fs.target"];
+      after = [
+        "local-fs.target"
+        "aos-config-seed.service"
+      ];
+      before = [
+        "aos-host-config-restore.service"
+        "aos-eval.service"
+        "multi-user.target"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        ${pkgs.aos}/bin/aos metadata persist-provisioning \
+          --state-dir ${provisioningStateDir} \
+          --module-abi ${toString cfg.moduleAbi} \
+          --image-version ${config.aos.system.version}
+      '';
+    };
+
+    systemd.services.aos-host-config-restore = {
+      description = "Restore the last fully evaluated host input";
+      wantedBy = ["multi-user.target"];
+      after = ["aos-provisioning-persist.service"];
+      before = [
+        "aos-eval.service"
+        "multi-user.target"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        if [ ! -e "${cfg.hostNix}" ]; then
+          ${pkgs.aos}/bin/aos metadata restore-runtime \
+            --state-dir ${provisioningStateDir} \
+            || echo "aos-eval: cached host input is unavailable or invalid; retaining the active generation" >&2
+        fi
+      '';
+    };
+
+    systemd.services.aos-eval = {
+      description = "Evaluate host configuration to a converged manifest";
+      wantedBy = ["multi-user.target"];
+      wants = ["network-online.target"];
+      requires = ["aos-host-config-restore.service"];
+      after = [
+        "network-online.target"
+        "nix-overlay-setup.service"
+        "aos-config-seed.service"
+        "aos-seed-profiles.service"
+        "aos-host-config-restore.service"
+      ];
+      before = [
+        "aos-install-baked-packages.service"
+        "aos-graph-compile.service"
+        "multi-user.target"
+      ];
+      # No host.nix ⇒ nothing to evaluate ⇒ clean no-op.
+      unitConfig.ConditionPathExists = cfg.hostNix;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Per-eval hardened resource budget. A runaway is OOM- or
+        # timeout-killed by the cgroup.
+        TimeoutStartSec = "120s";
+        MemoryMax = "2G";
+        MemoryHigh = "1536M";
+        TasksMax = 4096;
+        # These paths must exist before systemd constructs the service's mount
+        # namespace for ReadWritePaths. They are runtime state, not image
+        # contents, so create them for every boot.
+        RuntimeDirectory = ["aos" "aos-eval"];
+        # Hardened scope: inputs read-only, only /run/aos* writable.
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ReadWritePaths = ["/run/aos" "/run/aos-eval"];
+        # Best-effort: a failed eval must never fail the boot. The manifest is
+        # the only product, and its absence makes the downstream a no-op.
+        SuccessExitStatus = "0 1";
+      };
+      script = ''
+        set -u
+        mkdir -p /run/aos-eval /run/aos
+        # Confirm that /run still contains the exact host bytes accepted by the
+        # initrd authorization step, then stage them into the hardened eval
+        # root. The trust decision itself precedes systemd-repart.
+        ${pkgs.aos}/bin/aos metadata verify-binding
+        cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
+
+        # Prefer the image's recorded module_abi; fall back to the option.
+        module_abi="${toString cfg.moduleAbi}"
+        if [ -r /etc/os-release ]; then
+          # shellcheck disable=SC1091
+          . /etc/os-release
+          if [ -n "''${AOS_MODULE_ABI:-}" ]; then
+            module_abi="$AOS_MODULE_ABI"
+          fi
+        fi
+
+        desired_arg=""
+        if [ -r "${cfg.desired}" ]; then
+          desired_arg="--desired ${cfg.desired}"
+        fi
+
+        # Failure-safe: on any error apm __eval writes no manifest and exits
+        # non-zero; SuccessExitStatus keeps the boot green either way.
+        ${pkgs.aos}/bin/apm __eval \
+          --host-nix /run/aos-eval/host.nix \
+          --base-lib "${cfg.baseLib}" \
+          --module-abi "$module_abi" \
+          --out "${cfg.manifest}" \
+          --eval-root /run/aos-eval \
+          $desired_arg || exit 1
+      '';
+    };
+
+    systemd.services.aos-host-config-cache = {
+      description = "Cache the last fully evaluated host input";
+      wantedBy = ["multi-user.target"];
+      after = ["aos-eval.service"];
+      before = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        if [ -s "${cfg.manifest}" ] && [ -s "${cfg.hostNix}" ]; then
+          ${pkgs.aos}/bin/aos metadata cache-runtime \
+            --state-dir ${provisioningStateDir}
+        fi
+      '';
+    };
+  };
+}

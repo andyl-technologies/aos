@@ -54,14 +54,27 @@
       ${formatRules service "session"}
     '';
 
-  makeLimitsConf = limits: "${pkgs.writeTextFile {
-    name = "pam-limits";
-    destination = "/limits.conf";
-    text =
-      lib.concatMapStringsSep "\n"
-      (l: "${l.domain} ${l.type} ${l.item} ${toString l.value}")
-      limits;
-  }}/limits.conf";
+  # The body of a pam_limits.so config file: one `<domain> <type> <item>
+  # <value>` line per limit. A pure function of the limits list (no file
+  # merging), so it is rendered identically at stage-1 and on-host.
+  renderLimitsText = limits:
+    lib.concatMapStringsSep "\n"
+    (l: "${l.domain} ${l.type} ${l.item} ${toString l.value}")
+    limits;
+
+  # The merged limits.conf is registered as an image-fixed config artifact
+  # keyed by a hash of its content, so identical limit sets dedupe and the
+  # on-host eval-only evaluator reads a stage-1-frozen store path instead of
+  # rebuilding it (`pkgs.writeTextFile` is absent from the stage-2 frozen pkgs).
+  # NOTE: pam limits are operator-tunable (`aos.pam.loginLimits`), so this is a
+  # *config-dependent* artifact frozen per content hash. An operator who
+  # overrides limits via host.nix produces a new content hash with no frozen
+  # artifact; that is a build-time rebuild today (the on-host path would fail
+  # loudly rather than silently use stale limits). Full config-dependence —
+  # rendering limits.conf as `/etc` data so it re-renders on-host — is tracked
+  # as follow-up work in eval-only-core.md.
+  limitsKey = limits: "pam-limits-" + builtins.substring 0 32 (builtins.hashString "sha256" (renderLimitsText limits));
+  makeLimitsConf = limits: "${config.aos.config.artifacts.${limitsKey limits}}/limits.conf";
 
   defaultRules = service: {
     account = autoOrderRules [
@@ -308,6 +321,29 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Register every distinct non-empty limit set as an image-fixed config
+    # artifact keyed by content hash. `makeLimitsConf`
+    # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
+    # resolves to the stage-1-frozen store path on-host without rebuilding.
+    # Guarded so the stage-2 frozen pkgs never evaluates `writeTextFile`. The
+    # drv `name` stays "pam-limits", so on a normal build this is the exact
+    # same derivation as before (byte-identical).
+    aos.config._artifactSources = builtins.listToAttrs (
+      builtins.map (
+        limits:
+          lib.nameValuePair (limitsKey limits) (
+            if config.aos.config.frozenArtifacts ? ${limitsKey limits}
+            then null
+            else
+              pkgs.writeTextFile {
+                name = "pam-limits";
+                destination = "/limits.conf";
+                text = renderLimitsText limits;
+              }
+          )
+      ) (builtins.filter (l: l != []) (lib.mapAttrsToList (_: s: s.limits) cfg.services))
+    );
+
     aos.pam.services.other = {
       useDefaultRules = false;
       text = ''

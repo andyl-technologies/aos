@@ -1,0 +1,10 @@
+=== env ===
+TOKEN='abc 123'
+URL=https://x
+=== json ===
+{
+  "a": 1,
+  "b": "two"
+}
+=== toml ===
+k = "v"

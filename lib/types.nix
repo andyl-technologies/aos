@@ -639,21 +639,40 @@ in rec {
       toType.merge loc coerced;
   };
 
+  ## A conflict-rejecting enumerated scalar: `uniq (enum values)`.
+  ##
+  ## This is the canonical merge for an **owned shared scalar** on a
+  ## shared root — e.g. `firewall.forwardPolicy = uniqEnum [ "accept" "drop" ]`.
+  ## `enum` constrains the value set; `uniq` makes two *disagreeing* equal-
+  ## priority definitions a loud eval error ("conflicting definitions … must
+  ## have a unique value") rather than silent last-wins, so a genuine
+  ## disagreement between packages is resolved only by an explicit priority
+  ## bump — legitimately the operator at tier 75. Two *agreeing* definitions
+  ## (same value) merge cleanly. Equivalent to `uniq (enum values)`; provided
+  ## as a named helper so owners declare the pattern at a glance.
+  ##
+  ## # Type
+  ## `[a] -> type`
+  uniqEnum = values: uniq (enum values);
+
   ## # Type
   ## `type -> type`
   uniq = elemType: {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;
-    merge = loc: defs:
-      if builtins.length defs == 1
-      then (builtins.elemAt defs 0).value
-      else let
-        val = (builtins.elemAt defs 0).value;
-        allSame = builtins.all (d: d.value == val) defs;
-      in
-        if allSame
-        then val
-        else throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
+    merge = loc: defs: let
+      first = builtins.elemAt defs 0;
+      allSame = builtins.all (d: d.value == first.value) defs;
+    in
+      # Delegate the agreed value through the inner type's own merge so its
+      # validity check fires (e.g. `enum` rejects an out-of-set value). AOS has
+      # no engine-level `type.check` enforcement — each type validates inside its
+      # `merge` — so returning the bare `.value` here would silently discard the
+      # element type's constraint. `uniq` only adds the conflict-on-disagreement
+      # rule; it must not bypass the element type.
+      if allSame
+      then elemType.merge loc [first]
+      else throw "The option '${showLoc loc}' has conflicting definitions. It must have a unique value.";
   };
 }

@@ -9,6 +9,7 @@
 ##!     fetchCargoDeps   — vendor Cargo dependencies (fixed-output derivation)
 ##!     fetchCargoVendor — lockfile-driven Cargo vendoring (FOD staging + pure assembly)
 ##!     fetchGoModules   — download Go module dependencies (fixed-output derivation)
+##!     fetchNpmDeps     — materialize node_modules from a lockfile (fixed-output derivation)
 ##!     fakeHash       — placeholder hash for iterating on FODs
 ##!     replacePhase   — replace a phase by name
 ##!     addPhaseAfter  — insert a phase after a named phase
@@ -504,6 +505,7 @@
     postInstall ? "",
     passthru ? {},
     checks ? null,
+    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -646,6 +648,7 @@
       "postInstall"
       "passthru"
       "checks"
+      "expose"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -851,8 +854,18 @@
           passthru
           // {
             inherit phases;
-          };
+          }
+          // (
+            if expose != null
+            then {inherit expose;}
+            else {}
+          );
       }
+      // (
+        if expose != null
+        then {inherit expose;}
+        else {}
+      )
       // (
         if checks != null
         then {inherit checks;}
@@ -1335,6 +1348,130 @@
     };
 
   # ---------------------------------------------------------------------------
+  # fetchNpmDeps
+  # ---------------------------------------------------------------------------
+  # fetchNpmDeps { nodejs; python3; caCertificates; bootstrapTools;
+  #                src; hash; sourceRoot?; ... }
+  #
+  # Fixed-output derivation that materializes a complete `node_modules` tree
+  # from a committed `package.json` + `package-lock.json` (the npm analogue of
+  # `fetchCargoDeps`). It runs `npm ci --ignore-scripts`, which installs
+  # *exactly* the lockfile — no version resolution — so the result is
+  # deterministic given the lockfile, and a pure JS tree free of store-path
+  # references (which a fixed-output derivation must not contain). Native
+  # (node-gyp) addons are left uncompiled and are built by the *consuming*
+  # derivation, which is permitted to reference the toolchain.
+  #
+  # Network is allowed (FODs may reach the network). Determinism is enforced by:
+  #
+  #   * `npm ci` against a pinned `package-lock.json` (no floating resolution).
+  #   * a build-local `npm_config_cache` (no `$HOME/.npm` leakage).
+  #   * `--no-audit --no-fund` and a disabled update-notifier (no network chatter
+  #     that could vary the tree or timing).
+  #   * `npm_config_nodedir=${nodejs}` so node-gyp builds native addons (e.g.
+  #     better-sqlite3) against the AOS node headers *offline* instead of
+  #     downloading a node header tarball.
+  #
+  # `src` here is a directory (typically `./.` of the package dir) that contains
+  # `package.json` and `package-lock.json`. The output is the populated
+  # `node_modules` directory itself.
+  #
+  # ```text
+  # <out>/
+  #   .bin/                  ← CLI shims (host shebangs; consumer bypasses them)
+  #   wrangler/
+  #   miniflare/
+  #   better-sqlite3/        ← C++ sources present; .node compiled by consumer
+  #   ...
+  # ```
+  fetchNpmDeps = {
+    nodejs,
+    python3,
+    caCertificates,
+    bootstrapTools,
+    src,
+    hash,
+    sourceRoot ? null,
+    extraPaths ? [],
+    extraLibPaths ? [],
+    name ? "npm-deps",
+    system ? defaultSystem,
+  }: let
+    ldLibPath = builtins.concatStringsSep ":" (
+      builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
+    );
+  in
+    builtins.derivation {
+      inherit name system;
+      builder = builderPath;
+      args = [
+        "-c"
+        ''
+          set -eu
+          export PATH="${nodejs}/bin:${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          export SSL_CERT_FILE="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
+          export NODE_EXTRA_CA_CERTS="$SSL_CERT_FILE"
+          ${
+            if extraLibPaths != []
+            then "export LD_LIBRARY_PATH=\"${ldLibPath}\""
+            else ""
+          }
+
+          # Stage the package manifest + lockfile into a writable build tree.
+          mkdir -p "$TMPDIR/build"
+          cd "$TMPDIR/build"
+          srcdir="${
+            if sourceRoot != null
+            then "${src}/${sourceRoot}"
+            else "${src}"
+          }"
+          cp "$srcdir/package.json" package.json
+          cp "$srcdir/package-lock.json" package-lock.json
+
+          # Build-local, hermetic npm/node-gyp configuration.
+          export HOME="$TMPDIR/home"
+          export npm_config_cache="$TMPDIR/npm-cache"
+          export npm_config_update_notifier=false
+          export npm_config_fund=false
+          export npm_config_audit=false
+          export npm_config_progress=false
+          export NODE_ENV=production
+          mkdir -p "$HOME" "$npm_config_cache"
+
+          # npmCli — npm ships as a JS file with a `#!/usr/bin/env node` shebang,
+          # which the sandbox (no /usr/bin/env) cannot execute. Invoke through
+          # node directly.
+          npmCli="${nodejs}/lib/node_modules/npm/bin/npm-cli.js"
+
+          # `npm ci --ignore-scripts` populates the lockfile-exact tree WITHOUT
+          # running install lifecycle scripts. Native addons (e.g. better-sqlite3)
+          # are therefore left uncompiled here: a fixed-output derivation must NOT
+          # reference store paths, but a compiled `.node` carries an RPATH/interp
+          # to the toolchain. Compilation happens in the *consuming* build (which
+          # is allowed to reference store paths) by driving node-gyp directly;
+          # see the miniflare package's install phase. Skipping scripts also
+          # avoids the addons' `prebuild-install || node-gyp rebuild` install
+          # hooks, whose host-style shebangs cannot run in the sandbox.
+          node "$npmCli" \
+            ci --no-audit --no-fund --ignore-scripts
+
+          # Emit the populated node_modules tree (pure JS, no store references)
+          # as the FOD output.
+          cp -a node_modules "$out"
+
+          # Normalize timestamps/permissions for reproducibility.
+          find "$out" -exec touch -h -t 200001010000.00 {} + 2>/dev/null || true
+        ''
+      ];
+
+      outputHash = hash;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+
+      preferLocalBuild = true;
+    };
+
+  # ---------------------------------------------------------------------------
   # fetchBazelDeps
   # ---------------------------------------------------------------------------
   # fetchBazelDeps { bazel; jdk; src; hash; tools; ... }
@@ -1555,6 +1692,7 @@ in {
     fetchCargoDeps
     fetchCargoVendor
     fetchGoModules
+    fetchNpmDeps
     fetchBazelDeps
     fakeHash
     ;

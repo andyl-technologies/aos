@@ -84,6 +84,10 @@ impl RegistryFixture {
         &self.source
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn origin_path(&self) -> &Path {
         &self.origin
     }

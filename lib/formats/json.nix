@@ -7,8 +7,7 @@
 ##!
 ##! No post-write validation is run; callers that want semantic
 ##! checks (JSON schema, domain validators) should compose a custom
-##! `generate` around this one or use a format-specific helper like
-##! `lib.formats.ignition`.
+##! `generate` around this one or use a format-specific helper.
 ##!
 ##! The recursive value type follows nixpkgs'
 ##! `types.serializableValueWith` pattern: the inner `oneOf` refers

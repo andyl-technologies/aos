@@ -173,8 +173,8 @@ pub struct CacheAuthArgs {
     /// AWS credentials profile name
     #[arg(long)]
     pub s3_profile: Option<String>,
-    /// Custom S3-compatible endpoint (MinIO, B2, etc.)
-    #[arg(long)]
+    /// Custom S3-compatible endpoint (MinIO, B2, R2, etc.)
+    #[arg(long, env = "S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
 
     // --- SFTP ---

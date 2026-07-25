@@ -1,0 +1,139 @@
+# Cloudflare Workers config for the AOS registry hub Worker (RFC-0004).
+#
+# PREFER THE INSTALLER. `aos-hub worker deploy` (the
+# `aos-hub-cloudflare` package) generates this config over the prebuilt
+# wasm dist, provisions the resources, and sets the secrets — see
+# deploy/DEPLOY.md. The schema is then migrated by `aos-hub init
+# --target d1:<name>` over D1 (there is no public init endpoint). This checked-in
+# file is for the manual `wrangler deploy` path; its placeholder ids are not real.
+#
+# Runtime configuration the Worker reads (worker deploy sets these for you):
+#   HUB_JWT_SECRET      (secret, required) HS256 JWT signing key
+#   HUB_SEAL_KEY        (secret, required) at-rest AES-GCM sealing key
+#   HUB_EXTERNAL_URL    ([vars], required) externally-reachable base URL
+#   HUB_EMAIL_API_URL   ([vars], optional) magic-link email relay endpoint
+#   HUB_EMAIL_API_TOKEN (secret, optional) bearer token for the relay
+# Set secrets with `wrangler secret put <NAME>`; put [vars] in this file. The
+# root admin is created by `init`/`reset-root` in D1, not as a Worker secret.
+#
+# Live validation requires a Cloudflare account; none of this can be validated
+# in a sandbox — see README.md and deploy/DEPLOY.md.
+
+name = "aos-hub"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-09-23"
+
+# Build the Rust cdylib to wasm with the workers-rs wasm-pack pipeline.
+# `worker-build` (installed via `cargo install worker-build`) wraps
+# `cargo build --target wasm32-unknown-unknown` + wasm-bindgen and emits the JS
+# shim wrangler loads.
+[build]
+command = "worker-build --release"
+
+# Run at the edge near each client (never smart placement): the worker is a thin
+# edge that forwards to the `HubDb` Durable Object (the colocated-SQLite system
+# of record, pinned to its own region), so the worker itself should stay near the
+# client. Hardcoded `off` so a dashboard toggle to `smart` is reverted on deploy.
+[placement]
+mode = "off"
+
+# RFC-0004 ch.14 Phase E: there is **no D1**. The relational system of record is
+# the `HubDb` Durable Object's colocated SQLite (declared below under
+# `[[durable_objects.bindings]]` + the `new_sqlite_classes` migration). The
+# schema is the shared `MIGRATIONS`, applied to the DO's SQLite on first use — no
+# external init step.
+
+# The R2 bucket that holds the registry surfaces (the zero-egress facade
+# source). The binding name must match `handlers::bindings::R2`
+# (REGISTRY_BUCKET). Registries are prefixes within this shared bucket.
+[[r2_buckets]]
+binding = "REGISTRY_BUCKET"
+bucket_name = "aos-registry-surfaces"
+
+# KV for human sessions (RFC-0004 "KV holds sessions"). The read path does not
+# require it for public registries; it is bound here for the deferred
+# private-registry auth path. The binding name matches
+# `handlers::bindings::KV_SESSIONS` (SESSIONS).
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "00000000000000000000000000000000"  # replace with your KV namespace id
+
+# The Cron trigger that drives the indexer (RFC-0004 "Cron Triggers/Queues
+# drive the indexer"). Every 15 minutes re-walks every public registry's R2
+# surface into D1. Fires the `scheduled` event handler.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# The coordinator Durable Object (RFC-0004 ch.14 Phase B): the
+# strongly-consistent rate-limit counter, publish lease, and (future) channel
+# floors. The binding name must match `handlers::bindings::COORDINATOR`; the
+# class name is the `#[durable_object]` struct `CoordinatorObject`. Phase E adds
+# per-tenant SQLite DOs alongside this.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "CoordinatorObject"
+
+# The per-tenant SQLite Durable Object (RFC-0004 ch.14 Phase E): one DO per
+# tenant owns that tenant's colocated SQLite system of record. The class name is
+# the `#[durable_object]` struct `TenantDb`. (The request-path routing into these
+# is the remaining E3 structural step; the class + router are implemented.)
+[[durable_objects.bindings]]
+name = "TENANT_DB"
+class_name = "TenantDb"
+
+# The colocated-SQLite **system of record** (RFC-0004 ch.14 Phase E). When the
+# `HUB_SQLITE_DO` var is "1", the Worker forwards every request to this DO, whose
+# local SQLite has no D1 session cost. Class `HubDb` (SQLite storage).
+[[durable_objects.bindings]]
+name = "HUB_DB"
+class_name = "HubDb"
+
+# Declare the DO classes on first deploy. `CoordinatorObject` uses the
+# transactional key-value storage (`new_classes`); `TenantDb`/`HubDb` use SQLite
+# storage (`new_sqlite_classes`).
+[[migrations]]
+tag = "v1"
+new_classes = ["CoordinatorObject"]
+new_sqlite_classes = ["TenantDb", "HubDb"]
+
+# Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
+# no network hop. One binding per budget tier (period 60); the worker routes a
+# rate class to the binding matching its budget. Names match
+# `handlers::bindings::RL_*`.
+[[ratelimits]]
+name = "RL_BURST5"
+namespace_id = "1001"
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[ratelimits]]
+name = "RL_BURST10"
+namespace_id = "1002"
+[ratelimits.simple]
+limit = 10
+period = 60
+
+[[ratelimits]]
+name = "RL_BROWSE120"
+namespace_id = "1003"
+[ratelimits.simple]
+limit = 120
+period = 60
+
+# The deferred-jobs queue (RFC-0004 ch.14 Phase D): the Worker is both a producer
+# (the write path enqueues post-write propagation) and the consumer (it drains
+# the batch in the `queue` event handler). The binding name must match
+# `handlers::bindings::QUEUE`.
+[[queues.producers]]
+binding = "JOBS"
+queue = "aos-hub-jobs"
+
+[[queues.consumers]]
+queue = "aos-hub-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+
+# KV for human sessions (RFC-0004) — now also the Phase C read-through cache for
+# hot point-key state (sessions/tokens/config/routing). The binding name matches
+# `handlers::bindings::KV_SESSIONS`. (Declared above under `[[kv_namespaces]]`.)

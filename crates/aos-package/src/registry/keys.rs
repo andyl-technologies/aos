@@ -16,6 +16,8 @@
 //!
 //! [[revoked]]
 //! id = "release-2024"
+//! key = "aos-core:Ed25519:base64..."
+//! provenance-before-sequence = 42
 //! reason = "planned retirement"
 //! ```
 //!
@@ -27,55 +29,18 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 
 use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key};
 
-/// The `keys.toml` schema version this build reads and writes.
-pub const KEYS_TOML_SCHEMA: u32 = 1;
-
-/// A currently active registry signing key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RosterKey {
-    /// Human-chosen stable identifier used by revocation entries.
-    pub id: String,
-    /// Key in `registry:Ed25519:<base64>` form.
-    pub key: String,
-}
-
-/// A planned retired key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RevokedKey {
-    /// Identifier of the roster key being revoked.
-    pub id: String,
-    /// Optional human-readable revocation reason.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// Trust roster stored as the committed tree file `keys.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeysToml {
-    /// Schema version; must equal [`KEYS_TOML_SCHEMA`].
-    #[serde(default = "default_schema")]
-    pub schema: u32,
-    /// Currently active signing keys (`[[keys]]` in the file).
-    #[serde(default, rename = "keys")]
-    pub active: Vec<RosterKey>,
-    /// Keys declared revoked (`[[revoked]]` in the file).
-    #[serde(default)]
-    pub revoked: Vec<RevokedKey>,
-}
-
-impl Default for KeysToml {
-    fn default() -> Self {
-        Self {
-            schema: KEYS_TOML_SCHEMA,
-            active: Vec::new(),
-            revoked: Vec::new(),
-        }
-    }
-}
+// The committed-roster schema (`KeysToml`, `RosterKey`, `RevokedKey`, and the
+// `KEYS_TOML_SCHEMA` version) moved to the wasm-clean `aos-registry-surface`
+// crate (RFC-0004 Phase 5) so the registry hub's indexer and the Cloudflare
+// Worker can deserialize a committed roster — to extend the trusted key set
+// during a verified walk — without pulling `aos-package` (native-only).
+// Re-exported here so `aos_package::registry::keys::{KeysToml, RosterKey,
+// RevokedKey, KEYS_TOML_SCHEMA}` paths are unchanged; the native load/validate/
+// pin helpers below layer on top.
+pub use aos_registry_surface::manifest::{KEYS_TOML_SCHEMA, KeysToml, RevokedKey, RosterKey};
 
 /// Load and validate `keys.toml` from a checked-out registry tree.
 ///
@@ -110,20 +75,12 @@ pub fn load_keys_toml(root: &Path) -> Result<Option<KeysToml>> {
 /// Returns an error if the git invocation fails for any reason other than
 /// the file being absent, or if the roster fails validation.
 pub fn load_keys_toml_at_commit(repo_dir: &Path, commit: &str) -> Result<Option<KeysToml>> {
-    let spec = format!("{commit}:keys.toml");
-    let output = crate::gitcmd::hermetic()
-        .args(["show", &spec])
-        .current_dir(repo_dir)
-        .output()
-        .with_context(|| format!("running git show {spec}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
-            return Ok(None);
-        }
-        bail!("git show {spec} failed: {}", stderr.trim());
-    }
-    let content = String::from_utf8_lossy(&output.stdout);
+    let Some(bytes) = crate::registry::repo::read_blob_at_blocking(repo_dir, commit, "keys.toml")
+        .with_context(|| format!("reading {commit}:keys.toml"))?
+    else {
+        return Ok(None);
+    };
+    let content = String::from_utf8_lossy(&bytes);
     let roster: KeysToml =
         toml::from_str(&content).with_context(|| format!("parsing keys.toml at {commit}"))?;
     validate_roster(&roster)?;
@@ -232,12 +189,18 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
         if entry.id.is_empty() {
             bail!("revoked key id is empty");
         }
+        if entry.key.is_some() != entry.provenance_before_sequence.is_some() {
+            bail!(
+                "revoked key '{}' must declare key and provenance-before-sequence together",
+                entry.id
+            );
+        }
+        if let Some(key) = &entry.key {
+            parse_signing_key(key)
+                .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
+        }
     }
     Ok(())
-}
-
-fn default_schema() -> u32 {
-    KEYS_TOML_SCHEMA
 }
 
 #[cfg(test)]
@@ -264,6 +227,8 @@ mod tests {
             ],
             revoked: vec![RevokedKey {
                 id: "retired".into(),
+                key: Some(KEY1.into()),
+                provenance_before_sequence: Some(17),
                 reason: Some("planned retirement".into()),
             }],
             ..KeysToml::default()
@@ -319,6 +284,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -335,6 +302,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -351,6 +320,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()

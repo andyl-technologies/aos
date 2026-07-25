@@ -100,6 +100,16 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command).await;
     }
 
+    // The metadata agent does not need a repository or NixRunner.
+    if let Commands::Metadata { command } = &cli.command {
+        return commands::metadata::run(command).await;
+    }
+
+    // Hub commands talk to the public API and do not need NixRunner.
+    if let Commands::Hub { command } = &cli.command {
+        return commands::hub::run(&printer, command).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -157,7 +167,14 @@ async fn run(cli: &Cli) -> Result<()> {
             package,
             dependency,
         } => commands::why_depends::run(&nix, &printer, package, dependency),
-        Commands::Describe => commands::describe::run(&nix, &printer),
+        Commands::Profile { command } => commands::profile::run(&nix, &printer, command),
+        Commands::Describe { package } => {
+            if let Some(package) = package {
+                commands::show::run(&nix, &printer, package)
+            } else {
+                commands::describe::run(&nix, &printer)
+            }
+        }
         Commands::Prefetch {
             package,
             all,
@@ -191,6 +208,8 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
+        Commands::Metadata { .. } => unreachable!(),
+        Commands::Hub { .. } => unreachable!(),
     }
 }
 

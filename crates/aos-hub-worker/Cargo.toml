@@ -1,0 +1,104 @@
+[package]
+name = "aos-hub-worker"
+version = "0.1.0"
+edition = "2021"
+description = "The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004): an R2-backed machine facade, a D1-backed browse UI and JSON read API, and a Cron-triggered indexer — reusing the pure, wasm-clean aos-registry-surface reader"
+
+# A `cdylib` for the wasm32 Workers runtime; an `rlib` so the pure modules
+# (sql, keymap, render, model) compile and test on the native host. The crate
+# is a workspace member, but only its pure modules build for the native target
+# — the worker glue (handlers, D1/R2/KV access, the indexer) is gated behind
+# `#[cfg(target_arch = "wasm32")]`, exactly like the sibling `aos-registry-spa`
+# crate. Build the deployable wasm with
+# `cargo build -p aos-hub-worker --target wasm32-unknown-unknown`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Per-statement query timing (RFC-0004 ch.14 Phase A): wraps the request's D1
+# backend in `aos_hub_core::backend::TimingBackend` and emits a `Server-Timing`
+# response header so the per-request D1 session cost is visible in `wrangler
+# tail` / the network panel. For the preview Worker only — off in production.
+query-timing = ["aos-hub-core/query-timing"]
+# One-time D1->HubDb data-replay admin path (`POST /_admin/sql`, seal-gated).
+# NOT in the production build — enable only to run a migration, then redeploy the
+# default build. RFC-0004 ch.14 Phase E cutover.
+cutover-admin = []
+# DO-SQLite end-to-end probe endpoint (`POST /_e2e/managed-registry-bootstrap`),
+# used only by the `aos-hub-worker-do-e2e` check to exercise the managed-registry
+# create + read path against the real DO SQLite engine under workerd. NOT in the
+# production build.
+do-e2e = []
+
+[dependencies]
+# The pure, wasm-clean registry reader — the exact verifier the native hub
+# indexer and `apm` run. Reused here for object/tag/refs parsing and Ed25519
+# signature verification in the Cron indexer, so the Worker's read of the
+# surface cannot drift from the rest of AOS.
+aos-registry-surface = { workspace = true }
+# The shared runtime-agnostic core (RFC-0004 Phase 5): the Database/Backend
+# abstraction the Worker drives over D1, so the Worker runs the exact same
+# read/write logic as the native hub rather than a divergent reimplementation.
+aos-hub-core = { workspace = true }
+# The D1 Backend impl is async over the trait; #[async_trait(?Send)] because the
+# Worker is single-threaded and D1 futures are !Send.
+async-trait = { workspace = true }
+# JsValue marshalling for D1 bind/raw (param ↔ JS value).
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+# Await the JS Promise returned by the Cloudflare Email Service binding
+# (`EMAIL.send(...)`) in the WorkerMailer console port. wasm-clean by nature.
+wasm-bindgen-futures = "0.4"
+# Bridge the shared core's `tracing` events (handler failures are reported with
+# `tracing::error!`, e.g. `internal()`) to the Workers console, so they reach
+# Workers Logs / `wrangler tail`. Without a subscriber the runtime drops them and
+# a 500 carries no server-side trace. See `tracinglog`.
+tracing = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+# Encodes the OIDC token-exchange POST body (application/x-www-form-urlencoded)
+# in the Worker's `HttpClient` console port. Pure-Rust and wasm-clean (the same
+# url-family crate the native side pulls transitively).
+form_urlencoded = "1"
+# Trust-anchor fingerprints in the browse UI (key_fingerprint), matching the
+# native hub's ssh-keygen-style SHA256 form. Both are wasm-clean.
+base64 = { workspace = true }
+sha2 = { workspace = true }
+# Semver ordering for the Cron indexer (release-tag classification + channel
+# frontier selection), matching the native indexer.
+semver = { workspace = true }
+
+# The Workers runtime bindings (workers-rs). `d1` enables the D1 sqlite driver
+# binding; the default features carry R2, KV, the Router, and the event macros.
+# This dependency only links into the wasm32 target; on native it resolves but
+# its glue is never referenced (the worker modules are cfg-gated out).
+worker = { version = "0.8", features = ["queue"] }
+
+# The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
+# shared Connect-JSON axum router as the native hub (aos_hub_core::connect),
+# bridged to the Workers runtime by hand (no axum-cloudflare-adapter — no release
+# tracks the worker version pinned here). axum types-only (default-features=false) is the
+# wasm-clean config; tower's ServiceExt::oneshot drives the Router; http builds
+# the request/response at the bridge boundary.
+axum = { version = "0.8", default-features = false, features = ["json"] }
+tower = { version = "0.5", features = ["util"] }
+http = { workspace = true }
+# `StreamExt::next` to drain a `worker::Response` body stream with a running
+# size cap in the OIDC HttpClient port (aborts the instant the running total
+# exceeds the cap, so a chunked no-Content-Length response cannot OOM the
+# isolate). Lightweight, wasm-clean.
+futures-util = "0.3"
+# Wrap the `!Send` R2 body stream so `axum::body::Body::from_stream` (which
+# requires `Send`) accepts it — sound on the single-threaded Worker. Already in
+# the workspace lockfile via aos-hub-core, so this adds no new vendored crate.
+send_wrapper = { version = "0.6", features = ["futures"] }
+
+[dev-dependencies]
+# The `gen_surface` example (the worker integration test's fixture generator)
+# signs the surface with a deterministic maintainer key. Already in the
+# workspace lockfile via aos-registry-surface, so this adds no new dependency.
+ed25519-dalek = { workspace = true }

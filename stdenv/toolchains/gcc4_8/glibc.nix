@@ -84,6 +84,8 @@ in
         CC="${gcc}/bin/gcc" \
         AR="${binutils}/bin/ar" \
         RANLIB="${binutils}/bin/ranlib" \
+        BISON="${prev.bison}/bin/bison" \
+        INSTALL_INFO="${prev.texinfo}/bin/install-info" \
         CFLAGS="-O2 -isystem ${prev.glibc}/include" \
         CPPFLAGS="-isystem ${prev.glibc}/include" \
         "$TMPDIR/glibc-2.17/configure" \
@@ -94,6 +96,7 @@ in
           --disable-shared \
           --disable-profile \
           --disable-nscd \
+          --enable-add-ons=nptl \
           --enable-static-nss \
           --disable-multi-arch \
           --without-gd \

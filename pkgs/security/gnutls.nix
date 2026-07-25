@@ -41,8 +41,14 @@ in
         # package. certtool is kept — swtpm's localca uses it.
         name = "configure";
         script = ''
+          # Default X.509 trust store: the canonical runtime path owned by the
+          # aos.security.pki module (modules/security/pki.nix), NOT a store
+          # path — so operators can extend the trust store without rebuilding
+          # gnutls. gnutls_certificate_set_x509_system_trust() (chrony NTS,
+          # etc.) reads this file at runtime.
           ./configure \
             --prefix=$out \
+            --with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt \
             --disable-static \
             --without-p11-kit \
             --with-included-unistring \

@@ -94,6 +94,7 @@ in {
         --maintainer anchor@example.invalid \
         --key "$KEY_PATH" \
         --cache-url http://127.0.0.1:18095 \
+        --upload-url file:///tmp/anchor-cache \
         > /tmp/anchor-release.out 2>&1 || {
         cat /tmp/anchor-release.out
         fail "apr release publishes signed release"

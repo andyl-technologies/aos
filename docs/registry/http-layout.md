@@ -126,7 +126,7 @@ paths plus an additive `/channels` and per-release object layer.
       objects/                               ← PACK-ONLY (no loose objects, no info/alternates)
         info/packs                           ← lists this release's full pack(s)
         pack/pack-<sha256>.pack (+ .idx)     ← self-contained "full" pack at X.Y.0 anchors
-        pack/delta-<from-semver>.pack         ← THIN deltas; AOS-only; NOT listed in info/packs
+        pack/delta-<from-semver>.pack.zst     ← THIN deltas; AOS-only; NOT listed in info/packs
 ```
 
 Three properties hold by construction:
@@ -240,19 +240,22 @@ Two kinds of pack files live under each release's `objects/pack/`:
 | Pack | Filename | Self-contained? | In `info/packs`? | Audience |
 |---|---|---|---|---|
 | **Full pack** | `pack-<sha256>.pack` (+ `.idx`) | yes | **yes** | stock git + AOS |
-| **Thin delta pack** | `delta-<from-semver>.pack` (+ `.zst`) | no (references base) | **no** | AOS only |
+| **Thin delta pack** | `delta-<from-semver>.pack.zst` | no (references base) | **no** | AOS only |
 
 - A **full pack** is emitted at every `X.Y.0` (major/minor) anchor release. It is
-  self-contained, conventionally named `pack-<sha256>.pack` so stock dumb git
-  recognises it, ships with an `.idx`, and **is** listed in `info/packs`.
+  self-contained, conventionally named `pack-<sha256>.pack`, ships with a
+  producer-generated `.idx` for stock dumb Git, and **is** listed in
+  `info/packs`. AOS clients regenerate and verify the pack index locally instead
+  of downloading or trusting the server-published `.idx`.
 - A **thin delta pack** carries only the objects introduced between two release
   commits and may reference the base release's objects. It is named
-  `delta-<from-semver>.pack`, ships **without** an `.idx` (the client rebuilds it
-  with `git index-pack --fix-thin`), and is **never** listed in `info/packs`
-  (a stock dumb client cannot apply a thin pack). AOS clients discover delta packs
-  by the `delta-<semver>` naming convention, not via `info/packs`.
+  `delta-<from-semver>.pack.zst`, ships **without** an `.idx` (the client
+  rebuilds it with libgit2 pack indexing after decompression), and is **never**
+  listed in `info/packs` (a stock dumb client cannot apply a thin pack). AOS
+  clients discover delta packs by the `delta-<semver>` naming convention, not via
+  `info/packs`.
 
-The delta graph the producer guarantees, the `pack-objects`/zstd command details,
+The delta graph the producer guarantees, the libgit2/thin-pack/zstd details,
 and client resolution/retention all live in
 [`packs-and-deltas.md`](packs-and-deltas.md). The only layout fact that matters here:
 **`info/packs` lists full packs only.**
@@ -304,10 +307,10 @@ SSH-Ed25519-signed git tag object whose **tag-name field equals the channel name
 - These files are **layout, not refs**: they are not in `info/refs`, so a stock
   `git clone` never sees them. That is intentional — rollout is an AOS-fleet concept.
 - They change frequently (every rollout advance), so `/channels/**` is **low TTL**
-  (§6). Freshness comes from that low CDN TTL combined with the consumer's own
-  max-staleness policy and the monotonic anti-rollback floor — there is **no in-band
-  `valid_until`** in the tag (§6). The trade-off: this is weaker than an in-band
-  signed expiry against a frozen-but-validly-signed mirror.
+  (§6). Partition freshness comes from that low CDN TTL combined with the
+  consumer's own max-staleness policy and the monotonic anti-rollback floor.
+  Moving-ref release metadata freshness is separately required and signed in
+  `tuf/timestamp.json`.
 
 A single partition file is just the raw bytes of a git tag object; a client fetches
 `/channels/stable/<bucket>`, verifies the signature and the name binding, follows the
@@ -343,11 +346,12 @@ This is the asymmetric-cost philosophy realised at the cache edge: publishing re
 a handful of low-TTL index files; the bulk of bytes (objects and packs) is immutable
 and served from cache near-permanently.
 
-The low CDN TTL on `/channels` (and `info/refs`, `objects/info`) is also the
-**freshness mechanism**: there is no in-band signed `valid_until` (C). Freshness is
-the low TTL plus the consumer's own max-staleness policy plus the monotonic
-anti-rollback floor; the trade-off is that this is weaker than an in-band signed
-expiry against a frozen-but-validly-signed mirror.
+The low CDN TTL on `/channels` (and `info/refs`, `objects/info`) is the
+**pointer freshness mechanism** for rollout refs. Moving-ref release metadata
+must also carry signed freshness in `tuf/timestamp.json`; consumers verify that
+timestamp before extracting the package catalog. Explicit commit/tag/version pins
+still verify signed metadata and catalog hashes when present without expiring old
+immutable release snapshots.
 
 ```
                  publish event
@@ -390,19 +394,22 @@ from the root loose store and the full packs listed in `info/packs`, following
 
 ### 7.2 Pack naming: `pack-<sha256>.pack`, no `full.pack`
 
-The self-contained full pack is named **`pack-<sha256>.pack`** (+ `.idx`) and listed
-in that **release's** `objects/info/packs`, discovered by the client following the
-root `objects/info/alternates` into the per-release pack store — precisely what stock
-dumb git expects. There is **no** separate semantic `full.pack` name — that alias is
-dropped entirely so there is no duplicate file and no special-casing (design-brief §12).
+The self-contained full pack is named **`pack-<sha256>.pack`**, ships with
+`pack-<sha256>.idx`, and is listed in that **release's** `objects/info/packs`,
+discovered by the client following the root `objects/info/alternates` into the
+per-release pack store. There is **no** separate semantic `full.pack` name —
+that alias is dropped entirely so there is no duplicate file and no
+special-casing (design-brief §12). AOS clients rebuild the `.idx` locally after
+download instead of trusting the server copy.
 
 ### 7.3 Thin delta packs are invisible to stock git
 
-Thin `delta-*.pack`s are **not** listed in `info/packs`. A stock dumb client cannot
-apply a thin pack (it references objects it may not have indexed), so it must never
-be told one exists. AOS clients find them by the `delta-<from-semver>` naming
-convention and complete them with `git index-pack --fix-thin`. Result: thin packs
-help AOS and are completely transparent to stock git.
+Thin `delta-*.pack.zst`s are **not** listed in `info/packs`. A stock dumb client
+cannot apply a thin pack (it references objects it may not have indexed), so it
+must never be told one exists. AOS clients find them by the
+`delta-<from-semver>` naming convention, decompress them, and complete them with
+local pack indexing. Result: thin packs help AOS and are completely transparent
+to stock git.
 
 ### 7.4 Channels-as-branches, releases-as-tags, graceful degradation
 
@@ -467,19 +474,19 @@ channel rolling `1.1.0` out to 4/256 of the fleet (buckets `00`–`03` advanced,
     1/1/0/objects/
       info/packs                         pack-<sha>.pack                    [low]
       pack/pack-<sha256>.pack (+ .idx)   full pack at the 1.1.0 minor      [immutable]
-      pack/delta-1.0.0.pack (+ .zst)     thin delta from 1.0.0 (AOS-only)  [immutable]
+      pack/delta-1.0.0.pack.zst          thin delta from 1.0.0 (AOS-only)  [immutable]
 ```
 
 Reading the example:
 
 - **Stock `git clone <url>`** checks out `stable` (= `1.1.0`, the frontier), pulls
   the `1.1.0` full pack from `release/1/1/0/objects/pack/`, ignores
-  `delta-1.0.0.pack` (not in `info/packs`), and can `git verify-tag 1.1.0`.
+  `delta-1.0.0.pack.zst` (not in `info/packs`), and can `git verify-tag 1.1.0`.
 - **An AOS host in bucket `b7`** fetches `/channels/stable/b7`, verifies it, sees it
   targets `1.0.0`, and stays on `1.0.0` — held back from the rollout.
 - **An AOS host in bucket `01` already on `1.0.0`** fetches `/channels/stable/01`, sees
-  `1.1.0`, and fetches the thin `delta-1.0.0.pack` (small) instead of a full pack,
-  completing it with `git index-pack --fix-thin`.
+  `1.1.0`, and fetches the thin `delta-1.0.0.pack.zst` (small) instead of a full
+  pack, completing it with local pack indexing.
 
 A worked split of a prerelease/build version into its `/releases/<…>/` path:
 `1.0.0-beta+exp.sha.5114f85` → `/releases/1/0/0-beta+exp.sha.5114f85/` (the third path
@@ -499,7 +506,7 @@ segment is everything after `major.minor`; design-brief §7).
 | `/channels/<name>/00..ff` | 256 signed partition tag objects | yes | low |
 | `/releases/<M>/<m>/<patch…>/objects/info/packs` | per-release pack index | yes | low |
 | `/releases/<M>/<m>/<patch…>/objects/pack/pack-<sha>.pack(.idx)` | self-contained full pack (X.Y.0 anchors) | no | high |
-| `/releases/<M>/<m>/<patch…>/objects/pack/delta-<from>.pack(.zst)` | thin AOS-only delta | no | high |
+| `/releases/<M>/<m>/<patch…>/objects/pack/delta-<from>.pack.zst` | thin AOS-only delta | no | high |
 
 ---
 
@@ -513,7 +520,7 @@ segment is everything after `major.minor`; design-brief §7).
 | Object store | root loose-object validation and relative alternates helpers exist | all loose `objects/<xx>/<62-hex>` at root + per-release pack dirs |
 | Release index | `objects/info/alternates` writer exists | `objects/info/alternates` doubles as index |
 | Versioning | semver tags and channel floors | semver, no `v` prefix |
-| Deltas | pack helper module + consumer fetch resolver exist | thin `delta-<from-semver>.pack`, not in `info/packs` |
-| Full snapshot | pack helper module + consumer fetch resolver exist | `pack-<sha256>.pack` at X.Y.0 anchors |
+| Deltas | pack helper module + consumer fetch resolver exist | thin `delta-<from-semver>.pack.zst`, not in `info/packs` |
+| Full snapshot | pack helper module + consumer fetch resolver exist | `pack-<sha256>.pack` + `.idx` at X.Y.0 anchors |
 | Rollout | 256 signed `/channels/<name>/00..ff` partition tags | same |
 | Stock-git clone | sha256 dumb-HTTP clone coverage exists | `git clone <url>` works (sha256-capable client) |
