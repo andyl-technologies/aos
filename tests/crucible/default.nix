@@ -166,8 +166,8 @@ in rec {
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuPluginPreemption";
-      taskIds = [];
-      openTaskIds = ["T-DET-30" "T-PLUG-25"];
+      taskIds = ["T-PLUG-25"];
+      openTaskIds = ["T-DET-30"];
     };
     qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
       inherit pkgs lib;

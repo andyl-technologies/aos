@@ -886,12 +886,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
     is exercised by the same live `-smp 4` boot. **Deferred to M7 (exploration):**
     the E22 inter-vCPU IPI-delivery clause served through the *Rust plugin's*
-    commanded-icount preemption injection (`inject_preemption`, 11/[PATCH-47]) —
-    there is no host→plugin preemption-command wire in M3; live preemption is
-    explorer-sourced. The E22 delivery mechanism is proven live on the C-plugin
-    path today (`checks.crucible.phase2.qemuDetIpi`, patch 0028, `-smp 2`) and
-    modeled by `checks.crucible.phase2.qemuPluginPreemption`; the Rust-plugin live
-    injection closes with [T-PLUG-25] in M7.
+    commanded-icount preemption injection (`inject_preemption`, 11/[PATCH-47]).
+    The ABI-v5 host→plugin scheduler mailbox and live Rust-plugin application are
+    now proven by `checks.crucible.phase2.qemuLivePluginPreemption` ([T-PLUG-25]).
+    T-DET-30 remains open because its E22 clause additionally requires the live
+    command to be derived from sender icount plus the fixed modeled IPI latency
+    and rounded to the next RR switch, rather than the gate's direct commanded
+    interrupt probe.
 - [ ] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection

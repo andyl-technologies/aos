@@ -27,8 +27,8 @@
   qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginPreemption";
-    taskIds = [];
-    openTaskIds = ["T-DET-30" "T-PLUG-25"];
+    taskIds = ["T-PLUG-25"];
+    openTaskIds = ["T-DET-30"];
   };
   qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
     inherit pkgs lib;
@@ -388,8 +388,8 @@ in
               "scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology"
             require_leaf ${qemuPluginPreemption} \
               "gate=gate:layer0-determinism" \
-              "tasks=" \
-              "open_tasks=T-DET-30,T-PLUG-25" \
+              "tasks=T-PLUG-25" \
+              "open_tasks=T-DET-30" \
               "status=partial" \
               "preemption_capability=qemu_plugin_inject_preemption" \
               "dispatch=vCPU-switch-or-interrupt-at-commanded-icount" \
