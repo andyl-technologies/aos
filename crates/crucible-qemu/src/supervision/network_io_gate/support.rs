@@ -149,7 +149,7 @@ pub(super) fn connect_qmp_priming_main_loop(
         let primer = scope.spawn(|| {
             while !stop.load(Ordering::Relaxed) {
                 let _ = setup.signal_plugin_wake();
-                thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
+                thread::park_timeout(QMP_PRIMER_WAKE_INTERVAL);
             }
         });
         let result = QemuQmpVmStateControlChannel::connect_unix_socket(socket_path);
@@ -163,7 +163,7 @@ pub(super) fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
     for _ in 0..bounded_drive_polls(timeout) {
         match child.try_wait_natural_exit() {
             Ok(Some(status)) => return status.success(),
-            Ok(None) => thread::sleep(DRIVE_POLL_INTERVAL),
+            Ok(None) => thread::park_timeout(DRIVE_POLL_INTERVAL),
             Err(_) => return false,
         }
     }

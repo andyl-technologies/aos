@@ -374,7 +374,7 @@ fn prime_guest_off_boot_barrier(
         {
             break;
         }
-        thread::sleep(DRIVE_POLL_INTERVAL);
+        thread::park_timeout(DRIVE_POLL_INTERVAL);
     }
     let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
     if reached {
@@ -412,7 +412,7 @@ fn drive_exchange(
         let step = servicer
             .service_with_before_reply(|| {
                 if should_delay {
-                    thread::sleep(reply_wall_delay);
+                    thread::park_timeout(reply_wall_delay);
                     delayed_this_call = true;
                 }
             })
@@ -439,7 +439,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::sleep(DRIVE_POLL_INTERVAL);
+        thread::park_timeout(DRIVE_POLL_INTERVAL);
     }
     if !discovery_complete {
         let node_evidence = servicer.vm_node_snapshot().map_or_else(
@@ -485,7 +485,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::sleep(DRIVE_POLL_INTERVAL);
+        thread::park_timeout(DRIVE_POLL_INTERVAL);
     }
     if !reply_reached {
         return Err(QemuLiveNetworkIoGateError::ReplyDeliveryDidNotReach {
@@ -528,7 +528,7 @@ fn drive_exchange(
                 status: status.to_string(),
             });
         }
-        thread::sleep(DRIVE_POLL_INTERVAL);
+        thread::park_timeout(DRIVE_POLL_INTERVAL);
     }
     if acknowledgement_icount.is_none() {
         return Err(QemuLiveNetworkIoGateError::AcknowledgementDidNotArrive {
