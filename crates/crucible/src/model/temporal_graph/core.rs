@@ -1435,32 +1435,6 @@ impl TemporalGraph {
         })
     }
 
-    /// Branches one frontier over deterministic app-random served values.
-    ///
-    /// Each branch appends one [`Decision::AppRandom`] value sampled from an
-    /// observed draw site in `config`. A scenario with no observed draw sites,
-    /// or with `samples == 0`, generates no children and therefore leaves the
-    /// explored graph unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::AppRandomDrawCapExceeded`] when a sampled branch
-    /// would exceed the scenario's per-run draw cap, or another [`EngineError`]
-    /// if the child cannot be recorded.
-    pub fn branch_app_random(
-        &mut self,
-        frontier: &Configuration,
-        config: &AppRandomBranchConfig,
-    ) -> Result<AppRandomBranchRun, EngineError> {
-        let decisions = app_random_branch_decisions(config);
-        let report = self.enumerate_frontier_reduced(
-            frontier,
-            decisions.clone(),
-            FrontierReductionPolicy::none(),
-        )?;
-        Ok(AppRandomBranchRun { decisions, report })
-    }
-
     /// Searches a graph by repeatedly expanding frontiers selected by `strategy`.
     ///
     /// Strategy selection is deterministic: breadth-first and depth-first use

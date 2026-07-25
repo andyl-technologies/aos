@@ -9,15 +9,16 @@ use std::error::Error;
 
 use crucible::{
     AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit, AdaptiveStrategyReward,
-    AppRandomBranchConfig, AppRandomDecision, AppRandomDrawSite, AssertionProximityGuidanceSignal,
-    Checkpoint, CheckpointKind, Configuration, ContentHash, CoverageGuidanceSignal, Decision,
-    EngineError, FrontierReductionPolicy, GuidanceScore, GuidanceSignal, GuidanceSignalComposition,
-    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount, IrqVector, NodeId,
-    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
+    AppRandomBranchConfig, AppRandomDecision, AppRandomSampleBudget,
+    AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, Configuration, ContentHash,
+    CoverageGuidanceSignal, Decision, EngineError, FrontierReductionPolicy, GuidanceScore,
+    GuidanceSignal, GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind,
+    GuidanceSignalWeight, Icount, IrqVector, MAX_APP_RANDOM_SAMPLES_PER_DRAW, NodeId, NodeTemplate,
+    NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
     PreemptionKind, ReadyPoint, RngStreamId, ScenarioDef, SearchBudget, Seed, TemporalGraph,
-    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
-    lint_guidance_determinism_source, preemption_branch_decisions, reduce,
-    run_adaptive_strategy_selection, step, try_step,
+    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
+    app_random_draw_sites_from_schedule, bake, lint_guidance_determinism_source,
+    preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
 };
 
 #[test]
@@ -288,40 +289,50 @@ fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Err
     let root = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     let base_config = AppRandomBranchConfig {
-        draw_sites: Vec::new(),
-        samples: 3,
+        samples_per_draw: AppRandomSampleBudget::new(3).ok_or("valid sample budget")?,
         seed: Seed::from_u64(0xa11),
     };
-    let unchanged = graph.branch_app_random(&root, &base_config)?;
     let before_count = graph.checkpoint_node_count();
-    let mut branch_config = base_config.clone();
-    branch_config.draw_sites = vec![AppRandomDrawSite {
+    let unchanged = graph.branch_app_random(&root, &base_config)?;
+    assert!(unchanged.observed_sites.is_empty());
+    assert!(unchanged.decisions.is_empty());
+    assert!(unchanged.report.explored.is_empty());
+    assert_eq!(before_count, graph.checkpoint_node_count());
+
+    let observed = Decision::AppRandom(AppRandomDecision {
         node: node("guest-a"),
         stream: RngStreamId::for_node("guest-a/app-random"),
         request_id: 7,
         width: 8,
-    }];
-    let decisions = app_random_branch_decisions(&branch_config);
-    let branched = graph.branch_app_random(&root, &branch_config)?;
+        value: 42,
+    });
+    let observed_frontier = step(&root, observed.clone());
+    graph.record_step(&root, observed)?;
+    let observed_sites = app_random_draw_sites_from_schedule(&observed_frontier.schedule);
+    let decisions = app_random_branch_decisions(&observed_frontier.schedule, &base_config);
+    let branched = graph.branch_app_random(&observed_frontier, &base_config)?;
 
-    assert!(unchanged.decisions.is_empty());
-    assert!(unchanged.report.explored.is_empty());
-    assert_eq!(
-        before_count,
-        graph.checkpoint_node_count() - branched.report.explored.len()
-    );
+    assert_eq!(branched.observed_sites, observed_sites);
+    assert_eq!(branched.observed_sites.len(), 1);
     assert_eq!(branched.decisions, decisions);
     assert_eq!(branched.report.explored.len(), 3);
     for decision in &branched.decisions {
         assert!(matches!(
             decision,
-            Decision::AppRandom(AppRandomDecision { width: 8, .. })
+            Decision::AppRandom(AppRandomDecision {
+                request_id: 7,
+                width: 8,
+                value,
+                ..
+            }) if *value != 42
         ));
     }
     for child in &branched.report.explored {
         assert!(matches!(child.decision, Decision::AppRandom(_)));
+        assert_eq!(child.configuration.schedule.decisions().len(), 1);
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
     }
+    assert!(AppRandomSampleBudget::new(MAX_APP_RANDOM_SAMPLES_PER_DRAW + 1).is_none());
 
     let capped = Configuration::genesis(
         ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
@@ -331,7 +342,7 @@ fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Err
             0,
         ),
     );
-    let capped_decision = app_random_branch_decisions(&branch_config)
+    let capped_decision = app_random_branch_decisions(&observed_frontier.schedule, &base_config)
         .into_iter()
         .next()
         .ok_or("expected app-random decision")?;

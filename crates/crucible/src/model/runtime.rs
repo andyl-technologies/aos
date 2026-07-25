@@ -342,44 +342,6 @@ pub fn preemption_branch_decisions(config: &PreemptionBranchConfig) -> Vec<Decis
     decisions
 }
 
-/// Generates deterministic app-random served-value branch decisions.
-#[must_use]
-pub fn app_random_branch_decisions(config: &AppRandomBranchConfig) -> Vec<Decision> {
-    let mut decisions = Vec::new();
-    for site in &config.draw_sites {
-        let width = site.width.min(64);
-        let mask = if width == 64 {
-            u64::MAX
-        } else if width == 0 {
-            0
-        } else {
-            (1u64 << width) - 1
-        };
-        for sample in 0..config.samples {
-            let material = format!(
-                "seed={}\nnode={}\nstream_domain={}\nstream_name={}\nrequest_id={}\nwidth={width}\nsample={sample}",
-                config.seed.to_hex(),
-                site.node.name,
-                site.stream.domain,
-                site.stream.name,
-                site.request_id
-            );
-            let value = content_hash_low_u64(ContentHash::from_canonical_material(
-                "crucible.app-random.branch.v1",
-                &material,
-            )) & mask;
-            decisions.push(Decision::AppRandom(AppRandomDecision {
-                node: site.node.clone(),
-                stream: site.stream.clone(),
-                request_id: site.request_id,
-                width,
-                value,
-            }));
-        }
-    }
-    decisions
-}
-
 pub(super) fn run_coverage_guided_fuzz(
     family: &ScenarioFamily,
     config: CoverageGuidedFuzzConfig,
