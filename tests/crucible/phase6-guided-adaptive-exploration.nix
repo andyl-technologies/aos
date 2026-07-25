@@ -239,19 +239,19 @@
       };
       T-ADV-21 = {
         testFilter = "gate_app_random_branching_is_optional_and_bounded";
-        result = "partial_app_random=caller-supplied-sites-unbounded-samples";
+        result = "app_random=recorded-sites+bounded-seeded-samples+prefix-replacement+no-draw-equivalence";
         docNeedles = [
           {
-            label = "T-ADV-21 remains open";
-            needle = "- [ ] **T-ADV-21**";
+            label = "T-ADV-21 is complete";
+            needle = "- [x] **T-ADV-21**";
           }
           {
-            label = "app-random partial-evidence note";
-            needle = "Partial evidence from `checks.crucible.phase6.appRandomBranching`";
+            label = "app-random completion note";
+            needle = "Completed by `checks.crucible.phase6.appRandomBranching`";
           }
           {
-            label = "app-random observed-site blocker";
-            needle = "deriving sites from recorded observations";
+            label = "app-random no-draw equivalence proof";
+            needle = "leaves the content-addressed graph unchanged";
           }
         ];
         modelNeedles = [
@@ -266,6 +266,14 @@
           {
             label = "app-random graph branch";
             needle = "pub fn branch_app_random";
+          }
+          {
+            label = "validated app-random sample budget";
+            needle = "pub struct AppRandomSampleBudget";
+          }
+          {
+            label = "recorded app-random site derivation";
+            needle = "pub fn app_random_draw_sites_from_schedule";
           }
         ];
         libNeedles = [
@@ -282,6 +290,10 @@
           {
             label = "app-random decision assertion";
             needle = "Decision::AppRandom";
+          }
+          {
+            label = "app-random no-draw graph assertion";
+            needle = "assert_eq!(before_count, graph.checkpoint_node_count())";
           }
         ];
       };

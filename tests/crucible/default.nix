@@ -1915,13 +1915,13 @@ in rec {
         phase6.searchReductions
       ];
     };
-    appRandomBranching = redBeforeAdvance {
+    appRandomBranching = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.appRandomBranching";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.appRandomBranching";
-        taskIds = [];
-        openTaskIds = ["T-ADV-21"];
+        taskIds = ["T-ADV-21"];
+        openTaskIds = [];
         gateName = "gate:app-random-branching";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1934,11 +1934,6 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.preemptionBranching
       ];
-      phase = "phase6";
-      reason = "app-random branching uses caller-supplied sites and an unbounded per-draw sample count";
-      taskIds = ["T-ADV-21"];
-      gateName = "gate:app-random-branching";
-      owner = "crucible";
     };
     basicBlockCoverage = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.basicBlockCoverage";
