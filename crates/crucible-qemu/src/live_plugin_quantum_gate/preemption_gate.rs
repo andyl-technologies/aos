@@ -1,0 +1,328 @@
+//! Loaded-QEMU proof for live scheduler-commanded preemptions.
+
+use std::fs;
+
+use crucible::{ExecutionFingerprint, SimDoubleHostScheduleEvent};
+use crucible_shmem::{
+    FingerprintSample, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, SchedulerPreemptionCommand,
+    SchedulerPreemptionKind, mmap_setup_region,
+};
+
+use crate::{
+    LaunchProfileCandidate, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuPluginIpcControlChannel, QemuQuantumShmemConfig,
+    QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
+    spawn_qemu_child_with_fds_in_directory,
+};
+
+use super::scheduler::QuantumStop;
+use super::{
+    GATE_MEMORY_MIB, GATE_NODE, GATE_QUEUE_CAPACITY, GATE_ROUTER, GATE_SLOT, GateSendAuthorizer,
+    HostLoad, LivePluginQuantumGateConfig, LivePluginQuantumGateError,
+    assert_sim_double_schedule_matches, channel_error, node_id, path_text, scheduler,
+    vm_launch_config,
+};
+
+/// Successful evidence from the live patched-QEMU preemption gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LivePluginPreemptionReport {
+    /// Exact node icount at which the vCPU switch was commanded.
+    pub switch_icount: u64,
+    /// vCPU that was current when the switch command was authored.
+    pub switch_from_vcpu: u32,
+    /// vCPU selected by the commanded switch.
+    pub switch_to_vcpu: u32,
+    /// Mailbox sequence acknowledged after QEMU accepted the switch.
+    pub switch_consumed_sequence: u32,
+    /// Exact node icount at which the interrupt was commanded.
+    pub interrupt_icount: u64,
+    /// vCPU targeted by the commanded interrupt.
+    pub interrupt_target_vcpu: u32,
+    /// Interrupt vector delivered through patched QEMU.
+    pub interrupt_vector: u32,
+    /// Mailbox sequence acknowledged after QEMU accepted the interrupt.
+    pub interrupt_consumed_sequence: u32,
+    /// Terminal exact ceiling reached after both commands became due.
+    pub terminal_icount: u64,
+    /// Final execution fingerprint shared by both runs.
+    pub execution_fingerprint: ExecutionFingerprint,
+    /// Both commands and the final fingerprint reproduced under host load.
+    pub deterministic_under_host_load: bool,
+    /// The second run actually applied host CPU load.
+    pub host_load_applied: bool,
+    /// The three live RUN boundaries replayed byte-for-byte through `SimDouble`.
+    pub sim_double_schedule_matches: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreemptionScenarioOutcome {
+    switch_icount: u64,
+    switch_from_vcpu: u32,
+    switch_to_vcpu: u32,
+    switch_consumed_sequence: u32,
+    interrupt_icount: u64,
+    interrupt_target_vcpu: u32,
+    interrupt_vector: u32,
+    interrupt_consumed_sequence: u32,
+    terminal_icount: u64,
+    execution_fingerprint: ExecutionFingerprint,
+    final_sample: FingerprintSample,
+    host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
+}
+
+/// Runs live vCPU-switch and interrupt commands twice through patched QEMU.
+///
+/// Each command is published before its owning RUN, acknowledged only after
+/// QEMU accepts it, and then allowed to become due. Patched QEMU aborts if
+/// either command misses its exact icount or names the wrong current vCPU, so
+/// survival to the following exact ceiling is the application proof.
+///
+/// # Errors
+///
+/// Returns [`LivePluginQuantumGateError`] when launch or setup fails, a RUN does
+/// not reach its exact ceiling, either command is rejected or unacknowledged,
+/// fingerprint sampling fails, the host-load run diverges, or teardown fails.
+pub fn run_live_plugin_preemption_gate(
+    config: &LivePluginQuantumGateConfig,
+) -> Result<LivePluginPreemptionReport, LivePluginQuantumGateError> {
+    let step = config.schedule.ceiling_step_icount;
+    if step < 2 {
+        return Err(probe_error(
+            "preemption gate requires a ceiling step of at least two icount",
+        ));
+    }
+    let reference = run_preemption_scenario(config, "preemption-reference", false)?;
+    let host_load_applied = config.second_run_host_load;
+    let second = run_preemption_scenario(
+        config,
+        if host_load_applied {
+            "preemption-host-load"
+        } else {
+            "preemption-repeat"
+        },
+        host_load_applied,
+    )?;
+    if reference != second {
+        return Err(LivePluginQuantumGateError::SecondRunDiverged {
+            reason: format!("live preemption evidence differed: {reference:?} vs {second:?}"),
+        });
+    }
+    assert_sim_double_schedule_matches(&reference.host_observable_schedule)?;
+
+    Ok(LivePluginPreemptionReport {
+        switch_icount: reference.switch_icount,
+        switch_from_vcpu: reference.switch_from_vcpu,
+        switch_to_vcpu: reference.switch_to_vcpu,
+        switch_consumed_sequence: reference.switch_consumed_sequence,
+        interrupt_icount: reference.interrupt_icount,
+        interrupt_target_vcpu: reference.interrupt_target_vcpu,
+        interrupt_vector: reference.interrupt_vector,
+        interrupt_consumed_sequence: reference.interrupt_consumed_sequence,
+        terminal_icount: reference.terminal_icount,
+        execution_fingerprint: reference.execution_fingerprint,
+        deterministic_under_host_load: true,
+        host_load_applied,
+        sim_double_schedule_matches: true,
+    })
+}
+
+fn run_preemption_scenario(
+    config: &LivePluginQuantumGateConfig,
+    run_name: &str,
+    apply_host_load: bool,
+) -> Result<PreemptionScenarioOutcome, LivePluginQuantumGateError> {
+    let run_directory = config.run_directory.join(run_name);
+    fs::create_dir_all(&run_directory).map_err(|source| {
+        LivePluginQuantumGateError::PrepareRunDirectory {
+            path: run_directory.clone(),
+            source,
+        }
+    })?;
+    let host_load = HostLoad::start_if(apply_host_load);
+    let mut candidate = LaunchProfileCandidate::default()
+        .with_memory_mib(GATE_MEMORY_MIB)
+        .with_smp_vcpus(2);
+    if let Some(cmdline) = &config.kernel_cmdline {
+        candidate = candidate.with_kernel_cmdline(cmdline.clone());
+    }
+    let profile = candidate
+        .try_into_deterministic()
+        .map_err(|source| LivePluginQuantumGateError::LaunchProfile { source })?;
+    profile
+        .guest_entropy_seed_file()
+        .write_to_dir(&run_directory)
+        .map_err(|source| LivePluginQuantumGateError::GuestEntropySeed {
+            path: run_directory.clone(),
+            source,
+        })?;
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_fingerprint(QemuLaunchPluginSwitch::On);
+    let command = profile
+        .qemu_launch_command(
+            vm_launch_config(config),
+            path_text(&config.qemu_executable),
+            plugin,
+        )
+        .map_err(|source| LivePluginQuantumGateError::LaunchCommand { source })?;
+    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
+    let allocation = RegionAllocation::new(region_config)
+        .map_err(|source| LivePluginQuantumGateError::RegionLayout { source })?;
+    let spawned = spawn_qemu_child_with_fds_in_directory(
+        &command,
+        &run_directory,
+        allocation.layout().region_size,
+    )
+    .map_err(|source| LivePluginQuantumGateError::Spawn { source })?;
+    let (mut child, resources) = spawned.into_parts();
+    let mut setup =
+        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
+            .map_err(|source| LivePluginQuantumGateError::HostSetup { source })?;
+    if !setup.setup_ack().can_schedule() {
+        return Err(LivePluginQuantumGateError::SetupAckNotReady);
+    }
+    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
+        .map_err(|source| LivePluginQuantumGateError::RegionMap { source })?;
+    let hot_path_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
+        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
+    let mut hot_path =
+        QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
+            .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+
+    let step = config.schedule.ceiling_step_icount;
+    let mut host_observable_schedule = Vec::with_capacity(3);
+    let (first_stop, first_event) =
+        scheduler::run_quantum(&mut hot_path, &mut child, &setup, step, config)?;
+    require_reached_ceiling(first_stop, step)?;
+    host_observable_schedule.push(first_event);
+    let first_sample = required_sample(&hot_path, step)?;
+    let switch_from_vcpu = first_sample.rr_current_vcpu;
+    let switch_to_vcpu = 1_u32.saturating_sub(switch_from_vcpu);
+    let switch_icount = step.saturating_add(1);
+    let switch_ceiling = step.saturating_mul(2);
+    let switch_sequence = hot_path
+        .publish_preemption_command(SchedulerPreemptionCommand {
+            at_icount: switch_icount,
+            deadline_icount: switch_icount,
+            ceiling_icount: switch_ceiling,
+            kind: SchedulerPreemptionKind::VcpuSwitch {
+                from_vcpu: switch_from_vcpu,
+                to_vcpu: switch_to_vcpu,
+            },
+        })
+        .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+    let (switch_stop, switch_event) =
+        scheduler::run_quantum(&mut hot_path, &mut child, &setup, switch_ceiling, config)?;
+    require_reached_ceiling(switch_stop, switch_ceiling)?;
+    require_consumed(&hot_path, switch_sequence, "vCPU switch")?;
+    host_observable_schedule.push(switch_event);
+
+    let switch_sample = required_sample(&hot_path, switch_ceiling)?;
+    let interrupt_target_vcpu = switch_sample.rr_current_vcpu;
+    let interrupt_vector = 0xf1;
+    let interrupt_icount = switch_ceiling.saturating_add(1);
+    let interrupt_ceiling = step.saturating_mul(3);
+    let interrupt_sequence = hot_path
+        .publish_preemption_command(SchedulerPreemptionCommand {
+            at_icount: interrupt_icount,
+            deadline_icount: interrupt_icount,
+            ceiling_icount: interrupt_ceiling,
+            kind: SchedulerPreemptionKind::InterruptAt {
+                target_vcpu: interrupt_target_vcpu,
+                irq: interrupt_vector,
+            },
+        })
+        .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+    let (interrupt_stop, interrupt_event) =
+        scheduler::run_quantum(&mut hot_path, &mut child, &setup, interrupt_ceiling, config)?;
+    require_reached_ceiling(interrupt_stop, interrupt_ceiling)?;
+    require_consumed(&hot_path, interrupt_sequence, "interrupt")?;
+    host_observable_schedule.push(interrupt_event);
+    let final_sample = required_sample(&hot_path, interrupt_ceiling)?;
+    let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
+        .map_err(|source| channel_error("read preemption execution fingerprint", source))?;
+
+    setup
+        .assert_run_control_silent()
+        .map_err(|source| channel_error("prove preemption run control silence", source))?;
+    QemuPluginIpcControlChannel::send_quit(&mut setup)
+        .map_err(|source| channel_error("send preemption plugin Quit", source))?;
+    scheduler::wait_for_plugin_teardown(&hot_path, config)?;
+    let exit_status = scheduler::wait_for_natural_child_exit(&mut child, config)?;
+    if !exit_status.success() {
+        return Err(LivePluginQuantumGateError::ChildExitUnclean {
+            status: exit_status.to_string(),
+        });
+    }
+    drop(setup);
+    drop(child);
+    drop(host_load);
+
+    Ok(PreemptionScenarioOutcome {
+        switch_icount,
+        switch_from_vcpu,
+        switch_to_vcpu,
+        switch_consumed_sequence: switch_sequence,
+        interrupt_icount,
+        interrupt_target_vcpu,
+        interrupt_vector,
+        interrupt_consumed_sequence: interrupt_sequence,
+        terminal_icount: interrupt_ceiling,
+        execution_fingerprint,
+        final_sample,
+        host_observable_schedule,
+    })
+}
+
+fn required_sample(
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    expected_icount: u64,
+) -> Result<FingerprintSample, LivePluginQuantumGateError> {
+    let sample = hot_path
+        .fingerprint_sample()
+        .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?
+        .ok_or_else(|| probe_error("live preemption gate observed no fingerprint sample"))?;
+    if sample.sample_icount != expected_icount
+        || sample.vcpu_count != 2
+        || sample.component_failures != 0
+        || sample.rr_current_vcpu >= 2
+    {
+        return Err(probe_error(format!(
+            "invalid preemption boundary sample at {expected_icount}: {sample:?}"
+        )));
+    }
+    Ok(sample)
+}
+
+fn require_reached_ceiling(
+    stop: QuantumStop,
+    expected: u64,
+) -> Result<(), LivePluginQuantumGateError> {
+    match stop {
+        QuantumStop::ReachedCeiling { icount } if icount == expected => Ok(()),
+        other => Err(probe_error(format!(
+            "preemption RUN expected exact ceiling {expected}, got {other:?}"
+        ))),
+    }
+}
+
+fn require_consumed(
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    expected: u32,
+    kind: &str,
+) -> Result<(), LivePluginQuantumGateError> {
+    let consumed = hot_path
+        .consumed_preemption_sequence()
+        .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
+    if consumed != expected {
+        return Err(probe_error(format!(
+            "{kind} preemption sequence {expected} was not acknowledged; consumed {consumed}"
+        )));
+    }
+    Ok(())
+}
+
+fn probe_error(reason: impl Into<String>) -> LivePluginQuantumGateError {
+    LivePluginQuantumGateError::SecondRunDiverged {
+        reason: reason.into(),
+    }
+}

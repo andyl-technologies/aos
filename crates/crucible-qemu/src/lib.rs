@@ -146,9 +146,9 @@ pub use live_plugin_gate::{
 };
 #[cfg(target_os = "linux")]
 pub use live_plugin_quantum_gate::{
-    LivePluginAdvancementRates, LivePluginIdleObservation, LivePluginQuantumGateConfig,
-    LivePluginQuantumGateError, LivePluginQuantumReport, LivePluginQuantumSchedule,
-    run_live_plugin_quantum_gate,
+    LivePluginAdvancementRates, LivePluginIdleObservation, LivePluginPreemptionReport,
+    LivePluginQuantumGateConfig, LivePluginQuantumGateError, LivePluginQuantumReport,
+    LivePluginQuantumSchedule, run_live_plugin_preemption_gate, run_live_plugin_quantum_gate,
 };
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
