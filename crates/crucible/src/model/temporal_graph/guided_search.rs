@@ -2,6 +2,83 @@
 
 use super::*;
 
+pub(in crate::model) enum SearchCampaignMode<'a> {
+    Guided {
+        config: &'a GuidanceSearchConfig,
+        state: &'a mut GuidanceSearchState,
+    },
+    Adaptive {
+        config: &'a AdaptiveCampaignConfig,
+        guidance: &'a mut GuidanceSearchState,
+        state: &'a mut AdaptiveCampaignState,
+    },
+}
+
+impl SearchCampaignMode<'_> {
+    fn admit_candidate(&mut self, graph: &TemporalGraph, configuration: &Configuration) {
+        let guidance = match self {
+            Self::Guided { state, .. } => state,
+            Self::Adaptive { guidance, .. } => guidance,
+        };
+        guidance.admit_candidate(graph, configuration);
+    }
+
+    fn guidance(
+        &self,
+        strategy: SearchStrategy,
+    ) -> Option<(&GuidanceSearchConfig, &GuidanceSearchState)> {
+        if strategy != SearchStrategy::CoverageGuided {
+            return None;
+        }
+        match self {
+            Self::Guided { config, state } => Some((config, state)),
+            Self::Adaptive {
+                config, guidance, ..
+            } => Some((&config.guidance, guidance)),
+        }
+    }
+
+    fn select_arm(
+        &mut self,
+        graph: &BTreeSet<ContentHash>,
+        sequence: u64,
+    ) -> Option<(AdaptiveStrategyArm, u64, Seed)> {
+        match self {
+            Self::Guided { .. } => None,
+            Self::Adaptive { config, state, .. } => {
+                let (arm, score) = state.select(&config.strategy, graph, sequence);
+                Some((arm, score, config.strategy.seed))
+            }
+        }
+    }
+
+    fn record_selection(
+        &mut self,
+        sequence: u64,
+        arm: AdaptiveStrategyArm,
+        frontier: ContentHash,
+        score_micros: u64,
+    ) {
+        if let Self::Adaptive { state, .. } = self {
+            state.record_selection(sequence, arm, frontier, score_micros);
+        }
+    }
+
+    fn credit_realized(
+        &mut self,
+        graph: &TemporalGraph,
+        arm: AdaptiveStrategyArm,
+        realized: &BTreeMap<ContentHash, bool>,
+    ) {
+        if let Self::Adaptive {
+            guidance, state, ..
+        } = self
+        {
+            state.credit_realized(graph, guidance, arm, realized);
+        }
+    }
+}
+
 impl TemporalGraph {
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
@@ -16,8 +93,7 @@ impl TemporalGraph {
         scenario: Option<&ScenarioDefForm>,
         failure_oracle: &SearchFailureOracle,
         max_depth: Option<u64>,
-        guidance_config: Option<&GuidanceSearchConfig>,
-        mut guidance_state: Option<&mut GuidanceSearchState>,
+        mut campaign: Option<SearchCampaignMode<'_>>,
         sampling_config: Option<&SearchReplayOracleSamplingConfig>,
         mut sampling_report: Option<&mut SearchReplayOracleSamplingReport>,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
@@ -29,8 +105,8 @@ impl TemporalGraph {
         let mut discovered_failures = Vec::new();
         let mut discovered_failure_configurations = BTreeSet::new();
         let mut sampling_sequence_offset = 0;
-        if let Some(state) = guidance_state.as_deref_mut() {
-            state.admit_candidate(self, root);
+        if let Some(campaign) = campaign.as_mut() {
+            campaign.admit_candidate(self, root);
         }
         record_search_discovered_failure(
             root,
@@ -41,18 +117,33 @@ impl TemporalGraph {
         )?;
 
         while (expansions.len() as u64) < budget.max_expansions {
+            let sequence = expansions.len() as u64;
+            let adaptive_selection = campaign
+                .as_mut()
+                .and_then(|campaign| campaign.select_arm(&explored_graph, sequence));
+            let active_strategy = adaptive_selection
+                .map(|(arm, _, seed)| adaptive_arm_search_strategy(arm, seed))
+                .unwrap_or(strategy);
+            let guidance = campaign
+                .as_ref()
+                .and_then(|campaign| campaign.guidance(active_strategy));
             let Some(index) = select_search_frontier_candidate(
                 self,
                 &worklist,
-                strategy,
+                active_strategy,
                 max_depth,
-                guidance_config.zip(guidance_state.as_deref()),
+                guidance,
             ) else {
                 break;
             };
             let candidate = worklist.remove(index);
             if !expanded.insert(candidate.id()) {
                 continue;
+            }
+            if let (Some(campaign), Some((arm, score_micros, _))) =
+                (campaign.as_mut(), adaptive_selection)
+            {
+                campaign.record_selection(sequence, arm, candidate.id(), score_micros);
             }
 
             let search = match sampling_config {
@@ -81,9 +172,12 @@ impl TemporalGraph {
                 sampling_sequence_offset =
                     sampling_sequence_offset.saturating_add(search.materialized.len() as u64);
             }
+            let mut realized = BTreeMap::new();
             for child in &search.frontier_report.explored {
                 let child_id = child.configuration.id();
-                explored_graph.insert(child_id);
+                if explored_graph.insert(child_id) {
+                    realized.insert(child_id, failure_oracle.failure_for(child_id).is_some());
+                }
                 record_search_discovered_failure(
                     &child.configuration,
                     scenario,
@@ -92,8 +186,8 @@ impl TemporalGraph {
                     &mut discovered_failures,
                 )?;
                 if scheduled.insert(child_id) {
-                    if let Some(state) = guidance_state.as_deref_mut() {
-                        state.admit_candidate(self, &child.configuration);
+                    if let Some(campaign) = campaign.as_mut() {
+                        campaign.admit_candidate(self, &child.configuration);
                     }
                     worklist.push(SearchFrontierCandidate::new(child.configuration.clone()));
                 }
@@ -105,7 +199,12 @@ impl TemporalGraph {
                     .cloned()
                 {
                     let representative_id = representative.id();
-                    explored_graph.insert(representative_id);
+                    if explored_graph.insert(representative_id) {
+                        realized.insert(
+                            representative_id,
+                            failure_oracle.failure_for(representative_id).is_some(),
+                        );
+                    }
                     record_search_discovered_failure(
                         &representative,
                         scenario,
@@ -114,16 +213,19 @@ impl TemporalGraph {
                         &mut discovered_failures,
                     )?;
                     if scheduled.insert(representative_id) {
-                        if let Some(state) = guidance_state.as_deref_mut() {
-                            state.admit_candidate(self, &representative);
+                        if let Some(campaign) = campaign.as_mut() {
+                            campaign.admit_candidate(self, &representative);
                         }
                         worklist.push(SearchFrontierCandidate::new(representative));
                     }
                 }
             }
+            if let (Some(campaign), Some((arm, _, _))) = (campaign.as_mut(), adaptive_selection) {
+                campaign.credit_realized(self, arm, &realized);
+            }
 
             expansions.push(SearchExpansion {
-                sequence: expansions.len() as u64,
+                sequence,
                 frontier: candidate.id(),
                 depth: candidate.depth,
                 search,
@@ -173,10 +275,66 @@ impl TemporalGraph {
             None,
             &failure_oracle,
             None,
-            Some(config),
-            Some(state),
+            Some(SearchCampaignMode::Guided { config, state }),
             None,
             None,
         )
+    }
+
+    /// Runs deterministic UCB arm selection inside the shared search campaign loop.
+    ///
+    /// Rewards are derived only from content-addressed realized nodes and are
+    /// credited in content-address order. The selected arm changes frontier
+    /// ordering only; every child still uses the same reduction, materialization,
+    /// failure capture, and replayable configuration path as non-adaptive search.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not describe `root`. Returns other [`EngineError`] values when
+    /// expansion, reduction, materialization, or reproduction capture fails.
+    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_adaptive_campaign(
+        &mut self,
+        scenario: &ScenarioDefForm,
+        root: &Configuration,
+        budget: SearchBudget,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+        config: &AdaptiveCampaignConfig,
+        guidance: &mut GuidanceSearchState,
+    ) -> Result<AdaptiveCampaignRun, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
+        let mut state = AdaptiveCampaignState::default();
+        guidance.admit_candidate(self, root);
+        state.observe_root(self, root, guidance);
+        let search = self.search_with_strategy_inner(
+            root,
+            SearchStrategy::BreadthFirst,
+            budget,
+            reduction_policy,
+            materialization_policy,
+            trigger,
+            Some(scenario),
+            failure_oracle,
+            None,
+            Some(SearchCampaignMode::Adaptive {
+                config,
+                guidance,
+                state: &mut state,
+            }),
+            None,
+            None,
+        )?;
+        Ok(state.finish(config, search))
     }
 }

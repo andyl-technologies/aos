@@ -83,9 +83,10 @@ pub use example_corpus::{
 };
 pub use model::{
     APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, ActiveFaultTable, ActiveNetworkEdgeDirection,
-    ActiveNetworkEdgeKey, AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit,
-    AdaptiveStrategyReward, AdaptiveStrategyRun, AdaptiveStrategySelection, AppRandomBranchConfig,
-    AppRandomBranchRun, AppRandomDecision, AppRandomDrawSite, AppRandomSampleBudget, AssertionDef,
+    ActiveNetworkEdgeKey, AdaptiveCampaignConfig, AdaptiveCampaignRun, AdaptiveCampaignSelection,
+    AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit, AdaptiveStrategyReward,
+    AdaptiveStrategyRun, AdaptiveStrategySelection, AppRandomBranchConfig, AppRandomBranchRun,
+    AppRandomDecision, AppRandomDrawSite, AppRandomSampleBudget, AssertionDef,
     AssertionId, AssertionPhase, AssertionProximityGuidanceSignal, BlockFault, Checkpoint,
     CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate, CodePoint, CombinedBlockFaults,
     CombinedDuplicateFault, CombinedFaults, CombinedIoCorruptionFault,
@@ -97,7 +98,8 @@ pub use model::{
     CoverageGuidedCorpusEntryOrigin, CoverageGuidedCorpusError, CoverageGuidedCorpusRun,
     CoverageGuidedFuzzConfig, CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun,
     CoverageGuidedFuzzThroughputReport, CoverageGuidedFuzzThroughputTarget, CowDeltaKind,
-    CowDeltaRef, CowSharingStats, DEFAULT_APP_RANDOM_DRAW_CAP,
+    CowDeltaRef, CowSharingStats, ADAPTIVE_UCB_SCORE_ONE_MICRO, DEFAULT_APP_RANDOM_DRAW_CAP,
+    DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS,
     DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET, DagStore, DagStoreError,
     DagStoreReproductionArtifact, DebugAttachChannelKind, DebugAttachChannelSet, DebugAttachReport,
     DebugAttachRequest, DebugBreakpointClientKind, DebugBreakpointMechanism, DebugBreakpointReport,
