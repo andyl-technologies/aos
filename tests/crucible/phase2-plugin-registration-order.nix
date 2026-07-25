@@ -2,8 +2,9 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginRegistrationOrder",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-3"],
+  taskIds ? ["T-PLUG-3"],
+  openTaskIds ? [],
+  livePluginInstall ? import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -48,8 +49,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-3 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-3**";
+        label = "T-PLUG-3 is complete with live QEMU callback integration";
+        needle = "- [x] **T-PLUG-3**";
       }
       {
         label = "fixed registration order required by spec";
@@ -247,6 +248,10 @@ in
               -p crucible-qemu-plugin \
               registration_order \
               -- --test-threads=1
+            grep -Fxq PASS ${livePluginInstall}/result
+            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${livePluginInstall}/result
+            grep -Fxq 'setup_ack_ready=true' ${livePluginInstall}/result
+            grep -Fxq 'boot_barrier_ceiling_enforced=true' ${livePluginInstall}/result
           '';
         }
         {
@@ -259,13 +264,14 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             sequencer=crucible-qemu-plugin::registration
             fixed_order=parse,handshake,time-control,setup,map,arm-wake,callbacks,setup-ack,boot-barrier,first-instruction
             fail_loud=true
             out_of_order_attempts=terminal_failure
             later_steps_after_failure=blocked
             ready_token=PluginRegistrationReady
+            live_plugin_install=${livePluginInstall}
             RESULT
           '';
         }

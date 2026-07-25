@@ -2,8 +2,11 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginFailLoud",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-22"],
+  taskIds ? ["T-PLUG-22"],
+  openTaskIds ? [],
+  liveNetworkIo ? import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;},
+  liveBlockIo ? import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;},
+  liveNinePIo ? import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -161,8 +164,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-22 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-22**";
+        label = "T-PLUG-22 is complete with live QEMU callback integration";
+        needle = "- [x] **T-PLUG-22**";
       }
       {
         label = "PLUG-48 wording";
@@ -609,6 +612,13 @@ in
                 "$filter" \
                 -- --test-threads=1
             done
+            grep -Fxq PASS ${liveNetworkIo}/result
+            grep -Fxq 'gate=gate:live-network-io' ${liveNetworkIo}/result
+            grep -Fxq 'network_ring=SLOT_NET_ROUTER' ${liveNetworkIo}/result
+            grep -Fxq PASS ${liveBlockIo}/result
+            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveBlockIo}/result
+            grep -Fxq PASS ${liveNinePIo}/result
+            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveNinePIo}/result
           '';
         }
         {
@@ -621,13 +631,14 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             broken_ipc=step-scoped-diagnostic
             missing_capability=distinct-errors
             abi_mismatch=unsupported-api-diagnostic
             full_ring=queuefull-preserved
             passed_delivery_icount=fail-loud-no-consume
             wall_clock_fallback=forbidden
+            live_callback_surfaces=network,block,9p
             RESULT
           '';
         }

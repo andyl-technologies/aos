@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLivePluginInstall",
-  taskIds ? ["T-PLUG-16" "T-PLUG-17" "T-PLUG-18" "T-PLUG-19" "T-PROTO-6"],
+  taskIds ? ["T-PLUG-3" "T-PLUG-16" "T-PLUG-17" "T-PLUG-18" "T-PLUG-19" "T-PROTO-6"],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
