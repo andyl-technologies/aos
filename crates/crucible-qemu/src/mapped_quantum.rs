@@ -2,9 +2,11 @@
 
 use crucible::{
     BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount, ObservableEvent,
-    SchedulerSendAuthorizer,
+    SchedulerSendAuthorizer, observable_event_from_whitebox_marker_payload,
 };
-use crucible_protocol::PluginBasicBlockCoverageObservation;
+use crucible_protocol::{
+    PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
+};
 use crucible_shmem::{
     FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
     MappedSetupRegionAccessError, RegionControlError, STATUS_DONE,
@@ -28,6 +30,8 @@ pub struct QemuMappedQuantumShmemHotPath {
     next_coverage_sequence: u64,
     last_coverage_icount: Option<u64>,
     seen_coverage_map_indices: Vec<bool>,
+    next_marker_sequence: u64,
+    last_marker_icount: Option<u64>,
     send_authorizer: Box<dyn SchedulerSendAuthorizer>,
 }
 
@@ -139,6 +143,11 @@ impl QemuMappedQuantumShmemHotPath {
         let seen_coverage_map_indices = coverage_bridge.as_ref().map_or_else(Vec::new, |bridge| {
             vec![false; bridge.consumer().map_entries()]
         });
+        let next_marker_sequence = region
+            .whitebox_marker_ring_mut(config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .header
+            .read_index();
         Ok(Self {
             config,
             region,
@@ -147,6 +156,8 @@ impl QemuMappedQuantumShmemHotPath {
             next_coverage_sequence,
             last_coverage_icount: None,
             seen_coverage_map_indices,
+            next_marker_sequence,
+            last_marker_icount: None,
             send_authorizer: Box::new(send_authorizer),
         })
     }
@@ -288,6 +299,96 @@ impl QemuMappedQuantumShmemHotPath {
         }
         Ok(events)
     }
+
+    fn drain_markers_at_quantum_boundary(
+        &mut self,
+        boundary_icount: u64,
+    ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        let node = self.config.node.clone();
+        let ring = self
+            .region
+            .whitebox_marker_ring_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("drain white-box markers", error.to_string())
+            })?;
+        if ring.header.read_index() != self.next_marker_sequence {
+            return Err(QemuNodeChannelError::new(
+                "drain white-box markers",
+                format!(
+                    "marker read sequence changed: expected {}, observed {}",
+                    self.next_marker_sequence,
+                    ring.header.read_index()
+                ),
+            ));
+        }
+
+        let mut events = Vec::new();
+        while let Some(entry) =
+            ring.header
+                .dequeue_whitebox_marker(ring.entries)
+                .map_err(|error| {
+                    QemuNodeChannelError::new("drain white-box markers", error.to_string())
+                })?
+        {
+            let entry = entry.validate().map_err(|error| {
+                QemuNodeChannelError::new("drain white-box markers", error.to_string())
+            })?;
+            if entry.current_icount() > boundary_icount {
+                return Err(QemuNodeChannelError::new(
+                    "drain white-box markers",
+                    format!(
+                        "marker icount {} exceeds completed quantum boundary {}",
+                        entry.current_icount(),
+                        boundary_icount
+                    ),
+                ));
+            }
+            if let Some(previous) = self.last_marker_icount
+                && entry.current_icount() < previous
+            {
+                return Err(QemuNodeChannelError::new(
+                    "drain white-box markers",
+                    format!(
+                        "marker icount regressed from {previous} to {}",
+                        entry.current_icount()
+                    ),
+                ));
+            }
+            let frame =
+                WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
+                    QemuNodeChannelError::new("drain white-box markers", error.to_string())
+                })?;
+            let payload = decode_whitebox_marker_payload(&frame).map_err(|error| {
+                QemuNodeChannelError::new("drain white-box markers", error.to_string())
+            })?;
+            let event = observable_event_from_whitebox_marker_payload(
+                Icount {
+                    retired: entry.current_icount(),
+                },
+                node.clone(),
+                &payload,
+            )
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "drain white-box markers",
+                    format!(
+                        "marker kind {} is not observational and cannot enter the marker ring",
+                        entry.kind()
+                    ),
+                )
+            })?;
+            events.push(event);
+            self.last_marker_icount = Some(entry.current_icount());
+            self.next_marker_sequence =
+                self.next_marker_sequence.checked_add(1).ok_or_else(|| {
+                    QemuNodeChannelError::new(
+                        "drain white-box markers",
+                        "marker sequence overflowed",
+                    )
+                })?;
+        }
+        Ok(events)
+    }
 }
 
 impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
@@ -336,10 +437,13 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
-        let boundary_icount = self.with_hot_path("coverage teardown boundary", |hot_path| {
+        let boundary_icount = self.with_hot_path("observation boundary", |hot_path| {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
-        self.drain_coverage_at_quantum_boundary(boundary_icount)
+        let mut events = self.drain_coverage_at_quantum_boundary(boundary_icount)?;
+        events.extend(self.drain_markers_at_quantum_boundary(boundary_icount)?);
+        events.sort_by_key(ObservableEvent::at);
+        Ok(events)
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {

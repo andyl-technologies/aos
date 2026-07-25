@@ -250,8 +250,6 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
-#[cfg(feature = "test-double")]
-pub use trigger::observable_event_from_whitebox_marker_payload;
 pub use trigger::{
     Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationBisectionRequest, AssertionViolationDivergence,
@@ -277,7 +275,7 @@ pub use trigger::{
     SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, TcgExecBasicBlock,
     basic_block_coverage_map_index, check_assertion_violation_reproduction,
     check_assertion_violation_reproduction_with_oracles, lint_host_assertion_harness_source,
-    resolve_ready_point,
+    observable_event_from_whitebox_marker_payload, resolve_ready_point,
 };
 
 #[cfg(any(debug_assertions, feature = "test-support"))]

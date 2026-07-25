@@ -18,8 +18,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, EventLog, EventLogCoverageObservation,
-    ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
-    SchedulerSendAuthorizer, event_log_coverage_projection,
+    ExecutionHorizon, Icount, MarkerId, NodeId, SchedulerError, SchedulerNodeId,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer, event_log_coverage_projection,
+};
+#[cfg(unix)]
+use crucible_protocol::{
+    WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload, WhiteboxRandomRequestBody,
+    encode_whitebox_marker_payload_body,
 };
 #[cfg(unix)]
 use crucible_qemu::{
@@ -29,7 +34,7 @@ use crucible_qemu::{
 #[cfg(unix)]
 use crucible_shmem::{
     CoverageEntry, FrameEntry, MappedSetupRegion, RegionAllocation, RegionConfig, SLOT_NET_ROUTER,
-    authorize_advance_ceiling, mmap_setup_region,
+    WhiteboxMarkerEntry, authorize_advance_ceiling, mmap_setup_region,
 };
 
 #[cfg(unix)]
@@ -201,6 +206,78 @@ fn mapped_quantum_rejects_duplicate_novelty_and_future_icount_loudly() -> Result
 }
 
 #[cfg(unix)]
+#[test]
+fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result<(), Box<dyn Error>>
+{
+    let coverage = [CoverageEntry::new(6, 0, 0x4010, 4, map_index_for(0x4010))?];
+    let marker_payload = WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
+        point: "guest.ready".to_owned(),
+    });
+    let marker = marker_entry(5, &marker_payload)?;
+    let region = mapped_region_with_markers(6, None, &coverage, &[marker])?;
+    let config = qemu_config().with_coverage(BasicBlockCoverageConfig::on());
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(config, region, AllowAllSends)?;
+
+    let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?;
+    let mut event_log = EventLog::new();
+    let append = event_log.append_observable_events(observations)?;
+    let projection = event_log_coverage_projection(&append.entries);
+
+    assert_eq!(projection.len(), 2);
+    assert_eq!(projection.entries()[0].at.icount, icount(5));
+    assert_eq!(
+        projection.entries()[0].observation,
+        EventLogCoverageObservation::Named {
+            node: node_id("vm-a"),
+            marker: MarkerId::from_name("guest.ready"),
+        }
+    );
+    assert_eq!(projection.entries()[1].at.icount, icount(6));
+    assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds()
+-> Result<(), Box<dyn Error>> {
+    let coverage_payload = WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
+        point: "guest.ready".to_owned(),
+    });
+    let future_region =
+        mapped_region_with_markers(6, None, &[], &[marker_entry(7, &coverage_payload)?])?;
+    let mut future =
+        QemuMappedQuantumShmemHotPath::new(qemu_config(), future_region, AllowAllSends)?;
+    let error = QemuShmemHotPathChannel::drain_observable_events(&mut future)
+        .expect_err("a future marker must fail the run");
+    assert!(error.message.contains("exceeds completed quantum boundary"));
+
+    let regressing = [
+        marker_entry(6, &coverage_payload)?,
+        marker_entry(5, &coverage_payload)?,
+    ];
+    let regressing_region = mapped_region_with_markers(6, None, &[], &regressing)?;
+    let mut regressing =
+        QemuMappedQuantumShmemHotPath::new(qemu_config(), regressing_region, AllowAllSends)?;
+    let error = QemuShmemHotPathChannel::drain_observable_events(&mut regressing)
+        .expect_err("a regressing marker must fail the run");
+    assert!(error.message.contains("marker icount regressed"));
+
+    let random = WhiteboxMarkerPayload::RandomRequest(WhiteboxRandomRequestBody {
+        request_id: 3,
+        width_bytes: 4,
+        stream_tag: "guest".to_owned(),
+    });
+    let random_region = mapped_region_with_markers(6, None, &[], &[marker_entry(5, &random)?])?;
+    let mut random =
+        QemuMappedQuantumShmemHotPath::new(qemu_config(), random_region, AllowAllSends)?;
+    let error = QemuShmemHotPathChannel::drain_observable_events(&mut random)
+        .expect_err("an app-random request must not enter the observational ring");
+    assert!(error.message.contains("is not observational"));
+    Ok(())
+}
+
+#[cfg(unix)]
 struct AllowAllSends;
 
 #[cfg(unix)]
@@ -224,6 +301,16 @@ fn mapped_region(
     outbound: Option<FrameEntry>,
     coverage: &[CoverageEntry],
 ) -> Result<MappedSetupRegion, Box<dyn Error>> {
+    mapped_region_with_markers(current_icount, outbound, coverage, &[])
+}
+
+#[cfg(unix)]
+fn mapped_region_with_markers(
+    current_icount: u64,
+    outbound: Option<FrameEntry>,
+    coverage: &[CoverageEntry],
+    markers: &[WhiteboxMarkerEntry],
+) -> Result<MappedSetupRegion, Box<dyn Error>> {
     let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
     {
         let slot = allocation.node_slot(0).ok_or("VM slot 0 should exist")?;
@@ -237,6 +324,9 @@ fn mapped_region(
     for entry in coverage {
         allocation.enqueue_coverage_entry(0, *entry)?;
     }
+    for entry in markers {
+        allocation.enqueue_whitebox_marker_entry(0, *entry)?;
+    }
 
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
@@ -244,6 +334,20 @@ fn mapped_region(
     temp.set_len(layout.region_size)?;
     temp.write_all(&bytes)?;
     Ok(mmap_setup_region(temp.as_fd(), layout.region_size)?)
+}
+
+#[cfg(unix)]
+fn marker_entry(
+    current_icount: u64,
+    payload: &WhiteboxMarkerPayload,
+) -> Result<WhiteboxMarkerEntry, Box<dyn Error>> {
+    let body = encode_whitebox_marker_payload_body(payload)?;
+    Ok(WhiteboxMarkerEntry::new(
+        current_icount,
+        0,
+        payload.kind().wire_value(),
+        &body,
+    )?)
 }
 
 #[cfg(unix)]

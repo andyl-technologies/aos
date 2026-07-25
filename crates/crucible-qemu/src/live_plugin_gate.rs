@@ -26,8 +26,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{
-    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    EventLog, EventLogCoverageObservation, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId,
+    SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    event_log_coverage_projection,
 };
 use crucible_shmem::{
     RegionAllocation, RegionConfig, RegionLayoutError, SLOT_NET_ROUTER, SetupRegionMapError,
@@ -189,6 +190,12 @@ pub struct LivePluginInstallReport {
     pub time_authority_is_rust_plugin: bool,
     /// Setup-time x86 port-map region observed at the reserved doorbell port.
     pub whitebox_setup_region: Option<String>,
+    /// Number of guest coverage markers admitted through the unified event log.
+    pub whitebox_marker_count: usize,
+    /// Exact icount of the first admitted guest coverage marker, when present.
+    pub whitebox_marker_icount: Option<u64>,
+    /// Semantic point of the first admitted guest coverage marker, when present.
+    pub whitebox_marker_point: Option<String>,
 }
 
 /// Failure returned by the production loaded-QEMU plugin install gate.
@@ -271,6 +278,12 @@ pub enum LivePluginInstallGateError {
         operation: &'static str,
         /// Underlying channel error.
         source: QemuNodeChannelError,
+    },
+    /// Appending drained plugin observations to the unified event log failed.
+    #[error("append install loaded-QEMU observations to event log failed: {source}")]
+    EventLog {
+        /// Underlying scheduler event-log error.
+        source: SchedulerError,
     },
     /// QEMU did not publish the requested icount before the host bound expired.
     #[error(
@@ -454,6 +467,28 @@ pub fn run_live_plugin_install_gate(
     }
     let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
+    let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
+        .map_err(|source| channel_error("drain boundary observations", source))?;
+    let mut event_log = EventLog::new();
+    let append = event_log
+        .append_observable_events(observations)
+        .map_err(|source| LivePluginInstallGateError::EventLog { source })?;
+    let coverage_projection = event_log_coverage_projection(&append.entries);
+    let mut whitebox_markers =
+        coverage_projection
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.observation {
+                EventLogCoverageObservation::Named { marker, .. } => {
+                    Some((entry.at.icount.retired, marker.name.clone()))
+                }
+                EventLogCoverageObservation::BasicBlock { .. } => None,
+            });
+    let first_whitebox_marker = whitebox_markers.next();
+    let whitebox_marker_count =
+        usize::from(first_whitebox_marker.is_some()) + whitebox_markers.count();
+    let (whitebox_marker_icount, whitebox_marker_point) =
+        first_whitebox_marker.map_or((None, None), |(icount, point)| (Some(icount), Some(point)));
 
     setup
         .assert_run_control_silent()
@@ -486,6 +521,9 @@ pub fn run_live_plugin_install_gate(
         orderly_child_exit: true,
         time_authority_is_rust_plugin: true,
         whitebox_setup_region,
+        whitebox_marker_count,
+        whitebox_marker_icount,
+        whitebox_marker_point,
     })
 }
 

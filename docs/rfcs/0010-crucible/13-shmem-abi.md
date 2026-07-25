@@ -1070,9 +1070,16 @@ by when the producer's store landed in shared memory.
   unified event log before the next step or teardown. Treat overflow,
   regression, future icounts, and duplicate novelty as fatal invariant errors.
   — satisfies [SHM-38], [SHM-39], [SHM-40]; spec §13.3.5, §13.4, §13.6.
-- [ ] **T-SHM-18** Add one ABI-v4 white-box marker SPSC ring per logical VM,
+- [x] **T-SHM-18** Add one ABI-v4 white-box marker SPSC ring per logical VM,
   publish decoded guest markers without callback allocation or I/O, and make
   the host validate, canonically decode, and append each completion-boundary
   batch to the unified event log. Treat overflow, malformed entries,
   unsupported kinds, regression, and future icounts as fatal invariant errors.
   — satisfies [SHM-41], [SHM-42], [SHM-43]; spec §13.3.7, §13.4, §13.6.
+  Completed by `checks.crucible.phase2.shmemAbiConformance`,
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`, and
+  `checks.crucible.phase4.guestHostMarkerObservability`: the ABI-v4 layout and
+  C/Rust vectors freeze the per-VM marker ring, the live plugin publishes the
+  exact trap icount and payload without allocation or I/O, and the mapped host
+  consumer rejects full, malformed, unsupported, regressing, or future entries
+  before appending each boundary batch to the unified observational event log.

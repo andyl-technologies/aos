@@ -7,7 +7,7 @@ publish = false
 [features]
 default = []
 test-support = []
-test-double = ["dep:crucible-protocol", "dep:crucible-shmem"]
+test-double = ["dep:crucible-shmem"]
 qemu-backend = []
 
 [lints]
@@ -18,7 +18,7 @@ blake3 = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
-crucible-protocol = { path = "../crucible-protocol", optional = true }
+crucible-protocol = { path = "../crucible-protocol" }
 regex = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
