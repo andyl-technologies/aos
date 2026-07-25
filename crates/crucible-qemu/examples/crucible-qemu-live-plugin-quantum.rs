@@ -123,6 +123,14 @@ fn run() -> Result<(), String> {
     );
     println!("host_load_applied={}", report.host_load_applied);
     println!(
+        "sim_double_schedule_matches={}",
+        report.sim_double_schedule_matches
+    );
+    println!(
+        "host_observable_schedule_len={}",
+        report.host_observable_schedule_len
+    );
+    println!(
         "execution_fingerprint={}",
         report.execution_fingerprint.hash.to_hex()
     );

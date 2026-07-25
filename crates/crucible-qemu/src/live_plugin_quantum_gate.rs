@@ -52,10 +52,18 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    ExecutionFingerprint, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
-    SchedulerSendAuthorizer,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer, SimDouble, SimDoubleConfig,
+    SimDoubleError, SimDoubleHostScheduleEvent, SimInstructionScript, SimInstructionStep,
+    sim_double_host_schedule_canonical_bytes,
 };
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+use crucible_protocol::{
+    CONTROL_PROTOCOL_VERSION, HostMsg, PluginMsg, SETUP_ACK_STATUS_READY,
+    control_decode_plugin_msg, control_encode_host_msg,
+};
+use crucible_shmem::{
+    ABI_VERSION, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+};
 
 use crate::{
     LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig,
@@ -285,6 +293,7 @@ struct ScenarioOutcome {
     idle: LivePluginIdleObservation,
     rates: LivePluginAdvancementRates,
     fingerprint: ExecutionFingerprint,
+    host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
 }
 
 /// Successful evidence from the production loaded-QEMU plugin quantum gate.
@@ -300,6 +309,11 @@ pub struct LivePluginQuantumReport {
     pub deterministic_under_host_load: bool,
     /// Host CPU load was actually applied during the second run.
     pub host_load_applied: bool,
+    /// The live production-plugin schedule replayed byte-for-byte through
+    /// [`SimDouble`].
+    pub sim_double_schedule_matches: bool,
+    /// Number of host-observable schedule entries compared on each side.
+    pub host_observable_schedule_len: usize,
     /// The idle-jump advancement rate exceeded the boot rate by the required
     /// factor, proving O(1) idle advancement rather than a per-instruction crawl.
     pub idle_jump_proven: bool,
@@ -335,6 +349,7 @@ pub fn run_live_plugin_quantum_gate(
     };
 
     assert_runs_match(&reference, &second)?;
+    assert_sim_double_schedule_matches(&reference.host_observable_schedule)?;
 
     // Idle-jump advancement (T-PLUG-7) is proven only when it was actually
     // driven and the idle advancement rate exceeds the busy boot rate by the
@@ -353,6 +368,8 @@ pub fn run_live_plugin_quantum_gate(
         execution_fingerprint: reference.fingerprint,
         deterministic_under_host_load: true,
         host_load_applied,
+        sim_double_schedule_matches: true,
+        host_observable_schedule_len: reference.host_observable_schedule.len(),
         idle_jump_proven,
         time_authority_is_rust_plugin: true,
     })
@@ -446,7 +463,8 @@ fn run_one_scenario(
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
 
-    let (idle, rates) = scheduler::drive_scenario(&mut hot_path, &mut child, &setup, config)?;
+    let (idle, rates, host_observable_schedule) =
+        scheduler::drive_scenario(&mut hot_path, &mut child, &setup, config)?;
     let fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
 
@@ -471,6 +489,7 @@ fn run_one_scenario(
         idle,
         rates,
         fingerprint,
+        host_observable_schedule,
     })
 }
 
@@ -504,7 +523,134 @@ fn assert_runs_match(
             ),
         });
     }
+    if reference.host_observable_schedule != second.host_observable_schedule {
+        return Err(LivePluginQuantumGateError::SecondRunDiverged {
+            reason: format!(
+                "host-observable schedule differed: {:?} vs {:?}",
+                reference.host_observable_schedule, second.host_observable_schedule
+            ),
+        });
+    }
     Ok(())
+}
+
+/// Replays a production-plugin host schedule through the in-process double.
+fn assert_sim_double_schedule_matches(
+    live_schedule: &[SimDoubleHostScheduleEvent],
+) -> Result<(), LivePluginQuantumGateError> {
+    let steps = live_schedule
+        .iter()
+        .map(|event| match event {
+            SimDoubleHostScheduleEvent::HorizonAdvance {
+                from_icount,
+                reached_icount,
+                ..
+            } => Ok(SimInstructionStep::budget(
+                reached_icount.checked_sub(*from_icount).ok_or_else(|| {
+                    LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+                        reason: format!(
+                            "live schedule moved backward from {from_icount} to {reached_icount}"
+                        ),
+                    }
+                })?,
+            )),
+            other => Err(LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+                reason: format!("quantum gate emitted unsupported live event {other:?}"),
+            }),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut double = SimDouble::new(SimDoubleConfig {
+        slot_index: GATE_SLOT,
+        vm_node_count: 1,
+        queue_capacity: GATE_QUEUE_CAPACITY,
+        icount_shift: 0,
+        script: SimInstructionScript::new(steps),
+    })
+    .map_err(sim_double_error)?;
+    complete_sim_double_setup(&mut double)?;
+
+    for expected in live_schedule {
+        let SimDoubleHostScheduleEvent::HorizonAdvance {
+            requested_icount,
+            outcome,
+            ..
+        } = expected
+        else {
+            return Err(LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+                reason: format!("quantum gate emitted unsupported live event {expected:?}"),
+            });
+        };
+        let actual = double
+            .advance_scripted_quantum(
+                ExecutionHorizon {
+                    icount: Icount {
+                        retired: *requested_icount,
+                    },
+                },
+                &GateSendAuthorizer,
+            )
+            .map_err(sim_double_error)?;
+        if &actual != outcome {
+            return Err(LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+                reason: format!("double outcome {actual:?} did not match live outcome {outcome:?}"),
+            });
+        }
+    }
+
+    let live_bytes = sim_double_host_schedule_canonical_bytes(live_schedule);
+    let double_bytes = sim_double_host_schedule_canonical_bytes(double.host_observable_schedule());
+    if live_bytes != double_bytes {
+        return Err(LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+            reason: format!(
+                "live schedule {:?} did not match SimDouble schedule {:?} byte-for-byte",
+                live_schedule,
+                double.host_observable_schedule()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn complete_sim_double_setup(double: &mut SimDouble) -> Result<(), LivePluginQuantumGateError> {
+    let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: ABI_VERSION,
+        slot_index: GATE_SLOT,
+        node_count: double.shmem_layout().node_count,
+    });
+    double
+        .accept_host_control_frame(&hello_ack)
+        .map_err(sim_double_error)?;
+    let setup = control_encode_host_msg(&HostMsg::Setup {
+        region_len: double.shmem_layout().region_size,
+    });
+    let setup_ack = double
+        .accept_host_control_frame(&setup)
+        .map_err(sim_double_error)?
+        .ok_or_else(|| LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+            reason: String::from("SimDouble setup emitted no SetupAck"),
+        })?;
+    let message = control_decode_plugin_msg(&setup_ack).map_err(|error| {
+        LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+            reason: format!("decode SimDouble SetupAck failed: {error}"),
+        }
+    })?;
+    if message
+        != (PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        })
+    {
+        return Err(LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+            reason: format!("SimDouble setup returned unexpected message {message:?}"),
+        });
+    }
+    Ok(())
+}
+
+fn sim_double_error(source: SimDoubleError) -> LivePluginQuantumGateError {
+    LivePluginQuantumGateError::SimDoubleScheduleMismatch {
+        reason: source.to_string(),
+    }
 }
 
 /// A background host-CPU load generator that stresses scheduling around a run.
