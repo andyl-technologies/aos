@@ -1061,12 +1061,17 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   Completed by `checks.crucible.phase2.gates.patchMicrotests`: every carried
   patch has prefix provenance plus exactly one live drop-one attribution method,
   and the aggregate rejects composition and structural fallback classifications.
-- [ ] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
+- [x] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
   identical to an unpatched reference over the behavioral corpus, all from-source).
   — satisfies [HARN-21]; spec §10.
-  - Partial evidence under `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
-    variants from the pinned source and compares normalized boot/device-I/O, QMP,
-    migration, and snapshot/restore command surface with sim mode off.
+  - Completed by `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
+    variants from the pinned source and compares raw boot/device-I/O serial,
+    bound block/9p/virtio-rng execution output, QMP capability/state,
+    full-stream migration digests, and concluded snapshot save/load outcomes
+    with sim mode off. The curated corpus spans guest execution, device I/O,
+    management, transfer, and restore compatibility. Only unordered QMP
+    collections and QMP transport metadata are normalized; a marker-projection
+    negative control proves raw serial comparison remains authoritative.
 - [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —

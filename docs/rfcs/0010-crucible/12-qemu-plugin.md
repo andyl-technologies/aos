@@ -1122,7 +1122,7 @@ component that makes that purity true *inside* the QEMU process.
 - [x] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
-  implemented by T-HARN-21/T-PATCH-3. — satisfies [PLUG-49]; spec §12.10.4.
+  completed by T-HARN-21/T-PATCH-3. — satisfies [PLUG-49]; spec §12.10.4.
 - [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with

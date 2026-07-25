@@ -260,7 +260,7 @@ in
             rust_test=crucible-qemu::protocol_inertness
             sim_off=stock-tcg-thread-single,no-control-socket,no-control-frames,no-plugin-args,no-sim-accelerator
             sim_on=shared-memory-runtime,no-runtime-control-frames,no-delivery-icounts,run-silent
-            full_qemu_inert_gate=pending-T-PATCH-3
+            full_qemu_inert_gate=checks.crucible.phase2.gates.qemuInert
             RESULT
           '';
         }

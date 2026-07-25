@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.qemuInert",
-  taskIds ? [],
-  openTaskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"],
+  taskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"],
+  openTaskIds ? [],
   patchMicrotests ? import ./phase2-patch-microtests.nix {inherit pkgs lib;},
   referenceQemu ? pkgs.qemu-crucible-reference,
   patchedQemu ? pkgs.qemu-crucible,
@@ -524,6 +524,10 @@ in
           normalize_serial() {
             input="$1"
             output="$2"
+            # This projection is retained only as a focused workload-evidence
+            # artifact. The gate separately byte-compares the complete raw
+            # guest serial streams, so filtering here cannot hide a
+            # guest-visible divergence.
             grep -E '^(CRUCIBLE_QEMU_INERT_|TEST_RESULT:)' "$input" > "$output"
           }
 
@@ -579,6 +583,22 @@ in
             ' "$evidence")
             test "$actual_binding" = "$expected_binding" \
               || fail "$label execution evidence composite binding is invalid"
+          }
+
+          exercise_serial_normalization_negative_control() {
+            left="$TMPDIR/serial-normalization-left.raw"
+            right="$TMPDIR/serial-normalization-right.raw"
+            printf 'guest-visible-line-a\nTEST_RESULT:PASS\n' > "$left"
+            printf 'guest-visible-line-b\nTEST_RESULT:PASS\n' > "$right"
+            normalize_serial "$left" "$TMPDIR/serial-normalization-left.projected"
+            normalize_serial "$right" "$TMPDIR/serial-normalization-right.projected"
+            files_identical \
+              "$TMPDIR/serial-normalization-left.projected" \
+              "$TMPDIR/serial-normalization-right.projected" \
+              || fail "serial normalization negative-control projections should match"
+            if files_identical "$left" "$right"; then
+              fail "raw serial comparison failed to expose a filtered guest-visible divergence"
+            fi
           }
 
           bind_execution_evidence() {
@@ -649,6 +669,7 @@ in
             || fail "virtio-rng delivery structural inertness proof did not pass"
           grep -q '^rng_completion_icount_equivalence_proven=true$' "$RNG_DELIVERY_INERT_RESULT" \
             || fail "virtio-rng delivery proof did not establish delivery-icount equivalence"
+          exercise_serial_normalization_negative_control
 
           seed="$TMPDIR/seed.bin"
           block_image="$TMPDIR/block.img"
@@ -706,7 +727,7 @@ in
               -device virtio-rng-pci,rng=inert-rng0,id=inert-vrng0 \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
-              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
+              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 printk.time=0" \
               -drive id=inertblock,file="$block_image",format=raw,if=none,readonly=on,cache=unsafe \
               -device virtio-blk-pci,drive=inertblock \
               -fsdev local,id=fs0,path="$ninep_root",security_model=none \
@@ -891,12 +912,14 @@ in
 
           run_boot_case reference-tcg "$REFERENCE_QEMU" none
           run_boot_case patched-tcg "$PATCHED_QEMU" none
+          compare_files boot-tcg-raw "$TMPDIR/serial-reference-tcg.log" "$TMPDIR/serial-patched-tcg.log"
           compare_files boot-tcg "$TMPDIR/normalized-serial-reference-tcg.txt" "$TMPDIR/normalized-serial-patched-tcg.txt"
           compare_files execution-output-tcg "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$TMPDIR/execution-fingerprint-patched-tcg.txt"
           compare_files execution-output-tcg-digest "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$TMPDIR/execution-fingerprint-patched-tcg.sha256"
 
           run_boot_case reference-icount "$REFERENCE_QEMU" plain
           run_boot_case patched-icount "$PATCHED_QEMU" plain
+          compare_files boot-plain-icount-raw "$TMPDIR/serial-reference-icount.log" "$TMPDIR/serial-patched-icount.log"
           compare_files boot-plain-icount "$TMPDIR/normalized-serial-reference-icount.txt" "$TMPDIR/normalized-serial-patched-icount.txt"
           compare_files execution-output-plain-icount "$TMPDIR/execution-fingerprint-reference-icount.txt" "$TMPDIR/execution-fingerprint-patched-icount.txt"
           compare_files execution-output-plain-icount-digest "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$TMPDIR/execution-fingerprint-patched-icount.sha256"
@@ -917,8 +940,12 @@ in
           mkdir -p "$out/corpus"
           cp "$PATCH_MICROTESTS_RESULT" "$out/patch-microtests.result"
           cp "$RNG_DELIVERY_INERT_RESULT" "$out/rng-delivery-inert.result"
+          cp "$TMPDIR/serial-reference-tcg.log" "$out/corpus/boot-tcg-reference.raw"
+          cp "$TMPDIR/serial-patched-tcg.log" "$out/corpus/boot-tcg-patched.raw"
           cp "$TMPDIR/normalized-serial-reference-tcg.txt" "$out/corpus/boot-tcg-reference.txt"
           cp "$TMPDIR/normalized-serial-patched-tcg.txt" "$out/corpus/boot-tcg-patched.txt"
+          cp "$TMPDIR/serial-reference-icount.log" "$out/corpus/boot-icount-reference.raw"
+          cp "$TMPDIR/serial-patched-icount.log" "$out/corpus/boot-icount-patched.raw"
           cp "$TMPDIR/normalized-serial-reference-icount.txt" "$out/corpus/boot-icount-reference.txt"
           cp "$TMPDIR/normalized-serial-patched-icount.txt" "$out/corpus/boot-icount-patched.txt"
           cp "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$out/corpus/execution-output-tcg-reference.txt"
@@ -942,8 +969,8 @@ in
           check=${attrPath}
           tasks=${builtins.concatStringsSep "," taskIds}
           open_tasks=${builtins.concatStringsSep "," openTaskIds}
-          status=partial
-          evidence_scope=full-stack-sim-off-corpus-without-prefix-attribution
+          status=complete
+          evidence_scope=full-stack-sim-off-upstream-equivalent-corpus-plus-per-patch-attribution
           gate=gate:qemu-inert
           reference_qemu=${referenceQemu}
           patched_qemu=${patchedQemu}
@@ -952,6 +979,10 @@ in
           sim_accel_selected=false
           sim_flags_present=false
           patch_microtests_dependency_passed=true
+          guest_visible_boot_serial_compared_raw=true
+          guest_kernel_printk_timestamps_disabled_at_source=true
+          serial_normalization_scope=secondary-workload-marker-evidence-only
+          serial_normalization_masking_negative_control=red
           reference_vs_patched_boot_tcg_identical=true
           reference_vs_patched_boot_plain_icount_identical=true
           reference_vs_patched_device_io_identical=true

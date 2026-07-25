@@ -57,6 +57,19 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
     assert_contains(&inert_gate, "qmp_introspection_surface_identical=true");
     assert_contains(&inert_gate, "migration_stream_identical=true");
     assert_contains(&inert_gate, "snapshot_restore_surface_identical=true");
+    assert_contains(&inert_gate, "compare_files boot-tcg-raw");
+    assert_contains(&inert_gate, "compare_files boot-plain-icount-raw");
+    assert_contains(&inert_gate, "printk.time=0");
+    assert_contains(
+        &inert_gate,
+        "exercise_serial_normalization_negative_control",
+    );
+    assert_contains(&inert_gate, "status=complete");
+    assert_contains(
+        &inert_gate,
+        "taskIds ? [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
+    );
+    assert_contains(&inert_gate, "openTaskIds ? []");
 
     assert_contains(&spec, "**T-PATCH-3**");
     assert_contains(&spec, "checks.crucible.phase2.gates.qemuInert");
