@@ -901,7 +901,7 @@ component that makes that purity true *inside* the QEMU process.
 > after the shmem ABI ([`13-shmem-abi.md`](13-shmem-abi.md)) and control protocol
 > ([`14-protocol.md`](14-protocol.md)) primitives the plugin depends on.
 
-- [ ] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
+- [x] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
   `qemu_plugin_version` and `qemu_plugin_install` exports, inert callback entry
   points, QEMU API/vCPU-count validation from `qemu_info_t`, the
   single-threaded round-robin TCG precondition, and the partition of state into a
@@ -910,6 +910,15 @@ component that makes that purity true *inside* the QEMU process.
   TX/RX, block/9p submit/poll, white-box doorbell trap) so no host component
   injects/completes/stamps except through these paths. —
   satisfies [PLUG-2], [PLUG-3], [PLUG-4]; spec §12.1, §12.5, §12.6, §12.7.
+  Completed by `checks.crucible.phase2.qemuPluginAbiScaffold` and the live
+  callback gates. The packaged `cdylib` exports only the pinned QEMU install and
+  version ABI, validates the live QEMU API, vCPU topology, and single-threaded
+  RR execution proof before registration, and keeps lifecycle state separate
+  from its registration-time-fixed callback table. The installed production
+  plugin is the sole callback owner in the live network, block, 9p, and
+  white-box gates; each host servicer communicates only through the plugin-owned
+  shared-memory rings and never injects, completes, or stamps guest events
+  directly.
 - [x] **T-PLUG-2** Implement plugin-argument parsing (`simfd`, `slot`,
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
   aborts registration on any malformed or missing required key. — satisfies
