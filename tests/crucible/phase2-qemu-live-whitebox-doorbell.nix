@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveWhiteboxDoorbell",
-  taskIds ? ["T-GHC-6"],
+  taskIds ? ["T-GHC-6" "T-GHC-9"],
   openTaskIds ? ["T-PLUG-14" "T-GHC-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -201,8 +201,13 @@ in
             grep -Fxq "whitebox=$mode" "$report"
             if [ "$mode" = on ]; then
               grep -Fxq 'whitebox_setup_region=io' "$report"
+              grep -Fxq 'whitebox_marker_count=1' "$report"
+              grep -Fxq 'whitebox_marker_point=hot-path' "$report"
             else
               grep -Fxq 'whitebox_setup_region=not-required' "$report"
+              grep -Fxq 'whitebox_marker_count=0' "$report"
+              grep -Fxq 'whitebox_marker_icount=not-observed' "$report"
+              grep -Fxq 'whitebox_marker_point=not-observed' "$report"
             fi
             grep -Fxq 'fingerprint=on' "$report"
             grep -Fxq 'plugin_loaded=rust-control-cdylib' "$report"
@@ -239,15 +244,14 @@ in
             'FAIL: reserved white-box port 0x00e7 collides with QEMU region `isa-debugcon`' \
             "$collision_error"
 
-          if grep -q '^CRUCIBLE_WHITEBOX_' "$TMPDIR/live-whitebox-off.qemu.log"; then
-            echo "FAIL: white-box off mode emitted a callback record" >&2
+          if grep -q '^CRUCIBLE_WHITEBOX_' "$TMPDIR/live-whitebox-off.qemu.log" \
+            || grep -q '^CRUCIBLE_WHITEBOX_' "$TMPDIR/live-whitebox-on.qemu.log"; then
+            echo "FAIL: white-box callback performed diagnostic I/O" >&2
             exit 1
           fi
-          grep -Eq '^CRUCIBLE_WHITEBOX_MARKER icount=[1-9][0-9]* vcpu=0 kind=4 payload_len=10$' \
-            "$TMPDIR/live-whitebox-on.qemu.log"
 
-          marker_icount=$(sed -n 's/^CRUCIBLE_WHITEBOX_MARKER icount=\([0-9][0-9]*\) .*/\1/p' \
-            "$TMPDIR/live-whitebox-on.qemu.log")
+          marker_icount=$(sed -n 's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' \
+            "$TMPDIR/live-whitebox-on.result")
           test -n "$marker_icount"
           off_fingerprint=$(sed -n 's/^execution_fingerprint=//p' "$TMPDIR/live-whitebox-off.result")
           on_fingerprint=$(sed -n 's/^execution_fingerprint=//p' "$TMPDIR/live-whitebox-on.result")
@@ -282,6 +286,9 @@ in
             printf 'port_register=rdx\n'
             printf 'guest_memory_api=qemu_plugin_read_memory_vaddr\n'
             printf 'marker_kind=coverage\n'
+            printf 'marker_transport=plugin-to-host-shmem-spsc\n'
+            printf 'marker_host_consumer=quantum-boundary\n'
+            printf 'marker_event_log_admission=true\n'
             printf 'marker_icount=%s\n' "$marker_icount"
             printf 'marker_payload_len=10\n'
             printf 'exact_icount_callback=true\n'

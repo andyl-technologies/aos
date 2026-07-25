@@ -488,7 +488,6 @@ impl GuestAssertionMarker {
 /// they do not masquerade as black-box node lifecycle observations. The in-band
 /// random-request kind returns [`None`] because it is handled by the app-random
 /// decision path instead of the observational marker path.
-#[cfg(feature = "test-double")]
 #[must_use]
 pub fn observable_event_from_whitebox_marker_payload(
     retired_icount: Icount,
@@ -528,7 +527,6 @@ pub fn observable_event_from_whitebox_marker_payload(
     }
 }
 
-#[cfg(feature = "test-double")]
 pub(super) fn guest_assertion_marker_from_whitebox_body(
     body: &crucible_protocol::WhiteboxAssertionMarkerBody,
 ) -> GuestAssertionMarker {
@@ -546,7 +544,6 @@ pub(super) fn guest_assertion_marker_from_whitebox_body(
     )
 }
 
-#[cfg(feature = "test-double")]
 pub(super) fn guest_assertion_kind_from_whitebox_flavor(
     flavor: crucible_protocol::WhiteboxAssertionMarkerFlavor,
 ) -> GuestAssertionKind {

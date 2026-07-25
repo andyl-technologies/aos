@@ -270,6 +270,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 .prepare_live_whitebox_state(
                     whitebox_apis,
                     args.whitebox_setup(),
+                    args.slot(),
                     self.execution_model.smp_vcpus(),
                     capabilities.icount_raw,
                     capabilities.request_shutdown,

@@ -11,7 +11,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use crucible_shmem::MAX_FRAME_DATA;
+use crucible_shmem::{MAX_FRAME_DATA, RingHeader, SpscRingError, WhiteboxMarkerEntry};
 use thiserror::Error;
 
 use crate::{
@@ -168,6 +168,67 @@ impl LiveWhiteboxRegisters {
     }
 }
 
+/// Pinned raw producer view of one ABI-validated white-box marker ring.
+#[derive(Debug)]
+pub(crate) struct LiveWhiteboxMarkerShmemProducer {
+    header: *const RingHeader,
+    entries: *mut WhiteboxMarkerEntry,
+    capacity: usize,
+}
+
+impl LiveWhiteboxMarkerShmemProducer {
+    /// Builds a producer retained by the process-lifetime callback owner.
+    ///
+    /// # Safety
+    ///
+    /// `header` and the `capacity` entries starting at `entries` must remain
+    /// mapped, aligned, and exclusively producer-owned until the callback owner
+    /// is destroyed. The host may access them only as the SPSC consumer.
+    pub(crate) unsafe fn from_raw_parts(
+        header: *const RingHeader,
+        entries: *mut WhiteboxMarkerEntry,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            capacity,
+        }
+    }
+
+    fn ring_parts(&mut self) -> (&RingHeader, &mut [WhiteboxMarkerEntry]) {
+        // SAFETY: construction requires both raw ranges to remain valid and
+        // producer-exclusive. Single-threaded RR serializes trap callbacks.
+        unsafe {
+            (
+                &*self.header,
+                std::slice::from_raw_parts_mut(self.entries, self.capacity),
+            )
+        }
+    }
+
+    fn record(
+        &mut self,
+        current_icount: u64,
+        vcpu_index: u32,
+        kind: u16,
+        payload: &[u8],
+    ) -> Result<(), WhiteboxMarkerSinkError> {
+        let entry = WhiteboxMarkerEntry::new(current_icount, vcpu_index, kind, payload)
+            .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
+        let (header, entries) = self.ring_parts();
+        header
+            .enqueue_whitebox_marker(entries, entry)
+            .map_err(|error| {
+                if matches!(error, SpscRingError::QueueFull { .. }) {
+                    WhiteboxMarkerSinkError::new("live white-box marker queue is full")
+                } else {
+                    WhiteboxMarkerSinkError::new("live white-box marker queue rejected an entry")
+                }
+            })
+    }
+}
+
 /// Heap-stable callback state retained by the process-lifetime runtime owner.
 pub(crate) struct LiveWhiteboxState {
     apis: LiveWhiteboxApis,
@@ -176,6 +237,7 @@ pub(crate) struct LiveWhiteboxState {
     vcpu_count: usize,
     icount_raw: QemuIcountRawFn,
     request_shutdown: QemuRequestShutdownFn,
+    marker_sink: LiveMarkerSink,
 }
 
 impl LiveWhiteboxState {
@@ -191,6 +253,7 @@ impl LiveWhiteboxState {
         vcpu_count: u32,
         icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
+        marker_output: LiveWhiteboxMarkerShmemProducer,
     ) -> Result<Self, LiveWhiteboxError> {
         if setup_attestation != Some(crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1) {
             return Err(LiveWhiteboxError::SetupAttestationMissing);
@@ -235,6 +298,9 @@ impl LiveWhiteboxState {
             vcpu_count,
             icount_raw,
             request_shutdown,
+            marker_sink: LiveMarkerSink {
+                output: marker_output,
+            },
         })
     }
 
@@ -342,8 +408,7 @@ impl LiveWhiteboxState {
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, address, len),
         );
         let mut reader = LiveGuestMemoryReader { apis: self.apis };
-        let mut sink = LiveMarkerSink;
-        handle_whitebox_doorbell_callback(&self.doorbell, &mut reader, &mut sink, event)
+        handle_whitebox_doorbell_callback(&self.doorbell, &mut reader, &mut self.marker_sink, event)
             .map(|_marker| ())
             .map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
@@ -422,12 +487,8 @@ impl GuestMemoryReader for LiveGuestMemoryReader {
     }
 }
 
-struct LiveMarkerSink;
-
-impl LiveMarkerSink {
-    fn emit(&self, message: String) -> Result<(), WhiteboxMarkerSinkError> {
-        write_stderr(message.as_bytes()).map_err(WhiteboxMarkerSinkError::new)
-    }
+struct LiveMarkerSink {
+    output: LiveWhiteboxMarkerShmemProducer,
 }
 
 fn write_stderr(bytes: &[u8]) -> Result<(), String> {
@@ -454,25 +515,19 @@ impl WhiteboxMarkerSink for LiveMarkerSink {
         &mut self,
         marker: &WhiteboxMarker,
     ) -> Result<(), WhiteboxMarkerSinkError> {
-        self.emit(format!(
-            "CRUCIBLE_WHITEBOX_MARKER icount={} vcpu={} kind={} payload_len={}\n",
+        self.output.record(
             marker.marker_icount(),
             marker.vcpu_index(),
             marker.kind(),
-            marker.payload().len(),
-        ))
+            marker.payload(),
+        )
     }
 
     fn record_whitebox_decode_diagnostic(
         &mut self,
-        diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
+        _diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
     ) -> Result<(), WhiteboxMarkerSinkError> {
-        self.emit(format!(
-            "CRUCIBLE_WHITEBOX_DECODE_DROP icount={} vcpu={} kind={:?}\n",
-            diagnostic.marker_icount(),
-            diagnostic.vcpu_index(),
-            diagnostic.kind(),
-        ))
+        Ok(())
     }
 }
 
@@ -545,6 +600,12 @@ pub enum LiveWhiteboxError {
     /// The host did not attest a collision-free x86 port map at setup.
     #[error("live white-box registration requires an x86 port-map setup attestation")]
     SetupAttestationMissing,
+    /// The mapped setup region could not expose this VM's marker queue.
+    #[error("mapped live white-box marker queue is unavailable")]
+    MappedMarkerQueue {
+        /// Underlying mapped-region access error.
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
     /// A required upstream QEMU or GLib symbol was absent.
     #[error("required live white-box capability `{symbol}` is unavailable")]
     CapabilityUnavailable {
@@ -606,4 +667,67 @@ pub enum LiveWhiteboxError {
         /// Stable callback diagnostic.
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_marker_producer_publishes_exact_entry_to_shmem() {
+        let header = RingHeader::new();
+        let mut entries = vec![WhiteboxMarkerEntry::default(); 4];
+        // SAFETY: the test-owned header and entry array outlive the producer,
+        // and no other producer accesses them.
+        let mut producer = unsafe {
+            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(&header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        };
+
+        if let Err(error) = producer.record(913, 2, 4, b"MARK") {
+            panic!("live marker producer should enqueue: {error}");
+        }
+        drop(producer);
+
+        let entry = match header.dequeue_whitebox_marker(&entries) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => panic!("live marker ring should contain one entry"),
+            Err(error) => panic!("live marker ring should dequeue: {error}"),
+        };
+        assert_eq!(entry.current_icount(), 913);
+        assert_eq!(entry.vcpu_index(), 2);
+        assert_eq!(entry.kind(), 4);
+        assert_eq!(entry.payload(), b"MARK");
+        assert_eq!(entry.validate(), Ok(entry));
+    }
+
+    #[test]
+    fn live_marker_producer_fails_loud_when_queue_is_full() {
+        let header = RingHeader::new();
+        let mut entries = vec![WhiteboxMarkerEntry::default(); 2];
+        // SAFETY: the test-owned header and entry array outlive the producer,
+        // and no other producer accesses them.
+        let mut producer = unsafe {
+            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(&header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        };
+
+        if let Err(error) = producer.record(1, 0, 4, b"a") {
+            panic!("first marker should enqueue: {error}");
+        }
+        if let Err(error) = producer.record(2, 0, 4, b"b") {
+            panic!("second marker should enqueue: {error}");
+        }
+        let error = match producer.record(3, 0, 4, b"c") {
+            Ok(()) => panic!("full marker ring must reject a third entry"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("queue is full"));
+    }
 }

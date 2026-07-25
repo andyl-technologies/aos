@@ -1,9 +1,10 @@
 {
   pkgs,
   lib,
+  liveWhitebox ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
   attrPath ? "checks.crucible.phase4.guestHostMarkerObservability",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-9"],
+  taskIds ? ["T-GHC-9"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -17,6 +18,11 @@
   markerObservabilityTest = builtins.readFile ../../crates/crucible/tests/guest_host_marker_observability.rs;
   eventLogDeterminismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxTest = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
+  pluginLiveWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
+  mappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
+  mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -49,12 +55,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-9 remains open";
-        needle = "- [ ] **T-GHC-9**";
+        label = "T-GHC-9 completion";
+        needle = "- [x] **T-GHC-9**";
       }
       {
-        label = "T-GHC-9 partial-evidence note";
-        needle = "Partial model evidence is provided by";
+        label = "T-GHC-9 live completion evidence";
+        needle = "`checks.crucible.phase2.qemuLiveWhiteboxDoorbell`";
       }
       {
         label = "marker observability implementation note";
@@ -114,6 +120,8 @@
         label = "plugin records through marker sink";
         needle = "sink.record_whitebox_marker(&marker)";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTest [
       {
         label = "plugin engine event-log sink test";
         needle = "whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink";
@@ -133,6 +141,50 @@
       {
         label = "plugin sink causal projection empty";
         needle = "event_log_causal_projection(&sink.entries).is_empty()";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+      {
+        label = "mapped live marker ring binding";
+        needle = "LiveWhiteboxError::MappedMarkerQueue";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs" pluginLiveWhitebox [
+      {
+        label = "live callback marker shmem enqueue";
+        needle = ".enqueue_whitebox_marker(entries, entry)";
+      }
+      {
+        label = "live callback marker producer";
+        needle = "struct LiveWhiteboxMarkerShmemProducer";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" mappedQuantum [
+      {
+        label = "host marker shmem dequeue";
+        needle = ".dequeue_whitebox_marker(ring.entries)";
+      }
+      {
+        label = "host canonical marker decode";
+        needle = "decode_whitebox_marker_payload(&frame)";
+      }
+      {
+        label = "host marker semantic mapping";
+        needle = "observable_event_from_whitebox_marker_payload(";
+      }
+      {
+        label = "host chronological observation merge";
+        needle = "events.sort_by_key(ObservableEvent::at)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/tests/mapped_quantum.rs" mappedQuantumTest [
+      {
+        label = "mapped marker event-log admission test";
+        needle = "mapped_quantum_merges_whitebox_markers_into_the_unified_event_log";
+      }
+      {
+        label = "mapped invalid marker rejection test";
+        needle = "mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds";
       }
     ]
     ++ failuresFor "crates/crucible/tests/guest_host_marker_observability.rs" markerObservabilityTest [
@@ -202,7 +254,7 @@
       }
       {
         label = "phase4 marker observability task id";
-        needle = "openTaskIds = [\"T-GHC-9\"]";
+        needle = "taskIds = [\"T-GHC-9\"];\n      openTaskIds = [];";
       }
     ];
 in
@@ -217,7 +269,7 @@ in
       pname = "crucible-phase4-guest-host-marker-observability";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed liveWhitebox];
       phases = [
         {
           name = "unpack";
@@ -269,6 +321,13 @@ in
               --features test-double \
               --test guest_host_marker_observability \
               -- --test-threads=1
+
+            grep -Fxq PASS ${liveWhitebox}/result
+            grep -Fxq 'marker_transport=plugin-to-host-shmem-spsc' ${liveWhitebox}/result
+            grep -Fxq 'marker_host_consumer=quantum-boundary' ${liveWhitebox}/result
+            grep -Fxq 'marker_event_log_admission=true' ${liveWhitebox}/result
+            grep -Eq '^marker_icount=[1-9][0-9]*$' ${liveWhitebox}/result
+            grep -Fxq 'off_on_fingerprint_equal=true' ${liveWhitebox}/result
           '';
         }
         {
@@ -281,11 +340,14 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
-            evidence_scope=marker-observation-model
+            status=complete
+            evidence_scope=marker-observation-model-and-live-production
             gate=gate:single-vm-fingerprint
             marker_event_log_class=observational
             marker_determinism_projection=causal-subsequence
+            marker_transport=plugin-to-host-shmem-spsc
+            marker_host_consumer=quantum-boundary
+            live_off_on_fingerprint_equal=true
             RESULT
           '';
         }

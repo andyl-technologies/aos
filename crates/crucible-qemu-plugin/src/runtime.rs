@@ -317,6 +317,7 @@ impl OwnedCallbackRuntimeState {
         self: Pin<&mut Self>,
         apis: live_whitebox::LiveWhiteboxApis,
         setup_attestation: Option<crate::WhiteboxSetupAttestation>,
+        slot_index: u32,
         vcpu_count: u32,
         icount_raw: crate::QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
@@ -324,12 +325,28 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
         let state = unsafe { self.get_unchecked_mut() };
+        let marker_ring = state
+            .setup
+            .mapped_region_mut()
+            .whitebox_marker_ring_mut(slot_index)
+            .map_err(|source| live_whitebox::LiveWhiteboxError::MappedMarkerQueue { source })?;
+        // SAFETY: `state.setup` owns the mapping for at least as long as the
+        // sibling live white-box callback owner. The mapped accessor returns
+        // the unique per-VM producer slice; the host is its sole SPSC consumer.
+        let marker_output = unsafe {
+            live_whitebox::LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(marker_ring.header),
+                marker_ring.entries.as_mut_ptr(),
+                marker_ring.entries.len(),
+            )
+        };
         let callback_state = live_whitebox::LiveWhiteboxState::new(
             apis,
             setup_attestation,
             vcpu_count,
             icount_raw,
             request_shutdown,
+            marker_output,
         )?;
         let mut callback_state = Box::pin(callback_state);
         // SAFETY: the independently boxed state is pinned and retained by this

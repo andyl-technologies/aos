@@ -100,6 +100,20 @@ fn run() -> Result<(), String> {
             .as_deref()
             .unwrap_or("not-required")
     );
+    println!("whitebox_marker_count={}", report.whitebox_marker_count);
+    println!(
+        "whitebox_marker_icount={}",
+        report
+            .whitebox_marker_icount
+            .map_or_else(|| "not-observed".to_owned(), |icount| icount.to_string())
+    );
+    println!(
+        "whitebox_marker_point={}",
+        report
+            .whitebox_marker_point
+            .as_deref()
+            .unwrap_or("not-observed")
+    );
     println!("fingerprint={fingerprint}");
     Ok(())
 }

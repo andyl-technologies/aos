@@ -850,18 +850,20 @@ the transport layer by construction.
   records decoded observational marker payloads, and rejects `random_request` on
   the observational marker path while preserving the existing app-random servicing
   path.
-- [ ] **T-GHC-9** Record every marker as an observational, icount-stamped
+- [x] **T-GHC-9** Record every marker as an observational, icount-stamped
   event-log entry excluded from the determinism comparison; prove markers do not
   move the fingerprint. — satisfies [GHC-24], [GHC-30]; spec §16.5.2, §16.7.
-  Partial model evidence is provided by
-  `checks.crucible.phase4.guestHostMarkerObservability`: decoded
-  white-box assertion, lifecycle, event, and coverage marker payloads now append
-  as observational scheduler event-log entries stamped with the exact marker
-  icount and guest source, including through a QEMU-plugin `WhiteboxMarkerSink`
-  fed by the real doorbell callback; schedule decisions, causal event-log
-  projections, and backend fingerprints remain identical when marker content or
-  interleaving changes, while causal decision and backend input changes still
-  move the corresponding run-material witness.
+  Completed by `checks.crucible.phase4.guestHostMarkerObservability` and
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: decoded white-box assertion,
+  lifecycle, event, and coverage marker payloads append as observational
+  scheduler event-log entries stamped with the exact marker icount and guest
+  source. The live gate proves the production x86 guest → QEMU-plugin callback →
+  ABI-v4 SPSC shmem ring → host quantum-boundary validation and canonical decode
+  → unified `EventLog` path, with no callback allocation or diagnostic I/O.
+  Model tests prove marker content and interleaving cannot change schedule
+  decisions, causal event-log projections, or backend fingerprints, and the live
+  white-box off/on executions produce identical fingerprints while admitting
+  exactly one named marker in on mode.
 - [x] **T-GHC-10** Build `crucible-guest`, a minimal static guest emitter (CLI +
   thin library) mirroring the marker vocabulary, hermetically from source for each
   guest arch from the single-source ABI. — satisfies [GHC-26], [GHC-27], [GHC-29];

@@ -1100,8 +1100,8 @@ in rec {
     guestHostMarkerObservability = import ./phase4-guest-host-marker-observability.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostMarkerObservability";
-      taskIds = [];
-      openTaskIds = ["T-GHC-9"];
+      taskIds = ["T-GHC-9"];
+      openTaskIds = [];
     };
     guestHostEmitter = import ./phase4-guest-host-emitter.nix {
       inherit pkgs lib;
@@ -1202,8 +1202,8 @@ in rec {
         };
         dependencies = [replayOracle phase1.simDouble];
         phase = "phase4";
-        reason = "the white-box channel evidence is model-only until production plugin callbacks and live on/off fingerprint coverage exist";
-        taskIds = ["T-GHC-4" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
+        reason = "the remaining white-box channel work requires aarch64, crash-control, network, and multi-node production evidence";
+        taskIds = ["T-GHC-4" "T-GHC-6" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
       };
     };
   };
