@@ -26,7 +26,12 @@ use crucible_shmem::{
     RING_HEADER_PAD_WRITE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
     RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation, RegionConfig, RegionHeader,
     RegionHeaderSnapshot, RegionLayout, RegionLayoutError, ReservedExecutorSlot, SLOT_9P_IO,
-    SLOT_BLK_IO, SLOT_NET_ROUTER, validate_layout_target,
+    SLOT_BLK_IO, SLOT_NET_ROUTER, WHITEBOX_MARKER_ENTRY_ALIGN,
+    WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
+    WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET,
+    WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, WHITEBOX_MARKER_ENTRY_SIZE,
+    WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, WHITEBOX_MARKER_QUEUE_CAPACITY,
+    validate_layout_target,
 };
 
 #[cfg(all(
@@ -101,6 +106,15 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(COVERAGE_ENTRY_RESERVED_OFFSET, 32);
     assert_eq!(COVERAGE_ENTRY_SIZE, 64);
     assert_eq!(COVERAGE_ENTRY_ALIGN, 64);
+    assert_eq!(WHITEBOX_MARKER_QUEUE_CAPACITY, 1_024);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, 0);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, 8);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_KIND_OFFSET, 12);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, 14);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, 16);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, 4_624);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_SIZE, 4_672);
+    assert_eq!(WHITEBOX_MARKER_ENTRY_ALIGN, 64);
 }
 
 #[test]
@@ -146,10 +160,30 @@ fn region_layout_computes_offsets_and_directed_rings() {
         coverage_data_end.div_ceil(FINGERPRINT_SAMPLE_SLOT_ALIGN as u64)
             * FINGERPRINT_SAMPLE_SLOT_ALIGN as u64
     );
+    let fingerprint_data_end = layout.fingerprint_sample_off
+        + u64::from(layout.fingerprint_sample_count) * layout.fingerprint_sample_stride;
+    assert_eq!(layout.whitebox_marker_ring_count, layout.vm_node_count);
+    assert_eq!(
+        layout.whitebox_marker_queue_capacity,
+        WHITEBOX_MARKER_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        layout.whitebox_marker_ring_hdr_off,
+        fingerprint_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64
+    );
+    assert_eq!(
+        layout.whitebox_marker_ring_data_off,
+        layout.whitebox_marker_ring_hdr_off
+            + u64::from(layout.whitebox_marker_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.whitebox_marker_entry_stride,
+        WHITEBOX_MARKER_ENTRY_SIZE as u64
+    );
     assert_eq!(
         layout.region_size,
-        layout.fingerprint_sample_off
-            + u64::from(layout.fingerprint_sample_count) * layout.fingerprint_sample_stride
+        layout.whitebox_marker_ring_data_off
+            + layout.whitebox_marker_entry_count() * layout.whitebox_marker_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),

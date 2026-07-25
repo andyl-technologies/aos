@@ -15,7 +15,7 @@ use crucible_shmem::{
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation,
     RegionConfig, RegionHeader, RegionHeaderSnapshot, RegionLayout, RegionSetupValidationError,
     SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, ValidatedSetupRegion,
-    validate_setup_region_header,
+    WhiteboxMarkerEntry, validate_setup_region_header,
 };
 
 #[cfg(unix)]
@@ -350,6 +350,36 @@ fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
             .err(),
         Some(MappedSetupRegionAccessError::DuplicateDirectedRing { ring_index: 0 })
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let marker = match WhiteboxMarkerEntry::new(913, 2, 4, b"MARK") {
+        Ok(marker) => marker,
+        Err(error) => panic!("valid marker entry should build: {error}"),
+    };
+
+    let ring = match mapped.whitebox_marker_ring_mut(0) {
+        Ok(ring) => ring,
+        Err(error) => panic!("mapped marker ring should bind: {error}"),
+    };
+    if let Err(error) = ring.header.enqueue_whitebox_marker(ring.entries, marker) {
+        panic!("mapped marker ring should enqueue: {error}");
+    }
+    let consumed = match ring.header.dequeue_whitebox_marker(ring.entries) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => panic!("mapped marker ring should contain one entry"),
+        Err(error) => panic!("mapped marker ring should dequeue: {error}"),
+    };
+
+    assert_eq!(consumed.validate(), Ok(marker));
+    assert_eq!(ring.header.dequeue_whitebox_marker(ring.entries), Ok(None));
 }
 
 fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {

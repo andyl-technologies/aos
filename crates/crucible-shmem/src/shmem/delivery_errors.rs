@@ -144,6 +144,25 @@ pub enum CoverageEntryError {
     NonzeroReservedBytes,
 }
 
+/// A validation error for plugin-to-host white-box marker entries.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum WhiteboxMarkerEntryError {
+    /// The marker body does not fit in the fixed entry payload.
+    #[error("white-box marker payload length {len} exceeds capacity {capacity}")]
+    PayloadLengthExceedsCapacity {
+        /// Requested or advertised marker payload length.
+        len: usize,
+        /// ABI-fixed marker payload capacity.
+        capacity: usize,
+    },
+    /// Bytes after the advertised marker body were not zero.
+    #[error("white-box marker entry contains nonzero payload-tail bytes")]
+    NonzeroPayloadTail,
+    /// Forward-compatibility bytes in a shared entry were nonzero.
+    #[error("white-box marker entry contains nonzero reserved bytes")]
+    NonzeroReservedBytes,
+}
+
 /// An error produced while validating a mapped setup region header.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RegionSetupValidationError {

@@ -137,11 +137,12 @@ fixture, catching any disagreement the compile-time checks miss.
 
 The region is laid out as a fixed-size header followed by a fixed-size array of
 per-node slots, followed by the directed-frame SPSC rings and their frame-entry
-storage, then one fixed-capacity plugin-to-host coverage ring per VM. The header
-and slots are fixed-size so their offsets are compile-time constants. Frame-ring
-geometry is recorded in the header; ABI v2 derives the trailing coverage-ring
-geometry from that frame extent, the VM count, and the ABI-fixed coverage-map
-cardinality, so no process-local pointer or host-layout fact crosses the ABI.
+storage, one fixed-capacity plugin-to-host coverage ring per VM, one fingerprint
+sample slot per VM, and one bounded plugin-to-host white-box marker ring per VM.
+The header and slots are fixed-size so their offsets are compile-time constants.
+Frame-ring geometry is recorded in the header; ABI v4 derives every trailing
+section from that frame extent, the VM count, and ABI-fixed constants, so no
+process-local pointer or host-layout fact crosses the ABI.
 
 ```text
   +--------------------------------------------------+  offset 0
@@ -162,6 +163,13 @@ cardinality, so no process-local pointer or host-layout fact crosses the ABI.
   +--------------------------------------------------+
   | CoverageEntry[vm_node_count][65536]              |   = one slot per map index
   | ...                                              |
+  +--------------------------------------------------+  align_up(coverage data end, 128)
+  | FingerprintSampleSlot[vm_node_count]             |   = latest boundary sample
+  +--------------------------------------------------+  align_up(fingerprint data end, 128)
+  | Whitebox Marker RingHeader[vm_node_count]        |   = one SPSC ring per VM
+  +--------------------------------------------------+
+  | WhiteboxMarkerEntry[vm_node_count][1024]         |   = decoded guest markers
+  | ...                                              |
   +--------------------------------------------------+  header.region_size
 ```
 
@@ -169,9 +177,10 @@ cardinality, so no process-local pointer or host-layout fact crosses the ABI.
 
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
-frame sub-region offsets, and the global pause flag. ABI v2 mappers derive the
-coverage tail from that validated frame extent, the VM count, and fixed v2
-coverage constants. The header is the first thing a mapper reads and the thing
+frame sub-region offsets, and the global pause flag. ABI v4 mappers derive the
+coverage, fingerprint-sample, and white-box marker tail sections from that
+validated frame extent, the VM count, and fixed ABI constants. The header is
+the first thing a mapper reads and the thing
 the handshake ([`14-protocol.md`](14-protocol.md)) validates before any node
 touches a slot.
 
@@ -181,7 +190,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 4;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -491,7 +500,7 @@ The discipline is the standard seqlock idiom:
 
 ### 13.3.5 Plugin-to-host coverage rings
 
-ABI v2 allocates one additional SPSC ring per logical VM. The QEMU plugin is
+ABI v4 retains the ABI-v2 coverage section: one SPSC ring per logical VM. The QEMU plugin is
 the sole producer; the host adapter is the sole consumer. `CoverageEntry` is a
 fixed 64-byte record containing the raw icount immediately before the covered
 TB's first instruction, the guest PC, the fixed-map index, the vCPU index, and
@@ -515,7 +524,7 @@ the backend quantum loop, admitted with the same dense event-log sequence
 validation, and published by the session actor before shutdown completes. No
 host-side coverage collection is a persistent record parallel to that log.
 
-- **[SHM-38]** Each logical VM MUST own exactly one ABI-v2 coverage ring with the
+- **[SHM-38]** Each logical VM MUST own exactly one coverage ring with the
   QEMU plugin as sole producer and host adapter as sole consumer. Publication
   and reclamation MUST use the same release/acquire SPSC ordering as frame
   rings. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
@@ -533,9 +542,54 @@ host-side coverage collection is a persistent record parallel to that log.
   `gate:basic-block-coverage`. *Spec:* §13.3.5, forward-ref
   [`19-observability-event-log.md`](19-observability-event-log.md).
 
+### 13.3.6 Fingerprint sample slots
+
+ABI v4 retains the additive ABI-v3 fingerprint section: one 640-byte,
+128-byte-aligned `FingerprintSampleSlot` per logical VM. The plugin publishes
+the latest completed-boundary sample under the slot's generation seqlock and
+the host reads it only while the VM is quiescent. The section begins at the
+coverage-data end rounded up to 128 bytes; its VM count and fixed stride
+determine the following marker-ring offset.
+
+### 13.3.7 Plugin-to-host white-box marker rings
+
+ABI v4 appends one SPSC marker ring per logical VM after the fingerprint sample
+slots. The QEMU plugin is the sole producer and the host adapter is the sole
+consumer. Each fixed 4,672-byte `WhiteboxMarkerEntry` carries the exact trap
+icount, vCPU index, decoded doorbell kind, bounded marker-body length, marker
+body, and zeroed reserved bytes. Publication uses the same release/acquire SPSC
+ordering as frame and coverage rings.
+
+The marker ring is observational: it is distinct from every causal
+network/block/9p ring, is drained only at a completed quantum boundary, and
+cannot alter scheduling or delivery order. The host validates each copied
+entry, decodes it through the canonical white-box protocol decoder, and admits
+the resulting event to the unified event log. Invalid entries, unsupported
+marker kinds, future or regressing icounts, and queue overflow fail the run
+loudly. The control socket remains setup/control-only and MUST NOT carry
+run-phase marker frames.
+
+- **[SHM-41]** Each logical VM MUST own exactly one ABI-v4 white-box marker ring
+  with the QEMU plugin as sole producer and host adapter as sole consumer.
+  Publication and reclamation MUST use release/acquire SPSC ordering. *Gate:*
+  `gate:abi-conformance`, `gate:guest-host-marker-observability`. *Spec:*
+  §13.3.7, §13.4.
+
+- **[SHM-42]** Marker entries MUST preserve the exact trap icount, vCPU, kind,
+  and canonical bounded payload. Queue overflow, malformed entries, and
+  unsupported run-phase kinds MUST fail without eviction, overwrite, blocking,
+  or fallback to a causal ring or control socket. *Gate:*
+  `gate:guest-host-marker-observability`. *Spec:* §13.3.7.
+
+- **[SHM-43]** The host MUST drain markers only at a published completion
+  boundary and append validated decoded events to the unified event log before
+  the next step or teardown. *Gate:* `gate:guest-host-marker-observability`.
+  *Spec:* §13.3.7, forward-ref
+  [`19-observability-event-log.md`](19-observability-event-log.md).
+
 ## 13.4 Normative offset and size table
 
-The following constants are the binding ABI for `ABI_VERSION = 2` on
+The following constants are the binding ABI for `ABI_VERSION = 4` on
 `x86_64-unknown-linux-gnu`. The generated C header ([SHM-4]) and the Rust static
 assertions ([SHM-5]) MUST both reproduce these exactly. The golden-vector test
 (§13.8) checks the runtime bytes against a fixture built from this table.
@@ -591,32 +645,47 @@ CoverageEntry (size 64, align 64)
   @ 28  block_len          u32
   @ 32  _reserved[32]
 
+FingerprintSampleSlot (size 640, align 128)
+  @  0  sample_gen         u32
+  @  4  _reserved          u32
+  @  8  words[68]          u64
+
+WhiteboxMarkerEntry (size 4672, align 64)
+  @  0  current_icount     u64
+  @  8  vcpu_index         u32
+  @ 12  kind               u16
+  @ 14  payload_len        u16
+  @ 16  payload[4608]
+  @4624 _reserved[48]
+
 Constants
   REGION_MAGIC            = "CRUCSHM1" (LE u64)
-  ABI_VERSION             = 2
+  ABI_VERSION             = 4
   MAX_NODES               = 32
   RESERVED_SLOTS          = 3
   MAX_FRAME_DATA          = 4608
   DEFAULT_QUEUE_CAPACITY  = 64
   COVERAGE_QUEUE_CAPACITY = 65536
+  WHITEBOX_MARKER_QUEUE_CAPACITY = 1024
 ```
 
 - **[SHM-14]** The offsets, sizes, and alignments in the §13.4 table are the
-  normative ABI for `ABI_VERSION = 2`. The build MUST verify, on both the Rust and
-  C sides, that the compiled layout matches this table; any deviation MUST fail the
-  build. Header and slot offsets MUST be compile-time constants. Directed-ring and
-  frame-entry offsets MUST be computed from the header geometry. Coverage-ring
-  offsets MUST be derived deterministically from the frame-data end and the v2
-  constants, with one ring per VM and capacity equal to the coverage-map
-  cardinality.
+  normative ABI for `ABI_VERSION = 4`. The build MUST verify, on both the Rust and
+  C sides, that the compiled layout matches this table; any deviation MUST fail
+  the build. Header and slot offsets MUST be compile-time constants.
+  Directed-ring and frame-entry offsets MUST be computed from the header
+  geometry. Coverage-ring, fingerprint-slot, and marker-ring offsets MUST be
+  derived deterministically from the preceding section and the ABI constants,
+  with one of each per VM.
   *Gate:* `gate:abi-conformance`. *Spec:* §13.4.
 
 - **[SHM-15]** Reserved bytes (`RegionHeader::_reserved`, `NodeSlot::_reserved`,
   the ring-header pad regions, `FrameEntry::_pad`, and
   `CoverageEntry::_reserved`) MUST be zero-initialized at region creation.
   Existing control/frame reserved space MUST be ignored on read at
-  `ABI_VERSION = 2`; coverage entries MUST reject non-zero reserved bytes because
-  each entry is untrusted plugin output validated before event-log admission.
+  `ABI_VERSION = 4`; coverage and white-box marker entries MUST reject non-zero
+  reserved bytes because each entry is untrusted plugin output validated before
+  event-log admission.
   Reserved space exists so a future version can add fields without moving
   existing offsets (§13.6). *Gate:*
   `gate:abi-conformance`. *Spec:* §13.4, §13.6.
@@ -995,9 +1064,15 @@ by when the producer's store landed in shared memory.
   keep per-vCPU icount/state out of the ABI so `ABI_VERSION` is unchanged for
   N-vCPU nodes; route per-vCPU fingerprint state over QMP/plugin introspection,
   not shmem. — satisfies [SHM-37]; spec §13.3.2.
-- [x] **T-SHM-17** Add one ABI-v2 coverage SPSC ring per logical VM, fix its
+- [x] **T-SHM-17** Add one coverage SPSC ring per logical VM, fix its
   capacity to the coverage-map cardinality, publish only first-hit entries, and
   make the host validate and append each completion-boundary batch to the
   unified event log before the next step or teardown. Treat overflow,
   regression, future icounts, and duplicate novelty as fatal invariant errors.
   — satisfies [SHM-38], [SHM-39], [SHM-40]; spec §13.3.5, §13.4, §13.6.
+- [ ] **T-SHM-18** Add one ABI-v4 white-box marker SPSC ring per logical VM,
+  publish decoded guest markers without callback allocation or I/O, and make
+  the host validate, canonically decode, and append each completion-boundary
+  batch to the unified event log. Treat overflow, malformed entries,
+  unsupported kinds, regression, and future icounts as fatal invariant errors.
+  — satisfies [SHM-41], [SHM-42], [SHM-43]; spec §13.3.7, §13.4, §13.6.

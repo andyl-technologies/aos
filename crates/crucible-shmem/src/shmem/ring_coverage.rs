@@ -115,6 +115,36 @@ impl RingHeader {
         Ok(())
     }
 
+    /// Enqueues one observational white-box marker into producer-owned storage.
+    ///
+    /// The plugin copies the complete marker before release-publishing the new
+    /// write index. The host acquire-loads that index only at a quantum
+    /// boundary, so marker transport cannot affect guest execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the marker slice has invalid capacity,
+    /// the ring indices are corrupt, or the fixed queue is full.
+    pub fn enqueue_whitebox_marker(
+        &self,
+        entries: &mut [WhiteboxMarkerEntry],
+        entry: WhiteboxMarkerEntry,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let tail = self.write_idx.load(Ordering::Relaxed);
+        let head = self.read_idx.load(Ordering::Acquire);
+        let live = live_count(head, tail, capacity)?;
+        if live == capacity {
+            return Err(SpscRingError::QueueFull { capacity });
+        }
+
+        let slot = (tail & (capacity - 1)) as usize;
+        entries[slot] = entry;
+        self.write_idx
+            .store(tail.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
+
     /// Returns the next frame's delivery icount without consuming it.
     ///
     /// # Errors
@@ -187,6 +217,29 @@ impl RingHeader {
         &self,
         entries: &[CoverageEntry],
     ) -> Result<Option<CoverageEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+
+        let slot = (head & (capacity - 1)) as usize;
+        let entry = entries[slot];
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(Some(entry))
+    }
+
+    /// Dequeues the next plugin-to-host observational white-box marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the marker slice has invalid capacity or
+    /// the shared indices describe more live entries than the queue can hold.
+    pub fn dequeue_whitebox_marker(
+        &self,
+        entries: &[WhiteboxMarkerEntry],
+    ) -> Result<Option<WhiteboxMarkerEntry>, SpscRingError> {
         let capacity = validated_capacity(entries)?;
         let head = self.read_idx.load(Ordering::Relaxed);
         let tail = self.write_idx.load(Ordering::Acquire);

@@ -20,7 +20,10 @@ use crucible_shmem::{
     REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET,
     REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionConfig,
-    RegionLayout, STATUS_IDLE, SpscRingSnapshot, generated_c_header,
+    RegionLayout, STATUS_IDLE, SpscRingSnapshot, WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+    WHITEBOX_MARKER_ENTRY_KIND_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+    WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, WHITEBOX_MARKER_ENTRY_SIZE,
+    WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, generated_c_header,
 };
 
 const COMMITTED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
@@ -33,7 +36,8 @@ const GOLDEN_NODE_SLOT_BASE: usize = REGION_HEADER_SIZE;
 const GOLDEN_RING_HEADER_BASE: usize = GOLDEN_NODE_SLOT_BASE + NODE_SLOT_SIZE;
 const GOLDEN_FRAME_ENTRY_BASE: usize = GOLDEN_RING_HEADER_BASE + RING_HEADER_SIZE;
 const GOLDEN_COVERAGE_ENTRY_BASE: usize = GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SIZE;
-const GOLDEN_TOTAL_LEN: usize = GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_SIZE;
+const GOLDEN_WHITEBOX_MARKER_ENTRY_BASE: usize = GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_SIZE;
+const GOLDEN_TOTAL_LEN: usize = GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_SIZE;
 
 #[test]
 fn gate_abi_conformance_checks_generated_header_and_golden_vectors() {
@@ -108,6 +112,14 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_coverage_entry, vcpu_index)",
         "offsetof(crucible_shmem_coverage_entry, block_len)",
         "offsetof(crucible_shmem_coverage_entry, reserved)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_whitebox_marker_entry)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_whitebox_marker_entry)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, current_icount)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, vcpu_index)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, kind)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, payload_len)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, payload)",
+        "offsetof(crucible_shmem_whitebox_marker_entry, reserved)",
     ] {
         assert!(
             header.contains(needle),
@@ -207,6 +219,10 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.coverage.map_index, 17);
     assert_eq!(decoded.coverage.vcpu_index, 2);
     assert_eq!(decoded.coverage.block_len, 4);
+    assert_eq!(decoded.whitebox_marker.current_icount, 913);
+    assert_eq!(decoded.whitebox_marker.vcpu_index, 2);
+    assert_eq!(decoded.whitebox_marker.kind, 4);
+    assert_eq!(decoded.whitebox_marker.payload, b"MARK");
 
     let mut payload_mutation = fixture.bytes.clone();
     payload_mutation[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
@@ -463,6 +479,29 @@ fn live_golden_bytes() -> Vec<u8> {
         GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
         4,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+        913,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+        2,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
+        4,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+        4,
+    );
+    bytes[GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
+        ..GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET + 4]
+        .copy_from_slice(b"MARK");
 
     bytes
 }
@@ -562,6 +601,16 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             "frame payload length {frame_len} exceeds MAX_FRAME_DATA"
         ));
     }
+    let marker_len = read_u16(
+        bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+    );
+    let marker_len_usize = usize::from(marker_len);
+    if marker_len_usize > MAX_FRAME_DATA {
+        return Err(format!(
+            "white-box marker payload length {marker_len} exceeds MAX_FRAME_DATA"
+        ));
+    }
 
     Ok(GoldenState {
         region: RegionHeaderState {
@@ -640,6 +689,25 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
             ),
+        },
+        whitebox_marker: WhiteboxMarkerEntryState {
+            current_icount: read_u64(
+                bytes,
+                GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+            ),
+            vcpu_index: read_u32(
+                bytes,
+                GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+            ),
+            kind: read_u16(
+                bytes,
+                GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
+            ),
+            payload: bytes[GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
+                ..GOLDEN_WHITEBOX_MARKER_ENTRY_BASE
+                    + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
+                    + marker_len_usize]
+                .to_vec(),
         },
     })
 }
@@ -810,6 +878,31 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
         state.coverage.block_len,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+        state.whitebox_marker.current_icount,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+        state.whitebox_marker.vcpu_index,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
+        state.whitebox_marker.kind,
+    );
+    write_u16(
+        &mut bytes,
+        GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+        state.whitebox_marker.payload.len() as u16,
+    );
+    bytes[GOLDEN_WHITEBOX_MARKER_ENTRY_BASE + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
+        ..GOLDEN_WHITEBOX_MARKER_ENTRY_BASE
+            + WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET
+            + state.whitebox_marker.payload.len()]
+        .copy_from_slice(&state.whitebox_marker.payload);
 
     bytes
 }
@@ -865,6 +958,7 @@ struct GoldenState {
     ring: RingHeaderState,
     frame: FrameEntryState,
     coverage: CoverageEntryState,
+    whitebox_marker: WhiteboxMarkerEntryState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -917,4 +1011,12 @@ struct CoverageEntryState {
     map_index: u64,
     vcpu_index: u32,
     block_len: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WhiteboxMarkerEntryState {
+    current_icount: u64,
+    vcpu_index: u32,
+    kind: u16,
+    payload: Vec<u8>,
 }
