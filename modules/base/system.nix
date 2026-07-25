@@ -46,39 +46,6 @@
     };
   };
 
-  # Fully-typed Ignition v3.6 schema. `allowStorageHardware = false`
-  # omits `storage.{disks,filesystems,raid,luks}` so test-harness
-  # configs that try to manage partitioning fail at eval with a
-  # readable "option not declared" error — those paths belong to the
-  # AOS image, not to first-boot metadata. Production / standalone
-  # callers that want the full schema can import
-  # `lib/formats/ignition.nix` directly with `allowStorageHardware = true`.
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
-  ignitionConfigType = ignitionFormat.type;
-
-  instanceMetadataType = lib.types.submodule {
-    options = {
-      format = lib.mkOption {
-        type = lib.types.enum ["ignition"];
-        default = "ignition";
-        description = "Provisioner that will consume the metadata.";
-      };
-      config = lib.mkOption {
-        type = ignitionConfigType;
-        description = ''
-          The ignition config as a Nix attrset. The test harness
-          serialises it to JSON, packs it into an ISO9660 image
-          (volume label `aos-metadata`), and attaches it to the VM;
-          `aos-platform-detect.service` mounts it and points ignition
-          at the file via `IGNITION_CONFIG_FILE`.
-        '';
-      };
-    };
-  };
-
   checkSpecType = lib.types.submodule ({name, ...}: {
     options = {
       description = lib.mkOption {
@@ -89,16 +56,6 @@
       checks = lib.mkOption {
         type = lib.types.listOf checkType;
         description = "Flat list of checks run inside one VM.";
-      };
-      instanceMetadata = lib.mkOption {
-        type = lib.types.nullOr instanceMetadataType;
-        default = null;
-        description = ''
-          Optional first-boot provisioning payload. When set, the
-          test harness attaches a second virtio-blk device carrying
-          this JSON. Ignition runs on every test boot (metadata or
-          not), but only consumes a config when this option is set.
-        '';
       };
     };
   });
@@ -137,6 +94,27 @@ in {
         value signals that state-migration scripts should run on upgrade.
         Do not change this on a running system without understanding the
         migration implications.
+      '';
+    };
+
+    ## Shared-option-schema ABI integer used to validate configuration generations.
+    ##
+    ## A monotonic integer identifying the base-lib option schema this image
+    ## ships. It is written to `/etc/os-release` as `AOS_MODULE_ABI` (and so
+    ## into the UKI `.osrel` section measured into PCR 11), and the on-host
+    ## resolver reads it to gate every config module's `module_abi_compat`
+    ## band before evaluation. Orthogonal to `stateVersion` (a /var
+    ## state-migration trigger) — the two gate different artifacts at
+    ## different phases and need not coincide.
+    moduleAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 1;
+      description = ''
+        Shared-option-schema ABI integer for this image. Emitted as
+        `AOS_MODULE_ABI` in /etc/os-release (and the measured UKI .osrel),
+        used by the on-host resolver as the pre-eval admission gate for
+        config modules. Bump on a breaking change to the shared option
+        schema. Independent of `stateVersion`.
       '';
     };
 
@@ -255,6 +233,7 @@ in {
         HOME_URL="https://aos.dev"
         BUG_REPORT_URL="https://aos.dev/issues"
         AOS_STATE_VERSION=${cfg.stateVersion}
+        AOS_MODULE_ABI=${toString cfg.moduleAbi}
       '';
     };
 

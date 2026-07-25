@@ -8,6 +8,7 @@ aos-core = { workspace = true }
 aos-cache = { workspace = true }
 aos-net = { workspace = true }
 aos-systemd = { workspace = true }
+aos-registry-surface = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -16,6 +17,7 @@ reqwest = { workspace = true }
 rusqlite = { workspace = true }
 ed25519-dalek = { workspace = true }
 toml = { workspace = true }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 indicatif = { workspace = true }
@@ -34,5 +36,10 @@ tokio-stream = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
 rand = { workspace = true }
+git2 = { workspace = true }
+ssh-key = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]

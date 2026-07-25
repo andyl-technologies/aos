@@ -70,10 +70,16 @@ in
     #   0003 — Remove install_emptydir(systemdstatedir) from meson.build
     #          (resolves to /var/lib/systemd which can't be created in the
     #          sandbox; created at system activation time instead).
+    #   0004 — Skip creating /run/systemd for test-run managers so offline
+    #          analysis tools can run inside the Nix sandbox.
+    #   0005 — Fail closed when RootHashSignature= is present but the kernel
+    #          rejects the dm-verity signed-key activation.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0003-remove-install-emptydir-systemdstatedir.patch
+      ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
+      ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
     ];
 
     buildDeps = [
@@ -86,11 +92,14 @@ in
       python3
       gperf
       getent
+      # Kernel UAPI headers are compile-time only. Keeping them out of
+      # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
+      # shared library) and keeps the 7 MiB header tree out of the closure.
+      linux-headers
     ];
     runtimeDeps = [
       util-linux
       kmod
-      linux-headers
       zlib
       xz
       lz4
@@ -241,7 +250,7 @@ in
                     -Dtpm=true \
                     -Denvironment-d=false \
                     -Dbinfmt=false \
-                    -Drepart=disabled \
+                    -Drepart=enabled \
                     -Dcoredump=true \
                     -Dpstore=false \
                     -Doomd=true \
@@ -289,7 +298,7 @@ in
                     -Daudit=enabled \
                     -Dkmod=enabled \
                     -Dblkid=enabled \
-                    -Dfdisk=disabled \
+                    -Dfdisk=enabled \
                     -Dgnutls=disabled \
                     -Dopenssl=enabled \
                     -Dp11kit=disabled \

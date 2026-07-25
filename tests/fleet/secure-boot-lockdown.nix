@@ -20,76 +20,19 @@
   lib,
   pkgs,
   systems,
-}: let
-  # The base image ships only ESP + root-a; ignition creates
-  # root-b/swap/var on first boot. /var is required to reach multi-user
-  # (see tests/fleet/secure-boot.nix). Same layout as install-from-image.
-  rootSizeMiB = 6144;
-  swapSizeMiB = 1024;
-  diskProvision = {
-    storage = {
-      disks = [
-        {
-          device = "/dev/vda";
-          wipeTable = false;
-          partitions = [
-            {
-              number = 2;
-              label = "root-a";
-              sizeMiB = rootSizeMiB;
-              resize = true;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 3;
-              label = "root-b";
-              sizeMiB = rootSizeMiB;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 4;
-              label = "swap";
-              sizeMiB = swapSizeMiB;
-              typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-            }
-            {
-              number = 5;
-              label = "var";
-              sizeMiB = 0;
-            }
-          ];
-        }
-      ];
-      filesystems = [
-        {
-          device = "/dev/disk/by-partlabel/root-b";
-          format = "ext4";
-          label = "aos-root-b";
-          wipeFilesystem = false;
-        }
-        {
-          device = "/dev/disk/by-partlabel/var";
-          format = "ext4";
-          label = "aos-var";
-          wipeFilesystem = false;
-        }
-      ];
-    };
-  };
-in {
+}: {
   name = "secure-boot-lockdown";
   timeout = 1800;
 
   machines = {
+    # The base image ships only ESP and root-a;
+    # systemd-repart creates swap/var on first boot. /var is required to reach
+    # multi-user (see tests/fleet/secure-boot.nix).
     target = {
       system = systems.server-secureboot-lockdown;
       bootMode = "image";
       imageDiskMiB = 16384;
-      roles = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = diskProvision;
-      };
+      packages = ["aos-test-agent"];
     };
   };
 
@@ -114,7 +57,7 @@ in {
           target.succeed(f"{eu} -f {keys}/{var}.auth {var} 2>&1")
       assert efivar_byte("SetupMode") == 0, "PK enrollment should exit Setup Mode"
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
 
       # ════ 2. Lockdown engaged in confidentiality mode ════════════════

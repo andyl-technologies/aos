@@ -25,6 +25,10 @@ in
       hash = "sha256-RD5G+JZMmsx4D0Va+7jiOqDo7X7FBM/FngT0BvoeioM=";
     };
 
+    patches = [
+      ./cryptsetup-patches/0001-fail-closed-on-signed-verity-activation.patch
+    ];
+
     buildDeps = [
       gnumake
       pkg-config

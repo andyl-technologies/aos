@@ -13,9 +13,13 @@
 #     `cfg.packages` / `cfg.globalEnvironment` are handled at the module
 #     seam in modules/systemd/system.nix (see spec §4.2), `utils` is
 #     inlined (only `escapeSystemdPath` was needed, ported below).
-#   - `makeJobScript` always uses `pkgs.writeShellScriptBin`; the
-#     `writeShellApplication` / shellcheck branch is dropped because AOS
-#     has no Haskell toolchain (spec §5.4).
+#   - `makeJobScript` no longer returns a bare `writeShellScriptBin` path.
+#     On-host evaluation reroutes it to a pure data record carrying the job
+#     script's TEXT (for `manifest.jobScripts`) plus a build-side
+#     derivation that materializes the script at an `aos-job-scripts/<key>`
+#     path; the `Exec*=` directive now points there. See `makeJobScript`
+#     below. (The dropped `writeShellApplication`/shellcheck branch — AOS
+#     has no Haskell toolchain, spec §5.4 — stays dropped.)
 #   - `generateUnits` keeps its `upstreamUnits` / `upstreamWants` parameters
 #     so the future initrd builder can cherry-pick stage-1 units from the
 #     systemd package, but drops the `type == "system"` tail that
@@ -215,14 +219,33 @@ in rec {
   # AOS modules disable an upstream unit without deleting its file.
   makeUnit = name: unit:
     if unit.enable
-    then
+    then let
+      # `unit.text` carries `#aos-jobscript:<key>#`
+      # placeholders (so the eval-only manifest can render the body without
+      # forcing any job-script derivation). Restore the build-side store paths
+      # here, on the *build* side, so the materialized unit file boots gen-0.
+      # `replaceStrings` forces each `j.path` (hence its `writeTextFile` drv) —
+      # legitimate: this derivation is toplevel-only and is never forced by the
+      # on-host eval-only manifest path. Non-service units carry no job scripts
+      # (`jobScripts` defaults to `[]`), so this is the identity there. The
+      # result is byte-for-byte identical to embedding `j.path` directly.
+      jobScripts = unit.jobScripts or [];
+      resolvedText =
+        if unit.text == null
+        then ""
+        else
+          builtins.replaceStrings
+          (builtins.map (j: j.placeholder) jobScripts)
+          (builtins.map (j: j.path) jobScripts)
+          unit.text;
+    in
       pkgs.runCommand "unit-${mkPathSafeName name}" {
         preferLocalBuild = true;
         allowSubstitutes = false;
         # unit.text can be null for disabled units; passAsFile with a null
         # variable is a no-op in Nix, so guard with optionalString to avoid
         # the mv call failing on a missing $textPath.
-        text = optionalString (unit.text != null) unit.text;
+        text = resolvedText;
         passAsFile = ["text"];
       } ''
         name=${shellEscape name}
@@ -503,7 +526,9 @@ in rec {
         user = "user";
         nspawn = "nspawn";
       }
-      .${type};
+      .${
+        type
+      };
   in
     pkgs.runCommand "${type}-units" {
       preferLocalBuild = true;
@@ -684,30 +709,75 @@ in rec {
       # /lib/systemd/system/ via SYSTEM_DATA_UNIT_DIR. See spec §5.5.)
     ''; # */
 
-  # makeJobScript — compile a shell snippet into a derivation whose main
-  # binary is the script. Returns the absolute path of that binary so
-  # callers can plug it into `ExecStart=` directly. Simplified vs. upstream
-  # per spec §5.4: shellcheck / writeShellApplication branch removed.
+  # makeJobScript — render a shell-snippet service option
+  # (`script=`/`preStart=`/`postStart=`/`reload=`/`preStop=`/`postStop=`)
+  # into a pure data *record*, not a bare store path.
+  #
+  # The render/assemble split keeps evaluation pure while image assembly
+  # F2): unit rendering must become host-portable pure eval, but a job
+  # script's body is a function of the *evaluated* stage-2 config, so an
+  # eval-only on-host evaluator must not build it. The fix carries the job
+  # script's TEXT in the manifest (`manifest.jobScripts["<unit>:<slot>.0"]`)
+  # and lets the imperative materializer write it to a generation-local
+  # path. The on-host materializer rewrites the unit's `Exec*=` from the
+  # `placeholder` token to that gen-local path.
+  #
+  # On the *build* side (off-host, where building is legitimate) this still
+  # needs to produce a bootable gen-0 image. So the record also carries:
+  #   - `drv`  — a derivation that writes the body to `$out/aos-job-scripts/<key>`
+  #              (path component `aos-job-scripts` so the system golden
+  #              comparator recognizes it; see lib/testing/system-
+  #              characterization.nix `JOB_SCRIPT_MARKERS`);
+  #   - `path` — the absolute store path of that file, plugged into the
+  #              *build-side* `Exec*=` so the image boots.
+  # The build-side `Exec*=` therefore changes from the old
+  # `…-unit-script-<name>/bin/<name>` path to `…/aos-job-scripts/<key>` —
+  # this is the single intentional ExecStart byte delta of the F2-A change
+  # (the golden normalizes both forms to the script TEXT).
+  #
+  # Slot is the systemd directive the option feeds (`script=` → `ExecStart`,
+  # `preStart=` → `ExecStartPre`, …); index is always 0 for option-derived
+  # scripts (decisions.md F2). `key = "<unit>:<slot>.<index>"`.
+  #
+  # The script interpreter is kept as the AOS-built bash absolute path
+  # (`${pkgs.bash}/bin/bash`, == `pkgs.runtimeShell`, the old
+  # `writeShellScriptBin` interpreter) rather than the `#!/bin/sh` form
+  # sketched in decisions.md: `/bin/sh` is forbidden by CLAUDE.md outside the
+  # rootfs init chain, and job scripts also run in stage-1 (initrd) services
+  # where `/bin/sh` is not guaranteed. The body is byte-equal to the old
+  # `writeShellScriptBin` output modulo a trailing newline (which the golden
+  # rstrips), so the inlined script text is unchanged.
   makeJobScript = {
+    unit,
+    slot,
     name,
     text,
+    index ? 0,
   }: let
     scriptName = replaceStrings ["\\" "@"] ["-" "_"] (shellEscape name);
-    out =
-      (
-        pkgs.writeShellScriptBin scriptName ''
-          set -e
-
-          ${text}
-        ''
-      )
-      .overrideAttrs (_: {
-        # The derivation name is different from the script file name
-        # to keep the script file name short and avoid cluttering logs.
-        name = "unit-script-${scriptName}";
-      });
-  in
-    lib.getExe out;
+    key = "${unit}:${slot}.${builtins.toString index}";
+    body = "#!${pkgs.bash}/bin/bash\nset -e\n\n${text}\n";
+    drv = pkgs.writeTextFile {
+      name = "aos-job-script-${scriptName}";
+      executable = true;
+      destination = "/aos-job-scripts/${key}";
+      text = body;
+      # Same build-time syntax guard writeShellScriptBin applied.
+      checkPhase = ''${pkgs.bash}/bin/bash -n "$target"'';
+    };
+  in {
+    inherit key name scriptName text drv;
+    # Absolute build-side path for `Exec*=`; carries store context that pins
+    # `drv` into the closure (so referencing `path` alone is enough).
+    path = "${drv}/aos-job-scripts/${key}";
+    # Verbatim body for `manifest.jobScripts[key].text`.
+    body = body;
+    mode = "0755";
+    # Whitespace-free token the manifest puts in the rendered unit text in
+    # place of `path`; the on-host materializer substitutes it for the
+    # gen-local script path.
+    placeholder = "#aos-jobscript:${key}#";
+  };
 
   # ----------------------------------------------------------------------
   # Submodule config mixins
@@ -895,10 +965,10 @@ in rec {
   # .requires / .upholds via `generateUnits`'s symlink farm; the
   # `[Install]` section is redundant-but-safe in that case (systemd's
   # preset/enable mechanism is idempotent if the symlinks already
-  # exist). Ignition relies on this section as the only path: its
-  # `enabled = true` writes the unit name to /etc/systemd/system-preset/,
-  # and `systemctl preset-all` (run by `aos-ignition-preset.service`
-  # in the initrd) walks `[Install]` to create the runtime symlinks.
+  # exist). RFC-0001 package targets rely on this section as the
+  # preset path: an Ignition-written preset file names the target, and
+  # the every-boot `aos-preset.service` walks `[Install]` to create the
+  # runtime symlink in the tmpfs /etc upper.
   commonUnitText = def: bodyLines: let
     install =
       optionalString (def.aliases != []) "Alias=${concatStringsSep " " def.aliases}\n"
@@ -921,7 +991,16 @@ in rec {
   # `text` is the rendered unit file; everything else drives how
   # `generateUnits` assembles symlinks and drop-ins.
 
-  targetToUnit = def: {
+  targetToUnit = def: let
+    # RFC-0001 package targets are enabled by preset policy at runtime, so
+    # their unit text needs an [Install] section even though the expose
+    # artifact must not carry direct multi-user.target.wants symlinks.
+    presetOnlyWantedBy =
+      if lib.hasPrefix "aos-pkg-" def.name && lib.hasSuffix ".target" def.name && def.wantedBy == []
+      then ["multi-user.target"]
+      else def.wantedBy;
+    textDef = def // {wantedBy = presetOnlyWantedBy;};
+  in {
     inherit
       (def)
       name
@@ -932,7 +1011,7 @@ in rec {
       enable
       overrideStrategy
       ;
-    text = settingsToSections {Unit = def.unitConfig;};
+    text = commonUnitText textDef "";
   };
 
   # serviceToUnit — pure function of `def`. Upstream's
@@ -953,6 +1032,11 @@ in rec {
       enable
       overrideStrategy
       ;
+    # Carry the service's job-script records onto the rendered
+    # unit so `makeUnit` can substitute each `#aos-jobscript:<key>#` placeholder
+    # in `text` back to its build-side `path`. `text` keeps placeholders so the
+    # eval-only manifest renders the body without forcing any job-script drv.
+    inherit (def) jobScripts;
     text = commonUnitText def (
       ''
         [Service]

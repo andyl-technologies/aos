@@ -49,11 +49,13 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
-  dbusConf = pkgs.dbus-conf {
-    packages = cfg.packages;
-    suidHelper = "/bin/false";
-    apparmor = "disabled";
-  };
+  # The merged system bus config is an image-fixed artifact
+  # (a function of which packages are enabled, not of host.nix). Register it as
+  # a config artifact and reference the resolved value, so the on-host eval-only
+  # evaluator uses the stage-1-frozen store path instead of re-building it. On a
+  # normal build `frozenArtifacts` is empty, so this resolves to the same
+  # `pkgs.dbus-conf {…}` derivation as before (byte-identical).
+  dbusConf = config.aos.config.artifacts.dbus-system-conf;
 in {
   options.aos.services.dbus.enable = lib.mkOption {
     type = lib.types.bool;
@@ -82,6 +84,24 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Register the merged system bus config as an image-fixed config artifact
+    # built during image assembly and referenced via
+    # `config.aos.config.artifacts.dbus-system-conf` (see the `let` above).
+    # Skip the live build entirely when the on-host evaluator injected a frozen
+    # path for this artifact: `pkgs.dbus-conf` is absent from the stage-2 frozen
+    # pkgs (it is a builder function, not a package), so even constructing the
+    # unused thunk would error. `artifacts.dbus-system-conf` reads the frozen
+    # path in that case.
+    aos.config._artifactSources.dbus-system-conf =
+      if config.aos.config.frozenArtifacts ? "dbus-system-conf"
+      then null
+      else
+        pkgs.dbus-conf {
+          packages = cfg.packages;
+          suidHelper = "/bin/false";
+          apparmor = "disabled";
+        };
+
     # Always contribute systemd so org.freedesktop.systemd1 (plus
     # hostname1/login1/timedate1/...) is reachable on the bus. listOf
     # merges across modules, so other modules can extend this list

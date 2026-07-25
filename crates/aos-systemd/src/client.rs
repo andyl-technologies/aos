@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
@@ -117,6 +117,33 @@ impl FailedUnitsReport {
     pub fn is_empty(&self) -> bool {
         self.failed.is_empty()
     }
+}
+
+/// Automatic-restart policy of a `.service` unit, read to size the settle
+/// deadline in a post-activation health gate.
+#[derive(Debug, Clone)]
+pub struct RestartPolicy {
+    /// `RestartSec` — the backoff systemd waits before each automatic restart.
+    pub restart_sec: Duration,
+    /// `NRestarts` — automatic restarts performed so far.
+    pub n_restarts: u32,
+}
+
+/// Terminal classification of a unit that was observed in `auto-restart`,
+/// returned by [`SystemdClient::wait_until_settled`] after waiting out the
+/// unit's `RestartSec` backoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettleOutcome {
+    /// The unit reached `active` — it recovered on a retry.
+    Recovered {
+        /// `NRestarts` observed once the unit went active.
+        n_restarts: u32,
+    },
+    /// The unit reached terminal `failed` (systemd gave up restarting it).
+    Failed,
+    /// The unit was still auto-restarting when the deadline elapsed — it is
+    /// not converging within the budget.
+    StillRestarting,
 }
 
 /// Shared job-tracking state.
@@ -283,6 +310,21 @@ impl SystemdClient {
     pub async fn start_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.start_unit(name, "replace").await?;
         self.await_job(path).await
+    }
+
+    /// Queue a start job for `name` without awaiting the job result.
+    ///
+    /// This matches `systemctl start --no-block`: systemd validates and queues
+    /// the job, then the caller continues while the unit reaches its terminal
+    /// state asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails, for example when systemd
+    /// rejects the unit name or cannot queue the job.
+    pub async fn start_unit_no_wait(&self, name: &str) -> Result<()> {
+        self.manager.start_unit(name, "replace").await?;
+        Ok(())
     }
 
     /// Stop `name` (mode `"replace"`) and await the job's terminal result.
@@ -564,6 +606,91 @@ impl SystemdClient {
         }
         Ok(count)
     }
+
+    /// Read the automatic-restart policy of a `.service` unit off its
+    /// `org.freedesktop.systemd1.Service` interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit is not loaded (`NoSuchUnit`) or the D-Bus
+    /// property reads fail.
+    pub async fn restart_policy(&self, name: &str) -> Result<RestartPolicy> {
+        let path = self.manager.get_unit(name).await?;
+        let svc = ServiceProxy::builder(&self.conn)
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        Ok(RestartPolicy {
+            restart_sec: Duration::from_micros(svc.restart_usec().await?),
+            n_restarts: svc.n_restarts().await.unwrap_or(0),
+        })
+    }
+
+    /// Wait up to `budget` for an auto-restarting unit to settle to a terminal
+    /// state, polling its `ActiveState`/`SubState` every 250 ms.
+    ///
+    /// A `.service` caught in `SubState == "auto-restart"` is mid-backoff, not
+    /// terminally failed: its next start may succeed. This resolves that
+    /// ambiguity by waiting until the unit leaves `auto-restart` and reaches
+    /// `active` ([`SettleOutcome::Recovered`]) or `failed`
+    /// ([`SettleOutcome::Failed`]) — or the budget elapses
+    /// ([`SettleOutcome::StillRestarting`]). A unit that has left `auto-restart`
+    /// but is still mid-start (`activating`) keeps the poll going until it
+    /// terminalizes.
+    ///
+    /// Transient D-Bus read errors (e.g. the unit momentarily unloaded between
+    /// restarts) are tolerated: the poll retries until the deadline. Infallible
+    /// by construction — every path resolves to a [`SettleOutcome`].
+    pub async fn wait_until_settled(&self, name: &str, budget: Duration) -> SettleOutcome {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            // Only act once the unit has left `auto-restart`; while it's still
+            // mid-backoff (or a read transiently fails) we fall through and poll
+            // again. A unit that left auto-restart but isn't yet active/failed
+            // (mid start job) also falls through until it terminalizes.
+            let settled = self
+                .unit_active_sub(name)
+                .await
+                .ok()
+                .filter(|(_, sub)| sub != "auto-restart");
+            if let Some((active, _)) = settled {
+                if active == "active" {
+                    let n_restarts = self
+                        .restart_policy(name)
+                        .await
+                        .map(|p| p.n_restarts)
+                        .unwrap_or(0);
+                    return SettleOutcome::Recovered { n_restarts };
+                }
+                if active == "failed" {
+                    return SettleOutcome::Failed;
+                }
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return SettleOutcome::StillRestarting;
+            }
+            tokio::time::sleep(Duration::from_millis(250).min(deadline - now)).await;
+        }
+    }
+
+    /// Read `(ActiveState, SubState)` off a unit's `Unit` interface with
+    /// properties uncached, so each poll reflects the live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit is not loaded (`NoSuchUnit`) or the D-Bus
+    /// property reads fail.
+    async fn unit_active_sub(&self, name: &str) -> Result<(String, String)> {
+        let path = self.manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        Ok((unit.active_state().await?, unit.sub_state().await?))
+    }
 }
 
 impl Drop for SystemdClient {
@@ -584,11 +711,6 @@ impl Drop for SystemdClient {
         }
         let _ = &self.conn;
     }
-}
-
-/// Whether a zbus error is systemd's `NoSuchUnit` method error.
-fn is_no_such_unit(e: &zbus::Error) -> bool {
-    matches!(e, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
 }
 
 /// Capture `systemctl status --no-pager --full <unit>` for human display. This

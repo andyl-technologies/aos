@@ -188,9 +188,15 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
         let inst_hash = store_path_hash(&inst.store_path);
 
         // Walk the store/ graph edges when present (O(closure) membership).
+        // Only treat the graph as authoritative for packages whose store
+        // record actually exists: if `inst_hash` is absent (e.g. its record
+        // was pruned by `apr unpublish` while the package is still installed),
+        // fall through to the resolve/local-closure fallbacks below instead of
+        // silently reporting no dependents.
         if let Some(graph) = registries
             .store_map_in(&apm.registry)
             .filter(|m| m.is_present())
+            .filter(|m| m.get(inst_hash).is_some())
         {
             let mut seen = HashSet::new();
             let mut stack = vec![inst_hash.to_string()];
@@ -1226,6 +1232,12 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1265,6 +1277,12 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1292,6 +1310,12 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
         let high_candidate = PackageMeta {
@@ -1313,6 +1337,14 @@ references = ["llllllllllllllllllllllllllllllll"]
             images: Vec::new(),
             sysroot: false,
             previous: None,
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         };
         let low_candidate = PackageMeta {
             name: "same-version-tool".into(),
@@ -1333,6 +1365,14 @@ references = ["llllllllllllllllllllllllllllllll"]
             images: Vec::new(),
             sysroot: false,
             previous: None,
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         assert_eq!(
@@ -1396,6 +1436,12 @@ references = []
                     held: false,
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    expose: None,
+                    expose_artifact: None,
+                    config_module: None,
+                    permissions: Default::default(),
+                    bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
             InstalledMeta {
@@ -1415,6 +1461,12 @@ references = []
                     held: false,
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    expose: None,
+                    expose_artifact: None,
+                    config_module: None,
+                    permissions: Default::default(),
+                    bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
         ];

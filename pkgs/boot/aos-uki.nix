@@ -32,6 +32,15 @@
 ##!                    RFC-0006 measured-boot.md)
 ##!   pcrPublicKey   — optional PCR-policy public key (PEM); embedded in
 ##!                    the `.pcrpkey` section, required with pcrPrivateKey
+##!   rootHashFile   — optional path to a file containing the dm-verity root
+##!                    hash (ASCII hex) of the erofs root. When
+##!                    set, `roothash=<hex>` is appended to the materialized
+##!                    cmdline before ukify, so the build-output Merkle root —
+##!                    unknowable at Nix eval — lands in the same `.cmdline`
+##!                    section ukify measures (into PCR 11) and the db key
+##!                    signs. This is what binds a UKI to exactly one root
+##!                    image. `null` (default) leaves the cmdline untouched, so
+##!                    non-verity UKIs are byte-identical.
 ##!
 ##! Output: $out/aos-${name}-${version}.efi
 {
@@ -50,6 +59,7 @@
   secureBootCert ? null,
   pcrPrivateKey ? null,
   pcrPublicKey ? null,
+  rootHashFile ? null,
 }: let
   effectiveStub =
     if stub != null
@@ -99,8 +109,18 @@ in
           export PATH="${systemd}/lib/systemd''${PATH:+:$PATH}"
           # cmdline arrives as a Nix string; materialize to a file so
           # ukify's @path read path handles special characters and
-          # trailing-newline rules consistently.
-          printf '%s' "${cmdline}" > cmdline
+          # trailing-newline rules consistently. When a
+          # rootHashFile is supplied, append `roothash=<hex>` here — this is
+          # the load-bearing trick. The roothash is a build output (the Merkle
+          # root of root.img), unknowable at Nix eval, so it cannot travel
+          # through aos.boot.kernelParams; injecting it into the same .cmdline
+          # ukify measures (--pcr-private-key) and the db key signs puts it
+          # simultaneously into PCR 11 and under the Authenticode signature.
+          ${
+            if rootHashFile != null
+            then ''printf '%s roothash=%s' "${cmdline}" "$(cat ${rootHashFile})" > cmdline''
+            else ''printf '%s' "${cmdline}" > cmdline''
+          }
 
           # Resolve the kernel's actual vmlinuz path — the kernel
           # derivation names it with the upstream version suffix

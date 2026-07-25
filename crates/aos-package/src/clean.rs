@@ -113,6 +113,19 @@ pub async fn run(
             }
             printer.info("No old generations to remove.");
         } else {
+            // Best-effort: reclaim each pruned generation's /etc overlay upper
+            // from the /run/etc tmpfs (system scope on a live host only). The
+            // generation is already gone and tmpfs clears any remainder at
+            // reboot, so a failure here is cosmetic — warn (to stderr) rather
+            // than fail the command.
+            if let Err(error) =
+                prune_runtime_uppers(config.scope, &removed_generations, Path::new(RUN_ETC_DIR))
+            {
+                printer.warning(&format!(
+                    "could not reclaim runtime /etc upper(s): {error:#}"
+                ));
+            }
+
             if json_mode {
                 printer.json(&clean_generations_json(
                     "cleaned",
@@ -380,6 +393,51 @@ fn clean_generations_json(
     })
 }
 
+/// Absolute path of the boot-time tmpfs that holds per-generation `/etc`
+/// overlay state on a live system (populated by `etc-overlay-setup.service`
+/// and the `activate` script).
+const RUN_ETC_DIR: &str = "/run/etc";
+
+/// Reclaim the `/etc` overlay uppers left in `/run/etc` by pruned generations.
+///
+/// On a live system each generation has one `upper-<N>/` directory under the
+/// `/run/etc` tmpfs holding that generation's runtime `/etc` writes. Those
+/// uppers are deliberately preserved across generation switches so a rollback
+/// can restore them, so pruning a generation is the moment its upper becomes
+/// unreachable and can be removed. This is purely cosmetic reclamation: the
+/// tmpfs clears any remainder at reboot.
+///
+/// Only system-scope generations have an `/etc` overlay, so for any other
+/// scope this is a no-op. Generations that predate the current boot were never
+/// activated this boot and have no `upper-<N>` directory; that absence is
+/// expected, not an error. `run_etc` is the `/run/etc` base, injectable so
+/// tests can point it at a scratch directory.
+///
+/// Returns the generation numbers whose upper was actually removed.
+///
+/// # Errors
+///
+/// Returns an error if an existing `upper-<N>/` directory cannot be removed
+/// (for example, a permissions failure). A missing directory is not an error.
+fn prune_runtime_uppers(scope: ProfileScope, removed: &[u32], run_etc: &Path) -> Result<Vec<u32>> {
+    if scope != ProfileScope::System {
+        return Ok(Vec::new());
+    }
+    let mut reclaimed = Vec::new();
+    for &number in removed {
+        let upper = run_etc.join(format!("upper-{number}"));
+        match std::fs::remove_dir_all(&upper) {
+            Ok(()) => reclaimed.push(number),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("removing runtime /etc upper {}", upper.display()));
+            }
+        }
+    }
+    Ok(reclaimed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +488,42 @@ mod tests {
         let writable = tmp.path().join("does/not/exist");
         let pruned = prune_orphaned_overlays_in(&writable, &[]).unwrap();
         assert!(pruned.is_empty());
+    }
+
+    #[test]
+    fn prune_runtime_uppers_removes_present_and_tolerates_absent() {
+        let tmp = TempDir::new().unwrap();
+        let run_etc = tmp.path();
+        // gen 1 and gen 3 left a populated upper; gen 2 has none (e.g. it
+        // predates this boot and was never activated since).
+        for n in [1u32, 3] {
+            let dir = run_etc.join(format!("upper-{n}/dir"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("runtime-write.conf"), b"x").unwrap();
+        }
+
+        let reclaimed = prune_runtime_uppers(ProfileScope::System, &[1, 2, 3], run_etc).unwrap();
+
+        // The missing gen-2 upper is tolerated, not an error; only the
+        // present ones are reported reclaimed.
+        assert_eq!(reclaimed, vec![1, 3]);
+        assert!(!run_etc.join("upper-1").exists());
+        assert!(!run_etc.join("upper-2").exists());
+        assert!(!run_etc.join("upper-3").exists());
+    }
+
+    #[test]
+    fn prune_runtime_uppers_skips_non_system_scope() {
+        let tmp = TempDir::new().unwrap();
+        let run_etc = tmp.path();
+        std::fs::create_dir_all(run_etc.join("upper-1/dir")).unwrap();
+
+        let reclaimed = prune_runtime_uppers(ProfileScope::User, &[1], run_etc).unwrap();
+
+        // User-scope generations have no /etc overlay, so the upper is left
+        // untouched.
+        assert!(reclaimed.is_empty());
+        assert!(run_etc.join("upper-1").exists());
     }
 
     #[test]

@@ -50,7 +50,7 @@ A publish has two strictly-ordered halves that must never be confused:
    ┌────────────────────────────────────────────────┐
    │ 1  build release commit                          │
    │ 2  create + sign semver tag  (refs/tags/<semver>)│
-   │ 3  pack-objects → full + thin deltas → zstd      │   immutable, content-addressed
+   │ 3  libgit2 full packs + Rust thin deltas + zstd  │   immutable, content-addressed
    │ 4  write loose objects under root /objects/      │──────────────────────────┐
    │ 5  per-release pack index (info/packs)           │                          │
    ├──────────────────────────────────────────────────┤   pointers, flipped LAST │
@@ -132,8 +132,8 @@ It produces, under [the HTTP/object layout](./http-layout.md):
 /releases/<major>/<minor>/<patch[-prerelease][+build]>/
   objects/
     info/packs                       ← lists this release's self-contained pack(s)
-    pack/pack-<sha256>.pack (+ .idx)  ← full pack (only at X.Y.0 anchors)
-    pack/delta-<from-semver>.pack[.zst] ← THIN deltas (AOS-only; NOT in info/packs)
+    pack/pack-<sha256>.pack (+ .idx)    ← full pack (only at X.Y.0 anchors)
+    pack/delta-<from-semver>.pack.zst   ← THIN deltas (AOS-only; NOT in info/packs)
                                         (PACK-ONLY: no loose <xx>/<…>, no info/alternates)
 /objects/<xx>/<62-hex>                ← ALL loose objects (every release), centralized at root
 refs/tags/<semver>                    ← signed tag → release commit          [via info/refs]
@@ -173,11 +173,14 @@ The third `/releases` path segment is **everything after `major.minor`** — e.g
    `security.rs` `parse_signing_key` `name:Ed25519:<base64>`).
 
 Release tags carry no in-band expiry, which fits releases being
-immutable and carrying a long CDN TTL. Freshness is enforced out of band — low CDN
-TTL on `/channels` (and `info/refs`, `objects/info`), the consumer's own
-max-staleness policy, and the monotonic anti-rollback floor — rather than a signed
-`valid_until` inside the tag. The trade-off: this is weaker than an in-band signed
-expiry against a frozen-but-validly-signed mirror.
+immutable and carrying a long CDN TTL. Release freshness is carried by committed
+AOS-TUF metadata: `tuf/timestamp.json` is a signed, short-lived pointer to the
+snapshot hash. Moving-ref consumers enforce that timestamp before accepting the
+package catalog; explicit commit/tag/version pins verify signatures, hashes, and
+metadata version floors when TUF exists without expiring old immutable release
+snapshots.
+Channel partition freshness remains the low CDN TTL plus the consumer's
+max-staleness policy and monotonic anti-rollback floor.
 
 The Nix binary-cache / NAR substituter location lives in the committed repo-root
 `registry.toml` `[[caches]]` (a tree file authenticated transitively by the signed
@@ -188,7 +191,7 @@ as the stock-nix superset; narinfo signing reuses the one Ed25519 key.
 
 ---
 
-## 5. Step 3 — pack generation (`pack-objects` + zstd)
+## 5. Step 3 — pack generation (libgit2 + thinpack + zstd)
 
 **TARGET.** Packs are an efficiency layer over the always-present loose object
 store. The producer commits to the [guaranteed delta graph](./packs-and-deltas.md)
@@ -201,71 +204,52 @@ so consumers can plan their walk:
 
 ### 5.1 Full pack (self-contained)
 
-```sh
-printf '%s\n' <release-commit-sha> \
-  | git pack-objects --revs \
-      --no-reuse-object --no-reuse-delta \
-      --window=350 --depth=50 --threads=0 \
-      --compression=0 \
-      --stdout > pack-<sha256>.pack
-# → emits pack-<sha256>.pack (+ pack-<sha256>.idx via git index-pack)
-```
+`registry::pack::full_pack` uses libgit2's `PackBuilder` over the release
+commit's reachable object graph, then libgit2's `Indexer` writes the conventional
+`pack-<sha256>.pack` and `pack-<sha256>.idx` pair.
 
-- `--revs` over the release commit (non-thin); git names the output
-  `pack-<sha256>.pack` (+ `.idx`).
-- The **expensive-producer flags** make the producer pay: `--no-reuse-object
-  --no-reuse-delta` force a from-scratch recompute, `--window=350` is the free
-  lever (more candidate bases = smaller pack), and `--depth=50` **caps** delta
-  chain length because deep chains cost the *consumer* CPU to reconstruct
-  (design brief §10). The producer may try multiple delta bases and ship the
-  smallest.
-- Ship the `.idx` **only** for full packs — they are self-contained and listed in
-  `objects/info/packs`.
+- The full pack is non-thin and self-contained.
+- The `.idx` ships **only** for full packs, so stock dumb Git can use the pack
+  listed in `objects/info/packs`.
+- AOS clients still regenerate and verify the index locally instead of trusting
+  the server copy.
 
 ### 5.2 Thin delta pack
 
-```sh
-printf '%s\n^%s\n' <to-semver-commit> <from-semver-commit> \
-  | git pack-objects --revs --thin \
-      --no-reuse-object --no-reuse-delta \
-      --window=350 --depth=50 --threads=0 \
-      --compression=0 \
-      --stdout > delta-<from-semver>.pack
-# → emits delta-<from-semver>.pack (NO .idx — the client's --fix-thin builds it)
-```
+`registry::thinpack` writes a thin pack equivalent to `git pack-objects --thin`
+over `to ^from`: objects in `<to>` but not `<from>`, with deltas allowed to
+reference `<from>`'s objects. It tries multiple local strategies and keeps the
+smallest zstd-probed candidate.
 
-- `--revs --thin` reading `"<to>\n^<from>\n"` packs objects in `<to>` not
-  `<from>`, and deltas may reference `<from>`'s objects (the "thin" part). The
-  consumer completes it with `git index-pack --fix-thin` against the retained
-  base (design brief §10; [packs-and-deltas.md](./packs-and-deltas.md)).
-- Thin deltas are **`.pack[.zst]` only** — no `.idx`, and they are **NOT** listed
+- The consumer completes the thin pack against the retained base with local
+  libgit2 pack indexing.
+- Thin deltas are **`.pack.zst` only** — no `.idx`, and they are **NOT** listed
   in `objects/info/packs` (a stock dumb client cannot apply a thin pack; AOS
   clients discover them by the `delta-<semver>` filename convention).
 
 ### 5.3 zstd (the working trick)
 
-git's pack format hard-codes **zlib per object**, so zstd-ing a
-`--compression=9` pack is near-useless (already DEFLATEd). Instead:
+git's pack format hard-codes **zlib per object**, so zstd-ing a normally
+compressed pack is near-useless (already DEFLATEd). The current zstd transport is
+for thin deltas:
 
 ```sh
-# 1. emit at compression level 0: "stored" zlib framing, valid git pack,
-#    NO entropy coding — BUT git's delta encoding is still applied.
-git pack-objects … --compression=0 … <args>     # (as in §5.1 / §5.2)
+# 1. thinpack emits stored zlib framing, valid git pack,
+#    NO entropy coding, with git-compatible delta encoding.
+registry::thinpack::write_thin_pack(...)
 
 # 2. zstd the whole .pack: zstd does the entropy coding over the delta-encoded stream.
-zstd --ultra -22 --long=27 pack-<sha256>.pack -o pack-<sha256>.pack.zst
 zstd --ultra -22 --long=27 delta-<from>.pack  -o delta-<from>.pack.zst
 ```
 
 zstd's entropy coding over the delta-encoded (but un-DEFLATEd) stream beats
 zlib-9, and the underlying `.pack` stays git-valid. The consumer fetches
-`.pack.zst`, runs `zstd -d`, then `git index-pack --fix-thin`. A zstd **trained
-dictionary** across a release line's small delta packs is an optional further win
-(design brief §10, open question §16.2).
+`.pack.zst`, runs `zstd -d`, then completes and indexes the pack locally. A zstd
+**trained dictionary** across a release line's small delta packs remains an
+optional future optimization.
 
-> **Serve both forms.** Keep the plain `.pack`/`.idx` for full packs (stock dumb
-> git can use them) and additionally serve `.pack.zst`; AOS clients prefer the
-> zstd form. See [http-layout.md](./http-layout.md).
+> **Serve current forms.** Full packs ship as plain `.pack` plus `.idx`; thin
+> deltas ship as `.pack.zst`. See [http-layout.md](./http-layout.md).
 
 ---
 
@@ -580,8 +564,8 @@ repair/resume work or for unusual staging topologies.
 build release commit  →  create + sign semver tag (refs/tags/<semver>, pure signed pointer + optional message)
         │
         ▼  (immutable, content-addressed — idempotent, any order)
-pack-objects:  full pack at X.Y.0  +  thin delta-<from>.pack(s)   [--no-reuse-* --window=350 --depth=50 --compression=0]
-        →  zstd --ultra -22 --long=27 each .pack
+libgit2 full pack + .idx at X.Y.0  +  thinpack delta-<from>.pack.zst artifacts
+        →  zstd --ultra -22 --long=27 each thin delta pack
         →  packs under /releases/X/Y/P/objects/pack/  ;  loose objects under root /objects/
         →  per-release pack index  (objects/info/packs: full pack only)
         │
@@ -622,7 +606,7 @@ the CDN-layout output was
 - [current-state.md](./current-state.md) — current git-native implementation status.
 - [http-layout.md](./http-layout.md) — the HTTP/object layout, CDN TTLs, `info/refs`/`HEAD`/`info/alternates`.
 - [versioning-and-channels.md](./versioning-and-channels.md) — semver, channels-as-branches, frontier, the 256-partition rollout, bucket selection, anti-rollback.
-- [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, `index-pack --fix-thin`, zstd.
+- [packs-and-deltas.md](./packs-and-deltas.md) — the delta-scheme graph, client resolution + retention, libgit2 pack indexing, zstd.
 - [signing-and-trust.md](./signing-and-trust.md) — signed tag objects (pure signed pointers), name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
 - [nix-cache-compatibility.md](./nix-cache-compatibility.md) — the Nix binary-cache superset located via the committed `registry.toml` `[[caches]]` (client-side `registries.d` as optional override).
 - [apt-comparison.md](./apt-comparison.md) — git-native + dumb-HTTP vs APT signed-flat-file / `pool` / phased rollout.

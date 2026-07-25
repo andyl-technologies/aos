@@ -10,6 +10,7 @@
   names,
 }:
 builtins.listToAttrs (map (name: {
-  inherit name;
-  value = mkTool manifest.${name};
-}) names)
+    inherit name;
+    value = mkTool manifest.${name};
+  })
+  names)

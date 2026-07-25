@@ -44,9 +44,10 @@
 
   inTreeDeps = spec.inTreeDeps or [];
   unpackInTreeDeps = concat "\n" (map (dep: ''
-    mkdir ${dep.name} && (cd ${dep.src} && ${prev.tar}/bin/tar cf - .) | (cd ${dep.name} && ${prev.tar}/bin/tar xf -)
-    chmod -R u+w ${dep.name}
-  '') inTreeDeps);
+      mkdir ${dep.name} && (cd ${dep.src} && ${prev.tar}/bin/tar cf - .) | (cd ${dep.name} && ${prev.tar}/bin/tar xf -)
+      chmod -R u+w ${dep.name}
+    '')
+    inTreeDeps);
   unpackCommands =
     spec.unpackCommands
     or ''

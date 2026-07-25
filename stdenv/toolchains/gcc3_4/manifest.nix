@@ -40,7 +40,7 @@
     {
       compiler = thisCompiler;
       gccVersion = "3.4.6";
-      cc = "${gcc}/bin/gcc";
+      staticNssWrapper = true;
       cflags = "-O2 -I${glibc}/include";
       cppflags = "";
       ldflags = "-L${glibc}/lib -static";

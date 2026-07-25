@@ -81,6 +81,8 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
+        ${lib.freezeAutotoolsMtimes}
+
         # ── Apply C99 compatibility patch (GCC 2.95.3 needs C89) ──────────
         # Same patch as stage4-binutils-tcc: fixes mixed declarations,
         # adds missing includes, fixes malloc prototype.

@@ -1,10 +1,24 @@
 //! Static git-origin upload helpers.
 //!
-//! This uploads the dumb-HTTP git origin surface in producer-safe order:
-//! immutable object payloads first, mutable pointers last. A consumer racing a
-//! partially completed upload can therefore at worst see *old* pointers
-//! (`HEAD`, `info/refs`, channel partitions) — never a pointer to content that
-//! has not been uploaded yet.
+//! This uploads the dumb-HTTP git origin surface in producer-safe,
+//! *phase-major* order across all destinations: every
+//! [`StaticOriginClass::Immutable`] object/cache payload is uploaded to
+//! *every* destination first, and only then are
+//! [`StaticOriginClass::Mutable`] pointers (`HEAD`, `info/refs`, channel
+//! partitions) uploaded — and only to the destinations whose immutable
+//! phase fully succeeded. A destination that failed the immutable phase
+//! is skipped in the mutable phase and left stale but consistent.
+//!
+//! The resulting invariant: any pointer visible on any mirror only
+//! references objects present on every mirror that completed the
+//! immutable phase. A consumer racing a partially completed upload can
+//! therefore at worst see *old* pointers — never a pointer to content
+//! that has not been uploaded yet, on any mirror.
+//!
+//! Within each phase the per-destination uploads run concurrently
+//! (`UPLOAD_CONCURRENCY` in flight), and an already-present immutable object
+//! is skipped (an existence check, unless `--no-skip`) so a re-publish only
+//! re-uploads what changed.
 //!
 //! Every file is classified as [`StaticOriginClass::Immutable`]
 //! (content-addressed git objects and release packs) or
@@ -17,9 +31,10 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_cache::backend::{self, AuthOptions};
+use aos_cache::backend::{
+    self, AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+};
 use aos_core::output::Printer;
-use futures_util::future::join_all;
 use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::registry::objectstore;
@@ -28,11 +43,6 @@ use crate::registry::objectstore;
 /// `aos_net` connection pool enforces the real per-host limit; this only
 /// bounds how many requests we stage at once.
 const UPLOAD_CONCURRENCY: usize = 16;
-
-/// `Cache-Control` for content-addressed files that never change in place.
-const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-/// `Cache-Control` for pointer files that are rewritten on every publish.
-const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
 /// Mutability class of a static origin file.
 ///
@@ -112,17 +122,28 @@ pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOrig
     Ok(files)
 }
 
-/// Upload the git-origin surface to every destination URL.
+/// Upload the static origin surface to every destination URL in
+/// phase-major order.
 ///
-/// All destinations receive the same file set in immutable-before-mutable
-/// order. Destinations are attempted independently: a failure on one does
-/// not stop uploads to the others.
+/// The immutable phase runs first: every [`StaticOriginClass::Immutable`]
+/// file is uploaded to *every* destination before any mutable pointer is
+/// uploaded anywhere. The mutable phase then uploads
+/// [`StaticOriginClass::Mutable`] files only to the destinations whose
+/// immutable phase fully succeeded; a destination that failed the
+/// immutable phase is skipped with a warning and left stale but
+/// consistent. This preserves the cross-mirror invariant: any pointer
+/// visible on any mirror only references objects present on every mirror
+/// that completed the immutable phase.
+///
+/// Destinations are attempted independently: a failure on one does not
+/// stop uploads to the others.
 ///
 /// # Errors
 ///
 /// Returns an error when no upload URL is given, the origin has no files,
-/// a source file cannot be stat'ed, or any destination upload fails (the
-/// error aggregates all per-destination failures).
+/// a source file cannot be stat'ed, or any destination fails in either
+/// phase (the error aggregates all per-destination failures, including
+/// those whose mutable phase was skipped).
 pub async fn upload_static_origin_to_all(
     registry_dir: &Path,
     upload_urls: &[String],
@@ -145,22 +166,21 @@ pub async fn upload_static_origin_to_all(
         bytes,
         skipped_files: 0,
     };
-    let results = join_all(upload_urls.iter().map(|upload_url| {
-        let files = &files;
-        async move {
-            upload_static_origin(files, upload_url, auth, no_skip, printer)
-                .await
-                .map_err(|err| format!("{upload_url}: {err:#}"))
+    // Connect every destination first; a connect failure is a per-destination
+    // failure that excludes that mirror from both phases.
+    let mut failures = Vec::new();
+    let mut destinations: Vec<(&str, Box<dyn CacheBackend>)> = Vec::new();
+    for upload_url in upload_urls {
+        match backend::from_url(upload_url, auth).await {
+            Ok(backend) => destinations.push((upload_url.as_str(), backend)),
+            Err(err) => failures.push(format!("{upload_url}: {err:#}")),
         }
-    }))
-    .await;
+    }
 
-    let skipped_files = results
-        .iter()
-        .filter_map(|result| result.as_ref().ok())
-        .map(|report| report.skipped_files)
-        .sum();
-    let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+    let (phase_failures, skipped_files) =
+        upload_phase_major(&files, &destinations, no_skip, printer).await;
+    failures.extend(phase_failures);
+
     if !failures.is_empty() {
         bail!(
             "static origin upload failed for {}/{} destination(s):\n{}",
@@ -176,58 +196,104 @@ pub async fn upload_static_origin_to_all(
     })
 }
 
-/// Upload the collected files to one destination.
+/// Upload `files` to already-connected destinations in phase-major order.
 ///
-/// Immutable payloads are uploaded first (concurrently), then — as a
-/// barrier — the mutable pointers, preserving the producer-safe ordering
-/// guarantee while parallelizing within each class.
-async fn upload_static_origin(
+/// Phase 1 uploads every [`StaticOriginClass::Immutable`] file to every
+/// destination; phase 2 uploads [`StaticOriginClass::Mutable`] files only to
+/// the destinations whose immutable phase fully succeeded (a phase-1 failure
+/// leaves that mirror stale but consistent, skipped with a warning). Within a
+/// phase, each destination's files upload concurrently (`UPLOAD_CONCURRENCY` in
+/// flight) and an already-present immutable object is skipped (unless
+/// `no_skip`).
+///
+/// Returns the per-destination failure messages (empty when every destination
+/// completed both phases) and the total number of skipped (already-present)
+/// uploads across all destinations.
+async fn upload_phase_major(
     files: &[StaticOriginFile],
-    upload_url: &str,
-    auth: &AuthOptions,
+    destinations: &[(&str, Box<dyn CacheBackend>)],
     no_skip: bool,
     printer: &Printer,
-) -> Result<StaticOriginUploadReport> {
-    let backend = backend::from_url(upload_url, auth).await?;
-    let backend = &*backend;
+) -> (Vec<String>, usize) {
+    let mut failures = Vec::new();
     let mut skipped_files = 0usize;
+    let mut immutable_ok = Vec::with_capacity(destinations.len());
 
-    for class in [StaticOriginClass::Immutable, StaticOriginClass::Mutable] {
-        let results =
-            futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
-                |file| async move {
-                    if !no_skip
-                        && file.class == StaticOriginClass::Immutable
-                        && backend.exists(&file.relative_path).await?
-                    {
-                        return Ok::<bool, anyhow::Error>(true);
-                    }
-                    backend
-                        .put_static_file(
-                            &file.relative_path,
-                            &file.source,
-                            Some(file.content_type),
-                            Some(file.cache_control),
-                        )
-                        .await
-                        .with_context(|| format!("uploading {}", file.relative_path))?;
-                    Ok::<bool, anyhow::Error>(false)
-                },
-            ))
-            .buffer_unordered(UPLOAD_CONCURRENCY)
-            .try_collect::<Vec<bool>>()
-            .await?;
-        skipped_files += results.into_iter().filter(|skipped| *skipped).count();
+    for (upload_url, backend) in destinations {
+        match upload_class(
+            backend.as_ref(),
+            files,
+            StaticOriginClass::Immutable,
+            no_skip,
+        )
+        .await
+        {
+            Ok(skipped) => {
+                skipped_files += skipped;
+                immutable_ok.push(true);
+            }
+            Err(err) => {
+                failures.push(format!("{upload_url}: {err:#}"));
+                immutable_ok.push(false);
+            }
+        }
     }
 
-    printer.success(&format!(
-        "Uploaded static registry origin files to {upload_url}"
-    ));
-    Ok(StaticOriginUploadReport {
-        files: files.len(),
-        bytes: total_bytes(files)?,
-        skipped_files,
-    })
+    for ((upload_url, backend), ok) in destinations.iter().zip(immutable_ok) {
+        if !ok {
+            printer.warning(&format!(
+                "Skipping mutable pointer upload to {upload_url}: immutable phase failed \
+                 (destination left stale but consistent)"
+            ));
+            continue;
+        }
+        match upload_class(backend.as_ref(), files, StaticOriginClass::Mutable, no_skip).await {
+            Ok(_) => printer.success(&format!(
+                "Uploaded static registry origin files to {upload_url}"
+            )),
+            Err(err) => failures.push(format!("{upload_url}: {err:#}")),
+        }
+    }
+
+    (failures, skipped_files)
+}
+
+/// Upload every file of one mutability class to a single backend, concurrently
+/// (`UPLOAD_CONCURRENCY` in flight).
+///
+/// An already-present immutable object is skipped via an existence check
+/// (unless `no_skip`). Returns the count of skipped (already-present) files;
+/// errors on the first failed upload.
+async fn upload_class(
+    backend: &dyn CacheBackend,
+    files: &[StaticOriginFile],
+    class: StaticOriginClass,
+    no_skip: bool,
+) -> Result<usize> {
+    let results = futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
+        |file| async move {
+            if !no_skip
+                && file.class == StaticOriginClass::Immutable
+                && backend.exists(&file.relative_path).await?
+            {
+                return Ok::<bool, anyhow::Error>(true);
+            }
+            backend
+                .put_static_file(
+                    &file.relative_path,
+                    &file.source,
+                    Some(file.content_type),
+                    Some(file.cache_control),
+                )
+                .await
+                .with_context(|| format!("uploading {}", file.relative_path))?;
+            Ok::<bool, anyhow::Error>(false)
+        },
+    ))
+    .buffer_unordered(UPLOAD_CONCURRENCY)
+    .try_collect::<Vec<bool>>()
+    .await?;
+    Ok(results.into_iter().filter(|skipped| *skipped).count())
 }
 
 /// Sum the on-disk size of every collected file.
@@ -375,6 +441,16 @@ fn content_type(relative_path: &str) -> &'static str {
         "application/x-git-packed-objects-toc"
     } else if relative_path.ends_with(".zst") {
         "application/zstd"
+    } else if relative_path.ends_with(".wasm") {
+        "application/wasm"
+    } else if relative_path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if relative_path.ends_with(".js") {
+        "text/javascript"
+    } else if relative_path.ends_with(".css") {
+        "text/css"
+    } else if relative_path.ends_with(".json") {
+        "application/json"
     } else {
         "application/octet-stream"
     }
@@ -522,6 +598,197 @@ mod tests {
                 std::fs::read(dest.join("objects/aa/object")).unwrap(),
                 b"object"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn static_origin_upload_is_phase_major_across_destinations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let printer = Printer::new(0, true, false);
+
+        let files = collect_static_origin_files(&root).unwrap();
+        let log = UploadLog::default();
+        let destinations: Vec<(&str, Box<dyn CacheBackend>)> = vec![
+            ("dest-a", Box::new(RecordingBackend::new("dest-a", &log))),
+            ("dest-b", Box::new(RecordingBackend::new("dest-b", &log))),
+        ];
+
+        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
+        assert!(failures.is_empty(), "{failures:?}");
+
+        let class_of = |path: &str| {
+            files
+                .iter()
+                .find(|file| file.relative_path == path)
+                .unwrap_or_else(|| panic!("unknown uploaded path {path}"))
+                .class
+        };
+        let events = log.lock().unwrap();
+        let immutable_count = files
+            .iter()
+            .filter(|file| file.class == StaticOriginClass::Immutable)
+            .count();
+        assert_eq!(events.len(), files.len() * 2);
+
+        // Every immutable upload — on both destinations — precedes the
+        // first mutable upload anywhere.
+        let first_mutable = events
+            .iter()
+            .position(|(_, path)| class_of(path) == StaticOriginClass::Mutable)
+            .unwrap();
+        assert_eq!(first_mutable, immutable_count * 2);
+        for dest in ["dest-a", "dest-b"] {
+            assert_eq!(
+                events[..first_mutable]
+                    .iter()
+                    .filter(|(name, _)| name == dest)
+                    .count(),
+                immutable_count,
+                "{dest} immutable uploads must all precede the mutable phase"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn destination_failing_immutable_phase_receives_no_mutable_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let printer = Printer::new(0, true, false);
+
+        let files = collect_static_origin_files(&root).unwrap();
+        let log = UploadLog::default();
+        let destinations: Vec<(&str, Box<dyn CacheBackend>)> = vec![
+            ("healthy", Box::new(RecordingBackend::new("healthy", &log))),
+            (
+                "broken",
+                Box::new(RecordingBackend::new("broken", &log).failing_on("objects/aa/object")),
+            ),
+        ];
+
+        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("broken"), "{failures:?}");
+        assert!(failures[0].contains("objects/aa/object"), "{failures:?}");
+
+        let events = log.lock().unwrap();
+        let class_of = |path: &str| {
+            files
+                .iter()
+                .find(|file| file.relative_path == path)
+                .unwrap()
+                .class
+        };
+        // The failing destination must receive no mutable pointers: it is
+        // left stale but consistent.
+        assert!(
+            events
+                .iter()
+                .filter(|(name, _)| name == "broken")
+                .all(|(_, path)| class_of(path) == StaticOriginClass::Immutable),
+            "broken destination must not receive mutable files: {events:?}"
+        );
+        // The healthy destination completes both phases in full.
+        assert_eq!(
+            events.iter().filter(|(name, _)| name == "healthy").count(),
+            files.len()
+        );
+    }
+
+    #[test]
+    fn content_type_maps_web_surface_extensions() {
+        assert_eq!(content_type("ui/app.wasm"), "application/wasm");
+        assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
+        assert_eq!(content_type("ui/app.js"), "text/javascript");
+        assert_eq!(content_type("ui/style.css"), "text/css");
+        assert_eq!(content_type("ui/manifest.json"), "application/json");
+    }
+
+    /// Shared upload event log: `(destination name, relative path)` in
+    /// global upload order across all destinations.
+    type UploadLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+    /// Fake [`CacheBackend`] that records `put_static_file` calls into a
+    /// shared log and optionally fails on one configured path.
+    struct RecordingBackend {
+        name: &'static str,
+        log: UploadLog,
+        fail_on: Option<&'static str>,
+    }
+
+    impl RecordingBackend {
+        fn new(name: &'static str, log: &UploadLog) -> Self {
+            Self {
+                name,
+                log: log.clone(),
+                fail_on: None,
+            }
+        }
+
+        fn failing_on(mut self, relative_path: &'static str) -> Self {
+            self.fail_on = Some(relative_path);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CacheBackend for RecordingBackend {
+        async fn has_narinfo(&self, _store_hash: &str) -> Result<bool> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn get_narinfo(&self, _store_hash: &str) -> Result<String> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn put_narinfo(&self, _store_hash: &str, _content: &str) -> Result<()> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn get_nar(&self, _url: &str) -> Result<Vec<u8>> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn put_nar(&self, _filename: &str, _data: &[u8]) -> Result<()> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn query_missing(&self, _store_hashes: &[&str]) -> Result<Vec<String>> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn ensure_cache_info(&self, _store_dir: &str) -> Result<()> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn put_cache_info(&self, _content: &str) -> Result<()> {
+            unimplemented!("not used by static origin upload")
+        }
+
+        async fn exists(&self, _relative_path: &str) -> Result<bool> {
+            // The recording backend treats every object as absent, so the
+            // skip-cached fast path never fires and the upload log records
+            // every file (the ordering invariant under test).
+            Ok(false)
+        }
+
+        async fn put_static_file(
+            &self,
+            relative_path: &str,
+            _source: &std::path::Path,
+            _content_type: Option<&str>,
+            _cache_control: Option<&str>,
+        ) -> Result<()> {
+            if self.fail_on == Some(relative_path) {
+                bail!("injected failure uploading {relative_path}");
+            }
+            self.log
+                .lock()
+                .unwrap()
+                .push((self.name.to_string(), relative_path.to_string()));
+            Ok(())
         }
     }
 

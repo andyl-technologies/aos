@@ -7,7 +7,9 @@ use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::{CacheBackend, add_static_metadata_headers};
+use super::{
+    CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL, add_static_metadata_headers,
+};
 
 /// S3 cache backend.
 ///
@@ -73,8 +75,13 @@ impl CacheBackend for S3Backend {
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
         let url = self.s3_url(&format!("{store_hash}.narinfo"));
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers
-            .push(("Content-Type".to_string(), "text/x-nix-narinfo".to_string()));
+        // narinfos are rewritten in place (e.g. re-signed on key rotation), so
+        // they must stay revalidatable rather than be cached as immutable.
+        add_static_metadata_headers(
+            &mut req,
+            Some("text/x-nix-narinfo"),
+            Some(MUTABLE_CACHE_CONTROL),
+        );
         self.engine
             .execute(req)
             .await
@@ -98,10 +105,13 @@ impl CacheBackend for S3Backend {
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
         let url = self.s3_url(&format!("nar/{filename}"));
         let mut req = TransferRequest::put(&url, data.to_vec());
-        req.headers.push((
-            "Content-Type".to_string(),
-            "application/x-nix-nar".to_string(),
-        ));
+        // NAR archives are content-addressed by the hash embedded in their
+        // filename, so the bytes behind a URL never change: cache immutably.
+        add_static_metadata_headers(
+            &mut req,
+            Some("application/x-nix-nar"),
+            Some(IMMUTABLE_CACHE_CONTROL),
+        );
         self.engine
             .execute(req)
             .await
@@ -142,8 +152,9 @@ impl CacheBackend for S3Backend {
 
         let content = format!("StoreDir: {store_dir}\nWantMassQuery: 1\nPriority: 40\n");
         let mut req = TransferRequest::put(&url, content.into_bytes());
-        req.headers
-            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        // The cache marker is rewritten in place (e.g. Priority changes), so
+        // keep it revalidatable rather than long-lived.
+        add_static_metadata_headers(&mut req, Some("text/plain"), Some(MUTABLE_CACHE_CONTROL));
         self.engine
             .execute(req)
             .await
@@ -154,8 +165,7 @@ impl CacheBackend for S3Backend {
     async fn put_cache_info(&self, content: &str) -> Result<()> {
         let url = self.s3_url("nix-cache-info");
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers
-            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        add_static_metadata_headers(&mut req, Some("text/plain"), Some(MUTABLE_CACHE_CONTROL));
         self.engine
             .execute(req)
             .await

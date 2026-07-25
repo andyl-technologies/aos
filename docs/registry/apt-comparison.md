@@ -111,8 +111,8 @@ re-maps onto a git primitive.
    │ pool/*.deb           │   ──→     │ /objects/<xx>/<62-hex> loose objects │
    │  (content-organized) │           │  (content-ADDRESSED) + full packs    │
    ├──────────────────────┤          ├────────────────────────────────────┤
-   │ Packages.diff (pdiff)│   ──→     │ thin delta-<from-semver>.pack        │
-   │                      │           │  (git pack-objects --thin)          │
+   │ Packages.diff (pdiff)│   ──→     │ thin delta-<from-semver>.pack.zst    │
+   │                      │           │  (Rust thinpack + zstd)              │
    ├──────────────────────┤          ├────────────────────────────────────┤
    │ by-hash/SHA256/<h>   │   ──→     │ content-addressed git objects        │
    │                      │           │  (path == sha256, intrinsically)     │
@@ -121,8 +121,8 @@ re-maps onto a git primitive.
    ├──────────────────────┤          ├────────────────────────────────────┤
    │ suites / components  │   ──→     │ channels = branches refs/heads/*     │
    ├──────────────────────┤          ├────────────────────────────────────┤
-   │ Valid-Until          │   ──→     │ CDN TTL + consumer max-staleness    │
-   │                      │           │  (no in-band signed expiry)         │
+   │ Valid-Until          │   ──→     │ AOS-TUF timestamp + channel policy │
+   │                      │           │  (signed expiry over snapshot)      │
    └──────────────────────┘          └────────────────────────────────────┘
 ```
 
@@ -146,10 +146,10 @@ counterpart. The AOS column links to the reference doc that specifies it.
 | OpenPGP / GPG signature | **Ed25519**, SSH signature format (reuses `apr sign` / `security.rs`); one key may also sign narinfos if NARs are served | [`signing-and-trust.md`](./signing-and-trust.md) |
 | `Packages` stanzas (`Package`, `Filename`→pool, `Size`, `SHA256`, `Depends`) | The git **tree + blob objects** are the metadata — package TOMLs live in the tree, transitively authenticated by the signed tag. Dependencies are **explicit closures**, not a `Depends` solver field. | [`http-layout.md`](./http-layout.md), [`nix-cache-compatibility.md`](./nix-cache-compatibility.md) |
 | `pool/…/<pkg>.deb` — content-organized package files | **Content-addressed git object store**: *all* loose objects for every release live under the single root `/objects/<xx>/<62-hex>` (sha256 2/62 split) as the completeness fallback; per-release `/releases/*/objects/` dirs are **pack-only** (an efficiency layer) | [`http-layout.md`](./http-layout.md), [`packs-and-deltas.md`](./packs-and-deltas.md) |
-| `Packages.diff/Index` — pdiff incremental index | **Thin delta packs** `delta-<from-semver>.pack`: `git pack-objects --revs --thin` reading `"<to>\n^<from>\n"`; client completes with `git index-pack --fix-thin`. A guaranteed, walkable delta graph at every release. | [`packs-and-deltas.md`](./packs-and-deltas.md) |
+| `Packages.diff/Index` — pdiff incremental index | **Thin delta packs** `delta-<from-semver>.pack.zst`: Rust thinpack over `to ^from`, zstd transport compression, and client-side local pack indexing. A guaranteed, walkable delta graph at every release. | [`packs-and-deltas.md`](./packs-and-deltas.md) |
 | `by-hash/SHA256/<h>` — consistency under concurrent publish | **Intrinsic** — git objects *are* content-addressed (the path is the sha256). Publish flips refs atomically; a client that resolved a ref reads a consistent immutable object closure regardless of later publishes. | [`http-layout.md`](./http-layout.md) |
 | `dists/<suite>/…/binary-<arch>/` partitioning | **Channels are branches** (`refs/heads/<channel>`); `HEAD` = the default channel. (No `[components]` table in the target.) | [`versioning-and-channels.md`](./versioning-and-channels.md) |
-| `Valid-Until` — time-based freshness bound | **No direct analogue / no in-band signed expiry.** Freshness = low CDN TTL on `/channels` (and `info/refs`, `objects/info`) + the consumer's own max-staleness policy + the monotonic anti-rollback floor | [`signing-and-trust.md`](./signing-and-trust.md), [`versioning-and-channels.md`](./versioning-and-channels.md) |
+| `Valid-Until` — time-based freshness bound | AOS-TUF `timestamp.json` gives signed expiry over the selected snapshot; channel pointers additionally use low CDN TTL, consumer max-staleness, and the monotonic anti-rollback floor | [`signing-and-trust.md`](./signing-and-trust.md), [`versioning-and-channels.md`](./versioning-and-channels.md) |
 | dumb-HTTP, static-mirror-friendly | dumb-HTTP is the substrate — the repo is a valid bare dumb-HTTP repo; a stock `git clone` works (design-brief §12) | [`architecture.md`](./architecture.md), [`http-layout.md`](./http-layout.md) |
 | `signed-by=` per-source key pinning | per-registry out-of-band anchor in `trusted-keys.d/<registry>.pub` + in-band `keys.toml` roster | [`signing-and-trust.md`](./signing-and-trust.md) |
 | `snapshot.debian.org` reproducible archives | reproducible snapshots are intrinsic: a signed tag addresses an immutable commit; the whole object closure is content-addressed | [`versioning-and-channels.md`](./versioning-and-channels.md) |
@@ -197,7 +197,7 @@ whose sha256 is `abcdef…`. Two consequences:
 (design-brief §8) — every release writes its loose objects there, the guaranteed
 completeness fallback for any stock dumb client. The per-release
 `/releases/<M>/<m>/<patch…>/objects/` dirs are **pack-only**: they hold
-`info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack`, with no
+`info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack.zst`, with no
 loose `<xx>/<…>` objects and no per-release `info/alternates`. Packs sit on top
 as an efficiency layer. See [`http-layout.md`](./http-layout.md).
 
@@ -207,22 +207,12 @@ APT's pdiff ships line-level `ed`-script diffs of the `Packages` text so clients
 patch their local index instead of re-downloading it. AOS generalizes this to
 the whole object DAG with **thin git packs**.
 
-**Producer** (design-brief §10), per `packs-and-deltas.md`:
+**Producer**, per `packs-and-deltas.md`: `registry::thinpack` writes a thin pack
+equivalent to `git pack-objects --thin` over `to ^from`, then the producer serves
+`delta-<from-semver>.pack.zst`.
 
-```sh
-# Thin delta: objects in <to> not in <from>; deltas MAY reference <from>'s objects
-printf '%s\n^%s\n' "$to_commit" "$from_commit" \
-  | git pack-objects --revs --thin \
-      --no-reuse-object --no-reuse-delta \
-      --window=350 --depth=50 --threads=0 \
-      --stdout > delta-"$from_semver".pack
-```
-
-**Consumer** completes the thin pack against objects it already retains:
-
-```sh
-git index-pack --fix-thin delta-<from-semver>.pack
-```
+**Consumer** decompresses the thin pack and completes it against objects it
+already retains using local libgit2 pack indexing.
 
 The delta *graph* is guaranteed and walkable so clients can plan (design-brief
 §9): every `X.Y.0` ships a self-contained full pack; majors/minors ship deltas
@@ -266,12 +256,14 @@ signed partition tags** per channel (design-brief §6):
 
 See [`versioning-and-channels.md`](./versioning-and-channels.md).
 
-### 5.5 `Valid-Until` → CDN TTL + consumer policy (no in-band expiry)
+### 5.5 `Valid-Until` → AOS-TUF timestamp + channel policy
 
 APT's `Valid-Until` is an **in-band signed expiry**: the signed root names the
 instant past which it must not be trusted, defending against a mirror that pins
-clients on a validly-signed-but-stale snapshot. AOS has **no direct analogue** —
-freshness is **out of band**, assembled from three pieces (design-brief §11):
+clients on a validly-signed-but-stale snapshot. AOS moving-ref syncs require
+release commits to carry `tuf/timestamp.json`, a short-lived signed pointer to
+the accepted snapshot hash. Channel tracking still layers CDN TTL, consumer
+max-staleness, and the monotonic anti-rollback floor around rollout pointers.
 
 - **Low CDN TTL** on the mutable surfaces — `/channels` (the rollout pointers) and
   the dumb-HTTP ref shim (`info/refs`, `objects/info`) — so a frozen mirror falls
@@ -285,10 +277,11 @@ freshness is **out of band**, assembled from three pieces (design-brief §11):
 - **The monotonic anti-rollback floor** — a consumer never moves to an older
   release than one it has already accepted.
 
-> **Trade-off:** this is **weaker** than APT's in-band signed expiry against a
-> frozen-but-validly-signed mirror. APT's `Valid-Until` is an attestation the
-> *publisher* signs into the root; AOS instead leans on CDN cache behavior and
-> consumer-side policy, neither of which the publisher signs over.
+Moving-ref consumers verify `tuf/timestamp.json` before accepting the package
+catalog. Explicit commit/tag/version pins keep old immutable releases
+reproducible: they verify TUF signatures, hashes, and metadata version floors
+when TUF exists, but do not fail solely because TUF is absent on a pre-cutover
+release or because the signed timestamp window has passed.
 
 See [`signing-and-trust.md`](./signing-and-trust.md) and
 [`versioning-and-channels.md`](./versioning-and-channels.md).
@@ -376,7 +369,7 @@ The same Ed25519 key signs narinfos (separate signature object). See
 | Content-addressed pool | `pool/` (content-organized) + `Packages` `SHA256` | `/objects/<xx>/<62-hex>` (content-*addressed*) | **AOS ahead** |
 | Incremental index updates | `Packages.diff` (pdiff) | thin `delta-*.pack` graph | **AOS ahead** (DAG, not one text file) |
 | Concurrent-publish consistency | `by-hash/SHA256/<h>` | immutable objects + atomic ref flip | **AOS ahead** (intrinsic) |
-| Time-based freshness | `Valid-Until` (in-band signed expiry) | low CDN TTL + consumer max-staleness + anti-rollback floor (no in-band expiry) | **AOS weaker** (out-of-band, not publisher-signed) |
+| Time-based freshness | `Valid-Until` (in-band signed expiry) | AOS-TUF `timestamp.json` plus channel max-staleness and anti-rollback floor | **parity for release metadata; extra channel policy for rollout pointers** |
 | Per-source key pinning | `signed-by=` | out-of-band anchor in `trusted-keys.d/<registry>.pub` + `keys.toml` roster | **AOS ahead** (in-band rotation) |
 | Reproducible snapshots | `snapshot.debian.org` | immutable signed tags | **AOS ahead** (no extra service) |
 | Phased rollout | `Phased-Update-Percentage` | 256 signed partition tags | **AOS ahead** (explicit cohorts) |
@@ -461,8 +454,8 @@ pool; the phased-rollout idea; per-source key pinning.
 `Packages`→git tree; `pool`→object store; pdiff→thin delta packs;
 `Phased-Update-%`→256 partitions; `by-hash`→content-addressed objects.
 **Drop:** regenerated flat `Packages`, OpenPGP, `Depends` solver, `Components`,
-`Contents-<arch>`, rsync-mirror publish; APT's in-band `Valid-Until` (freshness
-is now CDN TTL + consumer policy + anti-rollback floor, with no signed expiry).
+`Contents-<arch>`, rsync-mirror publish; APT's exact `Valid-Until` field is
+replaced by AOS-TUF timestamp metadata plus channel freshness policy.
 
 ---
 
@@ -473,7 +466,7 @@ is now CDN TTL + consumer policy + anti-rollback floor, with no signed expiry).
 - [`current-state.md`](./current-state.md) — the current git-native implementation status.
 - [`http-layout.md`](./http-layout.md) — HTTP/object layout, object store, `info/alternates`, stock-git compat.
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver, channels-as-branches, 256-partition rollout.
-- [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin/full packs, the delta scheme, zstd.
+- [`packs-and-deltas.md`](./packs-and-deltas.md) — libgit2 full packs, Rust thin packs, the delta scheme, zstd.
 - [`signing-and-trust.md`](./signing-and-trust.md) — signed tag objects, name-binding, `tag→tag→commit`.
 - [`publishing.md`](./publishing.md) — the producer pipeline and atomic publish ordering.
 - [`nix-cache-compatibility.md`](./nix-cache-compatibility.md) — the Nix binary-cache superset.

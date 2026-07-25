@@ -52,6 +52,10 @@
   # Auto-discovered module list.
   modules = import ./modules;
 
+  # Assemble the in-image, eval-only base library for every
+  # system. See `lib/build/base-lib.nix`.
+  mkBaseLib = import ./lib/build/base-lib.nix {inherit lib pkgs;};
+
   # Build a system from a system definition module (or list of modules).
   #
   # Accepts three calling conventions:
@@ -69,10 +73,31 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    systemName =
+      if builtins.isAttrs args && args ? systemName
+      then args.systemName
+      else "system";
+    # The on-host resolver supplies the verified `host.nix`
+    # store path here as an operator-provenance module, so its bare defs are
+    # lifted to the reserved priority-75 band (see `lib/modules.nix`
+    # `operatorModules`). Defaults `[]` — no caller sets it yet, so every
+    # existing system evaluates identically.
+    operatorModules =
+      if builtins.isAttrs args && args ? operatorModules
+      then args.operatorModules
+      else [];
+    systemModules = builtins.filter builtins.isPath moduleList;
+    baseLib = mkBaseLib {
+      baseModules = modules;
+      inherit systemModules systemName;
+    };
   in
     lib.evalModules {
-      modules = modules ++ moduleList;
-      inherit pkgs lib specialArgs;
+      modules =
+        modules
+        ++ moduleList
+        ++ [{aos.config.evalAtBoot.baseLib = baseLib;}];
+      inherit pkgs lib specialArgs operatorModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -90,10 +115,19 @@
       map (name: {
         name = lib.removeSuffix ".nix" name;
         value = let
-          evaluated = mkSystem (./systems + "/${name}");
+          variant = ./systems + "/${name}";
+          evaluated = mkSystem {
+            modules = [variant];
+            systemName = lib.removeSuffix ".nix" name;
+          };
         in {
           config = evaluated.config;
           options = evaluated.options;
+          # Re-expose `extendModules` so callers holding a discovered system
+          # (e.g. the fleet harness, which bakes per-VM identity via
+          # `environment.etc`) can overlay a fragment without rebuilding the
+          # module list. Inherits this variant's baseLib wiring.
+          inherit (evaluated) extendModules;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -150,6 +184,28 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
+  packagesWithExpose =
+    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
+
+  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
+    inherit pkgs lib mkSystem testing;
+  };
+  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
+    inherit pkgs mkSystem testing;
+  };
+  packagePresetCheck = import ./lib/testing/package-preset.nix {
+    inherit pkgs mkSystem testing;
+  };
+  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
+    inherit pkgs lib mkSystem testing;
+  };
+  apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
+    inherit pkgs mkSystem testing;
+  };
+  selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
+    inherit pkgs mkSystem testing;
+  };
+
   # Stdenv cross-cutting integration check
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
@@ -204,10 +260,16 @@
     ) (builtins.attrNames entries);
 
     loadSpec = filename: let
-      raw = (import (./tests/fleet + "/${filename}")) {
-        inherit lib pkgs;
+      specModule = import (./tests/fleet + "/${filename}");
+      availableArgs = {
+        inherit lib pkgs mkSystem;
+        inherit (testing) dataUrl;
         systems = discoverSystems;
       };
+      raw = specModule (
+        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+        availableArgs
+      );
       eval = lib.evalModules {
         modules = [
           {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
@@ -218,7 +280,7 @@
       eval.config.spec;
   in
     builtins.listToAttrs (
-      builtins.map (filename: {
+      map (filename: {
         name = lib.removeSuffix ".nix" filename;
         value = fleetHarness.mkFleetTest (loadSpec filename);
       })
@@ -799,7 +861,7 @@
       };
   };
 in {
-  inherit lib pkgs stdenv modules mkSystem;
+  inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -807,24 +869,26 @@ in {
 
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
-  checks = {
+  checks = rec {
     eval = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
+      systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
     in {
-      inherit critical-pkgs hardening-probe kernel-config;
+      inherit critical-pkgs hardening-probe kernel-config package-root-image systemd-verity;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs kernel-config]
+          [critical-pkgs kernel-config package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe;
         phases = [
           {
@@ -841,16 +905,47 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    ignition-format = import ./lib/testing/ignition-format.nix {inherit pkgs lib;};
+    # Off-host config-eval preflight and flat-to-module parity gates.
+    # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
+    config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
+    config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
+    # System characterization golden. Buildable via
+    # `nix-build -A checks.system-characterization`, but not wired into the
+    # hard CI gate (flake.nix / build.all): it is RED until its baselines are
+    # generated on a Linux/KVM builder (`-A checks.system-characterization.regenerate`)
+    # and committed under tests/fixtures/system-characterization-goldens/server/. Wire it into the
+    # gate in the same diff that lands the baselines. See that dir's README.
+    system-characterization = import ./lib/testing/system-characterization.nix {
+      inherit pkgs lib mkSystem;
+      system = serverSystem;
+    };
+    systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
+    systemd-verity = build.systemd-verity;
+    package-expose = import ./lib/testing/package-expose.nix {
+      inherit pkgs lib mkSystem packagesWithExpose;
+    };
+    package-firewall-reload = packageFirewallReloadCheck;
+    package-expose-lifecycle = packageExposeLifecycleCheck;
+    package-preset = packagePresetCheck;
+    package-test-http-server = packageTestHttpServerCheck;
+    selinux-base = selinuxBaseCheck;
+    apm-install-at-boot = apmInstallAtBootCheck;
+    lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
+        apm-install-at-boot = apmInstallAtBootCheck;
+        package-expose-lifecycle = packageExposeLifecycleCheck;
+        package-preset = packagePresetCheck;
+        package-test-http-server = packageTestHttpServerCheck;
+        selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests // crucibleFleetChecks;

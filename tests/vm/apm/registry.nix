@@ -712,7 +712,6 @@ in {
           and .previous == null
           and .images == []
           and .package_file == "packages/t/testpkg.toml"
-          and (.closure_file | startswith("closures/"))
           and .committed == true
           and .commit_message == "publish testpkg 1.0.0 (x86_64-linux)"
           and .current == "stable"
@@ -732,12 +731,14 @@ in {
         "store_path" "TOML has store_path"
       assert_file_contains "$REG_DIR/packages/t/testpkg.toml" \
         "nar_hash" "TOML has nar_hash"
-      assert_file_contains "$REG_DIR/packages/t/testpkg.toml" \
-        "references" "TOML has references"
 
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
-        "apr publish writes closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "apr publish writes store realisation record"
+      # References no longer live in the package TOML (RFC-0005): the per-path
+      # store record carries them as `ia:` dependency edges instead.
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "ia:sha256:" "store record lists dependency edges"
 
       # Verify git log shows the publish commit
       cd "$REG_DIR"
@@ -754,8 +755,8 @@ in {
         --registry test-reg
 
       CURL_HASH=$(basename ${pkgs.curl} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
-        "apr publish writes v2 closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$CURL_HASH")/$CURL_HASH" \
+        "apr publish writes v2 store realisation record"
 
       $APR packages --registry test-reg > /tmp/packages.out 2>&1 || {
         cat /tmp/packages.out
@@ -884,10 +885,10 @@ in {
         "nar_hash" "alternate-state publish records NAR hash"
 
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
-        "alternate-state publish writes closure metadata"
-      assert_file_contains "$REG_DIR/closures/$STORE_HASH" "$STORE_HASH" \
-        "alternate-state closure metadata contains root hash"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "alternate-state publish writes store realisation record"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" "nar:sha256:" \
+        "alternate-state store record carries a realisation header"
       if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
         fail "apr publish should not commit unrelated maintainer scratch files"
       else
@@ -1102,10 +1103,8 @@ in {
         "package TOML exists before unpublish"
       assert_file_exists "$REG_DIR/packages/r/retire-tool.toml" \
         "consumer package TOML exists before unpublish"
-      assert_file_contains "$REG_DIR/packages/r/retire-tool.toml" "$RETIRE_DEP_HASH" \
-        "consumer package metadata records dependency"
-      assert_file_contains "$REG_DIR/closures/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
-        "consumer package closure records dependency"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
+        "consumer package store record lists dependency edge"
       $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
         cat /tmp/unpublish-before.toml
         fail "apr show --raw reports initial multi-version package"
@@ -1161,9 +1160,13 @@ in {
 
       echo "==> Consumer: install package before maintainer unpublishes it"
       as_consumer
+      # The unpublish producer registry is unsigned (created without a trust
+      # key); signed metadata is now required by default on sync, so opt this
+      # consumer out of signature verification with --no-verify.
       $APM registry add file:///tmp/unpublish-origin.git \
         --name test-reg \
-        --branch "$DEFAULT_BRANCH" > /tmp/unpublish-registry-add.out 2>&1 || {
+        --branch "$DEFAULT_BRANCH" \
+        --no-verify > /tmp/unpublish-registry-add.out 2>&1 || {
         cat /tmp/unpublish-registry-add.out
         fail "apm registry add syncs unpublish registry"
       }
@@ -1347,18 +1350,18 @@ in {
       cat /tmp/unpublish-retire-tool.out
       assert_file_not_exists "$REG_DIR/packages/r/retire-tool.toml" \
         "consumer package TOML removed by unpublish"
-      git -C "$REG_DIR" rm -f "closures/$RETIRE_HASH" \
+      git -C "$REG_DIR" rm -f "store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" \
         > /tmp/unpublish-retire-tool-closure-rm.out 2>&1 || {
         cat /tmp/unpublish-retire-tool-closure-rm.out
-        fail "maintainer prunes retired package closure metadata"
+        fail "maintainer prunes retired package store record"
       }
       git -C "$REG_DIR" commit -m "registry: prune retired consumer closure" \
         > /tmp/unpublish-retire-tool-closure-commit.out 2>&1 || {
         cat /tmp/unpublish-retire-tool-closure-commit.out
         fail "maintainer commits retired package closure pruning"
       }
-      assert_file_not_exists "$REG_DIR/closures/$RETIRE_HASH" \
-        "retired package closure metadata pruned"
+      assert_file_not_exists "$REG_DIR/store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" \
+        "retired package store record pruned"
       $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
         cat /tmp/unpublish-packages-final.out
         fail "apr packages succeeds after final unpublish"
@@ -1615,6 +1618,7 @@ in {
         --license MIT \
         --maintainer override-workflow@example.invalid \
         --registry override-reg \
+        --sysroot \
         --no-commit
       $APR cache generate \
         --registry override-reg \
@@ -1657,10 +1661,19 @@ in {
 
       export HOME=/tmp/override-consumer
       export USER=overrideuser
-      export APM_SYSTEM_CONFIG_DIR=/tmp/override-system-config
-      SYSTEM_REG_CONFIG="$APM_SYSTEM_CONFIG_DIR/registries.d/override-reg.toml"
+      export AOS_ROOT=/tmp/override-root
+      # AOS_ROOT also derives the Nix store/state paths; keep the install
+      # operating on the real store so NAR import works (the redirect is only
+      # meant to relocate the apm system config tree here).
+      export AOS_NIX_STORE_DIR=/nix/store
+      export AOS_NIX_STATE_DIR=/nix/var/nix
+      SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
-      PROFILE_ROOT="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
+      # A --sysroot package installed with `--system` lands as a numbered system
+      # generation under /var/lib/profiles/system (gen-N/toplevel -> store path,
+      # current -> gen-N), not a user-scope tool profile.
+      SYSTEM_PROFILE="/var/lib/profiles/system"
+      PROFILE_ROOT="$SYSTEM_PROFILE/current/toplevel/bin/closure-root"
       mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
@@ -1717,7 +1730,7 @@ in {
       }
       pass "apm --json registry --system list reports redirected system registry"
 
-      $APM --json update --registry override-reg > /tmp/override-update.json 2>&1 || {
+      $APM --json update --system --registry override-reg > /tmp/override-update.json 2>&1 || {
         cat /tmp/override-update.json
         fail "apm update syncs registry from redirected system config"
       }
@@ -1737,7 +1750,7 @@ in {
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm update does not create a shadow user registry config"
 
-      $APM --json search override-root --registry override-reg \
+      $APM --json search override-root --system --registry override-reg \
         > /tmp/override-search.json 2>&1 || {
         cat /tmp/override-search.json
         fail "apm search resolves package from redirected system registry"
@@ -1775,7 +1788,7 @@ in {
         pass "override dependency missing before install"
       fi
 
-      $APM install override-root --registry override-reg --yes \
+      $APM install override-root --system --registry override-reg --yes \
         > /tmp/override-install.out 2>&1 || {
         cat /tmp/override-install.out
         fail "apm install downloads redirected system registry package"
@@ -1783,8 +1796,18 @@ in {
       cat /tmp/override-install.out
       assert_file_contains /tmp/override-install.out "Downloading" \
         "apm install downloads from redirected system registry cache"
-      assert_file_contains /tmp/override-install.out "Installed 1 package" \
-        "apm install creates profile generation from redirected system registry"
+      assert_file_contains /tmp/override-install.out "System generation 1 active" \
+        "apm install activates a system generation from redirected system registry"
+      if [ "$(readlink "$SYSTEM_PROFILE/current")" = "gen-1" ]; then
+        pass "redirected system install points current at gen-1"
+      else
+        fail "redirected system install should point current at gen-1"
+      fi
+      if [ "$(readlink "$SYSTEM_PROFILE/gen-1/toplevel")" = "$ROOT_STORE" ]; then
+        pass "redirected system gen-1 toplevel points at installed sysroot"
+      else
+        fail "redirected system gen-1 toplevel should point at installed sysroot"
+      fi
       "$PROFILE_ROOT" > /tmp/override-run.out
       assert_file_contains /tmp/override-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
@@ -1814,7 +1837,7 @@ in {
         "apm registry --system disable persists to redirected system config"
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm registry --system disable does not create a shadow user registry config"
-      if $APM update --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
+      if $APM update --system --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
         cat /tmp/override-update-disabled.out
         fail "apm update should reject disabled redirected system registry"
       else
@@ -2111,18 +2134,20 @@ in {
         "persisted upload destination has dependency narinfo"
 
       rm -f /tmp/origin-default-upload/info/refs
+      ORIGIN_DEFAULT_CACHE_DIR="$HOME/.cache/apm/registry-static/origin-default-reg"
       $APR --json origin upload --registry origin-default-reg \
-        --cache-dir /tmp/origin-default-cache \
+        --cache-dir "$ORIGIN_DEFAULT_CACHE_DIR" \
         > /tmp/origin-default-upload.json 2>&1 || {
         cat /tmp/origin-default-upload.json
         fail "apr origin upload reuses persisted upload defaults"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg upload "$ORIGIN_UPLOAD_URL" \
+        --arg cache_dir "$ORIGIN_DEFAULT_CACHE_DIR" \
         '.action == "origin_upload"
           and .registry == "origin-default-reg"
           and .upload_urls == [$upload]
-          and .cache_dir == "/tmp/origin-default-cache"
+          and .cache_dir == $cache_dir
           and (.files | type == "number" and . > 0)
           and (.bytes | type == "number" and . > 0)' \
         /tmp/origin-default-upload.json >/dev/null || {
@@ -2355,12 +2380,12 @@ in {
         "changeset includes runner package metadata"
       assert_file_contains /tmp/changeset.status "registry.toml" \
         "changeset includes cache pointer update"
-      assert_file_exists "$REG_DIR/closures/$GIT_HASH" \
-        "changeset includes git closure metadata"
-      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
-        "changeset includes curl closure metadata"
-      assert_file_exists "$REG_DIR/closures/$RUNNER_HASH" \
-        "changeset includes runner closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$GIT_HASH")/$GIT_HASH" \
+        "changeset includes git store record"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$CURL_HASH")/$CURL_HASH" \
+        "changeset includes curl store record"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$RUNNER_HASH")/$RUNNER_HASH" \
+        "changeset includes runner store record"
 
       git -C "$REG_DIR" add -A
       git -C "$REG_DIR" commit -m "release: publish maintainer tools"
@@ -2489,6 +2514,7 @@ in {
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18083 \
+        --upload-url file:///tmp/maint-cache \
         > /tmp/dirty-release.out 2>&1; then
         cat /tmp/dirty-release.out
         fail "apr release should refuse dirty registry before cache pointer commit"
@@ -2518,6 +2544,7 @@ in {
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18082 \
+        --upload-url file:///tmp/maint-cache \
         > /tmp/release.json 2>&1 || {
         cat /tmp/release.json
         fail "apr release signs merged release"
@@ -2532,8 +2559,8 @@ in {
           and .cache_pointer_updated == true
           and (.full_pack | startswith("pack-") and endswith(".pack"))
           and .deltas == []
-          and .cache == null
-          and .uploaded_files == null' \
+          and (.cache.paths >= 3)
+          and (.uploaded_files > 0)' \
         /tmp/release.json >/dev/null || {
         cat /tmp/release.json
         fail "apr --json release reports signed maintainer release"
@@ -2577,7 +2604,7 @@ in {
           and .clean == true
           and (.changed_files | length == 0)
           and (.base | length > 0)
-          and .output == ""' \
+          and (.output | contains("0 files changed"))' \
         /tmp/maint-remote-diff.json >/dev/null || {
         cat /tmp/maint-remote-diff.json
         fail "apr --json diff --remote is clean after pushing branch"
@@ -3015,11 +3042,11 @@ in {
       assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
         'source_nar_hash = "sha256-' "release metadata records v1 source NAR hash"
 
-      assert_file_exists "/tmp/static-release-cache/$ROOT_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
         "release cache has root narinfo"
-      assert_file_exists "/tmp/static-release-cache/$LEAF_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
         "release cache has unpublished dependency narinfo"
-      assert_file_exists "/tmp/static-release-cache/$ROOT_SOURCE_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$ROOT_SOURCE_HASH.narinfo" \
         "release cache has explicit source narinfo"
       assert_file_exists "/tmp/static-release-origin/HEAD" \
         "uploaded static origin has HEAD"
@@ -3564,6 +3591,7 @@ in {
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --init-channel \
         > /tmp/channel-release-dirty.out 2>&1; then
@@ -3599,6 +3627,7 @@ in {
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --init-channel \
         > /tmp/channel-release-v1.out 2>&1 || {
@@ -3745,6 +3774,7 @@ in {
         --previous 1.0.0 \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --partitions "$BUCKET" \
         > /tmp/channel-release-v2.out 2>&1 || {
@@ -3838,6 +3868,7 @@ in {
         --previous 2.0.0 \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         > /tmp/channel-release-v3.out 2>&1 || {
         cat /tmp/channel-release-v3.out
         fail "apr release creates v3 before direct channel advance"
@@ -4085,10 +4116,10 @@ in {
         "published package exists on feature branch"
       assert_file_contains "$REG_DIR/packages/f/featurepkg.toml" "$FEATURE_HASH" \
         "feature branch package metadata records real store hash"
-      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "feature branch closure file exists"
-      assert_file_contains "$REG_DIR/closures/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
-        "feature branch closure records dependency"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "feature branch store record exists"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
+        "feature branch store record lists dependency edge"
 
       $APR packages --registry test-reg > /tmp/branch-packages-feature.out 2>&1 || {
         cat /tmp/branch-packages-feature.out
@@ -4139,8 +4170,8 @@ in {
 
       assert_file_not_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package not on default branch before merge"
-      assert_file_not_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "closure not on default branch before merge"
+      assert_file_not_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "store record not on default branch before merge"
       $APR packages --registry test-reg > /tmp/branch-packages-default.out 2>&1 || {
         cat /tmp/branch-packages-default.out
         fail "apr packages succeeds on default branch before merge"
@@ -4180,8 +4211,8 @@ in {
 
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package exists on default branch after merge"
-      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "closure exists on default branch after merge"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "store record exists on default branch after merge"
       $APR show featurepkg --registry test-reg > /tmp/branch-show-merged.out 2>&1 || {
         cat /tmp/branch-show-merged.out
         fail "apr show resolves merged package"
@@ -4195,12 +4226,10 @@ in {
       }
       ${pkgs.jq}/bin/jq -e \
         --arg store "$FEATURE_STORE" \
-        --arg dep "$FEATURE_DEP_HASH" \
         '.package.name == "featurepkg"
           and .package.description == "Real branch workflow fixture"
           and .versions[0].version == "1.0.0"
-          and .versions[0].platforms."x86_64-linux".store_path == $store
-          and ((.versions[0].platforms."x86_64-linux".references | index($dep)) != null)' \
+          and .versions[0].platforms."x86_64-linux".store_path == $store' \
         /tmp/branch-show-merged.json >/dev/null || {
         cat /tmp/branch-show-merged.json
         fail "apr --json show displays merged closure metadata"
@@ -4785,10 +4814,10 @@ in {
 
       assert_file_contains "$REG_DIR/packages/t/tagpkg.toml" "$TAG_HASH" \
         "package metadata records real tagged store hash"
-      assert_file_exists "$REG_DIR/closures/$TAG_HASH" \
-        "tagged package closure file exists"
-      assert_file_contains "$REG_DIR/closures/$TAG_HASH" "$TAG_DEP_HASH" \
-        "tagged package closure records dependency"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" \
+        "tagged package store record exists"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" "$TAG_DEP_HASH" \
+        "tagged package store record lists dependency edge"
       $APR verify --registry test-reg > /tmp/tag-verify-before.out 2>&1 || {
         cat /tmp/tag-verify-before.out
         fail "apr verify accepts real package before tag"
@@ -4815,7 +4844,7 @@ in {
       assert_file_contains /tmp/tag-object.out "tag 1.0.0" \
         "release tag object records release name"
       git show 1.0.0:packages/t/tagpkg.toml > /tmp/tagpkg-at-tag.toml
-      git show "1.0.0:closures/$TAG_HASH" > /tmp/tag-closure-at-tag.out
+      git show "1.0.0:store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" > /tmp/tag-closure-at-tag.out
       cd /tmp
 
       assert_file_contains /tmp/tagpkg-at-tag.toml "$TAG_HASH" \
@@ -4989,53 +5018,89 @@ in {
         return 1
       }
 
-      commit_signed() {
-        key="$1"
-        label="$2"
-        message="$3"
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" \
-          -c gpg.format=ssh \
-          -c "user.signingkey=$key" \
-          commit -S -m "$message" > "/tmp/signed-commit-$label.out" 2>&1 || {
-          cat "/tmp/signed-commit-$label.out"
-          fail "signed commit succeeds: $message"
-          return 1
-        }
-        cat "/tmp/signed-commit-$label.out"
-        git -C "$REG_DIR" cat-file -p HEAD > "/tmp/signed-commit-$label.object"
-        assert_file_contains "/tmp/signed-commit-$label.object" \
-          "BEGIN SSH SIGNATURE" "registry commit $label carries SSH signature"
-      }
-
-      publish_signed_tool() {
+      # `apr release` is the only producer command that seals TUF metadata
+      # (root/targets/snapshot/timestamp) into a signed commit: it publishes the
+      # store path, generates + uploads the static cache, signs the commit, and
+      # creates the signed release tag. Consumers reject any synced commit whose
+      # TUF metadata is missing or stale, so the legacy `apr publish --no-commit`
+      # + hand `git commit -S` flow no longer authorizes a sync.
+      release_signed_tool() {
         version="$1"
         store="$2"
-        label="$3"
-        $APR publish "$store" \
+        key="$3"
+        label="$4"
+        shift 4
+        $APR release "$version" \
+          --registry signed-reg \
+          --store-path "$store" \
           --name signed-tool \
-          --version "$version" \
           --description "Signed commit trust workflow tool" \
           --license MIT \
           --maintainer signed-commit@example.invalid \
-          --registry signed-reg \
-          --no-commit > "/tmp/signed-publish-$label.out" 2>&1 || {
-          cat "/tmp/signed-publish-$label.out"
-          fail "apr publish signed-tool $version succeeds"
-          return 1
-        }
-        cat "/tmp/signed-publish-$label.out"
-        $APR cache generate \
-          --registry signed-reg \
-          --output /tmp/signed-cache \
+          --key "$key" \
+          --cache-key /tmp/signed-cache.sec \
           --cache-url http://127.0.0.1:18106 \
-          --priority 52 \
-          --no-commit > "/tmp/signed-cache-$label.out" 2>&1 || {
-          cat "/tmp/signed-cache-$label.out"
-          fail "apr cache generate signed-tool $version succeeds"
+          --cache-priority 52 \
+          --upload-url file:///tmp/signed-cache \
+          "$@" > "/tmp/signed-release-$label.out" 2>&1 || {
+          cat "/tmp/signed-release-$label.out"
+          fail "apr release signed-tool $version ($label) succeeds"
           return 1
         }
-        cat "/tmp/signed-cache-$label.out"
+        cat "/tmp/signed-release-$label.out"
+      }
+
+      # A metadata-only release re-seals TUF without publishing a package. It is
+      # used to re-seal the root after a roster change (rotation/retirement),
+      # because `apr keys add`/`apr keys retire` commit the roster but do not
+      # re-seal the TUF root themselves.
+      reseal_release() {
+        version="$1"
+        key="$2"
+        label="$3"
+        shift 3
+        $APR release "$version" \
+          --registry signed-reg \
+          --key "$key" \
+          --cache-key /tmp/signed-cache.sec \
+          --cache-url http://127.0.0.1:18106 \
+          --cache-priority 52 \
+          --upload-url file:///tmp/signed-cache \
+          "$@" > "/tmp/signed-reseal-$label.out" 2>&1 || {
+          cat "/tmp/signed-reseal-$label.out"
+          fail "apr reseal release $version ($label) succeeds"
+          return 1
+        }
+        cat "/tmp/signed-reseal-$label.out"
+      }
+
+      # Re-sign only the HEAD commit with a different key, leaving the sealed TUF
+      # tree untouched. Used to forge a commit whose TUF metadata is valid (good
+      # key) but whose commit signature is from an untrusted/retired key, so the
+      # consumer's rejection is specifically a commit-signature failure.
+      amend_commit() {
+        key="$1"
+        label="$2"
+        git -C "$REG_DIR" \
+          -c gpg.format=ssh \
+          -c "user.signingkey=$key" \
+          commit --amend --no-edit -S > "/tmp/signed-amend-$label.out" 2>&1 || {
+          cat "/tmp/signed-amend-$label.out"
+          fail "re-sign commit $label succeeds"
+          return 1
+        }
+        git -C "$REG_DIR" cat-file -p HEAD > "/tmp/signed-amend-$label.object"
+        assert_file_contains "/tmp/signed-amend-$label.object" \
+          "BEGIN SSH SIGNATURE" "re-signed commit $label carries SSH signature"
+      }
+
+      push_branch() {
+        git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" \
+          > /tmp/signed-push.out 2>&1 || {
+          cat /tmp/signed-push.out
+          fail "git push signed-reg branch"
+          return 1
+        }
       }
 
       GOOD_KEY=/tmp/signed-commit-good
@@ -5097,7 +5162,7 @@ in {
       assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
       assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
 
-      echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
+      echo "==> Maintainer: release signed-tool 1.0.0 with trusted commit key"
       $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial \
         --key "$GOOD_KEY"
       REG_DIR="$REG_STORAGE/signed-reg"
@@ -5106,22 +5171,31 @@ in {
         "registry records initial commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$TRUST_KEY" \
         "registry records initial commit signing key value"
-      publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
+
+      git init --bare --object-format=sha256 /tmp/signed-origin.git
+      git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/signed-origin.git
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      nix --extra-experimental-features nix-command key generate-secret \
+        --key-name signed-cache > /tmp/signed-cache.sec
+
+      release_signed_tool 1.0.0 "$TOOL_V1_STORE" "$GOOD_KEY" v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_DEP_HASH.narinfo" \
         "static cache has signed-tool v1 dependency narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18106" "registry records signed cache URL"
-      commit_signed "$GOOD_KEY" v1 "release: signed-tool 1.0.0"
+      assert_file_exists "$REG_DIR/tuf/root.json" \
+        "release seals TUF root metadata into the registry tree"
+      git -C "$REG_DIR" cat-file -p HEAD > /tmp/signed-head-v1.object
+      assert_file_contains /tmp/signed-head-v1.object \
+        "BEGIN SSH SIGNATURE" "release commit v1 carries SSH signature"
+      push_branch
 
-      git init --bare --object-format=sha256 /tmp/signed-origin.git
-      git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      git -C "$REG_DIR" remote add origin /tmp/signed-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
-
-      ${pkgs.iproute2}/sbin/ip link set lo up || true
-      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
       PYTHONUNBUFFERED=1 python3 -m http.server 18106 --bind 127.0.0.1 \
         --directory /tmp/signed-cache > /tmp/signed-cache-http.log 2>&1 &
       CACHE_PID=$!
@@ -5187,17 +5261,20 @@ in {
         "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
         "trusted signed v1 executable runs through dependency"
 
-      echo "==> Maintainer: publish v2 signed by the wrong key"
+      echo "==> Maintainer: release v2 sealed by the trusted key, commit re-signed wrong"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 2.0.0 "$TOOL_V2_STORE" v2-bad
+      # Seal v2's TUF with the trusted key, then re-sign only the commit with an
+      # untrusted key: the tree (and TUF metadata) stay valid, isolating the
+      # rejection to the commit signature.
+      release_signed_tool 2.0.0 "$TOOL_V2_STORE" "$GOOD_KEY" v2-bad --previous 1.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_HASH.narinfo" \
-        "static cache has wrong-key signed-tool v2 narinfo"
+        "static cache has signed-tool v2 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_DEP_HASH.narinfo" \
-        "static cache has wrong-key signed-tool v2 dependency narinfo"
-      commit_signed "$BAD_KEY" v2-bad "release: signed-tool 2.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+        "static cache has signed-tool v2 dependency narinfo"
+      amend_commit "$BAD_KEY" v2-bad
+      push_branch
 
       echo "==> Consumer: reject wrong-key registry update"
       export HOME=/tmp/signed-consumer
@@ -5226,17 +5303,16 @@ in {
         "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
         "wrong-key update leaves installed v1 active"
 
-      echo "==> Maintainer: publish v3 signed by the trusted key"
+      echo "==> Maintainer: release v3 sealed and signed by the trusted key"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 3.0.0 "$TOOL_V3_STORE" v3-good
+      release_signed_tool 3.0.0 "$TOOL_V3_STORE" "$GOOD_KEY" v3-good --previous 2.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has signed-tool v3 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_DEP_HASH.narinfo" \
         "static cache has signed-tool v3 dependency narinfo"
-      commit_signed "$GOOD_KEY" v3-good "release: signed-tool 3.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      push_branch
 
       echo "==> Consumer: recover on trusted signed update and upgrade"
       export HOME=/tmp/signed-consumer
@@ -5274,12 +5350,15 @@ in {
         "^signed-tool 3.0.0 via signed-leaf 3.0.0$" \
         "trusted signed v3 executable runs through dependency"
 
-      echo "==> Maintainer: rotate trust roster to a new signing key"
+      echo "==> Maintainer: rotate trust roster to add a new signing key, release v4"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      $APR keys add next "$NEXT_TRUST_KEY" --registry signed-reg --no-commit \
-        > /tmp/signed-keys-add-next.out 2>&1 || {
+      # Add the next key to the roster in a commit signed by the still-trusted
+      # initial key, then re-seal + publish v4 on top. The consumer accepts the
+      # rotation because it is delivered by a currently-trusted key.
+      $APR keys add next "$NEXT_TRUST_KEY" --registry signed-reg \
+        --key "$GOOD_KEY" > /tmp/signed-keys-add-next.out 2>&1 || {
         cat /tmp/signed-keys-add-next.out
         fail "apr keys add next succeeds"
       }
@@ -5288,13 +5367,19 @@ in {
         "registry records next commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$NEXT_TRUST_KEY" \
         "registry records next commit signing key value"
-      commit_signed "$GOOD_KEY" rotate-next "trust: add next signing key"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      release_signed_tool 4.0.0 "$TOOL_V4_STORE" "$GOOD_KEY" v4 --previous 3.0.0
+      assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
+        "static cache has signed-tool v4 narinfo"
+      push_branch
 
-      echo "==> Consumer: accept roster rotation signed by existing key"
+      echo "==> Consumer: accept roster rotation and upgrade to v4"
       export HOME=/tmp/signed-consumer
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
+      delete_store_path "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       $APM update --registry signed-reg > /tmp/signed-update-rotate.out 2>&1 || {
         cat /tmp/signed-update-rotate.out
         fail "apm update accepts roster rotation signed by existing key"
@@ -5304,35 +5389,9 @@ in {
         'id = "next"' "consumer materializes rotated trust key id"
       assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
         "$NEXT_TRUST_KEY" "consumer materializes rotated trust key value"
-
-      echo "==> Maintainer: publish v4 signed by the rotated key"
-      export HOME=/tmp
-      export USER=root
-      APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 4.0.0 "$TOOL_V4_STORE" v4-next
-      assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
-        "static cache has signed-tool v4 narinfo"
-      assert_file_exists "/tmp/signed-cache/$TOOL_V4_DEP_HASH.narinfo" \
-        "static cache has signed-tool v4 dependency narinfo"
-      commit_signed "$NEXT_KEY" v4-next "release: signed-tool 4.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
-
-      echo "==> Consumer: accept update signed by rotated key and upgrade"
-      export HOME=/tmp/signed-consumer
-      export USER=signeduser
-      APM_CONFIG="$HOME/.config/apm"
-      delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
-      delete_store_path "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
-      rm -rf "$HOME/.cache/apm"
-      mkdir -p "$HOME/.cache/apm"
-      $APM update --registry signed-reg > /tmp/signed-update-v4.out 2>&1 || {
-        cat /tmp/signed-update-v4.out
-        fail "apm update accepts signed v4 from rotated key"
-      }
-      cat /tmp/signed-update-v4.out
       $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v4.out 2>&1 || {
         cat /tmp/signed-upgrade-v4.out
-        fail "apm upgrade downloads rotated-key signed v4"
+        fail "apm upgrade downloads signed v4"
       }
       cat /tmp/signed-upgrade-v4.out
       assert_file_contains /tmp/signed-upgrade-v4.out "Downloading 2 NAR" \
@@ -5342,15 +5401,54 @@ in {
       "$PROFILE_TOOL" > /tmp/signed-run-v4.out
       assert_file_contains /tmp/signed-run-v4.out \
         "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
-        "rotated-key signed v4 executable runs through dependency"
+        "rotated-roster v4 executable runs through dependency"
 
-      echo "==> Maintainer: retire the original signing key"
+      echo "==> Maintainer: release v5 with a commit signed by the rotated key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      # Seal v5 with the trusted initial key, then re-sign the commit with the
+      # rotated next key (now an active roster member): the consumer accepts it.
+      release_signed_tool 5.0.0 "$TOOL_V5_STORE" "$GOOD_KEY" v5 --previous 4.0.0
+      assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
+        "static cache has signed-tool v5 narinfo"
+      amend_commit "$NEXT_KEY" v5
+      push_branch
+
+      echo "==> Consumer: accept update signed by rotated key and upgrade to v5"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V5_STORE" "signed-tool-v5"
+      delete_store_path "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-v5.out 2>&1 || {
+        cat /tmp/signed-update-v5.out
+        fail "apm update accepts commit signed by rotated key"
+      }
+      cat /tmp/signed-update-v5.out
+      $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v5.out 2>&1 || {
+        cat /tmp/signed-upgrade-v5.out
+        fail "apm upgrade downloads rotated-key signed v5"
+      }
+      cat /tmp/signed-upgrade-v5.out
+      assert_file_contains /tmp/signed-upgrade-v5.out "Downloading 2 NAR" \
+        "apm upgrade downloads signed v5 closure"
+      assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
+      assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      "$PROFILE_TOOL" > /tmp/signed-run-v5.out
+      assert_file_contains /tmp/signed-run-v5.out \
+        "^signed-tool 5.0.0 via signed-leaf 5.0.0$" \
+        "rotated-key signed v5 executable runs through dependency"
+
+      echo "==> Maintainer: retire the original signing key and rotate the TUF root"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
       $APR keys retire initial --vouched-by next --reason "rotation complete" \
         --key "$NEXT_KEY" \
-        --registry signed-reg --no-commit > /tmp/signed-keys-retire-initial.out 2>&1 || {
+        --registry signed-reg > /tmp/signed-keys-retire-initial.out 2>&1 || {
         cat /tmp/signed-keys-retire-initial.out
         fail "apr keys retire initial succeeds"
       }
@@ -5359,8 +5457,15 @@ in {
         "registry records retired signing key section"
       assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
         "registry records retired initial signing key id"
-      commit_signed "$NEXT_KEY" retire-initial "trust: retire initial signing key"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      # Retiring a key revokes it in the roster and re-signs tags but does not
+      # re-seal the TUF root, which still lists the retired key. Rotate the root
+      # off the retired key with a metadata-only release co-signed by the
+      # retiring key (--rotate-from) so consumers can authorize the transition.
+      reseal_release 5.1.0 "$NEXT_KEY" retire-reseal --previous 5.0.0 \
+        --rotate-from "$GOOD_KEY"
+      assert_file_not_contains "$REG_DIR/tuf/root.json" "$GOOD_PUBLIC" \
+        "rotated TUF root drops the retired key material"
+      push_branch
 
       echo "==> Consumer: accept retirement signed by rotated key"
       export HOME=/tmp/signed-consumer
@@ -5376,24 +5481,20 @@ in {
       assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
         'id = "initial"' "consumer materializes retired initial signing key id"
 
-      echo "==> Maintainer: publish v5 signed by the retired original key"
+      echo "==> Maintainer: forge a commit signed by the retired original key"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 5.0.0 "$TOOL_V5_STORE" v5-retired
-      assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
-        "static cache has signed-tool v5 narinfo"
-      assert_file_exists "/tmp/signed-cache/$TOOL_V5_DEP_HASH.narinfo" \
-        "static cache has signed-tool v5 dependency narinfo"
-      commit_signed "$GOOD_KEY" v5-retired "release: signed-tool 5.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      # Seal the metadata with the active next key, then re-sign the commit with
+      # the retired initial key: the consumer must reject the retired signature.
+      reseal_release 5.2.0 "$NEXT_KEY" retired-forge --previous 5.1.0
+      amend_commit "$GOOD_KEY" retired-forge
+      push_branch
 
       echo "==> Consumer: reject update signed by retired original key"
       export HOME=/tmp/signed-consumer
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
-      delete_store_path "$TOOL_V5_STORE" "signed-tool-v5"
-      delete_store_path "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
       if $APM update --registry signed-reg > /tmp/signed-update-retired.out 2>&1; then
         cat /tmp/signed-update-retired.out
         fail "apm update should reject commit signed by retired key"
@@ -5408,16 +5509,12 @@ in {
         cat /tmp/signed-search-after-retired.out
         fail "apm search still works after rejected retired-key update"
       }
-      assert_file_contains /tmp/signed-search-after-retired.out "4.0.0" \
-        "rejected retired-key update leaves v4 metadata active"
-      assert_file_not_contains /tmp/signed-search-after-retired.out "5.0.0" \
-        "rejected retired-key update does not expose v5"
-      assert_store_missing "$TOOL_V5_STORE" "signed-tool-v5"
-      assert_store_missing "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      assert_file_contains /tmp/signed-search-after-retired.out "5.0.0" \
+        "rejected retired-key update leaves v5 metadata active"
       "$PROFILE_TOOL" > /tmp/signed-run-after-retired.out
       assert_file_contains /tmp/signed-run-after-retired.out \
-        "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
-        "retired-key update leaves installed v4 active"
+        "^signed-tool 5.0.0 via signed-leaf 5.0.0$" \
+        "retired-key update leaves installed v5 active"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "signed static cache HTTP server stopped"
@@ -5719,50 +5816,54 @@ in {
         "published closure-leaf package metadata exists"
       assert_file_exists "$REG_DIR/packages/c/closure-root.toml" \
         "published closure-root package metadata exists"
-      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
-        "closure-leaf closure file exists"
-      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
-        "closure-root closure file exists"
+      LEAF_FILE="$REG_DIR/store/$(printf %.2s "$LEAF_HASH")/$LEAF_HASH"
+      ROOT_FILE="$REG_DIR/store/$(printf %.2s "$ROOT_HASH")/$ROOT_HASH"
+      assert_file_exists "$LEAF_FILE" \
+        "closure-leaf store record exists"
+      assert_file_exists "$ROOT_FILE" \
+        "closure-root store record exists"
 
-      LEAF_FIRST_TOKEN=$(head -1 "$REG_DIR/closures/$LEAF_HASH" | cut -d' ' -f1)
-      if [ "$LEAF_FIRST_TOKEN" = "$LEAF_HASH" ]; then
-        pass "closure-leaf closure starts with leaf hash"
-      else
-        fail "closure-leaf closure should start with $LEAF_HASH, got $LEAF_FIRST_TOKEN"
-        cat "$REG_DIR/closures/$LEAF_HASH"
-      fi
+      # Each store record opens with a realisation header — either a
+      # content-addressed line ("ca:sha256:<ca> nar:sha256:<nar>:<size>") or,
+      # for IA-only paths, a bare "nar:sha256:<nar>:<size>". The path's own
+      # ia-hash is the filename, never part of the record body.
+      LEAF_FIRST_TOKEN=$(head -1 "$LEAF_FILE" | cut -d' ' -f1)
+      case "$LEAF_FIRST_TOKEN" in
+        ca:sha256:* | nar:sha256:*)
+          pass "closure-leaf store record starts with a realisation header" ;;
+        *)
+          fail "closure-leaf store record should start with a realisation header, got $LEAF_FIRST_TOKEN"
+          cat "$LEAF_FILE" ;;
+      esac
 
-      FIRST_LINE=$(head -1 "$REG_DIR/closures/$ROOT_HASH")
-      FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
-      if [ "$FIRST_TOKEN" = "$ROOT_HASH" ]; then
-        pass "closure-root closure starts with root hash"
-      else
-        fail "closure-root closure should start with $ROOT_HASH, got $FIRST_TOKEN"
-        cat "$REG_DIR/closures/$ROOT_HASH"
-      fi
+      ROOT_FIRST_TOKEN=$(head -1 "$ROOT_FILE" | cut -d' ' -f1)
+      case "$ROOT_FIRST_TOKEN" in
+        ca:sha256:* | nar:sha256:*)
+          pass "closure-root store record starts with a realisation header" ;;
+        *)
+          fail "closure-root store record should start with a realisation header, got $ROOT_FIRST_TOKEN"
+          cat "$ROOT_FILE" ;;
+      esac
 
-      if echo "$FIRST_LINE" | grep -q "$LEAF_HASH"; then
-        pass "closure-root root line lists closure-leaf as a direct dep"
+      # The leaf appears as an "ia:" dependency edge in the root record. Edge
+      # lines are indented, so match the hash anywhere on the line (no anchor).
+      if grep -q "$LEAF_HASH" "$ROOT_FILE"; then
+        pass "closure-root store record lists closure-leaf as a dependency edge"
       else
-        fail "closure-root root line missing closure-leaf dep"
-        cat "$REG_DIR/closures/$ROOT_HASH"
-      fi
-
-      if grep -q "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH"; then
-        pass "closure-root closure has closure-leaf as a member"
-      else
-        fail "closure-root closure missing closure-leaf member line"
-        cat "$REG_DIR/closures/$ROOT_HASH"
+        fail "closure-root store record missing closure-leaf dependency edge"
+        cat "$ROOT_FILE"
       fi
 
       for ref_path in $(nix-store -q --references "$ROOT_STORE"); do
         ref_hash=$(basename "$ref_path" | cut -d- -f1)
-        assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$ref_hash" \
-          "closure-root closure includes direct reference $ref_hash"
+        # Self-references are excluded from the edge set (the path's own hash
+        # is the filename, not a record edge).
+        if [ "$ref_hash" = "$ROOT_HASH" ]; then
+          continue
+        fi
+        assert_file_contains "$ROOT_FILE" "$ref_hash" \
+          "closure-root store record includes direct reference $ref_hash"
       done
-
-      assert_file_contains "$REG_DIR/.gitattributes" \
-        "closures/" ".gitattributes has closures entry"
 
       $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
         cat /tmp/closure-verify-ok.out
@@ -5857,66 +5958,62 @@ in {
       publish_closure_package "$ROOT_STORE" closure-root 1.0.0
       commit_registry_changes "publish real closure verify packages"
 
-      cp "$REG_DIR/closures/$ROOT_HASH" /tmp/root-closure-good
+      ROOT_FILE="$REG_DIR/store/$(printf %.2s "$ROOT_HASH")/$ROOT_HASH"
+      LEAF_FILE="$REG_DIR/store/$(printf %.2s "$LEAF_HASH")/$LEAF_HASH"
+
+      cp "$ROOT_FILE" /tmp/root-store-good
       expect_verify_success valid-generated
 
-      grep -v "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH" \
-        > /tmp/root-closure-broken
-      mv /tmp/root-closure-broken "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry_changes "break root closure dependency"
-      expect_verify_failure broken-reference \
-        "reference $LEAF_HASH not found in closure $ROOT_HASH"
+      # Trimming a single dependency edge from a committed store record is now
+      # tolerated: apr verify revalidates each path against the live Nix store
+      # rather than trusting the recorded edge set, so a stale edge alone is
+      # not an error.
+      grep -v "$LEAF_HASH" "$ROOT_FILE" > /tmp/root-store-trimmed
+      mv /tmp/root-store-trimmed "$ROOT_FILE"
+      commit_registry_changes "trim root store dependency edge"
+      expect_verify_success trimmed-edge-tolerated
 
-      $APR verify --registry test-reg --package closure-root --fix \
-        > /tmp/verify-fix-broken-reference.out 2>&1 || {
-        cat /tmp/verify-fix-broken-reference.out
-        fail "apr verify --fix repairs stale root closure metadata"
-      }
-      cat /tmp/verify-fix-broken-reference.out
-      assert_file_contains /tmp/verify-fix-broken-reference.out \
-        "Regenerated 1 closure file" \
-        "apr verify --fix reports stale closure repair"
-      assert_file_contains /tmp/verify-fix-broken-reference.out "no errors" \
-        "apr verify --fix validates repaired stale closure metadata"
-      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
-        "apr verify --fix restores missing root closure dependency"
-      commit_registry_changes "repair root closure dependency with verify fix"
+      # Restore the good record before exercising the missing-record path.
+      cp /tmp/root-store-good "$ROOT_FILE"
+      commit_registry_changes "restore root store record"
       expect_verify_success restored-generated
 
-      rm -f "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry_changes "remove root closure"
-      expect_verify_failure missing-closure \
-        "missing closure file for store hash $ROOT_HASH"
+      # Deleting the store record entirely is an error: a closure member then
+      # has no store/ record to validate against.
+      rm -f "$ROOT_FILE"
+      commit_registry_changes "remove root store record"
+      expect_verify_failure missing-store-record \
+        "has no store/ record"
 
       $APR verify --registry test-reg --package closure-leaf \
         > /tmp/verify-filtered-leaf.out 2>&1 || {
         cat /tmp/verify-filtered-leaf.out
-        fail "apr verify --package ignores unrelated broken closure metadata"
+        fail "apr verify --package ignores unrelated broken store metadata"
       }
       cat /tmp/verify-filtered-leaf.out
       assert_file_contains /tmp/verify-filtered-leaf.out "no errors" \
         "apr verify --package validates only the requested package"
 
       $APR verify --registry test-reg --package closure-root --fix \
-        > /tmp/verify-fix-missing-closure.out 2>&1 || {
-        cat /tmp/verify-fix-missing-closure.out
-        fail "apr verify --fix repairs missing root closure metadata"
+        > /tmp/verify-fix-missing-store.out 2>&1 || {
+        cat /tmp/verify-fix-missing-store.out
+        fail "apr verify --fix repairs missing root store metadata"
       }
-      cat /tmp/verify-fix-missing-closure.out
-      assert_file_contains /tmp/verify-fix-missing-closure.out \
-        "Regenerated 1 closure file" \
-        "apr verify --fix reports missing closure repair"
-      assert_file_contains /tmp/verify-fix-missing-closure.out "no errors" \
-        "apr verify --fix validates repaired missing closure metadata"
-      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
-        "apr verify --fix recreates missing root closure file"
-      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
-        "apr verify --fix recreates root closure dependency"
-      commit_registry_changes "repair missing root closure with verify fix"
-      expect_verify_success fixed-missing-closure
+      cat /tmp/verify-fix-missing-store.out
+      assert_file_contains /tmp/verify-fix-missing-store.out \
+        "Regenerated store/ records for" \
+        "apr verify --fix reports missing store record repair"
+      assert_file_contains /tmp/verify-fix-missing-store.out "no errors" \
+        "apr verify --fix validates repaired missing store metadata"
+      assert_file_exists "$ROOT_FILE" \
+        "apr verify --fix recreates missing root store record"
+      assert_file_contains "$ROOT_FILE" "$LEAF_HASH" \
+        "apr verify --fix recreates root store dependency edge"
+      commit_registry_changes "repair missing root store record with verify fix"
+      expect_verify_success fixed-missing-store-record
 
-      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
-        "removing root closure leaves dependency closure intact"
+      assert_file_exists "$LEAF_FILE" \
+        "removing root store record leaves dependency record intact"
 
       check_fail
     '';

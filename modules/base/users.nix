@@ -2,7 +2,7 @@
 ##!
 ##! Declares system users and groups. Generates /etc/passwd, /etc/group,
 ##! and /etc/shadow entries. On an immutable system these are baked into
-##! the image; Ignition can layer additional users at first boot.
+##! the image; on-host configuration can layer additional users.
 ##!
 ##! Absorbed TOML config values:
 ##!   [users.*] uid, group, home, shell, description, extra_groups
@@ -226,16 +226,80 @@ in {
         gid = 0;
         members = ["root"];
       };
-      nobody = {
-        gid = 65534;
+      adm = {
+        gid = 4;
+        members = [];
+      };
+      tty = {
+        gid = 5;
+        members = [];
+      };
+      disk = {
+        gid = 6;
+        members = [];
+      };
+      lp = {
+        gid = 7;
+        members = [];
+      };
+      kmem = {
+        gid = 9;
+        members = [];
+      };
+      wheel = {
+        gid = 10;
+        members = [];
+      };
+      dialout = {
+        gid = 20;
         members = [];
       };
       utmp = {
         gid = 22;
         members = [];
       };
-      wheel = {
-        gid = 10;
+      cdrom = {
+        gid = 24;
+        members = [];
+      };
+      clock = {
+        gid = 25;
+        members = [];
+      };
+      tape = {
+        gid = 26;
+        members = [];
+      };
+      audio = {
+        gid = 29;
+        members = [];
+      };
+      kvm = {
+        gid = 36;
+        members = [];
+      };
+      video = {
+        gid = 44;
+        members = [];
+      };
+      users = {
+        gid = 100;
+        members = [];
+      };
+      input = {
+        gid = 104;
+        members = [];
+      };
+      sgx = {
+        gid = 106;
+        members = [];
+      };
+      render = {
+        gid = 107;
+        members = [];
+      };
+      nobody = {
+        gid = 65534;
         members = [];
       };
       systemd-journal = {

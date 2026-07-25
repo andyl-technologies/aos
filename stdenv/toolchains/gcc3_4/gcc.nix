@@ -38,7 +38,7 @@ in
     configureEnv = [
       ''CC="${prev.gcc}/bin/gcc"''
       ''CFLAGS="-O2 -static -DSSIZE_MAX=0x7fffffff"''
-      ''LDFLAGS="-static"''
+      ''LDFLAGS="-B${prev.glibc}/lib -static"''
     ];
     configureFlags = [
       "--enable-languages=c"
@@ -67,11 +67,18 @@ in
       cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
       ln -sf "$out/${targetPlatform.config}/sys-include" "$out/${targetPlatform.config}/include"
     '';
-    makeFlags = [
-      ''BOOT_CFLAGS="-O2 -static"''
-      ''CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include"''
-      ''LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static"''
-    ];
+    # This tier exports a C compiler, not the target runtime collection carried
+    # by the full GCC source archive. The top-level default also descends into
+    # libstdc++, boehm-gc, and libffi even with --enable-languages=c.
+    buildCommands = ''
+      make -j"$NIX_BUILD_CORES" all-gcc \
+        BOOT_CFLAGS="-O2 -static" \
+        CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
+        LDFLAGS_FOR_TARGET="-B${prev.glibc}/lib -L${prev.glibc}/lib -static"
+    '';
+    installCommands = ''
+      make install-gcc
+    '';
     postInstall = ''
       "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/3.4.6/libgcc_eh.a"
 

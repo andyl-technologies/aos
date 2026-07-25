@@ -3,8 +3,7 @@
 ##! Sits on top of libburn + libisofs (both marked FATAL prerequisites
 ##! in its configure.ac). Installs `bin/xorriso` which AOS uses to
 ##! produce the ISO9660 `aos-metadata` channel for VM tests and
-##! bare-metal operator workflows (see lib/testing/vm.nix:mkMetadataIso,
-##! modules/services/ignition.nix's platform detection that reads from
+##! bare-metal operator workflows (read from
 ##! /dev/disk/by-label/aos-metadata).
 ##!
 ##! The --disable-* flags drop features we don't use: Jigdo template

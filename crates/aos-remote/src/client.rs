@@ -90,7 +90,7 @@ fn validate_filename(filename: &str) -> Result<()> {
 }
 
 /// Validate and parse the base URL. Returns the parsed URI.
-fn validate_base_url(base_url: &str) -> Result<Uri> {
+pub(crate) fn validate_base_url(base_url: &str) -> Result<Uri> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
         bail!("base_url must start with http:// or https://");
     }
@@ -99,7 +99,7 @@ fn validate_base_url(base_url: &str) -> Result<Uri> {
 
 /// Build an `HttpClient` appropriate for the given URL scheme.
 /// Uses TLS + HTTP/2 for `https://`, plaintext for `http://`.
-fn make_http_client(base_url: &str) -> HttpClient {
+pub(crate) fn make_http_client(base_url: &str) -> HttpClient {
     if base_url.starts_with("https://") {
         let tls_config = Arc::new(
             rustls::ClientConfig::builder()

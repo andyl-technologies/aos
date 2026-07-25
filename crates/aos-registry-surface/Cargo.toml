@@ -1,0 +1,23 @@
+[package]
+name = "aos-registry-surface"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004): loose git objects, SSHSIG verification, signed tags, and refs — compiles to wasm32 for in-browser verification"
+
+[dependencies]
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+semver = { workspace = true }
+flate2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde = { workspace = true }
+# The committed-file TOML schemas (registry.toml root config, keys.toml trust
+# roster) and the package-TOML document parser used by the wasm-clean indexer
+# (RFC-0004 Phase 5). Pure-Rust and wasm32-clean; `aos-package` re-exports these
+# so its native git-CLI path keeps the same paths.
+toml = { workspace = true }
+# JSON (de)serialization for the cache-stack database storage form
+# (`stack::StackNode::to_json`). Pure-Rust and wasm32-clean.
+serde_json = { workspace = true }

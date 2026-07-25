@@ -524,8 +524,8 @@
       "sysroot = true" "published server is marked sysroot"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "$TOPLEVEL_HASH" "published server metadata records store hash"
-    assert_file_exists "$REG_DIR/closures/$TOPLEVEL_HASH" \
-      "published server closure metadata exists"
+    assert_file_exists "$REG_DIR/store/$(printf %.2s "$TOPLEVEL_HASH")/$TOPLEVEL_HASH" \
+      "published server store record exists"
 
     $APR verify --registry system-reg > /tmp/system-verify.out 2>&1 || {
       cat /tmp/system-verify.out

@@ -127,7 +127,6 @@
         help2man
         ;
     };
-
   };
 
   manifestTools = mkManifestTools {

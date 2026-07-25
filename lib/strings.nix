@@ -263,6 +263,17 @@ rec {
   ## `int -> int -> string`
   fixedWidthNumber = width: n: fixedWidthString width "0" (builtins.toString n);
 
+  ## Percent-encode a string for use in URI components and `data:` URLs.
+  ##
+  ## builtins.replaceStrings scans the input and emits replacements without
+  ## rescanning the output, so listing `%` first is safe.
+  ## # Type
+  ## `string -> string`
+  uriEncode =
+    builtins.replaceStrings
+    ["%" "\n" "\r" "\t" " " "!" "\"" "#" "$" "&" "'" "(" ")" "*" "+" "," "/" ":" ";" "<" "=" ">" "?" "@" "[" "\\" "]" "^" "`" "{" "|" "}"]
+    ["%25" "%0A" "%0D" "%09" "%20" "%21" "%22" "%23" "%24" "%26" "%27" "%28" "%29" "%2A" "%2B" "%2C" "%2F" "%3A" "%3B" "%3C" "%3D" "%3E" "%3F" "%40" "%5B" "%5C" "%5D" "%5E" "%60" "%7B" "%7C" "%7D"];
+
   ## # Shell escaping
 
   ## Escape a string for safe use as a shell argument.

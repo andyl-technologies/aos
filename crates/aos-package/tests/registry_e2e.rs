@@ -3,7 +3,7 @@ mod common;
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
 use aos_package::registry::{
-    Registry, fetch, git, keys, objectstore, pack, static_upload, store_path_hash,
+    Registry, fetch, git, keys, objectstore, pack, static_upload, store_path_hash, tuf,
 };
 use aos_package::registry_ops::{
     ReleaseTreeOptions, release_registry_tree, resolve_mirrors_for_registry,
@@ -25,12 +25,29 @@ fn publish_release(
 ) -> Result<(String, String, Vec<u8>)> {
     let store_path = fixture.write_package("hello", version)?;
     fixture.write_closure(&store_path)?;
-    let commit = fixture.commit_all(&format!("release {version}"))?;
+    fixture.commit_all(&format!("release {version}"))?;
+    let commit = commit_tuf_release_metadata(fixture, version)?;
     fixture.signed_tag(version, "HEAD")?;
     let channel_tag = fixture.signed_channel_tag_bytes(channel, version)?;
     fixture.set_branch(channel, "HEAD")?;
     fixture.publish_bare_origin()?;
     Ok((store_path, commit, channel_tag))
+}
+
+fn commit_tuf_release_metadata(fixture: &RegistryFixture, version: &str) -> Result<String> {
+    let changed = tuf::write_release_metadata_worktree(
+        fixture.source_path(),
+        fixture.name(),
+        &v(version),
+        &[tuf::MetadataSigningKey {
+            key_id: "initial".into(),
+            key_path: fixture.private_key_path().to_path_buf(),
+            key: fixture.trusted_key().to_string(),
+            role_key: true,
+        }],
+    )?;
+    assert!(changed, "TUF metadata should change for release {version}");
+    fixture.commit_all(&format!("TUF metadata {version}"))
 }
 
 async fn publish_full_pack(fixture: &RegistryFixture, version: &str) -> Result<String> {
@@ -120,6 +137,28 @@ fn assert_git_object_exists(repo: &Path, rev: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+fn git_stdout(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {} in {}", args.join(" "), repo.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_success(repo: &Path, args: &[&str]) -> Result<()> {
+    git_stdout(repo, args).map(|_| ())
 }
 
 const GIT_MATRIX_ENV: &str = "AOS_PACKAGE_TEST_GIT_MATRIX";
@@ -469,6 +508,7 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
     let options = ReleaseTreeOptions {
         version: v("1.1.0"),
         signing_key: fixture.private_key_path().to_string_lossy().into_owned(),
+        tuf_signing_keys: Vec::new(),
         channel: Some("stable".into()),
         init_channel: true,
         count: None,
@@ -497,6 +537,16 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         &fixture.printer(),
     )
     .await?;
+    let release_commit = git_stdout(fixture.source_path(), &["rev-parse", "1.1.0^{commit}"])?;
+    git_success(
+        fixture.source_path(),
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &source_commit,
+            &release_commit,
+        ],
+    )?;
 
     assert!(
         report
@@ -524,6 +574,18 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
                     .is_some_and(|name| name.starts_with("pack-") && name.ends_with(".pack"))
             })
     );
+    assert!(
+        uploaded
+            .path()
+            .join("releases/1/1/0/objects/pack")
+            .read_dir()?
+            .any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("pack-") && name.ends_with(".idx"))
+            })
+    );
 
     let server = StaticHttpServer::spawn(uploaded.path().to_path_buf()).await?;
     let config = fixture.signed_registry_config(server.base_url(), "stable");
@@ -539,8 +601,21 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
     )
     .await?;
 
-    assert_eq!(result.new_commit, source_commit);
+    assert_eq!(result.new_commit, release_commit);
     assert_eq!(state.floor.as_deref(), Some("1.1.0"));
+    for path in [
+        "tuf/root.json",
+        "tuf/targets.json",
+        "tuf/snapshot.json",
+        "tuf/timestamp.json",
+    ] {
+        let spec = format!("{release_commit}:{path}");
+        git_success(fixture.source_path(), &["cat-file", "-e", &spec])?;
+    }
+    assert_eq!(state.tuf_root_version, Some(1));
+    assert_eq!(state.tuf_targets_version, Some(1));
+    assert_eq!(state.tuf_snapshot_version, Some(1));
+    assert_eq!(state.tuf_timestamp_version, Some(1));
     let registry = Registry::load(fixture.cache_dir(), &config, "x86_64-linux")?;
     let package = registry.get("hello").expect("synced package exists");
     assert_eq!(package.store_path, store_path);
@@ -634,7 +709,8 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
     fixture.write_keys_toml()?;
     let v1_store_path = fixture.write_package("hello", "1.0.0")?;
     fixture.write_closure(&v1_store_path)?;
-    let v1_commit = fixture.commit_all("release 1.0.0")?;
+    fixture.commit_all("release 1.0.0")?;
+    let v1_commit = commit_tuf_release_metadata(&fixture, "1.0.0")?;
     fixture.signed_tag("1.0.0", "HEAD")?;
     let v1_channel_tag = fixture.signed_channel_tag_bytes("stable", "1.0.0")?;
     fixture.set_branch("stable", "HEAD")?;
@@ -672,7 +748,8 @@ async fn signed_channel_http_e2e_advances_persisted_bucket() -> Result<()> {
 
     let v2_store_path = fixture.write_package("hello", "1.1.0")?;
     fixture.write_closure(&v2_store_path)?;
-    let v2_commit = fixture.commit_all("release 1.1.0")?;
+    fixture.commit_all("release 1.1.0")?;
+    let v2_commit = commit_tuf_release_metadata(&fixture, "1.1.0")?;
     fixture.signed_tag("1.1.0", "HEAD")?;
     let v2_channel_tag = fixture.signed_channel_tag_bytes("stable", "1.1.0")?;
     fixture.set_branch("stable", "HEAD")?;

@@ -4,7 +4,7 @@
 //! git objects into the local registry repo with the least transfer. Three
 //! mechanisms are tried in order:
 //!
-//! 1. **AOS thin deltas** -- producer-published `delta-<base>.pack[.zst]`
+//! 1. **AOS thin deltas** -- producer-published `delta-<base>.pack.zst`
 //!    files under `releases/<release>/objects/pack/`, usable when the
 //!    client retains the base release (see [`retained_set`]).
 //! 2. **Full-pack anchors** -- a stock-git self-contained pack at the
@@ -18,13 +18,12 @@
 //! and indexes the packs.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use tokio::io::AsyncWriteExt as _;
 
 use crate::download::join_cache_url;
-use crate::gitcmd;
 use crate::registry::pack;
 use aos_core::output::Printer;
 
@@ -302,18 +301,20 @@ async fn fetch_delta(
     for compressed in [true, false] {
         let suffix = if compressed { ".pack.zst" } else { ".pack" };
         let relative = format!("releases/{release}/objects/pack/delta-{base}{suffix}");
-        let Some(bytes) = get_optional(origin, &relative).await? else {
-            continue;
-        };
-        let pack_bytes = if compressed {
-            zstd::stream::decode_all(Cursor::new(bytes)).context("decompressing delta pack")?
-        } else {
-            bytes
-        };
         let pack_path = local_pack_path(repo_dir, &format!("delta-{target}-from-{base}.pack"))?;
-        tokio::fs::write(&pack_path, pack_bytes)
-            .await
-            .with_context(|| format!("writing {}", pack_path.display()))?;
+        let download_path = if compressed {
+            pack_path.with_extension("pack.zst")
+        } else {
+            pack_path.clone()
+        };
+        if !download_optional_to_file(origin, &relative, &download_path).await? {
+            continue;
+        }
+        if compressed {
+            pack::zstd_decompress(&download_path, None)
+                .await
+                .context("decompressing delta pack")?;
+        }
         pack::index_pack_fix_thin(repo_dir, &pack_path).await?;
         return Ok(Some(FetchStep::Delta {
             target: target.clone(),
@@ -327,7 +328,7 @@ async fn fetch_delta(
 /// Try to download and index the self-contained full pack for `version`.
 ///
 /// Reads the release's `objects/info/packs` listing, downloads the first
-/// pack (verifying or regenerating its `.idx`), and returns `Ok(None)` when
+/// pack and indexes it (regenerating its `.idx`), and returns `Ok(None)` when
 /// the release publishes no full pack.
 async fn fetch_full_pack(
     repo_dir: &Path,
@@ -345,25 +346,14 @@ async fn fetch_full_pack(
     };
 
     let pack_relative = format!("releases/{release}/objects/pack/{pack_name}");
-    let Some(pack_bytes) = get_optional(origin, &pack_relative).await? else {
-        return Ok(None);
-    };
     let pack_path = local_pack_path(repo_dir, &pack_name)?;
-    tokio::fs::write(&pack_path, pack_bytes)
-        .await
-        .with_context(|| format!("writing {}", pack_path.display()))?;
-
-    let idx_name = pack_name.trim_end_matches(".pack").to_string() + ".idx";
-    let idx_relative = format!("releases/{release}/objects/pack/{idx_name}");
-    if let Some(idx_bytes) = get_optional(origin, &idx_relative).await? {
-        let idx_path = local_pack_path(repo_dir, &idx_name)?;
-        tokio::fs::write(&idx_path, idx_bytes)
-            .await
-            .with_context(|| format!("writing {}", idx_path.display()))?;
-        pack::verify_pack_index(repo_dir, &idx_path).await?;
-    } else {
-        pack::index_pack(repo_dir, &pack_path).await?;
+    if !download_optional_to_file(origin, &pack_relative, &pack_path).await? {
+        return Ok(None);
     }
+
+    // libgit2's pack writer regenerates and verifies the index, so the
+    // server-published `.idx` is neither downloaded nor trusted.
+    pack::index_pack(repo_dir, &pack_path).await?;
 
     Ok(Some(FetchStep::Full {
         version: version.clone(),
@@ -378,19 +368,12 @@ async fn git_fetch_release(
     target: &semver::Version,
 ) -> Result<FetchStep> {
     let refspec = release_refspec(target);
-    let output = gitcmd::transport_async()
-        .arg("-C")
-        .arg(repo_dir)
-        .args(["fetch", "--force", origin, &refspec])
-        .output()
+    // Leading `+` forces the ref update (the historical `git fetch --force`);
+    // the stored FetchStep keeps the logical, unforced refspec.
+    let forced = format!("+{refspec}");
+    crate::registry::repo::fetch(repo_dir, origin, std::slice::from_ref(&forced))
         .await
-        .with_context(|| format!("running git fetch {refspec}"))?;
-    if !output.status.success() {
-        bail!(
-            "git fetch fallback failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
+        .with_context(|| format!("git fetch {refspec}"))?;
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 
@@ -413,6 +396,54 @@ async fn get_optional(origin: &str, relative: &str) -> Result<Option<Vec<u8>>> {
             .with_context(|| format!("reading {url}"))?
             .to_vec(),
     ))
+}
+
+/// GET a static origin file directly to `dest`, mapping HTTP 404 to `Ok(false)`.
+async fn download_optional_to_file(origin: &str, relative: &str, dest: &Path) -> Result<bool> {
+    let url = join_cache_url(origin, relative);
+    let mut response = reqwest::get(&url)
+        .await
+        .with_context(|| format!("fetching {url}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if !response.status().is_success() {
+        bail!("GET {url} failed with {}", response.status());
+    }
+
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("download destination has no parent: {}", dest.display()))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("creating {}", parent.display()))?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".tmp-download-")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary download in {}", parent.display()))?
+        .into_temp_path();
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("reading {url}"))?
+    {
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("writing {}", tmp.display()))?;
+    }
+    file.flush()
+        .await
+        .with_context(|| format!("flushing {}", tmp.display()))?;
+    drop(file);
+    if dest.exists() {
+        std::fs::remove_file(dest).with_context(|| format!("removing {}", dest.display()))?;
+    }
+    tmp.persist(dest)
+        .map_err(|err| anyhow::anyhow!("persisting {}: {err}", dest.display()))?;
+    Ok(true)
 }
 
 /// Parse pack names from a git `objects/info/packs` listing (`P <name>` lines).

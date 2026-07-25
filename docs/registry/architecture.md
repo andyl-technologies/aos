@@ -238,10 +238,12 @@ file serves HTTP and local-FS alike. Because all loose objects are centralized a
 root `/objects/`, alternates now serve **pack discovery + the release index**, not
 object completeness. Conventionally-named **full packs** (`pack-<sha256>.pack` +
 `.idx`, listed in `info/packs`) restore speed; **loose objects** guarantee
-correctness even if no pack helps. A stock client never touches `/channels/**` or any
-`delta-*.pack` (thin deltas are deliberately *not* listed in `info/packs`, since a
-dumb client cannot apply a thin pack). sha256 + dumb HTTP requires a git client
-that supports the sha256 object format (the dumb protocol has no capability
+correctness even if no pack helps. AOS clients regenerate pack indexes locally
+rather than trusting server `.idx` files. A stock client never touches
+`/channels/**` or any `delta-*.pack.zst` (thin deltas are deliberately *not*
+listed in `info/packs`, since a dumb client cannot apply a thin pack). sha256 +
+dumb HTTP requires a git client that supports the sha256 object format (the dumb
+protocol has no capability
 negotiation). See [`http-layout.md`](./http-layout.md) §"stock git compatibility".
 
 ### 4.2 `apm` (the AOS package manager)
@@ -258,11 +260,11 @@ efficiency. End to end (TARGET):
                  verify sig + name-binding (name == <semver>)
     4. anti-rollback: reject if <semver> below the monotonic floor
     5. resolve   walk delta graph C→T (current→target):
-                   prefer delta-<B>.pack whose base B is retained;
+                   prefer delta-<B>.pack.zst whose base B is retained;
                    else walk releases back to a usable delta / full pack;
                    else full pack; else loose objects over dumb HTTP
-    6. fetch     GET .../pack/delta-<…>.pack[.zst] (or full pack / loose)
-                 zstd -d | git index-pack --fix-thin
+    6. fetch     GET .../pack/delta-<…>.pack.zst (or full pack / loose)
+                 zstd -d, then local libgit2 pack indexing
     7. checkout  read package TOMLs from the materialized tree
 ```
 
@@ -294,22 +296,18 @@ This single principle explains most of the non-obvious design choices:
 
 | Producer pays (once) | Consumer saves (forever) |
 |---|---|
-| `pack-objects --revs --no-reuse-object --no-reuse-delta --window=350 --depth=50 --threads=0 --compression=0` — exhaustive delta search | smaller packs → less bytes transferred |
-| **Capped `--depth` (≈50)** despite cheap producer CPU | shallow delta chains → less consumer CPU to reconstruct |
-| `--compression=0` then `zstd --ultra -22 --long=27` over the whole pack | far smaller `.pack.zst` than zlib-9, still git-valid |
+| libgit2 full-pack generation plus `.idx` emission | stock dumb Git gets conventional pack acceleration |
+| Rust thinpack generation with bounded delta-base search | smaller incremental packs → less bytes transferred |
+| Stored-entry thin packs then `zstd --ultra -22 --long=27` | far smaller thin-delta transport while the decompressed pack stays git-valid |
 | Emitting a **guaranteed, walkable delta graph** (full pack at every `X.Y.0`; deltas to last major/minor/patches) | consumers can *plan* a minimal fetch without probing |
 | Materializing **all objects loose** + conventionally-named full packs | any client (even stock dumb git) is always correct |
 | Trying multiple delta bases and shipping the smallest | best-case incremental size with no consumer effort |
 
-Two design knobs are *explicitly asymmetric*. **Window** is the free lever — the
-producer can search exhaustively because it pays the CPU once. **Depth** is capped
-even though the producer could afford deeper chains, because deep delta chains shift
-reconstruction cost onto *every consumer*; the cost asymmetry is the whole point, so
-we never trade consumer CPU for producer convenience. The zstd trick is the same
-logic: git's pack format hard-codes per-object zlib, so the producer emits a
-*level-0* (delta-encoded but not entropy-coded) pack and lets zstd do the entropy
-coding over the whole stream — more producer work, smaller consumer download, pack
-stays git-valid. All of this is detailed in
+Two design knobs remain *explicitly asymmetric*: the producer can spend more CPU
+searching for better thin-pack encodings, but it should not create deep chains
+that shift reconstruction cost onto *every consumer*. The zstd trick follows the
+same logic for thin deltas: the producer emits a stored-entry, delta-encoded pack
+and lets zstd do entropy coding over the whole stream. All of this is detailed in
 [`packs-and-deltas.md`](./packs-and-deltas.md) and [`publishing.md`](./publishing.md).
 
 ---
@@ -325,9 +323,9 @@ reader never sees a torn state:
   1. commit       apr stages package TOMLs/closures → release commit
   2. tag/sign     refs/tags/<semver>  (annotated, Ed25519, pure signed pointer)
   3. objects      write loose objects to the ROOT /objects/<xx>/<62hex>
-  4. pack/delta   per-release pack-only /releases/*/objects/pack/: full pack at X.Y.0;
-                  thin delta-<from>.pack per the delta scheme
-                  --compression=0  →  zstd --ultra -22 --long=27
+  4. pack/delta   per-release pack-only /releases/*/objects/pack/: full pack + .idx at X.Y.0;
+                  thin delta-<from>.pack.zst per the delta scheme
+                  stored-entry thin pack  →  zstd --ultra -22 --long=27
   5. index        git update-server-info  (regenerate info/refs, objects/info/packs)
                   write objects/info/alternates (relative ../releases/*/objects, new→old)
   6. partitions   advance N of /channels/<name>/00..ff to the new semver tag (signed)
@@ -365,7 +363,7 @@ would block a decrement anyway. See
 | Tamper / MITM | signed semver + partition tags pin every object by sha256; loose-object Merkle DAG |
 | Cross-serving a valid tag at the wrong path | **name-binding**: embedded tag name must equal the serving path's expected name |
 | Rollback to an older release | consumer **monotonic floor** (never moves below current release) |
-| Stale / frozen mirror | **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + the consumer's **max-staleness** policy + the monotonic anti-rollback floor. Weaker than an in-band signed expiry against a frozen-but-validly-signed mirror — no `valid_until` exists |
+| Stale / frozen mirror | AOS-TUF `timestamp.json` gives signed expiry over release metadata; **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + consumer **max-staleness** + the monotonic anti-rollback floor bound rollout pointers |
 
 Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 
@@ -386,8 +384,8 @@ Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 - [`versioning-and-channels.md`](./versioning-and-channels.md) — semver,
   channels-as-branches, frontier head, the 256-partition rollout, bucket selection,
   anti-rollback.
-- [`packs-and-deltas.md`](./packs-and-deltas.md) — pack-objects, thin vs full
-  packs, the delta graph, client resolution + retention, zstd.
+- [`packs-and-deltas.md`](./packs-and-deltas.md) — libgit2 full packs, Rust
+  thin packs, the delta graph, client resolution + retention, zstd.
 - [`signing-and-trust.md`](./signing-and-trust.md) — signed tag objects as pure
   signed pointers, name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
 - [`publishing.md`](./publishing.md) — the producer pipeline end to end.

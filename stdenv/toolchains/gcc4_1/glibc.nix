@@ -37,14 +37,29 @@ in
               cd glibc-2.5
               chmod -R u+w .
 
+              # Avoid the x86_64 fixed vsyscall page so this tier's Bash and
+              # other static tools run on kernels without legacy emulation.
+              ${prev.patch}/bin/patch -p1 < ${./patches/glibc-2.5-no-fixed-vsyscall.patch}
+
+              # The preceding cross tier's static sed 4.1.2 crashes in
+              # in-place mode on newer 6.12 kernels. Stream each transform
+              # back into the existing inode so configure keeps its mode.
+              rewrite_with_prev_sed() {
+                file="$1"
+                shift
+                ${prev.sed}/bin/sed "$@" "$file" > "$file.tmp-sed"
+                ${prev.coreutils}/bin/cat "$file.tmp-sed" > "$file"
+                ${prev.coreutils}/bin/rm "$file.tmp-sed"
+              }
+
               # glibc configure hardcodes /bin/pwd which doesn't exist in sandbox
-              sed -i 's|/bin/pwd|pwd|g' configure
+              rewrite_with_prev_sed configure 's|/bin/pwd|pwd|g'
 
               # vm86 is a versioned symbol (vm86@@GLIBC_2.3.4) — make-syscalls.sh only
               # generates rules for versioned symbols when building shared libraries.
               # With --disable-shared, the rule is skipped but the i386 Makefile still
               # lists vm86 in sysdep_routines, causing "No rule to make target vm86.o".
-              sed -i '/^sysdep_routines/s/ vm86//' sysdeps/unix/sysv/linux/i386/Makefile 2>/dev/null || true
+              rewrite_with_prev_sed sysdeps/unix/sysv/linux/i386/Makefile '/^sysdep_routines/s/ vm86//'
 
               # Out-of-tree build (required by glibc)
               mkdir -p "$TMPDIR/build"
@@ -68,7 +83,7 @@ in
           exec REAL_GCC "$@"
         fi
         WRAPPER
-              sed -i "s|REAL_GCC|${gcc}/bin/gcc|g" "$TMPDIR/fakebin/gcc-wrap"
+              rewrite_with_prev_sed "$TMPDIR/fakebin/gcc-wrap" "s|REAL_GCC|${gcc}/bin/gcc|g"
               chmod +x "$TMPDIR/fakebin/gcc-wrap"
 
               CC="$TMPDIR/fakebin/gcc-wrap" \
@@ -83,6 +98,8 @@ in
                 --disable-shared \
                 --disable-profile \
                 --disable-nscd \
+                --enable-add-ons=nptl \
+                --enable-kernel=2.6.0 \
                 --enable-static-nss \
                 --without-gd \
                 --without-selinux \
