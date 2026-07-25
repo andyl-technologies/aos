@@ -83,6 +83,8 @@ class QemuMachine(Machine):
     fw_cfg_path: str | None
     disk_size_mib: int | None
     var_size_mib: int | None
+    extra_disks: list[dict[str, object]]
+    extra_disk_copies: list[str]
     memory_mib: int
     vcpu_count: int
     mac: str
@@ -120,6 +122,7 @@ class QemuMachine(Machine):
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
         var_size_mib: int | None = None,
+        extra_disks: list[dict[str, object]] | None = None,
         tpm: bool = False,
         swtpm_bin: str | None = None,
     ) -> None:
@@ -133,6 +136,8 @@ class QemuMachine(Machine):
         self.fw_cfg_path = fw_cfg
         self.disk_size_mib = disk_size_mib
         self.var_size_mib = var_size_mib
+        self.extra_disks = extra_disks or []
+        self.extra_disk_copies = []
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
         self.mac = mac
@@ -200,6 +205,17 @@ class QemuMachine(Machine):
         # store files on certain filesystems.
         reflinked = clone_or_copy(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
+        self.extra_disk_copies = []
+        for index, disk in enumerate(self.extra_disks):
+            size_mib = disk.get("sizeMiB")
+            if not isinstance(size_mib, int) or size_mib <= 0:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid sizeMiB"
+                )
+            path = str(self.tmpdir / f"{self.name}-extra-{index}.img")
+            with open(path, "wb") as extra:
+                extra.truncate(size_mib * 1024 * 1024)
+            self.extra_disk_copies.append(path)
         copy_method = "reflink" if reflinked else "copy"
         if self.metadata_src is not None:
             shutil.copyfile(self.metadata_src, self.metadata_copy)
@@ -444,6 +460,21 @@ class QemuMachine(Machine):
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
 
+        for index, (disk, path) in enumerate(
+            zip(self.extra_disks, self.extra_disk_copies, strict=True)
+        ):
+            serial = disk.get("serial")
+            if not isinstance(serial, str) or not serial:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid serial"
+                )
+            drive_id = f"extra{index}"
+            argv += [
+                "-drive", f"id={drive_id},file={path},format=raw,if=none",
+                "-device",
+                f"virtio-blk-pci,drive={drive_id},serial={serial}",
+            ]
+
         # Attach native provisioning input for either boot shape. The initrd
         # probes the `aos-metadata` filesystem label before cloud DMI routing.
         if self.metadata_src is not None:
@@ -563,6 +594,16 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+
+    def reboot_without_metadata(self, timeout: float = 600.0) -> None:
+        """Reboot after detaching the optional metadata ISO.
+
+        This models a post-provision control-plane outage. The root disk and
+        firmware state are preserved, but the next QEMU launch omits the
+        config-drive so the guest must use its last-known-good runtime input.
+        """
+        self.metadata_src = None
+        self.reboot(timeout=timeout)
 
     # ------------------------------------------------------------------
     def reboot_expect_rejected(

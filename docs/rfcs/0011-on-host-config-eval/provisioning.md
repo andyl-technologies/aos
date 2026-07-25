@@ -32,7 +32,11 @@ authentication, and the boundary between the golden image and host policy.
 7. **The fallback uses the same schema.** With no `host.nix`, AOS evaluates the
    image's default `aos.provisioning.storage` module and feeds the result
    through the same Rust validator and renderer. There is no separately
-   maintained baked `repart.d` policy.
+   maintained baked `repart.d` policy. Unlike an earlier design that evaluated
+   the same module during image assembly and baked its rendered output, the
+   final design evaluates both arms in the initrd. This keeps storage policy
+   out of the golden image and makes the XOR differ only by whether an
+   authenticated operator module is present.
 8. **No build on the host.** Early and full evaluation are pure value
    computation over the in-image base library and authenticated source. They
    cannot instantiate or realize derivations.
@@ -114,7 +118,7 @@ sizeMin    systemd size string
 sizeMax    optional systemd size string
 weight     positive integer
 format     null, ext4, vfat, or swap
-uuid       optional operator-declared partition UUID
+uuid       optional operator-declared partition UUID; otherwise AOS-generated
 grow       whether this partition consumes remaining free space
 growFs     whether repart may grow an existing filesystem
 priority   deterministic placement priority
@@ -124,6 +128,14 @@ The root-disk default (`device = null`) is resolved from the parent of the
 booted `root-a` partition. Explicit devices must be stable paths. The renderer
 groups partitions by resolved device and invokes `systemd-repart` once per
 device.
+
+On the first provisioning boot AOS generates a random UUID for the reserved GPT
+marker. Every omitted partition UUID is a deterministic RFC 9562 version-8 UUID
+derived from that marker UUID plus the device, logical key, and label. On later
+boots the marker UUID is read back from GPT and supplies the same namespace.
+Consequently UUIDs are stable and machine-specific without `machine-id`,
+`systemd-repart --seed`, or provider-specific identity. An explicit operator
+UUID is always retained unchanged.
 
 The validator rejects:
 
@@ -137,6 +149,14 @@ The validator rejects:
 - formats whose tools are absent from the initrd;
 - raw INI, arbitrary commands, and caller-chosen output paths.
 
+These rules deliberately tighten two earlier schema sketches: device paths are
+limited to `/dev/disk/by-id/...`, rather than any absolute `/dev` path, and GPT
+labels are unique across the whole plan, rather than merely per device. The
+stricter contract prevents a transient kernel name or an ambiguous
+`/dev/disk/by-partlabel` lookup from becoming provisioning state. Operators
+that need repeated human-facing names use distinct GPT labels and mount by
+their explicit UUIDs.
+
 `/var` remains fixed substrate in v1. Measured images leave it raw so
 `aos-var-crypt` can create LUKS2 and enroll the TPM token. Unmeasured images
 format it as ext4. General filesystem mounts remain stage-2 configuration.
@@ -147,6 +167,12 @@ matching DPS root-verity GUID. Operator data stays `linux-generic`. This avoids
 same-type matching collisions without enabling DPS discovery:
 `systemd-gpt-auto-generator` does not own AOS mounts; root and `/var` continue
 to mount explicitly by partlabel.
+
+The dedicated DPS type is also why the renderer does not emit no-op definitions
+for ESP, root-a, or root-a-hash. An earlier draft required those definitions to
+protect a generic-typed root from repart's same-type matching. With immutable
+partitions isolated in protected type space and no definitions requesting
+those types, omitting the no-op definitions is the smaller and safer equivalent.
 
 The marker definition sorts before operator partitions, is a fixed 1 MiB, and
 sets a high repart `Priority=` so space pressure cannot drop the commit record.
@@ -282,6 +308,12 @@ compared with the live disks using `systemd-repart --dry-run`; pending work is
 reported as divergence and requires factory reset. Missing or invalid current
 metadata warns and falls back to the last fully evaluated runtime input.
 Neither case can reopen initrd disk mutation.
+
+The coherence check is intentionally one-sided because repart is additive.
+It detects intent that needs a new or larger partition. It cannot prove that a
+removed declaration, a requested shrink, or a requested reformat matches the
+committed disk. `coherent` therefore means "repart has no additive work," not
+"the current declaration is a complete bidirectional description of GPT."
 
 After `/var` is mounted, AOS records immutable first-commit evidence at
 `/var/lib/aos-provisioning/audit.json` and `initial-plan.json`, including the

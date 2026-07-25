@@ -21,6 +21,11 @@
   # This is a test fixture, not the universal production image.
   aos.roles.server.enable = true;
 
+  # Keep secure/measured-boot VM iteration practical. Production server images
+  # retain the module default (zstd-19); this throwaway-key fixture trades only
+  # test artifact size for substantially faster compression.
+  aos.image.erofsCompressionLevel = 1;
+
   # The server profile sets the test fixtures to `bundle = mkDefault false`
   # to keep them out of the production image. This is a test-only fixture
   # system, so re-bundle the guest agent: the fleet harness activates it on

@@ -145,7 +145,7 @@ Below is drop-in RFC markdown. Each checklist item is reproduced verbatim with a
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
   - **Done when** `tests/fleet/rfc-0011-metadata-agent.nix` (DO/OpenStack recorded fixtures) asserts: the initrd `aos metadata` agent seeds static networking from platform metadata, and on a **DHCP-less** profile stage-2 reaches the registry (a fetch over the configured interface succeeds) where it would otherwise time out. The accepted provisioning input and its hashes survive switch-root unchanged.
 
-- [ ] **Authenticated first-boot `host.nix` provisioning projection** with the
+- [x] **Authenticated first-boot `host.nix` provisioning projection** with the
       base module default as the no-input fallback.
   - **Done when** `tests/fleet/provisioning-boot.nix` asserts: literal
     `host.nix` setting `aos.provisioning.storage` changes the first-boot

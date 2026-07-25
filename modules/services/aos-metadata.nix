@@ -228,6 +228,7 @@ in {
             echo "aos-metadata: authorization failed after provisioning; ignoring the new input" >&2
             exit 0
           fi
+          echo "aos-metadata: authorizing ${trust} host.nix failed; refusing first-boot provisioning" >&2
           exit 1
         '';
       };
@@ -258,12 +259,17 @@ in {
         script = ''
           committed_arg=""
           if [ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 ]; then
-            committed_arg="--committed-source operator"
+            marker=/dev/disk/by-partlabel/aos-provenance-operator-v1
+            marker_uuid=$(${pkgs.util-linux}/bin/lsblk -ndo PARTUUID "$marker")
+            committed_arg="--committed-source operator --marker-uuid $marker_uuid"
           elif [ -e /dev/disk/by-partlabel/aos-provenance-fallback-v1 ]; then
-            committed_arg="--committed-source fallback"
+            marker=/dev/disk/by-partlabel/aos-provenance-fallback-v1
+            marker_uuid=$(${pkgs.util-linux}/bin/lsblk -ndo PARTUUID "$marker")
+            committed_arg="--committed-source fallback --marker-uuid $marker_uuid"
           fi
 
-          if [ -n "$committed_arg" ] && [ ! -e ${cfg.stashDir}/host.nix ]; then
+          if [ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 ] \
+            && [ ! -e ${cfg.stashDir}/host.nix ]; then
             echo "aos-provisioning: no current authorized host.nix; skipping advisory storage drift evaluation" >&2
             exit 0
           fi
@@ -279,6 +285,7 @@ in {
             printf '%s\n' divergent > ${cfg.stashDir}/storage-coherence
             exit 0
           fi
+          echo "aos-provisioning: restricted provisioning evaluation failed; refusing first-boot disk mutation" >&2
           exit 1
         '';
       };

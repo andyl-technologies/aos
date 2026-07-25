@@ -131,7 +131,7 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
     transport: str = entry["transport"]
     if transport == "firecracker":
-        return FirecrackerMachine(
+        machine = FirecrackerMachine(
             name=entry["name"],
             kernel=entry["kernel"],
             initrd=entry["initrd"],
@@ -141,26 +141,30 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             vcpu_count=entry["vcpu_count"],
             tmpdir=str(tmpdir),
         )
-    return QemuMachine(
-        name=entry["name"],
-        boot=entry.get("boot", "kernel"),
-        kernel=entry.get("kernel"),
-        initrd=entry.get("initrd"),
-        disk=entry["disk"],
-        metadata=entry.get("metadata"),
-        firmware_code=entry.get("firmware_code"),
-        firmware_vars=entry.get("firmware_vars"),
-        fw_cfg=entry.get("fw_cfg"),
-        disk_size_mib=entry.get("disk_size_mib"),
-        var_size_mib=entry.get("var_size_mib"),
-        tpm=entry.get("tpm", False),
-        swtpm_bin=entry.get("swtpm_bin"),
-        memory_mib=entry["memory_mib"],
-        vcpu_count=entry["vcpu_count"],
-        mac=entry["mac"],
-        ip=entry["ip"],
-        tmpdir=str(tmpdir),
-    )
+    else:
+        machine = QemuMachine(
+            name=entry["name"],
+            boot=entry.get("boot", "kernel"),
+            kernel=entry.get("kernel"),
+            initrd=entry.get("initrd"),
+            disk=entry["disk"],
+            metadata=entry.get("metadata"),
+            firmware_code=entry.get("firmware_code"),
+            firmware_vars=entry.get("firmware_vars"),
+            fw_cfg=entry.get("fw_cfg"),
+            disk_size_mib=entry.get("disk_size_mib"),
+            var_size_mib=entry.get("var_size_mib"),
+            extra_disks=entry.get("extra_disks", []),
+            tpm=entry.get("tpm", False),
+            swtpm_bin=entry.get("swtpm_bin"),
+            memory_mib=entry["memory_mib"],
+            vcpu_count=entry["vcpu_count"],
+            mac=entry["mac"],
+            ip=entry["ip"],
+            tmpdir=str(tmpdir),
+        )
+    machine.expect_agent = entry.get("expect_agent", True)
+    return machine
 
 
 def _dump_serial_logs(machines: list[Machine]) -> None:
@@ -201,6 +205,9 @@ DEFAULT_SYSTEM_READY_TIMEOUT: float = 60.0
 
 def _wait_agents(machines: list[Machine], deadline: float) -> None:
     for m in machines:
+        if not m.expect_agent:
+            log.info("Skipping agent wait for expected fail-closed machine %s", m.name)
+            continue
         log.info("Waiting for %s agent...", m.name)
         # wait_ready blocks until the agent answers a PING (raising
         # RuntimeError on the deadline). For the qemu transport it also
@@ -231,6 +238,8 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
         "systemctl is-system-running"
     ).format(t=timeout)
     for m in machines:
+        if not m.expect_agent:
+            continue
         log.info("Waiting for %s system to finish booting...", m.name)
         try:
             exit_code, stdout, _ = m.execute(cmd, timeout=timeout + 10)

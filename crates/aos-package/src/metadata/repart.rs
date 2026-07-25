@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Directory below the metadata stash for rendered definitions.
 pub const REPART_DIR: &str = "repart.d";
@@ -137,8 +139,8 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
         if partition.grow && !grow_devices.insert(device) {
             bail!("device '{device}' has more than one grow partition");
         }
-        if partition.partition_type == "swap" && partition.format.as_deref() != Some("swap") {
-            bail!("swap partition '{name}' must use format = \"swap\"");
+        if (partition.partition_type == "swap") != (partition.format.as_deref() == Some("swap")) {
+            bail!("partition '{name}' must use type = \"swap\" exactly when format = \"swap\"");
         }
         if !matches!(
             partition.format.as_deref(),
@@ -171,9 +173,10 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
 /// replaced.
 pub fn render_provisioning_plan(
     stash_dir: &Path,
-    plan: &ProvisioningPlan,
+    plan: &mut ProvisioningPlan,
     measured_boot: bool,
     marker_label: &str,
+    marker_uuid: &str,
 ) -> Result<Vec<PathBuf>> {
     validate_provisioning_plan(plan, measured_boot)?;
     if !matches!(
@@ -182,6 +185,8 @@ pub fn render_provisioning_plan(
     ) {
         bail!("unsupported provisioning marker label '{marker_label}'");
     }
+    let marker_uuid = normalize_marker_uuid(marker_uuid)?;
+    assign_missing_partition_uuids(plan, &marker_uuid);
     std::fs::write(
         stash_dir.join(STORAGE_PLAN_FILE),
         serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
@@ -235,7 +240,7 @@ pub fn render_provisioning_plan(
             std::fs::write(
                 &sentinel,
                 format!(
-                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={marker_label}\nSizeMinBytes=1M\nSizeMaxBytes=1M\nPriority=1000000\n"
+                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={marker_label}\nUUID={marker_uuid}\nSizeMinBytes=1M\nSizeMaxBytes=1M\nPriority=1000000\n"
                 ),
             )
             .with_context(|| format!("writing {}", sentinel.display()))?;
@@ -245,6 +250,73 @@ pub fn render_provisioning_plan(
     std::fs::write(stash_dir.join(REPART_TARGETS_FILE), targets)
         .context("writing repart target index")?;
     Ok(written)
+}
+
+/// Generates a random RFC 9562 version-4 UUID for a new GPT marker.
+pub fn generate_marker_uuid() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format_uuid(bytes)
+}
+
+/// Validates and normalizes an existing GPT marker UUID.
+///
+/// # Errors
+///
+/// Returns an error unless `value` is a canonical hyphenated UUID.
+pub fn normalize_marker_uuid(value: &str) -> Result<String> {
+    validate_uuid(value)?;
+    Ok(value.to_ascii_lowercase())
+}
+
+fn assign_missing_partition_uuids(plan: &mut ProvisioningPlan, marker_uuid: &str) {
+    for (name, partition) in &mut plan.storage.partitions {
+        if partition.uuid.is_some() {
+            continue;
+        }
+        let device = partition.device.as_deref().unwrap_or("root");
+        let mut digest = Sha256::new();
+        digest.update(b"aos.provisioning.partition-uuid/v1\0");
+        digest.update(marker_uuid.as_bytes());
+        digest.update(b"\0");
+        digest.update(device.as_bytes());
+        digest.update(b"\0");
+        digest.update(name.as_bytes());
+        digest.update(b"\0");
+        digest.update(partition.label.as_bytes());
+        let output = digest.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&output[..16]);
+        // RFC 9562 UUID version 8 reserves the payload for application-defined
+        // deterministic schemes. Keep the RFC variant bits canonical.
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        partition.uuid = Some(format_uuid(bytes));
+    }
+}
+
+fn format_uuid(bytes: [u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
 }
 
 fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {

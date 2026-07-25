@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
 use super::repart::{
-    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, render_provisioning_plan,
+    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, generate_marker_uuid,
+    normalize_marker_uuid, render_provisioning_plan,
 };
 use super::stash::{Stash, sha256_hex};
 
@@ -96,6 +97,8 @@ pub struct EvalProvisioningOptions {
     pub measured_boot: bool,
     /// Existing committed source when evaluating advisory post-commit drift.
     pub committed_source: Option<ProvisioningSource>,
+    /// Existing GPT marker UUID used as the namespace for generated UUIDs.
+    pub marker_uuid: Option<String>,
 }
 
 /// Provenance arm recorded in the durable GPT marker.
@@ -262,7 +265,7 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let plan: ProvisioningPlan =
+    let mut plan: ProvisioningPlan =
         serde_json::from_slice(&output.stdout).context("parsing evaluated provisioning plan")?;
     let source = if host_path.is_file() {
         ProvisioningSource::Operator
@@ -281,7 +284,18 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
     let marker_label = opts
         .committed_source
         .map_or(PENDING_LABEL, ProvisioningSource::committed_label);
-    render_provisioning_plan(&opts.stash_dir, &plan, opts.measured_boot, marker_label)?;
+    let marker_uuid = match opts.marker_uuid.as_deref() {
+        Some(value) => normalize_marker_uuid(value)
+            .with_context(|| format!("parsing committed provisioning marker UUID '{value}'"))?,
+        None => generate_marker_uuid(),
+    };
+    render_provisioning_plan(
+        &opts.stash_dir,
+        &mut plan,
+        opts.measured_boot,
+        marker_label,
+        &marker_uuid,
+    )?;
     std::fs::write(
         opts.stash_dir.join("provisioning-source"),
         format!("{}\n", source.as_str()),

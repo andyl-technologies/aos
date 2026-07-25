@@ -30,6 +30,7 @@ class Machine:
     name: str
     agent: AgentClient
     serial_log_path: str
+    expect_agent: bool
 
     def __init__(
         self, name: str, agent_socket_path: str, serial_log_path: str
@@ -37,6 +38,7 @@ class Machine:
         self.name = name
         self.agent = AgentClient(name, agent_socket_path, self.transport)
         self.serial_log_path = serial_log_path
+        self.expect_agent = True
 
     # ------------------------------------------------------------------
     # Subclass hooks

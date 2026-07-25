@@ -797,13 +797,16 @@ fn storage_projection_is_strict_and_renders_pending_marker() {
             priority: 9000,
         },
     );
-    let plan = ProvisioningPlan {
+    let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
         storage: StoragePlan { partitions },
     };
     validate_provisioning_plan(&plan, true).unwrap();
     let output = tempdir().unwrap();
-    let paths = render_provisioning_plan(output.path(), &plan, true, PENDING_LABEL).unwrap();
+    let marker_uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let paths =
+        render_provisioning_plan(output.path(), &mut plan, true, PENDING_LABEL, marker_uuid)
+            .unwrap();
     assert!(paths.iter().any(|path| {
         std::fs::read_to_string(path)
             .map(|contents| contents.contains(PENDING_LABEL))
@@ -821,6 +824,20 @@ fn storage_projection_rejects_unsafe_device_and_protected_type() {
         r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"root-a","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
     ];
     for input in unsafe_plans {
+        let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
+        assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
+    }
+}
+
+#[test]
+fn storage_projection_enforces_swap_pairing() {
+    use super::repart::ProvisioningPlan;
+
+    let invalid_plans = [
+        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1},"bad":{"device":null,"label":"bad","type":"linux-generic","sizeMin":"1G","sizeMax":"1G","weight":1000,"format":"swap","uuid":null,"grow":false,"growFs":true,"priority":2}}}}"#,
+        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1},"bad":{"device":null,"label":"bad","type":"swap","sizeMin":"1G","sizeMax":"1G","weight":1000,"format":"ext4","uuid":null,"grow":false,"growFs":true,"priority":2}}}}"#,
+    ];
+    for input in invalid_plans {
         let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
         assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
     }
@@ -896,11 +913,18 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
             priority: 9000,
         },
     );
-    let plan = ProvisioningPlan {
+    let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
         storage: StoragePlan { partitions },
     };
-    render_provisioning_plan(stash.path(), &plan, true, OPERATOR_LABEL).unwrap();
+    render_provisioning_plan(
+        stash.path(),
+        &mut plan,
+        true,
+        OPERATOR_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    )
+    .unwrap();
 
     assert!(
         persist_provisioning_state(&PersistProvisioningOptions {
@@ -960,14 +984,16 @@ fn provisioning_marker_is_first_and_protected_from_space_pressure() {
         },
     );
     let output = tempdir().unwrap();
+    let mut plan = ProvisioningPlan {
+        schema: "aos.provisioning-plan/v1".into(),
+        storage: StoragePlan { partitions },
+    };
     render_provisioning_plan(
         output.path(),
-        &ProvisioningPlan {
-            schema: "aos.provisioning-plan/v1".into(),
-            storage: StoragePlan { partitions },
-        },
+        &mut plan,
         true,
         PENDING_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     )
     .unwrap();
     let marker = std::fs::read_to_string(
@@ -977,6 +1003,23 @@ fn provisioning_marker_is_first_and_protected_from_space_pressure() {
     )
     .unwrap();
     assert!(marker.contains("Priority=1000000"));
+    assert!(marker.contains("UUID=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"));
+    let first_uuid = plan.storage.partitions["var"].uuid.clone().unwrap();
+
+    let second_output = tempdir().unwrap();
+    plan.storage.partitions.get_mut("var").unwrap().uuid = None;
+    render_provisioning_plan(
+        second_output.path(),
+        &mut plan,
+        true,
+        PENDING_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    )
+    .unwrap();
+    assert_eq!(
+        plan.storage.partitions["var"].uuid.as_deref(),
+        Some(first_uuid.as_str())
+    );
     assert!(output.path().join("repart.d/0000/0010-var.conf").is_file());
 }
 
@@ -1021,14 +1064,16 @@ fn provisioning_renderer_groups_devices_and_places_growth_last() {
         ),
     );
     let output = tempdir().unwrap();
+    let mut plan = ProvisioningPlan {
+        schema: "aos.provisioning-plan/v1".into(),
+        storage: StoragePlan { partitions },
+    };
     render_provisioning_plan(
         output.path(),
-        &ProvisioningPlan {
-            schema: "aos.provisioning-plan/v1".into(),
-            storage: StoragePlan { partitions },
-        },
+        &mut plan,
         false,
         PENDING_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     )
     .unwrap();
 
