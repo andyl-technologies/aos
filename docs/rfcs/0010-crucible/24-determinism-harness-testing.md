@@ -1055,9 +1055,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   well-formed block requests, block responses, and 9p envelopes. Full 9p
   filesystem semantics and block sub-node execution remain owned by the
   `15-io-subnodes.md` implementation tasks.
-- [ ] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
+- [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
   `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
   satisfies [HARN-20]; spec §10.
+  Completed by `checks.crucible.phase2.gates.patchMicrotests`: every carried
+  patch has prefix provenance plus exactly one live drop-one attribution method,
+  and the aggregate rejects composition and structural fallback classifications.
 - [ ] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
   identical to an unpatched reference over the behavioral corpus, all from-source).
   — satisfies [HARN-21]; spec §10.

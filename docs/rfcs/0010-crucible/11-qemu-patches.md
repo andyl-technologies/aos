@@ -1348,30 +1348,24 @@ time-control primitives the whole design rests on.
     pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
-- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+- [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
   spec §11.1.2, §11.9.
-  - Partial implementation by `checks.crucible.phase2.gates.patchMicrotests`: the aggregate
+  - Completed by `checks.crucible.phase2.gates.patchMicrotests`: the aggregate
     unpacks the pinned QEMU source, applies every carried patch with zero fuzz,
     forces the patched `qemu-crucible` build, requires the patch-series manifest
     gate, and requires every per-patch micro-test result to be keyed to that
-    patched QEMU package/version. The isolated-prefix build gate proves clean
-    apply and warning-clean compilation for every prefix, but the semantic
-    checks still target the fully patched package. Closure requires
-    prefix-attributed sim-on effects and sim-off inertness so a later patch
-    cannot make an earlier patch's test pass. The `gate:qemu-inert` phase gate
-    depends on the patch-microtests aggregate; its full upstream-equivalence
-    corpus remains owned by T-PATCH-3. Drop-one attribution
+    patched QEMU package/version. The isolated-prefix gates prove clean apply,
+    warning-clean compilation, source-tree provenance, exported-symbol first
+    appearance, and monotonic sim-off opt-in for every prefix. Drop-one attribution
     (`checks.crucible.phase2.gates.patchMicrotests.dropOne`) removes each carried
-    patch from the series and observes the result live; as verified at series
-    074fb5a9a it gives 29 of 36 patches airtight anti-masking evidence (23
-    assembly load-bearing via a later patch's failed 3-way apply, 3
-    exported-ABI-symbol present-in-full-absent-in-variant, 3 run-to-run sim
-    divergence at runtime), with the remaining 7 composition patches attributed
-    by series-level stock negative control and flagged for a per-patch
-    runtime-probe upgrade. Closure still requires patch-granular runtime
-    attribution for those 7.
+    patch from the series and observes the result live. For the 40-patch series it
+    reports 24 source-dependency, one build-required, four exported-symbol, and
+    eleven focused semantic attributions. The aggregate rejects composition and
+    structural fallback classifications, so a later patch cannot silently make
+    an earlier patch's focused effect pass. `gate:qemu-inert` depends on this
+    aggregate; its full upstream-equivalence corpus remains owned by T-PATCH-3.
 - [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
@@ -1448,7 +1442,7 @@ time-control primitives the whole design rests on.
     QEMU's incoming queue without guest-visible delivery even when the NIC is
     ready; flush fails loudly while the NIC is not ready or link-down; skewed
     producer timing observes the same guest-visible delivery icount.
-- [ ] **T-PATCH-9** Implement the plugin time-control surface
+- [x] **T-PATCH-9** Implement the plugin time-control surface
   `crucible-plugin-time-advance` (+ `has_time_control`) and the event-driven
   `crucible-plugin-advance-barrier` / `crucible-plugin-device-wake` handoffs with
   deterministic-propagation micro-tests. — satisfies [PATCH-18], [PATCH-19],
@@ -1474,11 +1468,16 @@ time-control primitives the whole design rests on.
     in ~23 ms (≈25× the boot rate), deterministic run-twice under host load. `checks.crucible.phase1.pluginTimeAdvance` models
     the icount clock and asserts the qtest set-based advance cannot converge
     while the bias-bump reaches the target (the regression guard for this class).
-  - Remains open on the `crucible-plugin-device-wake` handoff ([PATCH-20]): the
-    live proof above uses a diskless timer-idle guest, so the
-    device-completion → wake-fd → normal-main-loop resume path is not yet
-    exercised live. That requires live device I/O and is proven under M4's I/O
-    sub-nodes ([`15-io-subnodes.md`](15-io-subnodes.md)).
+  - The `crucible-plugin-device-wake` handoff ([PATCH-20]) is live-proven by
+    `checks.crucible.phase2.qemuLiveBlockIo` and
+    `checks.crucible.phase2.qemuLive9pIo`: real guest requests enter the reserved
+    device rings, the host publishes completions at exact future icounts, the
+    plugin holds virtual time while the response is unavailable, and the
+    completion wakes the normal main-loop path. Both guests progress after the
+    hold clears, including a run with host CPU load and a deliberately delayed
+    response. Drop-one runtime probes for patches 0017 and 0019 prove the live
+    block and 9p handoffs are patch-attributed rather than supplied by a later
+    patch.
 - [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],

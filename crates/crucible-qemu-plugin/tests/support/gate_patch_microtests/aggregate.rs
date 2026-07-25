@@ -29,14 +29,13 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "gate=gate:patch-microtests");
     assert_contains(
         &aggregate,
-        "taskIds ? [\"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",
+        "taskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\" \"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",
     );
-    assert_contains(
-        &aggregate,
-        "openTaskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"]",
-    );
+    assert_contains(&aggregate, "openTaskIds ? []");
     assert_contains(&aggregate, "open_tasks=${builtins.concatStringsSep");
-    assert_contains(&aggregate, "status=partial");
+    assert_contains(&aggregate, "status=complete");
+    assert_contains(&aggregate, "drop_one_composition_count=0");
+    assert_contains(&aggregate, "structural_fallback_count=0");
     assert_contains(
         &aggregate,
         "qemuPatchSeries = import ./phase2-qemu-patch-series.nix",
@@ -284,7 +283,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    assert_contains(&default_checks, "patchMicrotests = redBeforeAdvance {");
+    assert_contains(&default_checks, "patchMicrotests = greenBeforeAdvance {");
     assert_contains(&default_checks, "qemuInert = redBeforeAdvance {");
     assert_contains(
         &default_checks,
@@ -292,7 +291,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
     assert_contains(
         &default_checks,
-        "openTaskIds = [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"]",
+        "taskIds = [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"",
     );
     assert_contains(
         &default_checks,
