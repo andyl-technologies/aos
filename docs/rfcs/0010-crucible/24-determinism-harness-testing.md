@@ -1098,7 +1098,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   artifact format and CLI produce/replay seam are completed by T-HARN-24; the
   shared mock artifact machine-profile verifier is completed by T-HARN-25, and
   real AOS VM/fleet wiring remains packaging work.
-- [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
+- [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
@@ -1115,7 +1115,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   T-HARN-25 adds the shared mock machine-profile verifier and identity-mismatch
   replay failure; BLAKE3/DagStore-backed durable identities and real AOS fleet
   reproduction remain packaging work.
-- [ ] **T-HARN-25** Implement machine-independent reproduction verification
+- [x] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
   Completed by `checks.crucible.phase7.machineIndependentReproduction`:
