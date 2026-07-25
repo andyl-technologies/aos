@@ -24,6 +24,10 @@ pub const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 pub const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 /// The optional white-box hook switch argument key.
 pub const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
+/// The setup-time white-box collision-validation attestation argument key.
+pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+/// The only accepted x86 setup attestation for the frozen doorbell ABI.
+pub const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 /// The optional coverage hook switch argument key.
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
@@ -36,6 +40,7 @@ pub struct PluginArgs {
     slot: u32,
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
+    whitebox_setup: Option<WhiteboxSetupAttestation>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
 }
@@ -55,6 +60,7 @@ impl PluginArgs {
         let sim_fd = parse_required_fd(&parsed, PLUGIN_ARG_SIMFD)?;
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
+        let whitebox_setup = parse_whitebox_setup(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
@@ -64,6 +70,7 @@ impl PluginArgs {
             slot,
             inherited_fds,
             whitebox,
+            whitebox_setup,
             coverage,
             fingerprint,
         })
@@ -91,6 +98,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn whitebox(&self) -> PluginSwitch {
         self.whitebox
+    }
+
+    /// Returns the setup-time collision-validation attestation.
+    #[must_use]
+    pub const fn whitebox_setup(&self) -> Option<WhiteboxSetupAttestation> {
+        self.whitebox_setup
     }
 
     /// Returns whether coverage hooks are enabled.
@@ -143,6 +156,13 @@ pub enum PluginSwitch {
     Off,
     /// The feature is enabled.
     On,
+}
+
+/// A host-produced setup validation consumed before white-box registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhiteboxSetupAttestation {
+    /// The observed x86 QEMU I/O map leaves reserved port `0x00e7` unclaimed.
+    X86Port00e7UnclaimedV1,
 }
 
 impl PluginSwitch {
@@ -202,6 +222,26 @@ pub enum PluginArgsParseError {
         /// Key whose value was rejected.
         key: &'static str,
         /// Rejected value.
+        value: String,
+    },
+    /// White-box mode was enabled without a setup collision attestation.
+    #[error("white-box mode requires plugin argument `{key}`")]
+    MissingWhiteboxSetup {
+        /// Missing setup-attestation key.
+        key: &'static str,
+    },
+    /// A setup attestation was supplied while white-box mode was disabled.
+    #[error("plugin argument `{key}` is forbidden while white-box mode is off")]
+    WhiteboxSetupWhileDisabled {
+        /// Unexpected setup-attestation key.
+        key: &'static str,
+    },
+    /// The setup attestation did not match a supported frozen doorbell ABI.
+    #[error("plugin argument `{key}` has unsupported value `{value}`")]
+    InvalidWhiteboxSetup {
+        /// Setup-attestation key.
+        key: &'static str,
+        /// Rejected attestation.
         value: String,
     },
     /// Only one of the inherited descriptor keys was supplied.
@@ -319,6 +359,28 @@ fn parse_optional_switch(
     }
 }
 
+fn parse_whitebox_setup(
+    parsed: &ParsedPluginArgs<'_>,
+    whitebox: PluginSwitch,
+) -> Result<Option<WhiteboxSetupAttestation>, PluginArgsParseError> {
+    match (whitebox, parsed.value(PLUGIN_ARG_WHITEBOX_SETUP)) {
+        (PluginSwitch::Off, None) => Ok(None),
+        (PluginSwitch::Off, Some(_)) => Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+        }),
+        (PluginSwitch::On, None) => Err(PluginArgsParseError::MissingWhiteboxSetup {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+        }),
+        (PluginSwitch::On, Some(WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1)) => {
+            Ok(Some(WhiteboxSetupAttestation::X86Port00e7UnclaimedV1))
+        }
+        (PluginSwitch::On, Some(value)) => Err(PluginArgsParseError::InvalidWhiteboxSetup {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn parse_inherited_fds(
     parsed: &ParsedPluginArgs<'_>,
 ) -> Result<Option<PluginInheritedFds>, PluginArgsParseError> {
@@ -342,6 +404,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_SHMEMFD
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
+            | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
     )
@@ -360,6 +423,7 @@ mod tests {
         assert_eq!(args.slot(), 2);
         assert_eq!(args.inherited_fds(), None);
         assert_eq!(args.whitebox(), PluginSwitch::Off);
+        assert_eq!(args.whitebox_setup(), None);
         assert_eq!(args.coverage(), PluginSwitch::Off);
         assert_eq!(args.fingerprint(), PluginSwitch::Off);
         assert_eq!(args.validate_slot_index(3), Ok(()));
@@ -368,7 +432,7 @@ mod tests {
     #[test]
     fn plugin_args_parse_optional_fds_and_switches() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,coverage=off,fingerprint=on",
+            "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on",
         )
         .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
 
@@ -382,6 +446,10 @@ mod tests {
             })
         );
         assert!(args.whitebox().is_on());
+        assert_eq!(
+            args.whitebox_setup(),
+            Some(WhiteboxSetupAttestation::X86Port00e7UnclaimedV1)
+        );
         assert!(!args.coverage().is_on());
         assert!(args.fingerprint().is_on());
     }
@@ -448,6 +516,33 @@ mod tests {
             Err(PluginArgsParseError::InvalidSwitch {
                 key: "coverage",
                 value: String::from("true"),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_args_require_whitebox_setup_attestation_exactly_when_enabled() {
+        assert_eq!(
+            PluginArgs::parse("simfd=3,slot=0,whitebox=on"),
+            Err(PluginArgsParseError::MissingWhiteboxSetup {
+                key: PLUGIN_ARG_WHITEBOX_SETUP,
+            })
+        );
+        assert_eq!(
+            PluginArgs::parse(
+                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e8-unclaimed-v1"
+            ),
+            Err(PluginArgsParseError::InvalidWhiteboxSetup {
+                key: PLUGIN_ARG_WHITEBOX_SETUP,
+                value: String::from("x86-port-00e8-unclaimed-v1"),
+            })
+        );
+        assert_eq!(
+            PluginArgs::parse(
+                "simfd=3,slot=0,whitebox=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+            ),
+            Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
+                key: PLUGIN_ARG_WHITEBOX_SETUP,
             })
         );
     }

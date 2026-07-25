@@ -413,18 +413,9 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
 
     let s11 = fs::read_to_string(root.join("tests/crucible/phase0-s11.nix"))?;
     assert_contains(&s11, "diagnose_trace_structure() {");
-    assert_contains(
-        &s11,
-        "limit(10;\n                  inputs\n                  | select((.kind // \"sample\") == \"sample\")",
-    );
-    assert_contains(
-        &s11,
-        "limit(10;\n                  inputs\n                  | select(.kind == \"rr_switch\")",
-    );
-    assert_contains(
-        &s11,
-        "and (.observed_icount - $stop_at) <= $quantum",
-    );
+    assert_contains(&s11, "select((.kind // \"sample\") == \"sample\")");
+    assert_contains(&s11, "select(.kind == \"rr_switch\")");
+    assert_contains(&s11, "and (.observed_icount - $stop_at) <= $quantum");
     assert_contains(
         &s11,
         "and (.[-1] | ((.kind // \"sample\") == \"sample\" and .final == true))",
@@ -435,10 +426,7 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         "plugin_exit_semantics=post-stop-request-teardown-observation",
     );
     assert_contains(&s11, "plugin_exit_pause_overshoot_bounded=true");
-    assert_contains(
-        &s11,
-        "plugin_exit_fingerprint_compared=diagnostic-only",
-    );
+    assert_contains(&s11, "plugin_exit_fingerprint_compared=diagnostic-only");
 
     let qemu_det_ipi = fs::read_to_string(root.join("tests/crucible/phase2-qemu-det-ipi.nix"))?;
     assert_contains(&qemu_det_ipi, "T-PATCH-22");

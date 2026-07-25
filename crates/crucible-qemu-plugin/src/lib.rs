@@ -118,8 +118,9 @@ pub use abi::{
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD,
-    PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PluginArgs, PluginArgsParseError,
-    PluginInheritedFds, PluginSwitch,
+    PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP, PluginArgs,
+    PluginArgsParseError, PluginInheritedFds, PluginSwitch, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,

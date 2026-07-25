@@ -803,10 +803,11 @@ the transport layer by construction.
   vector (`ef`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
   the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
   registration state is built from those ABI trap entries.
-- [ ] **T-GHC-6** Implement collision avoidance and inertness for the reserved
+- [x] **T-GHC-6** Implement collision avoidance and inertness for the reserved
   doorbell port/instruction: validate non-collision at setup; inert when the
   channel is disabled. — satisfies [GHC-17], [GHC-34]; spec §16.4, §16.7.
-  Partial callback-core evidence is provided by
+  Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`
+  together with `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`:
   `checks.crucible.phase4.guestHostDoorbellCollisionInertness`: the
   plugin now validates the configured trap against
   `WhiteboxDoorbellSetupResources`, requires the resulting
@@ -816,8 +817,14 @@ the transport layer by construction.
   no trap so the doorbell remains inert when the channel is off. The real x86
   backend gate now corroborates that model by executing the same doorbell guest
   with white-box off and on: off mode emits zero white-box callback records, and
-  the production-plugin execution fingerprints are equal. Live setup discovery
-  of the configured QEMU device-port map remains open.
+  the production-plugin execution fingerprints are equal. Before the enabled
+  run registers the callback, the host now launches the exact configured QEMU
+  machine stopped and plugin-free, queries its flattened I/O map, and accepts
+  port `0x00e7` only when QEMU reports the unassigned `io` fallback. A versioned
+  `x86-port-00e7-unclaimed-v1` attestation is required by the plugin parser and
+  consumed by live registration; omission is fail-closed. The real-backend
+  negative maps `isa-debugcon` at `0x00e7` and proves the same production parser
+  rejects the collision before the control plugin is launched.
 - [x] **T-GHC-7** Implement the binary, versioned, length-prefixed doorbell frame
   format (magic/version/kind/len/payload, little-endian, length-prefixed strings),
   with golden vectors and a versioning rule. — satisfies [GHC-12], [GHC-19],

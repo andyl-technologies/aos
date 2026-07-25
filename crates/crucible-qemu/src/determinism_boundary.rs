@@ -1027,6 +1027,7 @@ mod tests {
         DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, IcountShiftSetting,
         InputPolicy, LaunchProfileCandidate, LaunchProfileError, QemuControlPlaneInertnessError,
         QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuVmLaunchConfig,
+        validate_x86_whitebox_hmp_mtree,
     };
 
     #[test]
@@ -1526,11 +1527,19 @@ mod tests {
     }
 
     fn plugin_config(whitebox: QemuLaunchPluginSwitch) -> QemuLaunchPluginConfig {
-        QemuLaunchPluginConfig::new(
+        let config = QemuLaunchPluginConfig::new(
             "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
             0,
         )
-        .with_whitebox(whitebox)
+        .with_whitebox(whitebox);
+        if whitebox == QemuLaunchPluginSwitch::Off {
+            return config;
+        }
+        let validation = validate_x86_whitebox_hmp_mtree(
+            "FlatView #2\n AS \"I/O\", root: io\n  00000000000000e0-00000000000000ef (prio 0, i/o): io @00000000000000e0\n",
+        )
+        .unwrap_or_else(|error| panic!("test white-box setup validation failed: {error}"));
+        config.with_whitebox_setup(validation)
     }
 
     fn default_vm_config() -> QemuVmLaunchConfig {

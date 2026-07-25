@@ -187,10 +187,14 @@ impl LiveWhiteboxState {
     /// safe doorbell registration plan rejects its capabilities or setup state.
     pub(crate) fn new(
         apis: LiveWhiteboxApis,
+        setup_attestation: Option<crate::WhiteboxSetupAttestation>,
         vcpu_count: u32,
         icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
     ) -> Result<Self, LiveWhiteboxError> {
+        if setup_attestation != Some(crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1) {
+            return Err(LiveWhiteboxError::SetupAttestationMissing);
+        }
         let vcpu_count = usize::try_from(vcpu_count).map_err(|_source| {
             LiveWhiteboxError::UnsupportedVcpuCount {
                 vcpu_count: u64::from(vcpu_count),
@@ -538,6 +542,9 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
 /// Failure at the live QEMU white-box ABI boundary.
 #[derive(Debug, Error)]
 pub enum LiveWhiteboxError {
+    /// The host did not attest a collision-free x86 port map at setup.
+    #[error("live white-box registration requires an x86 port-map setup attestation")]
+    SetupAttestationMissing,
     /// A required upstream QEMU or GLib symbol was absent.
     #[error("required live white-box capability `{symbol}` is unavailable")]
     CapabilityUnavailable {

@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveWhiteboxDoorbell",
-  taskIds ? [],
+  taskIds ? ["T-GHC-6"],
   openTaskIds ? ["T-PLUG-14" "T-GHC-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -171,7 +171,8 @@ in
             --target-dir "$TMPDIR/live-whitebox-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
-            --example crucible-qemu-live-plugin-install
+            --example crucible-qemu-live-plugin-install \
+            --example crucible-qemu-whitebox-map-validate
 
           run_mode() {
             label="$1"
@@ -198,6 +199,11 @@ in
             fi
             grep -Fxq PASS "$report"
             grep -Fxq "whitebox=$mode" "$report"
+            if [ "$mode" = on ]; then
+              grep -Fxq 'whitebox_setup_region=io' "$report"
+            else
+              grep -Fxq 'whitebox_setup_region=not-required' "$report"
+            fi
             grep -Fxq 'fingerprint=on' "$report"
             grep -Fxq 'plugin_loaded=rust-control-cdylib' "$report"
             grep -Fxq 'setup_ack_ready=true' "$report"
@@ -207,6 +213,31 @@ in
 
           run_mode off off
           run_mode on on
+
+          collision_map="$TMPDIR/live-whitebox-collision.mtree"
+          collision_result="$TMPDIR/live-whitebox-collision.result"
+          collision_error="$TMPDIR/live-whitebox-collision.error"
+          printf 'info mtree -f\nquit\n' |
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+              -machine pc-q35-9.2 \
+              -accel sim,thread=single \
+              -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
+              -S \
+              -display none \
+              -monitor stdio \
+              -nodefaults \
+              -chardev null,id=collision \
+              -device isa-debugcon,iobase=0xe7,chardev=collision \
+              > "$collision_map" 2> "$TMPDIR/live-whitebox-collision.qemu.log"
+          grep -Eq '00e7-00000000000000e7 .*: isa-debugcon' "$collision_map"
+          if "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-whitebox-map-validate" \
+            "$collision_map" > "$collision_result" 2> "$collision_error"; then
+            echo "FAIL: mapped white-box doorbell port passed setup validation" >&2
+            exit 1
+          fi
+          grep -Fxq \
+            'FAIL: reserved white-box port 0x00e7 collides with QEMU region `isa-debugcon`' \
+            "$collision_error"
 
           if grep -q '^CRUCIBLE_WHITEBOX_' "$TMPDIR/live-whitebox-off.qemu.log"; then
             echo "FAIL: white-box off mode emitted a callback record" >&2
@@ -228,6 +259,8 @@ in
           cp "$TMPDIR/live-whitebox-on.result" "$out/install-on-result"
           cp "$TMPDIR/live-whitebox-off.qemu.log" "$out/qemu-off.log"
           cp "$TMPDIR/live-whitebox-on.qemu.log" "$out/qemu-on.log"
+          cp "$collision_map" "$out/collision.mtree"
+          cp "$collision_error" "$out/collision.error"
           {
             printf 'PASS\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
@@ -237,6 +270,11 @@ in
             printf 'plugin_loaded=rust-control-cdylib\n'
             printf 'whitebox_modes=off,on\n'
             printf 'off_mode_callback_records=0\n'
+            printf 'setup_port_map_probe=stopped-plugin-free-exact-machine\n'
+            printf 'setup_reserved_port_region=io\n'
+            printf 'setup_attestation=x86-port-00e7-unclaimed-v1\n'
+            printf 'collision_negative_device=isa-debugcon\n'
+            printf 'collision_negative_rejected_before_plugin_launch=true\n'
             printf 'doorbell_architecture=x86_64\n'
             printf 'doorbell_instruction=out-dx-eax\n'
             printf 'doorbell_port=0x00e7\n'

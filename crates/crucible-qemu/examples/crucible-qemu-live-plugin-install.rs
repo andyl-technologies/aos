@@ -61,9 +61,7 @@ fn run() -> Result<(), String> {
     }
     let whitebox = env_switch("CRUCIBLE_LIVE_PLUGIN_WHITEBOX")?;
     let fingerprint = env_switch("CRUCIBLE_LIVE_PLUGIN_FINGERPRINT")?;
-    config = config
-        .with_whitebox(whitebox)
-        .with_fingerprint(fingerprint);
+    config = config.with_whitebox(whitebox).with_fingerprint(fingerprint);
     let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
@@ -95,6 +93,13 @@ fn run() -> Result<(), String> {
         report.time_authority_is_rust_plugin
     );
     println!("whitebox={whitebox}");
+    println!(
+        "whitebox_setup_region={}",
+        report
+            .whitebox_setup_region
+            .as_deref()
+            .unwrap_or("not-required")
+    );
     println!("fingerprint={fingerprint}");
     Ok(())
 }
@@ -105,9 +110,7 @@ fn env_switch(name: &str) -> Result<QemuLaunchPluginSwitch, String> {
         Ok("on") => QemuLaunchPluginSwitch::On,
         Ok("off") | Err(env::VarError::NotPresent) => QemuLaunchPluginSwitch::Off,
         Ok(value) => {
-            return Err(format!(
-                "{name} must be `on` or `off`, got `{value}`"
-            ));
+            return Err(format!("{name} must be `on` or `off`, got `{value}`"));
         }
         Err(env::VarError::NotUnicode(_value)) => {
             return Err(format!("{name} is not valid UTF-8"));

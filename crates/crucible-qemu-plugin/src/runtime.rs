@@ -316,6 +316,7 @@ impl OwnedCallbackRuntimeState {
     fn prepare_live_whitebox_state(
         self: Pin<&mut Self>,
         apis: live_whitebox::LiveWhiteboxApis,
+        setup_attestation: Option<crate::WhiteboxSetupAttestation>,
         vcpu_count: u32,
         icount_raw: crate::QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
@@ -323,8 +324,13 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
         let state = unsafe { self.get_unchecked_mut() };
-        let callback_state =
-            live_whitebox::LiveWhiteboxState::new(apis, vcpu_count, icount_raw, request_shutdown)?;
+        let callback_state = live_whitebox::LiveWhiteboxState::new(
+            apis,
+            setup_attestation,
+            vcpu_count,
+            icount_raw,
+            request_shutdown,
+        )?;
         let mut callback_state = Box::pin(callback_state);
         // SAFETY: the independently boxed state is pinned and retained by this
         // process-lifetime owner before its address is registered with QEMU.

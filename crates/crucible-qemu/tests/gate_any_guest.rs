@@ -16,7 +16,7 @@ use crucible_qemu::{
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmHostProfile,
     SingleVmNvcpuFingerprintMaterial, SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest,
     compare_single_vm_fingerprint_streams, initial_single_vm_rolling_fingerprint,
-    run_single_vm_fingerprint_gate,
+    run_single_vm_fingerprint_gate, validate_x86_whitebox_hmp_mtree,
 };
 
 #[test]
@@ -80,7 +80,7 @@ fn gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_con
         runner.plugin_args,
         vec![
             "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
-            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off",
+            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1",
         ]
     );
     compare_single_vm_fingerprint_streams(
@@ -145,8 +145,7 @@ impl SingleVmFingerprintRunner for AnyGuestRunner {
         };
 
         self.plugin_args.push(
-            QemuLaunchPluginConfig::new("/nix/store/plugin/lib/libcrucible_qemu_plugin.so", 0)
-                .with_whitebox(whitebox)
+            whitebox_plugin_config("/nix/store/plugin/lib/libcrucible_qemu_plugin.so", whitebox)
                 .plugin_args_raw(),
         );
         Ok(self.stream.clone())
@@ -174,8 +173,7 @@ fn launch_command(whitebox: QemuLaunchPluginSwitch) -> QemuLaunchCommand {
         content_hash(0x43),
         "/nix/store/aos-initrd/initrd.img",
     ));
-    let plugin = QemuLaunchPluginConfig::new("/nix/store/aos-plugin/lib/crucible-qemu.so", 0)
-        .with_whitebox(whitebox);
+    let plugin = whitebox_plugin_config("/nix/store/aos-plugin/lib/crucible-qemu.so", whitebox);
 
     QemuLaunchCommandBuilder::new(
         profile,
@@ -185,6 +183,18 @@ fn launch_command(whitebox: QemuLaunchPluginSwitch) -> QemuLaunchCommand {
     )
     .build()
     .unwrap_or_else(|error| panic!("launch command should build: {error}"))
+}
+
+fn whitebox_plugin_config(path: &str, whitebox: QemuLaunchPluginSwitch) -> QemuLaunchPluginConfig {
+    let config = QemuLaunchPluginConfig::new(path, 0).with_whitebox(whitebox);
+    if whitebox == QemuLaunchPluginSwitch::Off {
+        return config;
+    }
+    let validation = validate_x86_whitebox_hmp_mtree(
+        "FlatView #2\n AS \"I/O\", root: io\n  00000000000000e0-00000000000000ef (prio 0, i/o): io @00000000000000e0\n",
+    )
+    .unwrap_or_else(|error| panic!("test white-box setup validation failed: {error}"));
+    config.with_whitebox_setup(validation)
 }
 
 fn stream(
