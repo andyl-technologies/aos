@@ -119,7 +119,10 @@ pub(super) fn spsc_ring_unsafe_without_model_failures(
         .is_some_and(|target| target.placeholder);
 
     let mut sources = Vec::new();
-    collect_rust_sources(&root.join("crates/crucible-shmem/src"), &mut sources)?;
+    collect_rust_sources(
+        &workspace_crates_dir(root).join("crucible-shmem/src"),
+        &mut sources,
+    )?;
 
     let mut failures = Vec::new();
     for source in sources {
@@ -269,10 +272,10 @@ pub(super) fn gate_target_source_overrides(
     root: &Path,
 ) -> Result<GateSourceOverrides, Box<dyn Error>> {
     let mut sources = BTreeMap::new();
+    let crates_dir = workspace_crates_dir(root);
 
     for target in gate_targets() {
-        let path = root
-            .join("crates")
+        let path = crates_dir
             .join(target.package)
             .join("tests")
             .join(format!("{}.rs", target.test_target));
@@ -289,9 +292,23 @@ pub(super) fn gate_target_source_overrides(
 
 pub(super) fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    match manifest_dir.parent().and_then(Path::parent) {
-        Some(root) => root.to_path_buf(),
-        None => panic!("crucible-harness manifest is not inside the workspace"),
+    let Some(crates_dir) = manifest_dir.parent() else {
+        panic!("crucible-harness manifest is not inside the workspace");
+    };
+    match crates_dir.parent() {
+        Some(repository_root) if repository_root.join("docs/rfcs/0010-crucible").is_dir() => {
+            repository_root.to_path_buf()
+        }
+        _ => crates_dir.to_path_buf(),
+    }
+}
+
+fn workspace_crates_dir(root: &Path) -> PathBuf {
+    let nested = root.join("crates");
+    if nested.is_dir() {
+        nested
+    } else {
+        root.to_path_buf()
     }
 }
 
