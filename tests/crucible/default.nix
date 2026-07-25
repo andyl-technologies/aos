@@ -498,7 +498,6 @@ in rec {
           dependencies = [patchMicrotests.rawGate];
         };
         dependencies = [patchMicrotests];
-        taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
       };
       singleVmFingerprint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";

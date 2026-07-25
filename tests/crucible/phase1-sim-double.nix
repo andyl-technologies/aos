@@ -17,6 +17,7 @@
   shmem = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
   ];

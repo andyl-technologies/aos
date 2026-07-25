@@ -280,10 +280,18 @@ pub(super) fn gate_target_source_overrides(
             .join("tests")
             .join(format!("{}.rs", target.test_target));
         if path.is_file() {
-            sources.insert(
-                (target.package, target.test_target),
-                fs::read_to_string(path)?,
-            );
+            let mut content = fs::read_to_string(&path)?;
+            let module_dir = path.with_extension("");
+            if module_dir.is_dir() {
+                let mut module_sources = Vec::new();
+                collect_rust_sources(&module_dir, &mut module_sources)?;
+                module_sources.sort();
+                for module_source in module_sources {
+                    content.push('\n');
+                    content.push_str(&fs::read_to_string(module_source)?);
+                }
+            }
+            sources.insert((target.package, target.test_target), content);
         }
     }
 

@@ -14,9 +14,15 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoopTests = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs)
+  ];
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  shmemFrameNode =
+    builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
   shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -185,6 +191,8 @@
         label = "deterministic frame injection ordering";
         needle = "PluginInboundFrames::select_deliverable_frames";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests" pluginIdleLoopTests [
       {
         label = "timer/inbound/ceiling wake test";
         needle = "idle_loop_computes_wake_from_timer_inbound_and_ceiling";

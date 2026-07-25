@@ -140,7 +140,7 @@ per-node slots, followed by the directed-frame SPSC rings and their frame-entry
 storage, one fixed-capacity plugin-to-host coverage ring per VM, one fingerprint
 sample slot per VM, and one bounded plugin-to-host white-box marker ring per VM.
 The header and slots are fixed-size so their offsets are compile-time constants.
-Frame-ring geometry is recorded in the header; ABI v4 derives every trailing
+Frame-ring geometry is recorded in the header; ABI v5 derives every trailing
 section from that frame extent, the VM count, and ABI-fixed constants, so no
 process-local pointer or host-layout fact crosses the ABI.
 
@@ -177,7 +177,7 @@ process-local pointer or host-layout fact crosses the ABI.
 
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
-frame sub-region offsets, and the global pause flag. ABI v4 mappers derive the
+frame sub-region offsets, and the global pause flag. ABI v5 mappers derive the
 coverage, fingerprint-sample, and white-box marker tail sections from that
 validated frame extent, the VM count, and fixed ABI constants. The header is
 the first thing a mapper reads and the thing
@@ -190,7 +190,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -329,8 +329,27 @@ pub struct NodeSlot {
     /// reader/snapshotter detect a torn or in-progress publish without locking
     /// (the seqlock protocol, §13.3.4). Even == stable, odd == write in progress.
     pub publish_gen: AtomicU32, // @ 40
-    // @ 44..128 reserved, zero-initialized (forward-compatible additions only).
-    pub(crate) _reserved: [u8; 84],
+    pub(crate) _pad1: [u8; 4], // @ 44
+    /// Host-published exact completion icount, or zero when none is pending.
+    pub device_completion_deadline_icount: AtomicU64, // @ 48
+    /// Exact icount at which the plugin must apply the pending preemption.
+    pub preemption_at_icount: AtomicU64, // @ 56
+    /// Inclusive lower bound of the preemption authorization window.
+    pub preemption_deadline_icount: AtomicU64, // @ 64
+    /// Inclusive upper bound of the preemption authorization window.
+    pub preemption_ceiling_icount: AtomicU64, // @ 72
+    /// Sequence release-published by the scheduler after command fields.
+    pub preemption_published_sequence: AtomicU32, // @ 80
+    /// Sequence release-published by the plugin after QEMU accepts the command.
+    pub preemption_consumed_sequence: AtomicU32, // @ 84
+    /// Kind-specific first argument: source or target vCPU.
+    pub preemption_arg0: AtomicU32, // @ 88
+    /// Kind-specific second argument: target vCPU or interrupt vector.
+    pub preemption_arg1: AtomicU32, // @ 92
+    /// Command kind: none, vCPU switch, or interrupt injection.
+    pub preemption_kind: AtomicU8, // @ 96
+    // @ 97..128 reserved, zero-initialized (forward-compatible additions only).
+    pub(crate) _reserved: [u8; 31],
 }
 
 const _: () = assert!(core::mem::size_of::<NodeSlot>() == 128);
@@ -500,7 +519,7 @@ The discipline is the standard seqlock idiom:
 
 ### 13.3.5 Plugin-to-host coverage rings
 
-ABI v4 retains the ABI-v2 coverage section: one SPSC ring per logical VM. The QEMU plugin is
+ABI v5 retains the ABI-v2 coverage section: one SPSC ring per logical VM. The QEMU plugin is
 the sole producer; the host adapter is the sole consumer. `CoverageEntry` is a
 fixed 64-byte record containing the raw icount immediately before the covered
 TB's first instruction, the guest PC, the fixed-map index, the vCPU index, and
@@ -544,7 +563,7 @@ host-side coverage collection is a persistent record parallel to that log.
 
 ### 13.3.6 Fingerprint sample slots
 
-ABI v4 retains the additive ABI-v3 fingerprint section: one 640-byte,
+ABI v5 retains the additive ABI-v3 fingerprint section: one 640-byte,
 128-byte-aligned `FingerprintSampleSlot` per logical VM. The plugin publishes
 the latest completed-boundary sample under the slot's generation seqlock and
 the host reads it only while the VM is quiescent. The section begins at the
@@ -553,7 +572,7 @@ determine the following marker-ring offset.
 
 ### 13.3.7 Plugin-to-host white-box marker rings
 
-ABI v4 appends one SPSC marker ring per logical VM after the fingerprint sample
+ABI v5 retains the ABI-v4 SPSC marker ring per logical VM after the fingerprint sample
 slots. The QEMU plugin is the sole producer and the host adapter is the sole
 consumer. Each fixed 4,672-byte `WhiteboxMarkerEntry` carries the exact trap
 icount, vCPU index, decoded doorbell kind, bounded marker-body length, marker
@@ -589,9 +608,48 @@ run-phase marker frames.
   forward-ref
   [`19-observability-event-log.md`](19-observability-event-log.md).
 
+### 13.3.8 Scheduler-to-plugin preemption mailbox
+
+ABI v5 assigns the remaining fixed `NodeSlot` tail to a single-entry,
+scheduler-to-plugin mailbox. A command names an exact aggregate node icount, an
+inclusive authorization window, and either a `(from_vcpu, to_vcpu)` switch or a
+`(target_vcpu, irq)` interrupt injection. The scheduler writes all command
+fields with relaxed stores and then release-publishes a new wrapping
+sequence. The plugin acquire-loads that sequence before reading the command,
+validates the kind and window, asks QEMU to apply it at the exact commanded
+icount, and release-publishes the same consumed sequence only after QEMU
+accepts the operation.
+
+The mailbox permits exactly one outstanding command. A scheduler MUST NOT
+overwrite an unconsumed command, and the plugin MUST NOT acknowledge an unknown
+or already-consumed sequence. A command is valid only when
+`deadline_icount <= at_icount <= ceiling_icount`; neither side may clamp,
+advance, defer, or silently discard an out-of-window command. These failures,
+unknown kinds, and QEMU rejection are deterministic run failures.
+
+- **[SHM-44]** Each VM `NodeSlot` MUST carry one ABI-v5, single-outstanding
+  scheduler-to-plugin preemption mailbox with the exact fields and offsets in
+  §13.4. Kind `1` carries a vCPU switch and kind `2` carries an interrupt;
+  zero denotes no initialized command. *Gate:* `gate:abi-conformance`,
+  `gate:layer1-injection`. *Spec:* §13.3.8, §13.4.
+
+- **[SHM-45]** The scheduler MUST initialize command fields before
+  release-publishing `preemption_published_sequence`; the plugin MUST
+  acquire-load that sequence before reading them and MUST release-publish the
+  matching `preemption_consumed_sequence` only after QEMU accepts the command.
+  Neither producer may overwrite an outstanding command or acknowledge the
+  wrong sequence. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`.
+  *Spec:* §13.3.8, §13.6.
+
+- **[SHM-46]** Both endpoints MUST reject a reversed authorization window or a
+  commanded icount outside its inclusive bounds. The live path MUST apply the
+  command at exactly `at_icount`, without clamping, early injection, deferral,
+  or fallback to a control socket. *Gate:* `gate:layer1-injection`. *Spec:*
+  §13.3.8, forward-ref [`12-qemu-plugin.md`](12-qemu-plugin.md).
+
 ## 13.4 Normative offset and size table
 
-The following constants are the binding ABI for `ABI_VERSION = 4` on
+The following constants are the binding ABI for `ABI_VERSION = 5` on
 `x86_64-unknown-linux-gnu`. The generated C header ([SHM-4]) and the Rust static
 assertions ([SHM-5]) MUST both reproduce these exactly. The golden-vector test
 (§13.8) checks the runtime bytes against a fixture built from this table.
@@ -623,7 +681,17 @@ NodeSlot      (size 128, align 128)
   @ 38  device_io_active   u8
   @ 39  _pad0              u8
   @ 40  publish_gen        u32
-  @ 44  _reserved[84]
+  @ 44  _pad1[4]
+  @ 48  device_completion_deadline_icount u64
+  @ 56  preemption_at_icount              u64
+  @ 64  preemption_deadline_icount        u64
+  @ 72  preemption_ceiling_icount         u64
+  @ 80  preemption_published_sequence     u32
+  @ 84  preemption_consumed_sequence      u32
+  @ 88  preemption_arg0                   u32
+  @ 92  preemption_arg1                   u32
+  @ 96  preemption_kind                   u8
+  @ 97  _reserved[31]
 
 RingHeader    (size 128, align 128)
   @  0  read_idx           u64
@@ -662,7 +730,7 @@ WhiteboxMarkerEntry (size 4672, align 64)
 
 Constants
   REGION_MAGIC            = "CRUCSHM1" (LE u64)
-  ABI_VERSION             = 4
+  ABI_VERSION             = 5
   MAX_NODES               = 32
   RESERVED_SLOTS          = 3
   MAX_FRAME_DATA          = 4608
@@ -672,7 +740,7 @@ Constants
 ```
 
 - **[SHM-14]** The offsets, sizes, and alignments in the §13.4 table are the
-  normative ABI for `ABI_VERSION = 4`. The build MUST verify, on both the Rust and
+  normative ABI for `ABI_VERSION = 5`. The build MUST verify, on both the Rust and
   C sides, that the compiled layout matches this table; any deviation MUST fail
   the build. Header and slot offsets MUST be compile-time constants.
   Directed-ring and frame-entry offsets MUST be computed from the header
@@ -685,7 +753,7 @@ Constants
   the ring-header pad regions, `FrameEntry::_pad`, and
   `CoverageEntry::_reserved`) MUST be zero-initialized at region creation.
   Existing control/frame reserved space MUST be ignored on read at
-  `ABI_VERSION = 4`; coverage and white-box marker entries MUST reject non-zero
+  `ABI_VERSION = 5`; coverage and white-box marker entries MUST reject non-zero
   reserved bytes because each entry is untrusted plugin output validated before
   event-log admission.
   Reserved space exists so a future version can add fields without moving
@@ -1085,3 +1153,13 @@ by when the producer's store landed in shared memory.
   exact trap icount and payload without allocation or I/O, and the mapped host
   consumer rejects full, malformed, unsupported, regressing, or future entries
   before appending each boundary batch to the unified observational event log.
+- [x] **T-SHM-19** Add the ABI-v5 single-outstanding scheduler-to-plugin
+  preemption mailbox to each VM `NodeSlot`, including exact switch/interrupt
+  payloads, inclusive authorization-window validation, release/acquire
+  publication, post-QEMU acknowledgement, generated C-header/static-offset
+  coverage, and golden-vector round-trip tests. Reject overwrite, wrong
+  acknowledgement, unknown kinds, and out-of-window commands. — satisfies
+  [SHM-44], [SHM-45], [SHM-46]; spec §13.3.8, §13.4, §13.6.
+  Completed by `checks.crucible.phase2.shmemAbiConformance`: the ABI-v5 C/Rust
+  layouts and golden vector freeze the mailbox, while the Rust mailbox gate
+  covers publication, exact round-trip, acknowledgement, and negative cases.

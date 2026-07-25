@@ -22,6 +22,7 @@
   shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
     ../../crates/crucible-shmem/src/lib.rs
     ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
   ]);
   shmemNodeSlotTests = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
   defaultChecks = builtins.readFile ./default.nix;

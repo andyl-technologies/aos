@@ -7,6 +7,7 @@
   shmemSource = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
   ];
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;

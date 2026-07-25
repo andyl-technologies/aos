@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemAbiConformance",
-  taskIds ? ["T-SHM-14"],
+  taskIds ? ["T-SHM-14" "T-SHM-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,10 +18,17 @@
     builtins.readFile ../../crates/crucible-shmem/src/lib.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/preemption_mailbox.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_whitebox_marker.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/fingerprint_sample.rs;
-  shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
+  shmemGate =
+    builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs
+    + builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance/gate_cases.rs;
+  preemptionMailboxGate =
+    builtins.readFile ../../crates/crucible-shmem/tests/preemption_mailbox.rs;
   setupValidation = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   goldenFixture = builtins.readFile ../../crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture;
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
@@ -272,8 +279,44 @@
         needle = "const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);";
       }
       {
+        label = "node slot device completion Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);";
+      }
+      {
+        label = "node slot preemption icount Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET == 56);";
+      }
+      {
+        label = "node slot preemption deadline Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET == 64);";
+      }
+      {
+        label = "node slot preemption ceiling Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET == 72);";
+      }
+      {
+        label = "node slot published preemption sequence Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET == 80);";
+      }
+      {
+        label = "node slot consumed preemption sequence Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET == 84);";
+      }
+      {
+        label = "node slot first preemption argument Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_ARG0_OFFSET == 88);";
+      }
+      {
+        label = "node slot second preemption argument Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_ARG1_OFFSET == 92);";
+      }
+      {
+        label = "node slot preemption kind Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_KIND_OFFSET == 96);";
+      }
+      {
         label = "node slot reserved Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 56);";
+        needle = "const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 97);";
       }
       {
         label = "node slot size Rust static assertion";
@@ -378,10 +421,20 @@
         needle = "Red placeholder";
       }
     ]
+    ++ failuresFor "crates/crucible-shmem/tests/preemption_mailbox.rs" preemptionMailboxGate [
+      {
+        label = "preemption mailbox round-trip";
+        needle = "preemption_mailbox_round_trips_switch_interrupt_and_acknowledgement";
+      }
+      {
+        label = "preemption mailbox negative cases";
+        needle = "preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window";
+      }
+    ]
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=4";
+        needle = "abi_version=5";
       }
       {
         label = "total serialized length";
@@ -522,6 +575,42 @@
         needle = "offsetof(crucible_shmem_node_slot, publish_gen) == CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET";
       }
       {
+        label = "node slot device completion offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, device_completion_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot preemption icount offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_at_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot preemption deadline offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot preemption ceiling offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_ceiling_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot published preemption sequence offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_published_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET";
+      }
+      {
+        label = "node slot consumed preemption sequence offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_consumed_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET";
+      }
+      {
+        label = "node slot first preemption argument offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_arg0) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG0_OFFSET";
+      }
+      {
+        label = "node slot second preemption argument offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_arg1) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG1_OFFSET";
+      }
+      {
+        label = "node slot preemption kind offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_kind) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_KIND_OFFSET";
+      }
+      {
         label = "node slot reserved offset static assert";
         needle = "offsetof(crucible_shmem_node_slot, reserved) == CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_OFFSET";
       }
@@ -625,6 +714,14 @@
         label = "white-box marker payload offset static assert";
         needle = "offsetof(crucible_shmem_whitebox_marker_entry, payload) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET";
       }
+      {
+        label = "vCPU-switch preemption kind C constant";
+        needle = "#define CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH 1u";
+      }
+      {
+        label = "interrupt preemption kind C constant";
+        needle = "#define CRUCIBLE_SHMEM_PREEMPTION_KIND_INTERRUPT_AT 2u";
+      }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
@@ -721,6 +818,15 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
               --test gate_abi_conformance \
+              -- --test-threads=1
+
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
+              --test preemption_mailbox \
               -- --test-threads=1
 
             cargo run \
@@ -863,6 +969,17 @@ in
                 atomic_init(&slot.kind, CRUCIBLE_SHMEM_KIND_VM);
                 atomic_init(&slot.device_io_active, 1u);
                 atomic_init(&slot.publish_gen, 4u);
+                atomic_init(&slot.preemption_at_icount, 160u);
+                atomic_init(&slot.preemption_deadline_icount, 128u);
+                atomic_init(&slot.preemption_ceiling_icount, 256u);
+                atomic_init(&slot.preemption_published_sequence, 9u);
+                atomic_init(&slot.preemption_consumed_sequence, 8u);
+                atomic_init(&slot.preemption_arg0, 0u);
+                atomic_init(&slot.preemption_arg1, 1u);
+                atomic_init(
+                    &slot.preemption_kind,
+                    CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH
+                );
 
                 crucible_shmem_ring_header ring;
                 memset(&ring, 0, sizeof(ring));
@@ -996,7 +1113,16 @@ in
                     || atomic_load_explicit(&slot.status, memory_order_acquire) != CRUCIBLE_SHMEM_STATUS_IDLE
                     || atomic_load_explicit(&slot.kind, memory_order_acquire) != CRUCIBLE_SHMEM_KIND_VM
                     || atomic_load_explicit(&slot.device_io_active, memory_order_acquire) != 1u
-                    || atomic_load_explicit(&slot.publish_gen, memory_order_acquire) != 4u) {
+                    || atomic_load_explicit(&slot.publish_gen, memory_order_acquire) != 4u
+                    || atomic_load_explicit(&slot.preemption_at_icount, memory_order_acquire) != 160u
+                    || atomic_load_explicit(&slot.preemption_deadline_icount, memory_order_acquire) != 128u
+                    || atomic_load_explicit(&slot.preemption_ceiling_icount, memory_order_acquire) != 256u
+                    || atomic_load_explicit(&slot.preemption_published_sequence, memory_order_acquire) != 9u
+                    || atomic_load_explicit(&slot.preemption_consumed_sequence, memory_order_acquire) != 8u
+                    || atomic_load_explicit(&slot.preemption_arg0, memory_order_acquire) != 0u
+                    || atomic_load_explicit(&slot.preemption_arg1, memory_order_acquire) != 1u
+                    || atomic_load_explicit(&slot.preemption_kind, memory_order_acquire)
+                        != CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH) {
                     fprintf(stderr, "node slot validation failed\n");
                     return 1;
                 }
@@ -1074,7 +1200,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::gate_abi_conformance
+            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox
             generated_header_diff=checked
             bilateral_static_asserts=compiled
             golden_vector_roundtrip=rust,c

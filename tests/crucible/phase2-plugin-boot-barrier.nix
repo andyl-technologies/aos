@@ -18,7 +18,8 @@
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   shmem =
     builtins.readFile ../../crates/crucible-shmem/src/lib.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
