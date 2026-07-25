@@ -783,6 +783,13 @@ the transport layer by construction.
   trap `current_icount`, accepts only shared-page or register pointer+length
   payload sources, rejects disabled or oversized traps before reading guest
   memory, and keeps device-queue channel markers out of the doorbell path.
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell` now adds the first real
+  backend slice: a standalone x86 guest rings the frozen `out dx,eax` doorbell
+  on port `0x00e7`, and the packaged production Rust plugin reads its
+  `rax`/`rcx` virtual pointer+length payload, decodes the golden coverage marker,
+  and reports the exact trap icount before the run reaches its exact scheduler
+  ceiling. The item remains open for live collision validation, aarch64, and
+  routing the decoded observation into the host event log.
 - [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],

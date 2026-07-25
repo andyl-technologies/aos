@@ -2,6 +2,8 @@
 
 use super::*;
 
+extern "C" fn test_request_shutdown(_failure: std::os::raw::c_int) {}
+
 #[test]
 fn live_registrar_preflight_names_each_missing_capability() {
     let execution_model =
@@ -26,6 +28,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_block: Some(test_register_block),
             register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
+            request_shutdown: test_request_shutdown,
         },
     );
     assert!(matches!(
@@ -54,6 +57,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_block: Some(test_register_block),
             register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
+            request_shutdown: test_request_shutdown,
         },
     );
     assert!(matches!(
@@ -82,6 +86,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_block: Some(test_register_block),
             register_block_wait: Some(test_register_block_wait),
             register_ninep: Some(test_register_ninep),
+            request_shutdown: test_request_shutdown,
         },
     );
     assert!(matches!(
@@ -110,6 +115,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
             register_block: Some(test_register_block),
             register_block_wait: None,
             register_ninep: Some(test_register_ninep),
+            request_shutdown: test_request_shutdown,
         },
     );
     assert!(matches!(

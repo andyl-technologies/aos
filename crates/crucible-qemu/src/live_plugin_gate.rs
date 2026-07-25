@@ -75,6 +75,7 @@ pub struct LivePluginInstallGateConfig {
     run_directory: PathBuf,
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
+    whitebox: crate::QemuLaunchPluginSwitch,
     horizon_icount: u64,
     completion_timeout: Duration,
 }
@@ -97,6 +98,7 @@ impl LivePluginInstallGateConfig {
             run_directory: run_directory.into(),
             initrd: None,
             kernel_cmdline: None,
+            whitebox: crate::QemuLaunchPluginSwitch::Off,
             horizon_icount: DEFAULT_HORIZON_ICOUNT,
             completion_timeout: DEFAULT_COMPLETION_TIMEOUT,
         }
@@ -117,6 +119,13 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub fn with_kernel_cmdline(mut self, kernel_cmdline: impl Into<String>) -> Self {
         self.kernel_cmdline = Some(kernel_cmdline.into());
+        self
+    }
+
+    /// Returns this configuration with the optional white-box callback enabled.
+    #[must_use]
+    pub const fn with_whitebox(mut self, whitebox: crate::QemuLaunchPluginSwitch) -> Self {
+        self.whitebox = whitebox;
         self
     }
 
@@ -341,7 +350,8 @@ pub fn run_live_plugin_install_gate(
 
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
+        .with_whitebox(config.whitebox);
     let command = profile
         .qemu_launch_command(
             vm_launch_config(config),

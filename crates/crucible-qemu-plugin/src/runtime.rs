@@ -10,6 +10,7 @@
 
 pub(crate) mod callback_quiescence;
 mod live_callbacks;
+mod live_whitebox;
 
 use callback_quiescence::LiveCallbackQuiescence;
 
@@ -137,6 +138,11 @@ impl OwnedCallbackRegistrationMask {
         }
     }
 
+    const fn with_whitebox(mut self) -> Self {
+        self.bits |= Self::WHITEBOX;
+        self
+    }
+
     fn required_for(args: &PluginArgs) -> Self {
         let whitebox = if args.whitebox().is_on() {
             Self::WHITEBOX
@@ -176,6 +182,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     quiescence: Arc<LiveCallbackQuiescence>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
+    live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
     _pin: PhantomPinned,
@@ -190,6 +197,7 @@ impl OwnedCallbackRuntimeState {
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
             teardown_sender,
             live_vcpu_time: None,
+            live_whitebox: None,
             setup,
             coverage: None,
             _pin: PhantomPinned,
@@ -303,6 +311,30 @@ impl OwnedCallbackRuntimeState {
         let callback_pointer = std::ptr::from_ref(callback_state.as_ref().get_ref()).cast_mut();
         state.live_vcpu_time = Some(callback_state);
         Ok(callback_pointer)
+    }
+
+    fn prepare_live_whitebox_state(
+        self: Pin<&mut Self>,
+        apis: live_whitebox::LiveWhiteboxApis,
+        vcpu_count: u32,
+        icount_raw: crate::QemuIcountRawFn,
+        request_shutdown: QemuRequestShutdownFn,
+    ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
+        // SAFETY: assigning an independently heap-owned callback runtime does
+        // not move the pinned parent or its setup mapping.
+        let state = unsafe { self.get_unchecked_mut() };
+        let callback_state =
+            live_whitebox::LiveWhiteboxState::new(apis, vcpu_count, icount_raw, request_shutdown)?;
+        let mut callback_state = Box::pin(callback_state);
+        // SAFETY: the independently boxed state is pinned and retained by this
+        // process-lifetime owner before its address is registered with QEMU.
+        let callback_pointer = unsafe {
+            callback_state.as_mut().get_unchecked_mut() as *mut live_whitebox::LiveWhiteboxState
+        };
+        state.live_whitebox = Some(callback_state);
+        // SAFETY: `callback_pointer` points into the pinned allocation just
+        // retained by `state.live_whitebox`.
+        Ok(unsafe { &mut *callback_pointer })
     }
 
     fn register_basic_block_coverage(
@@ -881,6 +913,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     register_block: capabilities.register_block,
                     register_block_wait: capabilities.register_block_wait,
                     register_ninep: capabilities.register_ninep,
+                    request_shutdown: capabilities.request_shutdown,
                 },
             ),
         }

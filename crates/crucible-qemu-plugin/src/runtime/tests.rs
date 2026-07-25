@@ -876,6 +876,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_block: Some(capture_block_registration),
                 register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
+                request_shutdown: test_request_shutdown,
             },
         ),
     };
@@ -1045,7 +1046,7 @@ fn finalize_panic_is_fatal_without_dropping_userdata_or_sending_a_second_ack() {
 }
 
 #[test]
-fn enabled_whitebox_without_live_abi_fails_before_control_or_qemu_side_effects() {
+fn enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_effects() {
     let _runtime_state = isolate_runtime_state_for_test();
     reset_capability_call_counts();
     let registrations_before = live_registration_counts();
@@ -1074,7 +1075,7 @@ fn enabled_whitebox_without_live_abi_fails_before_control_or_qemu_side_effects()
         error,
         PluginRuntimeInstallError::OwnedCallbacks {
             source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                source: LiveVcpuTimeCallbackError::WhiteboxCallbackAbiUnavailable { .. },
+                source: LiveVcpuTimeCallbackError::WhiteboxCallback { .. },
             },
         }
     ));
