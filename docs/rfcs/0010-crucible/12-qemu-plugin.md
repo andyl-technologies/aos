@@ -914,10 +914,16 @@ component that makes that purity true *inside* the QEMU process.
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
   aborts registration on any malformed or missing required key. — satisfies
   [PLUG-5], [PLUG-6]; spec §12.2.1.
-- [ ] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
+- [x] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
   acquire time control before the first instruction → map+validate shmem → arm
   wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
   loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.
+  Completed by `checks.crucible.phase2.qemuPluginRegistrationOrder`, which
+  exhaustively checks the canonical sequencer and its terminal failure states,
+  then consumes `checks.crucible.phase2.qemuLivePluginInstall`. The live gate
+  loads the production Rust plugin and reaches ready `SetupAck`, enforces the
+  boot barrier before guest execution, runs silently, consumes `Quit`, and exits
+  orderly; those states are reachable only through the fixed install sequence.
 - [x] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
@@ -1114,11 +1120,17 @@ component that makes that purity true *inside* the QEMU process.
   access. Focused tests prove descriptor and mapping lifetimes, callback
   serialization, QEMU-API-only guest memory access, and bounds checks before
   network, block, 9p, and white-box payload copies.
-- [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
+- [x] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
   failure (broken IPC, missing capability, ABI mismatch, full ring, passed
   delivery icount) with a distinct diagnosable error that the divergence bisector
   can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
   spec §12.10.3.
+  Completed by `checks.crucible.phase2.qemuPluginFailLoud`. Its exhaustive
+  negative-control matrix covers broken IPC, missing capabilities, ABI/model
+  mismatch, full rings, and passed delivery icounts with distinct diagnostics
+  and no wall-clock fallback. The gate also consumes the production-plugin
+  network, block, and 9p live-I/O runs, proving the same guarded callback paths
+  are installed and exercised in QEMU rather than existing only as unit models.
 - [x] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
