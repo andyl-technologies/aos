@@ -1,7 +1,7 @@
 ##! modules/tests/nix-overlay.nix — /nix overlayfs verification
 ##!
 ##! AOS ships its Nix closure read-only at /nix.lower; the initrd unit
-##! `nix-overlay-setup.service` (modules/services/ignition.nix) stacks
+##! `nix-overlay-setup.service` (modules/services/boot-substrate.nix) stacks
 ##! an overlayfs at /nix with a writable upper on /var, so the Nix
 ##! package manager can install new store paths at runtime.
 ##!

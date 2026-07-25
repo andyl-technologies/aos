@@ -25,7 +25,7 @@ The naive approach — re-running the normal system eval on the host — does **
 work, and this was never validated before now. Two failures, both reproduced:
 
 1. **Sandbox config bug.** `crates/aos-package/src/config_eval/stock.rs` renders
-   `import /nix/store/…-aos-base-lib` and runs `nix eval --pure-eval`. Pure-eval
+   `import /nix/store/…-aos-base-lib` and ran evaluation with `--pure-eval`. Pure-eval
    **forbids importing any absolute path or `<search-path>`**, so it cannot even
    load base-lib. The correct sandbox is `restrict-eval` **without**
    `--pure-eval` (restrict-eval permits store paths + `-I` roots while still
@@ -248,9 +248,9 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    on-host eval converges to a valid manifest under the sandbox.
    `lib/build/base-lib.nix` bundles the source + baked `frozen-pkgs.json` /
    `frozen-artifacts.json` and exports `evalHostConfig`. Validated on the
-   builder: `evalHostConfig {}` and the exact `stock.rs` invocation (`nix eval
+   builder: `evalHostConfig {}` and the exact `stock.rs` invocation (`nix-instantiate --store dummy:// --eval --strict --json
    --option restrict-eval true --option allow-import-from-derivation false
-   -I <root> -I <base-lib> -f entry.nix manifest`) both produce a manifest
+   -I <root> -I <base-lib> -A manifest entry.nix`) both produce a manifest
    byte-identical to the real-pkgs manifest. `stock.rs` drops `--pure-eval`,
    reads `configManifest`, and adds the imported store paths as `-I` roots.
    Remaining for step 5: wire `mkBaseLib` into the image build so

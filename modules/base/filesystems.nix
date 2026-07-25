@@ -20,7 +20,7 @@
   # Build fstab entries from the filesystem configuration.
   #
   # The overlay on /etc is NOT listed here: the initrd service
-  # `etc-overlay-setup.service` (in modules/services/ignition.nix)
+  # `etc-overlay-setup.service` (in modules/services/boot-substrate.nix)
   # mounts it before `initrd-switch-root`, and the kernel inherits
   # that mount into stage 2. Adding it to fstab would re-trigger the
   # mount in stage 2 after switch_root, which overlayfs handles poorly
@@ -153,7 +153,7 @@ in {
 
     # `aos.filesystems.overlayEtc` was removed in spec v12: the
     # composefs-backed /etc overlay is now unconditional. See
-    # `modules/services/ignition.nix:etc-overlay-setup.service` for the
+    # `modules/services/boot-substrate.nix:etc-overlay-setup.service` for the
     # three-layer mount (system EROFS lower + per-gen config lower +
     # /var/etc + tmpfs upper).
   };
@@ -239,9 +239,8 @@ in {
       text = fstabEntries + "\n";
     };
 
-    # tmpfiles rules to create standard volatile directories. The
-    # `/run/etc-upper` triplet from the legacy overlay is gone —
-    # etc-overlay-setup.service now creates `/run/etc/upper-<gen>/{dir,work}`
+    # tmpfiles rules to create standard volatile directories.
+    # etc-overlay-setup.service creates `/run/etc/upper-<gen>/{dir,work}`
     # at boot time directly (spec v12 §6.1.4).
     environment.etc."tmpfiles.d/aos-filesystems.conf" = {
       text = ''

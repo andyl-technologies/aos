@@ -1,8 +1,8 @@
 //! The AWS IMDSv2 [`PlatformFetcher`] — the cloud exemplar.
 //!
-//! GCP / Azure / DigitalOcean / OpenStack-IMDS fetchers follow the same shape
-//! (different base URL, header, encoding) and live in
-//! [`crate::metadata::cloud`] as stubs until each has a recorded-fixture test.
+//! GCP, Azure, DigitalOcean, and OpenStack IMDS fetchers follow the same shape
+//! with provider-specific endpoints, headers, and encodings in
+//! [`crate::metadata::cloud`].
 //!
 //! # IMDSv2 token dance (mandatory)
 //!
@@ -15,7 +15,8 @@
 //! ```
 //!
 //! `fetch_user_data` GETs `/latest/user-data`: HTTP 200 is the literal
-//! `host.nix` (or a pointer JSON, resolved with a content-pin); HTTP 404 means
+//! complete literal `host.nix` (or a transport pointer JSON, resolved with a
+//! content-pin); HTTP 404 means
 //! no user-data attached (`Ok(None)`, *not* an error). `fetch_facts` reads
 //! `instance-id`, `placement/{region,availability-zone}`, `local-hostname`,
 //! the `public-keys/<i>/openssh-key` list, and the `network/interfaces/macs/`
@@ -71,7 +72,12 @@ impl AwsImdsFetcher {
     }
 
     /// GET a metadata path under `/latest/`, returning `None` on 404.
-    async fn get_meta(&self, http: &dyn MetadataHttp, token: &str, path: &str) -> Result<Option<String>> {
+    async fn get_meta(
+        &self,
+        http: &dyn MetadataHttp,
+        token: &str,
+        path: &str,
+    ) -> Result<Option<String>> {
         let url = format!("{}/latest/{path}", self.base);
         let resp = http
             .get(&url, &[(TOKEN_HEADER, token)])
@@ -110,7 +116,7 @@ impl PlatformFetcher for AwsImdsFetcher {
             return Ok(Some(UserData::Pointer(ptr)));
         }
         Ok(Some(UserData::Inline {
-            host_nix: body,
+            payload: body,
             sig: None,
         }))
     }
@@ -133,7 +139,10 @@ impl PlatformFetcher for AwsImdsFetcher {
 
         // public-keys/<i>/openssh-key — the listing is `<i>=<name>` lines;
         // iterate indices found in the listing.
-        if let Some(listing) = self.get_meta(http, &token, "meta-data/public-keys/").await? {
+        if let Some(listing) = self
+            .get_meta(http, &token, "meta-data/public-keys/")
+            .await?
+        {
             for line in listing.lines() {
                 let idx = line.split('=').next().unwrap_or(line).trim();
                 if idx.is_empty() {
@@ -158,8 +167,7 @@ impl PlatformFetcher for AwsImdsFetcher {
                 if mac.is_empty() {
                     continue;
                 }
-                let idx_path =
-                    format!("meta-data/network/interfaces/macs/{mac}/device-number");
+                let idx_path = format!("meta-data/network/interfaces/macs/{mac}/device-number");
                 let iface = self
                     .get_meta(http, &token, &idx_path)
                     .await?

@@ -1,21 +1,21 @@
 //! The `aos metadata` agent for fetching host configuration and instance facts.
 //!
-//! Two initrd phases own cross-cloud user-data + instance-metadata acquisition,
-//! replacing Ignition's fetch layer. The agent is **transport-only**: it
-//! fetches and stashes *untrusted* bytes; signature verification is deferred to
-//! the stage-2 `aos-eval.service`. A failed or missing fetch leaves no
-//! `host.nix` in the stash, so eval falls through to gen-0-only config — the
-//! failure-safe path.
+//! Initrd phases own cross-cloud acquisition and the narrow first-boot trust
+//! boundary. Fetch stores exact bytes. Authorization applies the measured
+//! `platform` or `signed` policy and is the only phase allowed to produce exact
+//! `host.nix`. Restricted evaluation then projects one-time provisioning and
+//! renders transient repart definitions. Full evaluation remains in stage 2.
 //!
 //! ```text
 //! aos metadata detect   # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env
-//! aos metadata fetch    # platform → /run/aos-metadata/{host.nix, host.nix.sig, facts.json, …}
+//! aos metadata fetch    # platform → exact user-data + facts
+//! aos metadata authorize # trust policy → exact host.nix
+//! aos metadata eval-provisioning # restricted projection → repart.d
 //! ```
 //!
 //! # Module map
 //!
-//! - [`detect`] — the DMI decision table (ported from
-//!   `pkgs/boot/aos-platform-detect.nix`) + the config-drive probe.
+//! - [`detect`] — the DMI decision table and config-drive probe.
 //! - [`fetcher`] — the [`PlatformFetcher`] trait and the normalized
 //!   [`UserData`] / [`Facts`] / [`StaticNetwork`] it produces.
 //! - [`http`] — the [`MetadataHttp`] surface: the `TransferEngine`-backed
@@ -24,12 +24,13 @@
 //!   behind a mockable trait.
 //! - [`offline`] — the offline fetchers (aos-metadata ISO, NoCloud,
 //!   config-drive, qemu fw_cfg).
-//! - [`aws`] — the AWS IMDSv2 cloud exemplar; [`cloud`] — the other cloud
-//!   vendors as `TODO` stubs.
+//! - [`aws`] — AWS IMDSv2; [`cloud`] — the other native cloud fetchers.
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
 //! - [`stash`] — the `/run/aos-metadata` stash format.
-//! - [`repart`] — the two-boot custom-repart persist seam.
+//! - [`provisioning`] — whole-input authorization and host extraction.
+//! - [`repart`] — typed storage validation and transient repart rendering.
+//! - [`state`] — durable provisioning evidence and last-known-good input.
 //!
 //! # Testability
 //!
@@ -46,9 +47,11 @@ pub mod fetcher;
 pub mod http;
 pub mod mount;
 pub mod offline;
+pub mod provisioning;
 pub mod repart;
-pub mod staticnet;
 pub mod stash;
+pub mod state;
+pub mod staticnet;
 
 #[cfg(test)]
 mod tests;
@@ -62,7 +65,11 @@ pub use facts_render::render_host_facts_nix;
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
 pub use mount::{BlkidProbe, ConfigDriveProbe};
+pub use provisioning::{
+    AuthorizeOptions, EvalProvisioningOptions, ProvisioningSource, ProvisioningTrust,
+};
 pub use stash::{MetadataResult, PlatformEnv, Stash};
+pub use state::{PersistProvisioningOptions, ProvisioningAudit};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 
@@ -70,9 +77,8 @@ use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 /// offline `metadata_dir` (when one was mounted by `detect`).
 ///
 /// Offline channels need their mounted directory; cloud channels ignore it.
-/// An unknown platform maps to the AWS exemplar only when it is `aws`;
-/// otherwise it falls back to a cloud stub or, lacking a directory, the qemu
-/// reader, so an un-ported platform is failure-safe.
+/// A detected network platform without a native fetcher fails closed instead
+/// of silently discarding possible control-plane provisioning data.
 pub fn select_fetcher(platform_id: &str, metadata_dir: Option<&str>) -> Box<dyn PlatformFetcher> {
     match platform_id {
         "aos-metadata" => Box::new(offline::AosMetadataFetcher::new(
@@ -90,10 +96,15 @@ pub fn select_fetcher(platform_id: &str, metadata_dir: Option<&str>) -> Box<dyn 
         "azure" => Box::new(cloud::AzureFetcher),
         "digitalocean" => Box::new(cloud::DigitalOceanFetcher),
         "openstack" => Box::new(cloud::OpenStackImdsFetcher),
-        // metal / vultr / hetzner / scaleway / oraclecloud and the unknown
-        // tail: no native fetcher yet ⇒ qemu fw_cfg reader is the only offline
-        // probe, else gen-0-only via the empty result.
-        _ => Box::new(offline::QemuFwCfgFetcher::default()),
+        "hetzner" => Box::new(cloud::UnsupportedCloudFetcher::new("hetzner")),
+        "vultr" => Box::new(cloud::UnsupportedCloudFetcher::new("vultr")),
+        "scaleway" => Box::new(cloud::UnsupportedCloudFetcher::new("scaleway")),
+        "oraclecloud" => Box::new(cloud::UnsupportedCloudFetcher::new("oraclecloud")),
+        "metal" => Box::new(cloud::NoMetadataFetcher::new("metal")),
+        "hyperv" => Box::new(cloud::NoMetadataFetcher::new("hyperv")),
+        "vmware" => Box::new(cloud::NoMetadataFetcher::new("vmware")),
+        "virtualbox" => Box::new(cloud::NoMetadataFetcher::new("virtualbox")),
+        _ => Box::new(cloud::NoMetadataFetcher::new("unknown")),
     }
 }
 
@@ -116,11 +127,11 @@ impl Default for FetchOptions {
 }
 
 /// Run `aos metadata fetch`: select the fetcher, acquire and stash the
-/// untrusted payload + facts, and seed DHCP-less networking.
+/// exact payload + facts, and seed DHCP-less networking.
 ///
 /// Reads `PLATFORM_ID`/`METADATA_DIR` from the stash's `platform.env`. Writes
-/// `host.nix` (+ `host.nix.sig`), `facts.json`, the optional network seed, and
-/// the `.metadata-result.json` run record. Never verifies a signature.
+/// `user-data` (+ `user-data.sig`), `facts.json`, the optional network seed,
+/// and the `.metadata-result.json` acquisition record. Never authorizes input.
 ///
 /// # Errors
 ///
@@ -136,7 +147,14 @@ pub async fn run_fetch(opts: &FetchOptions) -> Result<()> {
     let engine = TransferEngine::new(TransferEngineConfig::default());
     let http = EngineHttp::new(engine);
 
-    run_fetch_with(&stash, &*fetcher, &http, opts.var_etc_root.as_deref(), &env.platform_id).await
+    run_fetch_with(
+        &stash,
+        &*fetcher,
+        &http,
+        opts.var_etc_root.as_deref(),
+        &env.platform_id,
+    )
+    .await
 }
 
 /// The testable core of [`run_fetch`]: drive a given fetcher + HTTP surface and
@@ -153,15 +171,17 @@ pub(crate) async fn run_fetch_with(
     var_etc_root: Option<&std::path::Path>,
     platform_id: &str,
 ) -> Result<()> {
-    // 1. User-data (untrusted), resolving the pointer form if present.
+    stash.clear_fetch_outputs()?;
+
+    // 1. Exact user-data, resolving the top-level pointer form if present.
     let user_data = fetcher
         .fetch_user_data(http)
         .await
         .context("fetching user-data")?;
-    let (fetched, host_nix_sha256, sig_present) = match user_data {
+    let (fetched, user_data_sha256, sig_present) = match user_data {
         Some(ud) => {
             let resolved = ud.resolve(http).await.context("resolving user-data")?;
-            let sha = stash.write_host_nix(&resolved.host_nix, resolved.sig.as_deref())?;
+            let sha = stash.write_user_data(&resolved.payload, resolved.sig.as_deref())?;
             (true, Some(sha), resolved.sig.is_some())
         }
         None => (false, None, false),
@@ -173,21 +193,21 @@ pub(crate) async fn run_fetch_with(
 
     // 3. DHCP-less static-network seed.
     let mut network_seed_written = false;
-    if let Some(net) = &facts.network
-        && net.is_seedable()
-    {
-        let rendered = staticnet::render_networkd(net);
-        stash.write_network_seed(&rendered)?;
-        // Documented seam: also place into the gen-0 /var/etc lower so stage-2
-        // networkd has a route before any config-gen.
-        if let Some(root) = var_etc_root {
-            let dir = root.join("systemd/network");
-            std::fs::create_dir_all(&dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
-            std::fs::write(dir.join(staticnet::SEED_FILENAME), &rendered)
-                .context("seeding /var/etc network")?;
+    if let Some(net) = &facts.network {
+        if net.is_seedable() {
+            let rendered = staticnet::render_networkd(net);
+            stash.write_network_seed(&rendered)?;
+            // Documented seam: also place into the gen-0 /var/etc lower so stage-2
+            // networkd has a route before any config-gen.
+            if let Some(root) = var_etc_root {
+                let dir = root.join("systemd/network");
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
+                std::fs::write(dir.join(staticnet::SEED_FILENAME), &rendered)
+                    .context("seeding /var/etc network")?;
+            }
+            network_seed_written = true;
         }
-        network_seed_written = true;
     }
 
     // 4. Run record.
@@ -195,7 +215,7 @@ pub(crate) async fn run_fetch_with(
         platform_id: platform_id.to_string(),
         fetched_user_data: fetched,
         user_data_source: user_data_source(platform_id).to_string(),
-        host_nix_sha256,
+        user_data_sha256,
         sig_present,
         facts_hash,
         network_seed_written,
@@ -203,6 +223,38 @@ pub(crate) async fn run_fetch_with(
     };
     stash.write_result(&result)?;
     Ok(())
+}
+
+/// Run provisioning authorization with the production HTTP adapter.
+///
+/// # Errors
+///
+/// Returns an error for trust, schema, content-pin, validation, or stash
+/// failures. Errors are intentionally fatal to the initrd ordering chain.
+pub async fn authorize_main(opts: &AuthorizeOptions) -> Result<()> {
+    provisioning::run_authorize(opts)?;
+    Ok(())
+}
+
+/// Runs the restricted initrd provisioning projection and renderer.
+///
+/// # Errors
+///
+/// Returns an error when Nix evaluation, strict validation, or rendering
+/// fails. The caller must treat this as fatal before disk mutation.
+pub fn eval_provisioning_main(opts: &EvalProvisioningOptions) -> Result<()> {
+    provisioning::run_eval_provisioning(opts)?;
+    Ok(())
+}
+
+/// Verify the initrd-to-stage-2 host content binding.
+///
+/// # Errors
+///
+/// Returns an error when the accepted host or authorization record is missing
+/// or the content hash differs.
+pub fn verify_binding_main(stash_dir: &std::path::Path) -> Result<()> {
+    provisioning::verify_host_binding(stash_dir)
 }
 
 /// The `user_data_source` tag recorded for a platform.
@@ -219,7 +271,7 @@ fn user_data_source(platform_id: &str) -> &'static str {
 /// Uses the system clock; the value is recorded, never used in a security
 /// decision, so a coarse seconds-resolution stamp is sufficient. Falls back to
 /// the Unix epoch when the clock is before it.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

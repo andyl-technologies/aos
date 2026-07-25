@@ -64,6 +64,59 @@ let
 in {
   inherit lib;
 
+  ## Evaluate the closed one-time provisioning projection.
+  ##
+  ## This entrypoint is used in the initrd before package configuration modules
+  ## or registry access exist. Only the provisioning schema module is declared,
+  ## so unrelated `host.nix` definitions are dropped by the intentionally
+  ## non-strict AOS module engine and are never forced.
+  evalProvisioningConfig = {
+    operatorModules ? [],
+  }: let
+    evaluated = lib.evalModules {
+      # This closed projection has no package modules to arbitrate. Append the
+      # operator module at the normal tier so attrsOf/submodule values merge
+      # per key and field; the full evaluator retains the reserved priority-75
+      # operator tier needed to beat package contributions.
+      modules = [./modules/base/provisioning.nix] ++ operatorModules;
+      pkgs = frozenPkgs;
+      inherit lib;
+    };
+    partitions =
+      builtins.mapAttrs
+      (_: partition: {
+        inherit
+          (partition)
+          device
+          label
+          type
+          sizeMin
+          sizeMax
+          weight
+          format
+          uuid
+          grow
+          growFs
+          priority
+          ;
+      })
+      evaluated.config.aos.provisioning.storage.partitions;
+  in {
+    # Do not return the module engine's internal `_module` metadata. This
+    # closed value is the complete initrd/Rust data contract.
+    config.aos.provisioning.storage = {inherit partitions;};
+  };
+
+  ## Evaluate the package-name seed required before registry module resolution.
+  evalHostSelection = {
+    operatorModules ? [],
+  }:
+    lib.evalModules {
+      modules = [./modules/base/host-selection.nix];
+      pkgs = frozenPkgs;
+      inherit lib operatorModules;
+    };
+
   ## Evaluate a host configuration on-host into a config manifest.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
@@ -80,7 +133,15 @@ in {
         baseModules
         ++ systemModules
         ++ configModules
-        ++ [{aos.config.frozenArtifacts = frozenArtifacts;}];
+        ++ [
+          {
+            aos.config.frozenArtifacts = frozenArtifacts;
+            # Keep the full stage-2 projection self-referential: the generated
+            # service must continue to name this exact ABI-pinned base library,
+            # not the build-time default or an operator value.
+            aos.config.evalAtBoot.baseLib = ./.;
+          }
+        ];
       pkgs = frozenPkgs;
       inherit lib operatorModules;
     };

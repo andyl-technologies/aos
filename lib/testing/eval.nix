@@ -16,7 +16,6 @@
   exposeRenderer = import ../../pkgs/build-support/_expose-renderer.nix {
     inherit lib pkgs;
   };
-
   # The kernel-lockdown option was removed: SECURITY_LOCKDOWN_LSM selects
   # MODULE_SIG, whose default key generation breaks third-party
   # bit-reproducibility of the public base image. Fail loudly at eval time
@@ -44,8 +43,144 @@
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-fetch.service"
+    else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-metadata-authorize.service"
+    else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-provisioning-eval.service"
     else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-repart.service"
+    else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
+    then throw "the stock system must persist provisioning audit evidence"
+    else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)
+    then throw "the stock system must restore its last fully evaluated host input"
+    else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
+    then throw "the stock system must cache fully evaluated host input"
+    else if
+      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+      ? ConditionPathExists
+    then throw "metadata acquisition must run on provisioned boots"
+    else if
+      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+      ? ConditionPathExists
+    then throw "the restricted storage projection must remain available as a post-commit advisory check"
+    else if
+      !(builtins.elem
+        "aos-host-config-restore.service"
+        system.config.systemd.services.aos-eval.requires)
+    then throw "aos-eval.service must restore the last known-good input before full evaluation"
+    else if
+      !(builtins.elem
+        "aos-eval.service"
+        system.config.systemd.services."aos-host-config-cache".after)
+    then throw "host input may only be cached after successful full evaluation"
+    else if
+      !(containsStr
+        "pending provisioning marker found; refusing automatic replay"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "aos-repart.service must fail closed on a pending marker"
+    else if
+      !(containsStr
+        "--dry-run=yes"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "committed storage must be compared without mutation"
+    else if
+      !(containsStr
+        "storage-coherence"
+        system.config.boot.initrd.systemd.services.aos-repart.script)
+    then throw "committed storage comparison must publish an observable result"
+    else if
+      !(containsStr
+        (builtins.toString pkgs.dosfstools)
+        system.config.boot.initrd.systemd.services.aos-repart.environment.PATH)
+    then throw "every admitted vfat format must have its AOS-built initrd tool"
+    else if
+      !(builtins.elem
+        "initrd-root-fs.target"
+        system.config.boot.initrd.systemd.services.aos-metadata-authorize.requiredBy)
+    then throw "initrd-root-fs.target must require provisioning authorization"
+    else if
+      !(builtins.elem
+        "initrd-root-fs.target"
+        system.config.boot.initrd.systemd.services.aos-repart.requiredBy)
+    then throw "initrd-root-fs.target must require repartitioning"
+    else if
+      !(builtins.elem
+        "aos-provisioning-eval.service"
+        system.config.boot.initrd.systemd.services.aos-repart.requires)
+    then throw "aos-repart.service must require restricted provisioning evaluation"
+    else if
+      !(builtins.elem
+        "aos-provisioning-eval.service"
+        system.config.boot.initrd.systemd.services.aos-repart.after)
+    then throw "aos-repart.service must run after restricted provisioning evaluation"
+    else "ok";
+
+  # The early projection declares only aos.provisioning. An unrelated runtime
+  # definition can contain a throw and must remain unforced, while a storage
+  # override from the same operator module is visible.
+  provisioningProjection = lib.evalModules {
+    modules = [
+      ../../modules/base/provisioning.nix
+      {
+        aos.provisioning.storage.partitions.var.sizeMin = "8G";
+        services.notPartOfEarlyProjection.enable =
+          throw "restricted provisioning evaluation forced an unrelated runtime field";
+      }
+    ];
+    pkgs = {};
+    inherit lib;
+  };
+  provisioningProjectionIsClosed =
+    if provisioningProjection.config.aos.provisioning.storage.partitions.var.sizeMin
+    != "8G"
+    then throw "restricted provisioning evaluation did not apply host storage"
+    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.type
+    != "swap"
+    then throw "partial host storage overrides discarded default partition fields"
+    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.format
+    != "swap"
+    then throw "partial host storage overrides discarded the default swap format"
+    else "ok";
+  provisioningProjectionJson =
+    builtins.toJSON
+    (builtins.mapAttrs
+      (_: partition: {
+        inherit
+          (partition)
+          device
+          label
+          type
+          sizeMin
+          sizeMax
+          weight
+          format
+          uuid
+          grow
+          growFs
+          priority
+          ;
+      })
+      provisioningProjection.config.aos.provisioning.storage.partitions);
+  provisioningProjectionHasNoModuleInternals =
+    if builtins.match ".*_module.*" provisioningProjectionJson != null
+    then throw "restricted provisioning JSON leaked module-engine internals"
+    else "ok";
+
+  hostSelectionProjection = lib.evalModules {
+    modules = [../../modules/base/host-selection.nix];
+    pkgs = {};
+    inherit lib;
+    operatorModules = [
+      {
+        aos.apm.desiredPackages = ["k3s-worker"];
+        networking.notPartOfSelection =
+          throw "host package selection forced unrelated runtime policy";
+      }
+    ];
+  };
+  hostSelectionProjectionIsClosed =
+    if hostSelectionProjection.config.aos.apm.desiredPackages != ["k3s-worker"]
+    then throw "closed host selection did not apply desired package names"
     else "ok";
 
   # --- aos.apm.registries (modules/base/apm-registries.nix) -----------------
@@ -484,7 +619,7 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
-        echo "configuration pipeline: structural default (${structuralConfiguration})"
+        echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

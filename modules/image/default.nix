@@ -53,6 +53,16 @@ in {
       default = true;
       description = "Whether to build disk images for this system variant.";
     };
+
+    erofsCompressionLevel = lib.mkOption {
+      type = lib.types.int;
+      default = 19;
+      description = ''
+        Zstandard compression level used for EROFS root images. Production
+        keeps level 19 for distribution size; VM-test variants may select a
+        faster level without changing the filesystem or boot semantics.
+      '';
+    };
   };
 
   options.system.build.image = {

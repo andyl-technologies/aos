@@ -60,16 +60,15 @@ class QemuMachine(Machine):
     port, serial drain, mcast L2 netdev):
 
     - ``boot="kernel"`` (default): direct kernel boot via
-      ``-kernel``/``-initrd``/``-append`` with the ignition config on a
-      metadata ISO (SCSI CD-ROM) — the original fleet path.
+      ``-kernel``/``-initrd``/``-append``.
     - ``boot="image"``: boot a self-bootable raw disk image under OVMF
-      (two pflash drives), with the ignition config delivered over
-      ``-fw_cfg name=opt/com.coreos/config``. No metadata ISO is
-      attached — its presence would force ``PLATFORM_ID=file`` in
-      aos-platform-detect and ignition would never look at fw_cfg.
-      The per-run disk copy is grown to ``disk_size_mib`` and its GPT
-      backup header relocated (``sgdisk -e``) so ignition's disks
-      stage can create partitions past the image's original boundary.
+      (two pflash drives).
+
+    Either shape may attach an ``aos-metadata`` ISO as a SCSI CD-ROM. Image
+    tests use that channel to exercise native first-boot provisioning before
+    repartitioning. The per-run disk copy is grown to ``disk_size_mib`` and
+    its GPT backup header relocated (``sgdisk -e``) so systemd-repart sees the
+    complete target capacity.
     """
 
     transport: ClassVar[Driver] = "qemu"
@@ -84,6 +83,8 @@ class QemuMachine(Machine):
     fw_cfg_path: str | None
     disk_size_mib: int | None
     var_size_mib: int | None
+    extra_disks: list[dict[str, object]]
+    extra_disk_copies: list[str]
     memory_mib: int
     vcpu_count: int
     mac: str
@@ -121,6 +122,7 @@ class QemuMachine(Machine):
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
         var_size_mib: int | None = None,
+        extra_disks: list[dict[str, object]] | None = None,
         tpm: bool = False,
         swtpm_bin: str | None = None,
     ) -> None:
@@ -134,6 +136,8 @@ class QemuMachine(Machine):
         self.fw_cfg_path = fw_cfg
         self.disk_size_mib = disk_size_mib
         self.var_size_mib = var_size_mib
+        self.extra_disks = extra_disks or []
+        self.extra_disk_copies = []
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
         self.mac = mac
@@ -201,16 +205,28 @@ class QemuMachine(Machine):
         # store files on certain filesystems.
         reflinked = clone_or_copy(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
+        self.extra_disk_copies = []
+        for index, disk in enumerate(self.extra_disks):
+            size_mib = disk.get("sizeMiB")
+            if not isinstance(size_mib, int) or size_mib <= 0:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid sizeMiB"
+                )
+            path = str(self.tmpdir / f"{self.name}-extra-{index}.img")
+            with open(path, "wb") as extra:
+                extra.truncate(size_mib * 1024 * 1024)
+            self.extra_disk_copies.append(path)
         copy_method = "reflink" if reflinked else "copy"
+        if self.metadata_src is not None:
+            shutil.copyfile(self.metadata_src, self.metadata_copy)
+            os.chmod(self.metadata_copy, 0o644)
 
         if self.boot == "image":
             # Grow the per-run copy to the install target size (sparse —
             # os.truncate extends with holes, no real I/O) and relocate
             # the GPT backup header to the new end of disk. Without the
-            # relocation ignition-disks cannot create or resize
-            # partitions past the image's original boundary; ignition
-            # treats the stale table as authoritative (its disks stage
-            # is declarative and never repairs GPT itself).
+            # relocation systemd-repart cannot allocate partitions past the
+            # image's original boundary.
             if self.disk_size_mib is not None:
                 os.truncate(self.disk_copy, self.disk_size_mib * 1024 * 1024)
                 subprocess.run(
@@ -235,22 +251,19 @@ class QemuMachine(Machine):
             )
             log.info("  Firmware: %s", self.firmware_code)
             log.info("  fw_cfg:   %s", self.fw_cfg_path)
+            if self.metadata_src is not None:
+                log.info("  Metadata: %s", self.metadata_copy)
         else:
             # A metadata ISO is optional because fleet
             # identity is baked into the image's /etc (via extendModules), so a
             # kernel-boot machine may carry no metadata channel at all. When
             # absent, no SCSI CD-ROM is attached (see the argv block below) and
             # aos-metadata-detect falls through to the `metal` platform.
-            if self.metadata_src is not None:
-                shutil.copyfile(self.metadata_src, self.metadata_copy)
-                os.chmod(self.metadata_copy, 0o644)
-
-            # Kernel-boot "ignition" var: the base image ships no /var, so
+            # A repart-provisioned kernel disk ships no /var, so
             # grow the per-run copy by var_size_mib to open trailing free
             # space (sparse — os.truncate extends with holes) and relocate
-            # the GPT backup header to the new end. The guest's
-            # aos-gpt-relocate + ignition-disks then create and format /var
-            # there on first boot, mirroring production. Growing the per-run
+            # the GPT backup header to the new end. systemd-repart then
+            # creates and formats /var there on first boot. Growing the per-run
             # copy — not the shared base image — is what lets machines
             # differing only in /var size share one deduplicated base disk.
             if self.var_size_mib is not None:
@@ -265,14 +278,15 @@ class QemuMachine(Machine):
                     stderr=subprocess.STDOUT,
                 )
                 log.info(
-                    "  Disk:     %s (%s, +%s MiB /var via ignition)",
+                    "  Disk:     %s (%s, +%s MiB /var via systemd-repart)",
                     self.disk_copy,
                     copy_method,
                     self.var_size_mib,
                 )
             else:
                 log.info("  Disk:     %s (%s)", self.disk_copy, copy_method)
-            log.info("  Metadata: %s", self.metadata_copy)
+            if self.metadata_src is not None:
+                log.info("  Metadata: %s", self.metadata_copy)
 
         # Serial drain — unidirectional listener appending to
         # <name>-serial.log. Must be up before QEMU connects; the wait
@@ -298,7 +312,7 @@ class QemuMachine(Machine):
 
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
         # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
-        # what aos-platform-detect.service probes for.
+        # what the initrd metadata detector probes for.
         #
         # `localaddr=127.0.0.1` on the mcast netdev binds the multicast
         # socket to loopback. Without it QEMU asks the kernel to pick an
@@ -407,11 +421,7 @@ class QemuMachine(Machine):
 
         if self.boot == "image":
             # UEFI image boot: OVMF code (read-only) + per-run vars on
-            # pflash; firmware loads sd-boot from the image's ESP. The
-            # ignition config rides fw_cfg — aos-platform-detect sees
-            # QEMU DMI (no metadata ISO attached) and classifies
-            # PLATFORM_ID=qemu, which is exactly the platform whose
-            # fetch stage reads opt/com.coreos/config.
+            # pflash; firmware loads sd-boot from the image's ESP.
             #
             # Secure Boot needs SMM: OVMF's authenticated variable store
             # lives in SMM, and the firmware flash is marked secure so
@@ -430,7 +440,7 @@ class QemuMachine(Machine):
             ]
             if self.fw_cfg_path is not None:
                 argv += [
-                    "-fw_cfg", f"name=opt/com.coreos/config,file={self.fw_cfg_path}",
+                    "-fw_cfg", f"name=opt/org.andyl/provisioning,file={self.fw_cfg_path}",
                 ]
         else:
             vmlinuz = self._find_kernel()
@@ -449,15 +459,31 @@ class QemuMachine(Machine):
                 ),
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
-            # Attach the metadata ISO as a SCSI CD-ROM only when present; the
-            # machine identity is baked into /etc, so no metadata channel ships.
-            if self.metadata_src is not None:
-                argv += [
-                    "-drive",
-                    f"id=metadata,file={self.metadata_copy},if=none,format=raw,readonly=on",
-                    "-device", "virtio-scsi-pci,id=scsi0",
-                    "-device", "scsi-cd,drive=metadata,bus=scsi0.0",
-                ]
+
+        for index, (disk, path) in enumerate(
+            zip(self.extra_disks, self.extra_disk_copies, strict=True)
+        ):
+            serial = disk.get("serial")
+            if not isinstance(serial, str) or not serial:
+                raise RuntimeError(
+                    f"[{self.name}] extra disk {index} has invalid serial"
+                )
+            drive_id = f"extra{index}"
+            argv += [
+                "-drive", f"id={drive_id},file={path},format=raw,if=none",
+                "-device",
+                f"virtio-blk-pci,drive={drive_id},serial={serial}",
+            ]
+
+        # Attach native provisioning input for either boot shape. The initrd
+        # probes the `aos-metadata` filesystem label before cloud DMI routing.
+        if self.metadata_src is not None:
+            argv += [
+                "-drive",
+                f"id=metadata,file={self.metadata_copy},if=none,format=raw,readonly=on",
+                "-device", "virtio-scsi-pci,id=scsi0",
+                "-device", "scsi-cd,drive=metadata,bus=scsi0.0",
+            ]
 
         # vTPM device — connects QEMU's emulated tpm-tis to the swtpm
         # control socket launched in start(). Present on every (re)launch
@@ -568,6 +594,16 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+
+    def reboot_without_metadata(self, timeout: float = 600.0) -> None:
+        """Reboot after detaching the optional metadata ISO.
+
+        This models a post-provision control-plane outage. The root disk and
+        firmware state are preserved, but the next QEMU launch omits the
+        config-drive so the guest must use its last-known-good runtime input.
+        """
+        self.metadata_src = None
+        self.reboot(timeout=timeout)
 
     # ------------------------------------------------------------------
     def reboot_expect_rejected(

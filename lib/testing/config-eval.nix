@@ -83,9 +83,18 @@
     && systemA.config.aos.config.evalAtBoot.hostNix == "/run/aos-metadata/host.nix";
   signedModeRequiresSignature =
     builtins.match
+    ".*metadata authorize.*--trust signed.*--trusted-config-keys-dir.*"
+    signedSystem.config.boot.initrd.systemd.services.aos-metadata-authorize.serviceConfig.ExecStart
+    != null;
+  stage2UsesAcceptedBinding =
+    builtins.match
+    ".*metadata verify-binding.*"
+    signedSystem.config.systemd.services.aos-eval.script
+    != null
+    && builtins.match
     ".*--require-signed-host-nix.*"
     signedSystem.config.systemd.services.aos-eval.script
-    != null;
+    == null;
   signedModeWithoutKeyThrows =
     !(builtins.tryEval signedWithoutKeySystem.config.system.build.toplevel.name).success;
 
@@ -103,10 +112,12 @@
             (lib.throwIfNot defaultTrustsPlatform
               "config-eval: the stock image must trust the metadata-agent stash"
               (lib.throwIfNot signedModeRequiresSignature
-                "config-eval: signed policy must require host.nix signature verification"
-                (lib.throwIfNot signedModeWithoutKeyThrows
-                  "config-eval: signed policy without a trust anchor must fail evaluation"
-                  true)))))));
+                "config-eval: signed policy must verify the complete provisioning input in initrd"
+                (lib.throwIfNot stage2UsesAcceptedBinding
+                  "config-eval: stage 2 must verify the initrd-accepted host binding without repeating host-only signature verification"
+                  (lib.throwIfNot signedModeWithoutKeyThrows
+                    "config-eval: signed policy without a trust anchor must fail evaluation"
+                    true))))))));
 in
   pkgs.mkDerivation {
     pname = "config-eval-check";
