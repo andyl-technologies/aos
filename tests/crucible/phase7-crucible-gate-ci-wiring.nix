@@ -302,6 +302,34 @@
         label = "qemu-inert records patched package path";
         needle = "patched_qemu=\${patchedQemu}";
       }
+      {
+        label = "qemu-inert compares raw TCG guest serial";
+        needle = ''compare_files boot-tcg-raw "$TMPDIR/serial-reference-tcg.log" "$TMPDIR/serial-patched-tcg.log"'';
+      }
+      {
+        label = "qemu-inert compares raw plain-icount guest serial";
+        needle = ''compare_files boot-plain-icount-raw "$TMPDIR/serial-reference-icount.log" "$TMPDIR/serial-patched-icount.log"'';
+      }
+      {
+        label = "qemu-inert disables guest printk timestamps before capture";
+        needle = "printk.time=0";
+      }
+      {
+        label = "qemu-inert exercises normalization masking negative control";
+        needle = "exercise_serial_normalization_negative_control";
+      }
+      {
+        label = "qemu-inert records completed status";
+        needle = "status=complete";
+      }
+      {
+        label = "qemu-inert owns completed RFC tasks";
+        needle = ''taskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"]'';
+      }
+      {
+        label = "qemu-inert has no open RFC tasks";
+        needle = "openTaskIds ? []";
+      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -356,6 +384,14 @@
       {
         label = "package qemu-inert integration attrPath";
         needle = ''attrPath = "checks.integration.qemu-crucible-qemu-inert";'';
+      }
+      {
+        label = "package qemu-inert completed task ownership";
+        needle = ''taskIds = ["T-PLAN-3" "T-DET-23" "T-HARN-21" "T-PATCH-3"]'';
+      }
+      {
+        label = "package qemu-inert has no open task ownership";
+        needle = "openTaskIds = [];";
       }
       {
         label = "package qemu-inert uses package self";

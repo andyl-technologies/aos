@@ -319,7 +319,7 @@
     && hasInfix "dependencies = [patchMicrotestsCheck];" defaultNix
     && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
   qemuInertImplementedGateWired =
-    hasInfix "qemuInert = redBeforeAdvance {" defaultNix
+    hasInfix "qemuInert = greenBeforeAdvance {" defaultNix
     && hasInfix ''attrPath = "checks.crucible.phase2.gates.qemuInert";'' defaultNix
     && hasInfix "gate = import ./phase2-qemu-inert.nix" defaultNix
     && hasInfix "patchMicrotests = patchMicrotests.rawGate;" defaultNix

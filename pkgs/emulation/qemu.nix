@@ -391,7 +391,8 @@ in
           patchedQemu = self;
           referenceQemu = pkgs.qemu-crucible-reference;
           attrPath = "checks.integration.qemu-crucible-qemu-inert";
-          taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
+          taskIds = ["T-PLAN-3" "T-DET-23" "T-HARN-21" "T-PATCH-3"];
+          openTaskIds = [];
           dependencies = [patchMicrotests];
         };
       }

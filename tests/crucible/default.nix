@@ -485,20 +485,18 @@ in rec {
         };
         dependencies = [layer1Injection];
       };
-      qemuInert = redBeforeAdvance {
+      qemuInert = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.qemuInert";
         # lint needle: qemuInert = import ./phase2-qemu-inert.nix
         gate = import ./phase2-qemu-inert.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.qemuInert";
-          taskIds = [];
-          openTaskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
+          taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
+          openTaskIds = [];
           patchMicrotests = patchMicrotests.rawGate;
           dependencies = [patchMicrotests.rawGate];
         };
         dependencies = [patchMicrotests];
-        phase = "phase2";
-        reason = "the sim-off corpus remains diagnostic until its raw guest-visible comparison and corpus definition are complete";
         taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
       };
       singleVmFingerprint = greenBeforeAdvance {

@@ -315,7 +315,7 @@ in
             boundary_inputs=deterministic-launch-profile,sim-mode-inertness,black-box-plugin-fingerprint
             fingerprint_components=periodic-icount,architectural-registers,guest-memory,device-state
             entropy_elimination_microtests=tcg-icount,cpu-entropy,rtc,guest-entropy,run-seed,input,cow-backing,idle-warp,device-delivery,sim-mode
-            full_qemu_inert_gate=pending-T-PATCH-3
+            full_qemu_inert_gate=checks.crucible.phase2.gates.qemuInert
             n_vcpu_fingerprint=checks.crucible.phase2.qemuNvcpuFingerprint
             RESULT
           '';

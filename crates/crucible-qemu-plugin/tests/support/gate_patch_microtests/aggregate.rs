@@ -284,7 +284,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     assert_contains(&default_checks, "patchMicrotests = greenBeforeAdvance {");
-    assert_contains(&default_checks, "qemuInert = redBeforeAdvance {");
+    assert_contains(&default_checks, "qemuInert = greenBeforeAdvance {");
     assert_contains(
         &default_checks,
         "gate = import ./phase2-patch-microtests.nix",
@@ -295,7 +295,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
     assert_contains(
         &default_checks,
-        "openTaskIds = [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
+        "taskIds = [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
     );
     assert_contains(
         &default_checks,
@@ -363,13 +363,13 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
 
     let qemu_inert = fs::read_to_string(root.join("tests/crucible/phase2-qemu-inert.nix"))?;
-    assert_contains(&qemu_inert, "taskIds ? []");
     assert_contains(
         &qemu_inert,
-        "openTaskIds ? [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
+        "taskIds ? [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
     );
+    assert_contains(&qemu_inert, "openTaskIds ? []");
     assert_contains(&qemu_inert, "open_tasks=${builtins.concatStringsSep");
-    assert_contains(&qemu_inert, "status=partial");
+    assert_contains(&qemu_inert, "status=complete");
 
     Ok(())
 }

@@ -1365,25 +1365,28 @@ time-control primitives the whole design rests on.
     eleven focused semantic attributions. The aggregate rejects composition and
     structural fallback classifications, so a later patch cannot silently make
     an earlier patch's focused effect pass. `gate:qemu-inert` depends on this
-    aggregate; its full upstream-equivalence corpus remains owned by T-PATCH-3.
-- [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
+    aggregate and supplies the completed upstream-equivalence corpus.
+- [x] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
   §11.1.1, routes [INV-7], [DET-36].
-  - Partial evidence under `checks.crucible.phase2.gates.qemuInert`: the gate builds an
-    unpatched reference QEMU from the same pinned 10.0.0 source/configuration,
-    runs it against patched `qemu-crucible` with no plugin, no sim accelerator,
-    and no sim flags, and compares normalized boot/device-I/O, plain-icount boot,
-    QMP introspection, migration stream, and snapshot/restore command surface.
-    Closure requires two concrete steps: (a) audit each normalization in the
-    corpus comparison and document it as host-noise-only — guest-visible bytes
-    (e.g. the boot serial stream) must be raw-compared, and any normalization that
-    could hide a guest-visible divergence is a defect to fix or explicitly
-    justify; and (b) either expand the corpus to the full upstream test surface or
-    define "upstream-equivalent corpus" in the gate docs as this curated
-    boot/device-I/O/plain-icount/QMP/migration/snapshot set with its rationale.
-    The async virtio-rng delivery-timing residual is already closed structurally
-    (`phase2-qemu-rng-delivery-inert.nix`).
+  - Completed by `checks.crucible.phase2.gates.qemuInert`. The gate builds an
+    unpatched reference QEMU from the same pinned 10.0.0 source and
+    configuration, then runs it against patched `qemu-crucible` with no plugin,
+    sim accelerator, or sim flags. Its curated upstream-equivalent corpus covers
+    raw boot serial and block/9p/virtio-rng output under ordinary TCG and plain
+    icount, QMP capability/state introspection, a migration stream, and
+    snapshot save/load. These surfaces represent guest execution and device I/O,
+    management compatibility, live state transfer, and durable state restore.
+    Kernel printk timestamps are disabled in the guest command line before
+    capture; the complete resulting serial streams are byte-compared. The
+    marker-only projection is secondary evidence, and a negative control proves
+    it could mask a guest-visible change that the raw comparison catches. QMP
+    normalization sorts unordered capability collections and excludes only QMP
+    transport metadata; migration is compared by full-stream digest, and
+    snapshot comparison records the concluded save/load outcomes. The async
+    virtio-rng timing residual is closed structurally by
+    `phase2-qemu-rng-delivery-inert.nix`.
 - [x] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
   deterministic TCG sim accelerator (`-accel sim`), inert under other
   accelerators, with a cross-run icount-trace micro-test. — satisfies [PATCH-11];
