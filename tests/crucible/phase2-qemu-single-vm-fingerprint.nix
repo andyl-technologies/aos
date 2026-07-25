@@ -151,8 +151,8 @@
         needle = "attrPath = \"checks.crucible.phase2.gates.singleVmFingerprint\"";
       }
       {
-        label = "phase2 gate depends on the production real-QEMU importer check";
-        needle = "dependencies = [qemuInert.rawGate phase2.qemuSingleVmFingerprint]";
+        label = "phase2 gate depends on both production real-QEMU fingerprint authorities";
+        needle = "dependencies = [qemuInert phase2.qemuSingleVmFingerprint phase2.qemuLivePluginFingerprint]";
       }
     ];
 in

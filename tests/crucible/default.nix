@@ -1895,13 +1895,13 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
-    preemptionBranching = redBeforeAdvance {
+    preemptionBranching = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.preemptionBranching";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.preemptionBranching";
-        taskIds = [];
-        openTaskIds = ["T-ADV-20"];
+        taskIds = ["T-ADV-20"];
+        openTaskIds = [];
         gateName = "gate:preemption-branching";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1914,11 +1914,6 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.searchReductions
       ];
-      phase = "phase6";
-      reason = "preemption branching does not exercise partial-order reduction over commuting preemptions";
-      taskIds = ["T-ADV-20"];
-      gateName = "gate:preemption-branching";
-      owner = "crucible";
     };
     appRandomBranching = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.appRandomBranching";

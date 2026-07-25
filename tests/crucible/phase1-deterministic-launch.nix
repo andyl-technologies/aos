@@ -618,8 +618,8 @@
 
   qemuCargoRequirements = [
     {
-      label = "dev-only engine dependency for identity regression";
-      needle = "crucible = { path = \"../crucible\" }";
+      label = "engine dependency with deterministic test-double backend";
+      needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
     }
   ];
 
