@@ -129,7 +129,7 @@ pub(super) fn drive_scenario(
 
 /// A completed quantum's stopping condition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum QuantumStop {
+pub(super) enum QuantumStop {
     /// The busy guest advanced to exactly the host-published ceiling.
     ReachedCeiling {
         /// Node icount observed at the ceiling.
@@ -147,7 +147,7 @@ enum QuantumStop {
 /// Publishes one scheduler ceiling, waits for the plugin-owned boundary, and
 /// finishes the quantum, cross-checking the observed stop against the plugin's
 /// reported advance outcome.
-fn run_quantum(
+pub(super) fn run_quantum(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     child: &mut crate::QemuNodeChild,
     setup: &crate::QemuHostPluginSetup,

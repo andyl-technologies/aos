@@ -36,12 +36,11 @@
 //! that virtual time is icount-derived and host-time-independent, i.e. that the
 //! Rust plugin, not the host or wall clock, owns the clock (T-PLUG-4, T-TIME-5).
 //!
-//! The emitted [`LivePluginQuantumReport`] records the idle observation, the
-//! measured boot and idle advancement rates, and `time_authority=rust-plugin`
-//! so the gate cannot silently regress to a mode in which some other plugin or
-//! the host owns time control.
+//! The emitted report records idle and advancement evidence plus `time_authority=rust-plugin`
+//! so the Rust plugin remains the sole time owner.
 
 mod errors;
+mod preemption_gate;
 mod scheduler;
 
 use std::fs;
@@ -73,6 +72,7 @@ use crate::{
 };
 
 pub use errors::LivePluginQuantumGateError;
+pub use preemption_gate::{LivePluginPreemptionReport, run_live_plugin_preemption_gate};
 
 /// Content-addressing domain for quantum-gate launch artifacts.
 const GATE_DOMAIN: &str = "crucible.loaded-qemu-plugin-quantum.v1";
