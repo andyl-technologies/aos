@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLivePluginPreemption",
-  taskIds ? ["T-PLUG-25"],
+  taskIds ? ["T-PLUG-25" "T-DET-30"],
   openTaskIds ? [],
   ceilingStep ? "4000000",
   timeoutSecs ? "250",
@@ -110,7 +110,24 @@ in
           test "$from" -ne "$to"
           grep -Fxq 'switch_consumed_sequence=1' "$report"
           grep -Eq '^interrupt_icount=[1-9][0-9]*$' "$report"
+          grep -Eq '^ipi_send_icount=[1-9][0-9]*$' "$report"
+          grep -Fxq 'ipi_fixed_latency_icount=17' "$report"
+          grep -Eq '^ipi_earliest_delivery_icount=[1-9][0-9]*$' "$report"
+          grep -Eq '^ipi_rr_switch_quantum=[1-9][0-9]*$' "$report"
+          grep -Eq '^interrupt_sender_vcpu=[01]$' "$report"
           grep -Eq '^interrupt_target_vcpu=[01]$' "$report"
+          sender=$(sed -n 's/^interrupt_sender_vcpu=//p' "$report")
+          target=$(sed -n 's/^interrupt_target_vcpu=//p' "$report")
+          test "$sender" -ne "$target"
+          send_icount=$(sed -n 's/^ipi_send_icount=//p' "$report")
+          latency=$(sed -n 's/^ipi_fixed_latency_icount=//p' "$report")
+          earliest=$(sed -n 's/^ipi_earliest_delivery_icount=//p' "$report")
+          delivery=$(sed -n 's/^interrupt_icount=//p' "$report")
+          quantum=$(sed -n 's/^ipi_rr_switch_quantum=//p' "$report")
+          test "$earliest" -eq "$((send_icount + latency))"
+          test "$delivery" -ge "$earliest"
+          test "$((delivery % quantum))" -eq 0
+          test "$((delivery - earliest))" -lt "$quantum"
           grep -Fxq 'interrupt_vector=241' "$report"
           grep -Fxq 'interrupt_consumed_sequence=2' "$report"
           grep -Eq '^terminal_icount=[1-9][0-9]*$' "$report"
@@ -125,7 +142,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=live-smp-vcpu-switch,live-smp-commanded-interrupt,exact-icount-fail-stop,mailbox-ack,host-load-repeat,sim-double-schedule\n'
+            printf 'proven=live-smp-vcpu-switch,live-smp-commanded-interrupt,fixed-latency-ipi,next-rr-switch-delivery,exact-icount-fail-stop,mailbox-ack,host-load-repeat,sim-double-schedule\n'
           } >> "$out/result"
         '';
       }

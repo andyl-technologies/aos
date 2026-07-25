@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_int, c_uint};
 
+use crucible_protocol::deterministic_ipi_delivery_icount;
 use thiserror::Error;
 
 use crate::{
@@ -62,13 +63,16 @@ pub fn plan_deterministic_ipi_delivery(
             rr_switch_quantum: round_robin.rr_switch_quantum(),
         },
     )?;
-    let delivery_icount =
-        next_round_robin_switch_boundary(earliest_delivery_icount, round_robin.rr_switch_quantum())
-            .ok_or(PreemptionError::IpiDeliveryIcountOverflow {
-                send_icount,
-                fixed_latency_icount,
-                rr_switch_quantum: round_robin.rr_switch_quantum(),
-            })?;
+    let delivery_icount = deterministic_ipi_delivery_icount(
+        send_icount,
+        fixed_latency_icount,
+        round_robin.rr_switch_quantum(),
+    )
+    .ok_or(PreemptionError::IpiDeliveryIcountOverflow {
+        send_icount,
+        fixed_latency_icount,
+        rr_switch_quantum: round_robin.rr_switch_quantum(),
+    })?;
     let decision = PluginPreemptionDecision::interrupt_at(delivery_icount, target_vcpu, irq);
 
     Ok(DeterministicIpiDelivery {
@@ -520,15 +524,6 @@ fn validate_vcpu(vcpu_id: u32, vcpu_count: u32) -> Result<(), PreemptionError> {
         });
     }
     Ok(())
-}
-
-fn next_round_robin_switch_boundary(earliest_icount: u64, rr_switch_quantum: u64) -> Option<u64> {
-    let remainder = earliest_icount % rr_switch_quantum;
-    if remainder == 0 {
-        Some(earliest_icount)
-    } else {
-        earliest_icount.checked_add(rr_switch_quantum - remainder)
-    }
 }
 
 #[cfg(test)]
