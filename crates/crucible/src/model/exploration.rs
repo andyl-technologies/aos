@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "app_random_branching.rs"]
+mod app_random_branching;
+
+pub use app_random_branching::*;
+
 /// Result of an on-demand replay-oracle check.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReplayOracleCheck {
