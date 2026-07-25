@@ -361,9 +361,10 @@ Feature layout:
 [features]
 default = []
 # Compile the in-process deterministic backend (SimBackend) used by the
-# layer-0/engine determinism gates. Enables the shared protocol/shmem crates
-# needed by the in-process plugin-side test double. Pure SAFE Rust; no QEMU.
-test-double = ["dep:crucible-protocol", "dep:crucible-shmem"]
+# layer-0/engine determinism gates. Enables shared memory for the in-process
+# plugin-side test double; the production engine already owns protocol marker
+# decoding. Pure SAFE Rust; no QEMU.
+test-double = ["dep:crucible-shmem"]
 # Compile the engine-side hooks used by higher-layer QEMU adapter wiring.
 # The concrete driver lives in crucible-qemu; this only flips engine glue.
 qemu-backend = []

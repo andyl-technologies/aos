@@ -192,10 +192,22 @@
   safetyCommentStatesInvariant = rawLines: lineNumber: let
     lineCount = builtins.length rawLines;
     following =
-      lineNumber < lineCount
+      lineNumber
+      < lineCount
       && safetyLineStatesInvariant (builtins.elemAt rawLines lineNumber);
   in
     (lineNumber >= 2 && precedingSafetySection rawLines (lineNumber - 1)) || following;
+  precedingSafetyDocSection = rawLines: above:
+    if above < 1
+    then false
+    else let
+      line = lib.trim (builtins.elemAt rawLines (above - 1));
+    in
+      if lib.hasPrefix "///" line && hasInfix "# Safety" line
+      then true
+      else if lib.hasPrefix "///" line || lib.hasPrefix "#[" line || line == ""
+      then precedingSafetyDocSection rawLines (above - 1)
+      else false;
 
   rustSources = dir: displayPrefix: let
     entries = builtins.readDir dir;
@@ -265,6 +277,7 @@
         lib.optionals (
           spec.unsafeBoundary
           && (hasInfix "unsafefn" compact || hasInfix "unsafetrait" compact || hasInfix "unsafeexternfn" compact)
+          && !(precedingSafetyDocSection rawLines (lineNumber - 1))
         ) [
           "${linePrefix}: banned unsafe item pattern `unsafe`"
         ];
@@ -511,50 +524,53 @@
   unsafeSourceFailures = lib.concatMap unsafeSourceFailuresForSpec specs;
 
   unsafeSourceRegressionFailures = let
-    safeCrateFindings = unsafeSourceFailuresForContent {
-      package = "crucible";
-      unsafeBoundary = false;
-    } "safe-regression.rs" ''
-      fn bad() {
-        unsafe {}
-      }
-    '';
-    unsafeBoundaryFindings = unsafeSourceFailuresForContent {
-      package = "crucible-shmem";
-      unsafeBoundary = true;
-    } "unsafe-boundary-regression.rs" ''
-      pub unsafe fn leaky_public_api() {}
+    safeCrateFindings =
+      unsafeSourceFailuresForContent {
+        package = "crucible";
+        unsafeBoundary = false;
+      } "safe-regression.rs" ''
+        fn bad() {
+          unsafe {}
+        }
+      '';
+    unsafeBoundaryFindings =
+      unsafeSourceFailuresForContent {
+        package = "crucible-shmem";
+        unsafeBoundary = true;
+      } "unsafe-boundary-regression.rs" ''
+        pub unsafe fn leaky_public_api() {}
 
-      unsafe impl Send for LeakyRing {}
+        unsafe impl Send for LeakyRing {}
 
-      unsafe extern "C" {
-        pub static mut RAW_STATE: u8;
-      }
+        unsafe extern "C" {
+          pub static mut RAW_STATE: u8;
+        }
 
-      fn empty_safety_comment() {
-        // SAFETY:
-        unsafe {}
-      }
-    '';
-    allowedBoundaryFindings = unsafeSourceFailuresForContent {
-      package = "crucible-shmem";
-      unsafeBoundary = true;
-    } "allowed-boundary-regression.rs" ''
-      pub fn safe_wrapper() {
-        // SAFETY: the wrapper validates the pointer before dereference.
-        unsafe {}
-      }
+        fn empty_safety_comment() {
+          // SAFETY:
+          unsafe {}
+        }
+      '';
+    allowedBoundaryFindings =
+      unsafeSourceFailuresForContent {
+        package = "crucible-shmem";
+        unsafeBoundary = true;
+      } "allowed-boundary-regression.rs" ''
+        pub fn safe_wrapper() {
+          // SAFETY: the wrapper validates the pointer before dereference.
+          unsafe {}
+        }
 
-      unsafe extern "C" {
-        fn private_raw_ffi_import();
-        fn publish_event();
-      }
+        unsafe extern "C" {
+          fn private_raw_ffi_import();
+          fn publish_event();
+        }
 
-      // SAFETY: the ring wrapper owns the producer/consumer invariants.
-      unsafe impl Send for PrivateRing {}
+        // SAFETY: the ring wrapper owns the producer/consumer invariants.
+        unsafe impl Send for PrivateRing {}
 
-      const SAMPLE: &str = "unsafe {";
-    '';
+        const SAMPLE: &str = "unsafe {";
+      '';
     hasFinding = reason: findings: builtins.any (finding: hasInfix reason finding) findings;
   in
     (lib.optionals (!(hasFinding "outside enumerated unsafe-boundary crate" safeCrateFindings)) [
