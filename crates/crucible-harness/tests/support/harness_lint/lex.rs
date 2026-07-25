@@ -102,6 +102,22 @@ pub(super) fn next_is_bang(tokens: &[Token], index: usize) -> bool {
     )
 }
 
+pub(super) fn next_is_path_separator(tokens: &[Token], index: usize) -> bool {
+    matches!(
+        (tokens.get(index + 1), tokens.get(index + 2)),
+        (
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Punct(':'),
+                ..
+            })
+        )
+    )
+}
+
 pub(super) fn is_identifier_start(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic()
 }
