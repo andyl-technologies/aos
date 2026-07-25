@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
-  openTaskIds ? ["T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
+  openTaskIds ? ["T-TIME-8" "T-TIME-9" "T-DET-31"],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
@@ -22,13 +22,13 @@
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
     taskIds = ["T-DET-29"];
-    openTaskIds = ["T-DET-30"];
+    openTaskIds = [];
   };
   qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginPreemption";
     taskIds = ["T-PLUG-25"];
-    openTaskIds = ["T-DET-30"];
+    openTaskIds = [];
   };
   qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
     inherit pkgs lib;
@@ -244,8 +244,8 @@
         needle = "- [x] **T-DET-10**";
       }
       {
-        label = "T-DET-30 remains open";
-        needle = "- [ ] **T-DET-30**";
+        label = "T-DET-30 is complete";
+        needle = "- [x] **T-DET-30**";
       }
       {
         label = "T-DET-31 remains open";
@@ -366,8 +366,8 @@ in
             require_leaf ${qemuMultiVcpuLaunch} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-29" \
-              "open_tasks=T-DET-30" \
-              "status=partial" \
+              "open_tasks=" \
+              "status=complete" \
               "accelerator=sim,thread=single" \
               "accelerator_family=tcg-derived-sim" \
               "stock_tcg_crucible_runtime=forbidden" \
@@ -389,8 +389,8 @@ in
             require_leaf ${qemuPluginPreemption} \
               "gate=gate:layer0-determinism" \
               "tasks=T-PLUG-25" \
-              "open_tasks=T-DET-30" \
-              "status=partial" \
+              "open_tasks=" \
+              "status=complete" \
               "preemption_capability=qemu_plugin_inject_preemption" \
               "dispatch=vCPU-switch-or-interrupt-at-commanded-icount" \
               "deterministic_ipi_delivery=sender-icount-plus-fixed-latency-next-rr-switch" \

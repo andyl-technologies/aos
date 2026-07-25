@@ -861,13 +861,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     plus `N`/quantum/rotation in scenario hash material. The pre-spawn validator
     rejects MTTCG, missing/duplicate RR quantum declarations, adaptive icount
     mode, realtime icount switching, and QEMU realtime launch flags before spawn.
-- [ ] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
+- [x] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
   uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
   (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed
   modeled latency at the next RR switch (E22), and deterministic secondary-vCPU
   SIPI/INIT bringup with no runtime hotplug (E24). — satisfies [DET-18] (E22, E23,
   E24), [DET-43]; spec §4.6 (E22, E23, E24), §4.4.
-  - Partial model and launch evidence is provided by `checks.crucible.phase2.qemuMultiVcpuLaunch` and
+  - Model and launch evidence is provided by `checks.crucible.phase2.qemuMultiVcpuLaunch` and
     `checks.crucible.phase2.qemuPluginPreemption`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: the launch profile hashes
     the uniform `-cpu` model, node-icount TSC source, scenario/run-seed-backed
@@ -884,15 +884,16 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     probe, so the uniform `-cpu` pin and node-icount-derived per-vCPU TSC/RNG
     (E23) produce a deterministic, uniform per-vCPU architectural state.
     Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
-    is exercised by the same live `-smp 4` boot. **Deferred to M7 (exploration):**
-    the E22 inter-vCPU IPI-delivery clause served through the *Rust plugin's*
-    commanded-icount preemption injection (`inject_preemption`, 11/[PATCH-47]).
-    The ABI-v5 host→plugin scheduler mailbox and live Rust-plugin application are
-    now proven by `checks.crucible.phase2.qemuLivePluginPreemption` ([T-PLUG-25]).
-    T-DET-30 remains open because its E22 clause additionally requires the live
-    command to be derived from sender icount plus the fixed modeled IPI latency
-    and rounded to the next RR switch, rather than the gate's direct commanded
-    interrupt probe.
+    is exercised by the same live `-smp 4` boot.
+  - Live E22 closure is provided by
+    `checks.crucible.phase2.qemuLivePluginPreemption`: at `-smp 2`, the gate
+    samples the authoritative sender vCPU and RR quantum, adds the fixed modeled
+    node-icount IPI latency, rounds the earliest delivery to the next RR switch
+    with the same `crucible_protocol::deterministic_ipi_delivery_icount` function
+    used by the plugin planner, and commands delivery to the other vCPU through
+    the ABI-v5 mailbox and `qemu_plugin_inject_preemption`. The exact delivery,
+    mailbox acknowledgement, terminal fingerprint, and host-observable schedule
+    repeat byte-identically under host CPU load and match `SimDouble`.
 - [ ] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection

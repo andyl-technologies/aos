@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuMultiVcpuLaunch",
   taskIds ? ["T-QEMU-15" "T-DET-29"],
-  openTaskIds ? ["T-DET-30"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -415,7 +415,7 @@ in
             gate=gate:layer0-determinism
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             check_scope=task-level
             qemu_5=single-threaded-round-robin-sim-tcg-with-smp-N
             qemu_43=pre-spawn-rr-quantum-validation

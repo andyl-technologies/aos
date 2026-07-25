@@ -161,13 +161,13 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
       taskIds = ["T-DET-29"];
-      openTaskIds = ["T-DET-30"];
+      openTaskIds = [];
     };
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuPluginPreemption";
       taskIds = ["T-PLUG-25"];
-      openTaskIds = ["T-DET-30"];
+      openTaskIds = [];
     };
     qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
       inherit pkgs lib;
@@ -270,7 +270,7 @@ in rec {
             "T-DET-9"
             "T-DET-10"
           ];
-          openTaskIds = ["T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
+          openTaskIds = ["T-TIME-8" "T-TIME-9" "T-DET-31"];
         };
         dependencies = [harnessLint];
         phase = "phase1";
