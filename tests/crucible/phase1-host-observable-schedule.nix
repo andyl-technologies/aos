@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.hostObservableSchedule",
-  taskIds ? [],
-  openTaskIds ? ["T-HARN-4"],
+  taskIds ? ["T-HARN-4"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -19,6 +19,7 @@
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
+  liveQuantumGate = builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate.rs;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
@@ -49,12 +50,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-4 remains open";
-        needle = "- [ ] **T-HARN-4**";
+        label = "T-HARN-4 is complete";
+        needle = "- [x] **T-HARN-4**";
       }
       {
-        label = "T-HARN-4 partial-evidence note";
-        needle = "Partial callback-core evidence is provided by";
+        label = "T-HARN-4 completion note";
+        needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
@@ -225,6 +226,24 @@
         needle = "pub struct PluginClockAdvance";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu/src/live_plugin_quantum_gate.rs" liveQuantumGate [
+      {
+        label = "installed plugin host schedule";
+        needle = "host_observable_schedule: Vec<SimDoubleHostScheduleEvent>";
+      }
+      {
+        label = "host-load schedule equality";
+        needle = "reference.host_observable_schedule != second.host_observable_schedule";
+      }
+      {
+        label = "live SimDouble comparison";
+        needle = "fn assert_sim_double_schedule_matches";
+      }
+      {
+        label = "canonical schedule comparison";
+        needle = "sim_double_host_schedule_canonical_bytes";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase1 exposes host schedule check";
@@ -310,13 +329,14 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
-            evidence_scope=callback-core-model-not-installed-production-plugin
+            status=complete
+            evidence_scope=callback-core+installed-production-plugin
             sim_double_schedule_trace=true
             plugin_projection_clock_cross_check=true
             plugin_projection_rx_cross_check=true
             plugin_projection_tx_cross_check=true
             host_observable_schedule_identical=true
+            installed_plugin_schedule_cross_check=true
             RESULT
           '';
         }

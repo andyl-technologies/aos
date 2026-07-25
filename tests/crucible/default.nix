@@ -233,20 +233,16 @@ in rec {
         };
         dependencies = [phase0.gates.blockers phase0.gates.harnessLint];
       };
-      hostObservableSchedule = redBeforeAdvance {
+      hostObservableSchedule = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
         # lint needle: hostObservableSchedule = import ./phase1-host-observable-schedule.nix
         gate = import ./phase1-host-observable-schedule.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
-          taskIds = [];
-          openTaskIds = ["T-HARN-4"];
+          taskIds = ["T-HARN-4"];
           dependencies = [harnessLint.rawGate];
         };
         dependencies = [harnessLint];
-        phase = "phase1";
-        reason = "the host-observable schedule comparison exercises callback-core models, not an installed production plugin";
-        taskIds = ["T-HARN-4"];
       };
       layer0Determinism = redBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
