@@ -821,6 +821,7 @@ impl Error for TemporalGraphStoreError {
     }
 }
 
+mod app_random_branching;
 mod binary_plan;
 mod binary_state;
 mod configuration;
@@ -844,6 +845,7 @@ mod topology_faults;
 mod validation;
 mod workload;
 
+pub use app_random_branching::*;
 use binary_plan::*;
 use binary_state::*;
 pub use configuration::*;

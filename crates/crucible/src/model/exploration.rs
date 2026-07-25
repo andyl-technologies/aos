@@ -956,39 +956,6 @@ pub struct PreemptionBranchRun {
     pub materialized: Vec<Checkpoint>,
 }
 
-/// Configuration for app-random branch generation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AppRandomBranchConfig {
-    /// App-random draw sites observed in the candidate run.
-    pub draw_sites: Vec<AppRandomDrawSite>,
-    /// Number of alternative served values to sample.
-    pub samples: u64,
-    /// Seed for deterministic value sampling.
-    pub seed: Seed,
-}
-
-/// One app-random request site available for branch exploration.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AppRandomDrawSite {
-    /// Node requesting random data.
-    pub node: NodeId,
-    /// Decision stream serving the request.
-    pub stream: RngStreamId,
-    /// Per-stream request identifier.
-    pub request_id: u64,
-    /// Requested bit width, capped at 64.
-    pub width: u8,
-}
-
-/// Result of app-random branch expansion.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AppRandomBranchRun {
-    /// Decisions considered for branching.
-    pub decisions: Vec<Decision>,
-    /// Frontier report for the generated children.
-    pub report: FrontierReductionReport,
-}
-
 /// Result of the guidance determinism source lint.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GuidanceDeterminismLintReport {
