@@ -1427,10 +1427,7 @@ impl TemporalGraph {
         let decisions = preemption_branch_decisions(config);
         let report =
             self.enumerate_frontier_reduced(frontier, decisions.clone(), reduction_policy)?;
-        let mut materialized = Vec::new();
-        for child in &report.explored {
-            materialized.push(self.materialize_checkpoint(&child.configuration)?);
-        }
+        let materialized = self.materialize_preemption_branches(&report)?;
         Ok(PreemptionBranchRun {
             decisions,
             report,
