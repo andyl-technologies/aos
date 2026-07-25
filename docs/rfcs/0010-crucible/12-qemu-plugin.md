@@ -990,9 +990,16 @@ component that makes that purity true *inside* the QEMU process.
   guest emits its acknowledgement. The exact router latency, frame bytes,
   ordering, and sequences are identical under host CPU load; the gate records
   raw probe and guest-ACK offsets separately as whole-guest diagnostics.
-- [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
+- [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
+  Completed by `checks.crucible.phase2.qemuLiveBlockIo` and
+  `checks.crucible.phase2.qemuLive9pIo`. Both gates delay a due response in host
+  wall time while the production plugin holds virtual time at the published
+  completion horizon, then require the device hold to clear and the real guest
+  to progress. The block path pairs each request token with one completion; the
+  9p path holds the counter across the whole request burst and clears it only at
+  burst-done. Both repeat under host CPU load with identical modeled traffic.
 - [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
@@ -1007,10 +1014,19 @@ component that makes that purity true *inside* the QEMU process.
   Completed by `checks.crucible.phase2.qemuLiveNetworkIo`: the router's
   delivery-stamped reply traverses the inbound ring and QEMU's lossless send
   and flush path, and the real guest proves receipt by emitting the exact ACK.
-- [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
+- [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.
+  Completed by `checks.crucible.phase2.qemuLiveBlockIo`. A real Linux guest
+  submits both discovery traffic and an explicit sector write through
+  `SLOT_BLK_IO`; the host servicer publishes the exact future completion
+  horizon, the production plugin advances to it, validates and delivers the
+  response, releases the device hold, and lets the guest progress. A second run
+  combines host CPU load with a 100 ms delayed response publication while
+  preserving the same request/completion observations. The drop-one gate proves
+  patch 0017 is load-bearing: without its zero-byte completion fix, request-token
+  ordering fails before the guest can progress.
 - [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.

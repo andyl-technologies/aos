@@ -971,7 +971,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   exact delivery.
   Summary: exact completion visibility is independent of whether the consumer
   idles or polls; busy-poll remains a performance issue, not a correctness input.
-- [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
+- [x] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
   split (host access decoupled from virtual-time visibility), an in-flight
   response queue ordered by `delivery_icount` exposed as the sub-node's
   `next_exact_local_event`, and deterministic full-ring backpressure (block-and-
@@ -993,7 +993,13 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   and slot wakes on both sides.
   Summary: block and 9p request/response lifecycles now use real shmem rings
   while preserving COMPUTE-then-DELIVER visibility, exact next-event ordering,
-  and deterministic block-and-wake backpressure.
+  deterministic full-ring backpressure, and producer/consumer wakes.
+  `checks.crucible.phase2.qemuLiveBlockIo` supplies the final real-backend
+  discharge: a Linux guest's explicit sector write is computed by the host
+  servicer, remains invisible until its future delivery icount, then crosses
+  `SLOT_BLK_IO` and releases the guest. Delaying response publication by 100 ms
+  under host CPU load changes neither the modeled completion horizon nor the
+  normalized request/delivery stream.
 - [x] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
   positive latency floor at the link, clamp sub-floor latency faults, trigger the
   lookahead/horizon recompute on any conservative effective-latency-bound change

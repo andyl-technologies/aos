@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeviceIoFreeze",
   taskIds ? [],
-  openTaskIds ? ["T-PLUG-9"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,8 +15,14 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginDeviceIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoopContract =
+    pluginIdleLoop
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-shmem/src/lib.rs
+    ../../crates/crucible-shmem/src/shmem/frame_node.rs
+  ]);
   shmemNodeSlotTests = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -89,8 +95,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-9 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-9**";
+        label = "T-PLUG-9 completed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-9**";
+      }
+      {
+        label = "T-PLUG-9 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo` and";
       }
       {
         label = "device-I/O freeze wording";
@@ -217,7 +227,7 @@
         needle = "device_io_foreign_token_with_target_pending_is_fail_loud";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs and tests/wake_cases.rs" pluginIdleLoopContract [
       {
         label = "idle plan carries device I/O hold";
         needle = "device_io_holding_ticks";
@@ -247,7 +257,7 @@
         needle = "idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src/{lib.rs,shmem/frame_node.rs}" shmemSources [
       {
         label = "mark device I/O active";
         needle = "pub fn mark_device_io_active";
@@ -373,7 +383,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             device_io_active=published-before-submit
             pending_counter=one-to-one-submit-completion
             failure_path=releases-pending-request
