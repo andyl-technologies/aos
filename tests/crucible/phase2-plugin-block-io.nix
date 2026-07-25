@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginBlockIo",
   taskIds ? [],
-  openTaskIds ? ["T-PLUG-12"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,7 +15,12 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-shmem/src/lib.rs
+    ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    ../../crates/crucible-shmem/src/shmem/region.rs
+    ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
+  ]);
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -75,8 +80,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-12 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-12**";
+        label = "T-PLUG-12 completed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-12**";
+      }
+      {
+        label = "T-PLUG-12 live completion evidence";
+        needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo`";
       }
       {
         label = "block callback wording";
@@ -208,7 +217,7 @@
       }
       {
         label = "freeze before publish";
-        needle = "freeze\n            .begin_submit(slot, submit_icount)";
+        needle = "freeze\n            .begin_independent_submit(slot, submit_icount)";
       }
       {
         label = "SPSC enqueue";
@@ -323,7 +332,7 @@
         needle = "block_response_decode_rejects_nonzero_reserved_and_trailing_payload";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem/src/{lib.rs,shmem/*.rs}" shmemSources [
       {
         label = "block slot constant";
         needle = "pub const SLOT_BLK_IO";
@@ -423,7 +432,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             block_rings=vm-slot-to-block-io-and-return
             submit_icount=stamped-in-request-frame
             device_io_freeze=begin-submit-before-enqueue
