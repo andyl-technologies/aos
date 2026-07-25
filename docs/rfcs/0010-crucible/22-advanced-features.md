@@ -1204,23 +1204,24 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   coverage-guided fuzzing, self-contained reproduction artifacts, and
   minimization, proves they all validate on the same temporal graph id, and
   rejects mismatched or forged operation evidence before graph admission.
-- [ ] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
+- [x] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
   signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
   deterministically-maintained rarity table; assertion-proximity from the 18
   distance metric) and fixed-point deterministic composition (content-address
   tie-break); prove the default (coverage only, no adaptivity) reproduces the
   existing §22.5.2 behavior and that signals are readers-only (no fingerprint
   effect). — satisfies [ADV-34], [ADV-35]; spec §22.5.4; cross-ref §22.6, 07 §2, 18.
-  Partial evidence from `checks.crucible.phase6.guidanceSignals`: the model exposes a
+  Completed by `checks.crucible.phase6.guidanceSignals`: the model exposes a
   `GuidanceSignal` trait with coverage, novelty/rarity, and assertion-proximity
-  built-ins, fixed-point integer `GuidanceScore`s, deterministic sorted
-  `GuidanceSignalComposition`, a coverage-only ordering key wired into the
-  existing `SearchStrategy::CoverageGuided` checkpoint coverage key, and tests
-  showing that attaching coverage feedback leaves checkpoint identity unchanged.
-  Completion remains open on an owned, deterministically maintained rarity table;
-  deriving proximity from the assertion-distance metric; applying composite
-  scores and content-address tie-breaking to real search expansion; and proving
-  that the integrated readers-only path cannot affect fingerprints.
+  built-ins, fixed-point integer `GuidanceScore`s, and deterministic sorted
+  `GuidanceSignalComposition`. `GuidanceSearchState` owns a deterministically
+  maintained rarity table and derives assertion proximity from the unified
+  event-log distance projection. `TemporalGraph::search_with_guidance` applies
+  the composition to the real shared expansion path with configuration
+  content-address tie-breaking. The gate proves the default coverage-only
+  configuration exactly reproduces `SearchStrategy::CoverageGuided`, composite
+  proximity and rarity reorder real frontier expansion, and guidance remains
+  reader-only with no configuration or checkpoint fingerprint effect.
 - [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
   (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
   expansion arms with a deterministic reward model (new coverage, novelty gain,
