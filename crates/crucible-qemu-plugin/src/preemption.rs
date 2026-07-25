@@ -15,6 +15,9 @@ use crate::{
     RoundRobinConfig, RoundRobinError, RoundRobinRunState, RoundRobinTurn, SchedulerCeiling,
 };
 
+#[path = "preemption/injector.rs"]
+mod injector;
+
 /// Required QEMU plugin extension symbol for commanded preemption injection.
 pub const QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL: &str = "qemu_plugin_inject_preemption";
 /// Raw QEMU tag for a commanded vCPU switch.
@@ -391,80 +394,6 @@ impl QemuPreemptionCommand {
 #[derive(Clone, Copy, Debug)]
 pub struct PluginPreemptionInjector {
     inject_preemption: QemuInjectPreemptionFn,
-}
-
-impl PluginPreemptionInjector {
-    /// Requires the patched QEMU preemption-injection export.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreemptionError::CapabilityUnavailable`] when the
-    /// `qemu_plugin_inject_preemption` export was not resolved.
-    pub fn require(
-        inject_preemption: Option<QemuInjectPreemptionFn>,
-    ) -> Result<Self, PreemptionError> {
-        let Some(inject_preemption) = inject_preemption else {
-            return Err(PreemptionError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL,
-            });
-        };
-        Ok(Self { inject_preemption })
-    }
-
-    /// Applies a scheduler-commanded preemption exactly at the requested icount.
-    ///
-    /// The command is rejected before calling QEMU if it is outside `window`, if
-    /// its vCPU operands are malformed, or if a vCPU-switch command does not
-    /// match the current round-robin cursor. The round-robin cursor is advanced
-    /// only after QEMU accepts a vCPU-switch command.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreemptionError`] when validation fails, when QEMU rejects the
-    /// command, or when the local round-robin cursor rejects a commanded switch.
-    pub fn apply_decision(
-        &self,
-        decision: PluginPreemptionDecision,
-        window: PreemptionWindow,
-        run_state: &mut RoundRobinRunState,
-    ) -> Result<PluginPreemptionApplication, PreemptionError> {
-        let command = decision.to_qemu_command(window, run_state.vcpu_count())?;
-        if let PluginPreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } = decision.kind() {
-            run_state
-                .validate_commanded_switch(from_vcpu, to_vcpu)
-                .map_err(PreemptionError::RoundRobin)?;
-        }
-
-        let status = (self.inject_preemption)(
-            command.at_icount,
-            command.deadline_icount,
-            command.ceiling_icount,
-            command.raw_kind,
-            command.arg0,
-            command.arg1,
-            command.arg2,
-        );
-        if status != 0 {
-            return Err(PreemptionError::CapabilityRejected {
-                at_icount: command.at_icount,
-                raw_kind: command.raw_kind,
-                status,
-            });
-        }
-
-        let round_robin_turn = match decision.kind() {
-            PluginPreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
-                Some(run_state.force_commanded_switch(from_vcpu, to_vcpu)?)
-            }
-            PluginPreemptionKind::InterruptAt { .. } => None,
-        };
-
-        Ok(PluginPreemptionApplication {
-            decision,
-            command,
-            round_robin_turn,
-        })
-    }
 }
 
 /// Evidence that one preemption command was accepted by QEMU and local state.

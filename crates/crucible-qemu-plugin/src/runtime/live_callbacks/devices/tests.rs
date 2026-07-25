@@ -133,6 +133,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     let state = LiveVcpuTimeCallbackState::new(
         61,
         test_icount_raw,
+        super::super::test_support::test_preemption_injector(),
         1,
         0,
         0,
@@ -186,6 +187,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
     let state = LiveVcpuTimeCallbackState::new(
         62,
         test_icount_raw,
+        super::super::test_support::test_preemption_injector(),
         1,
         0,
         0,
@@ -244,6 +246,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
     let state = LiveVcpuTimeCallbackState::new(
         63,
         test_icount_raw,
+        super::super::test_support::test_preemption_injector(),
         1,
         0,
         0,

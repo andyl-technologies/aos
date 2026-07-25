@@ -9,6 +9,7 @@ use crucible_shmem::{
     authorize_advance_ceiling,
 };
 
+mod preemption;
 mod preflight_cases;
 
 extern "C" fn test_icount_raw() -> u64 {
@@ -69,6 +70,7 @@ fn test_live_state_with_teardown(
     LiveVcpuTimeCallbackState::new(
         plugin_id,
         test_icount_raw,
+        test_support::test_preemption_injector(),
         vcpu_count,
         icount_shift,
         initial_raw_icount,
@@ -223,7 +225,7 @@ fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
     state
         .publish_current_icount(5)
         .unwrap_or_else(|error| panic!("sim icount should publish: {error}"));
-    assert_eq!(state.max_advance_icount(), 12);
+    assert_eq!(state.max_advance_icount(), Ok(12));
     assert_eq!(slot.snapshot().current_icount, 5);
     assert!(state.initialized_vcpus[0].load(Ordering::Acquire));
     assert!(state.initialized_vcpus[1].load(Ordering::Acquire));
@@ -350,7 +352,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
         .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
 
     // Busy path: no idle-jump offset yet, so the raw limit is the ceiling.
-    assert_eq!(state.max_advance_icount(), 100);
+    assert_eq!(state.max_advance_icount(), Ok(100));
 
     let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
@@ -369,7 +371,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     // offset(50) = 50, so the guest may retire only 20 more raw instructions
     // (50 - 30) to reach logical 100 = the ceiling, and no further.
     assert_eq!(slot.snapshot().current_icount, 80);
-    assert_eq!(state.max_advance_icount(), 50);
+    assert_eq!(state.max_advance_icount(), Ok(50));
 }
 
 #[test]

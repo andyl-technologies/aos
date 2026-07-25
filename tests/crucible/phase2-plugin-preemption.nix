@@ -13,7 +13,9 @@
   };
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginPreemption = builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption.rs;
+  pluginPreemption =
+    builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption.rs
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption/injector.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;

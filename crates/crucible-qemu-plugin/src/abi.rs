@@ -1923,6 +1923,7 @@ fn install_owned_boundary(
     };
     let capabilities = crate::runtime::LiveInstallCapabilities {
         icount_raw: runtime_apis.icount_raw(),
+        inject_preemption,
         request_time_control: resolve_qemu_request_time_control_symbol(),
         clock_deadline_ns,
         advance_time_ns,
