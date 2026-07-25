@@ -1262,17 +1262,17 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   representative of a covered child is materialized through the same
   replay-oracle-checked fat checkpoint path, and the gate verifies their
   content addresses and replay evidence.
-- [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
+- [x] **T-ADV-21** Implement optional, additive exploration of app-controlled
   randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
   served values, bounded by the per-scenario draw cap and a per-draw seeded
   value-sampling budget, recording each alternative as a `Decision`; prove a
   scenario with no app-random draws explores identically to before. — satisfies
   [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.
-  Partial evidence from `checks.crucible.phase6.appRandomBranching`: `TemporalGraph` now
-  branches over seeded `Decision::AppRandom` served values for caller-supplied draw
-  sites, returns no children when a scenario has no app-random draw sites, preserves
-  the existing graph in that no-draw case, and relies on `try_step`/`reduce` to
-  enforce the per-scenario app-random draw cap for every sampled alternative.
-  Completion remains open on deriving sites from recorded observations rather
-  than caller-supplied data, validating a bounded per-draw sampling budget, and
-  proving no-draw equivalence through the integrated exploration driver.
+  Completed by `checks.crucible.phase6.appRandomBranching`: `TemporalGraph`
+  derives unique draw sites from recorded `Decision::AppRandom` observations,
+  deterministically samples alternatives under a validated per-draw budget, and
+  replaces the observed response at its original schedule prefix. Every
+  alternative remains a recorded decision and passes the graph's reduction path,
+  so the recorded schedule retains the scenario's existing draw count and cap.
+  The integrated gate also proves that a schedule with no app-random observations
+  yields no branches and leaves the content-addressed graph unchanged.
