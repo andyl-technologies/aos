@@ -128,6 +128,12 @@ pub enum LivePluginQuantumGateError {
         /// Deterministic description of the divergence.
         reason: String,
     },
+    /// Replaying the live host-observable schedule through `SimDouble` diverged.
+    #[error("live plugin and SimDouble host-observable schedules diverged: {reason}")]
+    SimDoubleScheduleMismatch {
+        /// Deterministic description of the first rejected schedule property.
+        reason: String,
+    },
     /// The plugin did not publish `Done` after consuming control `Quit`.
     #[error("quantum plugin did not publish teardown Done within {timeout:?}")]
     PluginQuitTimeout {

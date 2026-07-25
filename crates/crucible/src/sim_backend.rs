@@ -504,6 +504,104 @@ pub enum SimDoubleHostScheduleEvent {
     },
 }
 
+/// Encodes a host-observable schedule into a stable byte representation.
+///
+/// The encoding is versioned, length-prefixes variable data, and assigns a
+/// fixed tag to every event and outcome variant. It is the comparison surface
+/// shared by the in-process double and production-plugin integration gates.
+#[must_use]
+pub fn sim_double_host_schedule_canonical_bytes(
+    schedule: &[SimDoubleHostScheduleEvent],
+) -> Vec<u8> {
+    let mut bytes = b"crucible.sim-double.host-schedule.v1\0".to_vec();
+    push_u64(&mut bytes, schedule.len() as u64);
+    for event in schedule {
+        match event {
+            SimDoubleHostScheduleEvent::HorizonAdvance {
+                from_icount,
+                requested_icount,
+                reached_icount,
+                outcome,
+            } => {
+                bytes.push(0);
+                push_u64(&mut bytes, *from_icount);
+                push_u64(&mut bytes, *requested_icount);
+                push_u64(&mut bytes, *reached_icount);
+                match outcome {
+                    AdvanceOutcome::ReachedHorizon => bytes.push(0),
+                    AdvanceOutcome::Paused { at } => {
+                        bytes.push(1);
+                        push_u64(&mut bytes, at.retired);
+                    }
+                }
+            }
+            SimDoubleHostScheduleEvent::FrameDelivery {
+                src_slot,
+                sequence,
+                delivery_icount,
+                payload,
+            } => {
+                bytes.push(1);
+                push_u32(&mut bytes, *src_slot);
+                push_u32(&mut bytes, *sequence);
+                push_u64(&mut bytes, *delivery_icount);
+                push_bytes(&mut bytes, payload);
+            }
+            SimDoubleHostScheduleEvent::FrameEmission {
+                dst_slot,
+                sequence,
+                delivery_icount,
+                payload,
+            } => {
+                bytes.push(2);
+                push_u32(&mut bytes, *dst_slot);
+                push_u32(&mut bytes, *sequence);
+                push_u64(&mut bytes, *delivery_icount);
+                push_bytes(&mut bytes, payload);
+            }
+            SimDoubleHostScheduleEvent::IoCompletion {
+                device,
+                sequence,
+                completion_icount,
+                payload,
+            } => {
+                bytes.push(3);
+                push_bytes(&mut bytes, device.as_bytes());
+                push_u64(&mut bytes, *sequence);
+                push_u64(&mut bytes, *completion_icount);
+                push_bytes(&mut bytes, payload);
+            }
+            SimDoubleHostScheduleEvent::Snapshot {
+                checkpoint_id,
+                fingerprint,
+                kind,
+            } => {
+                bytes.push(4);
+                bytes.extend_from_slice(&checkpoint_id.bytes);
+                bytes.extend_from_slice(&fingerprint.bytes);
+                bytes.push(match kind {
+                    CheckpointKind::Fat => 0,
+                    CheckpointKind::Thin => 1,
+                });
+            }
+        }
+    }
+    bytes
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    push_u64(bytes, value.len() as u64);
+    bytes.extend_from_slice(value);
+}
+
 /// An in-process QEMU plugin-side test double.
 ///
 /// `SimDouble` is the Phase-1 stand-in for one real QEMU plugin endpoint. It
@@ -1671,6 +1769,42 @@ mod tests {
         assert_eq!(
             double.shmem_header_snapshot().region_size,
             double.shmem_layout().region_size
+        );
+    }
+
+    #[test]
+    fn host_observable_schedule_bytes_are_stable_and_field_sensitive() {
+        let baseline = vec![
+            SimDoubleHostScheduleEvent::HorizonAdvance {
+                from_icount: 0,
+                requested_icount: 10,
+                reached_icount: 7,
+                outcome: AdvanceOutcome::Paused {
+                    at: Icount { retired: 7 },
+                },
+            },
+            SimDoubleHostScheduleEvent::FrameDelivery {
+                src_slot: 1,
+                sequence: 2,
+                delivery_icount: 7,
+                payload: b"frame".to_vec(),
+            },
+        ];
+        let mut changed = baseline.clone();
+        changed[1] = SimDoubleHostScheduleEvent::FrameDelivery {
+            src_slot: 1,
+            sequence: 2,
+            delivery_icount: 8,
+            payload: b"frame".to_vec(),
+        };
+
+        assert_eq!(
+            sim_double_host_schedule_canonical_bytes(&baseline),
+            sim_double_host_schedule_canonical_bytes(&baseline)
+        );
+        assert_ne!(
+            sim_double_host_schedule_canonical_bytes(&baseline),
+            sim_double_host_schedule_canonical_bytes(&changed)
         );
     }
 

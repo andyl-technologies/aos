@@ -901,29 +901,26 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     src_node, seq)` key, advances by a deterministic instruction-budget script,
     and hashes a synthetic register/memory fingerprint with no wall-clock,
     thread RNG, or unordered map dependency.
-- [ ] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
+- [x] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
-  - Partial callback-core evidence is provided by
-    `checks.crucible.phase1.hostObservableSchedule` and the
+  - Completed by `checks.crucible.phase1.hostObservableSchedule` and
+    `checks.crucible.phase2.qemuLivePluginQuantum`. The
     `host_observable_schedule_cross_checks_sim_double_against_plugin_projection`
-    unit test: `crucible::SimDouble` now records a typed host-observable
-    schedule vocabulary for horizon advances, inbound SPSC frame deliveries,
-    outbound SPSC frame emissions, I/O completions, and snapshots; the QEMU
-    plugin test constructs the matching callback-model projection through
+    unit test proves the callback-model half: `crucible::SimDouble` records a
+    typed host-observable schedule vocabulary for horizon advances, inbound
+    SPSC frame deliveries, outbound SPSC frame emissions, I/O completions, and
+    snapshots; the QEMU plugin test constructs the matching callback-model
+    projection through
     `PluginIdleHotLoop`, `PluginVirtualClock`, `PluginNetworkRx`, and
     `PluginNetworkTx` before asserting byte-for-byte schedule equality, with the
     plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
-    This does not execute an installed production plugin, so the live-plugin
-    half remains open.
-  - The installed production plugin is now executed live by
-    `checks.crucible.phase2.qemuLivePluginQuantum` and
-    `checks.crucible.phase2.qemuLivePluginFingerprint`, which prove the live
-    plugin's host-observable behaviour (idle/deadline/idle-jump schedule and a
-    deterministic run-twice fingerprint) is reproducible. The remaining open
-    piece is the explicit cross-check that replays one recorded host-observable
-    schedule through both the `SimDouble` and the installed plugin and asserts
-    byte-for-byte equality of the two live schedules; that comparison harness is
-    not yet built.
+    The installed production plugin gate records every completed busy, idle,
+    and idle-jump quantum in that same typed vocabulary, requires the host-load
+    run to reproduce the schedule exactly, builds a `SimInstructionScript` from
+    the live reached-icount sequence, replays the exact requested horizons
+    through `SimDouble`, and compares the versioned, length-prefixed canonical
+    schedule bytes. The live gate fails on a backward step, unsupported event,
+    outcome mismatch, setup failure, or first byte-level schedule difference.
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.

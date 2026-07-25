@@ -8,7 +8,7 @@ publish = false
 workspace = true
 
 [dependencies]
-crucible = { path = "../crucible" }
+crucible = { path = "../crucible", features = ["test-double"] }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }

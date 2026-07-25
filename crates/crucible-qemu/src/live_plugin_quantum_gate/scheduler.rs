@@ -10,7 +10,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crucible::{AdvanceOutcome, ExecutionHorizon, Icount};
+use crucible::{AdvanceOutcome, ExecutionHorizon, Icount, SimDoubleHostScheduleEvent};
 
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
@@ -37,14 +37,24 @@ pub(super) fn drive_scenario(
     child: &mut crate::QemuNodeChild,
     setup: &crate::QemuHostPluginSetup,
     config: &LivePluginQuantumGateConfig,
-) -> Result<(LivePluginIdleObservation, LivePluginAdvancementRates), LivePluginQuantumGateError> {
+) -> Result<
+    (
+        LivePluginIdleObservation,
+        LivePluginAdvancementRates,
+        Vec<SimDoubleHostScheduleEvent>,
+    ),
+    LivePluginQuantumGateError,
+> {
     let schedule = config.schedule();
     let boot_started = wall_clock_start();
     let mut ceiling = schedule.ceiling_step_icount;
     let mut boot_quantum_count: u32 = 0;
+    let mut host_observable_schedule = Vec::new();
 
     let idle = loop {
-        match run_quantum(hot_path, child, setup, ceiling, config)? {
+        let (stop, event) = run_quantum(hot_path, child, setup, ceiling, config)?;
+        host_observable_schedule.push(event);
+        match stop {
             QuantumStop::ReachedCeiling { .. } => {
                 boot_quantum_count = boot_quantum_count.saturating_add(1);
                 if ceiling >= schedule.max_search_icount {
@@ -79,7 +89,7 @@ pub(super) fn drive_scenario(
             idle_wall_micros: 0,
             terminal_icount: idle.idle_onset_icount,
         };
-        return Ok((idle, rates));
+        return Ok((idle, rates, host_observable_schedule));
     }
 
     // Idle-jump: raise the ceiling far beyond the parked deadline in one quantum.
@@ -93,7 +103,9 @@ pub(super) fn drive_scenario(
                 .saturating_add(schedule.ceiling_step_icount),
         );
     let idle_started = wall_clock_start();
-    let terminal_icount = match run_quantum(hot_path, child, setup, idle_horizon, config)? {
+    let (stop, event) = run_quantum(hot_path, child, setup, idle_horizon, config)?;
+    host_observable_schedule.push(event);
+    let terminal_icount = match stop {
         QuantumStop::ReachedCeiling { icount } => icount,
         QuantumStop::Paused { at, .. } => at,
     };
@@ -112,7 +124,7 @@ pub(super) fn drive_scenario(
         idle_wall_micros,
         terminal_icount,
     };
-    Ok((idle, rates))
+    Ok((idle, rates, host_observable_schedule))
 }
 
 /// A completed quantum's stopping condition.
@@ -141,7 +153,11 @@ fn run_quantum(
     setup: &crate::QemuHostPluginSetup,
     ceiling: u64,
     config: &LivePluginQuantumGateConfig,
-) -> Result<QuantumStop, LivePluginQuantumGateError> {
+) -> Result<(QuantumStop, SimDoubleHostScheduleEvent), LivePluginQuantumGateError> {
+    let from_icount = QemuShmemHotPathChannel::idle_state(hot_path)
+        .map_err(|source| channel_error("read pre-quantum icount", source))?
+        .current_icount
+        .retired;
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         ExecutionHorizon {
@@ -168,7 +184,21 @@ fn run_quantum(
         .map_err(|source| channel_error("finish quantum", source))?;
     match (&stop, &completion.outcome) {
         (QuantumStop::ReachedCeiling { .. }, AdvanceOutcome::ReachedHorizon)
-        | (QuantumStop::Paused { .. }, AdvanceOutcome::Paused { .. }) => Ok(stop),
+        | (QuantumStop::Paused { .. }, AdvanceOutcome::Paused { .. }) => {
+            let reached_icount = match stop {
+                QuantumStop::ReachedCeiling { icount } => icount,
+                QuantumStop::Paused { at, .. } => at,
+            };
+            Ok((
+                stop,
+                SimDoubleHostScheduleEvent::HorizonAdvance {
+                    from_icount,
+                    requested_icount: ceiling,
+                    reached_icount,
+                    outcome: completion.outcome,
+                },
+            ))
+        }
         (_, outcome) => Err(LivePluginQuantumGateError::SecondRunDiverged {
             reason: format!("quantum stop {stop:?} disagreed with plugin outcome {outcome:?}"),
         }),

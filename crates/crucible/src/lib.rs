@@ -247,7 +247,7 @@ pub use scheduler::{
 pub use sim_backend::{
     SimBackend, SimBackendState, SimDeliveredFrame, SimDouble, SimDoubleConfig,
     SimDoubleControlEvent, SimDoubleError, SimDoubleHostScheduleEvent, SimInstructionScript,
-    SimInstructionStep, SimOutboundFrame,
+    SimInstructionStep, SimOutboundFrame, sim_double_host_schedule_canonical_bytes,
 };
 pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
 pub use trigger::{

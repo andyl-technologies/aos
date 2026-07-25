@@ -11,7 +11,7 @@
   # self-extending past it. So this gate proves T-PLUG-4/5/6/7 and T-TIME-5/7 end
   # to end. T-TIME-6 (the deadline-introspection twin of T-PLUG-6) is closed via
   # phase1-clock-deadline.
-  taskIds ? ["T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-PLUG-7" "T-TIME-5" "T-TIME-7"],
+  taskIds ? ["T-HARN-4" "T-PLUG-4" "T-PLUG-5" "T-PLUG-6" "T-PLUG-7" "T-TIME-5" "T-TIME-7"],
   openTaskIds ? [],
   # Drive the authorized idle-jump advancement (not just observe idle onset). The
   # example reads this via `.with_prove_idle_jump`; on it asserts the guest jumps
@@ -145,6 +145,12 @@ in
           grep -Eq '^boot_quantum_count=[1-9][0-9]*$' "$report"
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Fxq 'host_load_applied=true' "$report"
+          # T-HARN-4: the host records each completed production-plugin
+          # quantum in the shared canonical schedule vocabulary, replays the
+          # exact horizons through SimDouble, and compares the versioned byte
+          # encoding. The host-load run must reproduce the same schedule too.
+          grep -Fxq 'sim_double_schedule_matches=true' "$report"
+          grep -Eq '^host_observable_schedule_len=[1-9][0-9]*$' "$report"
           # T-PLUG-5/6 + T-TIME-6: the guest parked idle with a computed next
           # virtual-timer deadline (a timer-deadline idle, not an I/O-wait idle).
           grep -Eq '^idle_onset_icount=[1-9][0-9]*$' "$report"
@@ -171,7 +177,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=boot-ceiling-ownership,idle-park,timer-deadline-introspection,authorized-idle-jump-advancement,run-twice-determinism\n'
+            printf 'proven=boot-ceiling-ownership,idle-park,timer-deadline-introspection,authorized-idle-jump-advancement,run-twice-determinism,live-plugin-sim-double-host-schedule-byte-equivalence\n'
           } >> "$out/result"
         '';
       }
