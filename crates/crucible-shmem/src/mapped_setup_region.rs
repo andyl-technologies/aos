@@ -8,11 +8,12 @@ use thiserror::Error;
 
 use super::{
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
-    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FingerprintSampleSlot,
-    FRAME_ENTRY_ALIGN, FRAME_ENTRY_SIZE, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
+    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
+    FRAME_ENTRY_SIZE, FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
     REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
     RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
-    directed_rings, layout_from_setup_region_header, validate_setup_region_header,
+    WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE, WhiteboxMarkerEntry, directed_rings,
+    layout_from_setup_region_header, validate_setup_region_header,
 };
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
@@ -45,6 +46,20 @@ pub struct MappedCoverageRingMut<'a> {
     pub header: &'a RingHeader,
     /// Compact coverage-entry backing storage.
     pub entries: &'a mut [CoverageEntry],
+}
+
+/// A mutable view of one VM's plugin-to-host white-box marker ring.
+///
+/// The plugin is the sole entry/write-index producer and the host is the sole
+/// read-index consumer. Marker traffic is observational and never shares a
+/// causal frame ring.
+pub struct MappedWhiteboxMarkerRingMut<'a> {
+    /// VM slot that exclusively produces this ring.
+    pub vm_slot: u32,
+    /// SPSC header shared by the plugin producer and host consumer.
+    pub header: &'a RingHeader,
+    /// Bounded marker-entry backing storage.
+    pub entries: &'a mut [WhiteboxMarkerEntry],
 }
 
 /// A mutable view of two distinct mapped directed rings and one node slot.
@@ -267,6 +282,55 @@ impl MappedSetupRegion {
         })
     }
 
+    /// Borrows one VM's dedicated plugin-to-host white-box marker ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` does not name a logical VM, or a computed marker
+    /// segment is out of bounds or misaligned.
+    pub fn whitebox_marker_ring_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedWhiteboxMarkerRingMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.whitebox_marker_ring_count {
+            return Err(MappedSetupRegionAccessError::UnknownWhiteboxMarkerRing {
+                vm_slot,
+                vm_node_count: layout.vm_node_count,
+            });
+        }
+        let header_offset = mapped_whitebox_marker_ring_header_offset(layout, self.len, vm_slot)?;
+        let entries_offset = mapped_whitebox_marker_ring_entries_offset(layout, self.len, vm_slot)?;
+        let entry_count =
+            usize::try_from(layout.whitebox_marker_queue_capacity).map_err(|_error| {
+                MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                    segment: "white-box marker entry",
+                    index: vm_slot,
+                }
+            })?;
+        let base = self.ptr.as_ptr();
+        // SAFETY: the marker offset helpers validate the complete typed ranges
+        // and alignments inside this owned mapping. Each VM names a distinct
+        // SPSC slice, and the exclusive mapping borrow prevents safe aliasing.
+        let (header, entries) = unsafe {
+            (
+                &*base.add(header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(entries_offset).cast::<WhiteboxMarkerEntry>(),
+                    entry_count,
+                ),
+            )
+        };
+        Ok(MappedWhiteboxMarkerRingMut {
+            vm_slot,
+            header,
+            entries,
+        })
+    }
+
     /// Borrows one VM's dedicated plugin-to-host fingerprint sample slot.
     ///
     /// The VM slot is also the fingerprint-slot index. The interior atomic
@@ -411,6 +475,16 @@ pub enum MappedSetupRegionAccessError {
         "mapped setup region has no coverage ring for VM slot {vm_slot}; VM count is {vm_node_count}"
     )]
     UnknownCoverageRing {
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Number of logical VM slots in the region.
+        vm_node_count: u32,
+    },
+    /// A VM slot was outside the dedicated white-box marker-ring table.
+    #[error(
+        "mapped setup region has no white-box marker ring for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownWhiteboxMarkerRing {
         /// Rejected VM slot.
         vm_slot: u32,
         /// Number of logical VM slots in the region.
@@ -713,6 +787,48 @@ fn mapped_fingerprint_sample_offset(
         layout.fingerprint_sample_off,
         FINGERPRINT_SAMPLE_SLOT_SIZE,
         FINGERPRINT_SAMPLE_SLOT_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_whitebox_marker_ring_header_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "white-box marker ring header",
+        vm_slot,
+        layout.whitebox_marker_ring_hdr_off,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_whitebox_marker_ring_entries_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    let capacity = usize::try_from(layout.whitebox_marker_queue_capacity).map_err(|_error| {
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "white-box marker entry",
+            index: vm_slot,
+        }
+    })?;
+    let byte_len = capacity.checked_mul(WHITEBOX_MARKER_ENTRY_SIZE).ok_or(
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "white-box marker entry",
+            index: vm_slot,
+        },
+    )?;
+    mapped_segment_offset(
+        "white-box marker entry",
+        vm_slot,
+        layout.whitebox_marker_ring_data_off,
+        byte_len,
+        WHITEBOX_MARKER_ENTRY_ALIGN,
         region_len,
     )
 }

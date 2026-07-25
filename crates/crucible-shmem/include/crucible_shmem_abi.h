@@ -14,10 +14,11 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 3u
+#define CRUCIBLE_SHMEM_ABI_VERSION 4u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY 1024u
 #define CRUCIBLE_SHMEM_MAX_NODES 32u
 #define CRUCIBLE_SHMEM_RESERVED_SLOTS 3u
 #define CRUCIBLE_SHMEM_MAX_VM_NODES 29u
@@ -105,6 +106,16 @@
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET 0u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET 4u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET 8u
+
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE 4672u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_ALIGN 64u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET 0u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET 8u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_KIND_OFFSET 12u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET 14u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET 16u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET 4624u
+#define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_LEN 48u
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t magic;
@@ -230,5 +241,23 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_fingerprint_sample_slot) ==
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, sample_gen) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, "crucible_shmem_fingerprint_sample_slot.sample_gen offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, reserved) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET, "crucible_shmem_fingerprint_sample_slot.reserved offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, "crucible_shmem_fingerprint_sample_slot.words offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_whitebox_marker_entry {
+    uint64_t current_icount;
+    uint32_t vcpu_index;
+    uint16_t kind;
+    uint16_t payload_len;
+    uint8_t payload[CRUCIBLE_SHMEM_MAX_FRAME_DATA];
+    uint8_t reserved[CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_LEN];
+} crucible_shmem_whitebox_marker_entry;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_whitebox_marker_entry) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, "crucible_shmem_whitebox_marker_entry size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_whitebox_marker_entry) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_ALIGN, "crucible_shmem_whitebox_marker_entry alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, current_icount) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, "crucible_shmem_whitebox_marker_entry.current_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, vcpu_index) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, "crucible_shmem_whitebox_marker_entry.vcpu_index offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, kind) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_KIND_OFFSET, "crucible_shmem_whitebox_marker_entry.kind offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, payload_len) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, "crucible_shmem_whitebox_marker_entry.payload_len offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, payload) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, "crucible_shmem_whitebox_marker_entry.payload offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, reserved) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, "crucible_shmem_whitebox_marker_entry.reserved offset");
 
 #endif /* CRUCIBLE_SHMEM_ABI_H */

@@ -400,6 +400,16 @@ pub struct RegionLayout {
     pub fingerprint_sample_off: u64,
     /// Byte stride between fingerprint sample slots.
     pub fingerprint_sample_stride: u64,
+    /// Number of plugin-to-host white-box marker rings, one per logical VM.
+    pub whitebox_marker_ring_count: u32,
+    /// Fixed entry capacity of every white-box marker ring.
+    pub whitebox_marker_queue_capacity: u32,
+    /// Byte offset from region base to the first white-box marker ring header.
+    pub whitebox_marker_ring_hdr_off: u64,
+    /// Byte offset from region base to the first white-box marker entry.
+    pub whitebox_marker_ring_data_off: u64,
+    /// Byte stride between white-box marker entries.
+    pub whitebox_marker_entry_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
@@ -481,12 +491,39 @@ impl RegionLayout {
         // appended after the coverage data with the slot's own alignment.
         let fingerprint_sample_count = config.vm_node_count;
         let fingerprint_sample_stride = usize_to_u64(FINGERPRINT_SAMPLE_SLOT_SIZE)?;
-        let fingerprint_sample_off =
-            checked_align_up(coverage_data_end, usize_to_u64(FINGERPRINT_SAMPLE_SLOT_ALIGN)?)?;
-        let region_size = fingerprint_sample_off
+        let fingerprint_sample_off = checked_align_up(
+            coverage_data_end,
+            usize_to_u64(FINGERPRINT_SAMPLE_SLOT_ALIGN)?,
+        )?;
+        let fingerprint_data_end = fingerprint_sample_off
             .checked_add(
                 u64::from(fingerprint_sample_count)
                     .checked_mul(fingerprint_sample_stride)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+
+        // Additive ABI v4 section: one observational marker ring per logical
+        // VM, appended after the v3 fingerprint slots.
+        let whitebox_marker_ring_count = config.vm_node_count;
+        let whitebox_marker_queue_capacity = WHITEBOX_MARKER_QUEUE_CAPACITY;
+        let whitebox_marker_ring_hdr_off =
+            checked_align_up(fingerprint_data_end, usize_to_u64(RING_HEADER_ALIGN)?)?;
+        let whitebox_marker_ring_data_off = whitebox_marker_ring_hdr_off
+            .checked_add(
+                u64::from(whitebox_marker_ring_count)
+                    .checked_mul(usize_to_u64(RING_HEADER_SIZE)?)
+                    .ok_or(RegionLayoutError::GeometryOverflow)?,
+            )
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let whitebox_marker_entry_stride = usize_to_u64(WHITEBOX_MARKER_ENTRY_SIZE)?;
+        let whitebox_marker_entry_count = u64::from(whitebox_marker_ring_count)
+            .checked_mul(u64::from(whitebox_marker_queue_capacity))
+            .ok_or(RegionLayoutError::GeometryOverflow)?;
+        let region_size = whitebox_marker_ring_data_off
+            .checked_add(
+                whitebox_marker_entry_count
+                    .checked_mul(whitebox_marker_entry_stride)
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -508,6 +545,11 @@ impl RegionLayout {
             fingerprint_sample_count,
             fingerprint_sample_off,
             fingerprint_sample_stride,
+            whitebox_marker_ring_count,
+            whitebox_marker_queue_capacity,
+            whitebox_marker_ring_hdr_off,
+            whitebox_marker_ring_data_off,
+            whitebox_marker_entry_stride,
             region_size,
             icount_shift: config.icount_shift,
         })
@@ -523,6 +565,12 @@ impl RegionLayout {
     #[must_use]
     pub fn coverage_entry_count(&self) -> u64 {
         u64::from(self.coverage_ring_count) * u64::from(self.coverage_queue_capacity)
+    }
+
+    /// Returns the number of white-box marker-entry slots in the allocation.
+    #[must_use]
+    pub fn whitebox_marker_entry_count(&self) -> u64 {
+        u64::from(self.whitebox_marker_ring_count) * u64::from(self.whitebox_marker_queue_capacity)
     }
 }
 
@@ -584,6 +632,8 @@ pub struct RegionAllocation {
     frame_entries: Vec<FrameEntry>,
     coverage_ring_headers: Vec<RingHeader>,
     coverage_entries: Vec<CoverageEntry>,
+    whitebox_marker_ring_headers: Vec<RingHeader>,
+    whitebox_marker_entries: Vec<WhiteboxMarkerEntry>,
     rings: Vec<DirectedRing>,
     layout: RegionLayout,
 }
@@ -597,6 +647,8 @@ impl Clone for RegionAllocation {
             frame_entries: self.frame_entries.clone(),
             coverage_ring_headers: self.coverage_ring_headers.clone(),
             coverage_entries: self.coverage_entries.clone(),
+            whitebox_marker_ring_headers: self.whitebox_marker_ring_headers.clone(),
+            whitebox_marker_entries: self.whitebox_marker_entries.clone(),
             rings: self.rings.clone(),
             layout: self.layout,
         }
@@ -687,6 +739,14 @@ impl RegionAllocation {
         let coverage_entries = (0..coverage_entry_count)
             .map(|_| CoverageEntry::default())
             .collect::<Vec<_>>();
+        let whitebox_marker_ring_headers = (0..layout.whitebox_marker_ring_count)
+            .map(|_| RingHeader::new())
+            .collect::<Vec<_>>();
+        let whitebox_marker_entry_count = usize::try_from(layout.whitebox_marker_entry_count())
+            .map_err(|_| RegionLayoutError::GeometryOverflow)?;
+        let whitebox_marker_entries = (0..whitebox_marker_entry_count)
+            .map(|_| WhiteboxMarkerEntry::default())
+            .collect::<Vec<_>>();
 
         Ok(Self {
             header,
@@ -695,6 +755,8 @@ impl RegionAllocation {
             frame_entries,
             coverage_ring_headers,
             coverage_entries,
+            whitebox_marker_ring_headers,
+            whitebox_marker_entries,
             rings,
             layout,
         })
@@ -734,6 +796,18 @@ impl RegionAllocation {
     #[must_use]
     pub fn coverage_entries(&self) -> &[CoverageEntry] {
         &self.coverage_entries
+    }
+
+    /// Returns the plugin-to-host white-box marker ring headers.
+    #[must_use]
+    pub fn whitebox_marker_ring_headers(&self) -> &[RingHeader] {
+        &self.whitebox_marker_ring_headers
+    }
+
+    /// Returns the plugin-to-host white-box marker-entry backing storage.
+    #[must_use]
+    pub fn whitebox_marker_entries(&self) -> &[WhiteboxMarkerEntry] {
+        &self.whitebox_marker_entries
     }
 
     /// Returns the deterministic directed-ring map.
@@ -829,6 +903,29 @@ impl RegionAllocation {
                 coverage_entry,
             );
         }
+        for (index, ring_header) in self.whitebox_marker_ring_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "white-box marker ring header",
+                index,
+                self.layout.whitebox_marker_ring_hdr_off,
+                RING_HEADER_SIZE,
+                region_len,
+            )?;
+            write_ring_header_bytes(&mut bytes[base..base + RING_HEADER_SIZE], ring_header);
+        }
+        for (index, marker_entry) in self.whitebox_marker_entries.iter().enumerate() {
+            let base = checked_segment_offset(
+                "white-box marker entry",
+                index,
+                self.layout.whitebox_marker_ring_data_off,
+                WHITEBOX_MARKER_ENTRY_SIZE,
+                region_len,
+            )?;
+            write_whitebox_marker_entry_bytes(
+                &mut bytes[base..base + WHITEBOX_MARKER_ENTRY_SIZE],
+                marker_entry,
+            );
+        }
 
         Ok(bytes)
     }
@@ -890,6 +987,48 @@ impl RegionAllocation {
         }
         self.coverage_ring_headers[ring_index]
             .enqueue_coverage(&mut self.coverage_entries[start..end], entry)?;
+        Ok(())
+    }
+
+    /// Enqueues one plugin-produced white-box marker entry for `vm_slot`.
+    ///
+    /// This model helper uses the same observational SPSC publication primitive
+    /// as the mapped plugin path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionAllocationAccessError`] when the VM slot is absent, its
+    /// fixed backing range cannot be represented, or the marker ring rejects
+    /// the entry.
+    pub fn enqueue_whitebox_marker_entry(
+        &mut self,
+        vm_slot: u32,
+        entry: WhiteboxMarkerEntry,
+    ) -> Result<(), RegionAllocationAccessError> {
+        if vm_slot >= self.layout.whitebox_marker_ring_count {
+            return Err(RegionAllocationAccessError::UnknownWhiteboxMarkerRing {
+                vm_slot,
+                vm_node_count: self.layout.vm_node_count,
+            });
+        }
+        let ring_index = usize::try_from(vm_slot).map_err(|_error| {
+            RegionAllocationAccessError::WhiteboxMarkerEntryRangeOverflow { vm_slot }
+        })?;
+        let capacity =
+            usize::try_from(self.layout.whitebox_marker_queue_capacity).map_err(|_error| {
+                RegionAllocationAccessError::WhiteboxMarkerEntryRangeOverflow { vm_slot }
+            })?;
+        let start = ring_index
+            .checked_mul(capacity)
+            .ok_or(RegionAllocationAccessError::WhiteboxMarkerEntryRangeOverflow { vm_slot })?;
+        let end = start
+            .checked_add(capacity)
+            .ok_or(RegionAllocationAccessError::WhiteboxMarkerEntryRangeOverflow { vm_slot })?;
+        if end > self.whitebox_marker_entries.len() {
+            return Err(RegionAllocationAccessError::WhiteboxMarkerEntryRangeOverflow { vm_slot });
+        }
+        self.whitebox_marker_ring_headers[ring_index]
+            .enqueue_whitebox_marker(&mut self.whitebox_marker_entries[start..end], entry)?;
         Ok(())
     }
 
@@ -1101,6 +1240,16 @@ pub enum RegionAllocationAccessError {
         /// Logical VM count.
         vm_node_count: u32,
     },
+    /// A VM slot does not have a plugin-to-host white-box marker ring.
+    #[error(
+        "region allocation has no white-box marker ring for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownWhiteboxMarkerRing {
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Logical VM count.
+        vm_node_count: u32,
+    },
     /// A ring index could not be represented as a local vector index.
     #[error("region allocation ring index {ring_index} is outside the local ring table")]
     RingIndexOutOfRange {
@@ -1116,6 +1265,12 @@ pub enum RegionAllocationAccessError {
     /// A VM's compact coverage-entry range overflowed.
     #[error("region allocation coverage-entry range overflowed for VM slot {vm_slot}")]
     CoverageEntryRangeOverflow {
+        /// Rejected VM slot.
+        vm_slot: u32,
+    },
+    /// A VM's white-box marker-entry range overflowed.
+    #[error("region allocation white-box marker-entry range overflowed for VM slot {vm_slot}")]
+    WhiteboxMarkerEntryRangeOverflow {
         /// Rejected VM slot.
         vm_slot: u32,
     },
@@ -1490,6 +1645,29 @@ pub(super) fn write_coverage_entry_bytes(bytes: &mut [u8], entry: &CoverageEntry
     write_u32_at(bytes, COVERAGE_ENTRY_VCPU_INDEX_OFFSET, entry.vcpu_index);
     write_u32_at(bytes, COVERAGE_ENTRY_BLOCK_LEN_OFFSET, entry.block_len);
     bytes[COVERAGE_ENTRY_RESERVED_OFFSET..COVERAGE_ENTRY_SIZE].copy_from_slice(&entry._reserved);
+}
+
+pub(super) fn write_whitebox_marker_entry_bytes(bytes: &mut [u8], entry: &WhiteboxMarkerEntry) {
+    write_u64_at(
+        bytes,
+        WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+        entry.current_icount,
+    );
+    write_u32_at(
+        bytes,
+        WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+        entry.vcpu_index,
+    );
+    write_u16_at(bytes, WHITEBOX_MARKER_ENTRY_KIND_OFFSET, entry.kind);
+    write_u16_at(
+        bytes,
+        WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+        entry.payload_len,
+    );
+    bytes[WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET..WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET]
+        .copy_from_slice(&entry.payload);
+    bytes[WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET..WHITEBOX_MARKER_ENTRY_SIZE]
+        .copy_from_slice(&entry._reserved);
 }
 
 pub(super) fn write_u8_at(bytes: &mut [u8], offset: usize, value: u8) {

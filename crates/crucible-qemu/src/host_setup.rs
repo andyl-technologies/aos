@@ -381,8 +381,8 @@ mod tests {
     const EVENTFD_WAKE_PROBE: u64 = 7;
 
     #[test]
-    fn qemu_host_rejects_a_v1_plugin_against_the_v3_region() {
-        assert_eq!(ABI_VERSION, 3);
+    fn qemu_host_rejects_a_v1_plugin_against_the_v4_region() {
+        assert_eq!(ABI_VERSION, 4);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,

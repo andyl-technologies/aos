@@ -23,7 +23,11 @@ use crate::{
     REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_ALIGN, RING_HEADER_PAD_READ_OFFSET,
     RING_HEADER_PAD_WRITE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
     RING_HEADER_WRITE_IDX_OFFSET, SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE,
-    STATUS_IDLE, STATUS_RUNNING,
+    STATUS_IDLE, STATUS_RUNNING, WHITEBOX_MARKER_ENTRY_ALIGN,
+    WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
+    WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET,
+    WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, WHITEBOX_MARKER_ENTRY_SIZE,
+    WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, WHITEBOX_MARKER_QUEUE_CAPACITY,
 };
 use crate::{
     FINGERPRINT_DIGEST_BYTES, FINGERPRINT_SAMPLE_MAX_VCPUS, FINGERPRINT_SAMPLE_SLOT_ALIGN,
@@ -47,6 +51,7 @@ pub fn generated_c_header() -> String {
     emit_frame_entry(&mut out);
     emit_coverage_entry(&mut out);
     emit_fingerprint_sample_slot(&mut out);
+    emit_whitebox_marker_entry(&mut out);
     emit_footer(&mut out);
     out
 }
@@ -80,6 +85,11 @@ fn emit_constants(out: &mut String) {
         out,
         "CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY",
         COVERAGE_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY",
+        WHITEBOX_MARKER_QUEUE_CAPACITY,
     );
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_NODES", MAX_NODES);
     emit_define_usize(out, "CRUCIBLE_SHMEM_RESERVED_SLOTS", RESERVED_SLOTS);
@@ -258,6 +268,30 @@ fn emit_constants(out: &mut String) {
         ],
     );
     out.push('\n');
+
+    emit_layout_constant_group(
+        out,
+        "WHITEBOX_MARKER_ENTRY",
+        WHITEBOX_MARKER_ENTRY_SIZE,
+        WHITEBOX_MARKER_ENTRY_ALIGN,
+        &[
+            (
+                "CURRENT_ICOUNT",
+                WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+            ),
+            ("VCPU_INDEX", WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET),
+            ("KIND", WHITEBOX_MARKER_ENTRY_KIND_OFFSET),
+            ("PAYLOAD_LEN", WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET),
+            ("PAYLOAD", WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET),
+            ("RESERVED", WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET),
+        ],
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_LEN",
+        WHITEBOX_MARKER_ENTRY_SIZE - WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET,
+    );
+    out.push('\n');
 }
 
 fn emit_region_header(out: &mut String) {
@@ -429,6 +463,33 @@ fn emit_coverage_entry(out: &mut String) {
             ("map_index", "MAP_INDEX"),
             ("vcpu_index", "VCPU_INDEX"),
             ("block_len", "BLOCK_LEN"),
+            ("reserved", "RESERVED"),
+        ],
+    );
+}
+
+fn emit_whitebox_marker_entry(out: &mut String) {
+    out.push_str(&format!(
+        "typedef struct CRUCIBLE_SHMEM_ALIGNED({WHITEBOX_MARKER_ENTRY_ALIGN}) crucible_shmem_whitebox_marker_entry {{\n"
+    ));
+    out.push_str("    uint64_t current_icount;\n");
+    out.push_str("    uint32_t vcpu_index;\n");
+    out.push_str("    uint16_t kind;\n");
+    out.push_str("    uint16_t payload_len;\n");
+    out.push_str("    uint8_t payload[CRUCIBLE_SHMEM_MAX_FRAME_DATA];\n");
+    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_LEN];\n");
+    out.push_str("} crucible_shmem_whitebox_marker_entry;\n\n");
+
+    emit_static_asserts(
+        out,
+        "crucible_shmem_whitebox_marker_entry",
+        "WHITEBOX_MARKER_ENTRY",
+        &[
+            ("current_icount", "CURRENT_ICOUNT"),
+            ("vcpu_index", "VCPU_INDEX"),
+            ("kind", "KIND"),
+            ("payload_len", "PAYLOAD_LEN"),
+            ("payload", "PAYLOAD"),
             ("reserved", "RESERVED"),
         ],
     );

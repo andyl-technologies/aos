@@ -19,6 +19,7 @@
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_whitebox_marker.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/fingerprint_sample.rs;
   shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
   setupValidation = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
@@ -211,6 +212,26 @@
         needle = "const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);";
       }
       {
+        label = "white-box marker exact-icount Rust static assertion";
+        needle = "assert!(WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET == 0);";
+      }
+      {
+        label = "white-box marker payload Rust static assertion";
+        needle = "assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET == 16);";
+      }
+      {
+        label = "white-box marker reserved Rust static assertion";
+        needle = "assert!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET == 16 + MAX_FRAME_DATA);";
+      }
+      {
+        label = "white-box marker size Rust static assertion";
+        needle = "assert!(WHITEBOX_MARKER_ENTRY_SIZE == 4_672);";
+      }
+      {
+        label = "white-box marker alignment Rust static assertion";
+        needle = "assert!(WHITEBOX_MARKER_ENTRY_ALIGN == 64);";
+      }
+      {
         label = "node slot current icount Rust static assertion";
         needle = "const _: () = assert!(NODE_SLOT_CURRENT_ICOUNT_OFFSET == 0);";
       }
@@ -252,7 +273,7 @@
       }
       {
         label = "node slot reserved Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 44);";
+        needle = "const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 56);";
       }
       {
         label = "node slot size Rust static assertion";
@@ -335,11 +356,11 @@
     ]
     ++ failuresFor "crates/crucible-shmem/tests/setup_validation.rs" setupValidation [
       {
-        label = "ABI v2 explicitly rejects a v1 region header";
+        label = "current ABI explicitly rejects an older region header";
         needle = "abi_version: ABI_VERSION - 1";
       }
       {
-        label = "ABI v2 also rejects future region headers";
+        label = "current ABI also rejects future region headers";
         needle = "abi_version: ABI_VERSION + 1";
       }
     ]
@@ -360,11 +381,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=3";
+        needle = "abi_version=4";
       }
       {
         label = "total serialized length";
-        needle = "total_len=5208";
+        needle = "total_len=9880";
       }
       {
         label = "region magic";
@@ -381,6 +402,14 @@
       {
         label = "coverage entry block marker";
         needle = "5172=04000000";
+      }
+      {
+        label = "white-box marker exact-icount marker";
+        needle = "5208=9103000000000000";
+      }
+      {
+        label = "white-box marker payload marker";
+        needle = "5224=4d41524b";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
@@ -583,6 +612,18 @@
       {
         label = "fingerprint sample slot words offset static assert";
         needle = "offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET";
+      }
+      {
+        label = "white-box marker entry C struct";
+        needle = "crucible_shmem_whitebox_marker_entry";
+      }
+      {
+        label = "white-box marker entry size static assert";
+        needle = "sizeof(crucible_shmem_whitebox_marker_entry) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE";
+      }
+      {
+        label = "white-box marker payload offset static assert";
+        needle = "offsetof(crucible_shmem_whitebox_marker_entry, payload) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
@@ -806,7 +847,7 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 8840704u);
+                atomic_init(&header.region_size, 18409216u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -844,12 +885,21 @@ in
                 coverage.vcpu_index = 2u;
                 coverage.block_len = 4u;
 
+                crucible_shmem_whitebox_marker_entry marker;
+                memset(&marker, 0, sizeof(marker));
+                marker.current_icount = 913u;
+                marker.vcpu_index = 2u;
+                marker.kind = 4u;
+                marker.payload_len = 4u;
+                memcpy(marker.payload, "MARK", 4);
+
                 int failed = 0;
                 failed |= write_exact(out, &header, sizeof(header), "region header");
                 failed |= write_exact(out, &slot, sizeof(slot), "node slot");
                 failed |= write_exact(out, &ring, sizeof(ring), "ring header");
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
                 failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
+                failed |= write_exact(out, &marker, sizeof(marker), "white-box marker entry");
                 if (fclose(out) != 0) {
                     perror("fclose");
                     failed = 1;
@@ -905,6 +955,7 @@ in
                 crucible_shmem_ring_header ring;
                 crucible_shmem_frame_entry frame;
                 crucible_shmem_coverage_entry coverage;
+                crucible_shmem_whitebox_marker_entry marker;
 
                 int failed = 0;
                 failed |= read_exact(in, &header, sizeof(header), "region header");
@@ -912,6 +963,7 @@ in
                 failed |= read_exact(in, &ring, sizeof(ring), "ring header");
                 failed |= read_exact(in, &frame, sizeof(frame), "frame entry");
                 failed |= read_exact(in, &coverage, sizeof(coverage), "coverage entry");
+                failed |= read_exact(in, &marker, sizeof(marker), "white-box marker entry");
                 if (fclose(in) != 0) {
                     perror("fclose input");
                     failed = 1;
@@ -928,7 +980,7 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 8840704u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 18409216u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u) {
@@ -973,6 +1025,15 @@ in
                     return 1;
                 }
 
+                if (marker.current_icount != 913u
+                    || marker.vcpu_index != 2u
+                    || marker.kind != 4u
+                    || marker.payload_len != 4u
+                    || memcmp(marker.payload, "MARK", 4) != 0) {
+                    fprintf(stderr, "white-box marker entry validation failed\n");
+                    return 1;
+                }
+
                 FILE *out = fopen(argv[2], "wb");
                 if (out == NULL) {
                     perror("fopen output");
@@ -983,6 +1044,7 @@ in
                 failed |= write_exact(out, &ring, sizeof(ring), "ring header");
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
                 failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
+                failed |= write_exact(out, &marker, sizeof(marker), "white-box marker entry");
                 if (fclose(out) != 0) {
                     perror("fclose output");
                     failed = 1;

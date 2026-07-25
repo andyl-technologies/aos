@@ -66,6 +66,18 @@
 //! 28      4     block_len
 //! 32      32    reserved (zero)
 //! ```
+//!
+//! Plugin-to-host white-box marker entry wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     current_icount
+//! 8       4     vcpu_index
+//! 12      2     marker kind
+//! 14      2     payload length
+//! 16      4608  decoded marker payload
+//! 4624    48    reserved (zero)
+//! ```
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
@@ -81,7 +93,8 @@ pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
     MappedCoverageRingMut, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, SetupRegionMapError, mmap_setup_region,
+    MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
+    mmap_setup_region,
 };
 
 use thiserror::Error;
@@ -99,10 +112,9 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 3 appends the additive per-node [`FingerprintSampleSlot`] section
-/// after the coverage-ring data; the region header, node slots, frame rings,
-/// and coverage rings keep their version-2 offsets.
-pub const ABI_VERSION: u32 = 3;
+/// Version 4 appends a per-node observational white-box marker ring after the
+/// version-3 fingerprint slots; all earlier section offsets remain unchanged.
+pub const ABI_VERSION: u32 = 4;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -110,6 +122,11 @@ const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// each newly reached map entry at most once, so a correctly paired producer
 /// cannot overflow before the host drains at a quantum boundary.
 pub const COVERAGE_QUEUE_CAPACITY: u32 = 65_536;
+/// Fixed entries in each plugin-to-host white-box marker queue.
+///
+/// The queue is drained at quantum boundaries. Exhaustion is a fail-loud
+/// infrastructure error rather than causal guest backpressure.
+pub const WHITEBOX_MARKER_QUEUE_CAPACITY: u32 = 1_024;
 /// Compile-time physical slot capacity of one shared-memory region.
 pub const MAX_NODES: usize = 32;
 /// Number of physical slots reserved for executor endpoints.
@@ -146,9 +163,12 @@ mod frame_node;
 mod region;
 #[path = "shmem/ring_coverage.rs"]
 mod ring_coverage;
+#[path = "shmem/ring_whitebox_marker.rs"]
+mod ring_whitebox_marker;
 
 pub use delivery_errors::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;
 pub use ring_coverage::*;
+pub use ring_whitebox_marker::*;
