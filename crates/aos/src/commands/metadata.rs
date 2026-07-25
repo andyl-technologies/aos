@@ -44,6 +44,7 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
             eval_root,
             measured_boot,
             committed_source,
+            marker_uuid,
         } => aos_package::metadata::eval_provisioning_main(
             &aos_package::metadata::EvalProvisioningOptions {
                 stash_dir: std::path::PathBuf::from(
@@ -53,6 +54,7 @@ pub async fn run(command: &MetadataCmd) -> Result<()> {
                 eval_root: eval_root.clone(),
                 measured_boot: *measured_boot,
                 committed_source: committed_source.as_deref().map(str::parse).transpose()?,
+                marker_uuid: marker_uuid.clone(),
             },
         ),
         MetadataCmd::VerifyBinding => aos_package::metadata::verify_binding_main(

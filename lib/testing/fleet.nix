@@ -101,6 +101,8 @@
       metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
+      extraDisks = m.extraDisks or [];
+      expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
       name = mname;
@@ -291,7 +293,7 @@
             '';
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB extraDisks expectAgent;
           inherit metadataISO;
           system = effectiveSystem;
         }
@@ -350,6 +352,8 @@
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
+                expect_agent = mb.expectAgent;
+                extra_disks = mb.extraDisks;
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
@@ -569,10 +573,10 @@
               -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
               -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
               ${lib.optionalString (mb.metadataISO != null) ''
-                -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
-                -device virtio-scsi-pci,id=scsi0 \
-                -device scsi-cd,drive=metadata,bus=scsi0.0 \
-              ''}
+              -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
+              -device virtio-scsi-pci,id=scsi0 \
+              -device scsi-cd,drive=metadata,bus=scsi0.0 \
+            ''}
               -device virtio-serial \
               -device virtserialport,chardev=agent,name=aos.test.agent \
               -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \

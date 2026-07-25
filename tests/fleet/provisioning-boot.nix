@@ -22,8 +22,9 @@
   systems,
 }: {
   name = "provisioning-boot";
-  # One image build + two UEFI boots + repart carve/idempotency assertions.
-  # No registry or upgrade, so this remains cheaper than install-from-image.
+  # Shared image builds plus positive, fallback, multi-device, and fail-closed
+  # UEFI boots. No registry or upgrade, so this remains cheaper than
+  # install-from-image.
   timeout = 1200;
 
   machines = {
@@ -50,12 +51,66 @@
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
     };
+    multidisk = {
+      system = systems.server-test;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
+      extraDisks = [
+        {
+          serial = "aos-data";
+          sizeMiB = 4096;
+        }
+      ];
+      metadata."host.nix" = ''
+        {
+          aos.provisioning.storage.partitions.data = {
+            device = "/dev/disk/by-id/virtio-aos-data";
+            label = "data";
+            sizeMin = "1G";
+            sizeMax = "1G";
+            format = "ext4";
+          };
+        }
+      '';
+    };
+    invalid = {
+      system = systems.server-test;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
+      expectAgent = false;
+      # A legacy-style JSON provisioning bundle is merely invalid host.nix;
+      # there is no parallel JSON configuration path or fallback on failure.
+      metadata."host.nix" = ''{"storage":{"partitions":{}}}'';
+    };
+    signed_invalid = {
+      system = systems.server-test;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
+      expectAgent = false;
+      extraModules = [
+        {
+          aos.apm.configKeys.ops = [
+            "ops:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL"
+          ];
+          aos.config.evalAtBoot.trust = "signed";
+        }
+      ];
+      metadata."host.nix" = ''
+        { aos.provisioning.storage.partitions.var.sizeMin = "2G"; }
+      '';
+    };
   };
 
   testScript =
     # python
     ''
       import re
+      import subprocess
+      import time
+      from pathlib import Path
 
       # Reaching the agent handshake proves the complete provisioned boot:
       # UEFI -> sd-boot -> UKI -> systemd initrd -> aos-repart (carve swap/var)
@@ -96,13 +151,13 @@
       assert hostname == "node", f"hostname is {hostname!r}, expected 'node'"
 
       hosts = node.succeed("cat /etc/hosts")
-      assert "192.168.50.11 node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
+      assert "192.168.50.13 node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
 
       # The .network baked by the identity module (MAC-matched) bound the
       # fleet IP. The guest has no `ip` tool, so read the kernel's local-route
       # trie (/proc/net/fib_trie lists configured addresses) and match the
       # address host-side. net.ifnames=0 is baked, so the NIC is eth0.
-      assert "192.168.50.11" in node.succeed(
+      assert "192.168.50.13" in node.succeed(
           "cat /proc/net/fib_trie"
       ), "the baked fleet address was not assigned to any interface"
 
@@ -152,6 +207,21 @@
           )
 
       node.succeed("test -e /dev/disk/by-partlabel/aos-provenance-operator-v1")
+      marker_dev = node.succeed(
+          "readlink -f /dev/disk/by-partlabel/aos-provenance-operator-v1"
+      ).strip()
+      marker_uuid = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PARTUUID {marker_dev}"
+      ).strip()
+      var_uuid = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PARTUUID {var_dev}"
+      ).strip()
+      assert marker_uuid, "provisioning marker has no AOS-generated UUID"
+      assert var_uuid, "omitted var UUID was not materialized by AOS"
+      node.succeed(
+          "case \"$(cat /run/aos-metadata/repart.d/*/*-var.conf)\" in "
+          "*UUID=*) ;; *) exit 1 ;; esac"
+      )
 
       # A second boot must reacquire and fully evaluate host.nix, while the
       # durable marker freezes both host-defined partitions. The restricted
@@ -166,6 +236,17 @@
       node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
       node.succeed("test -s /run/aos/manifest.json")
       node.succeed("test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent")
+      marker_dev_after = node.succeed(
+          "readlink -f /dev/disk/by-partlabel/aos-provenance-operator-v1"
+      ).strip()
+      marker_uuid_after = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PARTUUID {marker_dev_after}"
+      ).strip()
+      var_uuid_after = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PARTUUID {var_dev}"
+      ).strip()
+      assert marker_uuid_after == marker_uuid, "marker UUID changed across reboot"
+      assert var_uuid_after == var_uuid, "derived var UUID changed across reboot"
       swap_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/swap").strip()
       var_dev_after = node.succeed("readlink -f /dev/disk/by-partlabel/var").strip()
       swap_sectors_after = int(
@@ -178,6 +259,31 @@
       assert var_sectors_after == var_sectors, "var changed after provisioning commit"
       failed = node.succeed("systemctl --failed --no-legend").strip()
       assert not failed, f"failed units after provisioned reboot: {failed!r}"
+
+      # Detaching metadata after commit must not reopen disk mutation or lose
+      # runtime configuration. Stage 2 restores only the hash-checked input
+      # that previously produced a manifest, while storage coherence is
+      # explicitly unavailable rather than guessed.
+      node.reboot_without_metadata()
+      node.wait_until_succeeds(
+          "systemctl is-active multi-user.target", timeout=120
+      )
+      node.succeed("test -s /run/aos-metadata/host.nix")
+      node.succeed("test -s /run/aos/manifest.json")
+      node.succeed(
+          "test \"$(cat /run/aos-metadata/storage-coherence)\" = unavailable"
+      )
+      swap_dev_outage = node.succeed(
+          "readlink -f /dev/disk/by-partlabel/swap"
+      ).strip()
+      swap_sectors_outage = int(
+          node.succeed(
+              f"cat /sys/class/block/{swap_dev_outage.rsplit('/', 1)[-1]}/size"
+          )
+      )
+      assert swap_sectors_outage == swap_sectors, (
+          "metadata outage changed committed swap"
+      )
 
       # A host with no operator input takes the schema-default arm and records
       # that choice both in GPT and in the durable audit record.
@@ -198,6 +304,136 @@
       ).strip()
       assert not fallback_failed, (
           f"failed units on fallback provisioning boot: {fallback_failed!r}"
+      )
+
+      # A committed fallback machine has no host.nix by definition, but it
+      # still re-evaluates the schema-default arm and reports coherence.
+      fallback.reboot()
+      fallback.wait_until_succeeds(
+          "systemctl is-active multi-user.target", timeout=120
+      )
+      fallback.succeed(
+          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
+      )
+
+      # The real renderer and repart implementation handle a second stable
+      # device in the same first-boot transaction. The whole-machine marker
+      # remains on the root disk while the data partition lands on the
+      # virtio serial-backed disk.
+      multidisk.succeed("systemctl is-active multi-user.target")
+      multidisk.succeed(
+          "test -e /dev/disk/by-partlabel/aos-provenance-operator-v1"
+      )
+      data_dev = multidisk.succeed(
+          "readlink -f /dev/disk/by-partlabel/data"
+      ).strip()
+      data_parent = multidisk.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PKNAME {data_dev}"
+      ).strip()
+      stable_data_parent = multidisk.succeed(
+          "readlink -f /dev/disk/by-id/virtio-aos-data"
+      ).strip().rsplit("/", 1)[-1]
+      assert data_parent == stable_data_parent, (
+          f"data partition parent {data_parent!r} is not extra disk "
+          f"{stable_data_parent!r}"
+      )
+      multidisk.succeed(
+          "test -s /var/lib/aos-provisioning/desired/repart-targets"
+      )
+
+      # An additional desired partition on the extra disk produces pending
+      # repart work without mutating it, exercising the live divergence
+      # predicate against a layout with enough free space for a valid plan.
+      multidisk.succeed(
+          "mkdir -p /run/aos-divergent && "
+          "printf '%s\\n' '[Partition]' "
+          "'Type=11111111-2222-4333-8444-555555555555' "
+          "'Label=divergence-probe' 'SizeMinBytes=512M' 'SizeMaxBytes=512M' "
+          "> /run/aos-divergent/10-probe.conf"
+      )
+      multidisk.succeed(
+          f"result=$(${pkgs.systemd}/bin/systemd-repart "
+          f"--definitions=/run/aos-divergent --dry-run=yes --empty=allow "
+          f"--json=short /dev/{stable_data_parent}); "
+          f"printf '%s\\n' \"$result\" | ${pkgs.jq}/bin/jq -e "
+          f"'any(.[]; .activity != \"unchanged\")' >/dev/null"
+      )
+
+      # Present but malformed host.nix fails before GPT mutation. This machine
+      # intentionally never reaches the guest agent, so inspect its serial log
+      # and writable disk copy from the host-side driver.
+      invalid_log = Path(invalid.serial_log_path)
+      deadline = time.monotonic() + 120
+      invalid_text = ""
+      while time.monotonic() < deadline:
+          if invalid_log.exists():
+              invalid_text = invalid_log.read_text(errors="replace")
+              if (
+                  "restricted provisioning evaluation failed" in invalid_text
+                  or "erofs (device" in invalid_text
+              ):
+                  break
+          time.sleep(1)
+      assert "erofs (device" in invalid_text, (
+          "JSON provisioning input did not reach a settled initrd failure"
+      )
+      assert "invalid login:" not in invalid_text, (
+          "JSON provisioning input unexpectedly reached the stage-2 system"
+      )
+      invalid_gpt = subprocess.run(
+          ["sgdisk", "-p", invalid.disk_copy],
+          check=True,
+          text=True,
+          capture_output=True,
+      ).stdout
+      assert "aos-provenance" not in invalid_gpt
+      assert "aos-provisioning" not in invalid_gpt
+      assert re.search(r"\\bvar\\b", invalid_gpt) is None
+
+      signed_log = Path(signed_invalid.serial_log_path)
+      deadline = time.monotonic() + 120
+      signed_text = ""
+      while time.monotonic() < deadline:
+          if signed_log.exists():
+              signed_text = signed_log.read_text(errors="replace")
+              if (
+                  "authorizing signed host.nix" in signed_text
+                  or "erofs (device" in signed_text
+              ):
+                  break
+          time.sleep(1)
+      assert "erofs (device" in signed_text, (
+          "unsigned signed-policy input did not reach a settled initrd failure"
+      )
+      assert "signed_invalid login:" not in signed_text, (
+          "unsigned signed-policy input unexpectedly reached the stage-2 system"
+      )
+      signed_gpt = subprocess.run(
+          ["sgdisk", "-p", signed_invalid.disk_copy],
+          check=True,
+          text=True,
+          capture_output=True,
+      ).stdout
+      assert "aos-provenance" not in signed_gpt
+      assert "aos-provisioning" not in signed_gpt
+      assert re.search(r"\\bvar\\b", signed_gpt) is None
+
+      # A crash-observable pending marker refuses automatic replay. Relabel the
+      # committed marker, reboot, and require the initrd diagnostic with no
+      # stage-2 agent.
+      root_disk = node.succeed(
+          f"${pkgs.util-linux}/bin/lsblk -ndo PKNAME {root_dev}"
+      ).strip()
+      marker_number = node.succeed(
+          f"cat /sys/class/block/{marker_dev.rsplit('/', 1)[-1]}/partition"
+      ).strip()
+      node.succeed(
+          f"${pkgs.util-linux}/sbin/sfdisk --part-label /dev/{root_disk} "
+          f"{marker_number} aos-provisioning-pending-v1"
+      )
+      node.reboot_expect_rejected(
+          settle=30,
+          markers=["pending provisioning marker found"],
       )
     '';
 }

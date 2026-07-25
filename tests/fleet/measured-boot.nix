@@ -134,7 +134,7 @@
       wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
       target.succeed(
-          "test \"$(cat /run/aos-metadata/storage-coherence)\" = unavailable"
+          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
       )
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)

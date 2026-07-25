@@ -288,6 +288,9 @@ pub enum MetadataCmd {
         /// Existing committed arm for advisory post-provision drift evaluation
         #[arg(long)]
         committed_source: Option<String>,
+        /// Existing GPT marker UUID for stable generated partition UUIDs
+        #[arg(long)]
+        marker_uuid: Option<String>,
     },
     /// Verify that stage 2 sees the exact host input accepted in initrd
     VerifyBinding,
