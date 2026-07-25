@@ -788,8 +788,11 @@ the transport layer by construction.
   on port `0x00e7`, and the packaged production Rust plugin reads its
   `rax`/`rcx` virtual pointer+length payload, decodes the golden coverage marker,
   and reports the exact trap icount before the run reaches its exact scheduler
-  ceiling. The item remains open for live collision validation, aarch64, and
-  routing the decoded observation into the host event log.
+  ceiling. Its paired off/on runs also prove that disabling white-box installs
+  no callback record and that servicing the observational marker leaves the
+  production execution fingerprint unchanged. The item remains open for live
+  collision validation, aarch64, and routing the decoded observation into the
+  host event log.
 - [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
@@ -810,7 +813,11 @@ the transport layer by construction.
   `WhiteboxDoorbellSetupValidation` before installing the white-box trap, rejects
   unchecked, mismatched, x86 port collision, and aarch64 reserved-immediate
   collision records as setup errors, and preserves the disabled plan that installs
-  no trap so the doorbell remains inert when the channel is off.
+  no trap so the doorbell remains inert when the channel is off. The real x86
+  backend gate now corroborates that model by executing the same doorbell guest
+  with white-box off and on: off mode emits zero white-box callback records, and
+  the production-plugin execution fingerprints are equal. Live setup discovery
+  of the configured QEMU device-port map remains open.
 - [x] **T-GHC-7** Implement the binary, versioned, length-prefixed doorbell frame
   format (magic/version/kind/len/payload, little-endian, length-prefixed strings),
   with golden vectors and a versioning rule. — satisfies [GHC-12], [GHC-19],

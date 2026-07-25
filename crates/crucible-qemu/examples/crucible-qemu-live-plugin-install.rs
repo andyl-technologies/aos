@@ -59,21 +59,11 @@ fn run() -> Result<(), String> {
             .map_err(|_| String::from("kernel command line is not valid UTF-8"))?;
         config = config.with_kernel_cmdline(kernel_cmdline);
     }
-    let whitebox = match env::var("CRUCIBLE_LIVE_PLUGIN_WHITEBOX").as_deref() {
-        Ok("on") => QemuLaunchPluginSwitch::On,
-        Ok("off") | Err(env::VarError::NotPresent) => QemuLaunchPluginSwitch::Off,
-        Ok(value) => {
-            return Err(format!(
-                "CRUCIBLE_LIVE_PLUGIN_WHITEBOX must be `on` or `off`, got `{value}`"
-            ));
-        }
-        Err(env::VarError::NotUnicode(_value)) => {
-            return Err(String::from(
-                "CRUCIBLE_LIVE_PLUGIN_WHITEBOX is not valid UTF-8",
-            ));
-        }
-    };
-    config = config.with_whitebox(whitebox);
+    let whitebox = env_switch("CRUCIBLE_LIVE_PLUGIN_WHITEBOX")?;
+    let fingerprint = env_switch("CRUCIBLE_LIVE_PLUGIN_FINGERPRINT")?;
+    config = config
+        .with_whitebox(whitebox)
+        .with_fingerprint(fingerprint);
     let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
@@ -105,7 +95,25 @@ fn run() -> Result<(), String> {
         report.time_authority_is_rust_plugin
     );
     println!("whitebox={whitebox}");
+    println!("fingerprint={fingerprint}");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn env_switch(name: &str) -> Result<QemuLaunchPluginSwitch, String> {
+    let switch = match env::var(name).as_deref() {
+        Ok("on") => QemuLaunchPluginSwitch::On,
+        Ok("off") | Err(env::VarError::NotPresent) => QemuLaunchPluginSwitch::Off,
+        Ok(value) => {
+            return Err(format!(
+                "{name} must be `on` or `off`, got `{value}`"
+            ));
+        }
+        Err(env::VarError::NotUnicode(_value)) => {
+            return Err(format!("{name} is not valid UTF-8"));
+        }
+    };
+    Ok(switch)
 }
 
 #[cfg(target_os = "linux")]
