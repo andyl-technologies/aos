@@ -4,8 +4,10 @@ use super::*;
 
 use std::cell::RefCell;
 
+type CapturedPreemption = (u64, u64, u64, std::os::raw::c_uint, u32, u32, u32);
+
 thread_local! {
-    static TEST_PREEMPTION_COMMAND: RefCell<Option<(u64, u64, u64, std::os::raw::c_uint, u32, u32, u32)>> =
+    static TEST_PREEMPTION_COMMAND: RefCell<Option<CapturedPreemption>> =
         const { RefCell::new(None) };
 }
 

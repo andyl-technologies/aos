@@ -1185,23 +1185,24 @@ component that makes that purity true *inside* the QEMU process.
   gate does not reach an idle window, and driving the node idle at `-smp N`
   crosses the idle-warp window deferred by the M3 determinism scope. Closure of
   the idle-at-`N` clause lands with that determinism-scope fix.
-- [ ] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
+- [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
   satisfies [PLUG-50]; spec §12.3.6.
-  **Partial (kept open by intent), full live application deferred to M7.** The
-  injection capability is resolved at install — `PluginPreemptionInjector::require`
-  binds `qemu_plugin_inject_preemption` (11/[PATCH-47]) into the plugin state
-  partition — and `apply_decision` forces the commanded switch/interrupt at the
-  commanded node-icount, failing loud and localizing any command outside
-  `[deadline, ceiling]` rather than clamping or deferring; this is unit-proven in
-  `preemption.rs`. The scheduler-side RESOLVE application is modeled by
-  `checks.crucible.phase3.schedulerPreemptionResolve` ([T-SCHED-29]). What is not
-  yet live: there is no host→plugin preemption-command wire in the shared-memory
-  protocol — a live `Decision::Preemption` is produced only by the explorer, so
-  live injection is exercised in M7 (exploration on real backends). Closure lands
-  there; the injector and its fail-loud window are ready.
+  Completed by `checks.crucible.phase2.qemuLivePluginPreemption`, with the
+  callback-core contract retained in
+  `checks.crucible.phase2.qemuPluginPreemption`. The ABI-v5 shared-memory
+  scheduler mailbox carries vCPU-switch and interrupt commands into the loaded
+  production Rust plugin. The plugin applies each command through
+  `qemu_plugin_inject_preemption` at its exact commanded node-icount and
+  acknowledges the mailbox sequence only after patched QEMU accepts it. The
+  live `-smp 2` gate reaches exact ceilings after both a forced vCPU switch and
+  a commanded interrupt, repeats byte-identically under host CPU load, and
+  cross-checks the host-observable schedule against `SimDouble`. Patch and
+  plugin negative controls reject commands outside the authorized window
+  `[deadline, ceiling]` rather than clamp, defer, or apply it at a different
+  node-icount.
 - [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.

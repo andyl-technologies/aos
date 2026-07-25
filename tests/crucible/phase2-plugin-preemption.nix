@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginPreemption",
-  taskIds ? [],
-  openTaskIds ? ["T-DET-30" "T-PLUG-25"],
+  taskIds ? ["T-PLUG-25"],
+  openTaskIds ? ["T-DET-30"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -69,8 +69,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-25 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-25**";
+        label = "T-PLUG-25 is complete with live QEMU callback integration";
+        needle = "- [x] **T-PLUG-25**";
       }
       {
         label = "Decision::Preemption obligation";
@@ -87,6 +87,10 @@
       {
         label = "no clamp/defer wording";
         needle = "rather than clamp, defer, or apply it at a different";
+      }
+      {
+        label = "live preemption completion gate";
+        needle = "`checks.crucible.phase2.qemuLivePluginPreemption`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
