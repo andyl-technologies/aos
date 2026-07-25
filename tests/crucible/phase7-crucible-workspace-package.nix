@@ -124,7 +124,7 @@
       }
       {
         label = "runtime closure uses AOS QEMU/plugin";
-        needle = "runtimeDeps = [qemu-crucible crucible-qemu-plugin];";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin];";
       }
       {
         label = "workspace build info";

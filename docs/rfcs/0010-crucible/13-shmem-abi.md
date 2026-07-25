@@ -572,19 +572,21 @@ run-phase marker frames.
 - **[SHM-41]** Each logical VM MUST own exactly one ABI-v4 white-box marker ring
   with the QEMU plugin as sole producer and host adapter as sole consumer.
   Publication and reclamation MUST use release/acquire SPSC ordering. *Gate:*
-  `gate:abi-conformance`, `gate:guest-host-marker-observability`. *Spec:*
-  §13.3.7, §13.4.
+  `gate:abi-conformance`. *Check:*
+  `checks.crucible.phase4.guestHostMarkerObservability`. *Spec:* §13.3.7,
+  §13.4.
 
 - **[SHM-42]** Marker entries MUST preserve the exact trap icount, vCPU, kind,
   and canonical bounded payload. Queue overflow, malformed entries, and
   unsupported run-phase kinds MUST fail without eviction, overwrite, blocking,
-  or fallback to a causal ring or control socket. *Gate:*
-  `gate:guest-host-marker-observability`. *Spec:* §13.3.7.
+  or fallback to a causal ring or control socket. *Check:*
+  `checks.crucible.phase4.guestHostMarkerObservability`. *Spec:* §13.3.7.
 
 - **[SHM-43]** The host MUST drain markers only at a published completion
   boundary and append validated decoded events to the unified event log before
-  the next step or teardown. *Gate:* `gate:guest-host-marker-observability`.
-  *Spec:* §13.3.7, forward-ref
+  the next step or teardown. *Check:*
+  `checks.crucible.phase4.guestHostMarkerObservability`. *Spec:* §13.3.7,
+  forward-ref
   [`19-observability-event-log.md`](19-observability-event-log.md).
 
 ## 13.4 Normative offset and size table

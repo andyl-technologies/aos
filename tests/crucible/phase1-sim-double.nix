@@ -75,11 +75,11 @@
       }
       {
         label = "shared protocol dependency";
-        needle = ''crucible-protocol = { path = "../crucible-protocol", optional = true }'';
+        needle = ''crucible-protocol = { path = "../crucible-protocol" }'';
       }
       {
         label = "test-double feature dependencies";
-        needle = ''test-double = ["dep:crucible-protocol", "dep:crucible-shmem"]'';
+        needle = ''test-double = ["dep:crucible-shmem"]'';
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [

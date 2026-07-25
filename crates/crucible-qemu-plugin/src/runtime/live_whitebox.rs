@@ -338,8 +338,8 @@ impl LiveWhiteboxState {
         let Some(array) = NonNull::new(array) else {
             return Err(LiveWhiteboxError::RegisterListUnavailable { vcpu_index });
         };
-        // SAFETY: QEMU returns a live `GArray` of descriptors for the duration
-        // of this callback; its `data` contains exactly `len` descriptors.
+        // QEMU retains the descriptor array for the duration of this callback.
+        // SAFETY: `data` contains exactly `len` initialized register descriptors.
         let descriptors = unsafe {
             std::slice::from_raw_parts(
                 array.as_ref().data.cast::<QemuPluginRegDescriptor>(),
@@ -353,10 +353,8 @@ impl LiveWhiteboxState {
             }
             // SAFETY: QEMU documents descriptor names as valid NUL-terminated
             // strings retained for the plugin lifetime.
-            let name = unsafe { CStr::from_ptr(descriptor.name) }
-                .to_bytes()
-                .strip_prefix(b"%")
-                .unwrap_or_else(|| unsafe { CStr::from_ptr(descriptor.name) }.to_bytes());
+            let raw_name = unsafe { CStr::from_ptr(descriptor.name) }.to_bytes();
+            let name = raw_name.strip_prefix(b"%").unwrap_or(raw_name);
             let handle = NonNull::new(descriptor.handle);
             match name {
                 b"rax" => registers.rax = handle,
@@ -428,10 +426,11 @@ impl LiveWhiteboxState {
             (self.apis.g_byte_array_free)(array.as_ptr(), true);
             return Err(LiveWhiteboxError::RegisterRead);
         }
-        // SAFETY: GLib owns `data`, and QEMU/GLib set `len` to its initialized
-        // byte count. The array remains live until the free below.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(array.as_ref().data, array.as_ref().len as usize) };
+        let bytes = {
+            // GLib retains the array until the explicit free below.
+            // SAFETY: QEMU sets `data` and `len` to the initialized register bytes.
+            unsafe { std::slice::from_raw_parts(array.as_ref().data, array.as_ref().len as usize) }
+        };
         let mut value = 0_u64;
         for (shift, byte) in bytes.iter().copied().take(8).enumerate() {
             value |= u64::from(byte) << (shift * 8);
@@ -477,11 +476,12 @@ impl GuestMemoryReader for LiveGuestMemoryReader {
                 "qemu_plugin_read_memory_vaddr failed",
             ));
         }
-        // SAFETY: QEMU expanded the live GLib array to the initialized result
-        // length. The bytes are copied before the array is freed.
-        let bytes =
+        let bytes = {
+            // The returned bytes are copied before the GLib array is freed.
+            // SAFETY: QEMU sets `data` and `len` to the initialized memory result.
             unsafe { std::slice::from_raw_parts(array.as_ref().data, array.as_ref().len as usize) }
-                .to_vec();
+        }
+        .to_vec();
         (self.apis.g_byte_array_free)(array.as_ptr(), true);
         Ok(bytes)
     }
@@ -677,20 +677,21 @@ mod tests {
     fn live_marker_producer_publishes_exact_entry_to_shmem() {
         let header = RingHeader::new();
         let mut entries = vec![WhiteboxMarkerEntry::default(); 4];
-        // SAFETY: the test-owned header and entry array outlive the producer,
-        // and no other producer accesses them.
-        let mut producer = unsafe {
-            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
-                std::ptr::from_ref(&header),
-                entries.as_mut_ptr(),
-                entries.len(),
-            )
-        };
+        {
+            // SAFETY: the test-owned header and entry array outlive the producer,
+            // and no other producer accesses them.
+            let mut producer = unsafe {
+                LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                    std::ptr::from_ref(&header),
+                    entries.as_mut_ptr(),
+                    entries.len(),
+                )
+            };
 
-        if let Err(error) = producer.record(913, 2, 4, b"MARK") {
-            panic!("live marker producer should enqueue: {error}");
+            if let Err(error) = producer.record(913, 2, 4, b"MARK") {
+                panic!("live marker producer should enqueue: {error}");
+            }
         }
-        drop(producer);
 
         let entry = match header.dequeue_whitebox_marker(&entries) {
             Ok(Some(entry)) => entry,

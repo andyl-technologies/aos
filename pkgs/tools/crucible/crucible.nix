@@ -4,6 +4,8 @@
   mkCargoPackage,
   fetchCargoDeps,
   rust,
+  openssl,
+  pkg-config,
   qemu-crucible,
   crucible-qemu-plugin,
 }: let
@@ -20,11 +22,18 @@
     "aos-core"
     "aos-net"
     "aos-proto"
+    "aos-proto-types"
     "aos-server"
     "aos-cache"
     "aos-remote"
     "aos-doc"
     "aos-package"
+    "aos-hub-core"
+    "aos-hub"
+    "aos-registry-surface"
+    "aos-registry-spa"
+    "aos-hub-worker"
+    "aos-profile"
     "aos-systemd"
   ];
   workspaceCargoFlags = builtins.concatStringsSep " " (
@@ -70,8 +79,13 @@ in
     cargoFlags = workspaceCargoFlags;
     cargoTestFlags = workspaceCargoFlags;
     doCheck = true;
-    buildDeps = [rust.dev];
-    runtimeDeps = [qemu-crucible crucible-qemu-plugin];
+    buildDeps = [rust.dev pkg-config openssl];
+    runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin];
+    OPENSSL_DIR = "${openssl}";
+    OPENSSL_LIB_DIR = "${openssl}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl}/include";
+    OPENSSL_NO_VENDOR = "1";
+    OPENSSL_STATIC = "0";
     CRUCIBLE_AOS_QEMU = "${qemu-crucible}/bin/qemu-system-x86_64";
     CRUCIBLE_AOS_PLUGIN = "${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
 

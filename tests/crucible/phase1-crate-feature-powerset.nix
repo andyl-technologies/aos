@@ -70,7 +70,8 @@
   in
     builtins.any (
       alias:
-        feature == alias
+        feature
+        == alias
         || feature == "dep:${alias}"
         || lib.hasPrefix "${alias}/" feature
         || lib.hasPrefix "${alias}?/" feature
@@ -90,15 +91,14 @@
           then manifest.features
           else {};
         defaultFeatures = defaultFeatureClosure features;
-        guestDeps =
-          builtins.filter (dep: dep.package == "crucible-guest") (
-            lib.mapAttrsToList (name: value: {
-              inherit name value;
-              package = dependencyPackageName name value;
-              optional = isOptionalDependency value;
-            })
-            dependencies
-          );
+        guestDeps = builtins.filter (dep: dep.package == "crucible-guest") (
+          lib.mapAttrsToList (name: value: {
+            inherit name value;
+            package = dependencyPackageName name value;
+            optional = isOptionalDependency value;
+          })
+          dependencies
+        );
       in
         lib.concatMap (
           dep:
@@ -129,14 +129,13 @@
     "crucible-cli"
   ];
 
-  realManifests =
-    builtins.listToAttrs (
-      map (package: {
-        name = package;
-        value = readManifest package;
-      })
-      corePackages
-    );
+  realManifests = builtins.listToAttrs (
+    map (package: {
+      name = package;
+      value = readManifest package;
+    })
+    corePackages
+  );
 
   defaultGuestDependencyFailures =
     guestDependencyFailuresFor realManifests corePackages;
@@ -179,7 +178,7 @@
     assertFeatureSet "crucible" {
       default = [];
       test-support = [];
-      test-double = ["dep:crucible-protocol" "dep:crucible-shmem"];
+      test-double = ["dep:crucible-shmem"];
       qemu-backend = [];
     }
     ++ assertFeatureSet "crucible-device" {
