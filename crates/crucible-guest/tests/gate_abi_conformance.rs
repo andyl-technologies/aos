@@ -196,18 +196,22 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
         CRUCIBLE_GUEST_STATIC_RUSTFLAGS,
         &["-C", "target-feature=+crt-static"]
     );
-    let cargo_toml = repo_file("crates/crucible-guest/Cargo.toml");
+    let cargo_toml = manifest_file("Cargo.toml");
     assert!(cargo_toml.contains("name = \"crucible-guest\""));
     assert!(cargo_toml.contains("path = \"src/main.rs\""));
     assert!(!cargo_toml.contains("clap"));
 
-    let package = repo_file("pkgs/tools/crucible-guest.nix");
-    assert!(package.contains("CARGO_TARGET_"));
-    assert!(package.contains("target-feature=+crt-static"));
-    assert!(package.contains("-p crucible-guest --bin crucible-guest"));
-    assert!(package.contains("patchelf --print-interpreter"));
-    assert!(package.contains("packaged_guest_system=${lib.system}"));
-    assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
+    // The standalone `pkgs.aos` package intentionally copies only `crates/`
+    // into its build source. The dedicated Crucible ABI gate copies the
+    // repository packaging files too and exercises these assertions there.
+    if let Some(package) = repo_file("pkgs/tools/crucible-guest.nix") {
+        assert!(package.contains("CARGO_TARGET_"));
+        assert!(package.contains("target-feature=+crt-static"));
+        assert!(package.contains("-p crucible-guest --bin crucible-guest"));
+        assert!(package.contains("patchelf --print-interpreter"));
+        assert!(package.contains("packaged_guest_system=${lib.system}"));
+        assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
+    }
 }
 
 fn payload_from_args(args: &[&str]) -> WhiteboxMarkerPayload {
@@ -231,12 +235,17 @@ fn assert_usage_error(result: Result<GuestCommand, GuestEmitterError>) {
     }
 }
 
-fn repo_file(path: &str) -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    match std::fs::read_to_string(root.join(path)) {
+fn manifest_file(path: &str) -> String {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    match std::fs::read_to_string(manifest_dir.join(path)) {
         Ok(content) => content,
-        Err(error) => panic!("failed to read repo file {path}: {error}"),
+        Err(error) => panic!("failed to read manifest file {path}: {error}"),
     }
+}
+
+fn repo_file(path: &str) -> Option<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::read_to_string(root.join(path)).ok()
 }
 
 fn must<T, E>(result: Result<T, E>) -> T
