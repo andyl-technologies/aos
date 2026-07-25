@@ -4,6 +4,7 @@ use super::*;
 
 mod core;
 mod debug_helpers;
+mod guided_search;
 mod preemption_branching;
 mod search_storage;
 

@@ -7,16 +7,22 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+#[path = "support/guidance_search.rs"]
+mod guidance_search_support;
+
+use guidance_search_support::*;
+
 use crucible::{
     AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit, AdaptiveStrategyReward,
     AppRandomBranchConfig, AppRandomDecision, AppRandomSampleBudget,
     AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, Configuration, ContentHash,
     CoverageGuidanceSignal, Decision, EngineError, FrontierReductionPolicy, GuidanceScore,
-    GuidanceSignal, GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind,
-    GuidanceSignalWeight, Icount, IrqVector, MAX_APP_RANDOM_SAMPLES_PER_DRAW, NodeId, NodeTemplate,
-    NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
-    PreemptionKind, ReadyPoint, RngStreamId, ScenarioDef, SearchBudget, Seed, TemporalGraph,
-    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
+    GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
+    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount, IrqVector,
+    MAX_APP_RANDOM_SAMPLES_PER_DRAW, MaterializationPolicy, MaterializationTrigger, NodeId,
+    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
+    PreemptionKind, ReadyPoint, RngStreamId, ScenarioDef, SearchBudget, SearchStrategy, Seed,
+    TemporalGraph, VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
     app_random_draw_sites_from_schedule, bake, lint_guidance_determinism_source,
     preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
 };
@@ -80,6 +86,144 @@ fn gate_guidance_signals_are_fixed_point_readers_only() {
     );
     assert!(composition.score(input).micros > 0);
     assert_eq!(checkpoint.id, scored_checkpoint.id);
+}
+
+#[test]
+fn gate_guidance_signals_are_fixed_point_readers_only_in_integrated_search()
+-> Result<(), Box<dyn Error>> {
+    let world = single_node_world("integrated-guidance")?;
+    let scenario = world.scenario_def();
+    let root = Configuration::genesis(scenario.clone());
+    let decisions = (0..3).map(guidance_decision).collect::<Vec<_>>();
+    let baked = bake_with_search_frontier_choices(&world, decisions.clone())?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let mut state = GuidanceSearchState::default();
+    let mut children = Vec::new();
+
+    for (index, decision) in decisions.into_iter().enumerate() {
+        let child = try_step(&root, decision)?;
+        let checkpoint = graph.materialize_checkpoint(&child)?;
+        let event_log = guidance_event_log(index as u64);
+        graph.cache_snapshot_with_event_log_coverage(&child, checkpoint, &event_log)?;
+        state.record_event_log_observation(&child, &event_log);
+        children.push(child);
+    }
+
+    let configuration_ids = children
+        .iter()
+        .map(Configuration::id)
+        .collect::<BTreeSet<_>>();
+    let checkpoint_ids = children
+        .iter()
+        .filter_map(|child| {
+            graph
+                .checkpoint_node(child.id())
+                .map(|checkpoint| checkpoint.id)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut coverage_graph = graph.clone();
+    let coverage_run = coverage_graph.search_with_strategy(
+        &root,
+        SearchStrategy::CoverageGuided,
+        SearchBudget::new(2),
+        MaterializationPolicy::thin_only(),
+        MaterializationTrigger::Cold,
+    )?;
+    let default_run = graph.search_with_guidance(
+        &root,
+        SearchBudget::new(2),
+        MaterializationPolicy::thin_only(),
+        MaterializationTrigger::Cold,
+        &GuidanceSearchConfig::default(),
+        &mut state,
+    )?;
+
+    assert_eq!(
+        default_run
+            .expansions
+            .iter()
+            .map(|expansion| expansion.frontier)
+            .collect::<Vec<_>>(),
+        coverage_run
+            .expansions
+            .iter()
+            .map(|expansion| expansion.frontier)
+            .collect::<Vec<_>>()
+    );
+
+    let proximity_config = GuidanceSearchConfig {
+        composition: GuidanceSignalComposition::new(vec![GuidanceSignalWeight {
+            signal: GuidanceSignalKind::AssertionProximity,
+            weight_micros: 1_000_000,
+        }]),
+    };
+    let mut proximity_graph = graph.clone();
+    let mut proximity_state = GuidanceSearchState::default();
+    for (index, child) in children.iter().enumerate() {
+        proximity_state.record_event_log_observation(child, &guidance_event_log(index as u64));
+    }
+    let proximity_run = proximity_graph.search_with_guidance(
+        &root,
+        SearchBudget::new(2),
+        MaterializationPolicy::thin_only(),
+        MaterializationTrigger::Cold,
+        &proximity_config,
+        &mut proximity_state,
+    )?;
+    assert_eq!(proximity_run.expansions[1].frontier, children[2].id());
+    assert_eq!(
+        proximity_state
+            .observation(children[2].id())
+            .and_then(|observation| observation.assertion_proximity_distance),
+        Some(1)
+    );
+
+    let novelty_config = GuidanceSearchConfig {
+        composition: GuidanceSignalComposition::new(vec![GuidanceSignalWeight {
+            signal: GuidanceSignalKind::NoveltyRarity,
+            weight_micros: 1_000_000,
+        }]),
+    };
+    let mut novelty_graph = graph.clone();
+    let mut novelty_state = GuidanceSearchState::default();
+    for (index, child) in children.iter().enumerate() {
+        novelty_state.record_event_log_observation(child, &guidance_event_log(index as u64));
+    }
+    let novelty_run = novelty_graph.search_with_guidance(
+        &root,
+        SearchBudget::new(2),
+        MaterializationPolicy::thin_only(),
+        MaterializationTrigger::Cold,
+        &novelty_config,
+        &mut novelty_state,
+    )?;
+    assert_eq!(novelty_run.expansions[1].frontier, children[2].id());
+
+    assert_eq!(
+        configuration_ids,
+        children
+            .iter()
+            .map(Configuration::id)
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        checkpoint_ids,
+        children
+            .iter()
+            .filter_map(|child| {
+                graph
+                    .checkpoint_node(child.id())
+                    .map(|checkpoint| checkpoint.id)
+            })
+            .collect::<BTreeSet<_>>()
+    );
+    let repeated_coverage = novelty_state
+        .observation(children[0].id())
+        .ok_or("recorded guidance observation")?
+        .coverage_fingerprint;
+    assert_eq!(novelty_state.rarity().count(repeated_coverage), 2);
+
+    Ok(())
 }
 
 #[test]
