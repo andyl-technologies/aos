@@ -132,7 +132,6 @@ shape-line|crates/crucible-session/src/tests/engine_state.rs|2581
 shape-line|crates/crucible-session/tests/gate_control_responsive.rs|839
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|632
 shape-line|crates/crucible-shmem/src/mapped_setup_region.rs|939
-shape-line|crates/crucible-shmem/src/shmem/frame_node.rs|915
 shape-line|crates/crucible-shmem/src/shmem/region.rs|1737
 shape-line|crates/crucible-shmem/src/shmem/ring_coverage.rs|610
 shape-line|crates/crucible-shmem/tests/advance_ceiling_handoff.rs|652

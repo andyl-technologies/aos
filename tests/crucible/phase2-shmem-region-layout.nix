@@ -13,7 +13,13 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemContract = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+  ];
   regionTest = builtins.readFile ../../crates/crucible-shmem/tests/region_layout.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -109,14 +115,14 @@
     nonShmemSources;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "region magic";
         needle = "pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b\"CRUCSHM1\");";
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 4;";
+        needle = "pub const ABI_VERSION: u32 = 5;";
       }
       {
         label = "physical slot capacity";
@@ -192,7 +198,7 @@
       }
       {
         label = "node slot reserved offset";
-        needle = "NODE_SLOT_RESERVED_OFFSET == 44";
+        needle = "NODE_SLOT_RESERVED_OFFSET == 97";
       }
       {
         label = "ring header size";
@@ -292,14 +298,14 @@
       }
       {
         label = "node reserved zero check";
-        needle = "self._pad0 == 0 && self._reserved.iter().all";
+        needle = "&& self._reserved.iter().all(|byte| *byte == 0)";
       }
       {
         label = "ring padding zero check";
         needle = "pub fn padding_bytes_are_zero(&self) -> bool";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "public raw header magic";
         needle = "pub magic: AtomicU64";

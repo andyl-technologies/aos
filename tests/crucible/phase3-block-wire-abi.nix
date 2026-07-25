@@ -16,7 +16,8 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   shmem =
     builtins.readFile ../../crates/crucible-shmem/src/lib.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
   defaultChecks = builtins.readFile ./default.nix;
 

@@ -2,58 +2,25 @@
 
 use super::*;
 
-/// A shared-memory frame whose delivery time is carried in band.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[repr(C)]
-pub struct FrameEntry {
-    /// The consumer icount at which the frame becomes visible.
-    pub delivery_icount: u64,
-    /// The producer node id.
-    pub src_node: u32,
-    /// The per-producer sequence number.
-    pub seq: u32,
-    /// The number of valid bytes in [`FrameEntry::data`].
-    pub len: u16,
-    pub(super) _pad: [u8; 6],
-    /// The fixed-capacity frame payload buffer.
-    pub data: [u8; MAX_FRAME_DATA],
-}
+#[path = "frame_node/frame_entry.rs"]
+mod frame_entry;
+#[path = "frame_node/futex.rs"]
+mod futex;
+#[path = "frame_node/preemption_mailbox.rs"]
+mod preemption_mailbox;
 
-/// Byte offset of [`FrameEntry`]'s delivery-icount field.
-pub const FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(FrameEntry, delivery_icount);
-/// Byte offset of [`FrameEntry`]'s source-node field.
-pub const FRAME_ENTRY_SRC_NODE_OFFSET: usize = core::mem::offset_of!(FrameEntry, src_node);
-/// Byte offset of [`FrameEntry`]'s producer-sequence field.
-pub const FRAME_ENTRY_SEQ_OFFSET: usize = core::mem::offset_of!(FrameEntry, seq);
-/// Byte offset of [`FrameEntry`]'s payload-length field.
-pub const FRAME_ENTRY_LEN_OFFSET: usize = core::mem::offset_of!(FrameEntry, len);
-/// Byte offset of [`FrameEntry`]'s reserved padding bytes.
-pub const FRAME_ENTRY_PAD_OFFSET: usize = core::mem::offset_of!(FrameEntry, _pad);
-/// Byte offset of [`FrameEntry`]'s payload data.
-pub const FRAME_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(FrameEntry, data);
-/// Wire size of one [`FrameEntry`].
-pub const FRAME_ENTRY_SIZE: usize = core::mem::size_of::<FrameEntry>();
-/// Wire alignment of one [`FrameEntry`].
-pub const FRAME_ENTRY_ALIGN: usize = core::mem::align_of::<FrameEntry>();
-
-pub(super) const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
-pub(super) const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
-pub(super) const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
-pub(super) const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
-pub(super) const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
-pub(super) const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
-pub(super) const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-pub(super) const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
-pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
-pub(super) const _: () =
-    assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
-#[rustfmt::skip]
-pub(super) const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-pub(super) const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
+pub use frame_entry::{
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+    FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE,
+    FRAME_ENTRY_SRC_NODE_OFFSET, FrameEntry,
+};
+pub use futex::{
+    FutexError, FutexWait, FutexWaitOutcome, FutexWakeResult, RegionControlError, WakeAction,
+};
+pub use preemption_mailbox::{
+    PreemptionMailboxError, PublishedPreemptionCommand, SchedulerPreemptionCommand,
+    SchedulerPreemptionKind,
+};
 
 /// Node status: actively retiring instructions or processing an I/O burst.
 pub const STATUS_RUNNING: u8 = 0;
@@ -70,6 +37,13 @@ pub const KIND_NET: u8 = 1;
 pub const KIND_BLK: u8 = 2;
 /// Node kind: a 9p-filesystem I/O node.
 pub const KIND_9P: u8 = 3;
+
+/// No scheduler-commanded preemption is published.
+pub const PREEMPTION_KIND_NONE: u8 = 0;
+/// The preemption command forces a deterministic vCPU switch.
+pub const PREEMPTION_KIND_VCPU_SWITCH: u8 = 1;
+/// The preemption command delivers an interrupt to one vCPU.
+pub const PREEMPTION_KIND_INTERRUPT_AT: u8 = 2;
 
 /// The advance-ceiling futex uses the cross-process operation, not private futexes.
 pub const FUTEX_PRIVATE: bool = false;
@@ -89,7 +63,15 @@ pub struct NodeSlot {
     publish_gen: AtomicU32,
     _pad1: [u8; 4],
     device_completion_deadline_icount: AtomicU64,
-    _reserved: [u8; 72],
+    preemption_at_icount: AtomicU64,
+    preemption_deadline_icount: AtomicU64,
+    preemption_ceiling_icount: AtomicU64,
+    preemption_published_sequence: AtomicU32,
+    preemption_consumed_sequence: AtomicU32,
+    preemption_arg0: AtomicU32,
+    preemption_arg1: AtomicU32,
+    preemption_kind: AtomicU8,
+    _reserved: [u8; 31],
 }
 
 impl Clone for NodeSlot {
@@ -110,7 +92,23 @@ impl Clone for NodeSlot {
                 self.device_completion_deadline_icount
                     .load(Ordering::Acquire),
             ),
-            _reserved: [0; 72],
+            preemption_at_icount: AtomicU64::new(self.preemption_at_icount.load(Ordering::Acquire)),
+            preemption_deadline_icount: AtomicU64::new(
+                self.preemption_deadline_icount.load(Ordering::Acquire),
+            ),
+            preemption_ceiling_icount: AtomicU64::new(
+                self.preemption_ceiling_icount.load(Ordering::Acquire),
+            ),
+            preemption_published_sequence: AtomicU32::new(
+                self.preemption_published_sequence.load(Ordering::Acquire),
+            ),
+            preemption_consumed_sequence: AtomicU32::new(
+                self.preemption_consumed_sequence.load(Ordering::Acquire),
+            ),
+            preemption_arg0: AtomicU32::new(self.preemption_arg0.load(Ordering::Acquire)),
+            preemption_arg1: AtomicU32::new(self.preemption_arg1.load(Ordering::Acquire)),
+            preemption_kind: AtomicU8::new(self.preemption_kind.load(Ordering::Acquire)),
+            _reserved: [0; 31],
         }
     }
 }
@@ -141,6 +139,30 @@ pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, 
 /// Byte offset of [`NodeSlot`]'s host-owned device-completion-deadline field.
 pub const NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, device_completion_deadline_icount);
+/// Byte offset of the scheduler-commanded preemption icount.
+pub const NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_at_icount);
+/// Byte offset of the preemption authorization-window deadline.
+pub const NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_deadline_icount);
+/// Byte offset of the preemption authorization-window ceiling.
+pub const NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_ceiling_icount);
+/// Byte offset of the host-published preemption sequence.
+pub const NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_published_sequence);
+/// Byte offset of the plugin-consumed preemption sequence.
+pub const NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_consumed_sequence);
+/// Byte offset of the first preemption-kind argument.
+pub const NODE_SLOT_PREEMPTION_ARG0_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_arg0);
+/// Byte offset of the second preemption-kind argument.
+pub const NODE_SLOT_PREEMPTION_ARG1_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_arg1);
+/// Byte offset of the preemption-kind discriminator.
+pub const NODE_SLOT_PREEMPTION_KIND_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_kind);
 /// Byte offset of [`NodeSlot`]'s reserved forward-compatibility bytes.
 pub const NODE_SLOT_RESERVED_OFFSET: usize = core::mem::offset_of!(NodeSlot, _reserved);
 /// Wire size of one [`NodeSlot`].
@@ -160,7 +182,15 @@ pub(super) const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
 pub(super) const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
 pub(super) const _: () = assert!(core::mem::offset_of!(NodeSlot, _pad1) == 44);
 pub(super) const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);
-pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 56);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET == 56);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET == 64);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET == 72);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET == 80);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET == 84);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_ARG0_OFFSET == 88);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_ARG1_OFFSET == 92);
+pub(super) const _: () = assert!(NODE_SLOT_PREEMPTION_KIND_OFFSET == 96);
+pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 97);
 pub(super) const _: () = assert!(NODE_SLOT_SIZE == 128);
 pub(super) const _: () = assert!(NODE_SLOT_ALIGN == 128);
 
@@ -185,7 +215,15 @@ impl NodeSlot {
             publish_gen: AtomicU32::new(0),
             _pad1: [0; 4],
             device_completion_deadline_icount: AtomicU64::new(0),
-            _reserved: [0; 72],
+            preemption_at_icount: AtomicU64::new(0),
+            preemption_deadline_icount: AtomicU64::new(0),
+            preemption_ceiling_icount: AtomicU64::new(0),
+            preemption_published_sequence: AtomicU32::new(0),
+            preemption_consumed_sequence: AtomicU32::new(0),
+            preemption_arg0: AtomicU32::new(0),
+            preemption_arg1: AtomicU32::new(0),
+            preemption_kind: AtomicU8::new(PREEMPTION_KIND_NONE),
+            _reserved: [0; 31],
         }
     }
 
@@ -362,24 +400,6 @@ impl NodeSlot {
         Ok(())
     }
 
-    /// Computes the race-free futex wait decision after an idle publish.
-    #[must_use]
-    pub fn prepare_futex_wait(&self) -> FutexWait {
-        let expected = self.wake_signal.load(Ordering::Acquire);
-        if self.is_runnable_after_idle_publish() {
-            FutexWait::Runnable
-        } else {
-            FutexWait::Wait { expected }
-        }
-    }
-
-    /// Returns `true` if a futex wait on `expected` is still warranted.
-    #[must_use]
-    pub fn futex_wait_still_valid(&self, expected: u32) -> bool {
-        self.wake_signal.load(Ordering::Acquire) == expected
-            && !self.is_runnable_after_idle_publish()
-    }
-
     /// Marks a woken node as running.
     pub fn mark_running(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
@@ -392,77 +412,6 @@ impl NodeSlot {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_DONE, Ordering::Release);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
-    }
-
-    /// Wakes a node because an inbound frame became actionable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FutexError`] when the Linux futex wake syscall fails for an
-    /// unexpected reason. Non-Linux developer-tooling builds return a no-op
-    /// success with zero woken waiters.
-    pub fn wake_for_frame_delivery(&self) -> Result<WakeAction, FutexError> {
-        self.wake_after_signal_increment()
-    }
-
-    /// Wakes a node because an in-flight device-I/O hold was released.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FutexError`] when the Linux futex wake syscall fails for an
-    /// unexpected reason. Non-Linux developer-tooling builds return a no-op
-    /// success with zero woken waiters.
-    pub fn wake_for_device_io_release(&self) -> Result<WakeAction, FutexError> {
-        self.wake_after_signal_increment()
-    }
-
-    /// Issues a non-private futex wake on this node's wake-signal word.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FutexError`] when the Linux futex syscall fails for a reason
-    /// other than no waiters. Non-Linux developer-tooling builds return a
-    /// no-op success with zero woken waiters.
-    pub fn futex_wake_nonprivate(&self, max_waiters: u32) -> Result<FutexWakeResult, FutexError> {
-        futex_wake_nonprivate(&self.wake_signal, max_waiters)
-    }
-
-    /// Waits on this node's wake-signal word using non-private `FUTEX_WAIT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FutexError`] when the Linux futex syscall fails for an
-    /// unexpected reason. Non-Linux developer-tooling builds return
-    /// [`FutexWaitOutcome::Noop`] after the race-free pre-check.
-    pub fn futex_wait_nonprivate(&self, wait: FutexWait) -> Result<FutexWaitOutcome, FutexError> {
-        match wait {
-            FutexWait::Runnable => Ok(FutexWaitOutcome::Runnable),
-            FutexWait::Wait { expected } => {
-                if self.futex_wait_still_valid(expected) {
-                    self.futex_wait_word_nonprivate(expected)
-                } else {
-                    Ok(FutexWaitOutcome::ValueChanged)
-                }
-            }
-        }
-    }
-
-    /// Calls non-private `FUTEX_WAIT` directly on the wake-signal word.
-    ///
-    /// This is the safe syscall wrapper used after the race-free re-check. A
-    /// concurrent wake that changes the word before the syscall parks returns
-    /// [`FutexWaitOutcome::ValueChanged`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FutexError`] when the Linux futex syscall fails for an
-    /// unexpected reason. Non-Linux developer-tooling builds return
-    /// [`FutexWaitOutcome::Noop`].
-    pub fn futex_wait_word_nonprivate(
-        &self,
-        expected: u32,
-    ) -> Result<FutexWaitOutcome, FutexError> {
-        futex_wait_nonprivate(&self.wake_signal, expected)
     }
 
     /// Returns a stable snapshot of the slot's published fields.
@@ -619,91 +568,6 @@ pub struct NodeSlotSnapshot {
     pub publish_gen: u32,
 }
 
-/// A scheduler wake action for a parked node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WakeAction {
-    /// The wake signal was incremented and a non-private futex wake was issued.
-    Wake {
-        /// The wake signal value before the release increment.
-        previous: u32,
-        /// The wake signal value after the release increment.
-        new: u32,
-        /// The result of issuing `FUTEX_WAKE` on the wake-signal word.
-        futex: FutexWakeResult,
-    },
-}
-
-/// A node-side futex wait decision after publishing an idle precondition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FutexWait {
-    /// The node is already runnable and must not enter `FUTEX_WAIT`.
-    Runnable,
-    /// The node should wait on `wake_signal` while it still equals `expected`.
-    Wait {
-        /// The observed futex word used as the `FUTEX_WAIT` expected value.
-        expected: u32,
-    },
-}
-
-/// Result of a non-private futex wake syscall.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FutexWakeResult {
-    /// Number of waiters woken by the syscall.
-    pub waiters_woken: u32,
-    /// Whether the private futex flag was used.
-    pub futex_private: bool,
-}
-
-/// Result of a non-private futex wait syscall.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FutexWaitOutcome {
-    /// The node was already runnable and no syscall was needed.
-    Runnable,
-    /// The futex word changed before the wait could park.
-    ValueChanged,
-    /// The wait was interrupted by a signal.
-    Interrupted,
-    /// The futex wait returned because a waker woke this waiter.
-    Woken,
-    /// The non-Linux developer-tooling shim compiled the wait path to a no-op.
-    Noop,
-}
-
-/// A futex syscall error.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum FutexError {
-    /// The futex syscall failed unexpectedly.
-    #[error("{operation} syscall failed with errno {errno}")]
-    Syscall {
-        /// The futex operation being attempted.
-        operation: &'static str,
-        /// The OS errno value.
-        errno: i32,
-    },
-    /// The futex syscall returned an invalid nonnegative count.
-    #[error("{operation} syscall returned invalid count {count}")]
-    InvalidReturnCount {
-        /// The futex operation being attempted.
-        operation: &'static str,
-        /// The raw return count.
-        count: i64,
-    },
-}
-
-/// An error produced while updating global region control flags.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum RegionControlError {
-    /// A slot wake failed while broadcasting a control-flag update.
-    #[error("waking node slot {slot_index} for control flag failed")]
-    WakeSlot {
-        /// The index in the caller-provided slot iterator.
-        slot_index: usize,
-        /// The futex wake failure.
-        #[source]
-        source: FutexError,
-    },
-}
-
 /// Converts an icount into virtual nanoseconds with the fixed shift.
 ///
 /// # Errors
@@ -719,197 +583,4 @@ pub fn icount_to_virtual_ns(icount: u64, shift_bits: u8) -> Result<u64, NodeSlot
     icount
         .checked_mul(nanos_per_icount)
         .ok_or(NodeSlotError::VirtualTimeOverflow { icount, shift_bits })
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn futex_wake_nonprivate(
-    wake_signal: &AtomicU32,
-    max_waiters: u32,
-) -> Result<FutexWakeResult, FutexError> {
-    // SAFETY: `wake_signal` is an aligned live `AtomicU32` valid for this syscall.
-    let raw = unsafe {
-        libc::syscall(
-            libc::SYS_futex,
-            wake_signal.as_ptr(),
-            libc::FUTEX_WAKE,
-            max_waiters,
-        )
-    };
-    if raw < 0 {
-        return Err(last_futex_error("FUTEX_WAKE"));
-    }
-
-    let waiters_woken = u32::try_from(raw).map_err(|_| FutexError::InvalidReturnCount {
-        operation: "FUTEX_WAKE",
-        count: raw,
-    })?;
-    Ok(FutexWakeResult {
-        waiters_woken,
-        futex_private: FUTEX_PRIVATE,
-    })
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn futex_wake_nonprivate(
-    _wake_signal: &AtomicU32,
-    _max_waiters: u32,
-) -> Result<FutexWakeResult, FutexError> {
-    Ok(FutexWakeResult {
-        waiters_woken: 0,
-        futex_private: FUTEX_PRIVATE,
-    })
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn futex_wait_nonprivate(
-    wake_signal: &AtomicU32,
-    expected: u32,
-) -> Result<FutexWaitOutcome, FutexError> {
-    // SAFETY: `wake_signal` is aligned and live, and the null timeout is never dereferenced.
-    let raw = unsafe {
-        libc::syscall(
-            libc::SYS_futex,
-            wake_signal.as_ptr(),
-            libc::FUTEX_WAIT,
-            expected,
-            core::ptr::null::<libc::timespec>(),
-        )
-    };
-    if raw == 0 {
-        return Ok(FutexWaitOutcome::Woken);
-    }
-
-    let errno = last_errno();
-    match errno {
-        libc::EAGAIN => Ok(FutexWaitOutcome::ValueChanged),
-        libc::EINTR => Ok(FutexWaitOutcome::Interrupted),
-        _ => Err(FutexError::Syscall {
-            operation: "FUTEX_WAIT",
-            errno,
-        }),
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn futex_wait_nonprivate(
-    _wake_signal: &AtomicU32,
-    _expected: u32,
-) -> Result<FutexWaitOutcome, FutexError> {
-    Ok(FutexWaitOutcome::Noop)
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn last_futex_error(operation: &'static str) -> FutexError {
-    FutexError::Syscall {
-        operation,
-        errno: last_errno(),
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn last_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-impl FrameEntry {
-    /// Builds a frame entry with an in-band delivery icount.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FrameEntryError::PayloadLengthExceedsCapacity`] when `payload`
-    /// is too large for [`MAX_FRAME_DATA`].
-    pub fn new(
-        delivery_icount: u64,
-        src_node: u32,
-        seq: u32,
-        payload: &[u8],
-    ) -> Result<Self, FrameEntryError> {
-        if payload.len() > MAX_FRAME_DATA {
-            return Err(FrameEntryError::PayloadLengthExceedsCapacity {
-                len: payload.len(),
-                capacity: MAX_FRAME_DATA,
-            });
-        }
-
-        let mut data = [0; MAX_FRAME_DATA];
-        data[..payload.len()].copy_from_slice(payload);
-
-        Ok(Self {
-            delivery_icount,
-            src_node,
-            seq,
-            len: payload.len() as u16,
-            _pad: [0; 6],
-            data,
-        })
-    }
-
-    /// Returns `true` when this frame is visible at `consumer_current_icount`.
-    #[must_use]
-    pub fn is_deliverable_at(&self, consumer_current_icount: u64) -> bool {
-        self.delivery_icount <= consumer_current_icount
-    }
-
-    /// Returns the deterministic per-consumer delivery-order key.
-    #[must_use]
-    pub fn delivery_key(&self) -> FrameDeliveryKey {
-        FrameDeliveryKey {
-            delivery_icount: self.delivery_icount,
-            src_node: self.src_node,
-            seq: self.seq,
-        }
-    }
-
-    /// Returns the valid payload bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FrameEntryError::PayloadLengthExceedsCapacity`] when a frame
-    /// read from shared memory advertises a length greater than
-    /// [`MAX_FRAME_DATA`].
-    pub fn payload(&self) -> Result<&[u8], FrameEntryError> {
-        let len = usize::from(self.len);
-        if len > MAX_FRAME_DATA {
-            Err(FrameEntryError::PayloadLengthExceedsCapacity {
-                len,
-                capacity: MAX_FRAME_DATA,
-            })
-        } else {
-            Ok(&self.data[..len])
-        }
-    }
-
-    /// Returns `true` when the frame-entry padding bytes are zero.
-    #[must_use]
-    pub fn padding_bytes_are_zero(&self) -> bool {
-        self._pad.iter().all(|byte| *byte == 0)
-    }
-
-    pub(super) fn canonicalized_for_snapshot(&self) -> Result<Self, SpscRingError> {
-        let len = usize::from(self.len);
-        if len > MAX_FRAME_DATA {
-            return Err(SpscRingError::InvalidFrameLength {
-                len,
-                capacity: MAX_FRAME_DATA,
-            });
-        }
-
-        let mut canonical = self.clone();
-        canonical._pad = [0; 6];
-        canonical.data[len..].fill(0);
-        Ok(canonical)
-    }
-}
-
-impl Default for FrameEntry {
-    fn default() -> Self {
-        Self {
-            delivery_icount: 0,
-            src_node: 0,
-            seq: 0,
-            len: 0,
-            _pad: [0; 6],
-            data: [0; MAX_FRAME_DATA],
-        }
-    }
 }

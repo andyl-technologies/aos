@@ -1,5 +1,9 @@
 //! Generated C header support for the shared-memory ABI.
 
+mod node_slot;
+
+use node_slot::emit_node_slot;
+
 use crate::{
     ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
@@ -12,8 +16,13 @@ use crate::{
     NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
     NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
-    NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE,
-    NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, REGION_HEADER_ABI_VERSION_OFFSET,
+    NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PREEMPTION_ARG0_OFFSET, NODE_SLOT_PREEMPTION_ARG1_OFFSET,
+    NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET, NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+    NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET, NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+    NODE_SLOT_PREEMPTION_KIND_OFFSET, NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET,
+    NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE,
+    NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, PREEMPTION_KIND_INTERRUPT_AT,
+    PREEMPTION_KIND_NONE, PREEMPTION_KIND_VCPU_SWITCH, REGION_HEADER_ABI_VERSION_OFFSET,
     REGION_HEADER_ALIGN, REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
@@ -112,6 +121,21 @@ fn emit_constants(out: &mut String) {
     emit_define_u8(out, "CRUCIBLE_SHMEM_KIND_NET", KIND_NET);
     emit_define_u8(out, "CRUCIBLE_SHMEM_KIND_BLK", KIND_BLK);
     emit_define_u8(out, "CRUCIBLE_SHMEM_KIND_9P", KIND_9P);
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_PREEMPTION_KIND_NONE",
+        PREEMPTION_KIND_NONE,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_PREEMPTION_KIND_VCPU_SWITCH",
+        PREEMPTION_KIND_VCPU_SWITCH,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_PREEMPTION_KIND_INTERRUPT_AT",
+        PREEMPTION_KIND_INTERRUPT_AT,
+    );
     out.push('\n');
 
     emit_layout_constant_group(
@@ -165,6 +189,29 @@ fn emit_constants(out: &mut String) {
                 "DEVICE_COMPLETION_DEADLINE_ICOUNT",
                 NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET,
             ),
+            (
+                "PREEMPTION_AT_ICOUNT",
+                NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+            ),
+            (
+                "PREEMPTION_DEADLINE_ICOUNT",
+                NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+            ),
+            (
+                "PREEMPTION_CEILING_ICOUNT",
+                NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+            ),
+            (
+                "PREEMPTION_PUBLISHED_SEQUENCE",
+                NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET,
+            ),
+            (
+                "PREEMPTION_CONSUMED_SEQUENCE",
+                NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET,
+            ),
+            ("PREEMPTION_ARG0", NODE_SLOT_PREEMPTION_ARG0_OFFSET),
+            ("PREEMPTION_ARG1", NODE_SLOT_PREEMPTION_ARG1_OFFSET),
+            ("PREEMPTION_KIND", NODE_SLOT_PREEMPTION_KIND_OFFSET),
             ("RESERVED", NODE_SLOT_RESERVED_OFFSET),
         ],
     );
@@ -328,47 +375,6 @@ fn emit_region_header(out: &mut String) {
             ("icount_shift", "ICOUNT_SHIFT"),
             ("pause_requested", "PAUSE_REQUESTED"),
             ("shutdown_requested", "SHUTDOWN_REQUESTED"),
-            ("reserved", "RESERVED"),
-        ],
-    );
-}
-
-fn emit_node_slot(out: &mut String) {
-    out.push_str("typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {\n");
-    out.push_str("    _Atomic uint64_t current_icount;\n");
-    out.push_str("    _Atomic uint64_t current_ns;\n");
-    out.push_str("    _Atomic uint64_t max_advance_icount;\n");
-    out.push_str("    _Atomic uint64_t idle_wake_icount;\n");
-    out.push_str("    _Atomic uint32_t wake_signal;\n");
-    out.push_str("    _Atomic uint8_t status;\n");
-    out.push_str("    _Atomic uint8_t kind;\n");
-    out.push_str("    _Atomic uint8_t device_io_active;\n");
-    out.push_str("    uint8_t pad0;\n");
-    out.push_str("    _Atomic uint32_t publish_gen;\n");
-    out.push_str("    uint8_t pad1[4];\n");
-    out.push_str("    _Atomic uint64_t device_completion_deadline_icount;\n");
-    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_NODE_SLOT_RESERVED_LEN];\n");
-    out.push_str("} crucible_shmem_node_slot;\n\n");
-
-    emit_static_asserts(
-        out,
-        "crucible_shmem_node_slot",
-        "NODE_SLOT",
-        &[
-            ("current_icount", "CURRENT_ICOUNT"),
-            ("current_ns", "CURRENT_NS"),
-            ("max_advance_icount", "MAX_ADVANCE_ICOUNT"),
-            ("idle_wake_icount", "IDLE_WAKE_ICOUNT"),
-            ("wake_signal", "WAKE_SIGNAL"),
-            ("status", "STATUS"),
-            ("kind", "KIND"),
-            ("device_io_active", "DEVICE_IO_ACTIVE"),
-            ("pad0", "PAD0"),
-            ("publish_gen", "PUBLISH_GEN"),
-            (
-                "device_completion_deadline_icount",
-                "DEVICE_COMPLETION_DEADLINE_ICOUNT",
-            ),
             ("reserved", "RESERVED"),
         ],
     );

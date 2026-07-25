@@ -42,7 +42,17 @@
 //! 38      1     device_io_active
 //! 39      1     padding
 //! 40      4     publish_gen
-//! 44      84    reserved
+//! 44      4     padding
+//! 48      8     device_completion_deadline_icount
+//! 56      8     preemption_at_icount
+//! 64      8     preemption_deadline_icount
+//! 72      8     preemption_ceiling_icount
+//! 80      4     preemption_published_sequence
+//! 84      4     preemption_consumed_sequence
+//! 88      4     preemption_arg0
+//! 92      4     preemption_arg1
+//! 96      1     preemption_kind
+//! 97      31    reserved
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -112,9 +122,9 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 4 appends a per-node observational white-box marker ring after the
-/// version-3 fingerprint slots; all earlier section offsets remain unchanged.
-pub const ABI_VERSION: u32 = 4;
+/// Version 5 replaces part of each node slot's reserved tail with an atomic
+/// scheduler-to-plugin preemption mailbox while preserving the 128-byte slot.
+pub const ABI_VERSION: u32 = 5;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

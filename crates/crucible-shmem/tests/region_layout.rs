@@ -82,7 +82,7 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(NODE_SLOT_PAD0_OFFSET, 39);
     assert_eq!(NODE_SLOT_PUBLISH_GEN_OFFSET, 40);
     assert_eq!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, 48);
-    assert_eq!(NODE_SLOT_RESERVED_OFFSET, 56);
+    assert_eq!(NODE_SLOT_RESERVED_OFFSET, 97);
     assert_eq!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, 0);
     assert_eq!(FRAME_ENTRY_SRC_NODE_OFFSET, 8);
     assert_eq!(FRAME_ENTRY_SEQ_OFFSET, 12);

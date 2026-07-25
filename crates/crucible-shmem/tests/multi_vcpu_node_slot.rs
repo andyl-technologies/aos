@@ -20,7 +20,7 @@ const GENERATED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
 
 #[test]
 fn multi_vcpu_count_does_not_change_region_shape_or_abi_version() {
-    assert_eq!(ABI_VERSION, 4);
+    assert_eq!(ABI_VERSION, 5);
 
     let region_layout = layout(RegionConfig::new(2, 8, 4));
     assert_eq!(region_layout.node_count, MAX_NODES as u32);
