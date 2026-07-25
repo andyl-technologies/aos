@@ -4,9 +4,6 @@
 //! single named one) and stores it in the local cache.  Registry update now
 //! uses git-native sync for both dumb-HTTP and native git origins.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use anyhow::{Context, Result};
 
 use crate::config::ApmConfig;
@@ -198,14 +195,14 @@ pub async fn run(
 
         match result {
             Ok(sync_result) => {
-                // Save state back to the registry config file.
-                if let Some(state_path) =
-                    writable_state_path(&config_dir, config.scope, &reg_config.name)
-                {
-                    save_registry_state(&state_path, reg_config, &current_state).with_context(
-                        || format!("saving state for registry '{}'", reg_config.name),
-                    )?;
-                }
+                // Persist the updated sync state as a minimal delta in the
+                // writable config layer (`/var/lib/apm/config` for `--system`),
+                // never in the read-only `/etc/apm` seed. For a seeded registry
+                // this is a `[registry.state]`-only overlay; the registry's
+                // url/signing keep inheriting from the seed.
+                let state_path = config.registry_overlay_path(&reg_config.name);
+                state::save_state(&state_path, &current_state)
+                    .with_context(|| format!("saving state for registry '{}'", reg_config.name))?;
 
                 if json_mode {
                     json_registries.push(json!({
@@ -264,6 +261,22 @@ pub async fn run(
         ));
     }
 
+    // Opportunistically prune orphaned writable-layer overlays: a seeded
+    // registry whose seed was blanked leaves a url-less state delta behind that
+    // could otherwise resurrect stale anti-rollback state on re-add. Cleanup
+    // failures must not fail the sync, so they are only warned about.
+    match crate::clean::prune_orphaned_overlays(config.scope) {
+        Ok(pruned) if !pruned.is_empty() && !json_mode => {
+            printer.info(&format!(
+                "Pruned {} orphaned registry overlay(s): {}",
+                pruned.len(),
+                pruned.join(", ")
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => printer.warning(&format!("could not prune orphaned overlays: {e}")),
+    }
+
     if nudge_system && !json_mode {
         printer.warning(
             "Synced a system registry into the root user's tree; \
@@ -295,74 +308,4 @@ pub async fn run(
 /// it never gates behavior, so a stale value is harmless.
 fn running_as_root() -> bool {
     rustix::process::geteuid().is_root()
-}
-
-/// Resolve the config file that should receive updated registry state.
-///
-/// User-scope configs layer `$XDG_CONFIG_HOME/apm` over the system config
-/// directory. A system-provisioned registry may not have a user-level TOML
-/// file at all; when the fallback file is writable, persist state there so
-/// non-AOS fixture deployments using `APM_SYSTEM_CONFIG_DIR` keep anti-
-/// rollback and last-commit state across invocations. When the fallback is
-/// read-only, persist a user override so unprivileged updates still retain
-/// anti-rollback and last-commit state across invocations.
-fn writable_state_path(
-    config_dir: &std::path::Path,
-    scope: ProfileScope,
-    name: &str,
-) -> Option<PathBuf> {
-    let primary = config_dir.join("registries.d").join(format!("{name}.toml"));
-    if primary.exists() {
-        return Some(primary);
-    }
-
-    if scope != ProfileScope::User {
-        return None;
-    }
-
-    let fallback = ProfileScope::System
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if fallback.exists()
-        && std::fs::OpenOptions::new()
-            .write(true)
-            .open(&fallback)
-            .is_ok()
-    {
-        Some(fallback)
-    } else if fallback.exists() {
-        Some(primary)
-    } else {
-        None
-    }
-}
-
-/// Persist registry sync state, creating a user override config when needed.
-fn save_registry_state(
-    path: &Path,
-    reg_config: &crate::types::RegistryConfig,
-    registry_state: &crate::types::RegistryState,
-) -> Result<()> {
-    if path.exists() {
-        return state::save_state(path, registry_state);
-    }
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-    let registry = match toml::Value::try_from(reg_config.clone())? {
-        toml::Value::Table(mut table) => {
-            table.insert("state".into(), toml::Value::try_from(registry_state)?);
-            table
-        }
-        _ => anyhow::bail!("registry config did not serialize as a TOML table"),
-    };
-    let mut root = toml::map::Map::new();
-    root.insert("registry".into(), toml::Value::Table(registry));
-    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
-    fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
 }

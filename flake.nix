@@ -60,9 +60,10 @@
       names = builtins.filter isDrv (builtins.attrNames p);
     in
       builtins.listToAttrs (map (name: {
-        name = "pkg-${name}";
-        value = p.${name};
-      }) names);
+          name = "pkg-${name}";
+          value = p.${name};
+        })
+        names);
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -98,11 +99,20 @@
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
+          aos.pkgs.systemd
           aos.pkgs.tar
           aos.pkgs.zstd
           aos.pkgs.which
         ];
         binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
+        # Per-target cargo rustflags env var for the dev-shell host. Used to
+        # inject an OpenSSL rpath for native `cargo build` (see shellHook)
+        # without disturbing the wasm32 rustflags in crates/.cargo/config.toml:
+        # a plain RUSTFLAGS would replace those and break the Workers build.
+        cargoHostRustflagsVar = builtins.getAttr system {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
+        };
       in {
         default = builtins.derivation {
           name = "aos-dev";
@@ -125,6 +135,15 @@
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
+              # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
+              # OpenSSL; the resulting binary still records only the SONAME, so
+              # an impure `cargo build` produces a binary that cannot find
+              # libssl at runtime. Bake the OpenSSL dir into the binary's rpath
+              # at link time, so `./target/debug/{aos,apr,apm}` run directly —
+              # no patchelf, and no LD_LIBRARY_PATH that would poison the `nix`
+              # subprocess they shell out to (which needs its own, newer
+              # OpenSSL). rpath is per-binary, so each keeps its own OpenSSL.
+              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib"
             '';
         };
       }

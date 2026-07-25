@@ -50,9 +50,17 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
 
     let (key_file, trusted_public_key) = nix_cache_key(tmp.path())?;
     let printer = Printer::new(0, true, false);
-    let report =
-        nixcache::generate_static_cache(&registry_dir, &output_dir, Some(&key_file), 37, &printer)
-            .await?;
+    let report = nixcache::generate_static_cache(
+        &registry_dir,
+        &output_dir,
+        Some(&key_file),
+        37,
+        None,
+        None,
+        false,
+        &printer,
+    )
+    .await?;
     assert_eq!(report.paths, 1);
     assert_eq!(report.narinfos, 1);
     assert_eq!(report.nars, 1);
@@ -69,6 +77,7 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         &[DownloadRequest {
             store_path: store_path.clone(),
             mirror_url: mirror_url.clone(),
+            fallback_mirrors: Vec::new(),
         }],
         1,
         &printer,
@@ -186,6 +195,8 @@ async fn assert_filesystem_upload_array_round_trips(
         output_dir,
         &upload_urls,
         &AuthOptions::default(),
+        &[],
+        false,
         printer,
     )
     .await?;
@@ -231,6 +242,8 @@ async fn assert_generated_cache_external_upload_matrix_round_trips(
         output_dir,
         &upload_urls,
         &AuthOptions::default(),
+        &[],
+        false,
         printer,
     )
     .await?;

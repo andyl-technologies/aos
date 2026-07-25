@@ -23,6 +23,13 @@
   hostPlatform,
   targetPlatform,
 }: let
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
@@ -59,18 +66,123 @@
     # Phase 6b: Native target GCC (Canadian cross)
     gcc = callPackage ./gcc.nix {};
 
+    # Phase 7 uses previous-tier x86_64 tools to run configure/make while
+    # the manifest explicitly points CC/CXX/binutils at prefixed cross tools.
+    # A normal tier-stdenv would inject a target-arch cc-wrapper as a build
+    # dependency, which cannot execute on the x86_64 builder.
+    crossBuildStdenv = let
+      system = buildPlatform.system;
+      shellPath = "${prev.bash}/bin/bash";
+      initialPath = [
+        prev.coreutils
+        prev.findutils
+        prev.gnumake
+        prev.gawk
+        prev.grep
+        prev.sed
+        prev.tar
+        prev.gzip
+        prev.diffutils
+        prev.patch
+        prev.bash
+      ];
+    in {
+      mkDerivation = args:
+        lib.mkDerivation (
+          args
+          // {
+            buildDeps = (args.buildDeps or []) ++ initialPath;
+            system = args.system or system;
+            shell = args.shell or shellPath;
+            storeDir = args.storeDir or "/nix/store";
+            defaultHardeningFlags = args.defaultHardeningFlags or [];
+            nukeRefsKeep = (args.nukeRefsKeep or []) ++ [prev.bash];
+          }
+        );
+      mkShell = args:
+        lib.mkShell (
+          args
+          // {
+            buildDeps = (args.buildDeps or []) ++ initialPath;
+            system = args.system or system;
+            shell = args.shell or shellPath;
+          }
+        );
+      fetchurl = args:
+        lib.fetchurl (
+          args
+          // {
+            system = args.system or system;
+            storeDir = args.storeDir or "/nix/store";
+          }
+        );
+      fetchgit = args:
+        lib.fetchgit (
+          args
+          // {
+            system = args.system or system;
+            storeDir = args.storeDir or "/nix/store";
+          }
+        );
+      inherit system initialPath;
+      storeDir = "/nix/store";
+      cc = scope.crossGccStage2;
+      shell = shellPath;
+      gcc = scope.crossGccStage2;
+      glibc = scope.crossGlibc;
+      binutils = scope.crossBinutils;
+      bash = prev.bash;
+      coreutils = prev.coreutils;
+      gnumake = prev.gnumake;
+      sed = prev.sed;
+      grep = prev.grep;
+      findutils = prev.findutils;
+      gawk = prev.gawk;
+      diffutils = prev.diffutils;
+      tar = prev.tar;
+      gzip = prev.gzip;
+      patch = prev.patch;
+      isCross = true;
+      canExecHost = false;
+      inherit buildPlatform hostPlatform targetPlatform;
+    };
+
+    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = scope.crossBuildStdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit
+        prev
+        buildPlatform
+        hostPlatform
+        ;
+      inherit
+        (scope)
+        crossGccStage2
+        crossBinutils
+        crossGlibc
+        ;
+    };
+
     # Phase 7: Native target POSIX tools (cross-compiled)
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
-    patch = callPackage ./patch.nix {};
+    bash = scope.mkAutotoolsTool scope.manifest.bash;
+    coreutils = scope.mkAutotoolsTool scope.manifest.coreutils;
+    gnumake = scope.mkAutotoolsTool scope.manifest.gnumake;
+    sed = scope.mkAutotoolsTool scope.manifest.sed;
+    grep = scope.mkAutotoolsTool scope.manifest.grep;
+    gawk = scope.mkAutotoolsTool scope.manifest.gawk;
+    findutils = scope.mkAutotoolsTool scope.manifest.findutils;
+    diffutils = scope.mkAutotoolsTool scope.manifest.diffutils;
+    tar = scope.mkAutotoolsTool scope.manifest.tar;
+    gzip = scope.mkAutotoolsTool scope.manifest.gzip;
+    patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
 in {
   inherit

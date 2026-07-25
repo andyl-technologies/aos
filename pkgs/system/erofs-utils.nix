@@ -1,10 +1,11 @@
 ##! erofs-utils — EROFS user-space tools (mkfs.erofs, fsck.erofs)
 ##!
 ##! The AOS `/etc` model uses EROFS as the bottom lower of the
-##! three-layer overlay (`system.build.etcMetadataImage`). `fsck.erofs`
-##! sanity-checks the image at build time; `mkfs.erofs` is unused at
-##! image-build time today (composefs's `mkcomposefs --from-file`
-##! produces the EROFS image directly) but ships in the same package.
+##! three-layer overlay (`system.build.etcMetadataImage`, built by
+##! composefs's `mkcomposefs`). `mkfs.erofs -z zstd` additionally builds
+##! the compressed read-only system root image (`lib/build/rootfs.nix`),
+##! so the build is configured `--enable-zstd`. `fsck.erofs` sanity-checks
+##! both at build time.
 {
   mkDerivation,
   fetchurl,
@@ -15,6 +16,7 @@
   libtool,
   m4,
   util-linux,
+  zstd,
 }: let
   # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
   # heavy optional deps (lz4, lzma, zstd, libdeflate, xxhash, json-c,
@@ -50,9 +52,10 @@ in
       automake
       libtool
       m4
+      zstd
     ];
-    runtimeDeps = [util-linux];
-    propagatedDeps = [util-linux];
+    runtimeDeps = [util-linux zstd];
+    propagatedDeps = [util-linux zstd];
 
     phases = [
       {
@@ -80,18 +83,28 @@ in
       }
       {
         name = "configure";
-        # No LZ4/LZMA/ZSTD: the composefs-generated EROFS image AOS
-        # uses for `/etc` carries plain inodes — no compressed data
-        # blocks — so the compression libs aren't needed at runtime
-        # (or for fsck). Drop fuse for the same reason (the runtime
-        # mount is `mount -t erofs`).
+        # zstd is enabled: the read-only system root image is built with
+        # `mkfs.erofs -z zstd` (lib/build/rootfs.nix), so the compressor must
+        # be linked in. LZ4/LZMA stay off (unused), and fuse stays off (the
+        # runtime mount is the in-kernel `mount -t erofs`).
+        #
+        # Multithreading is enabled so `mkfs.erofs --workers=#` can compress
+        # the system root in parallel. The root image build is dominated by
+        # single-threaded `-z zstd,level=19` over the whole server closure
+        # (hours on one core); the worker pool splits the input into fixed
+        # 16 MiB segments and compresses them concurrently. Output stays
+        # bit-reproducible — segments are merged in deterministic on-disk
+        # order, 16 MiB is a clean multiple of the 256 KiB pcluster so
+        # boundaries don't shift the per-cluster compression, and `-T0 -U`
+        # pin the remaining nondeterminism. Pulls in libpthread (glibc).
         script = ''
           ./configure \
             --prefix=$out \
             --disable-fuse \
             --without-lz4 \
             --without-lzma \
-            --without-zstd
+            --enable-zstd \
+            --enable-multithreading
         '';
       }
       {

@@ -6,8 +6,13 @@
 //! - HeadObject, DeleteObject
 //! - Custom endpoints (MinIO, B2, Wasabi)
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::operation::head_object::HeadObjectError;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
@@ -21,6 +26,78 @@ const MULTIPART_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Default part size for multi-part uploads (5 MB).
 const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 
+/// Describes where an S3 request is sent, for diagnostics.
+///
+/// A `None` endpoint means the request targets real AWS S3, which is the
+/// usual cause of a surprising `403` when the credentials belong to an
+/// S3-compatible store (Cloudflare R2, MinIO): naming the endpoint in an
+/// error turns a misrouted request into an obvious fix.
+fn s3_target(auth: Option<&Credential>) -> String {
+    match auth {
+        Some(Credential::AwsSigV4 {
+            region, endpoint, ..
+        }) => match endpoint {
+            Some(endpoint) => format!("endpoint {endpoint} (region {region})"),
+            None => format!("the default AWS S3 endpoint (region {region})"),
+        },
+        _ => "the default AWS credential chain endpoint".to_string(),
+    }
+}
+
+/// Builds an actionable error for a failed S3 `operation` on `location`
+/// (`bucket/key`) sent to `target` (see [`s3_target`]).
+///
+/// S3-compatible stores answer some requests — notably `HEAD`, which carries
+/// no body — with a status the SDK cannot map to a modeled error, leaving the
+/// opaque `Unhandled` variant whose `Display` is just `"unhandled error"`.
+/// When a response reached us, this names the HTTP status, error code,
+/// message, and request id off it; otherwise (a transport, timeout, or
+/// construction failure with no response) it preserves the SDK error's own
+/// message as the source so detail like a DNS or connection failure survives.
+fn s3_operation_error<E>(
+    operation: &str,
+    location: &str,
+    target: &str,
+    err: SdkError<E>,
+) -> anyhow::Error
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    if let Some(response) = err.raw_response() {
+        let status = response.status().as_u16();
+        let request_id = response
+            .headers()
+            .get("x-amz-request-id")
+            .or_else(|| response.headers().get("cf-ray"))
+            .unwrap_or("none");
+        anyhow::anyhow!(
+            "S3 {operation} for {location} against {target} failed: HTTP status {status}, \
+             error code {code}, message {message:?}, request id {request_id}",
+            code = err.code().unwrap_or("none"),
+            message = err.message().unwrap_or("none"),
+        )
+    } else {
+        anyhow::Error::new(err)
+            .context(format!("S3 {operation} for {location} against {target}"))
+    }
+}
+
+/// Resolved [`Credential::AwsSigV4`] configuration that distinguishes one
+/// cached S3 client from another.
+///
+/// Used as `Option<S3ClientConfig>`: `None` is the SDK default credential
+/// chain, `Some(_)` an explicit SigV4 configuration. Two requests with an
+/// equal key share one [`aws_sdk_s3::Client`].
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct S3ClientConfig {
+    /// AWS region used for signing.
+    region: String,
+    /// Optional named AWS profile to load credentials from.
+    profile: Option<String>,
+    /// Optional custom endpoint URL for S3-compatible services.
+    endpoint: Option<String>,
+}
+
 /// S3 protocol handler.
 ///
 /// URLs use the `s3://bucket/key` form. SigV4 signing is delegated to
@@ -28,9 +105,15 @@ const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 /// profile, and endpoint, otherwise the SDK's default credential chain
 /// (environment, profile, IMDS) is used. File uploads larger than
 /// 5 MB automatically use multi-part upload.
+///
+/// Built clients are cached by configuration so the credential chain is
+/// resolved once per distinct `(region, profile, endpoint)` rather than
+/// on every request.
 pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
+    /// Clients cached by their resolved configuration.
+    clients: Mutex<HashMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
 }
 
 impl S3Protocol {
@@ -38,22 +121,69 @@ impl S3Protocol {
     pub fn new() -> Self {
         Self {
             part_size: MULTIPART_PART_SIZE,
+            clients: Mutex::new(HashMap::new()),
         }
     }
 
     /// Create a new S3 protocol handler with a custom part size
     /// (in bytes) for multi-part uploads.
     pub fn with_part_size(part_size: u64) -> Self {
-        Self { part_size }
+        Self {
+            part_size,
+            clients: Mutex::new(HashMap::new()),
+        }
     }
 
-    /// Build an S3 client from credentials.
+    /// Returns an S3 client for the given credentials, building and
+    /// caching one on first use for each distinct configuration.
     ///
     /// With a [`Credential::AwsSigV4`], the region (and optionally a
     /// named profile) configure the SDK loader, and a custom endpoint
     /// switches the client to path-style addressing for S3-compatible
     /// services. Without credentials, the SDK default chain is used.
+    /// Subsequent calls with the same `(region, profile, endpoint)`
+    /// reuse the cached client (a cheap `Arc` clone) instead of
+    /// re-running the credential chain.
     async fn build_client(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
+        let key = match auth {
+            Some(Credential::AwsSigV4 {
+                region,
+                profile,
+                endpoint,
+            }) => Some(S3ClientConfig {
+                region: region.clone(),
+                profile: profile.clone(),
+                endpoint: endpoint.clone(),
+            }),
+            _ => None,
+        };
+
+        // A poisoned cache lock is harmless here (the map holds only
+        // clonable clients), so recover the guard rather than panicking.
+        if let Some(client) = self
+            .clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Ok(client);
+        }
+
+        // Build outside the lock: the credential chain resolution is
+        // async and must not be held across the std Mutex. A benign
+        // race may build the same client twice; the last insert wins.
+        let client = self.build_client_uncached(auth).await?;
+        self.clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, client.clone());
+        Ok(client)
+    }
+
+    /// Builds a fresh S3 client, resolving the credential chain. Callers
+    /// should prefer [`build_client`](Self::build_client), which caches.
+    async fn build_client_uncached(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
         if let Some(Credential::AwsSigV4 {
@@ -108,6 +238,7 @@ impl S3Protocol {
     ) -> Result<TransferResult> {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
+        let target = s3_target(auth);
 
         let mut get_builder = client.get_object().bucket(&bucket).key(&key);
 
@@ -130,7 +261,7 @@ impl S3Protocol {
         let resp = get_builder
             .send()
             .await
-            .with_context(|| format!("S3 GetObject {bucket}/{key}"))?;
+            .map_err(|e| s3_operation_error("GetObject", &format!("{bucket}/{key}"), &target, e))?;
 
         let content_length = resp.content_length().map(|l| l as u64);
 
@@ -236,6 +367,7 @@ impl S3Protocol {
     ) -> Result<(TransferResult, ByteStream)> {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
+        let target = s3_target(auth);
 
         let mut get_builder = client.get_object().bucket(&bucket).key(&key);
 
@@ -258,7 +390,7 @@ impl S3Protocol {
         let resp = get_builder
             .send()
             .await
-            .with_context(|| format!("S3 GetObject {bucket}/{key}"))?;
+            .map_err(|e| s3_operation_error("GetObject", &format!("{bucket}/{key}"), &target, e))?;
 
         let content_length = resp.content_length().map(|l| l as u64);
 
@@ -302,6 +434,7 @@ impl S3Protocol {
     ) -> Result<TransferResult> {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
+        let target = s3_target(auth);
 
         match &request.body {
             Some(TransferBody::File(path)) => {
@@ -315,6 +448,7 @@ impl S3Protocol {
                         &client,
                         &bucket,
                         &key,
+                        &target,
                         path,
                         file_len,
                         &request.headers,
@@ -331,9 +465,9 @@ impl S3Protocol {
                         .key(&key)
                         .body(data.into());
                     let put = apply_put_object_headers(put, &request.headers);
-                    put.send()
-                        .await
-                        .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+                    put.send().await.map_err(|e| {
+                        s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
+                    })?;
                 }
 
                 Ok(TransferResult {
@@ -354,9 +488,9 @@ impl S3Protocol {
                     .key(&key)
                     .body(data.clone().into());
                 let put = apply_put_object_headers(put, &request.headers);
-                put.send()
-                    .await
-                    .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+                put.send().await.map_err(|e| {
+                    s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
+                })?;
 
                 Ok(TransferResult {
                     status: 200,
@@ -378,9 +512,9 @@ impl S3Protocol {
                     .key(&key)
                     .body(Vec::new().into());
                 let put = apply_put_object_headers(put, &request.headers);
-                put.send()
-                    .await
-                    .with_context(|| format!("S3 PutObject {bucket}/{key}"))?;
+                put.send().await.map_err(|e| {
+                    s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
+                })?;
 
                 Ok(TransferResult {
                     status: 200,
@@ -404,6 +538,7 @@ impl S3Protocol {
     ) -> Result<TransferResult> {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
+        let target = s3_target(auth);
 
         let resp = client.head_object().bucket(&bucket).key(&key).send().await;
 
@@ -421,8 +556,13 @@ impl S3Protocol {
                 })
             }
             Err(e) => {
-                let svc = e.into_service_error();
-                if svc.is_not_found() {
+                // A missing object is reported as absent, not an error. S3
+                // returns a modeled `NotFound`; an S3-compatible store that
+                // answers a HEAD with an empty body leaves the SDK only the
+                // raw `404` status to go on, so accept either signal.
+                let is_404 = e.as_service_error().is_some_and(HeadObjectError::is_not_found)
+                    || e.raw_response().map(|r| r.status().as_u16()) == Some(404);
+                if is_404 {
                     Ok(TransferResult {
                         status: 404,
                         headers: Vec::new(),
@@ -433,7 +573,12 @@ impl S3Protocol {
                         resumed: false,
                     })
                 } else {
-                    Err(anyhow::anyhow!("S3 HeadObject failed: {svc}"))
+                    Err(s3_operation_error(
+                        "HeadObject",
+                        &format!("{bucket}/{key}"),
+                        &target,
+                        e,
+                    ))
                 }
             }
         }
@@ -447,6 +592,7 @@ impl S3Protocol {
     ) -> Result<TransferResult> {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
+        let target = s3_target(auth);
 
         client
             .delete_object()
@@ -454,7 +600,7 @@ impl S3Protocol {
             .key(&key)
             .send()
             .await
-            .with_context(|| format!("S3 DeleteObject {bucket}/{key}"))?;
+            .map_err(|e| s3_operation_error("DeleteObject", &format!("{bucket}/{key}"), &target, e))?;
 
         Ok(TransferResult {
             status: 204,
@@ -478,13 +624,18 @@ impl S3Protocol {
         client: &aws_sdk_s3::Client,
         bucket: &str,
         key: &str,
+        target: &str,
         path: &std::path::Path,
         file_len: u64,
         headers: &[(String, String)],
     ) -> Result<()> {
+        let location = format!("{bucket}/{key}");
         let create = client.create_multipart_upload().bucket(bucket).key(key);
         let create = apply_create_multipart_headers(create, headers);
-        let create_resp = create.send().await.context("S3 CreateMultipartUpload")?;
+        let create_resp = create
+            .send()
+            .await
+            .map_err(|e| s3_operation_error("CreateMultipartUpload", &location, target, e))?;
 
         let upload_id = create_resp
             .upload_id()
@@ -515,7 +666,14 @@ impl S3Protocol {
                 .body(chunk.into())
                 .send()
                 .await
-                .with_context(|| format!("S3 UploadPart {bucket}/{key} part {part_number}"))?;
+                .map_err(|e| {
+                    s3_operation_error(
+                        &format!("UploadPart (part {part_number})"),
+                        &location,
+                        target,
+                        e,
+                    )
+                })?;
 
             let etag = upload_resp
                 .e_tag()
@@ -545,7 +703,7 @@ impl S3Protocol {
             .multipart_upload(completed)
             .send()
             .await
-            .context("S3 CompleteMultipartUpload")?;
+            .map_err(|e| s3_operation_error("CompleteMultipartUpload", &location, target, e))?;
 
         Ok(())
     }

@@ -142,7 +142,7 @@ in {
         `.network` suffix is appended). Unlike the unit options above
         these are networkd *config*, not units, so they bypass
         `generateUnits` and are copied into the initrd directly. Used by
-        stage-1 ignition networking to DHCP for instance metadata.
+        stage-1 metadata networking to DHCP for instance metadata.
       '';
     };
 
@@ -184,17 +184,8 @@ in {
     # are silently ignored (e.g. br_netfilter never loads, k3s bridge sysctls
     # fail). Same family as systemd issue #38765.
     #
-    # `initrd-cleanup` does `isolate initrd-switch-root.target`, which would
-    # stop these and reset them — but only for units *outside* that target's
-    # dependency closure. `ignition-fetch.service` has
-    # `Requires=systemd-modules-load.service` and is pulled in via
-    # initrd-root-fs.target, so modules-load sits *inside* the closure and is
-    # never stopped. Masking them in the initrd is also wrong: modules-load
-    # genuinely has work there (loads isofs / dm_crypt for ignition).
-    #
-    # Fix: `RemainAfterExit=no` in the initrd only. The oneshot still runs (and
-    # still satisfies `Requires=`/`After=` — a successful oneshot start counts),
-    # but drops straight back to `inactive` instead of lingering `active`. The
+    # `RemainAfterExit=no` in the initrd lets each oneshot do its stage-1 work
+    # and then return to `inactive`. The
     # serialized state is then `inactive` regardless of switch-root job timing
     # or closure membership, so stage-2 starts each one fresh against the real
     # /etc. Stage-2 keeps the stock `RemainAfterExit=yes`.
@@ -208,9 +199,7 @@ in {
         serviceConfig.RemainAfterExit = false;
       })
       // {
-        # ignition-fetch.service has Requires=systemd-modules-load.service,
-        # so if modules-load fails the unit, ignition is blocked and the
-        # initrd drops to emergency.target. modules-load already ignores
+        # modules-load already ignores
         # missing (-ENOENT) and hardware-absent (-ENODEV) modules; it exits
         # non-zero (1) only when a module is present but fails to insert.
         # SuccessExitStatus=0 1 keeps even that non-fatal, matching the
@@ -240,11 +229,11 @@ in {
     system.build.initrd = import ../base/_initrd-builder.nix {
       inherit pkgs lib;
       kernel = config.system.build.kernel;
-      kernelModules = config.aos.boot.initrd.modules;
+      loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
+      initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
-      ignitionRoles = config.system.build.ignitionRolesBundle;
     };
   };
 }

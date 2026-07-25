@@ -1,0 +1,1329 @@
+syntax = "proto3";
+package aos.registry.v1;
+
+// Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
+// verified index — registries, packages, channels, releases — to browsers,
+// CLIs, and third parties over one schema. Write-path services
+// (ConfigService, PublishService, …) arrive with hub phase 2+; PublishService
+// mints short-lived, registry-scoped upload credentials.
+//
+// All list RPCs paginate: pass the previous response's next_page_token to
+// continue; an empty token means the listing is complete.
+
+service RegistryService {
+  rpc ListRegistries(ListRegistriesRequest) returns (ListRegistriesResponse);
+  rpc GetRegistry(GetRegistryRequest) returns (GetRegistryResponse);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  // Create an org-owned, storage-bound managed registry (phase 2c). Write
+  // path: requires a bearer JWT with registry.configure on the org scope.
+  rpc CreateRegistry(CreateRegistryRequest) returns (CreateRegistryResponse);
+  // Set a registry's crawl policy (the generated robots.txt posture). Write
+  // path: requires registry.configure at the registry scope; applied as an
+  // audited change-set.
+  rpc SetCrawlPolicy(SetCrawlPolicyRequest) returns (SetCrawlPolicyResponse);
+  // Migrate a registry's surface to a different storage backend: copy every
+  // object to the target binding (or the default store), then re-point and
+  // re-index. Requires registry.configure at the registry scope.
+  rpc ChangeRegistryStorage(ChangeRegistryStorageRequest)
+      returns (ChangeRegistryStorageResponse);
+}
+
+// Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
+service OrgService {
+  // Create an org. Any authenticated principal may bootstrap one; the
+  // caller becomes its Owner.
+  rpc CreateOrg(CreateOrgRequest) returns (CreateOrgResponse);
+  rpc GetOrg(GetOrgRequest) returns (GetOrgResponse);
+  rpc ListOrgs(ListOrgsRequest) returns (ListOrgsResponse);
+}
+
+// Project-tree CRUD (RFC-0004 "Tenancy and IAM").
+service ProjectService {
+  // Create a project at a materialized path under an org. Requires
+  // registry.configure on the org scope.
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+}
+
+// Storage bindings (RFC-0004 "Storage: StorageBinding and shared buckets").
+service StorageService {
+  // Create a storage binding under an org. Requires registry.configure on
+  // the org scope. Only the local_fs kind is supported this phase.
+  rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
+  rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
+}
+
+// Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
+// matrix"). Reads require audit.read (admin+) on the queried scope.
+service AuditService {
+  // List recent audit entries at a scope, newest first. Requires a bearer
+  // JWT with audit.read on the scope.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+}
+
+// Deployment-wide instance settings (RFC-0004 "Instance administration"):
+// branding, footer/legal links, identity policy, and serving defaults. The
+// same key/value surface the `/-/instance` console edits and the `aos hub
+// instance` CLI drives. Reads require iam.admin at the instance root; updates
+// likewise.
+service InstanceService {
+  // Read the full editable instance-settings bundle. Requires iam.admin at the
+  // instance root.
+  rpc GetInstanceSettings(GetInstanceSettingsRequest)
+      returns (GetInstanceSettingsResponse);
+  // Set and/or clear instance-settings keys, then return the updated bundle.
+  // Requires iam.admin at the instance root.
+  rpc UpdateInstanceSettings(UpdateInstanceSettingsRequest)
+      returns (UpdateInstanceSettingsResponse);
+}
+
+// SQL-backed configuration change-sets (RFC-0004 "Configuration
+// management"): the append-only revision log over orgs, projects, members,
+// roles, tokens, visibility, and bindings. Reads require audit.read on the
+// scope; RevertChangeset requires registry.configure on the scope.
+service ConfigService {
+  // List change-sets at a scope, newest first. Requires audit.read.
+  rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
+  // Load one change-set's revisions and their semantic field diffs (the
+  // terraform-plan review view). Requires audit.read.
+  rpc GetChangeset(GetChangesetRequest) returns (GetChangesetResponse);
+  // Draft and apply a snapshot-targeted forward revert of a change-set,
+  // returning the new revert change-set. Requires registry.configure.
+  rpc RevertChangeset(RevertChangesetRequest) returns (RevertChangesetResponse);
+}
+
+service PackageService {
+  rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse);
+  rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
+}
+
+service ChannelService {
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
+}
+
+// The managed write path (RFC-0004 "API: aos.registry.v1"). This phase
+// implements credential minting: a producer with publish rights requests a
+// short-lived, registry-scoped upload credential instead of using the upload
+// facade directly. Requires publish on the registry's canonical scope.
+service PublishService {
+  // Mint a short-lived provisioning credential scoped to one registry with
+  // only the publish permission, plus the canonical upload URL to push the
+  // surface to. Requires publish on the registry's canonical scope.
+  rpc MintUploadCredentials(MintUploadCredentialsRequest)
+      returns (MintUploadCredentialsResponse);
+}
+
+// Git read API for the UI and remote `apr` (RFC-0004 "API: aos.registry.v1"
+// GitService; "Configuration management" git-backed change requests). Reads of
+// the committed history and config diffs require `read` (or `audit.read` for the
+// change-request list) on the registry's scope, following registry visibility.
+service GitService {
+  // The committed commit log of a registry's tracked branch, newest first.
+  // Requires `read` on the registry scope.
+  rpc GitLog(GitLogRequest) returns (GitLogResponse);
+  // A textual unified-ish diff of the committed config files (registry.toml,
+  // keys.toml, packages/) between two commits. Requires `read`.
+  rpc GitDiff(GitDiffRequest) returns (GitDiffResponse);
+  // The registry's draft git-backed change requests with their file diffs and
+  // the `apr change merge` command that promotes each. Requires `audit.read`.
+  rpc ListChangeRequests(ListChangeRequestsRequest)
+      returns (ListChangeRequestsResponse);
+}
+
+// Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
+// An org subscribes an HTTP endpoint to a set of registry event types; the hub
+// HMAC-signs and delivers each matching event. All three RPCs are admin-only:
+// they require members.manage on the org scope (managing notification
+// endpoints is an org-administration surface, alongside member and token
+// management).
+service WebhookService {
+  // Create a webhook under an org. The returned secret is shown once and is
+  // the HMAC-SHA256 key deliveries are signed under. Requires members.manage
+  // on the org scope.
+  rpc CreateWebhook(CreateWebhookRequest) returns (CreateWebhookResponse);
+  // List an org's webhook subscriptions. Requires members.manage on the org
+  // scope. Secrets are never returned by list.
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse);
+  // Delete a webhook by id. Requires members.manage on the owning org's scope.
+  rpc DeleteWebhook(DeleteWebhookRequest) returns (DeleteWebhookResponse);
+}
+
+message ListRegistriesRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListRegistriesResponse {
+  repeated Registry registries = 1;
+  string next_page_token = 2;
+}
+
+message GetRegistryRequest {
+  string slug = 1;
+}
+
+message GetRegistryResponse {
+  Registry registry = 1;
+}
+
+message ListReleasesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+  string next_page_token = 2;
+}
+
+message ListPackagesRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPackagesResponse {
+  repeated PackageSummary packages = 1;
+  string next_page_token = 2;
+}
+
+message GetPackageRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetPackageResponse {
+  Package package = 1;
+}
+
+message ListChannelsRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+  string next_page_token = 2;
+}
+
+message GetChannelRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message GetChannelResponse {
+  Channel channel = 1;
+}
+
+// One registered registry with its verified index status.
+message Registry {
+  string slug = 1;
+  // Committed registry name from registry.toml (empty until indexed).
+  string name = 2;
+  string description = 3;
+  string source_url = 4;
+  // Index state: fresh | indexing | stale | failed.
+  string index_state = 5;
+  // Failure detail when index_state is failed.
+  string index_error = 6;
+  // Commit the current index was built from (64-hex sha256).
+  string last_indexed_commit = 7;
+  // Unix seconds of the last successful index.
+  int64 indexed_at = 8;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 9;
+  // Committed [[caches]] entries, highest priority first.
+  repeated Cache caches = 10;
+  // Committed signing-key roster.
+  repeated RosterKey roster = 11;
+  // Crawl posture backing the generated robots.txt:
+  // allow_all | allow_no_ai | deny_all.
+  string crawl_policy = 12;
+  // Operator-authored llms.txt body served verbatim (empty = auto-generated).
+  string llms_txt_body = 13;
+}
+
+message Cache {
+  string url = 1;
+  uint32 priority = 2;
+}
+
+message RosterKey {
+  string id = 1;
+  // Key in name:Ed25519:<base64> form; empty for revoked entries whose
+  // key material left the roster.
+  string key = 2;
+  // active | revoked.
+  string status = 3;
+}
+
+message PackageSummary {
+  string name = 1;
+  string description = 2;
+  string license = 3;
+  string latest_version = 4;
+}
+
+// Full package detail: every version and platform artifact.
+message Package {
+  string name = 1;
+  string description = 2;
+  string homepage = 3;
+  string license = 4;
+  string maintainer = 5;
+  bool sysroot = 6;
+  repeated Version versions = 7;
+}
+
+message Version {
+  string version = 1;
+  // Previous version in the sysroot upgrade chain.
+  string previous = 2;
+  repeated Platform platforms = 3;
+}
+
+message Platform {
+  string platform = 1;
+  string store_path = 2;
+  string nar_hash = 3;
+  uint64 nar_size = 4;
+  uint64 closure_size = 5;
+}
+
+// One rollout channel with its 256-partition assignment map.
+message Channel {
+  string name = 1;
+  // Newest release any partition targets.
+  string frontier = 2;
+  // Assigned partitions only; unassigned buckets are omitted.
+  repeated Partition partitions = 3;
+}
+
+message Partition {
+  // Bucket index, 0..=255.
+  uint32 bucket = 1;
+  string release = 2;
+}
+
+// One verified, signed release tag.
+message Release {
+  string semver = 1;
+  // Unpeeled tag object id.
+  string tag_oid = 2;
+  string commit_oid = 3;
+  // Base64 SSH wire blob of the trusted key that signed the tag.
+  string signer = 4;
+  // Tagger timestamp, Unix seconds.
+  int64 tagged_at = 5;
+}
+
+// -- Tenancy: orgs and projects (phase 2c) ---------------------------------
+
+// An organization: the tenant boundary.
+message Org {
+  string slug = 1;
+  string name = 2;
+  // Unix seconds the org was created.
+  int64 created_at = 3;
+}
+
+message CreateOrgRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message CreateOrgResponse {
+  Org org = 1;
+}
+
+message GetOrgRequest {
+  string slug = 1;
+}
+
+message GetOrgResponse {
+  Org org = 1;
+}
+
+message ListOrgsRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListOrgsResponse {
+  repeated Org orgs = 1;
+  string next_page_token = 2;
+}
+
+// A project: a materialized-path node within an org.
+message Project {
+  string org_slug = 1;
+  // Materialized path within the org ("" for an org-root project).
+  string path = 2;
+  string name = 3;
+}
+
+message CreateProjectRequest {
+  string org_slug = 1;
+  string path = 2;
+  string name = 3;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message ListProjectsRequest {
+  string org_slug = 1;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+// -- Storage bindings (phase 2c) -------------------------------------------
+
+// A storage binding: a named backend an org's registries place surfaces in.
+message Binding {
+  string org_slug = 1;
+  string name = 2;
+  // Backend kind: "local_fs" | "s3" | "r2". The native hub serves all three;
+  // the Worker serves s3/r2 (it has no filesystem). External s3/r2 bindings are
+  // served via presigned URLs.
+  string kind = 3;
+  // Backend root: a filesystem path for local_fs, or the bucket (optionally
+  // "bucket/sub-prefix") for s3/r2.
+  string root = 4;
+  // Access mode for an s3/r2 binding: "private" (credentialed, read/write) or
+  // "public" (credential-less, read-only). Empty for local_fs.
+  string access = 5;
+  // Endpoint origin URL for an s3/r2 binding (e.g.
+  // "https://<account>.r2.cloudflarestorage.com"). Empty for local_fs.
+  string endpoint = 6;
+  // Signing region for an s3/r2 binding ("auto" for R2, e.g. "us-east-1" for
+  // S3). Empty for local_fs. Credentials are never echoed back.
+  string region = 7;
+}
+
+message CreateBindingRequest {
+  string org_slug = 1;
+  string name = 2;
+  // Backend kind: "local_fs" | "s3" | "r2" (defaults to local_fs when empty).
+  // The serving runtime gates which kinds are usable; see Binding.kind.
+  string kind = 3;
+  // Backend root: a filesystem path for local_fs, or the bucket (optionally
+  // "bucket/sub-prefix") for s3/r2.
+  string root = 4;
+  // Access mode for an s3/r2 binding: "private" (default) or "public".
+  string access = 5;
+  // Endpoint origin URL for an s3/r2 binding. Required for s3/r2.
+  string endpoint = 6;
+  // Signing region for an s3/r2 binding (defaults to "auto" when empty).
+  string region = 7;
+  // Access key id for a private s3/r2 binding (required when access=private).
+  string access_key_id = 8;
+  // Secret access key for a private s3/r2 binding (required when
+  // access=private). Sealed at rest; never stored or returned in the clear.
+  string secret_access_key = 9;
+}
+
+message CreateBindingResponse {
+  Binding binding = 1;
+}
+
+message ListBindingsRequest {
+  string org_slug = 1;
+}
+
+message ListBindingsResponse {
+  repeated Binding bindings = 1;
+}
+
+// -- Managed registry creation (phase 2c) ----------------------------------
+
+message CreateRegistryRequest {
+  string org_slug = 1;
+  // Owning project's materialized path ("" for an org-root registry).
+  string project_path = 2;
+  // Registry name (the last canonical-path segment).
+  string name = 3;
+  // Visibility: public | internal | private (defaults to private).
+  string visibility = 4;
+  // Storage binding name within the org; empty for an unbound registry.
+  string binding_name = 5;
+  // Sub-prefix under the binding root.
+  string prefix = 6;
+  // Pinned trust anchors in name:Ed25519:<base64> form.
+  repeated string trust_keys = 7;
+}
+
+message CreateRegistryResponse {
+  Registry registry = 1;
+}
+
+message SetCrawlPolicyRequest {
+  // Canonical registry path or flat slug.
+  string slug = 1;
+  // New crawl policy: allow_all | allow_no_ai | deny_all.
+  string policy = 2;
+}
+
+message SetCrawlPolicyResponse {
+  // The applied crawl policy (echoed back).
+  string policy = 1;
+}
+
+// The full editable instance-settings bundle. Every field carries its
+// effective value (a stored override or the documented default), so a client
+// reads exactly what the serving path uses. Unset optionals (the numeric
+// `*_secs`/`*_bytes`) are conveyed as 0, meaning "use the built-in default".
+message InstanceSettings {
+  // Site title shown in the masthead and page titles; empty falls back to the
+  // deploy brand.
+  string site_title = 1;
+  // Short tagline shown beside the brand.
+  string tagline = 2;
+  // Global announcement banner rendered on every console page; empty for none.
+  string announcement = 3;
+  // Terms-of-service URL for the footer.
+  string tos_url = 4;
+  // Privacy-policy URL for the footer.
+  string privacy_url = 5;
+  // Support/contact URL for the footer.
+  string support_url = 6;
+  // Who may create organizations: open | invite_only.
+  string signup_policy = 7;
+  // Lowercased email-domain allowlist for signup; empty allows any domain.
+  repeated string signup_domains = 8;
+  // Whether local password login is offered (else SSO/magic-link only).
+  bool password_login = 9;
+  // Session absolute lifetime in seconds; 0 = the built-in default.
+  int64 session_lifetime_secs = 10;
+  // Default robots.txt crawl policy new registries inherit:
+  // allow_all | allow_no_ai | deny_all.
+  string default_crawl_policy = 11;
+  // Maximum surface upload size in bytes; 0 = the built-in default.
+  int64 max_upload_bytes = 12;
+}
+
+message GetInstanceSettingsRequest {}
+
+message GetInstanceSettingsResponse {
+  // The full effective settings bundle.
+  InstanceSettings settings = 1;
+}
+
+message UpdateInstanceSettingsRequest {
+  // Keys to set, by their canonical name (e.g. `site_title`, `signup_policy`,
+  // `signup_domains`). A blank value clears the key to its default; values are
+  // validated per key (`signup_policy`, `default_crawl_policy`, and the numeric
+  // keys are checked) and an unknown key is rejected.
+  map<string, string> values = 1;
+  // Keys to explicitly reset to their default (equivalent to setting them
+  // blank). Same key namespace as `values`.
+  repeated string clear = 2;
+}
+
+message UpdateInstanceSettingsResponse {
+  // The settings bundle after applying the update.
+  InstanceSettings settings = 1;
+}
+message ChangeRegistryStorageRequest {
+  // Canonical registry path or flat slug.
+  string slug = 1;
+  // Target storage binding name within the org; empty = the deployment default
+  // store.
+  string binding_name = 2;
+}
+message ChangeRegistryStorageResponse {
+  // Objects copied to the new backend.
+  uint64 objects = 1;
+  // Bytes copied.
+  uint64 bytes = 2;
+}
+
+// -- Audit log (phase 3a) --------------------------------------------------
+
+// One append-only audit-log entry: who did what, where, and the change-set
+// and cryptographic-history cross-references.
+message AuditEntry {
+  // The change-set this entry ties to ("" when not change-set driven).
+  string change_id = 1;
+  // Human label of the actor ("alice@acme.com", "sa:acme/ci", a key
+  // fingerprint, or "system").
+  string actor_label = 2;
+  // The action verb (e.g. "registry.visibility", "membership.grant").
+  string action = 3;
+  // Scope path the action targeted.
+  string scope = 4;
+  // Resulting git commit hash for surface-touching ops ("" otherwise).
+  string result_commit = 5;
+  // Resulting git tag hash for surface-touching ops ("" otherwise).
+  string result_tag = 6;
+  // Free-form detail (often a compact JSON object).
+  string detail = 7;
+  // Unix seconds the entry was recorded.
+  int64 created_at = 8;
+}
+
+message ListAuditRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// -- Configuration change-sets (phase 3a) ----------------------------------
+
+// One configuration change-set summary.
+message Changeset {
+  string change_id = 1;
+  // Human label of the actor that opened the change-set.
+  string actor_label = 2;
+  // Scope path the change-set targets.
+  string scope = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Unix seconds the change-set was created.
+  int64 created_at = 6;
+  // Unix seconds the change-set was applied (0 when never applied).
+  int64 applied_at = 7;
+  // The change-set that reverted this one ("" when not reverted).
+  string reverted_by_change_id = 8;
+}
+
+// One revision within a change-set: a staged operation on one object.
+message Revision {
+  // The object's type (e.g. "registry", "membership", "token").
+  string object_type = 1;
+  // The object's stable id within its type.
+  string object_id = 2;
+  // The operation: create | update | delete.
+  string op = 3;
+  // Semantic field-level diffs of this revision.
+  repeated FieldDiff diffs = 4;
+}
+
+// One field-level diff between a revision's old and new object snapshots.
+message FieldDiff {
+  // The field name (a JSON object key).
+  string field = 1;
+  // The old scalar value ("" when the field was added).
+  string old = 2;
+  // The new scalar value ("" when the field was removed).
+  string new = 3;
+}
+
+message ListChangesetsRequest {
+  // Scope path to filter on; the root scope ("") lists instance-wide.
+  string scope = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListChangesetsResponse {
+  repeated Changeset changesets = 1;
+  string next_page_token = 2;
+}
+
+message GetChangesetRequest {
+  string change_id = 1;
+}
+
+message GetChangesetResponse {
+  Changeset changeset = 1;
+  repeated Revision revisions = 2;
+}
+
+message RevertChangesetRequest {
+  string change_id = 1;
+}
+
+message RevertChangesetResponse {
+  // The newly drafted-and-applied revert change-set.
+  Changeset changeset = 1;
+}
+
+// -- Publish: upload-credential minting ------------------------------------
+
+message MintUploadCredentialsRequest {
+  // Canonical registry slug to mint an upload credential for.
+  string slug = 1;
+}
+
+message MintUploadCredentialsResponse {
+  // The provisioning-token secret (aos_-prefixed), shown exactly once. Hand
+  // it to `apr origin upload --token <token>` or exchange it at
+  // /oauth2/token for a bearer JWT.
+  string token = 1;
+  // Canonical facade base URL to upload the registry surface to.
+  string upload_url = 2;
+  // Unix seconds the credential expires.
+  int64 expires_at = 3;
+}
+
+// -- Webhooks (phase 4) ----------------------------------------------------
+
+// One webhook subscription. The secret is omitted from list responses and
+// returned only once, on creation.
+message Webhook {
+  int64 id = 1;
+  string org_slug = 2;
+  // Destination URL each subscribed event is POSTed to.
+  string url = 3;
+  // Subscribed event-type strings; empty means all events.
+  repeated string events = 4;
+  // Whether the subscription currently receives deliveries.
+  bool active = 5;
+  // Unix seconds the subscription was created.
+  int64 created_at = 6;
+}
+
+message CreateWebhookRequest {
+  string org_slug = 1;
+  // Destination URL.
+  string url = 2;
+  // Event-type strings to subscribe to; empty subscribes to all events.
+  repeated string events = 3;
+  // Optional shared HMAC secret; a random one is generated when empty.
+  string secret = 4;
+}
+
+message CreateWebhookResponse {
+  Webhook webhook = 1;
+  // The HMAC-SHA256 signing secret, returned exactly once.
+  string secret = 2;
+}
+
+message ListWebhooksRequest {
+  string org_slug = 1;
+}
+
+message ListWebhooksResponse {
+  repeated Webhook webhooks = 1;
+}
+
+message DeleteWebhookRequest {
+  int64 id = 1;
+}
+
+message DeleteWebhookResponse {
+  // Whether a webhook was removed.
+  bool deleted = 1;
+}
+
+// -- Git read API + change requests ----------------------------------------
+
+// One commit in a registry's committed history.
+message GitCommit {
+  // Commit object id (64-hex sha256).
+  string oid = 1;
+  // Parent commit oids, in header order.
+  repeated string parents = 2;
+  // Commit message (full body).
+  string message = 3;
+  // Committer identity line ("Name <email>").
+  string author = 4;
+  // Committer timestamp, Unix seconds.
+  int64 when = 5;
+  // The AOS-Change-Id trailer when the commit carries one ("" otherwise).
+  string change_id = 6;
+}
+
+message GitLogRequest {
+  string slug = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message GitLogResponse {
+  repeated GitCommit commits = 1;
+  string next_page_token = 2;
+}
+
+message GitDiffRequest {
+  string slug = 1;
+  // Base commit oid (64-hex). Empty diffs the whole tree as additions.
+  string from_oid = 2;
+  // Target commit oid (64-hex). Empty defaults to the current HEAD.
+  string to_oid = 3;
+}
+
+message GitDiffResponse {
+  // A textual unified-ish diff of the committed config files between the two
+  // commits.
+  string diff = 1;
+}
+
+// One git-backed change request: a draft change-set with the hub's signed
+// draft commit and ref, its file diff, and the promotion command.
+message ChangeRequest {
+  // The change-set id (also the AOS-Change-Id trailer and ref suffix).
+  string change_id = 1;
+  // The draft ref the hub wrote (refs/hub/changes/<change_id>).
+  string git_ref = 2;
+  // The signed draft-commit oid the ref points at.
+  string git_commit = 3;
+  // Lifecycle status: draft | applied | reverted.
+  string status = 4;
+  // One-line human summary.
+  string summary = 5;
+  // Human label of the actor that opened the change request.
+  string actor_label = 6;
+  // Unix seconds the change request was created.
+  int64 created_at = 7;
+  // The committed file each revision edits, with its semantic diff.
+  repeated FileDiff file_diffs = 8;
+  // The `apr change merge <change_id>` command a maintainer runs to promote it.
+  string merge_command = 9;
+}
+
+// One edited committed file within a change request, with a unified diff.
+message FileDiff {
+  // The committed file path (e.g. "registry.toml").
+  string path = 1;
+  // A textual unified-ish diff of the file's old vs new contents.
+  string diff = 2;
+}
+
+message ListChangeRequestsRequest {
+  string slug = 1;
+}
+
+message ListChangeRequestsResponse {
+  repeated ChangeRequest change_requests = 1;
+}
+
+// -- Managed caches (RFC-0004 "11-caches") ---------------------------------
+
+// Hosting and managing Nix binary caches — a first-class sibling of
+// registries. Org-scoped writes require registry.configure on the owning org
+// (instance-level caches require iam.admin on root); reads honor the cache's
+// visibility, like registries.
+service CacheService {
+  rpc CreateCache(CreateCacheRequest) returns (CreateCacheResponse);
+  rpc GetCache(GetCacheRequest) returns (GetCacheResponse);
+  rpc ListCaches(ListCachesRequest) returns (ListCachesResponse);
+  rpc UpdateCache(UpdateCacheRequest) returns (UpdateCacheResponse);
+  rpc DeleteCache(DeleteCacheRequest) returns (DeleteCacheResponse);
+  rpc LinkCache(LinkCacheRequest) returns (LinkCacheResponse);
+  rpc UnlinkCache(UnlinkCacheRequest) returns (UnlinkCacheResponse);
+  rpc ListCacheLinks(ListCacheLinksRequest) returns (ListCacheLinksResponse);
+  rpc SetCacheGcPolicy(SetCacheGcPolicyRequest) returns (SetCacheGcPolicyResponse);
+  rpc GetCacheGcPolicy(GetCacheGcPolicyRequest) returns (GetCacheGcPolicyResponse);
+  rpc PinCachePath(PinCachePathRequest) returns (PinCachePathResponse);
+  rpc UnpinCachePath(UnpinCachePathRequest) returns (UnpinCachePathResponse);
+  rpc ListCacheRoots(ListCacheRootsRequest) returns (ListCacheRootsResponse);
+  rpc SearchCache(SearchCacheRequest) returns (SearchCacheResponse);
+  rpc GetCacheObject(GetCacheObjectRequest) returns (GetCacheObjectResponse);
+  rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
+  rpc RunCacheGc(RunCacheGcRequest) returns (RunCacheGcResponse);
+  rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
+  // Migrate a cache's surface to a different storage backend: copy every object
+  // to the target binding (or the default store), re-point, and reconcile the
+  // index. Requires cache-admin authority.
+  rpc ChangeCacheStorage(ChangeCacheStorageRequest)
+      returns (ChangeCacheStorageResponse);
+  // Mint a short-lived presigned PUT URL for uploading one object directly to a
+  // cache's private external origin (the `mint` purpose). Requires cache-write
+  // authority; only valid for a presign-configured (private external) binding.
+  rpc MintCacheUploadCredentials(MintCacheUploadCredentialsRequest)
+      returns (MintCacheUploadCredentialsResponse);
+  // Register (write + index) a batch of narinfos in one round-trip, after their
+  // NAR bytes have been uploaded directly to the origin via presigned URLs. The
+  // narinfos are small; batching keeps the hub off the per-object critical path
+  // so a bulk push is bounded by direct-to-origin NAR throughput, not Worker
+  // round-trips. Requires cache-write authority.
+  rpc RegisterCacheNarinfos(RegisterCacheNarinfosRequest)
+      returns (RegisterCacheNarinfosResponse);
+}
+
+// A managed cache (distinct from `Cache` above, which is a registry's
+// advertised cache-stack endpoint).
+message ManagedCache {
+  string slug = 1;
+  string name = 2;
+  // Owning org slug; empty for an instance-level standalone cache.
+  string org_slug = 3;
+  // Storage binding name within the org.
+  string binding_name = 4;
+  string prefix = 5;
+  // public | internal | private.
+  string visibility = 6;
+  // nix-cache-info Priority (lower = preferred).
+  int64 priority = 7;
+  // zstd | xz | none.
+  string compression = 8;
+  bool want_mass_query = 9;
+  // Whether narinfo is signed by a hosted key.
+  bool signed = 10;
+  int64 created_at = 11;
+  // Running storage totals (populated by GetCache; 0 in list responses).
+  int64 used_bytes = 12;
+  int64 object_count = 13;
+  // Live link and root counts (populated by GetCache).
+  int64 link_count = 14;
+  int64 root_count = 15;
+}
+
+// One narinfo-indexed object in a cache.
+message CacheObject {
+  string store_hash = 1;
+  string store_name = 2;
+  string nar_url = 3;
+  string nar_hash = 4;
+  int64 nar_size = 5;
+  string file_hash = 6;
+  int64 file_size = 7;
+  string compression = 8;
+  string deriver = 9;
+  repeated string refs = 10;
+  string sig = 11;
+  string ca = 12;
+  int64 uploaded_at = 13;
+}
+
+// A cache⇄registry link.
+message CacheLink {
+  string registry_slug = 1;
+  bool roots_packages = 2;
+  bool advertised = 3;
+}
+
+// A garbage-collection root.
+message CacheRoot {
+  string store_hash = 1;
+  // manual | release | channel | package_version | derived.
+  string root_kind = 2;
+  string root_ref = 3;
+  // Manual-pin deadline (unix seconds); unset = unlimited.
+  optional int64 expires_at = 4;
+  int64 created_at = 5;
+}
+
+// A cache GC retention policy (unset scalar = unlimited/disabled).
+message CacheGcPolicyMsg {
+  optional int64 max_bytes = 1;
+  optional int64 max_objects = 2;
+  optional int64 ttl_unreferenced_secs = 3;
+  optional int64 keep_release_versions = 4;
+  bool keep_channel_frontier = 5;
+  optional int64 schedule_secs = 6;
+}
+
+// A past or in-flight GC run.
+message CacheGcRun {
+  int64 id = 1;
+  int64 started_at = 2;
+  optional int64 finished_at = 3;
+  // running | ok | failed.
+  string status = 4;
+  string error = 5;
+  int64 scanned = 6;
+  int64 retained = 7;
+  int64 deleted_objects = 8;
+  int64 freed_bytes = 9;
+}
+
+message CreateCacheRequest {
+  // Owning org slug; empty for an instance-level standalone cache.
+  string org_slug = 1;
+  string slug = 2;
+  string name = 3;
+  // Storage binding name within the org.
+  string binding_name = 4;
+  string prefix = 5;
+  // Visibility: public | internal | private (defaults to private).
+  string visibility = 6;
+  // nix-cache-info Priority (0 → default 40).
+  int64 priority = 7;
+  // zstd | xz | none (empty → zstd).
+  string compression = 8;
+  bool want_mass_query = 9;
+}
+
+message CreateCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message GetCacheRequest {
+  string slug = 1;
+}
+
+message GetCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message ListCachesRequest {
+  // Restrict to one org's caches; empty lists all servable caches.
+  string org_slug = 1;
+}
+
+message ListCachesResponse {
+  repeated ManagedCache caches = 1;
+}
+
+message UpdateCacheRequest {
+  string slug = 1;
+  // A partial update: each omitted field keeps its current value.
+  optional string name = 2;
+  optional string visibility = 3;
+  optional int64 priority = 4;
+  optional string compression = 5;
+  optional bool want_mass_query = 6;
+}
+
+message UpdateCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message DeleteCacheRequest {
+  string slug = 1;
+  // Hard-delete the row (cascade); otherwise soft-delete.
+  bool hard = 2;
+  // Soft-delete grace before purge eligibility (seconds; 0 → 30 days).
+  int64 grace_secs = 3;
+}
+
+message DeleteCacheResponse {
+  bool deleted = 1;
+}
+
+message LinkCacheRequest {
+  string cache_slug = 1;
+  string registry_slug = 2;
+  bool roots_packages = 3;
+  bool advertised = 4;
+}
+
+message LinkCacheResponse {
+  // The id of the change request proposed to advertise this cache in the
+  // registry's committed registry.toml [[caches]], or empty when none was
+  // needed (advertised was false, or the cache was already advertised). The
+  // change is a draft a maintainer promotes with `apr change merge`.
+  string change_id = 1;
+}
+
+message UnlinkCacheRequest {
+  string cache_slug = 1;
+  string registry_slug = 2;
+}
+
+message UnlinkCacheResponse {
+  bool removed = 1;
+  // The id of the change request proposed to de-advertise this cache from the
+  // registry's committed registry.toml [[caches]], or empty when none was
+  // needed (the cache was not advertised there). Promote with `apr change
+  // merge`.
+  string change_id = 2;
+}
+
+message ListCacheLinksRequest {
+  string cache_slug = 1;
+}
+
+message ListCacheLinksResponse {
+  repeated CacheLink links = 1;
+}
+
+message SetCacheGcPolicyRequest {
+  string cache_slug = 1;
+  CacheGcPolicyMsg policy = 2;
+}
+
+message SetCacheGcPolicyResponse {}
+
+message GetCacheGcPolicyRequest {
+  string cache_slug = 1;
+}
+
+message GetCacheGcPolicyResponse {
+  // Unset when the cache has no explicit policy.
+  optional CacheGcPolicyMsg policy = 1;
+}
+
+message PinCachePathRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+  // Deadline (unix seconds); unset = unlimited. Renews in place.
+  optional int64 expires_at = 3;
+}
+
+message PinCachePathResponse {}
+
+message UnpinCachePathRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+message UnpinCachePathResponse {
+  bool removed = 1;
+}
+
+message ListCacheRootsRequest {
+  string cache_slug = 1;
+}
+
+message ListCacheRootsResponse {
+  repeated CacheRoot roots = 1;
+}
+
+message SearchCacheRequest {
+  string cache_slug = 1;
+  string query = 2;
+  // Maximum results (0 → 50).
+  int64 limit = 3;
+}
+
+message SearchCacheResponse {
+  repeated CacheObject objects = 1;
+}
+
+message GetCacheObjectRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+message GetCacheObjectResponse {
+  // Unset when the cache has no such object.
+  optional CacheObject object = 1;
+}
+
+message ListCacheGcRunsRequest {
+  string cache_slug = 1;
+  // Maximum runs (0 → 10).
+  int64 limit = 2;
+}
+
+message ListCacheGcRunsResponse {
+  repeated CacheGcRun runs = 1;
+}
+
+message RunCacheGcRequest {
+  string cache_slug = 1;
+  // Compute what would be reclaimed without deleting anything.
+  bool dry_run = 2;
+}
+
+message RunCacheGcResponse {
+  int64 scanned = 1;
+  int64 retained = 2;
+  int64 deleted_objects = 3;
+  int64 freed_bytes = 4;
+  bool dry_run = 5;
+}
+
+message CacheClosureRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+// One node in a closure: the object plus its direct reference edges.
+message CacheClosureNode {
+  string store_hash = 1;
+  string store_name = 2;
+  int64 file_size = 3;
+  // Direct references (store hashes) — the out-edges.
+  repeated string refs = 4;
+  // Whether this referenced object is actually present in the cache.
+  bool present = 5;
+}
+
+message CacheClosureResponse {
+  // The transitive closure of the requested path (the root first), present
+  // objects only carry size/refs; a missing reference appears with present=false.
+  repeated CacheClosureNode nodes = 1;
+  // Total on-disk size of the present closure (sum of file_size).
+  int64 total_size = 2;
+}
+
+message ChangeCacheStorageRequest {
+  // The cache slug to migrate.
+  string cache_slug = 1;
+  // Target storage binding name within the org; empty = the deployment default
+  // store.
+  string binding_name = 2;
+}
+message ChangeCacheStorageResponse {
+  // Objects copied to the new backend.
+  uint64 objects = 1;
+  // Bytes copied.
+  uint64 bytes = 2;
+}
+
+message MintCacheUploadCredentialsRequest {
+  // The cache slug to mint an upload URL for.
+  string cache_slug = 1;
+  // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
+  // Used for a one-off mint; for bulk uploads use `paths` instead.
+  string path = 2;
+  // Batch of object paths to mint URLs for in one round-trip. When non-empty,
+  // the response's `uploads` is populated (parallel to this list) and the
+  // single-path `upload_url` is unused.
+  repeated string paths = 3;
+}
+
+message MintCacheUploadCredentialsResponse {
+  // A short-lived presigned PUT URL the client uploads the object's bytes to
+  // directly (the origin, not the hub). Empty when the cache's binding is not a
+  // presign-configured private external origin (upload through the facade
+  // instead). The URL carries no long-lived secret.
+  string upload_url = 1;
+  // Unix seconds the presigned URL expires.
+  int64 expires_at = 2;
+  // Batch results, one per requested `paths` entry (same order). Each carries
+  // its own (possibly empty) presigned URL.
+  repeated PresignedUpload uploads = 3;
+}
+
+// One presigned upload URL within a batch mint response.
+message PresignedUpload {
+  // The cache-relative object path this URL uploads to.
+  string path = 1;
+  // The presigned PUT URL; empty when the path is not presignable.
+  string upload_url = 2;
+  // Unix seconds the presigned URL expires.
+  int64 expires_at = 3;
+}
+
+message RegisterCacheNarinfosRequest {
+  // The cache slug to register the narinfos under.
+  string cache_slug = 1;
+  // The narinfos to write + index.
+  repeated CacheNarinfo narinfos = 2;
+}
+
+// One narinfo to register: its store-path hash and full narinfo text.
+message CacheNarinfo {
+  // Store-path hash component (the narinfo object is `<store_hash>.narinfo`).
+  string store_hash = 1;
+  // The narinfo body (uploaded to the origin and parsed for the index).
+  string narinfo = 2;
+}
+
+message RegisterCacheNarinfosResponse {
+  // Number of narinfos successfully registered.
+  int64 registered = 1;
+}
+
+// IAM management: service accounts, scoped role grants, and registry-scoped
+// tokens — the machine API behind the producer console's settings pages, so the
+// CLI and automation administer identities over the authenticated API instead
+// of direct database access (RFC-0004 ch.14 "manage everything via the API").
+//
+// Every method takes a bearer JWT and authorizes against the same grants the
+// console enforces: `iam.admin` at the instance root, or `registry.configure`
+// at the target registry/org scope. A minted token's effective permissions are
+// intersected with the owning principal's grants — a token can never exceed its
+// owner's authority.
+service IamService {
+  // Create (or return the existing) org-owned service account — a non-human
+  // principal for CI/automation, distinct from a user.
+  rpc CreateServiceAccount(CreateServiceAccountRequest)
+      returns (CreateServiceAccountResponse);
+  // Grant a role to a principal (user or service account) at a canonical scope.
+  rpc GrantMembership(GrantMembershipRequest) returns (GrantMembershipResponse);
+  // Revoke a principal's grant at a scope (a no-op when none exists).
+  rpc RevokeMembership(RevokeMembershipRequest)
+      returns (RevokeMembershipResponse);
+  // Mint a registry-scoped bearer token; the secret is returned exactly once.
+  rpc MintToken(MintTokenRequest) returns (MintTokenResponse);
+  // Revoke a token by its id.
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+  // List the tokens visible at a scope (metadata only — never the secret).
+  rpc ListTokens(ListTokensRequest) returns (ListTokensResponse);
+}
+
+message CreateServiceAccountRequest {
+  // Owning org slug.
+  string org_slug = 1;
+  // Service-account name, unique within the org.
+  string name = 2;
+}
+
+// A non-human principal owned by an org.
+message ServiceAccount {
+  int64 id = 1;
+  string org_slug = 2;
+  string name = 3;
+}
+
+message CreateServiceAccountResponse {
+  ServiceAccount service_account = 1;
+}
+
+message GrantMembershipRequest {
+  // Principal kind: "user" or "service_account".
+  string principal_kind = 1;
+  // Principal reference: a user's email, or "<org_slug>/<name>" for a service
+  // account.
+  string principal_ref = 2;
+  // Canonical scope: "" (instance root), "<org>", or "<org>/<registry>".
+  string scope = 3;
+  // Role name: owner | maintainer | member | viewer.
+  string role = 4;
+}
+
+message GrantMembershipResponse {}
+
+message RevokeMembershipRequest {
+  string principal_kind = 1;
+  string principal_ref = 2;
+  string scope = 3;
+}
+
+message RevokeMembershipResponse {}
+
+message MintTokenRequest {
+  // Token owner: "user:<email>" or "service_account:<org_slug>/<name>".
+  string owner = 1;
+  // Canonical registry/org scope the token is bound to.
+  string scope = 2;
+  // Permission verbs the token carries (e.g. "read", "publish"); intersected
+  // with the owner's grants at `scope`.
+  repeated string permissions = 3;
+  // Optional time-to-live in seconds; 0 applies the hub's default policy.
+  int64 ttl_secs = 4;
+}
+
+message MintTokenResponse {
+  // Stable, non-secret token id (used by Revoke/List).
+  string token_id = 1;
+  // The token secret — returned ONCE; only its hash is persisted.
+  string secret = 2;
+}
+
+message RevokeTokenRequest {
+  string token_id = 1;
+}
+
+message RevokeTokenResponse {}
+
+message ListTokensRequest {
+  // Scope whose tokens to list.
+  string scope = 1;
+}
+
+// Token metadata (never includes the secret).
+message TokenInfo {
+  string token_id = 1;
+  string owner = 2;
+  string scope = 3;
+  repeated string permissions = 4;
+  int64 created_at = 5;
+  // Unix seconds the token expires; 0 for non-expiring.
+  int64 expires_at = 6;
+}
+
+message ListTokensResponse {
+  repeated TokenInfo tokens = 1;
+}

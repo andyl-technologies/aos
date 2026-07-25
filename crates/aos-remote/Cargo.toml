@@ -5,6 +5,11 @@ edition = "2024"
 
 [dependencies]
 aos-proto = { workspace = true }
+# The wasm-clean Connect-JSON message structs (RFC-0004 Phase 5): the registry
+# hub client exchanges these as JSON, the same types the hub's shared service
+# and the Cloudflare Worker speak. (The cache/build/gc/auth clients above still
+# use the connectrpc `aos-proto` types.)
+aos-proto-types = { workspace = true }
 anyhow = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }
@@ -12,3 +17,8 @@ http = { workspace = true }
 prost = { workspace = true }
 webpki-roots = { workspace = true }
 rustls-native-certs = { workspace = true }
+# REST client for the hub's `POST /oauth2/token` exchange (the provisioning
+# secret -> JWT login), which is a plain JSON endpoint, not a ConnectRPC service.
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

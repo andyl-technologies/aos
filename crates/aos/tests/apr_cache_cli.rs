@@ -209,6 +209,8 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             registry_name,
             "--key",
             release_key.to_str().context("release key path utf-8")?,
+            "--cache-url",
+            &cache_server.base_url(),
             "--upload-url",
             &format!("file://{}", upload_dir.display()),
         ],
@@ -331,6 +333,8 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             registry_name,
             "--key",
             release_key.to_str().context("release key path utf-8")?,
+            "--cache-url",
+            &cache_server.base_url(),
             "--upload-url",
             &format!("file://{}", upload_dir.display()),
         ],
@@ -559,9 +563,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         ],
     )?;
 
-    let cache_output = tmp.path().join("release-cache-output");
-    let cache_server = StaticHttpServer::spawn(cache_output.clone()).await?;
     let upload_dir = tmp.path().join("release-origin-upload");
+    let cache_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
     let upload_url = format!("file://{}", upload_dir.display());
     let release = run_apr_with_aos_root(
         &maintainer_home,
@@ -583,8 +586,6 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             "registry@example.com",
             "--key",
             key_path.to_str().context("release key path utf-8")?,
-            "--cache-output",
-            cache_output.to_str().context("cache output path utf-8")?,
             "--cache-url",
             &cache_server.base_url(),
             "--cache-priority",
@@ -616,7 +617,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         release.contains("Released release-store-path-cache 1.0.0"),
         "{release}",
     );
-    assert_cache_entry_count(&cache_output, 2)?;
+    assert_cache_entry_count(&upload_dir, 2)?;
 
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
@@ -624,10 +625,25 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
         "{package_toml}",
     );
+    // RFC-0005: dependency edges live in the `store/` realisation graph, not
+    // the package TOML (which now records only store_path/closure_size). The
+    // published tool record must list the helper as a runtime dependency, and
+    // the helper must have its own realisation record.
+    let tool_hash = store_path_hash(&fixture.tool_store_path)?;
     let helper_hash = store_path_hash(&fixture.helper_store_path)?;
+    let store_dir = registry_dir.join("store");
+    let tool_record = fs::read_to_string(store_dir.join(&tool_hash[..2]).join(&tool_hash))
+        .with_context(|| format!("reading published store/ record for tool {tool_hash}"))?;
     assert!(
-        package_toml.contains(&format!("\"{helper_hash}\"")),
-        "published package metadata should record helper reference {helper_hash}:\n{package_toml}",
+        tool_record.contains(&format!("ia:sha256:{helper_hash}")),
+        "published store/ record for the tool should record helper reference {helper_hash}:\n{tool_record}",
+    );
+    assert!(
+        store_dir
+            .join(&helper_hash[..2])
+            .join(&helper_hash)
+            .exists(),
+        "published store/ graph should include a realisation record for the helper {helper_hash}",
     );
     assert!(
         fs::read_to_string(registry_dir.join("registry.toml"))?
@@ -700,6 +716,293 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     assert_eq!(verified["registry"], registry_name);
     assert_eq!(verified["version"], "1.0.0");
     assert_eq!(verified["verified"], true, "{verified}");
+
+    Ok(())
+}
+
+/// All-or-nothing: a release whose cache upload fails must leave neither an
+/// advertised `[[caches]]` pointer nor a release tag behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apr_release_aborts_without_pointer_or_tag_when_upload_fails() -> Result<()> {
+    if !nix_toolchain_available("apr release all-or-nothing e2e") {
+        return Ok(());
+    }
+
+    let tmp = tempfile::TempDir::new()?;
+    let producer_aos_root = tmp.path().join("producer-aos-root");
+    prepare_aos_root(&producer_aos_root)?;
+    let Some(fixture) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
+    else {
+        eprintln!("skipping apr release all-or-nothing e2e: nix-store could not add fixture");
+        return Ok(());
+    };
+
+    let maintainer_home = tmp.path().join("maintainer-home");
+    let registry_name = "release-all-or-nothing";
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
+    let key_path = maintainer_home.join(format!(".config/apm/keys/{registry_name}-release.key"));
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+        ],
+    )?;
+
+    // Poison the destination: a regular file where the backend expects a
+    // directory, so the cache-bytes upload fails after generation succeeds.
+    let poisoned = tmp.path().join("poisoned-origin");
+    fs::write(&poisoned, b"not a directory")?;
+    let upload_url = format!("file://{}", poisoned.display());
+
+    let release = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "release",
+            "1.0.0",
+            "--registry",
+            registry_name,
+            "--store-path",
+            &fixture.tool_store_path,
+            "--name",
+            "fixture-tool",
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--cache-url",
+            "http://127.0.0.1:9/cache",
+            "--upload-url",
+            &upload_url,
+        ],
+    );
+    let message = format!(
+        "{:#}",
+        release.expect_err("release must fail when the cache upload fails")
+    );
+    assert!(
+        message.contains("poisoned-origin"),
+        "release failure should surface the failing destination:\n{message}",
+    );
+
+    let registry_dir = registry_dir(&maintainer_home, registry_name);
+    let registry_toml = fs::read_to_string(registry_dir.join("registry.toml"))?;
+    assert!(
+        !registry_toml.contains("[[caches]]"),
+        "a failed release must not advertise a cache pointer:\n{registry_toml}",
+    );
+    let tags = git_stdout(&registry_dir, &["tag", "--list"], "listing release tags")?;
+    assert!(
+        !tags.lines().any(|tag| tag.trim() == "1.0.0"),
+        "a failed release must not leave a 1.0.0 tag behind, found:\n{tags}",
+    );
+
+    Ok(())
+}
+
+/// A second release whose closure is already present on the destination skips
+/// it entirely — no narinfo or NAR is regenerated (§7.4 root early-out).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apr_release_skips_already_published_closure() -> Result<()> {
+    if !nix_toolchain_available("apr release remote-skip e2e") {
+        return Ok(());
+    }
+
+    let tmp = tempfile::TempDir::new()?;
+    let producer_aos_root = tmp.path().join("producer-aos-root");
+    prepare_aos_root(&producer_aos_root)?;
+    let Some(fixture) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
+    else {
+        eprintln!("skipping apr release remote-skip e2e: nix-store could not add fixture");
+        return Ok(());
+    };
+
+    let maintainer_home = tmp.path().join("maintainer-home");
+    let registry_name = "release-remote-skip";
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
+    let key_path = maintainer_home.join(format!(".config/apm/keys/{registry_name}-release.key"));
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+        ],
+    )?;
+    let registry_dir = registry_dir(&maintainer_home, registry_name);
+    configure_fixture_git_identity(&registry_dir)?;
+    fs::create_dir_all(registry_dir.join("packages/f"))?;
+    fs::write(
+        registry_dir.join("packages/f/fixture-tool.toml"),
+        package_toml_with_name("fixture-tool", "1.0.0", &fixture.tool_store_path),
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging fixture package",
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["commit", "-m", "publish fixture package"],
+        "committing fixture package",
+    )?;
+
+    let upload_dir = tmp.path().join("origin-upload");
+    let release_args = |version: &str| -> Vec<String> {
+        vec![
+            "release".to_string(),
+            version.to_string(),
+            "--registry".to_string(),
+            registry_name.to_string(),
+            "--key".to_string(),
+            key_path.to_string_lossy().into_owned(),
+            "--cache-url".to_string(),
+            "http://127.0.0.1:9/cache".to_string(),
+            "--upload-url".to_string(),
+            format!("file://{}", upload_dir.display()),
+        ]
+    };
+
+    // First release publishes the whole closure (tool + helper).
+    let first = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &release_args("1.0.0")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    )?;
+    assert!(
+        first.contains("Generated static cache: 2 narinfos, 2 NARs"),
+        "first release should generate the full closure:\n{first}",
+    );
+    assert_cache_entry_count(&upload_dir, 2)?;
+
+    // Re-point a new version at the same store path, then release it: the root
+    // narinfo is already present, so the whole subtree is skipped.
+    fs::write(
+        registry_dir.join("packages/f/fixture-tool.toml"),
+        package_toml_with_versions(
+            "fixture-tool",
+            &[
+                ("1.0.0", fixture.tool_store_path.as_str()),
+                ("2.0.0", fixture.tool_store_path.as_str()),
+            ],
+        ),
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["add", "packages/f/fixture-tool.toml"],
+        "staging second version",
+    )?;
+    git_stdout(
+        &registry_dir,
+        &["commit", "-m", "publish second version"],
+        "committing second version",
+    )?;
+    let second = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &release_args("2.0.0")
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    )?;
+    assert!(
+        second.contains("Generated static cache: 0 narinfos, 0 NARs"),
+        "second release of an already-published closure should regenerate nothing:\n{second}",
+    );
+    assert!(
+        second.contains("remote-skipped"),
+        "second release should report a remote skip:\n{second}",
+    );
+
+    Ok(())
+}
+
+/// `apr origin upload --cache-dir` uploads BOTH the static cache bytes and the
+/// git origin surface to the destination. This locks in the dedup that routes
+/// the cache through `upload_static_cache_to_all` (no longer bundled through
+/// the origin uploader). Pure file I/O — no Nix toolchain is exercised.
+#[test]
+fn apr_origin_upload_uploads_cache_and_git_origin() -> Result<()> {
+    if !nix_toolchain_available("apr origin upload --cache-dir e2e") {
+        return Ok(());
+    }
+
+    let tmp = tempfile::TempDir::new()?;
+    let producer_aos_root = tmp.path().join("producer-aos-root");
+    prepare_aos_root(&producer_aos_root)?;
+    let maintainer_home = tmp.path().join("maintainer-home");
+    let registry_name = "origin-upload-dedup";
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["create", registry_name],
+    )?;
+
+    // Fabricate a minimal static cache directory; `apr origin upload` PUTs the
+    // bytes verbatim and never parses them.
+    let cache_dir = tmp.path().join("cache");
+    fs::create_dir_all(cache_dir.join("nar"))?;
+    fs::write(
+        cache_dir.join("nix-cache-info"),
+        "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n",
+    )?;
+    fs::write(
+        cache_dir.join("abc123.narinfo"),
+        b"StorePath: /nix/store/x\n",
+    )?;
+    fs::write(cache_dir.join("nar/abc123.nar.zst"), b"zstd-nar-bytes")?;
+
+    let dest = tmp.path().join("origin-dest");
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            registry_name,
+            "--cache-dir",
+            cache_dir.to_str().context("cache dir utf-8")?,
+            "--upload-url",
+            &format!("file://{}", dest.display()),
+        ],
+    )?;
+
+    // Cache surface landed.
+    assert!(
+        dest.join("nix-cache-info").is_file(),
+        "missing nix-cache-info"
+    );
+    assert!(dest.join("abc123.narinfo").is_file(), "missing narinfo");
+    assert!(
+        dest.join("nar/abc123.nar.zst").is_file(),
+        "missing NAR under nar/",
+    );
+    // Git origin surface landed in the same upload.
+    assert!(dest.join("HEAD").is_file(), "missing git HEAD");
+    assert!(dest.join("info/refs").is_file(), "missing git info/refs");
+    assert!(dest.join("objects").is_dir(), "missing git objects/");
 
     Ok(())
 }
@@ -1062,7 +1365,14 @@ fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
 fn nix_store_dir(aos_root: &Path) -> PathBuf {
     aos_root
         .parent()
-        .map(|parent| parent.join("shared-store"))
+        .map(|parent| {
+            // Resolve symlinks in the store's parent: on macOS the temp dir
+            // lives under /var -> /private/var, and `nix-store` refuses a store
+            // whose parent path traverses a symlink.
+            std::fs::canonicalize(parent)
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join("shared-store")
+        })
         .unwrap_or_else(|| aos_root.join("store"))
 }
 

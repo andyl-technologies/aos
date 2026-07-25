@@ -429,11 +429,12 @@ fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
     let user = fs::read_to_string(&user_config)?;
     let system = fs::read_to_string(&system_config)?;
     assert!(user.contains("enabled = false"), "{user}");
+    // The overlay is a minimal delta: url/priority keep inheriting from the
+    // seed rather than being copied into the writable layer.
     assert!(
-        user.contains("url = \"https://registry.example/readonly\""),
-        "{user}"
+        !user.contains("url ="),
+        "disable overlay should not copy the seed url:\n{user}"
     );
-    assert!(user.contains("priority = 500"), "{user}");
     assert!(
         !system.contains("enabled = false"),
         "read-only system config should stay untouched by user disable:\n{system}"
@@ -466,7 +467,7 @@ fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
     let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "readonly"])?;
     assert!(
         !output.status.success(),
-        "registry remove should reject removing only the user override for a read-only system registry:\nstdout:\n{}\nstderr:\n{}",
+        "registry remove should refuse a seed-defined registry:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -476,8 +477,8 @@ fn read_only_system_registry_can_be_toggled_with_user_override() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        text.contains("also exists in system config"),
-        "remove error should explain that the system registry would remain:\n{text}"
+        text.contains("defined by a read-only seed"),
+        "remove error should explain the registry is seeded and must be blanked through host.nix:\n{text}"
     );
     assert!(
         user_config.exists(),
@@ -592,19 +593,17 @@ references = []
     let user = fs::read_to_string(&user_config)?;
     assert!(
         user.contains("[registry.state]"),
-        "update should create a user override with sync state:\n{user}"
+        "update should create a user overlay with sync state:\n{user}"
     );
     assert!(
         user.contains(&format!("last_commit = \"{head}\"")),
-        "user override should persist the synced commit:\n{user}"
+        "user overlay should persist the synced commit:\n{user}"
     );
+    // The overlay is a minimal [registry.state] delta: url/signing keep
+    // inheriting from the seed rather than being copied.
     assert!(
-        user.contains(&format!("url = \"file://{}\"", registry.display())),
-        "user override should preserve the system registry URL:\n{user}"
-    );
-    assert!(
-        user.contains("required = false"),
-        "user override should preserve the signing opt-out from system config:\n{user}"
+        !user.contains("url ="),
+        "state overlay should not copy the seed url:\n{user}"
     );
     let system = fs::read_to_string(&system_config)?;
     assert!(
@@ -624,7 +623,9 @@ fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     fs::create_dir_all(&origin)?;
 
     let url = format!("file://{}", origin.display());
-    let system_config = system_dir.join("registries.d/sysreg.toml");
+    // A system-scope add is a self-sufficient definition written to the
+    // writable layer (/var/lib/apm/config), never the read-only /etc seed.
+    let writable_config = aos_root(&system_dir).join("var/lib/apm/config/registries.d/sysreg.toml");
     let added = run_aos_package_json(
         &home,
         &system_dir,
@@ -656,14 +657,18 @@ fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     assert_eq!(added["verification_disabled"], true);
     assert_eq!(
         added["config"],
-        system_config.to_string_lossy().to_string(),
-        "registry --system add should write the redirected system config"
+        writable_config.to_string_lossy().to_string(),
+        "registry --system add should write the /var writable config layer"
     );
 
-    let config = fs::read_to_string(&system_config)?;
+    let config = fs::read_to_string(&writable_config)?;
     assert!(config.contains("name = \"sysreg\""), "{config}");
     assert!(config.contains(&format!("url = \"{url}\"")), "{config}");
     assert!(config.contains("priority = 701"), "{config}");
+    assert!(
+        !system_dir.join("registries.d/sysreg.toml").exists(),
+        "registry --system add must never write the read-only /etc seed"
+    );
     assert!(
         !home.join(".config/apm/registries.d/sysreg.toml").exists(),
         "registry --system add should not create a user config shadow file"
@@ -672,7 +677,7 @@ fn system_config_dir_override_supports_apm_system_registry_add() -> Result<()> {
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
         registries.contains("sysreg"),
-        "user-scope registry list did not see redirected system registry:\n{registries}"
+        "user-scope registry list did not see the /var system registry:\n{registries}"
     );
 
     Ok(())
@@ -699,8 +704,12 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
     assert!(
         registries.contains("sysreg"),
-        "aos package registry list did not see redirected system registry:\n{registries}"
+        "aos package registry list did not see the seeded system registry:\n{registries}"
     );
+
+    // disable/enable a seeded registry write a minimal overlay to the writable
+    // layer (here ~/.config/apm for user scope), never the read-only seed.
+    let user_overlay = home.join(".config/apm/registries.d/sysreg.toml");
 
     let disabled = run_aos_package_json(
         &home,
@@ -714,14 +723,18 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     assert_eq!(disabled["enabled"], false);
     assert_eq!(
         disabled["config"],
-        system_config.to_string_lossy().to_string(),
-        "registry disable should rewrite the effective redirected system config"
+        user_overlay.to_string_lossy().to_string(),
+        "registry disable should write the writable overlay, not the seed"
     );
-    let config = fs::read_to_string(&system_config)?;
-    assert!(config.contains("enabled = false"), "{config}");
+    let overlay = fs::read_to_string(&user_overlay)?;
+    assert!(overlay.contains("enabled = false"), "{overlay}");
     assert!(
-        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
-        "registry disable should not create a user config shadow file"
+        !overlay.contains("url ="),
+        "disable overlay should be a minimal delta:\n{overlay}"
+    );
+    assert!(
+        !fs::read_to_string(&system_config)?.contains("enabled = false"),
+        "the read-only seed must stay untouched by disable",
     );
 
     let enabled = run_aos_package_json(
@@ -736,67 +749,36 @@ fn system_config_dir_override_supports_apm_registry_lifecycle() -> Result<()> {
     assert_eq!(enabled["enabled"], true);
     assert_eq!(
         enabled["config"],
-        system_config.to_string_lossy().to_string(),
-        "registry enable should rewrite the effective redirected system config"
+        user_overlay.to_string_lossy().to_string(),
+        "registry enable should update the writable overlay",
     );
-    let config = fs::read_to_string(&system_config)?;
-    assert!(config.contains("enabled = true"), "{config}");
-    assert!(
-        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
-        "registry enable should not create a user config shadow file"
-    );
+    assert!(fs::read_to_string(&user_overlay)?.contains("enabled = true"));
 
+    // A seeded registry cannot be removed by apm — the seed must be blanked via
+    // signed host configuration. The command is refused and nothing on disk is deleted.
     let output = run_aos_package_output(
         &home,
         &system_dir,
-        &["--json", "registry", "remove", "sysreg", "--keep-local"],
+        &["registry", "remove", "sysreg", "--keep-local"],
     )?;
-    if !output.status.success() {
-        bail!(
-            "aos package registry remove sysreg failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .context("parsing registry remove JSON from stdout")?;
-    assert_eq!(json["action"], "registry_remove");
-    assert_eq!(json["status"], "removed");
-    assert_eq!(json["registry"], "sysreg");
-    assert_eq!(json["keep_local"], true);
-    assert_eq!(
-        json["config"],
-        system_config.to_string_lossy().to_string(),
-        "registry remove should delete the effective redirected system config"
-    );
-    assert_eq!(json["config_removed"], true);
     assert!(
-        String::from_utf8_lossy(&output.stderr).is_empty(),
-        "JSON registry remove should keep stderr clean:\n{}",
+        !output.status.success(),
+        "registry remove should refuse a seed-defined registry:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert!(
-        !system_config.exists(),
-        "registry remove left redirected system config behind at {}",
-        system_config.display()
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        !home.join(".config/apm/registries.d/sysreg.toml").exists(),
-        "registry remove should not create a user config shadow file"
+        text.contains("defined by a read-only seed"),
+        "remove error should explain the registry is seeded and must be blanked through host.nix:\n{text}"
     );
     assert!(
-        !system_trust_key.exists(),
-        "registry remove should delete the redirected system trust key for the removed system registry"
-    );
-    assert!(
-        !home.join(".config/apm/trusted-keys.d/sysreg.pub").exists(),
-        "registry remove should not replace a deleted system registry trust key with a user revocation file"
-    );
-
-    let registries = run_aos_package(&home, &system_dir, &["registry", "list"])?;
-    assert!(
-        !registries.contains("sysreg"),
-        "removed redirected system registry is still listed:\n{registries}"
+        system_config.exists() && system_trust_key.exists(),
+        "a refused remove must leave the seed and its trust key in place",
     );
 
     Ok(())
@@ -839,7 +821,7 @@ fn user_registry_shadowing_system_registry_is_not_silently_removed() -> Result<(
     let output = run_aos_package_output(&home, &system_dir, &["registry", "remove", "sysreg"])?;
     assert!(
         !output.status.success(),
-        "registry remove should reject a user shadow whose system fallback would remain:\nstdout:\n{}\nstderr:\n{}",
+        "registry remove should reject a user shadow whose seed definition would remain:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -849,8 +831,8 @@ fn user_registry_shadowing_system_registry_is_not_silently_removed() -> Result<(
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        text.contains("also exists in system config"),
-        "remove error should explain that the system fallback would remain:\n{text}"
+        text.contains("defined by a read-only seed"),
+        "remove error should explain the seed definition would remain:\n{text}"
     );
     assert!(
         user_config.exists(),
@@ -937,10 +919,17 @@ fn run_aos_package_output(
     let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
     command
         .env("HOME", home)
-        .env("APM_SYSTEM_CONFIG_DIR", system_dir);
+        .env("APM_SYSTEM_CONFIG_DIR", system_dir)
+        .env("AOS_ROOT", aos_root(system_dir));
     command.arg("package");
     command.args(args);
     command.output().context("running aos package")
+}
+
+/// Sandboxed `$AOS_ROOT` for a fixture, so the persistent `/var/lib/apm`
+/// writable layer lands under the test's tempdir instead of the real system.
+fn aos_root(system_dir: &Path) -> std::path::PathBuf {
+    system_dir.parent().unwrap_or(system_dir).join("aos-root")
 }
 
 fn run_apr_json(home: &Path, system_dir: &Path, args: &[&str], action: &str) -> Result<Value> {
@@ -984,6 +973,7 @@ fn run_apr_output(home: &Path, system_dir: &Path, args: &[&str]) -> Result<std::
     Command::new(env!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
+        .env("AOS_ROOT", aos_root(system_dir))
         .args(args)
         .output()
         .context("running apr")

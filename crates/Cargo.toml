@@ -17,11 +17,18 @@ members = [
     "ratchet-oracle",
     "aos-net",
     "aos-proto",
+    "aos-proto-types",
     "aos-server",
     "aos-cache",
     "aos-remote",
     "aos-doc",
     "aos-package",
+    "aos-hub-core",
+    "aos-hub",
+    "aos-registry-surface",
+    "aos-registry-spa",
+    "aos-hub-worker",
+    "aos-profile",
     "aos-systemd",
 ]
 
@@ -33,13 +40,19 @@ miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1.3.3"
+# `application/x-www-form-urlencoded` (de)serialization — the same decoder
+# axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
+# handler reproduces axum's parsing exactly.
+serde_urlencoded = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "fs", "time"] }
 crossbeam-deque = "0.8"
 md-5 = "0.11"
 sha1 = "0.10"
 sha2 = "0.10"
 ring = "0.17"
+hmac = "0.12"
 base64 = "0.22"
+aes-gcm = "0.10"
 regex = "1"
 stacker = "0.1.24"
 smallvec = "1"
@@ -76,12 +89,33 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Server
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+# Async SQL toolkit driving the registry-hub `Backend` over concrete pools
+# (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
+# mysql) are selected by `aos-hub`'s own cargo features; the bundled
+# sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
+# the existing tokio runtime rather than spawning a second reactor.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+# Still used by aos-package, aos-server, and aos-hub-worker; the registry
+# hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
 rusqlite = { version = "0.32", features = ["bundled"] }
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
-zstd = "0.13"
+# Pure-Rust Argon2id password hashing for the registry-hub PASSWORD auth path
+# (RFC-0004; the operator-requested reversal of the original "no passwords"
+# stance). PHC-string output, constant-time verify.
+argon2 = "0.5"
+# In-house WebAuthn RP verifier (RFC-0004 passkeys, attestation: none). These
+# round out the COSE signature algorithms beyond Ed25519 (already present):
+# p256 for ES256 ECDSA, rsa for RS256 PKCS#1v1.5, and ciborium as the CBOR
+# decoder for COSE keys + the attestationObject. All are pure-Rust RustCrypto
+# crates, wasm-clean for the Workers target.
+p256 = { version = "0.13", features = ["ecdsa"] }
+rsa = { version = "0.9", features = ["sha2"] }
+ciborium = "0.2"
+# `zstdmt` enables multi-threaded compression for apr's parallel NAR generation.
+zstd = { version = "0.13", features = ["zstdmt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }
@@ -105,6 +139,35 @@ clap_complete = "4"
 # Package manager
 toml = "0.8"
 semver = "1"
+# YAML parsing for the `aos metadata` agent: NoCloud `meta-data` /
+# `network-config` and cloud-config-shaped facts documents. JSON (serde_json)
+# and TOML (toml) cover everything else; YAML is the one format with no
+# existing crate in the lock.
+serde_yaml = "0.9"
+# Git access for the apm/apr registry. libgit2 (vendored, built with
+# -DEXPERIMENTAL_SHA256=ON via unstable-sha256) drives local object/ref
+# operations and the git://+ssh:// smart transports; the registry's static
+# dumb-HTTP(S) layout is read by our own loose-object walker since libgit2
+# speaks only smart HTTP. unstable-sha256 is an ABI-breaking feature, enabled
+# here because the registry is SHA-256-only.
+git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2", "unstable-sha256"] }
+# SSHSIG signing/verification (`gpg.format=ssh`) in pure Rust, replacing
+# shell-outs to `git verify-commit`/`verify-tag` and `ssh-keygen -Y`.
+ssh-key = { version = "0.6", default-features = false, features = ["std", "ed25519"] }
+# Tar archive writing for the `git archive`-equivalent tree extraction.
+tar = "0.4"
+# Data-parallelism for building thin-pack candidate strategies in parallel.
+rayon = "1"
+
+# zlib (de)compression for loose git objects (dumb-HTTP reader + hub indexer);
+# pure-Rust rust_backend so it stays wasm-clean for the Cloudflare Worker.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Pure-Rust NAR decompressors used by the mirror/pull-through to verify a
+# compressed NAR's *decompressed* bytes against the signed NarHash (sec CR-1).
+# In-process (no subprocess) so the verification path cannot be subverted by a
+# missing/hijacked external binary, and pure-Rust to stay wasm-clean.
+lzma-rs = "0.3"
+bzip2-rs = "0.1"
 
 # Code generation
 cranelift-codegen = { version = "=0.127.4", features = ["enable-serde"] }
@@ -122,6 +185,7 @@ loom = "0.7"
 connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "axum"] }
 buffa = "0.3"
 prost = "0.13"
+prost-build = "0.13"
 futures = "0.3"
 webpki-roots = "1"
 rustls-native-certs = "0.8"
@@ -147,11 +211,16 @@ ratchet-value = { path = "ratchet-value" }
 ratchet-oracle = { path = "ratchet-oracle" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
+aos-proto-types = { path = "aos-proto-types" }
 aos-server = { path = "aos-server" }
 aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
+aos-hub-core = { path = "aos-hub-core" }
+aos-hub = { path = "aos-hub" }
+aos-registry-surface = { path = "aos-registry-surface" }
+aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 
 [profile.release]

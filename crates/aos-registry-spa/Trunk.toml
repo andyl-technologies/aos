@@ -1,0 +1,21 @@
+# Trunk build configuration for the registry web-surface SPA.
+#
+# `trunk build --release` produces the dist `apr web generate` embeds:
+# hash-named `app-<hash>.js`, `app-<hash>_bg.wasm`, and `style-<hash>.css`.
+# The output is staged under `dist/` and uploaded to the registry bucket's
+# `web/` prefix as immutable assets (the immutable-first pointer-flip in
+# `static_upload.rs`).
+
+[build]
+# Name the wasm-bindgen artifacts `app-<hash>.*` to match RFC-0004's
+# artifact shape (/web/app-<hash>_bg.wasm, /web/app-<hash>.js).
+filehash = true
+public_url = "/web/"
+
+[build.aliases]
+# `trunk build --release` is the production invocation.
+
+[serve]
+# `trunk serve` is for local development against a checked-out surface;
+# production never serves through trunk.
+port = 8080

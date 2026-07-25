@@ -18,6 +18,7 @@ mod build;
 mod cache;
 mod doc;
 mod gc;
+mod hub;
 mod nix_diff;
 mod package;
 mod prefetch;
@@ -25,9 +26,12 @@ mod server;
 mod test;
 
 pub use cache::*;
+pub use hub::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
+
+use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 pub use nix_diff::NixDiffMode;
@@ -377,8 +381,11 @@ pub enum Commands {
         #[arg(long)]
         fail_on_stop: bool,
     },
-    /// Show repository info
-    Describe,
+    /// Show repository or package info
+    Describe {
+        /// Package name
+        package: Option<String>,
+    },
     /// Prefetch source hashes (parallel downloads with mirror failover)
     Prefetch {
         /// Only prefetch specific packages (repeatable)
@@ -424,12 +431,27 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
+    /// Cross-cloud metadata agent (initrd user-data fetch)
+    Metadata {
+        #[command(subcommand)]
+        command: MetadataCmd,
+    },
     /// Package manager (apm)
     Package(PackageArgs),
     /// Binary cache client (push, pull, prefetch, list)
     Cache {
         #[command(subcommand)]
         command: CacheCmd,
+    },
+    /// Registry hub client (interacts with an aos-hub via its API)
+    Hub {
+        #[command(subcommand)]
+        command: HubCmd,
+    },
+    /// Profile a closure for leaked build/dev artifacts
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCmd,
     },
     /// Browse documentation
     Doc {
@@ -446,6 +468,93 @@ pub enum Commands {
         /// Force rebuild index
         #[arg(long)]
         rebuild: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCmd {
+    /// Profile a target's runtime closure for build/dev artifacts
+    Closure {
+        /// Package name, attribute path, or store path to profile
+        target: String,
+        /// Number of largest paths to list
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+        /// Only print confirmed leaks (dev-leak / spurious verdicts)
+        #[arg(long)]
+        suspects_only: bool,
+        /// Also flag any path shipping no library/executable (slower:
+        /// scans much more of the closure, catches leaks of any name)
+        #[arg(long)]
+        deep: bool,
+    },
+    /// Explain why one package references another, with evidence
+    Refs {
+        /// Package that holds the reference
+        package: String,
+        /// Referenced dependency to justify
+        dependency: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MetadataCmd {
+    /// Detect the platform and probe offline config-drives
+    Detect,
+    /// Fetch and stash exact user-data + instance facts
+    Fetch,
+    /// Authorize user-data as exact literal host.nix
+    Authorize {
+        /// Measured provisioning trust policy: platform or signed
+        #[arg(long)]
+        trust: String,
+        /// Public configuration-key directory; repeatable
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+    },
+    /// Evaluate the closed aos.provisioning projection and render storage
+    EvalProvisioning {
+        /// ABI-pinned base module library embedded in the image
+        #[arg(long)]
+        base_lib: PathBuf,
+        /// Scratch directory admitted to restricted evaluation
+        #[arg(long, default_value = "/run/aos-provisioning-eval")]
+        eval_root: PathBuf,
+        /// Keep `/var` raw for measured-boot LUKS enrollment
+        #[arg(long)]
+        measured_boot: bool,
+        /// Existing committed arm for advisory post-provision drift evaluation
+        #[arg(long)]
+        committed_source: Option<String>,
+        /// Existing GPT marker UUID for stable generated partition UUIDs
+        #[arg(long)]
+        marker_uuid: Option<String>,
+    },
+    /// Verify that stage 2 sees the exact host input accepted in initrd
+    VerifyBinding,
+    /// Persist validated provisioning evidence and manual repart definitions
+    PersistProvisioning {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+        /// ABI of the base module library that evaluated the storage plan
+        #[arg(long)]
+        module_abi: u32,
+        /// Version of the image whose initrd evaluated the storage plan
+        #[arg(long)]
+        image_version: String,
+    },
+    /// Cache an authorized host input after full stage-2 evaluation succeeds
+    CacheRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
+    },
+    /// Restore the last fully evaluated host input when metadata is unavailable
+    RestoreRuntime {
+        /// Durable state directory on `/var`
+        #[arg(long, default_value = "/var/lib/aos-provisioning")]
+        state_dir: PathBuf,
     },
 }
 

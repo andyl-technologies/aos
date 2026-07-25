@@ -291,6 +291,42 @@ class AgentClient:
         else:
             self._wait_ready_oneshot(deadline)
 
+    def wait_down(self, deadline: float) -> None:
+        """Block until the agent stops answering PING (qemu in-VM reset).
+
+        The in-VM-reset reboot path keeps QEMU (and its swtpm) running, so
+        the pre-reboot agent keeps answering for the moment between issuing
+        ``reboot`` and the kernel tearing the transport down. Callers must
+        see the agent go silent before waiting for the new boot, or a PONG
+        from the *old* boot is mistaken for the reboot having completed.
+
+        Returns once two consecutive fresh-connection PINGs fail (the
+        guest is rebooting), or when ``deadline`` passes (caller's
+        subsequent ``wait_ready`` still bounds the overall wait).
+
+        # Errors
+
+        Never raises; a missed transition degrades to the readiness wait.
+        """
+        if self.driver != "qemu":
+            return
+        ping_frame = f"{len(b'PING')}\n".encode("ascii") + b"PING"
+        consecutive_down = 0
+        while time.monotonic() < deadline:
+            self._reset_conn()
+            try:
+                sock = self._persistent_conn(time.monotonic() + 2)
+                _write_all(sock, ping_frame, time.monotonic() + 2)
+                self._read_frame(sock, time.monotonic() + 2)
+                consecutive_down = 0  # still up
+            except (OSError, TimeoutError, AgentProtocolError):
+                consecutive_down += 1
+                if consecutive_down >= 2:
+                    self._reset_conn()
+                    return
+            time.sleep(0.3)
+        self._reset_conn()
+
     def _wait_ready_oneshot(self, deadline: float) -> None:
         """firecracker: a timed-out ping leaves nothing buffered (each
         attempt is its own vsock connection), so plain retry is safe."""

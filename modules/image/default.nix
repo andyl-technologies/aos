@@ -53,6 +53,16 @@ in {
       default = true;
       description = "Whether to build disk images for this system variant.";
     };
+
+    erofsCompressionLevel = lib.mkOption {
+      type = lib.types.int;
+      default = 19;
+      description = ''
+        Zstandard compression level used for EROFS root images. Production
+        keeps level 19 for distribution size; VM-test variants may select a
+        faster level without changing the filesystem or boot semantics.
+      '';
+    };
   };
 
   options.system.build.image = {
@@ -74,6 +84,16 @@ in {
     };
   };
 
+  options.system.build.uki = lib.mkOption {
+    type = lib.types.package;
+    description = ''
+      The assembled Unified Kernel Image (`.efi`) written to the image's
+      ESP. Secure Boot signed when `aos.boot.secureBoot.enable` is set.
+      Exposed so it can be published (`apr publish --image`) and have its
+      Secure Boot facts cataloged (RFC-0006 phase 4).
+    '';
+  };
+
   config = lib.mkIf cfg.enable {
     system.build.image = {
       raw = rawImage;
@@ -81,5 +101,6 @@ in {
       vmdk = convertImage "vmdk" "vmdk";
       vhd = convertImage "vhd" "vpc";
     };
+    system.build.uki = rawImage.uki;
   };
 }

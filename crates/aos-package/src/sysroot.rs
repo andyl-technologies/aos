@@ -49,17 +49,20 @@ use std::fs::{Metadata, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
 use aos_core::output::{OutputMode, Printer};
-use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
+use aos_systemd::{FailedUnitsReport, JobResult, SettleOutcome, SystemdClient};
 
 use crate::config::ApmConfig;
 use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    fetch_narinfos, resolve_mirror,
+    fetch_narinfos, resolve_mirror_chain, split_mirror_chain,
 };
+use crate::policy::admit_package_roots;
+use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
@@ -146,12 +149,16 @@ pub async fn install_system(
     printer.step(1, 8, "Loading registries...");
     let registries = load_registries(config)?;
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
+    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
 
     if closures.is_empty() {
         bail!("package '{pkg_name}' not found");
     }
 
-    let closure = &closures[0];
+    let closure = closures
+        .iter()
+        .find(|closure| closure.root.name == *pkg_name)
+        .ok_or_else(|| anyhow::anyhow!("resolved closure missing requested sysroot package"))?;
     let toplevel_meta = closure
         .closure
         .iter()
@@ -280,6 +287,14 @@ pub async fn install_system(
         printer.info("All paths already in store.");
     }
 
+    // Secure Boot validation (RFC-0006 phase 4): the closure is now
+    // downloaded, NAR/hash-verified, and imported. Before we create a new
+    // generation or touch the boot path, validate the image's recorded
+    // Secure Boot facts against the registry's signed catalog so an upgrade
+    // the firmware would reject is refused *here* — a clean, recoverable
+    // download-time refusal rather than a boot-time brick.
+    validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
+
     // Step 7: Create new system generation.
     printer.step(7, 8, "Creating system generation...");
     let profile_path = ProfileScope::System.profile_path();
@@ -307,6 +322,17 @@ pub async fn install_system(
         registry: closure.registry_name.clone(),
         created_at: now_iso,
         kernel_path: kernel_path.clone(),
+        // This single-axis sysroot-install path does not populate two-axis fields;
+        // not run the on-host config evaluator, so the config-gen axis metadata
+        // is absent. A `None` `module_abi_pinned` makes the rollback pin treat
+        // the generation is treated as same-ABI for direct reactivation.
+        image_gen_parent: None,
+        module_abi_pinned: None,
+        manifest_hash: None,
+        config_module_closure: None,
+        host_nix_ref: None,
+        host_nix_commit: None,
+        facts_hash: None,
     };
 
     // Create generation directory with a symlink to the toplevel.
@@ -795,10 +821,12 @@ async fn download_image(
 
     // Use the existing download pipeline — the image store path is just another
     // store path in the cache.
-    let mirror_url = resolve_image_mirror(config, meta);
+    let chain = resolve_image_mirror(config, meta);
+    let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let request = DownloadRequest {
         store_path: img.store_path.clone(),
         mirror_url,
+        fallback_mirrors,
     };
 
     let engine = std::sync::Arc::new(default_engine());
@@ -1025,6 +1053,115 @@ fn format_failed_units(report: &FailedUnitsReport) -> String {
     out
 }
 
+/// Hard ceiling on how long the post-activation health gate waits for a single
+/// auto-restarting unit to settle before giving up and reporting it failed.
+///
+/// Caps the per-unit deadline derived from `RestartSec` (see [`settle_budget`])
+/// so a pathological restart policy — a large `RestartSec`, or a unit that
+/// auto-restarts forever without ever reaching terminal `failed` — cannot stall
+/// the upgrade unboundedly.
+const MAX_SETTLE: Duration = Duration::from_secs(90);
+
+/// Floor on the settle deadline: always wait at least this long so a unit with
+/// a sub-second `RestartSec` still gets at least one clean retry observed.
+const MIN_SETTLE: Duration = Duration::from_secs(5);
+
+/// Restarts to budget for when sizing the settle deadline: enough to observe a
+/// fail -> backoff -> retry -> (one more) recovery, which covers the common
+/// "failed first start, recovers on retry" case.
+const SETTLE_RETRY_BUDGET: u32 = 2;
+
+/// Slack added on top of `RestartSec` * [`SETTLE_RETRY_BUDGET`] for the unit's
+/// own start time before it signals ready.
+const SETTLE_START_GRACE: Duration = Duration::from_secs(2);
+
+/// Settle budget for a unit, derived from its `RestartSec` and clamped to
+/// `[MIN_SETTLE, MAX_SETTLE]`.
+fn settle_budget(restart_sec: Duration) -> Duration {
+    (restart_sec * SETTLE_RETRY_BUDGET + SETTLE_START_GRACE).clamp(MIN_SETTLE, MAX_SETTLE)
+}
+
+/// Resolve units the snapshot scan flagged as auto-restarting before the gate
+/// judges them.
+///
+/// [`SystemdClient::failed_units`] is a point-in-time scan: a `.service` caught
+/// in its `RestartSec` backoff appears as `activating (auto-restart)` with a
+/// non-zero `ExecMainStatus`, indistinguishable from a unit that will keep
+/// failing. This partitions those tentative entries out, waits out each one's
+/// backoff (bounded by [`settle_budget`]), and keeps only the ones that end up
+/// genuinely failed — units that recover on retry are dropped. Units already in
+/// terminal `failed` state pass through untouched.
+///
+/// Waits run concurrently, so the added latency is the longest single budget,
+/// not their sum. Each wait is announced through `printer` (with its computed
+/// bound) before blocking, and a unit that never settles within the cap is
+/// reported with a warning, so a long wait is never silent and a flapping unit
+/// is never silently passed.
+async fn settle_auto_restarts(
+    client: &SystemdClient,
+    printer: &Printer,
+    report: FailedUnitsReport,
+) -> FailedUnitsReport {
+    let (tentative, mut failed): (Vec<_>, Vec<_>) = report
+        .failed
+        .into_iter()
+        .partition(|u| u.active_state != "failed" && u.sub_state == "auto-restart");
+
+    if tentative.is_empty() {
+        return FailedUnitsReport { failed };
+    }
+
+    // Size each unit's budget from its restart policy and announce before
+    // blocking, so the operator sees why the upgrade is pausing and for how long.
+    let mut budgets = Vec::with_capacity(tentative.len());
+    for u in &tentative {
+        let budget = match client.restart_policy(&u.name).await {
+            Ok(policy) => settle_budget(policy.restart_sec),
+            Err(_) => MIN_SETTLE,
+        };
+        let status = u
+            .exec_main_status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "n/a".to_string());
+        printer.info(&format!(
+            "{} is auto-restarting (ExecMainStatus={status}); waiting up to {}s for it to settle...",
+            u.name,
+            budget.as_secs(),
+        ));
+        budgets.push(budget);
+    }
+
+    let outcomes = futures_util::future::join_all(
+        tentative
+            .iter()
+            .zip(&budgets)
+            .map(|(u, budget)| client.wait_until_settled(&u.name, *budget)),
+    )
+    .await;
+
+    for ((u, budget), outcome) in tentative.into_iter().zip(budgets).zip(outcomes) {
+        match outcome {
+            SettleOutcome::Recovered { n_restarts } => {
+                printer.info(&format!(
+                    "  {} recovered after {n_restarts} restart(s)",
+                    u.name
+                ));
+            }
+            SettleOutcome::Failed => failed.push(u),
+            SettleOutcome::StillRestarting => {
+                printer.warning(&format!(
+                    "  {} did not settle within {}s (still auto-restarting) — not converging",
+                    u.name,
+                    budget.as_secs(),
+                ));
+                failed.push(u);
+            }
+        }
+    }
+
+    FailedUnitsReport { failed }
+}
+
 // ---------------------------------------------------------------------------
 // Live daemon reconciliation (`apm activate-{pre,post}-etc-swap`)
 // ---------------------------------------------------------------------------
@@ -1225,6 +1362,12 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
         .context("scanning for failed units")?;
 
     let _ = std::fs::remove_file(plan_path);
+
+    // `failed_units` is a point-in-time scan: a unit caught in its RestartSec
+    // backoff shows up as `activating (auto-restart)`, indistinguishable from
+    // one that will keep failing. Wait those out (bounded by MAX_SETTLE) before
+    // the gate judges, so a unit that recovers on retry doesn't fail the upgrade.
+    let report = settle_auto_restarts(&client, printer, report).await;
 
     if !report.is_empty() {
         printer.error(&format_failed_units(&report));
@@ -1674,14 +1817,252 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
 }
 
-/// Pick the mirror URL used for image downloads: the first configured
-/// registry's mirror, falling back to the default public cache.
-fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> String {
-    // Use the first configured registry's mirror URL.
-    if let Some((cfg, _)) = config.registries.first() {
-        return resolve_mirror(&config.scope.registries_path(), cfg);
+/// Validate a downloaded sysroot's Secure Boot facts against the registry's
+/// signed catalog before activation (RFC-0006 phase 4).
+///
+/// For every image the sysroot ships that records Secure Boot facts, this
+/// enforces, against the registry's committed `sb-certs.toml`:
+///
+/// 1. the image's `sb_signer_cert_sha256` is in the **active** db-cert set
+///    (and not revoked),
+/// 2. every SBAT component's generation is **at or above** the revocation
+///    floor,
+/// 3. (defense in depth) the downloaded UKI's embedded Authenticode
+///    signature re-verifies against the catalog's db cert, when a db cert
+///    PEM is provisioned locally (`trusted-sb-certs.d/<registry>.pem`).
+///
+/// On any mismatch it returns an error *before* a new generation is created
+/// or the boot path is touched, turning a boot-time Secure Boot rejection
+/// into a recoverable download-time refusal.
+///
+/// # Policy for unsigned images
+///
+/// Images that record **no** Secure Boot facts (legacy/unsigned/dev builds:
+/// `sb_signer_cert_sha256 == None` and an empty `sbat`) are skipped so the
+/// existing unsigned development path keeps working. Likewise, if the
+/// registry ships no `sb-certs.toml`, there is nothing to validate against
+/// and the step is a no-op. Validation engages only when *both* the image
+/// carries facts *and* the registry publishes a catalog.
+///
+/// # Errors
+///
+/// Returns an error when the registry catalog cannot be loaded or parsed,
+/// when an image's signer cert is not in the active db-cert set, when an
+/// SBAT generation is below the floor, or when the re-verification of a
+/// downloaded UKI against the db cert fails.
+fn validate_sysroot_secure_boot(
+    config: &ApmConfig,
+    toplevel_meta: &PackageMeta,
+    registry_name: &str,
+    printer: &Printer,
+) -> Result<()> {
+    // The signed `sb-certs.toml` is materialized by `extract_registry_root`
+    // (registry/git.rs) into the registries-storage directory alongside
+    // `registry.toml` / `keys.toml` — NOT the metadata cache that holds
+    // `packages/` and `closures/`. Read it from the same directory the
+    // extractor writes to, or the catalog is silently invisible.
+    let registry_tree = config.scope.registries_path().join(registry_name);
+    let db_cert = sb_db_cert_pem(config, registry_name);
+    validate_sysroot_secure_boot_in(
+        &toplevel_meta.images,
+        registry_name,
+        &registry_tree,
+        db_cert.as_deref(),
+        printer,
+    )
+}
+
+/// Catalog-directory-explicit core of [`validate_sysroot_secure_boot`].
+///
+/// Loads `sb-certs.toml` from `catalog_dir` (the exact directory
+/// `extract_registry_root` writes the registry's root files to) and runs the
+/// per-image gate. Keeping the directory and db-cert path as parameters lets
+/// tests point the validator at a temp tree without relying on the cached
+/// scope path resolution.
+///
+/// # Errors
+///
+/// Returns an error when the catalog fails to load/parse or any image fails
+/// [`validate_image_secure_boot`].
+fn validate_sysroot_secure_boot_in(
+    images: &[crate::types::SysrootImageEntry],
+    registry_name: &str,
+    catalog_dir: &Path,
+    db_cert: Option<&Path>,
+    printer: &Printer,
+) -> Result<()> {
+    let signed_images: Vec<&crate::types::SysrootImageEntry> = images
+        .iter()
+        .filter(|img| img.sb_signer_cert_sha256.is_some() || !img.sbat.is_empty())
+        .collect();
+    if signed_images.is_empty() {
+        // Unsigned/legacy sysroot: nothing to validate (dev path).
+        return Ok(());
     }
-    "https://cache.aos.dev".to_string()
+
+    let Some(catalog) = sb_certs::load_sb_certs_toml(catalog_dir).with_context(|| {
+        format!(
+            "loading Secure Boot catalog for registry '{registry_name}' from {}",
+            catalog_dir.display()
+        )
+    })?
+    else {
+        // The registry publishes no Secure Boot catalog; there is no
+        // signed floor or active set to enforce against.
+        printer.info(
+            "Registry publishes no Secure Boot catalog (sb-certs.toml); \
+             skipping download-time SB validation.",
+        );
+        return Ok(());
+    };
+
+    for img in signed_images {
+        validate_image_secure_boot(img, &catalog, db_cert)?;
+    }
+
+    printer.success("Secure Boot catalog validation passed.");
+    Ok(())
+}
+
+/// Validate one image entry against the registry catalog.
+///
+/// # Errors
+///
+/// Returns an error for an unknown/revoked signer cert, a below-floor SBAT
+/// generation, or a failed UKI re-verification.
+fn validate_image_secure_boot(
+    img: &crate::types::SysrootImageEntry,
+    catalog: &SbCertsToml,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    // 1. Signer cert must be active and not revoked.
+    match &img.sb_signer_cert_sha256 {
+        Some(cert) if catalog.accepts_signer(cert) => {}
+        Some(cert) => bail!(
+            "Secure Boot validation failed for image '{}': its signer cert \
+             {cert} is not in the registry's active db-cert set (it was \
+             retired or never trusted). Refusing the upgrade before reboot.",
+            img.format,
+        ),
+        None => bail!(
+            "Secure Boot validation failed for image '{}': it records SBAT \
+             facts but no signer cert; the registry cannot vouch for it. \
+             Refusing the upgrade before reboot.",
+            img.format,
+        ),
+    }
+
+    // 2. Every SBAT component must meet the revocation floor.
+    if let Some((component, found, floor)) = catalog.first_below_floor(&img.sbat) {
+        bail!(
+            "Secure Boot validation failed for image '{}': SBAT component \
+             '{component}' generation {found} is below the registry \
+             revocation floor {floor}. This component was revoked fleet-wide; \
+             refusing the upgrade before reboot.",
+            img.format,
+        );
+    }
+
+    // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
+    if let Some(db_cert) = db_cert {
+        if let Some(uki) = find_uki_in_image(&img.store_path) {
+            reverify_uki(&uki, db_cert).with_context(|| {
+                format!(
+                    "re-verifying downloaded UKI for image '{}' against the \
+                     catalog db cert",
+                    img.format
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Locate a provisioned db certificate PEM for `registry`, if present.
+///
+/// Mirrors the registry trust-anchor delivery: searches the scope's
+/// `trusted-sb-certs.d` directories for `<registry>.pem`, returning the
+/// first match or `None` when no db cert was baked/provisioned (in which
+/// case the re-verification step is skipped).
+fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
+    config
+        .scope
+        .trusted_sb_certs_dirs()
+        .into_iter()
+        .map(|dir| dir.join(format!("{registry}.pem")))
+        .find(|path| path.exists())
+}
+
+/// Find a UKI (`.efi` PE file) inside an imported image store path.
+fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let root = Path::new(store_path);
+    if root.is_file() {
+        return root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
+            .then(|| root.to_path_buf());
+    }
+    walk(root)
+}
+
+/// Re-verify a downloaded UKI's Authenticode signature against a db cert.
+///
+/// # Errors
+///
+/// Returns an error when `sbverify` cannot be spawned or reports the
+/// signature does not verify against `db_cert`.
+fn reverify_uki(uki: &Path, db_cert: &Path) -> Result<()> {
+    let output = std::process::Command::new("sbverify")
+        .arg("--cert")
+        .arg(db_cert)
+        .arg(uki)
+        .output()
+        .with_context(|| format!("running sbverify --cert on {}", uki.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!(
+            "downloaded UKI {} failed Secure Boot re-verification against \
+             db cert {}: {}",
+            uki.display(),
+            db_cert.display(),
+            if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            }
+        );
+    }
+    Ok(())
+}
+
+/// Pick the mirror chain used for image downloads: the first configured
+/// registry's mirror chain (primary + fallbacks for miss-fallthrough),
+/// falling back to the default public cache.
+fn resolve_image_mirror(config: &ApmConfig, _meta: &PackageMeta) -> Vec<String> {
+    // Use the first configured registry's mirror chain.
+    if let Some((cfg, _)) = config.registries.first() {
+        return resolve_mirror_chain(&config.scope.registries_path(), cfg);
+    }
+    vec!["https://cache.aos.dev".to_string()]
 }
 
 /// Build a [`DownloadRequest`] per missing store path, mapping each path back
@@ -1692,7 +2073,7 @@ fn build_download_requests(
     config: &ApmConfig,
 ) -> Result<Vec<DownloadRequest>> {
     let registries_base = config.scope.registries_path();
-    let mirror_map: std::collections::HashMap<String, String> = closures
+    let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
         .iter()
         .map(|c| {
             let reg_config = config
@@ -1700,12 +2081,12 @@ fn build_download_requests(
                 .iter()
                 .find(|(cfg, _)| cfg.name == c.registry_name)
                 .map(|(cfg, _)| cfg);
-            let mirror_url = if let Some(cfg) = reg_config {
-                resolve_mirror(&registries_base, cfg)
+            let chain = if let Some(cfg) = reg_config {
+                resolve_mirror_chain(&registries_base, cfg)
             } else {
-                format!("https://registry.aos.dev/{}", c.registry_name)
+                vec![format!("https://registry.aos.dev/{}", c.registry_name)]
             };
-            (c.registry_name.clone(), mirror_url)
+            (c.registry_name.clone(), chain)
         })
         .collect();
 
@@ -1726,13 +2107,15 @@ fn build_download_requests(
         let registry_name = hash_to_registry
             .get(&hash)
             .context("internal error: missing registry for package")?;
-        let mirror_url = mirror_map
+        let chain = mirror_map
             .get(registry_name)
             .context("internal error: missing mirror for registry")?;
+        let (mirror_url, fallback_mirrors) = split_mirror_chain(chain);
 
         requests.push(DownloadRequest {
             store_path: meta.store_path.clone(),
-            mirror_url: mirror_url.clone(),
+            mirror_url,
+            fallback_mirrors,
         });
     }
 
@@ -1834,6 +2217,175 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::sb_certs::{RevokedSbCert, SbCert, write_sb_certs_toml};
+    use crate::types::{SbatEntry, SysrootImageEntry};
+    use tempfile::TempDir;
+
+    const SIGNER_ACTIVE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SIGNER_RETIRED: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    fn sb_sbat(pairs: &[(&str, u32)]) -> Vec<SbatEntry> {
+        pairs
+            .iter()
+            .map(|(c, g)| SbatEntry {
+                component: (*c).into(),
+                generation: *g,
+            })
+            .collect()
+    }
+
+    fn signed_image(signer: &str, sbat: &[(&str, u32)]) -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/deadbeef-aos-image".into(),
+            nar_hash: "sha256:abc".into(),
+            nar_size: 4096,
+            sb_signer_cert_sha256: Some(signer.into()),
+            sbat: sb_sbat(sbat),
+            expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
+        }
+    }
+
+    fn active_catalog() -> SbCertsToml {
+        SbCertsToml {
+            active: vec![SbCert {
+                id: "db-2026".into(),
+                cert_sha256: SIGNER_ACTIVE.into(),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        }
+    }
+
+    // --- Real-validator coverage (RFC-0006 phase 4 download-time gate) ---
+
+    #[test]
+    fn validate_image_accepts_active_signer_above_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_below_floor() {
+        let img = signed_image(SIGNER_ACTIVE, &[("aos", 1)]);
+        let raised = SbCertsToml {
+            sbat_floor: sb_sbat(&[("aos", 2)]),
+            ..active_catalog()
+        };
+        let err = validate_image_secure_boot(&img, &raised, None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("below the registry"), "{msg}");
+    }
+
+    #[test]
+    fn validate_image_refuses_retired_cert() {
+        let catalog = SbCertsToml {
+            active: vec![
+                SbCert {
+                    id: "db-2026".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                },
+                SbCert {
+                    id: "db-2024".into(),
+                    cert_sha256: SIGNER_RETIRED.into(),
+                },
+            ],
+            revoked: vec![RevokedSbCert {
+                id: "db-2024".into(),
+                reason: Some("compromised".into()),
+            }],
+            sbat_floor: sb_sbat(&[("aos", 1)]),
+            ..SbCertsToml::default()
+        };
+        let retired = signed_image(SIGNER_RETIRED, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&retired, &catalog, None).is_err());
+        let active = signed_image(SIGNER_ACTIVE, &[("aos", 5)]);
+        assert!(validate_image_secure_boot(&active, &catalog, None).is_ok());
+    }
+
+    #[test]
+    fn validate_image_refuses_unknown_signer() {
+        let img = signed_image(SIGNER_RETIRED, &[("aos", 9)]);
+        assert!(validate_image_secure_boot(&img, &active_catalog(), None).is_err());
+    }
+
+    /// Regression guard for C1: the validator must read `sb-certs.toml` from
+    /// the exact directory `extract_registry_root` writes registry root files
+    /// to. This writes the catalog there and confirms the *real* gate
+    /// (`validate_sysroot_secure_boot_in`) picks it up and enforces it. With
+    /// the original cache-vs-registries path mismatch this test fails because
+    /// the catalog is invisible and a below-floor image is wrongly accepted.
+    #[test]
+    fn validate_sysroot_reads_catalog_from_extract_dir() {
+        let tmp = TempDir::new().unwrap();
+        let catalog_dir = tmp.path();
+        // This is the directory layout extract_registry_root produces:
+        // <registries-storage>/<name>/sb-certs.toml at the tree root.
+        write_sb_certs_toml(
+            catalog_dir,
+            &SbCertsToml {
+                active: vec![SbCert {
+                    id: "db".into(),
+                    cert_sha256: SIGNER_ACTIVE.into(),
+                }],
+                sbat_floor: sb_sbat(&[("aos", 5)]),
+                ..SbCertsToml::default()
+            },
+        )
+        .unwrap();
+        let printer = Printer::new(0, true, false);
+
+        // Below the floor (gen 1 < floor 5): must be refused now that the
+        // catalog is actually read from this directory.
+        let below = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(
+            validate_sysroot_secure_boot_in(&below, "aos", catalog_dir, None, &printer).is_err(),
+            "catalog at the extract dir must be enforced"
+        );
+
+        // At/above the floor: accepted.
+        let ok = vec![signed_image(SIGNER_ACTIVE, &[("aos", 5)])];
+        assert!(validate_sysroot_secure_boot_in(&ok, "aos", catalog_dir, None, &printer).is_ok());
+    }
+
+    #[test]
+    fn validate_sysroot_skips_unsigned_images() {
+        let tmp = TempDir::new().unwrap();
+        let printer = Printer::new(0, true, false);
+        let unsigned = vec![SysrootImageEntry {
+            format: "raw".into(),
+            store_path: "/nix/store/x".into(),
+            nar_hash: "sha256:y".into(),
+            nar_size: 1,
+            sb_signer_cert_sha256: None,
+            sbat: vec![],
+            expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
+        }];
+        // No catalog written, no facts on the image: no-op success.
+        assert!(
+            validate_sysroot_secure_boot_in(&unsigned, "aos", tmp.path(), None, &printer).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_sysroot_refuses_signed_image_with_no_catalog_floor_satisfied_but_signer_absent() {
+        // A signed image plus an empty catalog (no active certs) must refuse:
+        // an empty active set vouches for nobody. The catalog file is present
+        // but empty so load returns Some(default).
+        let tmp = TempDir::new().unwrap();
+        write_sb_certs_toml(tmp.path(), &SbCertsToml::default()).unwrap();
+        let printer = Printer::new(0, true, false);
+        let img = vec![signed_image(SIGNER_ACTIVE, &[("aos", 1)])];
+        assert!(validate_sysroot_secure_boot_in(&img, "aos", tmp.path(), None, &printer).is_err());
+    }
 
     #[test]
     fn generation_state_round_trip() {
@@ -1849,6 +2401,13 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-03-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern1-linux-6.12".into()),
+                    image_gen_parent: None,
+                    module_abi_pinned: None,
+                    manifest_hash: None,
+                    config_module_closure: None,
+                    host_nix_ref: None,
+                    host_nix_commit: None,
+                    facts_hash: None,
                 },
                 SystemGeneration {
                     number: 2,
@@ -1858,6 +2417,13 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-04-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern2-linux-6.13".into()),
+                    image_gen_parent: None,
+                    module_abi_pinned: None,
+                    manifest_hash: None,
+                    config_module_closure: None,
+                    host_nix_ref: None,
+                    host_nix_commit: None,
+                    facts_hash: None,
                 },
             ],
         };
@@ -1893,6 +2459,13 @@ mod tests {
                 registry: "core".into(),
                 created_at: "2026-01-01T00:00:00Z".into(),
                 kernel_path: None,
+                image_gen_parent: None,
+                module_abi_pinned: None,
+                manifest_hash: None,
+                config_module_closure: None,
+                host_nix_ref: None,
+                host_nix_commit: None,
+                facts_hash: None,
             }],
         };
         save_generation_state(tmp.path(), &state).unwrap();
@@ -2015,6 +2588,20 @@ mod tests {
         // A unit with no ExecMainStatus renders as n/a.
         assert!(out.contains("stuck.service"), "{out}");
         assert!(out.contains("ExecMainStatus=n/a"), "{out}");
+    }
+
+    #[test]
+    fn settle_budget_clamps_to_bounds() {
+        // A typical RestartSec=5s yields one-or-two retries plus grace, within
+        // bounds: 5*2 + 2 = 12s.
+        assert_eq!(
+            settle_budget(Duration::from_secs(5)),
+            Duration::from_secs(12)
+        );
+        // A sub-second RestartSec floors at MIN_SETTLE rather than ~2s.
+        assert_eq!(settle_budget(Duration::from_millis(100)), MIN_SETTLE);
+        // A large RestartSec is capped at MAX_SETTLE rather than 2*60+2 = 122s.
+        assert_eq!(settle_budget(Duration::from_secs(60)), MAX_SETTLE);
     }
 
     // --- activate plan helpers -----------------------------------------

@@ -26,7 +26,7 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{InstalledMeta, PackageMeta};
+use super::types::{ConfinementMeta, InstalledMeta, PackageMeta, PermissionsMeta, ProfileScope};
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,7 @@ pub async fn search(
     printer: &Printer,
 ) -> Result<()> {
     let registries = load_registries(config)?;
+    warn_unsynced_scope(config, printer);
 
     if installed_only {
         return search_installed(
@@ -220,6 +221,7 @@ pub async fn show(
     printer: &Printer,
 ) -> Result<()> {
     let registries = load_registries(config)?;
+    warn_unsynced_scope(config, printer);
     let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;
 
@@ -249,6 +251,129 @@ pub async fn show(
     }
 }
 
+/// Display package information, or just RFC-0001 permissions.
+///
+/// `apm info` is the compatibility spelling for users expecting a package
+/// information command. Without `--permissions`, it renders the same detail as
+/// [`show`]. With `--permissions`, it emits only the signed permission manifest
+/// and computed confinement summary.
+///
+/// # Errors
+///
+/// Returns an error under the same resolution conditions as [`show`], or when
+/// serializing the permission manifest fails.
+pub async fn info(
+    config: &ApmConfig,
+    package: &str,
+    registry_filter: Option<&str>,
+    permissions_only: bool,
+    printer: &Printer,
+) -> Result<()> {
+    if !permissions_only {
+        return show(config, package, registry_filter, printer).await;
+    }
+
+    let registries = load_registries(config)?;
+    let profile = Profile::open_readonly(config.scope);
+    let meta_list = list_meta(&profile)?;
+
+    if let Some(filter) = registry_filter {
+        if let Some(reg) = registries.get_registry(filter) {
+            if let Some(meta) = reg.get(package) {
+                return show_permissions(
+                    &meta.name,
+                    Some(&reg.config.name),
+                    meta.expose.is_some(),
+                    &meta.permissions,
+                    printer,
+                );
+            }
+        }
+
+        if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
+            return show_installed_permissions(installed, printer);
+        }
+
+        if registries.get_registry(filter).is_none() {
+            bail!("registry '{filter}' not found");
+        }
+        bail!("package '{package}' not found in registry '{filter}'");
+    }
+
+    if let Some((reg, meta)) = registries.resolve(package) {
+        show_permissions(
+            &meta.name,
+            Some(&reg.config.name),
+            meta.expose.is_some(),
+            &meta.permissions,
+            printer,
+        )
+    } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
+        show_installed_permissions(installed, printer)
+    } else {
+        bail!("package '{package}' not found in any registry")
+    }
+}
+
+fn show_installed_permissions(installed: &InstalledMeta, printer: &Printer) -> Result<()> {
+    let apm = installed
+        .apm
+        .as_ref()
+        .context("installed metadata is missing APM package state")?;
+    show_permissions(
+        &apm.name,
+        Some(&apm.registry),
+        apm.expose.is_some(),
+        &apm.permissions,
+        printer,
+    )
+}
+
+fn show_permissions(
+    package: &str,
+    registry: Option<&str>,
+    exposed: bool,
+    permissions: &PermissionsMeta,
+    printer: &Printer,
+) -> Result<()> {
+    let confinement = confinement_for_display(exposed, permissions);
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "package": package,
+            "registry": registry,
+            "permissions": permissions,
+            "confinement": confinement,
+        }));
+        return Ok(());
+    }
+
+    printer.kv("Package", package);
+    if let Some(registry) = registry {
+        printer.kv("Registry", registry);
+    }
+    if let Some(confinement) = &confinement {
+        printer.kv("Confinement", &confinement.label);
+    }
+    if permissions.is_empty() {
+        printer.kv("Permissions", "(none)");
+    } else {
+        let rendered = serde_json::to_string(permissions).context("serializing permissions")?;
+        printer.kv("Permissions", &rendered);
+    }
+    Ok(())
+}
+
+fn confinement_for_display(
+    exposed: bool,
+    permissions: &PermissionsMeta,
+) -> Option<ConfinementMeta> {
+    if exposed || !permissions.is_empty() {
+        Some(permissions.computed_confinement())
+    } else {
+        None
+    }
+}
+
 /// Render `apm show` for a package backed by a registry entry, including
 /// install state, dependency names, sysroot info, and (when installed)
 /// sysroot-lock violations.
@@ -273,6 +398,7 @@ fn show_registry_package(
     let dep_names = resolve_dependency_names(meta, reg);
 
     let nar_size_str = format_size(meta.nar_size);
+    let confinement = confinement_for_display(meta.expose.is_some(), &meta.permissions);
 
     if printer.mode() == OutputMode::Json {
         let json_obj = serde_json::json!({
@@ -290,6 +416,9 @@ fn show_registry_package(
             "dependencies": dep_names,
             "source_drv": meta.source_drv,
             "maintainer": meta.maintainer,
+            "expose": meta.expose,
+            "permissions": meta.permissions,
+            "confinement": confinement,
         });
         printer.json(&json_obj);
     } else {
@@ -312,6 +441,22 @@ fn show_registry_package(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
+        if let Some(expose) = &meta.expose {
+            printer.kv("Expose target", &expose.target);
+            if expose.requires.is_empty() {
+                printer.kv("Expose requires", "(none)");
+            } else {
+                printer.kv("Expose requires", &expose.requires.join(", "));
+            }
+        }
+        if let Some(confinement) = &confinement {
+            printer.kv("Confinement", &confinement.label);
+        }
+        if !meta.permissions.is_empty() {
+            let rendered =
+                serde_json::to_string(&meta.permissions).context("serializing permissions")?;
+            printer.kv("Permissions", &rendered);
+        }
 
         // Show sysroot-specific information.
         crate::sysroot::show_sysroot_info(meta, printer);
@@ -470,6 +615,7 @@ pub async fn list(
     printer: &Printer,
 ) -> Result<()> {
     let registries = load_registries(config)?;
+    warn_unsynced_scope(config, printer);
 
     // Load profile metadata for install/upgrade/held checks.
     let profile = Profile::open_readonly(config.scope);
@@ -770,6 +916,76 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     RegistrySet::load(&cache_dir, &enabled, &platform)
 }
 
+/// Names of enabled registries that have never been synced in the current
+/// scope's cache.
+///
+/// A registry is unsynced here when its package cache directory
+/// (`<cache>/<name>/packages`) is absent — exactly the state that makes
+/// [`load_registries`] return it with zero packages and no error. This is the
+/// silent-empty case behind "I ran `apm update --system` but `apm list` shows
+/// nothing": the sync populated one scope's cache and the query read the
+/// other's.
+fn unsynced_registry_names(config: &ApmConfig) -> Vec<String> {
+    unsynced_registry_names_in(&config.cache_path(), &config.enabled_registries())
+}
+
+/// Names of `enabled` registries that have no `packages/` directory under
+/// `cache_dir` (the scope-independent core of [`unsynced_registry_names`],
+/// split out so it can be tested without depending on environment-derived
+/// cache paths).
+fn unsynced_registry_names_in(
+    cache_dir: &std::path::Path,
+    enabled: &[&super::types::RegistryConfig],
+) -> Vec<String> {
+    enabled
+        .iter()
+        .filter(|cfg| !cache_dir.join(&cfg.name).join("packages").is_dir())
+        .map(|cfg| cfg.name.clone())
+        .collect()
+}
+
+/// Warn when enabled registries have no synced package cache in the current
+/// scope, naming the scope and cache path searched and pointing at the other
+/// scope.
+///
+/// Registry-backed query commands call this so that an empty or short result
+/// caused by querying the wrong profile scope explains itself instead of
+/// failing silently. It is a no-op when every enabled registry has a package
+/// cache in this scope (or none are enabled).
+pub(crate) fn warn_unsynced_scope(config: &ApmConfig, printer: &Printer) {
+    let unsynced = unsynced_registry_names(config);
+    if unsynced.is_empty() {
+        return;
+    }
+
+    let scope = config.scope;
+    let label = if unsynced.len() == 1 {
+        "registry"
+    } else {
+        "registries"
+    };
+    // Point at the other scope's flag: from user scope, add `--system`; from
+    // system scope, drop it.
+    let (scope_hint, sync_hint) = match scope {
+        ProfileScope::User => (
+            "retry with `--system` to query the system scope",
+            "`apm update`",
+        ),
+        ProfileScope::System => (
+            "retry without `--system` to query the user scope",
+            "`apm update --system`",
+        ),
+    };
+
+    printer.warning(&format!(
+        "{label} {names} not synced in the {scope} scope (searched {cache}); \
+         {scope_hint}, or run {sync_hint} to sync it here.",
+        names = unsynced.join(", "),
+        scope = scope.name(),
+        cache = config.cache_path().display(),
+    ));
+}
+
 /// Index installed packages by `(name, source registry)` — the same name
 /// may be installed from multiple registries with distinct store paths.
 fn installed_by_source(meta_list: &[InstalledMeta]) -> HashMap<(String, String), &InstalledMeta> {
@@ -928,6 +1144,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -971,8 +1188,24 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }
+    }
+
+    #[test]
+    fn confinement_for_display_computes_exposed_default() {
+        let empty = PermissionsMeta::default();
+        let confinement = super::confinement_for_display(true, &empty).unwrap();
+
+        assert_eq!(confinement.class, crate::types::ConfinementClass::Sandboxed);
+        assert_eq!(confinement.label, "sandboxed");
+        assert!(super::confinement_for_display(false, &empty).is_none());
     }
 
     // 1. search_finds_by_name
@@ -1278,5 +1511,53 @@ mod tests {
         // Verify dependency resolution.
         let dep_names = resolve_dependency_names(meta, &reg);
         assert!(dep_names.contains(&"zlib".to_string()));
+    }
+
+    /// Minimal enabled registry config carrying only the name (the field
+    /// [`unsynced_registry_names_in`] inspects).
+    fn bare_reg_config(name: &str) -> RegistryConfig {
+        RegistryConfig {
+            name: name.to_string(),
+            url: format!("https://registry.example.com/{name}"),
+            priority: 50,
+            enabled: true,
+            commit: None,
+            branch: None,
+            channel: None,
+            tag: None,
+            version: None,
+            pin: None,
+            max_staleness_seconds: None,
+            caches: Vec::new(),
+            cache: Default::default(),
+            upload_auth: None,
+            signing_keys: Default::default(),
+            signing: None,
+        }
+    }
+
+    #[test]
+    fn unsynced_names_flags_registry_without_packages_dir() {
+        let tmp = TempDir::new().unwrap();
+        // "synced" has a packages/ dir; "fresh" does not.
+        fs::create_dir_all(tmp.path().join("synced").join("packages")).unwrap();
+
+        let synced = bare_reg_config("synced");
+        let fresh = bare_reg_config("fresh");
+        let enabled = [&synced, &fresh];
+
+        let unsynced = unsynced_registry_names_in(tmp.path(), &enabled);
+        assert_eq!(unsynced, vec!["fresh".to_string()]);
+    }
+
+    #[test]
+    fn unsynced_names_empty_when_all_synced() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("andyl").join("packages")).unwrap();
+
+        let andyl = bare_reg_config("andyl");
+        let enabled = [&andyl];
+
+        assert!(unsynced_registry_names_in(tmp.path(), &enabled).is_empty());
     }
 }

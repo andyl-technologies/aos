@@ -197,6 +197,17 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command, &eval_config).await;
     }
 
+    // The metadata agent (initrd) reads/writes the /run/aos-metadata stash and
+    // shells out to blkid/mount + IMDS — no NixRunner needed.
+    if let Commands::Metadata { command } = &cli.command {
+        return commands::metadata::run(command).await;
+    }
+
+    // Hub commands talk to an aos-hub over its public API — no NixRunner.
+    if let Commands::Hub { command } = &cli.command {
+        return commands::hub::run(&printer, command).await;
+    }
+
     if let Commands::NixDiff {
         attr,
         smoke,
@@ -391,7 +402,14 @@ async fn run(cli: &Cli) -> Result<()> {
             package,
             dependency,
         } => commands::why_depends::run(&nix, &printer, package, dependency),
-        Commands::Describe => commands::describe::run(&nix, &printer),
+        Commands::Profile { command } => commands::profile::run(&nix, &printer, command),
+        Commands::Describe { package } => {
+            if let Some(package) = package {
+                commands::show::run(&nix, &printer, package)
+            } else {
+                commands::describe::run(&nix, &printer)
+            }
+        }
         Commands::Prefetch {
             package,
             all,
@@ -429,6 +447,8 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::NixBench { .. } => unreachable!(),
         Commands::NixFuzzCorpus { .. } => unreachable!(),
         Commands::NixMeasure { .. } => unreachable!(),
+        Commands::Metadata { .. } => unreachable!(),
+        Commands::Hub { .. } => unreachable!(),
     }
 }
 

@@ -48,7 +48,12 @@
     name = "nyacc-source-1.00.2";
     inherit system;
     builder = "builtin:fetchurl";
-    url = "https://download.savannah.nongnu.org/releases/nyacc/nyacc-1.00.2.tar.gz";
+    # download-mirror serves the file directly; the plain
+    # download.savannah host 302s into a volunteer mirror pool
+    # whose members intermittently answer HTTP 200 with an HTML
+    # error page — builtin:fetchurl has no retry, so a bad mirror
+    # poisons this FOD with a hash mismatch.
+    url = "https://download-mirror.savannah.gnu.org/releases/nyacc/nyacc-1.00.2.tar.gz";
     outputHash = "sha256-825Pt91STcP0s1TT1TE/aefOWmrpNxHoz21R6qjSsxg=";
     outputHashMode = "flat";
     outputHashAlgo = "sha256";

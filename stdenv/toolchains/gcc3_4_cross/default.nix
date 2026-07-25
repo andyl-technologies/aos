@@ -22,6 +22,22 @@
   hostPlatform,
   targetPlatform,
 }: let
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkBuildStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
@@ -58,18 +74,66 @@
     # Phase 6b: Native x86_64 GCC (Canadian cross)
     gcc = callPackage ./gcc.nix {};
 
+    # Phase 7 uses previous-tier i686 tools to run configure/make while
+    # crossGccStage2/crossBinutils produce x86_64 outputs.
+    crossBuildStdenv = mkBuildStdenv {
+      tc = {
+        gcc = scope.crossGccStage2;
+        binutils = scope.crossBinutils;
+        glibc = scope.crossGlibc;
+        inherit
+          (prev)
+          coreutils
+          findutils
+          gnumake
+          gawk
+          grep
+          sed
+          tar
+          gzip
+          diffutils
+          patch
+          bash
+          ;
+      };
+      staticDefault = true;
+    };
+
+    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = scope.crossBuildStdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit
+        buildPlatform
+        hostPlatform
+        ;
+      inherit
+        (scope)
+        crossGccStage2
+        crossBinutils
+        crossGlibc
+        ;
+    };
+
     # Phase 7: Native x86_64 POSIX tools (cross-compiled)
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
-    patch = callPackage ./patch.nix {};
+    bash = scope.mkAutotoolsTool scope.manifest.bash;
+    coreutils = scope.mkAutotoolsTool scope.manifest.coreutils;
+    gnumake = scope.mkAutotoolsTool scope.manifest.gnumake;
+    sed = scope.mkAutotoolsTool scope.manifest.sed;
+    grep = scope.mkAutotoolsTool scope.manifest.grep;
+    gawk = scope.mkAutotoolsTool scope.manifest.gawk;
+    findutils = scope.mkAutotoolsTool scope.manifest.findutils;
+    diffutils = scope.mkAutotoolsTool scope.manifest.diffutils;
+    tar = scope.mkAutotoolsTool scope.manifest.tar;
+    gzip = scope.mkAutotoolsTool scope.manifest.gzip;
+    patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
 in {
   inherit

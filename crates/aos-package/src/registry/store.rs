@@ -73,13 +73,13 @@ fn is_nix32_digest(s: &str) -> bool {
 }
 
 /// Validate an input-addressed store-path hash for use as a filename, shard,
-/// or edge reference: ASCII-alphanumeric and at least two characters (so it
-/// can be sharded). Real Nix store hashes are 32-char nixbase32 (a subset of
-/// this), but the value is whatever the store assigns and test fixtures use
-/// readable placeholders; the alphanumeric restriction is the safety property
-/// that matters — it blocks path-traversal characters (`/`, `.`).
+/// or edge reference: nixbase32 and at least two characters (so it can be
+/// sharded). A real Nix store-path hash is exactly 32 nixbase32 characters,
+/// but the length is not pinned here because the same predicate also guards
+/// the 52-char nixbase32 CA digests reused as edge pins; restricting to the
+/// nixbase32 alphabet is what blocks path-traversal characters (`/`, `.`).
 fn is_store_hash(s: &str) -> bool {
-    s.len() >= 2 && s.chars().all(|ch| ch.is_ascii_alphanumeric())
+    s.len() >= 2 && s.chars().all(|ch| NIX_BASE32_ALPHABET.contains(ch))
 }
 
 /// Parse a `sha256:<52-char-nix32>` content-hash token into its bare digest.
@@ -370,12 +370,11 @@ pub fn serialize_entry(entry: &StoreEntry) -> String {
 ///
 /// # Errors
 ///
-/// Returns an error if the hash is shorter than two characters or is not a
-/// valid store-path hash (which would let it escape the shard namespace via
-/// `/` or `.`).
+/// Returns an error if the hash is shorter than two characters or is not
+/// nixbase32 (which would let it escape the shard namespace via `/` or `.`).
 pub fn shard(ia_hash: &str) -> Result<&str> {
     if !is_store_hash(ia_hash) {
-        bail!("'{ia_hash}' is not a valid store-path hash; refusing to derive a shard");
+        bail!("'{ia_hash}' is not a nixbase32 store-path hash; refusing to derive a shard");
     }
     Ok(&ia_hash[..2])
 }
@@ -838,12 +837,11 @@ mod tests {
     }
 
     #[test]
-    fn shard_takes_first_two_chars_and_blocks_traversal() {
+    fn shard_takes_two_nixbase32_chars() {
         assert_eq!(shard("r4q1m2kp8v3x").unwrap(), "r4");
-        // Test fixtures use readable placeholder hashes with chars outside
-        // nixbase32 (e, o); those are still valid store-path hashes here.
-        assert_eq!(shard("hello000000000000").unwrap(), "he");
         assert!(shard("r").is_err()); // too short
+        assert!(shard("Euppercase").is_err()); // 'E'/'u' are not nixbase32
+        assert!(shard("hello000000000000").is_err()); // 'e'/'o' are not nixbase32
         assert!(shard("../escape").is_err()); // path traversal
         assert!(shard("a/b").is_err());
     }

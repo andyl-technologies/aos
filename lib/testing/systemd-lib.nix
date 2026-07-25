@@ -116,6 +116,13 @@
   beatenExec = svc.script-beaten-by-direct.serviceConfig.ExecStart;
   preStartList = svc.with-prestart.serviceConfig.ExecStartPre;
 
+  # The eval-time `ExecStart` from a `script=` option
+  # is the drv-free `#aos-jobscript:<key>#` placeholder (so the on-host
+  # eval-only manifest renders the unit without forcing the job-script
+  # derivation); the real build-side store path lives on the job-script record
+  # (`.path`), and `makeUnit` substitutes it into the materialized unit file.
+  scriptOnlyJob = builtins.head svc.script-only.jobScripts;
+
   rendered = (systemdLib.serviceToUnit svc.with-environment).text;
   xKnobsRendered = (systemdLib.serviceToUnit svc.with-x-knobs).text;
   # `script-only` sets none of the X-* knobs, so its rendered text must
@@ -132,8 +139,12 @@
   # false `cond`. Flatter than nesting `throwIfNot` calls by hand.
   checks = [
     {
-      cond = lib.hasPrefix "/nix/store/" scriptOnlyExec;
-      msg = "systemd-lib: script-only ExecStart should be a store path, got '${scriptOnlyExec}'";
+      cond = lib.hasPrefix "#aos-jobscript:" scriptOnlyExec;
+      msg = "systemd-lib: script-only ExecStart should be a job-script placeholder, got '${scriptOnlyExec}'";
+    }
+    {
+      cond = lib.hasPrefix "/nix/store/" scriptOnlyJob.path;
+      msg = "systemd-lib: script-only job-script path should be a store path, got '${scriptOnlyJob.path}'";
     }
     {
       cond = directOnlyExec == "/bin/true";
@@ -202,8 +213,10 @@ in
     version = "0";
     src = null;
 
-    # Force the compiled script derivations into the closure.
-    buildDeps = svc.with-environment.jobScripts;
+    # Force the compiled script derivations into the closure:
+    # `jobScripts` entries are now records; the build-side derivation is the
+    # `.drv` field (was a bare derivation/path before the split).
+    buildDeps = map (j: j.drv) svc.with-environment.jobScripts;
 
     phases = [
       {

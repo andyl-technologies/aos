@@ -1,0 +1,62 @@
+--- a/gcc/gengtype.c
++++ b/gcc/gengtype.c
+@@ -5389,0 +5390,8 @@
++static void
++gengtype_trace (const char *stage)
++{
++  fprintf (stderr, "gengtype-stage: %s\n", stage);
++  fflush (stderr);
++}
++
++
+@@ -5396,0 +5405 @@
++  gengtype_trace ("main");
+@@ -5401,0 +5411 @@
++  gengtype_trace ("input file hash table created");
+@@ -5404,0 +5415 @@
++  gengtype_trace ("special input files initialized");
+@@ -5407,0 +5419 @@
++  gengtype_trace ("scalar flags initialized");
+@@ -5409,0 +5422 @@
++  gengtype_trace ("program options parsed");
+@@ -5452,0 +5466,2 @@
++      gengtype_trace ("predefined scalar types initialized");
++      gengtype_trace ("reading input list");
+@@ -5453,0 +5469 @@
++      gengtype_trace ("input list read");
+@@ -5455,0 +5472,4 @@
++	  fprintf (stderr, "gengtype-stage: parsing file %lu/%lu %s\n",
++		   (unsigned long) i + 1, (unsigned long) num_gt_files,
++		   get_input_file_name (gt_files[i]));
++	  fflush (stderr);
+@@ -5456,0 +5477 @@
++	  gengtype_trace ("file parsed");
+@@ -5459,0 +5481,2 @@
++      gengtype_trace ("all input files parsed");
++      gengtype_trace ("reporting parse totals");
+@@ -5462,0 +5486 @@
++      gengtype_trace ("parse totals reported");
+@@ -5463,0 +5488 @@
++      gengtype_trace ("reporting post-parse type counts");
+@@ -5465,0 +5491 @@
++      gengtype_trace ("post-parse type counts reported");
+@@ -5469,0 +5496 @@
++  gengtype_trace ("input parsing branch complete");
+@@ -5471,0 +5499 @@
++  gengtype_trace ("post-parse error check complete");
+@@ -5505,0 +5534 @@
++  gengtype_trace ("output mode validated");
+@@ -5507,0 +5537 @@
++  gengtype_trace ("output-mode error check complete");
+@@ -5508,0 +5539 @@
++  gengtype_trace ("generating RTX links");
+@@ -5509,0 +5541 @@
++  gengtype_trace ("RTX links generated");
+@@ -5512,0 +5545 @@
++  gengtype_trace ("marking GC-used types");
+@@ -5513,0 +5547 @@
++  gengtype_trace ("GC-used types marked");
+@@ -5526,0 +5561 @@
++      gengtype_trace ("writing state");
+@@ -5528,0 +5564 @@
++      gengtype_trace ("state written");

@@ -49,11 +49,13 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
-  dbusConf = pkgs.dbus-conf {
-    packages = cfg.packages;
-    suidHelper = "/bin/false";
-    apparmor = "disabled";
-  };
+  # The merged system bus config is an image-fixed artifact
+  # (a function of which packages are enabled, not of host.nix). Register it as
+  # a config artifact and reference the resolved value, so the on-host eval-only
+  # evaluator uses the stage-1-frozen store path instead of re-building it. On a
+  # normal build `frozenArtifacts` is empty, so this resolves to the same
+  # `pkgs.dbus-conf {…}` derivation as before (byte-identical).
+  dbusConf = config.aos.config.artifacts.dbus-system-conf;
 in {
   options.aos.services.dbus.enable = lib.mkOption {
     type = lib.types.bool;
@@ -82,6 +84,24 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Register the merged system bus config as an image-fixed config artifact
+    # built during image assembly and referenced via
+    # `config.aos.config.artifacts.dbus-system-conf` (see the `let` above).
+    # Skip the live build entirely when the on-host evaluator injected a frozen
+    # path for this artifact: `pkgs.dbus-conf` is absent from the stage-2 frozen
+    # pkgs (it is a builder function, not a package), so even constructing the
+    # unused thunk would error. `artifacts.dbus-system-conf` reads the frozen
+    # path in that case.
+    aos.config._artifactSources.dbus-system-conf =
+      if config.aos.config.frozenArtifacts ? "dbus-system-conf"
+      then null
+      else
+        pkgs.dbus-conf {
+          packages = cfg.packages;
+          suidHelper = "/bin/false";
+          apparmor = "disabled";
+        };
+
     # Always contribute systemd so org.freedesktop.systemd1 (plus
     # hostname1/login1/timedate1/...) is reachable on the bus. listOf
     # merges across modules, so other modules can extend this list
@@ -138,6 +158,23 @@ in {
     systemd.services."dbus" = {
       description = "D-Bus System Message Bus";
       wantedBy = ["multi-user.target"];
+      # Reload, never restart, on a live generation switch. A `systemctl
+      # restart dbus.service` tears down the system bus, which severs every
+      # connected client — including the apm reconciler that is *driving the
+      # switch over that very bus* (it talks to systemd via
+      # /run/dbus/system_bus_socket). The reconciler then waits forever for a
+      # JobRemoved it can no longer receive. dbus-daemon's ExecReload
+      # (ReloadConfig, below) re-reads policy without dropping connections, so
+      # the diff engine schedules a reload (X-ReloadIfChanged) instead of a
+      # restart. This matches nixpkgs (services.system.dbus sets
+      # reloadIfChanged = true). Tradeoff: a changed --config-file store path is
+      # not picked up until the next reboot, since the running daemon keeps its
+      # original argv; acceptable and identical to NixOS's behaviour. The
+      # reconciler is additionally hardened against any bus-drop mid-reconcile
+      # (aos-systemd drops parked waiters when the signal stream closes, and
+      # connects over systemd's private socket), but not restarting the bus in
+      # the first place is the primary, upstream-blessed fix.
+      reloadIfChanged = true;
       requires = [
         "dbus.socket"
         "systemd-tmpfiles-setup.service"

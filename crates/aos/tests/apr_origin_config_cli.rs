@@ -322,14 +322,25 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
             "origin-default-reg",
             "--key",
             release_key.to_str().context("release key path utf-8")?,
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(
         release.contains("Released origin-default-reg 1.0.0"),
         "{release}"
     );
+    // The fixture's placeholder store path can't be cached, so the release is
+    // local; `apr origin upload` publishes the git origin for the consumer.
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "origin-default-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
     git_stdout(
         &maintainer_registry,
         &["rev-parse", "1.0.0^{tag}"],
@@ -405,14 +416,23 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
             "origin-default-reg",
             "--key",
             release_key.to_str().context("release key path utf-8")?,
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(
         release.contains("Released origin-default-reg 1.1.0"),
         "{release}"
     );
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "origin-default-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
 
     let updated = run_aos_package_json(
         &consumer_home,
@@ -507,11 +527,22 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
             "--channel",
             "stable",
             "--init-channel",
+        ],
+    )?;
+    assert!(release.contains("Released signed-reg 1.0.0"), "{release}");
+    // Placeholder store path → no cache; publish the git origin (incl. the
+    // freshly-initialized channel partitions) with `apr origin upload`.
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "signed-reg",
             "--upload-url",
             &upload_url,
         ],
     )?;
-    assert!(release.contains("Released signed-reg 1.0.0"), "{release}");
     assert!(
         upload_dir.join("channels/stable/00").exists(),
         "uploaded signed channel is missing a partition in {}",
@@ -582,8 +613,6 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
             "stable",
             "--count",
             "256",
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(release.contains("Released signed-reg 1.1.0"), "{release}");
@@ -591,6 +620,17 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
         release.contains("Advanced channel 'stable' 256 partition(s) to 1.1.0"),
         "{release}",
     );
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "signed-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
 
     let updated = run_aos_package_json(
         &consumer_home,
@@ -1023,12 +1063,25 @@ impl Drop for StaticHttpServer {
 }
 
 async fn serve_one(mut stream: TcpStream, root: PathBuf) -> Result<()> {
-    let mut buf = vec![0_u8; 8192];
-    let n = stream.read(&mut buf).await.context("reading request")?;
-    if n == 0 {
+    // Read until the end of the request headers. A single `read` can return a
+    // partial request line under concurrent load (TCP segmentation), which
+    // would truncate the path and 404 a valid object.
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).await.context("reading request")?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 64 * 1024 {
+            break;
+        }
+    }
+    if buf.is_empty() {
         return Ok(());
     }
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let request = String::from_utf8_lossy(&buf);
     let Some(line) = request.lines().next() else {
         return Ok(());
     };

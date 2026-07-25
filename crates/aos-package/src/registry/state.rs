@@ -1,15 +1,17 @@
 //! Registry state persistence.
 //!
-//! Each registry config file (`registries.d/{name}.toml`) contains a
-//! `[registry.state]` section that is written by `apm update` to track
-//! the last-synced commit and channel rollout state.  User-edited fields
-//! (name, url, signing, etc.) are preserved on every save.
+//! `apm update` records each registry's last-synced commit and channel rollout
+//! state in a `[registry.state]` table. Under the seed/state split this is
+//! written to the **writable** config layer (`/var/lib/apm/config` for system
+//! scope), never to the read-only `/etc/apm` seed — so for a *seeded* registry
+//! the on-disk file is a minimal `[registry.state]`-only overlay whose
+//! `url`/signing keep inheriting from the seed (see [`crate::config`]).
 //!
-//! Because the rest of the file is user-owned, saving works by textual
-//! section surgery rather than full-file re-serialization: the existing
-//! `[registry.state]` (or `[registry.signing_keys]`,
-//! `[registry.upload_auth]`) block is located by its header line and
-//! replaced in place, leaving all other bytes untouched.
+//! Because the writable-layer file is apm-owned, [`save_state`] rewrites it by
+//! a structured round-trip: parse, replace `registry.state`, re-serialize. The
+//! producer-side `[registry.signing_keys]` / `[registry.upload_auth]` helpers
+//! ([`upsert_signing_key`], [`save_upload_auth`]) still edit a single section
+//! textually, leaving the rest of an operator's `apr` config untouched.
 //!
 //! A fully populated state section looks like:
 //!
@@ -53,71 +55,46 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
     Ok(rf.registry.state)
 }
 
-/// Save/update the `[registry.state]` section in a registry config file.
+/// Save or update the `[registry.state]` table in a registry config file.
 ///
-/// Preserves user-edited fields — only appends or replaces the state
-/// section. Unset state fields are omitted from the rendered section
-/// entirely.
+/// The writable-layer file is apm-owned, so it is rewritten by a structured
+/// round-trip: the file is parsed, its `registry.state` sub-table is replaced,
+/// and the whole value is re-serialized. Unset state fields are omitted (an
+/// empty `retained` renders as `[]`).
+///
+/// When `path` does not exist, its parent is created and a minimal
+/// `[registry.state]`-only overlay is written — for a seeded registry the
+/// `url`/signing keep inheriting from the lower `/etc` seed layer.
 ///
 /// # Errors
 ///
-/// Returns an error when the config file does not exist, cannot be read, or
-/// cannot be rewritten.
+/// Returns an error when an existing file cannot be read or parsed, when the
+/// parent directory cannot be created, or when the file cannot be written.
 pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-
-    // Build the new state section text.
-    let mut state_lines = String::from("\n[registry.state]\n");
-    if let Some(ref commit) = state.last_commit {
-        state_lines.push_str(&format!("last_commit = \"{commit}\"\n"));
-    }
-    if let Some(ref commit) = state.last_roster_commit {
-        state_lines.push_str(&format!("last_roster_commit = \"{commit}\"\n"));
-    }
-    if let Some(ref floor) = state.floor {
-        state_lines.push_str(&format!("floor = \"{}\"\n", escape_toml_string(floor)));
-    }
-    if let Some(bucket) = state.bucket {
-        state_lines.push_str(&format!("bucket = {bucket}\n"));
-    }
-    if !state.retained.is_empty() {
-        state_lines.push_str("retained = [");
-        for (i, release) in state.retained.iter().enumerate() {
-            if i > 0 {
-                state_lines.push_str(", ");
-            }
-            state_lines.push('"');
-            state_lines.push_str(&escape_toml_string(release));
-            state_lines.push('"');
-        }
-        state_lines.push_str("]\n");
-    }
-    if let Some(ref ts) = state.last_update {
-        state_lines.push_str(&format!("last_update = \"{ts}\"\n"));
-    }
-
-    // Check whether a [registry.state] section already exists.
-    let new_content = if let Some(start) = find_state_section(&content) {
-        // Find the end of the state section (next `[` header or EOF).
-        let after_header = start + "[registry.state]".len();
-        let end = content[after_header..]
-            .find("\n[")
-            .map(|pos| after_header + pos)
-            .unwrap_or(content.len());
-
-        // Trim any trailing whitespace before the state section
-        let before = content[..start].trim_end_matches('\n');
-        let after = &content[end..];
-
-        format!("{before}{state_lines}{after}")
+    let mut root: toml::Value = if path.exists() {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?
     } else {
-        // No existing state section — append.
-        let trimmed = content.trim_end_matches('\n');
-        format!("{trimmed}{state_lines}")
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        toml::Value::Table(toml::map::Map::new())
     };
 
-    std::fs::write(path, &new_content).with_context(|| format!("writing {}", path.display()))?;
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: top level is not a TOML table", path.display()))?;
+    let registry = table
+        .entry("registry".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: [registry] is not a TOML table", path.display()))?;
+    registry.insert("state".to_string(), toml::Value::try_from(state)?);
+
+    let rendered = toml::to_string_pretty(&root)?;
+    std::fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
 
     Ok(())
 }
@@ -301,11 +278,6 @@ fn escape_toml_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Find the byte offset of the `[registry.state]` header in the file content.
-fn find_state_section(content: &str) -> Option<usize> {
-    find_section(content, "[registry.state]")
-}
-
 /// Find the byte offset of a `[section]` header at the start of a line.
 fn find_section(content: &str, header: &str) -> Option<usize> {
     for (i, line) in content.lines().enumerate() {
@@ -393,7 +365,7 @@ url = "https://registry.aos.dev/core"
     }
 
     #[test]
-    fn save_state_appends_to_file_without_state() {
+    fn save_state_updates_file_preserving_definition() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("aos-core.toml");
         fs::write(
@@ -417,31 +389,30 @@ public_key = "aos-core:Ed25519:base64keyhere"
             bucket: Some(183),
             retained: vec!["1.0.0".into(), "1.4.0".into(), "1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 
-        // Verify the file is still valid TOML and contains the state.
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[registry.signing]"));
-        assert!(content.contains("public_key"));
-        assert!(content.contains("[registry.state]"));
-        assert!(content.contains("last_commit = \"deadbeef\""));
-        assert!(content.contains("last_roster_commit = \"feedface\""));
-        assert!(content.contains("floor = \"1.4.2\""));
-        assert!(content.contains("bucket = 183"));
-        assert!(content.contains("retained = [\"1.0.0\", \"1.4.0\", \"1.4.2\"]"));
-
-        // Verify it round-trips through load_state.
+        // State round-trips through load_state.
         let loaded = load_state(&path).unwrap().unwrap();
-        assert_eq!(loaded.last_commit.unwrap(), "deadbeef");
-        assert_eq!(loaded.last_roster_commit.unwrap(), "feedface");
-        assert_eq!(loaded.floor.unwrap(), "1.4.2");
-        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.last_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(loaded.last_roster_commit.as_deref(), Some("feedface"));
+        assert_eq!(loaded.floor.as_deref(), Some("1.4.2"));
+        assert_eq!(loaded.bucket, Some(183));
         assert_eq!(loaded.retained, vec!["1.0.0", "1.4.0", "1.4.2"]);
+
+        // The existing definition (url, signing) is preserved.
+        let content = fs::read_to_string(&path).unwrap();
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(
+            rf.registry.url.as_deref(),
+            Some("https://registry.aos.dev/core")
+        );
+        assert!(rf.registry.signing.is_some());
     }
 
     #[test]
-    fn save_state_replaces_existing_state_section() {
+    fn save_state_replaces_existing_state() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("aos-core.toml");
         fs::write(
@@ -464,26 +435,53 @@ last_update = "2026-01-01T00:00:00Z"
             bucket: Some(183),
             retained: vec!["1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains("old_commit"));
-        assert!(content.contains("new_commit"));
-        assert!(content.contains("new_roster_commit"));
-        assert!(content.contains("floor = \"1.4.2\""));
-        assert!(content.contains("bucket = 183"));
-
-        // Verify user fields are preserved.
-        assert!(content.contains("name = \"aos-core\""));
-        assert!(content.contains("url = \"https://registry.aos.dev/core\""));
 
         let loaded = load_state(&path).unwrap().unwrap();
-        assert_eq!(loaded.last_commit.unwrap(), "new_commit");
-        assert_eq!(loaded.last_roster_commit.unwrap(), "new_roster_commit");
-        assert_eq!(loaded.floor.unwrap(), "1.4.2");
-        assert_eq!(loaded.bucket.unwrap(), 183);
+        assert_eq!(loaded.last_commit.as_deref(), Some("new_commit"));
+        assert_eq!(
+            loaded.last_roster_commit.as_deref(),
+            Some("new_roster_commit")
+        );
+        assert_eq!(loaded.floor.as_deref(), Some("1.4.2"));
+        assert_eq!(loaded.bucket, Some(183));
         assert_eq!(loaded.retained, vec!["1.4.2"]);
+
+        // The definition is preserved across the rewrite.
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(
+            rf.registry.url.as_deref(),
+            Some("https://registry.aos.dev/core")
+        );
+    }
+
+    #[test]
+    fn save_state_creates_minimal_overlay_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        // A nested path that does not exist yet — parents are created and a
+        // pure `[registry.state]` overlay (no url/name) is written, as for a
+        // seeded registry's first sync.
+        let path = tmp.path().join("config/registries.d/aos-core.toml");
+
+        let state = RegistryState {
+            last_commit: Some("deadbeef".into()),
+            floor: Some("1.4.2".into()),
+            ..RegistryState::default()
+        };
+        save_state(&path, &state).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert!(rf.registry.url.is_none());
+        assert!(rf.registry.name.is_none());
+        let loaded = rf.registry.state.unwrap();
+        assert_eq!(loaded.last_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(loaded.floor.as_deref(), Some("1.4.2"));
     }
 
     #[test]
@@ -534,9 +532,7 @@ alice = "/run/secrets/alice"
     }
 
     #[test]
-    fn save_state_preserves_fields_after_state_section() {
-        // Edge case: content after the state section should be preserved
-        // (though unusual, this tests robustness).
+    fn save_state_preserves_other_sections() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("test.toml");
         fs::write(
@@ -563,10 +559,15 @@ public_key = "test:Ed25519:abc"
         save_state(&path, &state).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("last_commit = \"new\""));
-        // The signing section after state should be preserved.
-        assert!(content.contains("[registry.signing]"));
-        assert!(content.contains("public_key = \"test:Ed25519:abc\""));
+        let rf: RegistryFile = toml::from_str(&content).unwrap();
+        assert_eq!(
+            rf.registry.state.unwrap().last_commit.as_deref(),
+            Some("new")
+        );
+        // The signing section is preserved across the rewrite.
+        let signing = rf.registry.signing.unwrap();
+        assert!(!signing.required);
+        assert_eq!(signing.public_key.as_deref(), Some("test:Ed25519:abc"));
     }
 
     #[test]

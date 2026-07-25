@@ -1,17 +1,19 @@
 # tests/fleet/install-from-image.nix - The installation guide, as a test.
 #
-# RFC-0003: the de-facto AOS install flow, end to end, using only what a
-# new user has — the published raw image, an Ignition config, and apm:
+# The AOS install flow, end to end, using only
+# what a new user has — the published raw image and apm:
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
-#                 UKI → initrd → ignition). The fw_cfg-delivered config
-#                 partitions the disk: grow root-a, create root-b, swap
-#                 and var (the A/B layout from docs/boot/qemu-uefi.md,
-#                 sized down for CI), format the filesystems.
-#   2. BOOT     — first boot reaches multi-user.target; the layout and
-#                 the aos-growfs filesystem growth are asserted. This is
-#                 the first CI exercise of the sd-boot/UKI path, the
-#                 qemu/fw_cfg ignition platform, and the disks stage.
+#                 UKI → systemd initrd). There is no metadata input;
+#                 systemd-repart carves swap and var (taking the
+#                 rest) in the trailing free space of the grown per-run disk.
+#                 root-a (the read-only erofs base) ships in the image
+#                 sized-to-fit and is never resized.
+#   2. BOOT     — first boot reaches multi-user.target; the layout is
+#                 asserted: the root is mounted read-only erofs (immutable,
+#                 not grown) and /var filled the disk. This is the first CI
+#                 exercise of the sd-boot/UKI path and the systemd-repart
+#                 substrate carving a real disk.
 #   3. UPDATE   — `apm registry add` + `apm update` against a registry
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
@@ -22,26 +24,50 @@
 #                 the new generation.
 #
 # The target machine is the production server image plus the bundled
-# aos-test-agent role (modules/roles/aos-test-agent.nix) — the boot and
-# provisioning path is fully stock; only the package set carries the
-# test agent that lets the harness drive the machine.
+# aos-test-agent package — the boot and provisioning path is fully stock;
+# only the package set carries the test agent that lets the harness drive
+# the machine.
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=.11):
 #   registry: kernel-boot peer publishing the registry + static cache
 #             (same shape as apm-registry-upgrade.nix), with the
 #             server-2 toplevel and bc pre-staged in its store.
-#   target:   image-boot (bootMode = "image"), no metadata ISO, ignition
-#             config over fw_cfg with the FULL profile (storage.disks).
+#   target:   image boot; identity is baked
+#             into /etc, systemd-repart carves swap/var.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   server2Top = systems.server-2.config.system.build.toplevel;
 
-  # Partition sizes (MiB). The docs' production layout is 16 GiB per
-  # root; CI uses a smaller A/B layout — same shape, same labels.
-  rootSizeMiB = 6144;
+  # The server profile keeps the test fixtures and guest agent out of the
+  # production image (bundle = mkDefault false; modules/profiles/server.nix).
+  # Re-bundle per machine: the registry serves the fixtures, and the
+  # image-boot target needs the agent payload in its raw image so the
+  # harness can activate it on the first boot (lib/testing/fleet.nix).
+  # server-test bundles the guest agent and the registry-workflow CLI tools
+  # (git for the registry seed, curl/git for the target's clone + cache probe)
+  # that image slimming dropped from the server profile. The registry machine
+  # additionally re-bundles its fixtures; the image-boot target is plain
+  # server-test (systems.server-test).
+  serverWithRegistry = mkSystem [
+    ../../systems/server-test.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
+
+  # Partition sizes (MiB). The root is a read-only erofs image (~200 MiB),
+  # so the A/B root slots only need headroom for the base image — not the
+  # whole disk. The freed space goes to /var, which holds the writable Nix
+  # store overlay and all mutable state. CI uses a smaller A/B layout —
+  # same shape, same labels.
+  rootSizeMiB = 1024;
   swapSizeMiB = 1024;
   diskSizeMiB = 16384;
 in {
@@ -50,75 +76,42 @@ in {
   # zstd-compresses the full server-2 closure; the upgrade pulls the
   # generation delta over the L2; then a full UEFI reboot. Budgeted
   # like apm-registry-upgrade plus the reboot.
-  timeout = 2400;
+  timeout = 3000;
 
   machines = {
     registry = {
-      system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      system = serverWithRegistry;
+      # Kernel boot with baked /var matches apm-registry-upgrade.
+      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
-      # Static cache of the full closure lands under /var/lib.
-      varSizeMiB = 1536;
+      # Static cache of the full closure lands under /var/lib/sysreg-cache, and
+      # publish/cache generation stages rewritten store paths in the /nix
+      # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
+      # producer headroom as the server closure grows.
+      varSizeMiB = 4096;
+      # `apr cache generate` zstd-compresses the full server-2 + bc closure
+      # (~1.5 GiB) while the image-boot target hammers the same host with UEFI
+      # partitioning/mkfs. At the 2 GiB default the producer's working set
+      # (closure + OS) thrashes page cache and the publish overruns the 1200 s
+      # agent deadline; 6 GiB keeps the closure resident. This is the one
+      # machine in the fleet that genuinely needs more than the default — every
+      # other VM runs at 2 GiB (see lib/testing/fleet-spec.nix `memoryMiB`).
+      memoryMiB = 6144;
     };
 
     target = {
-      system = systems.server;
+      system = systems.server-test;
       bootMode = "image";
+      # systemd-repart carves swap and var (and
+      # the reserved root-b slot) in the trailing free space of the grown
+      # per-run image disk; per-VM identity + the guest agent are baked into
+      # the image /etc via extendModules (lib/testing/fleet.nix).
       imageDiskMiB = diskSizeMiB;
-      roles = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = {
-          storage = {
-            disks = [
-              {
-                device = "/dev/vda";
-                wipeTable = false;
-                partitions = [
-                  {
-                    number = 2;
-                    label = "root-a";
-                    sizeMiB = rootSizeMiB;
-                    resize = true;
-                    typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-                  }
-                  {
-                    number = 3;
-                    label = "root-b";
-                    sizeMiB = rootSizeMiB;
-                    typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-                  }
-                  {
-                    number = 4;
-                    label = "swap";
-                    sizeMiB = swapSizeMiB;
-                    typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-                  }
-                  {
-                    number = 5;
-                    label = "var";
-                    sizeMiB = 0; # rest of the disk
-                  }
-                ];
-              }
-            ];
-            filesystems = [
-              {
-                device = "/dev/disk/by-partlabel/root-b";
-                format = "ext4";
-                label = "aos-root-b";
-                wipeFilesystem = false;
-              }
-              {
-                device = "/dev/disk/by-partlabel/var";
-                format = "ext4";
-                label = "aos-var";
-                wipeFilesystem = false;
-              }
-            ];
-          };
-        };
-      };
+      packages = ["aos-test-agent"];
+      # The upgrade leg imports the gen-2 closure delta (NAR decompress + nix
+      # import) into the /nix overlay on /var; extra RAM keeps that working set
+      # in page cache so it finishes within the deadline on a loaded builder.
+      memoryMiB = 4096;
     };
   };
 
@@ -130,40 +123,52 @@ in {
       # ════ 1+2. INSTALL + BOOT ═════════════════════════════════════════
       # Reaching this point already proves a lot: the driver's agent
       # handshake + system-ready gate ran against a machine that booted
-      # the stock raw image via OVMF/sd-boot/UKI, whose ignition (qemu
-      # platform, fw_cfg channel) partitioned and formatted the disk and
-      # merged the aos-test-agent role fragment at first boot.
+      # the stock raw image via OVMF/sd-boot/UKI, whose initrd partitioned
+      # and formatted the disk and activated the aos-test-agent package at
+      # first boot.
       target.succeed("systemctl is-active multi-user.target")
 
-      # The declared install layout exists.
-      for label in ("root-a", "root-b", "swap", "var"):
+      # The install layout exists: root-a ships in the image, systemd-repart
+      # carved swap + var in the trailing free space. (A
+      # reserved root-b slot is future A/B work — see modules/services/repart.nix.)
+      for label in ("root-a", "swap", "var"):
           target.succeed(f"test -e /dev/disk/by-partlabel/{label}")
 
-      # ignition-disks grew root-a (vda2) to exactly ${toString rootSizeMiB} MiB.
-      sectors = int(target.succeed("cat /sys/class/block/vda2/size").strip())
-      expected = ${toString rootSizeMiB} * 2048  # MiB -> 512-byte sectors
-      assert sectors == expected, (
-          f"root-a is {sectors} sectors, expected {expected}"
-      )
+      # The root is a read-only erofs image — the immutable base. It ships
+      # sized-to-fit in the image and is NEVER resized (repart only adds/grows
+      # the trailing partitions); all mutable state lives on /var. Confirm it
+      # is mounted read-only erofs and stayed small.
+      import re
 
-      # aos-growfs grew the root ext4 into the resized partition: the
-      # filesystem must report close to the partition size, far above
-      # the image's sized-to-fit original.
+      mounts = target.succeed("cat /proc/mounts")
+      assert re.search(r"^\S+ / erofs ro\b", mounts, re.M), (
+          f"root not mounted as read-only erofs:\n{mounts}"
+      )
       blocks, bsize = map(int, target.succeed(
           "stat -f -c '%b %S' /"
       ).split())
       fs_bytes = blocks * bsize
-      assert fs_bytes > ${toString (rootSizeMiB * 9 / 10)} * 1024 * 1024, (
-          f"root fs is {fs_bytes} bytes; aos-growfs did not grow it"
+      assert fs_bytes < ${toString rootSizeMiB} * 1024 * 1024, (
+          f"erofs root is {fs_bytes} bytes; expected the small immutable base"
       )
 
-      # /var is the ignition-created partition, mounted by partlabel.
+      # /var is the repart-created partition, mounted by partlabel.
       var_dev = target.succeed(
           "readlink -f /dev/disk/by-partlabel/var"
       ).strip()
-      mounts = target.succeed("cat /proc/mounts")
       assert f"{var_dev} /var " in mounts, (
           f"/var not mounted from {var_dev}:\n{mounts}"
+      )
+
+      # /var took the rest of the disk: with a small immutable erofs root,
+      # the writable Nix store overlay + state get the freed space. The disk
+      # is ${toString diskSizeMiB} MiB; /var must be the bulk of it.
+      vblocks, vbsize = map(int, target.succeed(
+          "stat -f -c '%b %S' /var"
+      ).split())
+      var_bytes = vblocks * vbsize
+      assert var_bytes > 10 * 1024 * 1024 * 1024, (
+          f"/var is {var_bytes} bytes; expected it to fill the disk"
       )
 
       # First boot seeded the system profile at gen-1.
@@ -174,7 +179,16 @@ in {
       # Same producer block as apm-registry-upgrade.nix, plus a regular
       # (non-sysroot) bc package for the `apm install` leg.
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
       )
@@ -307,9 +321,13 @@ in {
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
 
+      # Downloads + imports the gen-2 closure delta over the emulated L2 and
+      # switches the system profile. The NARs download quickly; the CPU-bound
+      # zstd decompress + nix import into the /nix overlay on /var then runs
+      # long, so the deadline has generous headroom over the ~normal cost.
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
-          timeout=900,
+          timeout=1800,
       )
       print("=== apm upgrade --system output ===\n" + out)
       assert "Downloading" in out, (
@@ -325,7 +343,7 @@ in {
       # Reboot through the full UEFI path. The upgraded generation and
       # the user-installed package live on /var and must survive.
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
 
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-2", f"generation reverted across reboot: {gen!r}"
@@ -337,6 +355,16 @@ in {
           "/var/lib/profiles/per-user/root/current/bin/bc --version"
       )
       failed = target.succeed("systemctl --failed --no-legend").strip()
+      if failed:
+          print("--- failed units after reboot ---")
+          print(failed)
+          for line in failed.splitlines():
+              fields = line.split()
+              unit = fields[1] if fields and fields[0] == "*" else fields[0]
+              print(f"--- journalctl -u {unit} -b ---")
+              print(target.succeed(
+                  f"journalctl -u {unit} -b --no-pager -n 120 2>&1 || true"
+              ))
       assert not failed, f"failed units after reboot: {failed!r}"
     '';
 }

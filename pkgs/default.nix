@@ -12,17 +12,89 @@
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
 
+  exposeRenderer = import ./build-support/_expose-renderer.nix {
+    inherit lib;
+    pkgs = self;
+  };
+
+  # Turn a package-authored `configModule`
+  # arg into the package's second `config` output (a pure-data store path
+  # carrying `module.nix` + a declared-interface manifest). Wired into
+  # mkDerivation below the same way `expose` is.
+  configModuleRenderer = import ./build-support/_config-module-renderer.nix {
+    inherit lib;
+    pkgs = self;
+  };
+
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
   # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
-  mkDerivation = args:
-    rawMkDerivation (
-      args
+  mkDerivation = args: let
+    packageName =
+      args.pname
+      or args.name
+      or (throw "mkDerivation: package must set pname or name");
+    renderedExpose =
+      if args ? expose
+      then
+        exposeRenderer.render {
+          inherit packageName drv;
+          expose = args.expose;
+        }
+      else null;
+    exposeAttrs =
+      if args ? expose
+      then {expose = renderedExpose;}
+      else {};
+    renderedConfigModule =
+      if args ? configModule
+      then
+        configModuleRenderer.render {
+          inherit packageName;
+          configModule = args.configModule;
+        }
+      else null;
+    configModuleAttrs =
+      if args ? configModule
+      then {configModule = renderedConfigModule;}
+      else {};
+    lowerArgs =
+      # `configModule` is an mkDerivation-level arg consumed here, not passed
+      # down to the raw builder (mirrors how `expose` is handled).
+      (builtins.removeAttrs args ["configModule"])
       // {
         buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
+        passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
-    );
+      // exposeAttrs;
+    drv = rawMkDerivation lowerArgs;
+    exposeCheck =
+      if args ? expose
+      then
+        self.runCommand "expose-payload-closure-check-${packageName}" {
+          payload = drv;
+          exposePath = renderedExpose;
+          disallowedRequisites = [renderedExpose];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        } ''
+          set -eu
+          ln -s "$payload" "$out"
+        ''
+      else null;
+    result =
+      drv
+      // (
+        if args ? expose
+        then {
+          inherit exposeCheck;
+          passthru = drv.passthru // {inherit exposeCheck;};
+        }
+        else {}
+      );
+  in
+    addBuilderOverrides mkDerivation args result;
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools = stdenv.cc;
@@ -88,6 +160,35 @@
           stdenv.gzip
           stdenv.bash
         ];
+      }
+    );
+
+  fetchNpmDeps = args:
+    lib.fetchNpmDeps (
+      args
+      // {
+        nodejs = self.nodejs;
+        python3 = self.python3;
+        caCertificates = self.ca-certificates;
+        inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+          stdenv.gnumake
+          stdenv.sed
+          stdenv.grep
+          stdenv.gawk
+          stdenv.findutils
+          self.git
+        ];
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
       }
     );
 
@@ -333,7 +434,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       self
       // {
-        inherit mkDerivation fetchurl;
+        inherit mkDerivation fetchurl callPackage;
       }
     );
   in
@@ -395,7 +496,7 @@
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
-      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchBazelDeps;
+      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---
@@ -413,7 +514,19 @@
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      # Build a kernel variant with extra kconfig appended. Use this — not
+      # `linux.override { extraConfig = …; }` — for deployment kernels:
+      # `extraConfig` is a linux.nix function arg consumed before
+      # mkDerivation, so the inherited `.override` hook can't reach it
+      # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
+      linuxWith = extraConfig:
+        callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
+
+      # Interpreter-free git for the system image (shares git.nix's source and
+      # version). Used by apm/apr's runtimeTools and the server profile so the
+      # image carries no Perl on git's behalf. `pkgs.git` remains the full build.
+      git-minimal = callPackage ./tools/git.nix {minimal = true;};
 
       kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
       kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};

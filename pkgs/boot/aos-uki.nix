@@ -1,12 +1,17 @@
 ##! aos-uki — Unified Kernel Image assembly
 ##!
 ##! Wraps `systemd-ukify` (from the AOS systemd package built with
-##! -Dukify=enabled) to produce a signed PE-COFF binary that UEFI
-##! firmware loads directly: the sd-stub prepended with kernel +
-##! initrd + cmdline + os-release as appended PE sections. One UKI
-##! per (kernel, initrd, cmdline, os-release) tuple; the image
-##! builder drops it under EFI/Linux/ on the ESP and sd-boot
-##! auto-discovers it.
+##! -Dukify=enabled) to assemble a PE-COFF binary that UEFI firmware
+##! loads directly: the sd-stub prepended with kernel + initrd +
+##! cmdline + os-release as appended PE sections. One UKI per (kernel,
+##! initrd, cmdline, os-release) tuple; the image builder drops it under
+##! EFI/Linux/ on the ESP and sd-boot auto-discovers it.
+##!
+##! The UKI is Secure Boot signed (a single Authenticode signature over
+##! the whole PE, covering kernel + initrd + cmdline transitively) ONLY
+##! when `secureBootKey`/`secureBootCert` are supplied — otherwise it is
+##! an unsigned, byte-reproducible artifact. SB keys are a deployment
+##! overlay, never baked into the reproducible base (RFC-0006).
 ##!
 ##! Arguments:
 ##!   kernel     — kernel derivation (provides /boot/vmlinuz-*)
@@ -18,11 +23,30 @@
 ##!   version    — version string used in the output filename
 ##!   stub       — optional stub PE path; defaults to x86_64 stub
 ##!                from the systemd package
+##!   secureBootKey  — optional db private key (PEM) to sign the UKI
+##!   secureBootCert — optional db certificate (PEM); required with key
+##!   pcrPrivateKey  — optional PCR-policy private key (PEM); when set,
+##!                    ukify measures the UKI and signs a PCR policy into
+##!                    the `.pcrsig` section so TPM-sealed secrets unseal
+##!                    against "any UKI signed by this key" (survives OTA —
+##!                    RFC-0006 measured-boot.md)
+##!   pcrPublicKey   — optional PCR-policy public key (PEM); embedded in
+##!                    the `.pcrpkey` section, required with pcrPrivateKey
+##!   rootHashFile   — optional path to a file containing the dm-verity root
+##!                    hash (ASCII hex) of the erofs root. When
+##!                    set, `roothash=<hex>` is appended to the materialized
+##!                    cmdline before ukify, so the build-output Merkle root —
+##!                    unknowable at Nix eval — lands in the same `.cmdline`
+##!                    section ukify measures (into PCR 11) and the db key
+##!                    signs. This is what binds a UKI to exactly one root
+##!                    image. `null` (default) leaves the cmdline untouched, so
+##!                    non-verity UKIs are byte-identical.
 ##!
 ##! Output: $out/aos-${name}-${version}.efi
 {
   mkDerivation,
   systemd,
+  sbsigntools,
 }: {
   kernel,
   initrd,
@@ -31,11 +55,28 @@
   name,
   version,
   stub ? null,
+  secureBootKey ? null,
+  secureBootCert ? null,
+  pcrPrivateKey ? null,
+  pcrPublicKey ? null,
+  rootHashFile ? null,
 }: let
   effectiveStub =
     if stub != null
     then stub
     else "${systemd}/lib/systemd/boot/efi/linuxx64.efi.stub";
+  signing = secureBootKey != null;
+  signArgs =
+    if signing
+    then "--signtool=sbsign --secureboot-private-key=${secureBootKey} --secureboot-certificate=${secureBootCert}"
+    else "";
+  # Signing a PCR policy makes the seal track the policy key, not a fixed
+  # hash, so any db-signed UKI unseals /var across upgrades.
+  measuring = pcrPrivateKey != null;
+  pcrArgs =
+    if measuring
+    then "--pcr-private-key=${pcrPrivateKey} --pcr-public-key=${pcrPublicKey}"
+    else "";
 in
   mkDerivation {
     pname = "aos-uki-${name}";
@@ -45,7 +86,14 @@ in
     # systemd carries `ukify` (and pefile/pyelftools via the wrapper) in
     # its `tools` output. The main systemd output is still needed for
     # the linuxx64.efi.stub (consumed via ${effectiveStub} below).
-    buildDeps = [systemd.tools systemd];
+    # sbsigntools (sbsign) is only needed when signing.
+    buildDeps =
+      [systemd.tools systemd]
+      ++ (
+        if signing
+        then [sbsigntools]
+        else []
+      );
     runtimeDeps = [];
 
     phases = [
@@ -53,10 +101,26 @@ in
         name = "build";
         script = ''
           mkdir -p $out
+          # When signing a PCR policy, ukify shells out to systemd-measure
+          # to compute the section measurements. It lives in systemd's
+          # lib/systemd (not bin), so put that on PATH — otherwise ukify
+          # falls back to /usr/lib/systemd/systemd-measure (absent in the
+          # sandbox) and fails.
+          export PATH="${systemd}/lib/systemd''${PATH:+:$PATH}"
           # cmdline arrives as a Nix string; materialize to a file so
           # ukify's @path read path handles special characters and
-          # trailing-newline rules consistently.
-          printf '%s' "${cmdline}" > cmdline
+          # trailing-newline rules consistently. When a
+          # rootHashFile is supplied, append `roothash=<hex>` here — this is
+          # the load-bearing trick. The roothash is a build output (the Merkle
+          # root of root.img), unknowable at Nix eval, so it cannot travel
+          # through aos.boot.kernelParams; injecting it into the same .cmdline
+          # ukify measures (--pcr-private-key) and the db key signs puts it
+          # simultaneously into PCR 11 and under the Authenticode signature.
+          ${
+            if rootHashFile != null
+            then ''printf '%s roothash=%s' "${cmdline}" "$(cat ${rootHashFile})" > cmdline''
+            else ''printf '%s' "${cmdline}" > cmdline''
+          }
 
           # Resolve the kernel's actual vmlinuz path — the kernel
           # derivation names it with the upstream version suffix
@@ -68,12 +132,19 @@ in
             exit 1
           fi
 
+          # ${signArgs} is empty unless SB signing is configured, in
+          # which case ukify signs the assembled PE with sbsign.
+          # ${pcrArgs} is empty unless PCR-policy signing is configured, in
+          # which case ukify measures the assembled sections and writes a
+          # signed PCR policy (.pcrsig/.pcrpkey) for TPM-sealed unlock.
           ${systemd.tools}/bin/ukify build \
             --stub=${effectiveStub} \
             --linux="$vmlinuz" \
             --initrd=${initrd}/initrd.img \
             --cmdline=@cmdline \
             --os-release=@${osRelease} \
+            ${signArgs} \
+            ${pcrArgs} \
             --output=$out/aos-${name}-${version}.efi
         '';
       }

@@ -7,11 +7,10 @@
 # the client needs. Nothing in `lib/testing/fleet.nix` forbids N=1 —
 # `apm-e2e.nix` is N=2 only because it needs two distinct hosts.
 #
-# The machine activates the `apm-systemd-client-test` role
-# (`modules/roles/apm-systemd-client-test.nix`), which ships seven
-# synthetic units. The test drives each `SystemdClient` code path
-# through the hidden `apm _test-systemd-client` subcommand and parses
-# its JSON on stdout.
+# The machine activates the `apm-systemd-client-test` package, which ships
+# eight manual-start synthetic units. The test drives each `SystemdClient`
+# code path through the hidden `apm _test-systemd-client` subcommand and
+# parses its JSON on stdout.
 #
 # apm is invoked by **store path** (`${pkgs.aos}/bin/apm`), not via the
 # PATH-installed wrapper: the rootfs symlink farm omits the dotfile
@@ -21,10 +20,18 @@
 # binary. No `HOME` is needed: the `_test-systemd-client` op
 # early-returns before `ApmConfig::load`, so it reads no apm state.
 {
+  mkSystem,
   pkgs,
-  systems,
   ...
-}: {
+}: let
+  # The server profile keeps apm-systemd-client-test out of the production
+  # image (bundle = mkDefault false); re-bundle it so the fleet seed can
+  # activate it at runtime (modules/profiles/server.nix).
+  serverWithClientTest = mkSystem [
+    ../../systems/server.nix
+    {aos.packages.apm-systemd-client-test.bundle = true;}
+  ];
+in {
   name = "apm-systemd-client";
   # One VM boot + role activation + a 5s slow-service wait + a 1s
   # start-timeout + the failed-unit scan. Comfortably under 600s; the
@@ -35,8 +42,12 @@
   machines = {
     # Python global `vm`.
     vm = {
-      system = systems.server;
-      roles = ["apm-systemd-client-test"];
+      system = serverWithClientTest;
+      # Exposed package activation measures PCR 15, so this package-backed
+      # systemd-client test needs a vTPM even though the assertions are about
+      # D-Bus job handling.
+      tpm = true;
+      packages = ["apm-systemd-client-test"];
     };
   };
 
@@ -47,6 +58,13 @@
       import time
 
       apm = "${pkgs.aos}/bin/apm _test-systemd-client"
+
+      vm.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
+      vm.wait_until_succeeds(
+          "systemctl is-active aos-pkg-apm-systemd-client-test.target", timeout=60
+      )
+      vm.succeed("test -L /etc/systemd/system.attached/apm-test-ok.service")
+      vm.succeed("test \"$(systemctl is-active apm-test-ok.service || true)\" = inactive")
 
       # ── 0. Wait for the system bus ────────────────────────────────
       # SystemdClient connects to /run/dbus/system_bus_socket; on a
@@ -85,6 +103,35 @@
       vm.succeed(f"{apm} start apm-test-reload.service", timeout=60)
       out = vm.succeed(f"{apm} reload apm-test-reload.service", timeout=60)
       assert json.loads(out)["result"] == "done", out
+
+      # ── 4b. Type=notify-reload waits for RELOADING=1 → READY=1 ────
+      out = vm.succeed(f"{apm} start apm-test-notify-reload.service", timeout=60)
+      assert json.loads(out)["result"] == "done", out
+      notify_pid_before = int(
+          vm.succeed(
+              "systemctl show -p MainPID --value apm-test-notify-reload.service"
+          ).strip()
+      )
+      t0 = time.monotonic()
+      out = vm.succeed(f"{apm} reload apm-test-notify-reload.service", timeout=60)
+      elapsed = time.monotonic() - t0
+      assert json.loads(out)["result"] == "done", out
+      assert 1.5 < elapsed < 30, (
+          f"notify-reload should wait for READY=1 after RELOADING=1, took {elapsed}s"
+      )
+      notify_pid_after = int(
+          vm.succeed(
+              "systemctl show -p MainPID --value apm-test-notify-reload.service"
+          ).strip()
+      )
+      assert notify_pid_before == notify_pid_after, (
+          "notify-reload should reload in place: "
+          f"PID {notify_pid_before} -> {notify_pid_after}"
+      )
+      count = vm.succeed(
+          "cat /var/lib/aos-pkg-apm-systemd-client-test/apm-test-notify-reload.count"
+      ).strip()
+      assert count == "1", f"notify-reload helper saw {count!r} reloads"
 
       # ── 5. Timeout → timeout ──────────────────────────────────────
       out = vm.succeed(f"{apm} start apm-test-timeout.service || true", timeout=60)
@@ -133,7 +180,7 @@
 
       # ── 12. list-units finds our synthetic units by pattern ───────
       # `list_units_by_patterns` enumerates *loaded* units, so it can
-      # only see units systemd still has in memory. Six of the seven end
+      # only see units systemd still has in memory. Seven of the eight end
       # in active / failed / activating states, which systemd keeps
       # loaded — those must appear. apm-test-dep-a is deliberately NOT
       # required: it ends `inactive` (its dependency failed, so it never
@@ -144,8 +191,9 @@
       got = {u["name"] for u in json.loads(out)["units"]}
       all_synthetic = {
           "apm-test-ok.service", "apm-test-fail.service", "apm-test-slow.service",
-          "apm-test-reload.service", "apm-test-timeout.service",
-          "apm-test-dep-a.service", "apm-test-autorestart.service",
+          "apm-test-reload.service", "apm-test-notify-reload.service",
+          "apm-test-timeout.service", "apm-test-dep-a.service",
+          "apm-test-autorestart.service",
       }
       sticky = all_synthetic - {"apm-test-dep-a.service"}
       # The kept-loaded units must all be listed...

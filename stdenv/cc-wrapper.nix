@@ -21,10 +21,14 @@
   hostPlatform,
   storeDir ? "/nix/store",
   defaultHardening ? "",
+  staticDefault ? false,
+  staticNoPie ? false,
 }: let
   system = hostPlatform.system;
   targetTriple = hostPlatform.config;
   dynamicLinker = "${libc}/lib/${hostPlatform.dynamicLinker}";
+  libcDev = libc.dev or libc;
+  libcStatic = libc.static or libc;
 
   mkdir = "${coreutils}/bin/mkdir";
   cat = "${coreutils}/bin/cat";
@@ -32,103 +36,207 @@
   ln = "${coreutils}/bin/ln";
   echo = "${coreutils}/bin/echo";
 
+  compilerRuntimeLdFlags =
+    if staticDefault
+    then "if [ \"$exec_link\" = true ]; then\n    extra_ldflags=\"$extra_ldflags -static${
+      if staticNoPie
+      then " -no-pie"
+      else ""
+    }\"\n  fi"
+    else "extra_ldflags=\"$extra_ldflags -Wl,-rpath,${libc}/lib\"\n  extra_ldflags=\"$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}\"\n  extra_ldflags=\"$extra_ldflags -Wl,-rpath-link,${libc}/lib\"";
+
+  directLdRuntimeFlags =
+    if staticDefault
+    then "extra_flags=\"$extra_flags -L${libcStatic}/lib\"\nextra_flags=\"$extra_flags -static\""
+    else "extra_flags=\"$extra_flags -rpath ${libc}/lib\"\nextra_flags=\"$extra_flags --dynamic-linker ${dynamicLinker}\"\nextra_flags=\"$extra_flags -rpath-link ${libc}/lib\"";
+
+  ccLdFlags =
+    if staticDefault
+    then "-L${libc}/lib -L${libcStatic}/lib -B${libc}/lib -static${
+      if staticNoPie
+      then " -no-pie"
+      else ""
+    }"
+    else "-L${libc}/lib -L${libcStatic}/lib -Wl,-rpath,${libc}/lib";
+
   # Shared shell prologue that turns the AOS_HARDENING_ENABLE token list into
   # the flag fragments used by the gcc/g++ wrappers:
   #   $hardening_cflags  — emitted before the package's arguments
   #   $hardening_post    — emitted after the package's arguments (Fortify)
   #   $hardening_ldflags — emitted on the link line
   # `isCxx` adds the C++-only libstdc++ assertions token.
-  compilerHardening = isCxx: ''
-    tokens="''${AOS_HARDENING_ENABLE-${defaultHardening}}"
+  compilerHardening = isCxx:
+    if staticDefault
+    then ''
+      tokens="''${AOS_HARDENING_ENABLE-${defaultHardening}}"
 
-    has() {
-      case " $tokens " in
-        *" $1 "*) return 0 ;;
-        *) return 1 ;;
-      esac
-    }
+      has() {
+        case " $tokens " in
+          *" $1 "*) return 0 ;;
+          *) return 1 ;;
+        esac
+      }
 
-    hardening_cflags=""
-    hardening_post=""
-    hardening_ldflags=""
+      hardening_cflags=""
+      hardening_post=""
+      hardening_ldflags=""
 
-    # Stack protector and PIE are GCC build-time defaults, so opting out has
-    # to inject negative flags — omitting a positive flag is not enough.
-    if has stackprotector; then
-      hardening_cflags="$hardening_cflags -fstack-protector-strong --param ssp-buffer-size=4"
-    else
-      hardening_cflags="$hardening_cflags -fno-stack-protector"
-    fi
+      # Early static toolchain tiers predate -fno-PIE/-no-pie. With an empty
+      # token set, do not add modern opt-out flags; only honor explicit
+      # hardening opt-ins that the caller knows this compiler accepts.
+      if has stackprotector; then
+        hardening_cflags="$hardening_cflags -fstack-protector-strong --param ssp-buffer-size=4"
+      fi
 
-    if has pie; then
-      :
-    else
-      hardening_cflags="$hardening_cflags -fno-PIE"
-    fi
+      if has stackclashprotection; then
+        hardening_cflags="$hardening_cflags -fstack-clash-protection"
+      fi
+      if has format; then
+        hardening_cflags="$hardening_cflags -Wformat -Wformat-security -Werror=format-security"
+      fi
+      if has strictflexarrays1; then
+        hardening_cflags="$hardening_cflags -fstrict-flex-arrays=1"
+      fi
+      if has strictflexarrays3; then
+        hardening_cflags="$hardening_cflags -fstrict-flex-arrays=3"
+      fi
+      if has shadowstack; then
+        hardening_cflags="$hardening_cflags -fcf-protection=return"
+      fi
+      if has pacret; then
+        hardening_cflags="$hardening_cflags -mbranch-protection=pac-ret"
+      fi
+      if has trivialautovarinit; then
+        hardening_cflags="$hardening_cflags -ftrivial-auto-var-init=zero"
+      fi
+      if has zerocallusedregs; then
+        hardening_cflags="$hardening_cflags -fzero-call-used-regs=used-gpr"
+      fi
+      ${
+        if isCxx
+        then ''
+          if has glibcxxassertions; then
+            hardening_cflags="$hardening_cflags -D_GLIBCXX_ASSERTIONS"
+          fi
+        ''
+        else ""
+      }
 
-    if has stackclashprotection; then
-      hardening_cflags="$hardening_cflags -fstack-clash-protection"
-    fi
-    if has format; then
-      hardening_cflags="$hardening_cflags -Wformat -Wformat-security -Werror=format-security"
-    fi
-    if has strictflexarrays1; then
-      hardening_cflags="$hardening_cflags -fstrict-flex-arrays=1"
-    fi
-    if has strictflexarrays3; then
-      hardening_cflags="$hardening_cflags -fstrict-flex-arrays=3"
-    fi
-    if has shadowstack; then
-      hardening_cflags="$hardening_cflags -fcf-protection=return"
-    fi
-    if has pacret; then
-      hardening_cflags="$hardening_cflags -mbranch-protection=pac-ret"
-    fi
-    if has trivialautovarinit; then
-      hardening_cflags="$hardening_cflags -ftrivial-auto-var-init=zero"
-    fi
-    if has zerocallusedregs; then
-      hardening_cflags="$hardening_cflags -fzero-call-used-regs=used-gpr"
-    fi
-    ${
-      if isCxx
-      then ''
-        if has glibcxxassertions; then
-          hardening_cflags="$hardening_cflags -D_GLIBCXX_ASSERTIONS"
+      # Fortify: force -O2 and clear any inherited level before the package's
+      # arguments, then set the requested level after them. This avoids macro
+      # redefinition warnings and lets a package's own -O0/-Og make Fortify
+      # inert. fortify3 wins over fortify.
+      if has fortify3; then
+        hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+        hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+      elif has fortify; then
+        hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+        hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
+      fi
+
+      if [ "$linking" = true ]; then
+        if has relro; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,relro"
         fi
-      ''
-      else ""
-    }
+        if has bindnow; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,now"
+        fi
+        if has noexecstack; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,noexecstack"
+        fi
+      fi
+    ''
+    else ''
+      tokens="''${AOS_HARDENING_ENABLE-${defaultHardening}}"
 
-    # Fortify: force -O2 and clear any inherited level before the package's
-    # arguments, then set the requested level after them. This avoids macro
-    # redefinition warnings and lets a package's own -O0/-Og make Fortify
-    # inert. fortify3 wins over fortify.
-    if has fortify3; then
-      hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
-      hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
-    elif has fortify; then
-      hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
-      hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
-    fi
+      has() {
+        case " $tokens " in
+          *" $1 "*) return 0 ;;
+          *) return 1 ;;
+        esac
+      }
 
-    if [ "$linking" = true ]; then
-      if has relro; then
-        hardening_ldflags="$hardening_ldflags -Wl,-z,relro"
+      hardening_cflags=""
+      hardening_post=""
+      hardening_ldflags=""
+
+      # Stack protector and PIE are GCC build-time defaults, so opting out has
+      # to inject negative flags — omitting a positive flag is not enough.
+      if has stackprotector; then
+        hardening_cflags="$hardening_cflags -fstack-protector-strong --param ssp-buffer-size=4"
+      else
+        hardening_cflags="$hardening_cflags -fno-stack-protector"
       fi
-      if has bindnow; then
-        hardening_ldflags="$hardening_ldflags -Wl,-z,now"
+
+      if has pie; then
+        :
+      else
+        hardening_cflags="$hardening_cflags -fno-PIE"
       fi
-      if has noexecstack; then
-        hardening_ldflags="$hardening_ldflags -Wl,-z,noexecstack"
+
+      if has stackclashprotection; then
+        hardening_cflags="$hardening_cflags -fstack-clash-protection"
       fi
-      # Active PIE opt-out, executable links only. Shared, relocatable and
-      # freestanding links manage their own position-independence.
-      if ! has pie && [ "$exec_link" = true ]; then
-        hardening_ldflags="$hardening_ldflags -no-pie"
+      if has format; then
+        hardening_cflags="$hardening_cflags -Wformat -Wformat-security -Werror=format-security"
       fi
-    fi
-  '';
+      if has strictflexarrays1; then
+        hardening_cflags="$hardening_cflags -fstrict-flex-arrays=1"
+      fi
+      if has strictflexarrays3; then
+        hardening_cflags="$hardening_cflags -fstrict-flex-arrays=3"
+      fi
+      if has shadowstack; then
+        hardening_cflags="$hardening_cflags -fcf-protection=return"
+      fi
+      if has pacret; then
+        hardening_cflags="$hardening_cflags -mbranch-protection=pac-ret"
+      fi
+      if has trivialautovarinit; then
+        hardening_cflags="$hardening_cflags -ftrivial-auto-var-init=zero"
+      fi
+      if has zerocallusedregs; then
+        hardening_cflags="$hardening_cflags -fzero-call-used-regs=used-gpr"
+      fi
+      ${
+        if isCxx
+        then ''
+          if has glibcxxassertions; then
+            hardening_cflags="$hardening_cflags -D_GLIBCXX_ASSERTIONS"
+          fi
+        ''
+        else ""
+      }
+
+      # Fortify: force -O2 and clear any inherited level before the package's
+      # arguments, then set the requested level after them. This avoids macro
+      # redefinition warnings and lets a package's own -O0/-Og make Fortify
+      # inert. fortify3 wins over fortify.
+      if has fortify3; then
+        hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+        hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+      elif has fortify; then
+        hardening_cflags="$hardening_cflags -O2 -U_FORTIFY_SOURCE"
+        hardening_post="$hardening_post -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
+      fi
+
+      if [ "$linking" = true ]; then
+        if has relro; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,relro"
+        fi
+        if has bindnow; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,now"
+        fi
+        if has noexecstack; then
+          hardening_ldflags="$hardening_ldflags -Wl,-z,noexecstack"
+        fi
+        # Active PIE opt-out, executable links only. Shared, relocatable and
+        # freestanding links manage their own position-independence.
+        if ! has pie && [ "$exec_link" = true ]; then
+          hardening_ldflags="$hardening_ldflags -no-pie"
+        fi
+      fi
+    '';
 
   wrapperDrv = builtins.derivation {
     name = "aos-cc-wrapper";
@@ -168,14 +276,12 @@
         # it (include_next searches dirs AFTER the one the current header
         # was found in). Result: C++ builds fail with "stdlib.h: No such
         # file". See gcc-stage2.nix + patchelf.nix for the same hazard.
-        extra_cflags="$extra_cflags -idirafter ${libc.dev}/include"
+        extra_cflags="$extra_cflags -idirafter ${libcDev}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
-          extra_ldflags="$extra_ldflags -L${libc.static}/lib"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
-          extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
-          extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
+          extra_ldflags="$extra_ldflags -L${libcStatic}/lib"
+          ${compilerRuntimeLdFlags}
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
@@ -208,14 +314,12 @@
         done
 
         # See the gcc wrapper above for why -idirafter instead of -isystem.
-        extra_cflags="$extra_cflags -idirafter ${libc.dev}/include"
+        extra_cflags="$extra_cflags -idirafter ${libcDev}/include"
 
         if [ "$linking" = true ]; then
           extra_ldflags="$extra_ldflags -L${libc}/lib"
-          extra_ldflags="$extra_ldflags -L${libc.static}/lib"
-          extra_ldflags="$extra_ldflags -Wl,-rpath,${libc}/lib"
-          extra_ldflags="$extra_ldflags -Wl,--dynamic-linker=${dynamicLinker}"
-          extra_ldflags="$extra_ldflags -Wl,-rpath-link,${libc}/lib"
+          extra_ldflags="$extra_ldflags -L${libcStatic}/lib"
+          ${compilerRuntimeLdFlags}
           extra_ldflags="$extra_ldflags -B${libc}/lib"
         fi
 
@@ -250,9 +354,7 @@
 
         extra_flags=""
         extra_flags="$extra_flags -L${libc}/lib"
-        extra_flags="$extra_flags -rpath ${libc}/lib"
-        extra_flags="$extra_flags --dynamic-linker ${dynamicLinker}"
-        extra_flags="$extra_flags -rpath-link ${libc}/lib"
+        ${directLdRuntimeFlags}
         # Phase 3: no -L/-rpath for ${cc}/lib{,64} — see gcc wrapper.
 
         # Token-gated link hardening for direct ld users. The gcc/g++
@@ -280,12 +382,12 @@
         # Multi-output glibc: $dev holds headers, $static holds .a archives.
         # Consumers that need either (e.g. envoy bazel, llvm clang config)
         # read these instead of computing them from $out's path.
-        ${echo} "${libc.dev}"    > $out/nix-support/orig-libc-dev
-        ${echo} "${libc.static}" > $out/nix-support/orig-libc-static
+        ${echo} "${libcDev}"    > $out/nix-support/orig-libc-dev
+        ${echo} "${libcStatic}" > $out/nix-support/orig-libc-static
         ${echo} "${binutils_}" > $out/nix-support/orig-binutils
         ${echo} "${system}"    > $out/nix-support/system
-        ${echo} "-idirafter ${libc.dev}/include" > $out/nix-support/cc-cflags
-        ${echo} "-L${libc}/lib -L${libc.static}/lib -Wl,-rpath,${libc}/lib" > $out/nix-support/cc-ldflags
+        ${echo} "-idirafter ${libcDev}/include" > $out/nix-support/cc-cflags
+        ${echo} "${ccLdFlags}" > $out/nix-support/cc-ldflags
         ${echo} "${dynamicLinker}" > $out/nix-support/dynamic-linker
       ''
     ];

@@ -69,11 +69,17 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
+        ${lib.freezeAutotoolsMtimes}
+
         # Bypass automake sanity check (coreutils-tcc's ls -t is broken)
         ${bash}/bin/bash ${lib.bypassSanityCheck} configure
 
+        # glibc 2.2.5 hides FNM_CASEFOLD behind GNU feature visibility, but
+        # enabling all GNU declarations conflicts with findutils 4.1's legacy
+        # basename declaration. Expose only the stable fnmatch flag bit that
+        # pred.c needs for -iname and -ipath.
         CC="${gcc}/bin/gcc" \
-        CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
+        CFLAGS="-DFNM_CASEFOLD=16 -I${glibc}/include -I${linuxHeaders}/include" \
         LDFLAGS="-static -L${glibc}/lib" \
         LIBS="-Wl,--start-group -lc -lnss_files -lnss_dns -lresolv -Wl,--end-group" \
         CONFIG_SHELL="${bash}/bin/bash" \
@@ -85,6 +91,12 @@ in
 
         make
         make install
+
+        # findutils is a bootstrap PATH dependency for every later GCC tier.
+        # Do not publish a partial output: a missing find otherwise surfaces
+        # much later as misleading GCC_NO_EXECUTABLES link-test failures.
+        test -x "$out/bin/find" || { echo "FATAL: find not installed"; exit 1; }
+        test -x "$out/bin/xargs" || { echo "FATAL: xargs not installed"; exit 1; }
 
         echo "GNU findutils 4.1 built successfully"
       ''

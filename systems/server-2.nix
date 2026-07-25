@@ -9,15 +9,20 @@
 ##!      as a newer sysroot target for `apm upgrade --system`.
 ##!   2. one new environment.etc symlink-mode entry → lands in the EROFS
 ##!      metadata image, proving the /etc overlay swap landed.
-##!   3. tweaked test-http-server role: bumped firewall.allowedTCP, added
+##!   3. upgraded HTTP fixture: bumped aos.firewall.allowedTCP, added
 ##!      a kernel.sysctl entry, added one new oneshot systemd.services
 ##!      entry, and removed one gen-1 oneshot unit. Exercises:
-##!      - role-driven nftables drop-in regeneration → nftables.service
-##!        reloads (its X-Reload-Triggers covers /etc/nftables.d).
-##!      - role-driven sysctl drop-in regeneration → systemd-sysctl.service
-##!        restarts (its X-Reload-Triggers covers /etc/sysctl.d).
+##!      - firewall ruleset regeneration → nftables.service reloads
+##!        (its X-Reload-Triggers covers /etc/nftables.conf).
+##!      - sysctl regeneration → systemd-sysctl.service restarts
+##!        (its X-Reload-Triggers covers /etc/sysctl.d).
 ##!      - a newly-added unit gets installed and started.
 ##!      - a removed unit is stopped before the old unit file disappears.
+##!   4. perturbed dbus.service (a serviceConfig limit) → its unit text
+##!      changes, so the reconciler must act on the system message bus. Since
+##!      dbus.service is reloadIfChanged, this exercises reload-not-restart:
+##!      the bus the reconciler is driven over must NOT be torn down. Guards
+##!      the dbus-self-restart hang.
 ##!
 ##! No kernel change. No bootloader change. Pure /etc + systemd
 ##! reconciliation surface, which is exactly what this fixture exists
@@ -27,7 +32,13 @@
   pkgs,
   ...
 }: {
-  imports = [./server.nix];
+  imports = [
+    ./server.nix
+    (import ./_upgrade-http-fixture.nix {
+      inherit lib pkgs;
+      generation = 2;
+    })
+  ];
 
   # server.nix inherits the 0.1.0 default (modules/base/system.nix).
   # `apm upgrade --system` only requires a *different* sysroot version
@@ -44,44 +55,12 @@
     text = "marker = 1\n";
   };
 
-  # test-http-server is ALREADY bundled on systems.server — the server
-  # profile sets `aos.roles.test-http-server.bundle = true` and
-  # server.nix enables that profile. So we do NOT set `bundle` here; we
-  # only tweak the role's content. The role module defines
-  # firewall.allowedTCP as [8000] unconditionally, so the list override
-  # needs lib.mkForce to replace rather than concatenate (which would
-  # yield [8000 8000 8443]). kernel.sysctl is an attrset and merges
-  # cleanly. systemd.services is forced so gen-2 can omit the gen-1-only
-  # aos-upgrade-removed.service while preserving test-http-server unchanged.
-  aos.roles.test-http-server = {
-    firewall.allowedTCP = lib.mkForce [8000 8443]; # role default: [8000]
-    kernel.sysctl."net.ipv4.tcp_keepalive_time" = "300"; # role default: unset
-
-    systemd.services = lib.mkForce {
-      test-http-server = {
-        description = "Test python http.server on :8000";
-        wantedBy = ["multi-user.target"];
-        serviceConfig = {
-          ExecStart = "${pkgs.python3}/bin/python3 -m http.server --bind 0.0.0.0 8000";
-          WorkingDirectory = "%S";
-          StateDirectory = "test-http-server";
-          Restart = "on-failure";
-          DynamicUser = true;
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          PrivateTmp = true;
-        };
-      };
-
-      aos-upgrade-test-marker = {
-        description = "Upgrade-test marker oneshot";
-        wantedBy = ["multi-user.target"];
-        serviceConfig = {
-          Type = "oneshot";
-          ExecStart = "${pkgs.coreutils}/bin/true";
-          RemainAfterExit = true;
-        };
-      };
-    };
-  };
+  # Perturb dbus.service so its effective fingerprint differs between gen-1
+  # and gen-2, forcing the reconciler to act on the system message bus. This
+  # is the regression surface for the "restart dbus over its own bus" hang:
+  # because dbus.service is reloadIfChanged (modules/services/dbus.nix), the
+  # diff must schedule a *reload* (preserving the daemon's PID and the live
+  # bus), never a restart. The fleet test asserts exactly that. The added
+  # limit is innocuous; only the resulting unit-text change matters.
+  systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
 }

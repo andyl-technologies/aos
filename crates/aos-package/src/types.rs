@@ -29,6 +29,74 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+/// Current registry package metadata format understood by this crate.
+pub const PACKAGE_META_FORMAT: u32 = 1;
+
+/// Registry feature flag for the RFC-0001 `expose` metadata schema.
+pub const FEATURE_EXPOSE_V1: &str = "expose-v1";
+
+/// Registry feature flag for RFC-0001 rendered expose artifacts.
+pub const FEATURE_EXPOSE_ARTIFACT_V1: &str = "expose-artifact-v1";
+
+/// Registry feature flag for the RFC-0001 permission manifest schema.
+pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
+
+/// Registry feature flag for RFC-0001 name-based package requirements.
+pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
+
+/// Registry feature flag for RFC-0001 package config metadata.
+pub const FEATURE_CONFIG_V1: &str = "config-v1";
+
+/// Registry feature flag for RFC-0001 package config reload metadata.
+pub const FEATURE_RELOAD_V1: &str = "reload-v1";
+
+/// Registry feature flag for RFC-0001 typed package capability routing.
+pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
+
+/// Registry feature flag for RFC-0001 per-package network policy grants.
+pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
+
+/// Registry feature flag for RFC-0001 generated MAC profile artifacts.
+pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
+
+/// Registry feature flag for RFC-0001 generated eBPF network policy loaders.
+pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
+
+/// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
+pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
+
+/// Registry feature flag for RFC-0001 package attestation metadata.
+pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
+
+/// Registry feature flag for the second `config` package output and
+/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
+pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
+
+const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
+    FEATURE_EXPOSE_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1,
+    FEATURE_PERMISSIONS_V1,
+    FEATURE_REQUIRES_V1,
+    FEATURE_CONFIG_V1,
+    FEATURE_RELOAD_V1,
+    FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_NETWORK_POLICY_V1,
+    FEATURE_MAC_PROFILE_V1,
+    FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_BPF_LSM_POLICY_V1,
+    FEATURE_ATTESTATION_V1,
+    FEATURE_CONFIG_MODULE_V1,
+];
+
+const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
+const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
+    "/usr/lib/credstore.encrypted",
+    "/etc/credstore.encrypted",
+    "/run/credstore.encrypted",
+];
+const PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES: &[&str] =
+    &["/usr/lib/credstore", "/etc/credstore", "/run/credstore"];
+
 // ---------------------------------------------------------------------------
 // Well-known paths
 // ---------------------------------------------------------------------------
@@ -162,52 +230,12 @@ fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Resu
     Ok(())
 }
 
-/// Validate a package name before using it in registry package paths.
-///
-/// Package names are used as filenames under
-/// `packages/<first-letter>/<name>.toml` and are commonly derived from Nix
-/// store path names. Accept the ASCII path-safe characters Nix permits in
-/// store path names, require an alphanumeric leading character so bucketing
-/// stays stable, and reject anything that could be interpreted as a path,
-/// shell word, or TOML delimiter.
-///
-/// # Errors
-///
-/// Returns an error when `name` is empty, starts with a non-alphanumeric
-/// character, or contains any byte outside ASCII letters, digits, `+`, `.`,
-/// `_`, `=`, and `-`.
-pub fn validate_package_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("package name must not be empty");
-    }
-
-    if !name
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric())
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '_' | '=' | '-'))
-    {
-        bail!(
-            "invalid package name '{name}': use only ASCII letters, digits, '+', '.', '_', '=' and '-', starting with a letter or digit"
-        );
-    }
-
-    Ok(())
-}
-
-/// Return the registry package bucket for a validated package name.
-///
-/// Package metadata files live under `packages/<bucket>/<name>.toml`, where
-/// the bucket is the lowercase first ASCII character of the package name.
-/// Call [`validate_package_name`] before using this for path construction.
-pub fn package_name_bucket(name: &str) -> String {
-    name.chars()
-        .next()
-        .map(|ch| ch.to_ascii_lowercase().to_string())
-        .unwrap_or_else(|| "_".to_string())
-}
+// Package-name validation and bucketing moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker share the exact rules without pulling `aos-package`.
+// Re-exported here so `aos_package::types::{validate_package_name,
+// package_name_bucket}` paths are unchanged.
+pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_name};
 
 /// Validate a platform/system name before using it as a package TOML key.
 ///
@@ -483,6 +511,1263 @@ pub struct PackageMeta {
     /// Pre-compiled images (only for sysroot packages).
     #[serde(default)]
     pub images: Vec<SysrootImageEntry>,
+    /// Minimum package metadata format required to safely consume this entry.
+    #[serde(
+        default,
+        rename = "min-format",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_format: Option<u32>,
+    /// Feature flags a consumer must understand before installing this entry.
+    #[serde(
+        default,
+        rename = "requires-features",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub requires_features: Vec<String>,
+    /// Optional RFC-0001 service exposure metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// Configuration-only module output and its declared interface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
+    /// Signed RFC-0001 permission manifest.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
+    /// Signed fleet BPF-LSM policy artifact metadata.
+    #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts for this package.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
+}
+
+// The RFC-0001 package metadata schema types moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker share them with the apr/apm client. Re-exported here
+// so `aos_package::types::{ExposeMeta, …}` paths are unchanged. The pure
+// validation free functions below stay native to this crate; only the data
+// contracts and their inherent helpers moved.
+pub use aos_registry_surface::manifest::{
+    AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta, CapabilityKind,
+    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass,
+    ConfinementMeta, CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    HostPathMode, HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
+    RequiredCapabilityMeta, SyscallProfile,
+};
+
+// Configuration schema types are pure manifest data; they live in the
+// wasm-clean `aos-registry-surface` crate alongside the rest of the package
+// schema (so the hub indexer and the Worker share them) and are re-exported
+// here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
+pub use aos_registry_surface::manifest::{
+    ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
+};
+
+/// Returns the top-level root segment of a dotted option path.
+///
+/// `"firewall.allowedTCPPorts"` → `"firewall"`; a path with no `.` is its own
+/// root.
+pub fn option_path_root(path: &str) -> &str {
+    path.split('.').next().unwrap_or(path)
+}
+
+/// Returns whether package metadata must be backed by DSSE provenance.
+///
+/// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
+/// [`rfc0001_metadata_requires_provenance`]; in addition, a configuration
+/// `config_module` block is privileged metadata that independently forces
+/// provenance.
+pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
+    rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    ) || meta.config_module.is_some()
+}
+
+/// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
+pub(crate) fn rfc0001_metadata_requires_provenance(
+    expose: Option<&ExposeMeta>,
+    expose_artifact: Option<&ExposeArtifactMeta>,
+    permissions: &PermissionsMeta,
+    bpf_lsm: Option<&BpfLsmPolicyMeta>,
+) -> bool {
+    expose.is_some()
+        || expose_artifact.is_some()
+        || !permissions.is_empty()
+        || bpf_lsm.is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+}
+
+/// Named host policy tier for RFC-0001 permission admission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyTier {
+    /// Tightest policy tier.
+    Restricted,
+    /// Default policy tier.
+    #[default]
+    Baseline,
+    /// Privileged policy tier.
+    Privileged,
+}
+
+/// Validate that a package metadata entry can be safely consumed.
+///
+/// # Errors
+///
+/// Returns an error when the entry requires a newer format, names an
+/// unsupported feature, uses RFC-0001 metadata without declaring its feature
+/// gate, names invalid package requirements, or requests `CAP_SYS_MODULE`
+/// inside the workload instead of using the host-fulfilled `kernel-modules`
+/// permission.
+pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+}
+
+/// Validate a package metadata entry against an explicit format/feature set.
+///
+/// This helper models older clients in tests: a client that supports the
+/// common gate fields but lacks the named feature must refuse the entry before
+/// it can silently ignore privilege metadata.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_supported_package_meta`] would reject the
+/// entry for the supplied capabilities.
+pub fn validate_supported_package_meta_with(
+    meta: &PackageMeta,
+    supported_format: u32,
+    supported_features: &[&str],
+) -> Result<()> {
+    if let Some(min_format) = meta.min_format {
+        if min_format > supported_format {
+            bail!(
+                "package '{}' requires package metadata format {min_format}, but this apm supports {supported_format}",
+                meta.name
+            );
+        }
+    }
+
+    for feature in &meta.requires_features {
+        if !supported_features.contains(&feature.as_str()) {
+            bail!(
+                "package '{}' requires unsupported registry feature '{feature}'",
+                meta.name
+            );
+        }
+    }
+
+    if meta.expose.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_V1)?;
+        require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
+    }
+    if meta.expose_artifact.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_ARTIFACT_V1)?;
+    }
+    if !meta.permissions.is_empty() {
+        require_feature(meta, FEATURE_PERMISSIONS_V1)?;
+        if meta.permissions.has_network_policy() {
+            require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
+        }
+    }
+    if let Some(bpf_lsm) = &meta.bpf_lsm {
+        if !bpf_lsm.is_empty() {
+            require_feature(meta, FEATURE_BPF_LSM_POLICY_V1)?;
+            validate_bpf_lsm_policy_meta(bpf_lsm)
+                .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
+        }
+    }
+    if !meta.attestation.is_empty() {
+        require_feature(meta, FEATURE_ATTESTATION_V1)?;
+        validate_attestation_meta(&meta.attestation)
+            .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
+    }
+    if let Some(config_module) = &meta.config_module {
+        require_feature(meta, FEATURE_CONFIG_MODULE_V1)?;
+        validate_config_module_meta(config_module)
+            .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
+    }
+    if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
+        let reason = if meta.config_module.is_some() {
+            "uses config-module metadata"
+        } else {
+            "uses RFC-0001 exposed or permission metadata"
+        };
+        bail!(
+            "package '{}' {reason} without attestation provenance",
+            meta.name
+        );
+    }
+
+    if let Some(expose) = &meta.expose {
+        validate_expose_meta_for_package(&meta.name, expose)?;
+        validate_attestation_expose_consistency(meta)?;
+        if !expose.requires.is_empty() {
+            require_feature(meta, FEATURE_REQUIRES_V1)?;
+        }
+        if !expose.config.is_empty() {
+            require_feature(meta, FEATURE_CONFIG_V1)?;
+        }
+        if expose.config.has_unit_reconciliation() {
+            require_feature(meta, FEATURE_RELOAD_V1)?;
+        }
+        if !expose.provides.is_empty() || !expose.uses.is_empty() {
+            require_feature(meta, FEATURE_CAPABILITY_ROUTES_V1)?;
+        }
+        if expose_uses_ebpf_net_policy(&meta.name, expose) {
+            require_feature(meta, FEATURE_EBPF_NET_POLICY_V1)?;
+        }
+        if expose_uses_mac_profile(&meta.name, expose) {
+            require_feature(meta, FEATURE_MAC_PROFILE_V1)?;
+        }
+        for required in &expose.requires {
+            validate_package_name(required)
+                .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
+        }
+    }
+    if let Some(artifact) = &meta.expose_artifact {
+        if meta.expose.is_none() {
+            bail!(
+                "package '{}' carries expose artifact metadata without expose metadata",
+                meta.name
+            );
+        }
+        validate_expose_artifact_meta(artifact)
+            .with_context(|| format!("invalid expose artifact for package '{}'", meta.name))?;
+    }
+
+    validate_permissions_meta(&meta.name, &meta.permissions)?;
+
+    Ok(())
+}
+
+fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
+    if meta
+        .requires_features
+        .iter()
+        .any(|declared| declared == feature)
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
+        meta.name
+    )
+}
+
+fn expose_uses_ebpf_net_policy(package_name: &str, expose: &ExposeMeta) -> bool {
+    let unit = format!("aos-pkg-{package_name}-ebpf.service");
+    expose.units.iter().any(|candidate| candidate == &unit)
+}
+
+fn expose_uses_mac_profile(package_name: &str, expose: &ExposeMeta) -> bool {
+    let unit = format!("aos-pkg-{package_name}-mac.service");
+    expose.units.iter().any(|candidate| candidate == &unit)
+}
+
+/// Validate an RFC-0001 exposure metadata block.
+///
+/// # Errors
+///
+/// Returns an error when the target/unit names, image metadata, or required
+/// package names are malformed.
+pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
+    validate_target_name(&expose.target)?;
+    let mut unit_names = std::collections::BTreeSet::new();
+    for unit in &expose.units {
+        validate_unit_name(unit)?;
+        unit_names.insert(unit.as_str());
+    }
+    for image in &expose.images {
+        validate_image_entry(image)?;
+    }
+    for required in &expose.requires {
+        validate_package_name(required)?;
+    }
+    validate_expose_config_meta(&expose.config)?;
+    validate_capability_routes(expose)?;
+    validate_expose_unit_references(expose, &unit_names)?;
+    Ok(())
+}
+
+/// Validate an RFC-0001 exposure metadata block for a package.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_expose_meta`] rejects the metadata or the
+/// target is not the package-owned `aos-pkg-<package>.target` activation unit.
+pub fn validate_expose_meta_for_package(package_name: &str, expose: &ExposeMeta) -> Result<()> {
+    validate_package_name(package_name)?;
+    validate_expose_meta(expose)?;
+    let expected = format!("aos-pkg-{package_name}.target");
+    if expose.target != expected {
+        bail!(
+            "expose target for package '{package_name}' must equal {expected}: {}",
+            expose.target
+        );
+    }
+    Ok(())
+}
+
+fn validate_expose_unit_references(
+    expose: &ExposeMeta,
+    unit_names: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    for artifact in &expose.config.artifacts {
+        for unit in &artifact.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "config artifact '{}' references unknown expose unit '{}'",
+                    artifact.name,
+                    unit
+                );
+            }
+        }
+    }
+    for credential in &expose.config.credentials {
+        for unit in &credential.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "credential '{}' references unknown expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
+        }
+    }
+    for provided in &expose.provides {
+        if let Some(unit) = &provided.unit
+            && !unit_names.contains(unit.as_str())
+        {
+            bail!(
+                "provided capability '{}' references unknown expose unit '{}'",
+                provided.name,
+                unit
+            );
+        }
+    }
+    for required in &expose.uses {
+        if !required.unit.ends_with(".service") {
+            bail!(
+                "required capability '{}.{}' references non-service expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+        if !unit_names.contains(required.unit.as_str()) {
+            bail!(
+                "required capability '{}.{}' references unknown expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate RFC-0001 package config metadata.
+///
+/// # Errors
+///
+/// Returns an error when an artifact, credential, field name, or target unit is
+/// malformed.
+pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
+    let mut artifact_names = std::collections::BTreeSet::new();
+    let mut artifact_paths = std::collections::BTreeSet::new();
+    for artifact in &config.artifacts {
+        validate_config_artifact_name(&artifact.name)?;
+        if !artifact_names.insert(&artifact.name) {
+            bail!("duplicate config artifact name '{}'", artifact.name);
+        }
+        validate_config_artifact_path(&artifact.path)?;
+        if !artifact_paths.insert(&artifact.path) {
+            bail!("duplicate config artifact path '{}'", artifact.path);
+        }
+        let mut fields = std::collections::BTreeSet::new();
+        for field in artifact.required.iter().chain(&artifact.optional) {
+            validate_config_field_name(field)?;
+            if !fields.insert(field) {
+                bail!(
+                    "config artifact '{}' declares field '{}' more than once",
+                    artifact.name,
+                    field
+                );
+            }
+        }
+        for unit in &artifact.units {
+            validate_unit_name(unit)?;
+        }
+    }
+
+    let mut credential_names = std::collections::BTreeSet::new();
+    for credential in &config.credentials {
+        validate_credential_name(&credential.name)?;
+        if !credential_names.insert(&credential.name) {
+            bail!("duplicate credential name '{}'", credential.name);
+        }
+        if let Some(source) = &credential.source {
+            validate_credential_source_path(source, credential.encrypted)?;
+        }
+        if let Some(ciphertext) = &credential.ciphertext {
+            if !credential.encrypted {
+                bail!(
+                    "credential '{}' declares ciphertext but is not encrypted",
+                    credential.name
+                );
+            }
+            if credential.source.is_some() {
+                bail!(
+                    "credential '{}' must not declare both source and ciphertext",
+                    credential.name
+                );
+            }
+            validate_credential_ciphertext(ciphertext)?;
+        }
+        for unit in &credential.units {
+            validate_unit_name(unit)?;
+            if !unit.ends_with(".service") {
+                bail!(
+                    "credential '{}' references non-service expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate rendered RFC-0001 expose artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when the store path is not absolute or the recorded NAR
+/// fields are missing or malformed.
+pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()> {
+    validate_absolute_path(&artifact.store_path, "expose artifact store path")?;
+    if store_path_hash_component(&artifact.store_path).is_none() {
+        bail!(
+            "expose artifact store path is not a Nix-style store path: {}",
+            artifact.store_path
+        );
+    }
+    if !artifact.nar_hash.starts_with("sha256:") && !artifact.nar_hash.starts_with("sha256-") {
+        bail!(
+            "expose artifact '{}' has invalid NAR hash",
+            artifact.store_path
+        );
+    }
+    if artifact.nar_size == 0 {
+        bail!(
+            "expose artifact '{}' must record a non-zero NAR size",
+            artifact.store_path
+        );
+    }
+    Ok(())
+}
+
+/// Validates metadata for the second `config` package output.
+///
+/// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
+/// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
+/// addition, every reference entry must be a bare store-path hash, and no
+/// reference may name a `.drv` — the config output is pure data and must never
+/// pull a derivation into its closure (publish lint, architecture.md §Stage-1).
+///
+/// # Errors
+///
+/// Returns an error when the store path is not an absolute Nix-style store path,
+/// the NAR hash is missing or malformed, the NAR size is zero, or a reference is
+/// not a bare store-path hash or names a derivation.
+pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
+    validate_absolute_path(&output.store_path, "config output store path")?;
+    if store_path_hash_component(&output.store_path).is_none() {
+        bail!(
+            "config output store path is not a Nix-style store path: {}",
+            output.store_path
+        );
+    }
+    if !output.nar_hash.starts_with("sha256:") && !output.nar_hash.starts_with("sha256-") {
+        bail!("config output '{}' has invalid NAR hash", output.store_path);
+    }
+    if output.nar_size == 0 {
+        bail!(
+            "config output '{}' must record a non-zero NAR size",
+            output.store_path
+        );
+    }
+    for reference in &output.references {
+        if reference.contains(".drv") {
+            bail!(
+                "config output '{}' must not reference a derivation: {reference}",
+                output.store_path
+            );
+        }
+        if reference.contains('/')
+            || reference.len() < 2
+            || !reference.chars().all(|ch| ch.is_ascii_alphanumeric())
+        {
+            bail!(
+                "config output '{}' reference is not a bare store-path hash: {reference}",
+                output.store_path
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validates configuration-module metadata.
+///
+/// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
+/// (`min <= max`), the option paths, owned roots, and contributions for
+/// well-formedness, and the capability tokens declared by the module.
+///
+/// # Errors
+///
+/// Returns an error when the config output is malformed, the ABI band is
+/// inverted, an option path / root / capability token is empty or malformed, a
+/// declared path's root is not owned-or-contributed, or a contribution targets a
+/// root the module also owns.
+pub fn validate_config_module_meta(module: &ConfigModuleMeta) -> Result<()> {
+    validate_config_output_meta(&module.config_output)?;
+
+    if module.module_abi_compat.min > module.module_abi_compat.max {
+        bail!(
+            "config module module_abi_compat range is inverted: min {} > max {}",
+            module.module_abi_compat.min,
+            module.module_abi_compat.max
+        );
+    }
+
+    let mut declared = std::collections::BTreeSet::new();
+    for path in &module.declares {
+        validate_option_path(path)?;
+        if !declared.insert(path) {
+            bail!("config module declares option path '{path}' more than once");
+        }
+    }
+
+    let mut owned = std::collections::BTreeSet::new();
+    for owned_root in &module.owns_roots {
+        validate_option_root("owned root", &owned_root.root)?;
+        if !owned.insert(owned_root.root.as_str()) {
+            bail!(
+                "config module owns root '{}' more than once",
+                owned_root.root
+            );
+        }
+        let mut contributable = std::collections::BTreeSet::new();
+        for path in &owned_root.contributable {
+            validate_option_subpath(path)?;
+            if !contributable.insert(path) {
+                bail!(
+                    "owned root '{}' lists contributable sub-path '{path}' more than once",
+                    owned_root.root
+                );
+            }
+        }
+    }
+
+    let mut contributed = std::collections::BTreeSet::new();
+    for contribution in &module.contributes {
+        validate_option_root("contribution root", &contribution.root)?;
+        if owned.contains(contribution.root.as_str()) {
+            bail!(
+                "config module both owns and contributes to root '{}'",
+                contribution.root
+            );
+        }
+        if !contributed.insert(contribution.root.as_str()) {
+            bail!(
+                "config module contributes to root '{}' more than once",
+                contribution.root
+            );
+        }
+        if contribution.paths.is_empty() {
+            bail!(
+                "config module contribution to root '{}' lists no paths",
+                contribution.root
+            );
+        }
+        for path in &contribution.paths {
+            validate_option_subpath(path)?;
+        }
+    }
+
+    let mut capabilities = std::collections::BTreeSet::new();
+    for token in &module.provides_capabilities {
+        validate_capability_token(token)?;
+        if !capabilities.insert(token) {
+            bail!("config module sets capability '{token}' more than once");
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a dotted option path used as an inverted-index key.
+fn validate_option_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        bail!("option path must not be empty");
+    }
+    if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
+        bail!("invalid option path '{path}': empty path segment");
+    }
+    if !path
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid option path '{path}': use ASCII letters, digits, '.', '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate a single option-path root segment (no `.`).
+fn validate_option_root(kind: &str, root: &str) -> Result<()> {
+    if root.is_empty() || root.contains('.') {
+        bail!("invalid {kind} '{root}': must be a single option-path segment");
+    }
+    if !root
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("invalid {kind} '{root}': use ASCII letters, digits, '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate an option sub-path relative to a shared root.
+fn validate_option_subpath(path: &str) -> Result<()> {
+    validate_option_path(path)
+}
+
+/// Validate a capability token (a dotted option path).
+fn validate_capability_token(token: &str) -> Result<()> {
+    validate_option_path(token)
+}
+
+/// Validate signed BPF-LSM policy artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when names are malformed, artifact paths are not safe
+/// package-relative paths, or program names are not BPF C identifiers.
+pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for policy in &meta.policies {
+        validate_policy_artifact_name(&policy.name)?;
+        validate_relative_artifact_path("BPF-LSM policy", &policy.policy, ".json")?;
+        validate_relative_artifact_path("BPF-LSM object", &policy.object, ".bpf.o")?;
+        if !seen.insert(&policy.name) {
+            bail!("duplicate BPF-LSM policy '{}'", policy.name);
+        }
+        if policy.programs.is_empty() {
+            bail!(
+                "BPF-LSM policy '{}' must name at least one program",
+                policy.name
+            );
+        }
+        let mut programs = std::collections::BTreeSet::new();
+        for program in &policy.programs {
+            validate_bpf_program_name(program)?;
+            if !programs.insert(program) {
+                bail!(
+                    "BPF-LSM policy '{}' contains duplicate program '{}'",
+                    policy.name,
+                    program
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate runtime integrity, attestation, and provenance metadata.
+///
+/// # Errors
+///
+/// Returns an error when root-hash/signature fields are incomplete, hash fields
+/// are malformed SHA-256 digests, or registry-served artifact references are
+/// unsafe.
+pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
+    if meta.root_hash.is_some() != meta.root_hash_sig.is_some() {
+        bail!("attestation root_hash and root_hash_sig must be declared together");
+    }
+    if meta.measurement.is_some() && meta.root_digest.is_none() && meta.root_hash.is_none() {
+        bail!("attestation measurement requires root_digest or root_hash/root_hash_sig");
+    }
+    if let Some(root_digest) = &meta.root_digest {
+        validate_sha256_digest("attestation root_digest", root_digest)?;
+    }
+    if let Some(root_hash) = &meta.root_hash {
+        validate_sha256_digest("attestation root_hash", root_hash)?;
+    }
+    if let (Some(root_digest), Some(root_hash)) = (&meta.root_digest, &meta.root_hash)
+        && canonical_sha256_digest(root_digest) != canonical_sha256_digest(root_hash)
+    {
+        bail!("attestation root_digest must match root_hash when both are declared");
+    }
+    if let Some(measurement) = &meta.measurement {
+        validate_sha256_digest("attestation measurement", measurement)?;
+    }
+    if let Some(root_hash_sig) = &meta.root_hash_sig {
+        validate_relative_artifact_path("attestation root_hash_sig", root_hash_sig, ".p7s")?;
+    }
+    if let Some(provenance) = &meta.provenance {
+        validate_attestation_provenance_ref(provenance)?;
+    }
+    Ok(())
+}
+
+/// Validate a registry-hosted attestation provenance JSONL reference.
+///
+/// The package registry cache has reserved top-level trees for package
+/// metadata, store-graph records, transport state, and transparency metadata.
+/// Provenance statements may use the generated `provenance/` tree or a
+/// custom artifact directory, but must not masquerade as those cache-owned
+/// trees.
+///
+/// # Errors
+///
+/// Returns an error when `path` is not a safe relative `.jsonl` artifact path
+/// or targets a cache-owned registry subtree.
+pub fn validate_attestation_provenance_ref(path: &str) -> Result<()> {
+    validate_relative_artifact_path("attestation provenance", path, ".jsonl")?;
+    if matches!(
+        Path::new(path).components().next(),
+        Some(std::path::Component::Normal(part))
+            if matches!(
+                part.to_str(),
+                Some("packages" | "store" | "repo.git" | "transparency")
+            )
+    ) {
+        bail!("attestation provenance path '{path}' must not target a cache-owned subtree");
+    }
+    Ok(())
+}
+
+fn validate_attestation_expose_consistency(meta: &PackageMeta) -> Result<()> {
+    let (Some(root_hash), Some(root_hash_sig), Some(expose)) = (
+        meta.attestation.root_hash.as_deref(),
+        meta.attestation.root_hash_sig.as_deref(),
+        meta.expose.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    let Some(attestation_root_hash) = canonical_sha256_digest(root_hash) else {
+        return Ok(());
+    };
+
+    let mut saw_verity_image = false;
+    for image in &expose.images {
+        if image.root_hash.is_none() && image.root_hash_sig.is_none() {
+            continue;
+        }
+        saw_verity_image = true;
+        let image_root_hash = image.root_hash.as_deref().and_then(canonical_sha256_digest);
+        if image_root_hash.as_deref() == Some(attestation_root_hash.as_str())
+            && image.root_hash_sig.as_deref() == Some(root_hash_sig)
+        {
+            return Ok(());
+        }
+    }
+
+    if saw_verity_image {
+        bail!(
+            "attestation root_hash/root_hash_sig for package '{}' must match a verity expose image",
+            meta.name
+        );
+    }
+    Ok(())
+}
+
+fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .with_context(|| format!("{kind} must start with sha256: or sha256-"))?;
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("{kind} must contain a 64-character SHA-256 digest");
+    }
+    Ok(())
+}
+
+fn canonical_sha256_digest(digest: &str) -> Option<String> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))?;
+    if hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Some(format!("sha256:{}", hex.to_ascii_lowercase()));
+    }
+    None
+}
+
+fn validate_policy_artifact_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("invalid BPF-LSM policy name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
+    if !path.ends_with(suffix) {
+        bail!("{kind} path '{path}' must be a relative *{suffix} path");
+    }
+    validate_relative_artifact_member_path(kind, path)
+}
+
+fn validate_relative_artifact_member_path(kind: &str, path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+        bail!("{kind} path '{path}' must be a relative artifact path");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '+' | '=' | '@' | '-')
+    }) {
+        bail!("{kind} path '{path}' contains unsupported characters");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => bail!("{kind} path '{path}' must not contain '.', '..', or prefixes"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_bpf_program_name(program: &str) -> Result<()> {
+    let mut chars = program.chars();
+    let Some(first) = chars.next() else {
+        bail!("BPF program name must not be empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        bail!("invalid BPF program name '{program}'");
+    }
+    Ok(())
+}
+
+/// Validate an RFC-0001 permission manifest.
+///
+/// # Errors
+///
+/// Returns an error when a manifest entry is malformed or asks for
+/// `CAP_SYS_MODULE` inside the workload.
+pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMeta) -> Result<()> {
+    for capability in &permissions.capabilities {
+        validate_capability_name(capability)?;
+        if capability == "CAP_SYS_MODULE" {
+            bail!(
+                "package '{package_name}' requests CAP_SYS_MODULE; load modules through kernel-modules instead"
+            );
+        }
+    }
+    validate_tcp_ports("tcp-bind", &permissions.tcp_bind)?;
+    validate_tcp_ports("tcp-connect", &permissions.tcp_connect)?;
+    for device in &permissions.devices {
+        validate_absolute_path(device, "device")?;
+    }
+    for host_path in &permissions.host_paths {
+        validate_host_path_permission(host_path)?;
+    }
+    for module in &permissions.kernel_modules {
+        validate_kernel_module_name(module)?;
+    }
+    if let Some(label) = &permissions.security_label {
+        validate_security_label(label)?;
+    }
+    if let Some(confinement) = &permissions.confinement {
+        validate_confinement_meta(confinement)?;
+        let computed = permissions.computed_confinement();
+        if confinement != &computed {
+            bail!(
+                "package '{package_name}' permissions.confinement does not match computed confinement: expected class {:?}, label '{}', holes {:?}; got class {:?}, label '{}', holes {:?}",
+                computed.class,
+                computed.label,
+                computed.holes,
+                confinement.class,
+                confinement.label,
+                confinement.holes
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_tcp_ports(kind: &str, ports: &[u16]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for port in ports {
+        if *port == 0 {
+            bail!("{kind} contains invalid TCP port 0");
+        }
+        if !seen.insert(port) {
+            bail!("{kind} contains duplicate TCP port {port}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_capability_name(capability: &str) -> Result<()> {
+    if capability.starts_with("CAP_")
+        && capability
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
+    {
+        return Ok(());
+    }
+    bail!("invalid capability name '{capability}'")
+}
+
+pub(crate) fn validate_kernel_module_name(module: &str) -> Result<()> {
+    if module.is_empty()
+        || !module
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid kernel module name '{module}'");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
+    if Path::new(path).is_absolute() {
+        return Ok(());
+    }
+    bail!("{kind} must be an absolute path: {path}")
+}
+
+fn validate_host_path_permission(host_path: &HostPathPermission) -> Result<()> {
+    validate_absolute_path(&host_path.path, "host path")?;
+    let path = Path::new(&host_path.path);
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("host path must not contain '..': {}", host_path.path);
+    }
+    if !host_path.path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!(
+            "host path contains unsupported characters: {:?}",
+            host_path.path
+        );
+    }
+    if host_path.mode == HostPathMode::ReadOnly
+        && LANDLOCK_WRITABLE_TEMP_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+    {
+        bail!(
+            "read-only host paths under /tmp or /var/tmp would be writable through the package Landlock temp grants: {}",
+            host_path.path
+        );
+    }
+    Ok(())
+}
+
+fn validate_config_artifact_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+        && !name.contains("..")
+    {
+        return Ok(());
+    }
+    bail!("invalid config artifact name '{name}'")
+}
+
+fn validate_config_artifact_path(path: &str) -> Result<()> {
+    validate_absolute_path(path, "config artifact path")?;
+    let p = Path::new(path);
+    if p.starts_with("/etc/aos/packages") && p.components().all(|c| c.as_os_str() != "..") {
+        return Ok(());
+    }
+    bail!("config artifact path must be under /etc/aos/packages: {path}")
+}
+
+pub(crate) fn validate_config_field_name(field: &str) -> Result<()> {
+    if !field.is_empty()
+        && field.chars().enumerate().all(|(idx, ch)| {
+            ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit())
+        })
+    {
+        return Ok(());
+    }
+    bail!("invalid config field name '{field}'")
+}
+
+pub(crate) fn validate_credential_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid credential name '{name}'")
+}
+
+fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
+    validate_absolute_path(path, "credential source path")?;
+    let p = Path::new(path);
+    if p.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("credential source path must not contain '..': {path}");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!("credential source path contains unsupported characters: {path:?}");
+    }
+    let allowed = if encrypted {
+        ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES
+    } else {
+        PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES
+    };
+    if allowed
+        .iter()
+        .any(|prefix| path != *prefix && p.starts_with(prefix))
+    {
+        return Ok(());
+    }
+    if encrypted {
+        bail!(
+            "encrypted credential source path must be under /usr/lib/credstore.encrypted, /etc/credstore.encrypted, or /run/credstore.encrypted: {path}"
+        );
+    }
+    bail!(
+        "credential source path must be under /usr/lib/credstore, /etc/credstore, or /run/credstore: {path}"
+    )
+}
+
+pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
+    if !ciphertext.is_empty()
+        && ciphertext
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '.' | '_' | '-'))
+    {
+        return Ok(());
+    }
+    bail!("credential ciphertext contains unsupported characters")
+}
+
+fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
+    let mut provided_names = std::collections::BTreeSet::new();
+    for provided in &expose.provides {
+        validate_capability_route_name(&provided.name)?;
+        if !provided_names.insert(&provided.name) {
+            bail!("duplicate provided capability '{}'", provided.name);
+        }
+        match provided.kind {
+            CapabilityKind::Directory => {
+                let Some(path) = provided.path.as_ref() else {
+                    bail!(
+                        "directory capability '{}' must declare a path",
+                        provided.name
+                    );
+                };
+                validate_absolute_path(path, "provided directory capability path")?;
+                if provided.unit.is_some() {
+                    bail!(
+                        "directory capability '{}' must not declare a unit",
+                        provided.name
+                    );
+                }
+            }
+            CapabilityKind::Namespace | CapabilityKind::Socket => {
+                let Some(unit) = provided.unit.as_ref() else {
+                    bail!(
+                        "{:?} capability '{}' must declare a unit",
+                        provided.kind,
+                        provided.name
+                    );
+                };
+                validate_unit_name(unit)?;
+                if provided.path.is_some() {
+                    bail!(
+                        "{:?} capability '{}' must not declare a path",
+                        provided.kind,
+                        provided.name
+                    );
+                }
+            }
+        }
+    }
+
+    for required in &expose.uses {
+        validate_package_name(&required.provider)?;
+        validate_capability_route_name(&required.name)?;
+        validate_unit_name(&required.unit)?;
+    }
+
+    Ok(())
+}
+
+fn validate_capability_route_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid capability route name '{name}'")
+}
+
+fn validate_target_name(target: &str) -> Result<()> {
+    validate_unit_name(target)?;
+    if !target.starts_with("aos-pkg-") || !target.ends_with(".target") {
+        bail!("expose target must be named aos-pkg-<name>.target: {target}");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
+    let has_known_suffix = [
+        ".automount",
+        ".mount",
+        ".path",
+        ".service",
+        ".slice",
+        ".socket",
+        ".target",
+        ".timer",
+    ]
+    .iter()
+    .any(|suffix| unit.ends_with(suffix));
+
+    if unit.is_empty()
+        || unit.contains('/')
+        || unit.chars().any(char::is_whitespace)
+        || !has_known_suffix
+    {
+        bail!("invalid systemd unit name '{unit}'");
+    }
+    Ok(())
+}
+
+fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
+    if image.format.is_empty()
+        || !image
+            .format
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid image format '{}'", image.format);
+    }
+    validate_absolute_path(&image.store_path, "image store path")?;
+    if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
+        bail!("image '{}' has invalid NAR hash", image.store_path);
+    }
+    validate_image_verity_entry(image)?;
+    Ok(())
+}
+
+fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
+    let verity_field_count = [
+        image.root_image.as_ref(),
+        image.root_verity.as_ref(),
+        image.root_hash.as_ref(),
+        image.root_hash_sig.as_ref(),
+    ]
+    .iter()
+    .filter(|field| field.is_some())
+    .count();
+    let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
+
+    if verity_field_count == 0 && !verity_format {
+        return Ok(());
+    }
+
+    if !verity_format {
+        bail!(
+            "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
+            image.store_path,
+            image.format
+        );
+    }
+    if verity_field_count != 4 {
+        bail!(
+            "image '{}' must declare root_image, root_verity, root_hash, and root_hash_sig together",
+            image.store_path
+        );
+    }
+
+    let root_image = image
+        .root_image
+        .as_ref()
+        .context("verity root_image missing after field-count validation")?;
+    let root_verity = image
+        .root_verity
+        .as_ref()
+        .context("verity root_verity missing after field-count validation")?;
+    let root_hash = image
+        .root_hash
+        .as_ref()
+        .context("verity root_hash missing after field-count validation")?;
+    let root_hash_sig = image
+        .root_hash_sig
+        .as_ref()
+        .context("verity root_hash_sig missing after field-count validation")?;
+
+    validate_relative_artifact_member_path("verity root_image", root_image)?;
+    validate_relative_artifact_path("verity root_verity", root_verity, ".verity")?;
+    validate_sha256_digest("verity root_hash", root_hash)?;
+    validate_relative_artifact_path("verity root_hash_sig", root_hash_sig, ".p7s")?;
+
+    Ok(())
+}
+
+fn store_path_hash_component(path: &str) -> Option<&str> {
+    let basename = path.rsplit('/').next()?;
+    let (hash, _) = basename.split_once('-')?;
+    if hash.len() >= 2 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_security_label(label: &str) -> Result<()> {
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid security label '{label}'");
+    }
+    Ok(())
+}
+
+fn validate_confinement_meta(confinement: &ConfinementMeta) -> Result<()> {
+    validate_display_ascii("confinement label", &confinement.label)?;
+    for hole in &confinement.holes {
+        validate_display_ascii("confinement hole", hole)?;
+    }
+    Ok(())
+}
+
+fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
+        bail!("invalid {kind} '{value}'");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +1824,24 @@ pub struct ApmMeta {
     /// NAR hash for the source derivation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_nar_hash: String,
+    /// RFC-0001 service exposure metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Rendered RFC-0001 expose artifact captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// Configuration-only module metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
+    /// RFC-0001 permission manifest captured at install time.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
+    /// Fleet BPF-LSM policy metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts captured at install time.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +1890,9 @@ pub struct RegistryConfig {
     /// with the committed root registry.toml caches, then sorted by priority.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    /// Producer-side internal cache staging policy.
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
@@ -669,6 +1975,26 @@ fn default_priority() -> u32 {
 /// Serde default for boolean fields that default to `true`.
 fn default_true() -> bool {
     true
+}
+
+/// Default retention for producer-side static-cache staging.
+pub const DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS: u64 = 30;
+
+/// Producer-side internal static-cache staging policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryCacheConfig {
+    /// Number of days to retain unused staged narinfo/NAR pairs. When unset,
+    /// `apr cache gc` and automatic successful-run GC use 30 days.
+    #[serde(default)]
+    pub max_age_days: Option<u64>,
+}
+
+impl RegistryCacheConfig {
+    /// Returns the configured retention period, defaulting to 30 days.
+    pub fn max_age_days(&self) -> u64 {
+        self.max_age_days
+            .unwrap_or(DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
+    }
 }
 
 /// Signing configuration embedded in a registry config.
@@ -785,6 +2111,18 @@ pub struct RegistryState {
     /// ISO 8601 timestamp of the last successful sync.
     #[serde(default)]
     pub last_update: Option<String>,
+    /// Highest accepted TUF root metadata version.
+    #[serde(default)]
+    pub tuf_root_version: Option<u64>,
+    /// Highest accepted TUF targets metadata version.
+    #[serde(default)]
+    pub tuf_targets_version: Option<u64>,
+    /// Highest accepted TUF snapshot metadata version.
+    #[serde(default)]
+    pub tuf_snapshot_version: Option<u64>,
+    /// Highest accepted TUF timestamp metadata version.
+    #[serde(default)]
+    pub tuf_timestamp_version: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -976,6 +2314,9 @@ pub struct ApmSettings {
     /// Automatically run gc after autoremove.
     #[serde(default)]
     pub auto_gc: bool,
+    /// PCR policy public key used for signed-PCR credential encryption.
+    #[serde(default)]
+    pub credential_pcr_public_key: Option<String>,
 }
 
 /// Serde default for [`ApmSettings::parallel_downloads`].
@@ -990,6 +2331,7 @@ impl Default for ApmSettings {
             parallel_downloads: default_parallel(),
             auto_autoremove: false,
             auto_gc: false,
+            credential_pcr_public_key: None,
         }
     }
 }
@@ -1003,11 +2345,37 @@ impl Default for ApmSettings {
 pub enum ProfileScope {
     /// Per-user profile at `/var/lib/profiles/per-user/$USER/`.
     User,
-    /// System-wide profile at `/var/lib/profiles/system/` (requires root).
+    /// System-wide scope (requires root).
+    ///
+    /// Sysroot generations live at `/var/lib/profiles/system/`; runtime APM
+    /// package generations live at `/var/lib/profiles/system-packages/`.
     System,
 }
 
 impl ProfileScope {
+    /// Lowercase human name for this scope (`"system"` or `"user"`).
+    ///
+    /// Used in diagnostics that name the scope a command searched, such as the
+    /// unsynced-registry warning emitted by query commands.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProfileScope::User => "user",
+            ProfileScope::System => "system",
+        }
+    }
+
+    /// The opposite scope.
+    ///
+    /// System scope returns [`ProfileScope::User`] and vice versa. Used to
+    /// point an operator at the scope they probably meant when a query finds a
+    /// registry unsynced in the current one.
+    pub fn other(&self) -> ProfileScope {
+        match self {
+            ProfileScope::User => ProfileScope::System,
+            ProfileScope::System => ProfileScope::User,
+        }
+    }
+
     /// Base path for profiles of this scope.
     ///
     /// User scope resolves to `<profiles>/per-user/$USER` (with `"unknown"`
@@ -1020,6 +2388,20 @@ impl ProfileScope {
                 profiles_base().join("per-user").join(user)
             }
             ProfileScope::System => profiles_base().join("system"),
+        }
+    }
+
+    /// Base path for APM package-profile generations in this scope.
+    ///
+    /// The sysroot uses [`ProfileScope::profile_path`] for
+    /// `/var/lib/profiles/system/state.json`, whose schema is
+    /// [`SystemGenerationState`]. Runtime system packages use a separate
+    /// package-generation database so `apm install --system` cannot corrupt
+    /// or replace the sysroot generation pointer.
+    pub fn package_profile_path(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => self.profile_path(),
+            ProfileScope::System => profiles_base().join("system-packages"),
         }
     }
 
@@ -1039,11 +2421,66 @@ impl ProfileScope {
         }
     }
 
+    /// Path for producer-side static-cache staging for one registry.
+    ///
+    /// Rooted under [`nar_cache_path`](Self::nar_cache_path) — the scope's
+    /// regenerable-bytes location (`~/.cache/apm` for user,
+    /// `/var/lib/apm/cache` for system) — with a `registry-static/` infix that
+    /// keeps producer staging separate from the consumer NAR download cache.
+    /// The per-registry leaf preserves the one-`StoreDir`-per-cache invariant.
+    pub fn registry_cache_path(&self, registry: &str) -> PathBuf {
+        self.nar_cache_path().join("registry-static").join(registry)
+    }
+
     /// Path for registry config files.
+    ///
+    /// This is the read-only `/etc/apm` image seed (system) or `~/.config/apm`
+    /// (user) — the lowest configuration layer. Use [`config_layers`] for the
+    /// full ordered read set and [`writable_config_dir`] for the mutation
+    /// target.
+    ///
+    /// [`config_layers`]: ProfileScope::config_layers
+    /// [`writable_config_dir`]: ProfileScope::writable_config_dir
     pub fn config_dir(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_config_home().join("apm"),
             ProfileScope::System => apm_system_config_dir().to_path_buf(),
+        }
+    }
+
+    /// Ordered configuration layers, from lowest to highest precedence.
+    ///
+    /// `apm` loads `apm.conf` and `registries.d/*.toml` from each layer and
+    /// merges them field by field, with higher layers overriding lower ones
+    /// (see [`crate::config`]). The lowest layer is the read-only `/etc/apm`
+    /// seed baked into the system image; the highest is the writable layer
+    /// returned by [`ProfileScope::writable_config_dir`].
+    ///
+    /// - System scope: `[/etc/apm, /var/lib/apm/config]`.
+    /// - User scope: `[/etc/apm, /var/lib/apm/config, ~/.config/apm]` — a user
+    ///   invocation also sees system runtime deltas before applying its own.
+    pub fn config_layers(&self) -> Vec<PathBuf> {
+        let mut layers = vec![
+            apm_system_config_dir().to_path_buf(),
+            apm_state_dir().join("config"),
+        ];
+        if matches!(self, ProfileScope::User) {
+            layers.push(xdg_config_home().join("apm"));
+        }
+        layers
+    }
+
+    /// Writable configuration layer where `apm` persists runtime config and
+    /// state deltas.
+    ///
+    /// This is the highest-precedence entry of [`ProfileScope::config_layers`]:
+    /// `/var/lib/apm/config` for system scope and `~/.config/apm` for user
+    /// scope. The `/etc/apm` seed is never written — it is a read-only image
+    /// layer whose tmpfs `/etc` upper is discarded on reboot.
+    pub fn writable_config_dir(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => xdg_config_home().join("apm"),
+            ProfileScope::System => apm_state_dir().join("config"),
         }
     }
 
@@ -1057,8 +2494,13 @@ impl ProfileScope {
 
     /// Directories searched for pinned trusted keys, in precedence order.
     ///
-    /// The first directory is also where new pins are written; the system
-    /// `trusted-keys.d` is shared by both scopes so user installs can trust
+    /// The first directory is the writable store where new pins are persisted
+    /// ([`crate::security::KeyStore`] writes its `.first()`); the rest are
+    /// read-only anchors searched in order. For system scope the writable
+    /// store is the persistent `/var/lib/apm/trusted-keys.d`, placed ahead of
+    /// the read-only `/etc/apm/trusted-keys.d` image seed, so runtime pins
+    /// survive a reboot while the seed still contributes trust anchors. The
+    /// `/etc` seed is shared with user scope so user installs can trust
     /// system-provisioned keys.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
@@ -1067,8 +2509,28 @@ impl ProfileScope {
                 apm_system_config_dir().join("trusted-keys.d"),
             ],
             ProfileScope::System => vec![
-                apm_system_config_dir().join("trusted-keys.d"),
                 apm_state_dir().join("trusted-keys.d"),
+                apm_system_config_dir().join("trusted-keys.d"),
+            ],
+        }
+    }
+
+    /// Directories searched for provisioned Secure Boot db certificates, in
+    /// precedence order.
+    ///
+    /// Mirrors [`ProfileScope::trusted_keys_dirs`]: a deployment bakes
+    /// `trusted-sb-certs.d/<registry>.pem` alongside `trusted-keys.d`, giving
+    /// `apm` the db cert to re-verify cataloged UKIs against at download time
+    /// (RFC-0006 phase 4 trust-bootstrap symmetry).
+    pub fn trusted_sb_certs_dirs(&self) -> Vec<PathBuf> {
+        match self {
+            ProfileScope::User => vec![
+                xdg_config_home().join("apm/trusted-sb-certs.d"),
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+            ],
+            ProfileScope::System => vec![
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+                apm_state_dir().join("trusted-sb-certs.d"),
             ],
         }
     }
@@ -1092,8 +2554,19 @@ pub struct RegistryFile {
 /// `apm update` appends — config loading splits the two apart.
 #[derive(Debug, Deserialize)]
 pub struct RegistryFileInner {
-    pub name: String,
-    pub url: String,
+    /// Registry name. Optional because a registry's identity is its config
+    /// file name (`<stem>.toml`): the loader defaults `name` to the stem and,
+    /// when this field is present, requires it to match. A minimal `/var`
+    /// overlay (a `[registry.state]` or `enabled` delta on a seeded registry)
+    /// carries no `name`.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Registry URL. Optional at the schema level so the loader can merge
+    /// layered fragments before validation: a pure `/var` overlay omits it and
+    /// inherits the seed's `url`, while a merged result that still lacks a
+    /// `url` is an orphaned delta the loader drops (see [`crate::config`]).
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_true")]
@@ -1115,6 +2588,8 @@ pub struct RegistryFileInner {
     pub max_staleness_seconds: Option<u64>,
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
@@ -1138,70 +2613,34 @@ pub struct ApmConfFile {
 // Registry root config — from `registry.toml` inside a registry repo
 // ---------------------------------------------------------------------------
 
-/// Top-level structure of a registry's `registry.toml` file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootConfig {
-    /// The `[registry]` metadata table.
-    pub registry: RegistryRootMeta,
-    /// Committed `[[caches]]` entries: binary caches every consumer of this
-    /// registry should use.
-    #[serde(default)]
-    pub caches: Vec<CacheEntry>,
-}
-
-/// Registry metadata in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootMeta {
-    /// Canonical registry name.
-    pub name: String,
-    /// Optional human-readable description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Whether the producer records content addresses in the `store/`
-    /// realisation graph (RFC-0005), so the registry serves both
-    /// input-addressed and content-addressed consumers. Default `true`;
-    /// set `false` for a pure input-addressed registry.
-    #[serde(default = "default_content_addressed")]
-    pub content_addressed: bool,
-}
-
-/// Serde default for [`RegistryRootMeta::content_addressed`].
-fn default_content_addressed() -> bool {
-    true
-}
-
-/// A binary cache entry in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    /// Base URL of the binary cache.
-    pub url: String,
-    /// Cache selection priority — higher is tried first (default 100).
-    #[serde(default = "default_cache_priority")]
-    pub priority: u32,
-}
-
-/// Serde default for [`CacheEntry::priority`].
-fn default_cache_priority() -> u32 {
-    100
-}
+// The committed `registry.toml` root-config schema (`RegistryRootConfig`, its
+// `[registry]` metadata, and the unified `[caches]` cache stack) moved to the
+// wasm-clean `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry
+// hub's indexer and the Cloudflare Worker can deserialize a committed root
+// config without pulling `aos-package` (which is native-only). Re-exported here
+// so `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry,
+// CachesConfig}` paths are unchanged. The `content_addressed` flag
+// (RFC-0005/0009) lives on the canonical `RegistryRootMeta` in that crate.
+pub use aos_registry_surface::manifest::{
+    CacheEntry, CachesConfig, RegistryRootConfig, RegistryRootMeta,
+};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
-/// A pre-compiled image format entry within a sysroot package version.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SysrootImageEntry {
-    /// Image format identifier (e.g. `qcow2`, `raw`), matched against
-    /// `apm install --image <FMT>`.
-    pub format: String,
-    /// Store path containing the image file.
-    pub store_path: String,
-    /// Hash of the image's uncompressed NAR: `"sha256:..."`.
-    pub nar_hash: String,
-    /// Size of the image's uncompressed NAR in bytes.
-    pub nar_size: u64,
-}
+// `SbatEntry` (the UKI `.sbat` component/generation record) moved to the
+// wasm-clean `aos-registry-surface` crate alongside the manifest `ImageEntry`
+// that carries it (RFC-0004 Phase 5 / RFC-0006), so the parse path and the
+// runtime `SysrootImageEntry` share one type. Re-exported here so
+// `aos_package::types::SbatEntry` is unchanged.
+// `SysrootImageEntry` (the pre-compiled image format entry within a sysroot
+// package version) also moved to the wasm-clean `aos-registry-surface` crate
+// (RFC-0004 Phase 5) so the parse path, the `ExposeMeta.images` schema, and the
+// runtime image entry share one type. Re-exported here so
+// `aos_package::types::SysrootImageEntry` is unchanged.
+pub use aos_registry_surface::manifest::SbatEntry;
+pub use aos_registry_surface::manifest::SysrootImageEntry;
 
 // ---------------------------------------------------------------------------
 // System generation state — persisted in /var/lib/profiles/system/state.json
@@ -1226,6 +2665,146 @@ pub struct SystemGeneration {
     /// upgrades and rollbacks (`None` when the toplevel ships no kernel).
     #[serde(default)]
     pub kernel_path: Option<String>,
+    /// The [`ImageGeneration::number`] against which this configuration was evaluated.
+    /// against, establishing the parent edge.
+    ///
+    /// `None` for legacy single-axis generations created before the two-axis
+    /// split; such generations re-activate directly (the rollback pin treats a
+    /// missing pin as "same ABI" for compatibility). Populated
+    /// for generations produced by the on-host config evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen_parent: Option<u32>,
+    /// The `module_abi` in effect at evaluation time, equal to the parent
+    /// image-gen's `module_abi`).
+    ///
+    /// The rollback pin ([`SystemGeneration::reactivation_plan`]) compares this
+    /// against the running image's ABI: equal ⇒ direct re-activation,
+    /// different ⇒ cross-ABI re-eval. `None` for legacy generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_abi_pinned: Option<u32>,
+    /// Content address of the canonicalized manifest JSON.
+    /// (`gen-N/manifest.json`) that identifies the config-gen's *output*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
+    /// Store path of the configuration-module **source** closure the
+    /// evaluator read (the eval *input*, distinct from package runtime
+    /// outputs). GC-rooted by `gen-N/cfgsrc/<hash>`; required for cross-ABI
+    /// re-eval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module_closure: Option<String>,
+    /// Store path or content hash of the exact `host.nix` this
+    /// config-gen was evaluated from (content-pin, never a mutable git ref).
+    /// GC-rooted by the same `gen-N/cfgsrc/<hash>` root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_ref: Option<String>,
+    /// Optional non-authoritative provenance: the Git commit
+    /// `host.nix` came from, recorded for operator traceability only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_commit: Option<String>,
+    /// Content address of the resolved instance facts (`facts.json`).
+    /// the eval consumed. Part of the reproducible input set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_hash: Option<String>,
+}
+
+impl SystemGeneration {
+    /// Decides how this config-generation may be re-activated under a running
+    /// image whose shared-option ABI is `running_abi`.
+    ///
+    /// A config-gen is pinned to the `module_abi` it was evaluated against
+    /// ([`Self::module_abi_pinned`]); the manifest is the *output* of evaluating
+    /// config modules against a specific base-lib option schema, so replaying it
+    /// against a different schema is undefined. The branch is therefore:
+    ///
+    /// - **Same ABI (or a legacy generation with no recorded pin)** ⇒
+    ///   [`ReactivationPlan::DirectReactivate`]: a pure pointer switch over the
+    ///   retained `cfg/` outputs. A `None` pin maps here so the single-axis
+    ///   single-axis rollback flow is preserved byte-for-byte.
+    /// - **Different ABI** ⇒ [`ReactivationPlan::CrossAbiReEval`] carrying the
+    ///   retained inputs (`config_module_closure`, `host_nix_ref`, `facts_hash`)
+    ///   the rolled-back image's evaluator must replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only in the cross-ABI case when a retained input
+    /// required for re-eval (`config_module_closure`, `host_nix_ref`, or
+    /// `facts_hash`) is missing from the record — a fail-closed signal that the
+    /// generation cannot be safely recomputed (its `cfgsrc/` inputs were never
+    /// recorded or were lost).
+    pub fn reactivation_plan(&self, running_abi: u32) -> Result<ReactivationPlan> {
+        match self.module_abi_pinned {
+            // Legacy generation or exact ABI match: free re-activation.
+            None => Ok(ReactivationPlan::DirectReactivate),
+            Some(pinned) if pinned == running_abi => Ok(ReactivationPlan::DirectReactivate),
+            Some(pinned) => {
+                let inputs = CrossAbiReEvalInputs {
+                    config_module_closure: self.config_module_closure.clone().with_context(|| {
+                        format!(
+                            "config-gen {} pins module_abi {pinned} but the running image is \
+                             {running_abi}; cross-ABI re-eval needs config_module_closure, \
+                             which is not recorded for this generation",
+                            self.number
+                        )
+                    })?,
+                    host_nix_ref: self.host_nix_ref.clone().with_context(|| {
+                        format!(
+                            "config-gen {} requires cross-ABI re-eval but records no \
+                             host_nix_ref",
+                            self.number
+                        )
+                    })?,
+                    facts_hash: self.facts_hash.clone().with_context(|| {
+                        format!(
+                            "config-gen {} requires cross-ABI re-eval but records no facts_hash",
+                            self.number
+                        )
+                    })?,
+                    from_module_abi: pinned,
+                    to_module_abi: running_abi,
+                };
+                Ok(ReactivationPlan::CrossAbiReEval(inputs))
+            }
+        }
+    }
+}
+
+/// The action required to re-activate a config-generation under a (possibly
+/// changed) running image's `module_abi`.
+///
+/// Produced by [`SystemGeneration::reactivation_plan`] and consumed by the
+/// rollback path. The two arms are the two independent re-bind outcomes the
+/// generations model permits: a free pointer switch within one ABI, or a
+/// deterministic re-evaluation across an ABI boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReactivationPlan {
+    /// Same ABI: re-activate directly with a pure `current → gen-N` pointer
+    /// switch over the retained `cfg/` outputs. No eval, no reboot.
+    DirectReactivate,
+    /// Different ABI: direct activation is refused; the config-gen must be
+    /// re-evaluated from its retained inputs against the rolled-back image's
+    /// evaluator before it can be committed.
+    CrossAbiReEval(CrossAbiReEvalInputs),
+}
+
+/// The retained eval inputs a cross-ABI re-activation must replay
+/// using its retained inputs.
+///
+/// All three store references are kept alive on `/var` by the per-generation
+/// `gen-N/cfgsrc/<hash>` GC root, so the re-eval is satisfiable without any
+/// network round-trip; because eval is pure and content-addressed, the
+/// recomputation is deterministic and usually cache-hits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrossAbiReEvalInputs {
+    /// Store path of the config-module source closure the evaluator must read.
+    pub config_module_closure: String,
+    /// Store path of the exact `host.nix` the config-gen was evaluated from.
+    pub host_nix_ref: String,
+    /// Content-address of the resolved instance facts (`facts.json`).
+    pub facts_hash: String,
+    /// The ABI the config-gen was originally pinned to.
+    pub from_module_abi: u32,
+    /// The running image ABI the config-gen must be re-evaluated against.
+    pub to_module_abi: u32,
 }
 
 /// Persistent state for system generations.
@@ -1240,9 +2819,228 @@ pub struct SystemGenerationState {
     pub generations: Vec<SystemGeneration>,
 }
 
+// ---------------------------------------------------------------------------
+// Two-axis generations: image generation (substrate) and configuration generation (overlay).
+// ---------------------------------------------------------------------------
+//
+// The generation model splits the bundled [`SystemGeneration`] into two records on two
+// axes (a tree: each [`ConfigGeneration`] is a child of exactly one
+// [`ImageGeneration`]). These types are introduced *alongside* the existing
+// `SystemGeneration`/`SystemGenerationState`, which remain the on-disk
+// authority for `/var/lib/profiles/system/state.json` (so legacy `state.json`
+// keeps parsing). [`ConfigGeneration`] is the forward-looking canonical view
+// over a `SystemGeneration` record; [`ImageGeneration`] is the genuinely new
+// image axis persisted at `/var/lib/profiles/image/state.json`.
+
+/// A/B slot discriminant for an image generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageSlot {
+    /// The `A` partition slot.
+    A,
+    /// The `B` partition slot.
+    B,
+}
+
+/// One measured, signed image-generation: kernel + initrd + base lib +
+/// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
+/// PCR-11 policy recorded for an image generation.
+///
+/// It is **not** the authority of record — the ESP UKI set + the running
+/// image's `/etc/os-release` are. The `/var` record is a userspace *index*
+/// over what is installed in the ESP slots, used by APM to reason about A/B
+/// state and retention. Persisted in `/var/lib/profiles/image/state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGeneration {
+    /// Image-generation number (names the `image-gen-N/` directory).
+    pub number: u32,
+    /// A/B slot this UKI occupies.
+    pub slot: ImageSlot,
+    /// ESP-relative path of this generation's UKI, e.g.
+    /// `EFI/Linux/aos-2026.06.1+3.efi` (the `+N` is the sd-boot boot-counting
+    /// tries-suffix; see build-spec §5.2).
+    pub uki_path: String,
+    /// Store path of the sysroot toplevel this image was built from.
+    pub toplevel: String,
+    /// Sysroot package name (provenance, migrated from `SystemGeneration`).
+    pub package_name: String,
+    /// Sysroot package version.
+    pub version: String,
+    /// Source registry the sysroot package was installed from.
+    pub registry: String,
+    /// Resolved kernel store path (kernel-change detection across A/B).
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+    /// Store path of the base-lib + evaluator closure carried *inside* this
+    /// image. The ABI artifact and GC-root target for
+    /// `image-gen-N/baselib/<module_abi>`.
+    pub evaluator_ref: String,
+    /// The monotonic shared-option-schema ABI this image's base lib exports.
+    /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
+    pub module_abi: u32,
+    /// SHA-256 of the base-lib closure, mirrored as `AOS_BASELIB_DIGEST` in
+    /// `/etc/os-release` and measured into PCR-11 via the `.osrel` section.
+    pub baselib_digest: String,
+    /// dm-verity Merkle root over the erofs root that carries the base lib
+    /// (F1), baked into the UKI `.cmdline` as `roothash=<hex>`. `None` for
+    /// unsigned/VM (ext4) images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_verity_roothash: Option<String>,
+    /// ukify-predicted PCR-11 for this UKI (RFC-0006 phase 4). `None` when
+    /// `systemd-measure` was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl ImageGeneration {
+    /// Returns whether a config-gen pinned to `pinned_abi` may re-activate
+    /// directly against this image (same-ABI), without re-eval.
+    ///
+    /// Same-ABI image upgrades (kernel/package change, no option-schema change)
+    /// satisfy the pin, so a config-gen freely re-activates across them.
+    pub fn admits_pin(&self, pinned_abi: u32) -> bool {
+        self.module_abi == pinned_abi
+    }
+}
+
+/// Persistent state for the image-generation axis
+/// stored at `/var/lib/profiles/image/state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationState {
+    /// The image-gen the live kernel booted (cross-checked against
+    /// `/etc/os-release`, never trusted from the network).
+    pub running: u32,
+    /// The slot `bootctl set-default` currently points at — the *durable*
+    /// next-boot selection (build-spec §5.2). Distinct from `running` during a
+    /// staged-but-not-yet-rebooted upgrade or a pending rollback.
+    pub default: u32,
+    /// A staged image-gen whose UKI is in the ESP but has not been booted yet;
+    /// cleared on its first successful boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<u32>,
+    /// All recorded image-generations, in creation order.
+    #[serde(default)]
+    pub generations: Vec<ImageGeneration>,
+}
+
+impl ImageGenerationState {
+    /// Looks up the currently-running image-generation record, if recorded.
+    pub fn running_generation(&self) -> Option<&ImageGeneration> {
+        self.generations.iter().find(|g| g.number == self.running)
+    }
+}
+
+/// One config-generation: the materialized `/etc` overlay produced by
+/// evaluating the installed set's config modules + `host.nix` against a
+/// specific image generation's base library.
+///
+/// This is the forward-looking canonical view; the on-disk authority is the
+/// (additively extended) [`SystemGeneration`] record. Use
+/// [`ConfigGeneration::from_system_generation`] to project a persisted
+/// `SystemGeneration` into this richer shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigGeneration {
+    /// Config-generation number (names the `gen-N/` directory; the pointer
+    /// `activate.sh.in` commits).
+    pub number: u32,
+    /// The [`ImageGeneration::number`] this config-gen was evaluated against.
+    /// `None` for a legacy single-axis generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen_parent: Option<u32>,
+    /// The `module_abi` in effect at eval time. `None` for a legacy generation
+    /// (treated as compatible with any running ABI for direct re-activation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_abi_pinned: Option<u32>,
+    /// Content-address of the canonicalized manifest JSON (the *output*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
+    /// Store path of the config-module source closure (the eval *input*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module_closure: Option<String>,
+    /// Store path / content hash of the exact `host.nix` evaluated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_ref: Option<String>,
+    /// Non-authoritative git commit `host.nix` came from (operator traceability).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_commit: Option<String>,
+    /// Content-address of the resolved instance facts (`facts.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_hash: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl ConfigGeneration {
+    /// Projects a persisted [`SystemGeneration`] into the canonical config-gen
+    /// view, copying the generation-axis fields verbatim.
+    ///
+    /// This is the one-shot migration seam: a legacy `state.json` whose
+    /// generations carry none of the two-axis fields yields configuration generations with
+    /// `None` axis metadata, which the rollback pin treats as same-ABI
+    /// preserving the single-axis compatibility flow.
+    pub fn from_system_generation(record: &SystemGeneration) -> Self {
+        Self {
+            number: record.number,
+            image_gen_parent: record.image_gen_parent,
+            module_abi_pinned: record.module_abi_pinned,
+            manifest_hash: record.manifest_hash.clone(),
+            config_module_closure: record.config_module_closure.clone(),
+            host_nix_ref: record.host_nix_ref.clone(),
+            host_nix_commit: record.host_nix_commit.clone(),
+            facts_hash: record.facts_hash.clone(),
+            created_at: record.created_at.clone(),
+        }
+    }
+}
+
+/// Persistent state for the config-generation axis, the forward-looking
+/// canonical view over [`SystemGenerationState`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigGenerationState {
+    /// Number of the currently active generation (`0` = none yet).
+    pub current: u32,
+    /// Number the next created generation will receive.
+    pub next: u32,
+    /// All recorded config-generations, in creation order.
+    #[serde(default)]
+    pub generations: Vec<ConfigGeneration>,
+}
+
+impl ConfigGenerationState {
+    /// Migrates a legacy [`SystemGenerationState`] into the two-axis config-gen
+    /// view, preserving the `current`/`next` counters and projecting every
+    /// generation through [`ConfigGeneration::from_system_generation`].
+    pub fn from_legacy(state: &SystemGenerationState) -> Self {
+        Self {
+            current: state.current,
+            next: state.next,
+            generations: state
+                .generations
+                .iter()
+                .map(ConfigGeneration::from_system_generation)
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_attestation() -> AttestationMeta {
+        AttestationMeta {
+            root_digest: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash: None,
+            root_hash_sig: None,
+            provenance: Some("attestation/test.provenance.jsonl".into()),
+            measurement: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+        }
+    }
 
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {
@@ -1521,6 +3319,59 @@ mod tests {
     }
 
     #[test]
+    fn config_layers_run_seed_to_writable() {
+        // Independent of the env-cached resolver values, the lowest layer is
+        // always the read-only `/etc` seed and the highest is the scope's
+        // writable layer.
+        for scope in [ProfileScope::System, ProfileScope::User] {
+            let layers = scope.config_layers();
+            assert_eq!(
+                layers.first(),
+                Some(&ProfileScope::System.config_dir()),
+                "lowest config layer must be the /etc seed",
+            );
+            assert_eq!(
+                layers.last(),
+                Some(&scope.writable_config_dir()),
+                "highest config layer must be the writable dir",
+            );
+        }
+    }
+
+    #[test]
+    fn system_config_layers_are_etc_then_var() {
+        let layers = ProfileScope::System.config_layers();
+        assert_eq!(layers.len(), 2);
+        assert_ne!(layers[0], layers[1]);
+    }
+
+    #[test]
+    fn user_config_layers_share_the_system_var_layer() {
+        let layers = ProfileScope::User.config_layers();
+        assert_eq!(layers.len(), 3);
+        // The shared /var system layer sits between the /etc seed and the
+        // user's own writable dir, so a user invocation sees system runtime
+        // deltas.
+        assert_eq!(layers[1], ProfileScope::System.writable_config_dir());
+    }
+
+    #[test]
+    fn system_trusted_keys_writable_store_precedes_seed() {
+        let dirs = ProfileScope::System.trusted_keys_dirs();
+        assert_eq!(dirs.len(), 2);
+        // The writable store is a sibling of the writable config dir (both
+        // under /var/lib/apm) and precedes the read-only /etc seed anchor.
+        assert_eq!(
+            dirs[0].parent(),
+            ProfileScope::System.writable_config_dir().parent(),
+        );
+        assert_eq!(
+            dirs[1],
+            ProfileScope::System.config_dir().join("trusted-keys.d"),
+        );
+    }
+
+    #[test]
     fn system_config_dir_falls_back_when_unset() {
         assert_eq!(resolve_system_config_dir(None), PathBuf::from("/etc/apm"));
     }
@@ -1593,6 +3444,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1615,6 +3467,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1637,6 +3490,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1659,6 +3513,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1681,6 +3536,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1695,7 +3551,15 @@ mod tests {
             scope.profile_path(),
             PathBuf::from("/var/lib/profiles/system")
         );
+        assert_eq!(
+            scope.package_profile_path(),
+            PathBuf::from("/var/lib/profiles/system-packages")
+        );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
+        assert_eq!(
+            scope.registry_cache_path("core"),
+            PathBuf::from("/var/lib/apm/cache/registry-static/core"),
+        );
         assert_eq!(scope.config_dir(), PathBuf::from("/etc/apm"));
     }
 
@@ -1716,12 +3580,31 @@ assume_yes = true
 parallel_downloads = 8
 auto_autoremove = true
 auto_gc = false
+credential_pcr_public_key = "/etc/aos/pcr-sign.pem"
 "#;
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
         assert!(conf.settings.assume_yes);
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
+        assert_eq!(
+            conf.settings.credential_pcr_public_key.as_deref(),
+            Some("/etc/aos/pcr-sign.pem")
+        );
+    }
+
+    #[test]
+    fn parse_registry_cache_config() {
+        let toml_str = r#"
+[registry]
+url = "https://registry.example.com/core"
+
+[registry.cache]
+max_age_days = 7
+"#;
+        let file: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(file.registry.cache.max_age_days, Some(7));
+        assert_eq!(RegistryCacheConfig::default().max_age_days(), 30);
     }
 
     #[test]
@@ -1764,7 +3647,7 @@ required = true
 public_key = "aos-core:Ed25519:base64keyhere"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(rf.registry.name, "aos-core");
+        assert_eq!(rf.registry.name.as_deref(), Some("aos-core"));
         assert_eq!(rf.registry.priority, 500);
         assert_eq!(rf.registry.max_staleness_seconds, Some(604800));
         assert_eq!(rf.registry.caches.len(), 1);
@@ -1813,8 +3696,10 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.registry.name, "aos-core");
         assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
-        assert_eq!(cfg.caches.len(), 1);
-        assert_eq!(cfg.caches[0].url, "https://cache.aos.dev");
+        // Legacy `[[caches]]` array still parses via the backward-compat enum.
+        let caches = cfg.cache_entries();
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].url, "https://cache.aos.dev");
     }
 
     #[test]
@@ -1860,6 +3745,12 @@ last_update = "2026-02-13T10:30:00Z"
                 held: false,
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -1894,6 +3785,1158 @@ last_update = "2026-02-13T10:30:00Z"
         assert_eq!(meta.access_count, 42);
     }
 
+    #[test]
+    fn package_meta_round_trips_sandbox_schema() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_EXPOSE_ARTIFACT_V1.into(),
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_REQUIRES_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: vec![SysrootImageEntry {
+                    format: "dir".into(),
+                    store_path: "/var/lib/store/webapproot-webapp-root".into(),
+                    nar_hash: "sha256:root".into(),
+                    nar_size: 2048,
+                    sb_signer_cert_sha256: None,
+                    sbat: Vec::new(),
+                    expected_pcr11: None,
+                    root_image: None,
+                    root_verity: None,
+                    root_hash: None,
+                    root_hash_sig: None,
+                }],
+                requires: vec!["provider".into()],
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: Some(ExposeArtifactMeta {
+                store_path: "/var/lib/store/exposehash11-expose-webapp".into(),
+                nar_hash: "sha256:artifact".into(),
+                nar_size: 128,
+            }),
+            config_module: None,
+            permissions: PermissionsMeta {
+                capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+                network: Some(NetworkPermission::PrivateOutbound),
+                host_paths: vec![HostPathPermission {
+                    path: "/srv/webapp".into(),
+                    mode: HostPathMode::ReadOnly,
+                }],
+                syscalls: Some(SyscallProfile::SystemService),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::SandboxedWithHoles,
+                    label: "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+                        .into(),
+                    holes: vec![
+                        "network:private-outbound".into(),
+                        "capability:CAP_NET_BIND_SERVICE".into(),
+                        "host-path:read-only:/srv/webapp".into(),
+                        "syscalls:system-service".into(),
+                    ],
+                }),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        validate_supported_package_meta(&meta).unwrap();
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        let parsed: PackageMeta = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.requires_features, meta.requires_features);
+        assert_eq!(parsed.expose, meta.expose);
+        assert_eq!(parsed.expose_artifact, meta.expose_artifact);
+        assert_eq!(parsed.permissions, meta.permissions);
+    }
+
+    #[test]
+    fn permissions_reject_host_paths_with_unsupported_characters() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/srv/my data".into(),
+                mode: HostPathMode::Rw,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("host path contains unsupported characters"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn permissions_reject_read_only_temp_host_paths() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/tmp/package-cache".into(),
+                mode: HostPathMode::ReadOnly,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("read-only host paths under /tmp or /var/tmp"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn package_meta_requires_supported_feature_gate() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
+    }
+
+    #[test]
+    fn package_meta_requires_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta {
+                tcp_connect: vec![443],
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_network_policy_feature_gate_for_expose() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_EXPOSE_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_expose_target_bound_to_other_package() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-other.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_network_policy_ports() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta {
+                tcp_bind: vec![0],
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("invalid TCP port 0"));
+
+        meta.permissions.tcp_bind = vec![8080, 8080];
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("duplicate TCP port 8080"));
+    }
+
+    #[test]
+    fn package_meta_rejects_mismatched_confinement() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::Sandboxed,
+                    label: "sandboxed".into(),
+                    holes: Vec::new(),
+                }),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("permissions.confinement does not match computed confinement"),
+            "got: {err}"
+        );
+
+        meta.permissions.confinement = Some(meta.permissions.computed_confinement());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_config_and_reload_feature_gates() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["webapp.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_RELOAD_V1));
+
+        meta.requires_features.push(FEATURE_RELOAD_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_config_unit_references() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_RELOAD_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["missing.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_non_service_units() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: None,
+                units: vec!["webapp.socket".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_outside_credstore() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/etc/shadow".into()),
+                ciphertext: None,
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("encrypted credential source path must be under")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some(
+                    "/usr/lib/credstore.encrypted/join-token\nPrivateNetwork=false".into(),
+                ),
+                ciphertext: None,
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential source path contains unsupported characters")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_without_encryption() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: false,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("is not encrypted"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_and_ciphertext() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/usr/lib/credstore.encrypted/join-token".into()),
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("both source and ciphertext"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abc\nPrivateNetwork=false".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential ciphertext contains unsupported characters")
+        );
+    }
+
+    #[test]
+    fn package_meta_requires_capability_route_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "consumer.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_CAPABILITY_ROUTES_V1));
+
+        meta.requires_features
+            .push(FEATURE_CAPABILITY_ROUTES_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_ebpf_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Web application".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_EBPF_NET_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_EBPF_NET_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    fn bpf_lsm_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "aos-ebpf-lsm-policy".into(),
+            version: "0".into(),
+            description: "Fleet BPF-LSM policy".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: Some(BpfLsmPolicyMeta {
+                policies: vec![BpfLsmPolicyArtifactMeta {
+                    name: "aos-lsm-task-audit".into(),
+                    policy: "share/aos/ebpf-lsm/aos-task-audit.json".into(),
+                    object: "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o".into(),
+                    programs: vec!["aos_lsm_file_mprotect".into()],
+                }],
+            }),
+            attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash: None,
+                root_hash_sig: None,
+                provenance: Some("attestation/aos-ebpf-lsm-policy.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_bpf_lsm_policy_feature_gate() {
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_EBPF_NET_POLICY_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
+
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.into(),
+            FEATURE_BPF_LSM_POLICY_V1.into(),
+        ];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_BPF_LSM_POLICY_V1]);
+        meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("BPF-LSM object path"));
+    }
+
+    fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "verity-app".into(),
+            version: "1.0.0".into(),
+            description: "Package root with verity attestation".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/verityhash12-verity-app-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash_sig: Some("attestation/verity-app.roothash.p7s".into()),
+                provenance: Some("attestation/verity-app.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_attestation_feature_gate() {
+        let mut meta = attestation_package_meta(vec![FEATURE_PERMISSIONS_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_ATTESTATION_V1));
+
+        meta.requires_features = vec![FEATURE_ATTESTATION_V1.into()];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_incomplete_attestation_root_hash() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("root_hash and root_hash_sig"));
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_measurement_without_root_digest() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_digest = None;
+        meta.attestation.root_hash = None;
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("measurement requires root_digest"));
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_attestation_digest() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash = Some("sha256:not-a-digest".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("64-character SHA-256 digest"));
+    }
+
+    #[test]
+    fn package_meta_rejects_unsafe_attestation_artifact_paths() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = Some("../escape.p7s".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
+    }
+
+    #[test]
+    fn package_meta_rejects_cache_owned_provenance_path() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.provenance = Some("packages/w/web.provenance.jsonl".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
+        );
+    }
+
+    #[test]
+    fn package_meta_accepts_attestation_matching_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash =
+            Some("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_that_diverges_from_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+        meta.attestation.root_hash =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+        meta.attestation.root_digest =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("must match a verity expose image"));
+    }
+
+    fn expose_meta_with_image(image: SysrootImageEntry) -> ExposeMeta {
+        ExposeMeta {
+            target: "aos-pkg-verity-app.target".into(),
+            units: vec!["verity-app.service".into()],
+            images: vec![image],
+            requires: Vec::new(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn verity_image_entry() -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "ext4-verity".into(),
+            store_path: "/var/lib/store/verityimage-verity-app-root".into(),
+            nar_hash: "sha256:root".into(),
+            nar_size: 2048,
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: Some("root.img".into()),
+            root_verity: Some("root.verity".into()),
+            root_hash: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+        }
+    }
+
+    #[test]
+    fn expose_meta_accepts_complete_verity_image() {
+        let expose = expose_meta_with_image(verity_image_entry());
+
+        validate_expose_meta(&expose).unwrap();
+    }
+
+    #[test]
+    fn expose_meta_rejects_partial_verity_image() {
+        let mut image = verity_image_entry();
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_format_without_tuple() {
+        let mut image = verity_image_entry();
+        image.root_image = None;
+        image.root_verity = None;
+        image.root_hash = None;
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_fields_on_plain_image_format() {
+        let mut image = verity_image_entry();
+        image.format = "dir".into();
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("is not a verity root format"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsafe_verity_member_path() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("../root.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("verity root_image path"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsupported_verity_member_path_characters() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("root image.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported characters"));
+    }
+
+    #[test]
+    fn package_meta_requires_mac_profile_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Web application".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-mac.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_MAC_PROFILE_V1));
+
+        meta.requires_features.push(FEATURE_MAC_PROFILE_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_or_non_service_capability_units() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+                FEATURE_CAPABILITY_ROUTES_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into(), "consumer.target".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "missing.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+
+        let expose = meta.expose.as_mut().unwrap();
+        expose.uses[0].unit = "consumer.target".into();
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
+    }
+
     // -----------------------------------------------------------------------
     // TrackingMode tests
     // -----------------------------------------------------------------------
@@ -1912,6 +4955,7 @@ last_update = "2026-02-13T10:30:00Z"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -2172,5 +5216,339 @@ pin = "v2026.02"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         assert_eq!(rf.registry.pin.as_deref(), Some("v2026.02"));
+    }
+
+    #[test]
+    fn profile_scope_name_and_other() {
+        assert_eq!(ProfileScope::User.name(), "user");
+        assert_eq!(ProfileScope::System.name(), "system");
+        assert_eq!(ProfileScope::User.other(), ProfileScope::System);
+        assert_eq!(ProfileScope::System.other(), ProfileScope::User);
+    }
+
+    // ----------------------------------------------------------------------
+    // Configuration-module metadata.
+    // ----------------------------------------------------------------------
+
+    fn sample_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
+                    .to_string(),
+                nar_hash: "sha256:deadbeef".to_string(),
+                nar_size: 4096,
+                references: vec!["0000000000000000000000000000000b".to_string()],
+            },
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec![
+                "firewall.allowedTCPPorts".to_string(),
+                "firewall.enable".to_string(),
+            ],
+            owns_roots: vec![OwnedRoot {
+                root: "firewall".to_string(),
+                interface_abi: 1,
+                contributable: vec!["allowedTCPPorts".to_string()],
+            }],
+            contributes: vec![RootContribution {
+                root: "nginx".to_string(),
+                paths: vec!["virtualHosts".to_string()],
+            }],
+            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
+        }
+    }
+
+    #[test]
+    fn config_module_meta_toml_round_trip() {
+        let module = sample_config_module();
+        let serialized = toml::to_string(&module).expect("serialize");
+        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(parsed, module);
+    }
+
+    #[test]
+    fn config_module_meta_inside_package_round_trips_and_gates() {
+        // A package carrying config_module must declare the feature and have
+        // attestation provenance, else validation fails.
+        let toml_str = r#"
+name = "firewall"
+version = "1.4.0"
+description = "host firewall"
+license = "MIT"
+maintainer = "aos"
+platform = "x86_64-linux"
+store_path = "/nix/store/0000000000000000000000000000000c-firewall-1.4.0"
+nar_hash = "sha256:aa"
+nar_size = 10
+references = []
+source_drv = "/nix/store/0000000000000000000000000000000d-firewall.drv"
+source_nar_hash = "sha256:bb"
+closure_size = 10
+requires-features = ["config-module-v1", "attestation-v1"]
+
+[config_module.config_output]
+store_path = "/nix/store/0000000000000000000000000000000a-firewall-config"
+nar_hash = "sha256:cc"
+nar_size = 2048
+
+[config_module.module_abi_compat]
+min = 1
+max = 2
+
+[config_module]
+declares = ["firewall.allowedTCPPorts"]
+provides_capabilities = []
+
+[[config_module.owns_roots]]
+root = "firewall"
+interface_abi = 1
+contributable = ["allowedTCPPorts"]
+
+[attestation]
+provenance = "provenance/firewall.jsonl"
+"#;
+        let meta: PackageMeta = toml::from_str(toml_str).expect("parse package meta");
+        assert!(meta.config_module.is_some());
+        validate_supported_package_meta(&meta).expect("valid config-module package");
+    }
+
+    #[test]
+    fn config_module_without_feature_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.config_module = Some(sample_config_module());
+        // Missing requires-features ⇒ feature gate refuses.
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(err.to_string().contains("config-module-v1"), "{err}");
+    }
+
+    #[test]
+    fn config_module_without_provenance_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![FEATURE_CONFIG_MODULE_V1.to_string()];
+        meta.config_module = Some(sample_config_module());
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(
+            err.to_string().contains("without attestation provenance"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_output_rejects_drv_reference() {
+        let mut output = sample_config_module().config_output;
+        output.references = vec!["abc.drv".to_string()];
+        let err = validate_config_output_meta(&output).expect_err("must refuse .drv ref");
+        assert!(
+            err.to_string().contains("must not reference a derivation"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_module_rejects_inverted_abi_band() {
+        let mut module = sample_config_module();
+        module.module_abi_compat = ModuleAbiCompat { min: 3, max: 1 };
+        let err = validate_config_module_meta(&module).expect_err("inverted band");
+        assert!(err.to_string().contains("inverted"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Two-axis generation records.
+    // -----------------------------------------------------------------------
+
+    /// A legacy single-axis `state.json` without two-axis fields still parses, and
+    /// every config-gen field defaults to `None` (backward compatibility).
+    #[test]
+    fn legacy_system_generation_state_parses() {
+        let legacy = r#"{
+            "current": 1,
+            "next": 2,
+            "generations": [
+                {
+                    "number": 1,
+                    "toplevel": "/nix/store/abc-server",
+                    "version": "1.0",
+                    "package_name": "server",
+                    "registry": "core",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "kernel_path": null
+                }
+            ]
+        }"#;
+        let state: SystemGenerationState = serde_json::from_str(legacy).expect("parse legacy");
+        assert_eq!(state.current, 1);
+        let g = &state.generations[0];
+        assert!(g.module_abi_pinned.is_none());
+        assert!(g.image_gen_parent.is_none());
+        assert!(g.config_module_closure.is_none());
+        // A legacy generation re-activates directly under any running ABI.
+        assert_eq!(
+            g.reactivation_plan(5).unwrap(),
+            ReactivationPlan::DirectReactivate
+        );
+        // Reserializing a legacy generation must not inject any two-axis
+        // keys (skip_serializing_if = Option::is_none) — otherwise upgrading a
+        // node would churn its on-disk state.json for no reason.
+        let reser = serde_json::to_value(g).expect("serialize legacy gen");
+        for k in [
+            "image_gen_parent",
+            "module_abi_pinned",
+            "manifest_hash",
+            "config_module_closure",
+            "host_nix_ref",
+            "host_nix_commit",
+            "facts_hash",
+        ] {
+            assert!(
+                reser.get(k).is_none(),
+                "legacy generation must not emit two-axis key '{k}'"
+            );
+        }
+    }
+
+    /// A configuration generation carrying the two-axis fields round-trips through serde.
+    /// and the new fields are emitted (and re-read) verbatim.
+    #[test]
+    fn config_gen_axis_fields_round_trip() {
+        let g = SystemGeneration {
+            number: 7,
+            toplevel: "/nix/store/top-server".into(),
+            version: "2026.06".into(),
+            package_name: "server".into(),
+            registry: "core".into(),
+            created_at: "2026-06-01T00:00:00Z".into(),
+            kernel_path: None,
+            image_gen_parent: Some(2),
+            module_abi_pinned: Some(2),
+            manifest_hash: Some("sha256:beef".into()),
+            config_module_closure: Some("/nix/store/src-cfg".into()),
+            host_nix_ref: Some("/nix/store/hn-host.nix".into()),
+            host_nix_commit: Some("deadbeef".into()),
+            facts_hash: Some("sha256:facts".into()),
+        };
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("module_abi_pinned"));
+        let parsed: SystemGeneration = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.module_abi_pinned, Some(2));
+        assert_eq!(parsed.host_nix_ref.as_deref(), Some("/nix/store/hn-host.nix"));
+
+        // Project into the canonical config-gen view.
+        let cfg = ConfigGeneration::from_system_generation(&parsed);
+        assert_eq!(cfg.number, 7);
+        assert_eq!(cfg.image_gen_parent, Some(2));
+        assert_eq!(cfg.facts_hash.as_deref(), Some("sha256:facts"));
+    }
+
+    /// The image-gen axis state round-trips, including the A/B slot, the durable
+    /// `default`/`pending` boot selection, and the verity/ABI fields.
+    #[test]
+    fn image_generation_state_round_trip() {
+        let state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: Some(2),
+            generations: vec![
+                ImageGeneration {
+                    number: 1,
+                    slot: ImageSlot::A,
+                    uki_path: "EFI/Linux/aos-2026.06.1+3.efi".into(),
+                    toplevel: "/nix/store/top1-server".into(),
+                    package_name: "server".into(),
+                    version: "2026.06.1".into(),
+                    registry: "core".into(),
+                    kernel_path: Some("/nix/store/k1-linux".into()),
+                    evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
+                    module_abi: 1,
+                    baselib_digest: "sha256:aa".into(),
+                    root_verity_roothash: Some("deadbeef".into()),
+                    expected_pcr11: None,
+                    created_at: "2026-06-01T00:00:00Z".into(),
+                },
+                ImageGeneration {
+                    number: 2,
+                    slot: ImageSlot::B,
+                    uki_path: "EFI/Linux/aos-2026.06.2+3.efi".into(),
+                    toplevel: "/nix/store/top2-server".into(),
+                    package_name: "server".into(),
+                    version: "2026.06.2".into(),
+                    registry: "core".into(),
+                    kernel_path: Some("/nix/store/k2-linux".into()),
+                    evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
+                    module_abi: 2,
+                    baselib_digest: "sha256:bb".into(),
+                    root_verity_roothash: None,
+                    expected_pcr11: None,
+                    created_at: "2026-06-02T00:00:00Z".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: ImageGenerationState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.running, 1);
+        assert_eq!(parsed.pending, Some(2));
+        let running = parsed.running_generation().unwrap();
+        assert_eq!(running.module_abi, 1);
+        assert!(running.admits_pin(1));
+        assert!(!running.admits_pin(2));
+    }
+
+    /// `ConfigGenerationState::from_legacy` preserves counters and projects
+    /// every generation into the canonical config-gen view.
+    #[test]
+    fn config_generation_state_from_legacy() {
+        let legacy = SystemGenerationState {
+            current: 2,
+            next: 3,
+            generations: vec![SystemGeneration {
+                number: 2,
+                toplevel: "/nix/store/top-server".into(),
+                version: "1.0".into(),
+                package_name: "server".into(),
+                registry: "core".into(),
+                created_at: "2026-06-01T00:00:00Z".into(),
+                kernel_path: None,
+                image_gen_parent: None,
+                module_abi_pinned: None,
+                manifest_hash: None,
+                config_module_closure: None,
+                host_nix_ref: None,
+                host_nix_commit: None,
+                facts_hash: None,
+            }],
+        };
+        let migrated = ConfigGenerationState::from_legacy(&legacy);
+        assert_eq!(migrated.current, 2);
+        assert_eq!(migrated.next, 3);
+        assert_eq!(migrated.generations.len(), 1);
+        assert_eq!(migrated.generations[0].number, 2);
+    }
+
+    fn sample_package_meta() -> PackageMeta {
+        PackageMeta {
+            name: "firewall".to_string(),
+            version: "1.4.0".to_string(),
+            description: "host firewall".to_string(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "aos".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000c-firewall-1.4.0".to_string(),
+            nar_hash: "sha256:aa".to_string(),
+            nar_size: 10,
+            references: vec![],
+            source_drv: "/nix/store/0000000000000000000000000000000d-firewall.drv".to_string(),
+            source_nar_hash: "sha256:bb".to_string(),
+            closure_size: 10,
+            sysroot: false,
+            previous: None,
+            images: vec![],
+            min_format: None,
+            requires_features: vec![],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta::default(),
+        }
     }
 }

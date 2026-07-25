@@ -16,9 +16,9 @@
 #     → [riscv64: gcc8_cross]   → gcc11 (x86_64 or target)
 #     → gcc14 (final target)
 #
-# The latest tier is recompiled with itself as the last step to ensure
-# optimal code generation in the final output. To update: add the new
-# tier, point `latest` at it, and set its self-recompile as the return.
+# The latest tier's final GCC uses stock GCC bootstrap internally. To update,
+# add the new tier, point `latest` at it, and keep the final compiler
+# bootstrapped while the rest of the tier builds once.
 #
 # Post-cross tiers run via QEMU binfmt_misc on the x86_64 builder.
 # The `system` attribute is always buildPlatform.system (x86_64-linux)
@@ -152,8 +152,7 @@
       ;
   };
   # ── latest: change this when adding a new GCC tier ──────────────
-  # Points to the newest tier directory.
-  # TODO: Re-enable self-recompile once GCC 14's in-tree GMP configure
-  # CC_FOR_BUILD issue is resolved (sysroot path invalidated after install).
+  # Points to the newest tier directory. The final compiler bootstrap happens
+  # inside the tier; the rest of the tier is not rebuilt with itself.
 in
   gcc14 // {inherit toolchainTiers;}

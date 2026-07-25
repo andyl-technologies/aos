@@ -84,6 +84,10 @@ impl RegistryFixture {
         &self.source
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn origin_path(&self) -> &Path {
         &self.origin
     }
@@ -178,7 +182,7 @@ key = "{}"
     }
 
     pub fn write_package(&self, name: &str, version: &str) -> Result<String> {
-        let hash = format!("{:0<32}", name);
+        let hash = nixbase32_store_hash(name);
         let dir = self.source.join("packages").join(&name[..1]);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let store_path = format!("/nix/store/{hash}-{name}-{version}");
@@ -365,6 +369,7 @@ key = "{}"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             // Unverified legacy sync: opting out requires an explicit
@@ -391,6 +396,7 @@ key = "{}"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
@@ -745,6 +751,43 @@ fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         );
     }
     Ok(output.stdout)
+}
+
+/// Nix's base32 alphabet, which omits `e`, `o`, `t`, and `u`.
+const NIX_BASE32_ALPHABET: &str = "0123456789abcdfghijklmnpqrsvwxyz";
+
+/// Derive a valid 32-character nixbase32 store-path hash from a package name.
+///
+/// Real Nix store paths are named `<32-char-nixbase32>-<name>-<version>`, and
+/// the registry's `store/` validation enforces that the hash is nixbase32. A
+/// readable placeholder like `hello` cannot be used verbatim (`e`/`o`/`t`/`u`
+/// fall outside the alphabet), so each character is folded into the alphabet
+/// — in-alphabet characters are kept for readability — and the result is
+/// right-padded to 32 characters. The mapping is deterministic, so a given
+/// name always yields the same hash.
+fn nixbase32_store_hash(name: &str) -> String {
+    let mut hash: String = name
+        .chars()
+        .map(|ch| {
+            if NIX_BASE32_ALPHABET.contains(ch) {
+                ch
+            } else {
+                // Fold any out-of-alphabet character (including `e`/`o`/`t`/`u`)
+                // deterministically into the 32-character alphabet.
+                NIX_BASE32_ALPHABET
+                    .as_bytes()
+                    .get((ch as usize) % 32)
+                    .copied()
+                    .map(char::from)
+                    .unwrap_or('0')
+            }
+        })
+        .take(32)
+        .collect();
+    while hash.len() < 32 {
+        hash.push('0');
+    }
+    hash
 }
 
 fn package_toml(name: &str, version: &str, store_path: &str) -> String {

@@ -10,6 +10,12 @@
   hostPlatform,
 }: let
   src = builtins.fetchTarball {
+    # Canonical kernel.org CDN: builtins.fetchTarball takes a single
+    # URL with no fallback, and independent mirrors prune old
+    # releases from v6.x (csclub.uwaterloo.ca dropped 6.12 and began
+    # returning 404 for this pin), while kernel.org retains every
+    # release permanently. Same bytes, so the unpacked-tree hash pin
+    # is unchanged.
     url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz";
     sha256 = "1dnxa60qxkjb8yqadbb1aglj8p57pqkmmg8ikdmlqxlb4vh7vnz3";
   };

@@ -39,22 +39,46 @@
 //! - [`profile`] / [`store`] / [`download`] — profile generations, the local
 //!   store, and the NAR download engine.
 
-#![forbid(unsafe_code)]
-
+pub mod attestation;
 pub mod clean;
 pub mod config;
+// `pub` (not `pub(crate)`) so the `golden_config_artifact` integration test —
+// which lives in a separate crate and can only reach `pub` items — can import
+// `render_package_config` through it. The module is otherwise internal
+// (`#[doc(hidden)]`); this widens visibility without changing behavior.
+#[doc(hidden)]
+pub mod config_artifact;
+#[doc(hidden)]
+pub use config_artifact::render_package_config;
+pub mod config_eval;
+pub mod config_trust;
+pub(crate) mod credential;
+pub(crate) mod credential_artifact;
 pub mod deps;
+pub mod desired;
 pub mod download;
+pub(crate) mod ebpf_lsm;
+pub(crate) mod exposed_units;
+/// Test-only helpers that shell out to the host `git` to set up fixtures; the
+/// production registry paths use libgit2 ([`registry::repo`],
+/// [`registry::porcelain`]) and never exec `git`.
+#[cfg(test)]
 pub(crate) mod gitcmd;
+pub mod graph_compile;
 pub mod hold;
 pub mod install;
+pub mod metadata;
+pub(crate) mod package_attestation;
+pub mod policy;
 pub mod profile;
+pub(crate) mod provenance;
 pub mod query;
 pub mod registry;
 pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
+pub mod secret_ref;
 pub mod security;
 pub mod source;
 pub mod sshkey;
@@ -72,11 +96,11 @@ pub mod verify;
 pub(crate) mod testutil;
 
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
@@ -85,6 +109,8 @@ use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
+
+const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-catalog.json";
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -105,6 +131,9 @@ pub enum PackageCommand {
     Install {
         /// Package names to install
         packages: Vec<String>,
+        /// Reconcile packages from a desired-package TOML file
+        #[arg(long = "from")]
+        from: Option<PathBuf>,
         /// Install from a specific registry
         #[arg(long)]
         registry: Option<String>,
@@ -210,6 +239,9 @@ pub enum PackageCommand {
         /// Search only this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show detailed package information
     Show {
@@ -218,6 +250,23 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
+    /// Show package information
+    Info {
+        /// Package name
+        package: String,
+        /// Show package from this registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// List packages
     List {
@@ -233,26 +282,47 @@ pub enum PackageCommand {
         /// Only from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show closure tree (store references)
     Depends {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show reverse dependencies
     Rdepends {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// Show available versions and registry origins
     Policy {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
     },
     /// List files installed by a package
     Files {
         /// Package name
         package: String,
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
+    /// Produce and verify package runtime attestations
+    Attest {
+        /// The attestation operation to run
+        #[command(subcommand)]
+        command: AttestCommand,
     },
     /// Prevent a package from being upgraded
     Hold {
@@ -265,9 +335,17 @@ pub enum PackageCommand {
         package: String,
     },
     /// List held packages
-    Held,
+    Held {
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
     /// List installed packages whose source registry is no longer configured
-    Orphans,
+    Orphans {
+        /// Query the system scope instead of the user scope
+        #[arg(long)]
+        system: bool,
+    },
     /// Remove cached NAR downloads
     Clean {
         /// Also remove old profile generations
@@ -322,6 +400,9 @@ pub enum PackageCommand {
         #[arg(long)]
         drain: bool,
     },
+    /// Prepare package credential payloads
+    #[command(subcommand)]
+    Credential(CredentialCommand),
     /// Manage registries
     #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
@@ -370,6 +451,224 @@ pub enum PackageCommand {
         /// The systemd client operation to exercise
         #[command(subcommand)]
         op: TestSystemdClientOp,
+    },
+    /// Hidden: reconcile exposed package units from the package profile.
+    #[command(name = "_test-reconcile-exposed-units", hide = true)]
+    TestReconcileExposedUnits {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Hidden: verify an RFC-0001 package attestation event log.
+    #[command(name = "_test-verify-package-attestation", hide = true)]
+    TestVerifyPackageAttestation {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: String,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
+    },
+    /// Hidden: produce an RFC-0001 package attestation TPM quote.
+    #[command(name = "_test-produce-package-attestation-quote", hide = true)]
+    TestProducePackageAttestationQuote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: String,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Hidden: load fleet BPF-LSM policies selected by host policy.
+    #[command(name = "_load-ebpf-lsm-policies", hide = true)]
+    LoadEbpfLsmPolicies {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Hidden: drive the on-host resolve/evaluate configuration fixpoint.
+    ///
+    /// Called only by `aos-eval.service`. Renders the working set into
+    /// `entry.nix`, runs the sandboxed stock-Nix evaluator, fetches missing
+    /// providers' config outputs, and — only on convergence — writes the
+    /// manifest. Failure-safe: a terminal error writes no manifest, so the
+    /// install step is a no-op and the active configuration remains unchanged.
+    #[command(name = "__eval", hide = true)]
+    Eval {
+        /// The delivered leaf host.nix path
+        #[arg(long = "host-nix")]
+        host_nix: PathBuf,
+        /// The in-image module library store path
+        #[arg(long = "base-lib")]
+        base_lib: PathBuf,
+        /// A desired.toml whose `packages` seed the working set
+        #[arg(long)]
+        desired: Option<PathBuf>,
+        /// The running image's base-lib module_abi
+        #[arg(long = "module-abi")]
+        module_abi: u32,
+        /// Where to write the converged manifest (only on success)
+        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
+        out: PathBuf,
+        /// The eval root holding entry.nix
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+        /// Require a detached host.nix signature from a trusted config key.
+        #[arg(long = "require-signed-host-nix")]
+        require_signed_host_nix: bool,
+    },
+    /// Apply a converged config manifest's `/etc` tree into a per-generation
+    /// lower. Called by `activate` when applying a configuration manifest.
+    ///
+    /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
+    /// `etc` entries (text files with modes, relative + store symlinks) under
+    /// `--etc-root`, materializes its job scripts under
+    /// `<etc-root>/aos-job-scripts/`, and rewrites `#aos-jobscript:<key>#`
+    /// unit-body placeholders to the job scripts' runtime paths. Idempotent.
+    #[command(name = "__materialize", hide = true)]
+    Materialize {
+        /// The converged manifest (`aos.config-manifest/v1` JSON).
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The per-generation `/etc` lower to write into.
+        #[arg(long = "etc-root")]
+        etc_root: PathBuf,
+        /// Runtime directory job scripts resolve to once the lower is `/etc`.
+        #[arg(
+            long = "job-scripts-runtime-dir",
+            default_value = config_eval::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR
+        )]
+        job_scripts_runtime_dir: String,
+    },
+    /// Evaluate the configuration and diff it against the live generation.
+    ///
+    /// `--dry-run` runs the evaluator, loads the current generation's
+    /// `gen-N/manifest.json`, prints a structural diff (etc entries, unit
+    /// actions, closure delta), and stops before any generation or `/etc` swap
+    /// — a clean no-op on the live system. The same codepath backs the CI
+    /// `checks.config-eval` gate, so green CI predicts on-box behavior.
+    Switch {
+        /// Evaluate and diff only; never create a generation or touch /etc
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// The operator host.nix to evaluate (defaults to the staged stash leaf)
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// Base manifest to diff against (the live/retained gen-N/manifest.json)
+        #[arg(long = "diff-against")]
+        diff_against: PathBuf,
+        /// Label for the base side of the diff
+        #[arg(long = "base-label", default_value = "current")]
+        base_label: String,
+        /// The in-image module library store path
+        #[arg(long = "base-lib")]
+        base_lib: PathBuf,
+        /// A desired.toml whose `packages` seed the working set
+        #[arg(long)]
+        desired: Option<PathBuf>,
+        /// The running image's base-lib module_abi
+        #[arg(long = "module-abi")]
+        module_abi: u32,
+        /// The eval root holding entry.nix
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
+        #[arg(long = "trusted-config-keys-dir")]
+        trusted_config_keys_dir: Vec<PathBuf>,
+        /// Require a detached host.nix signature from a trusted config key.
+        #[arg(long = "require-signed-host-nix")]
+        require_signed_host_nix: bool,
+        /// Where a real (non-dry-run) switch publishes the committed manifest
+        #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        live_manifest: PathBuf,
+    },
+    /// Materialize one package's pinned NAR closure into the store.
+    ///
+    /// Backs the `aos-pkg-fetch@.service` template's `ExecStart=`. Reads the
+    /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
+    /// via the configured substituters, and writes `/run/aos/fetch/<pkg>.ok` on
+    /// success. Idempotent; safe to run concurrently for distinct packages.
+    Fetch {
+        /// Package whose closure to fetch
+        package: String,
+        /// The eval-produced manifest pinning the closure
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// Root holding the per-package completion markers
+        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        marker_root: PathBuf,
+    },
+    /// Render one package's configuration artifacts into the staging area.
+    ///
+    /// Backs the `aos-pkg-install@.service` template's `ExecStart=`. Validates
+    /// the package's `config`/`credentials` blocks against its signed
+    /// `expose.config` metadata, stages the artifacts (never touching live
+    /// `/etc`), and writes `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
+    #[command(name = "render-one")]
+    RenderOne {
+        /// Package whose config to render
+        package: String,
+        /// The eval-produced manifest carrying the package's config block
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// Root holding the per-package completion markers
+        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        marker_root: PathBuf,
+        /// Root the rendered artifacts are staged under
+        #[arg(long = "staging-root", default_value = graph_compile::subverbs::STAGING_ROOT)]
+        staging_root: PathBuf,
+    },
+    /// Hidden: compile the eval output into a runtime systemd unit graph.
+    ///
+    /// Called only by `aos-graph-compile.service` (`After=aos-eval`,
+    /// `ConditionPathExists=/run/aos/manifest.json`). Reads `manifest.json` +
+    /// `graph.json`, writes per-instance dropins and `.wants` symlinks under
+    /// `/run/systemd/system`, then `daemon-reload`s and starts
+    /// `aos-config.target`. Talks to systemd over D-Bus and needs no apm config.
+    #[command(name = "__graph-compile", hide = true)]
+    GraphCompile {
+        /// The eval-produced data contract
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// The eval-produced cross-package DAG
+        #[arg(long, default_value = graph_compile::DEFAULT_GRAPH_PATH)]
+        graph: PathBuf,
+        /// Override the `/run/systemd/system` root (development only)
+        #[arg(long = "run-root")]
+        run_root: Option<PathBuf>,
+    },
+}
+
+/// Package credential helper operations.
+#[derive(Subcommand)]
+pub enum CredentialCommand {
+    /// Encrypt plaintext for inline expose credential metadata
+    Encrypt {
+        /// systemd credential name
+        name: String,
+        /// Plaintext credential file
+        input: PathBuf,
+        /// Write encrypted payload to this file
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Signed PCR public key
+        #[arg(long = "pcr-public-key")]
+        pcr_public_key: Option<PathBuf>,
+        /// Print a Nix expose.config.credentials entry
+        #[arg(long)]
+        expose_nix: bool,
+        /// Service unit that consumes the credential
+        #[arg(long = "unit")]
+        units: Vec<String>,
     },
 }
 
@@ -440,7 +739,13 @@ pub enum TestSystemdClientOp {
 
 impl PackageCommand {
     /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it (Install, Upgrade, Rollback, Update, Registry).
+    /// supports it.
+    ///
+    /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
+    /// `update`, `registry`) select the system scope to act on it; the
+    /// read-only query commands (`search`, `show`, `list`, `depends`,
+    /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
+    /// read the system registry cache and profile instead of the per-user ones.
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Install { system, .. } => *system,
@@ -448,7 +753,124 @@ impl PackageCommand {
             PackageCommand::Rollback { system, .. } => *system,
             PackageCommand::Update { system, .. } => *system,
             PackageCommand::Registry { system, .. } => *system,
+            PackageCommand::Search { system, .. } => *system,
+            PackageCommand::Show { system, .. } => *system,
+            PackageCommand::Info { system, .. } => *system,
+            PackageCommand::List { system, .. } => *system,
+            PackageCommand::Depends { system, .. } => *system,
+            PackageCommand::Rdepends { system, .. } => *system,
+            PackageCommand::Policy { system, .. } => *system,
+            PackageCommand::Files { system, .. } => *system,
+            PackageCommand::Attest { command } => command.is_system(),
+            PackageCommand::Held { system, .. } => *system,
+            PackageCommand::Orphans { system, .. } => *system,
+            PackageCommand::TestReconcileExposedUnits { system } => *system,
+            PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             _ => false,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum AttestCommand {
+    /// Produce a TPM quote over the package PCR set
+    Quote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Enroll a quote identity into a verifier trust catalog
+    Enroll {
+        /// Directory containing a quote bundle with AK/EK identity files
+        #[arg(long)]
+        quote_dir: PathBuf,
+        /// Human-readable fleet node or TPM label
+        #[arg(long)]
+        label: String,
+        /// Enrollment proof workflow used for this identity
+        #[arg(long, value_enum)]
+        method: AttestEnrollmentMethod,
+        /// File containing the credential-activation, privacy-CA, or OOB proof
+        #[arg(long = "evidence-file")]
+        evidence_file: PathBuf,
+        /// Verifier quote identity catalog to create or update
+        #[arg(long = "catalog-file")]
+        catalog_file: PathBuf,
+    },
+    /// Verify a package event log against a PCR 15 value or quote bundle
+    Verify {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: Option<String>,
+        /// Directory containing an unauthenticated quote bundle
+        #[arg(long)]
+        quote_dir: Option<PathBuf>,
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        /// Pinned quote identity catalog JSON file
+        #[arg(long = "quote-identity-file")]
+        quote_identity_files: Vec<PathBuf>,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
+    },
+    /// Print the package golden measurement catalog
+    Catalog {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
+    },
+}
+
+impl AttestCommand {
+    fn is_system(&self) -> bool {
+        match self {
+            AttestCommand::Verify { system, .. } => *system,
+            AttestCommand::Catalog { system, .. } => *system,
+            AttestCommand::Quote { .. } | AttestCommand::Enroll { .. } => false,
+        }
+    }
+}
+
+/// Enrollment proof workflows accepted by `apm attest enroll`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AttestEnrollmentMethod {
+    /// TPM credential activation was completed outside this verifier.
+    CredentialActivation,
+    /// A privacy CA certified the AK/EK binding.
+    PrivacyCa,
+    /// An operator supplied an equivalent out-of-band TPM enrollment proof.
+    OutOfBand,
+}
+
+impl AttestEnrollmentMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            AttestEnrollmentMethod::CredentialActivation => "credential-activation",
+            AttestEnrollmentMethod::PrivacyCa => "privacy-ca",
+            AttestEnrollmentMethod::OutOfBand => "out-of-band",
         }
     }
 }
@@ -552,6 +974,13 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Manage the committed Secure Boot validation catalog (sb-certs.toml)
+    #[command(name = "sb-certs")]
+    SbCerts {
+        /// The sb-certs.toml catalog operation to run
+        #[command(subcommand)]
+        command: SbCertsCommand,
+    },
 
     // ----- Package Entries -----
     /// Publish a package to the registry from a store path
@@ -594,6 +1023,9 @@ pub enum RegistryCommand {
         /// Image format for each --image (repeatable, paired with --image)
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
+        /// Expose manifest.json to publish with package metadata
+        #[arg(long = "expose-manifest")]
+        expose_manifest: Option<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -611,7 +1043,7 @@ pub enum RegistryCommand {
         /// Private key path used to sign the publish commit
         #[arg(long)]
         key: Option<String>,
-        /// Active key id whose configured private key signs the publish commit
+        /// Active key id whose configured private key signs the publish commit and provenance
         #[arg(long = "key-id")]
         key_id: Option<String>,
         /// Registry to operate on
@@ -783,6 +1215,12 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Git-backed config change requests (hub `refs/hub/changes/*`)
+    Change {
+        /// The change-request operation to run
+        #[command(subcommand)]
+        command: ChangeCommand,
+    },
     /// Static Nix-cache operations
     Cache {
         /// The cache operation to run
@@ -800,6 +1238,12 @@ pub enum RegistryCommand {
         /// The origin operation to run
         #[command(subcommand)]
         command: OriginCommand,
+    },
+    /// Static web-surface operations (the on-CDN no-JS browse pages)
+    Web {
+        /// The web operation to run
+        #[command(subcommand)]
+        command: WebCommand,
     },
     /// Run the ordered producer release pipeline
     Release {
@@ -866,9 +1310,9 @@ pub enum RegistryCommand {
         /// Resolve signing key path from [registry.signing_keys] by keys.toml id
         #[arg(long = "key-id")]
         key_id: Option<String>,
-        /// Output directory for generated static cache files
-        #[arg(long = "cache-output")]
-        cache_output: Option<PathBuf>,
+        /// Previous root key to co-sign a TUF root rotation (the key being rotated away from)
+        #[arg(long = "rotate-from")]
+        rotate_from: Option<PathBuf>,
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long = "cache-key")]
         cache_key: Option<PathBuf>,
@@ -876,8 +1320,11 @@ pub enum RegistryCommand {
         #[arg(long = "cache-url")]
         cache_url: Option<String>,
         /// Priority for generated nix-cache-info and registry [[caches]]
-        #[arg(long = "cache-priority", default_value = "40")]
-        cache_priority: u32,
+        #[arg(long = "cache-priority")]
+        cache_priority: Option<u32>,
+        /// Regenerate and re-upload paths even when local or remote entries exist
+        #[arg(long = "no-skip")]
+        no_skip: bool,
         /// Backend URL to upload the static origin to; repeat for multiple destinations
         /// (default: the upload_urls persisted by `origin config`)
         #[arg(long = "upload-url")]
@@ -894,6 +1341,9 @@ pub enum RegistryCommand {
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
     },
 
     // ----- Release -----
@@ -1056,6 +1506,86 @@ pub enum KeysCommand {
     },
 }
 
+/// Secure Boot validation-catalog subcommands.
+///
+/// These mutate the committed `sb-certs.toml` roster in an authoring clone:
+/// the active db-cert set, its revocations, and the SBAT revocation floor
+/// (RFC-0006 phase 4). Like `keys.toml`, every change is written with
+/// [`registry_ops::run_sb_certs`] and committed (optionally signed) so the
+/// catalog is covered by the registry's release signature.
+#[derive(Subcommand)]
+pub enum SbCertsCommand {
+    /// List the active db certs, revocations, and SBAT floor
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Add an active Secure Boot db certificate to the catalog
+    Add {
+        /// Stable cert id used by revocation entries
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Lowercase hex SHA-256 of the db certificate (DER)
+        #[arg(long = "cert-sha256", value_name = "HEX")]
+        cert_sha256: String,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Retire a db certificate by moving its id to [[revoked]]
+    Retire {
+        /// Active db cert id to retire
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Human-readable retirement reason
+        #[arg(long)]
+        reason: Option<String>,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Set (or raise) the SBAT revocation floor for a component
+    SetFloor {
+        /// SBAT component identifier (e.g. aos, systemd)
+        #[arg(long, value_name = "COMPONENT")]
+        component: String,
+        /// Minimum acceptable SBAT generation for the component
+        #[arg(long, value_name = "N")]
+        generation: u32,
+        /// Skip creating a git commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Private key path used to sign the catalog commit
+        #[arg(long = "key")]
+        signing_key: Option<String>,
+        /// Active key id whose configured private key signs the commit
+        #[arg(long = "key-id")]
+        signing_key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
 /// Branch subcommands.
 #[derive(Subcommand)]
 pub enum BranchCommand {
@@ -1136,6 +1666,48 @@ pub enum ChannelCommand {
     Status {
         /// Channel name
         channel: String,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+/// Git-backed config change-request subcommands.
+///
+/// A hub commits web edits to committed config as *change requests* under
+/// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key (so they
+/// never verify for consumers). These subcommands let a maintainer list, review
+/// the diff of, and **promote** a change request — re-signing the same tree
+/// with a roster key onto the tracked branch.
+#[derive(Subcommand)]
+pub enum ChangeCommand {
+    /// List the registry's open change requests
+    List {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Show a change request's diff vs the current branch HEAD
+    Show {
+        /// The change-request id (the `refs/hub/changes/<id>` suffix)
+        id: String,
+        /// Show only file stats
+        #[arg(long)]
+        stat: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Promote a change request: re-sign its tree onto the branch and push
+    Merge {
+        /// The change-request id to promote
+        id: String,
+        /// Signing key file (an SSH private key) to re-sign with
+        #[arg(long)]
+        key: Option<String>,
+        /// Resolve signing key path from [registry.signing_keys] by keys.toml id
+        #[arg(long = "key-id")]
+        key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1228,7 +1800,7 @@ pub enum CacheCommand {
     Generate {
         /// Output directory for generated static cache files
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long)]
         key: Option<PathBuf>,
@@ -1249,6 +1821,70 @@ pub enum CacheCommand {
         /// Do not commit registry.toml after updating [[caches]]
         #[arg(long)]
         no_commit: bool,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+        /// Parallel compression jobs for the static cache (default: CPU count)
+        #[arg(long)]
+        jobs: Option<usize>,
+        /// Regenerate and re-upload paths even when local or remote entries exist
+        #[arg(long = "no-skip")]
+        no_skip: bool,
+    },
+    /// Garbage-collect old internally staged static-cache files
+    Gc {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+        /// Maximum unused age in days before deleting a staged narinfo/NAR pair
+        #[arg(long = "max-age")]
+        max_age: Option<u64>,
+        /// Report candidates without deleting them
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// Static web-surface subcommands.
+///
+/// The web surface is RFC-0004's on-CDN, no-JS browse tier: a registry
+/// serves content-bearing `index.html`, JSON snapshots under `web/`, and
+/// `browse/<name>.html` pages from its own bucket, with zero hub in the
+/// serving path. `apr web generate` is the producer-side analogue of
+/// `apr cache generate`.
+#[derive(Subcommand)]
+pub enum WebCommand {
+    /// Generate the static no-JS web surface (index.html, JSON snapshots,
+    /// browse pages) from the committed registry tree
+    Generate {
+        /// Output directory for the generated web surface (default: a
+        /// `web` directory beside the registry clone)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Branding name shown on pages and in config.json (default: the
+        /// registry.toml name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional hub base URL the SPA connects to, recorded in config.json
+        #[arg(long = "hub-url")]
+        hub_url: Option<String>,
+        /// Optional accent color for the SPA theme, recorded in config.json
+        #[arg(long)]
+        accent: Option<String>,
+        /// Optional path to a built Leptos CSR SPA dist (the output of
+        /// `trunk build --release` in crates/aos-registry-spa); when given,
+        /// its wasm/js/css are staged into web/ and the generated pages load
+        /// them, progressively enhancing the no-JS floor
+        #[arg(long = "spa-dist")]
+        spa_dist: Option<PathBuf>,
+        /// Backend URL to upload generated files to; repeat for multiple
+        /// destinations (file://, s3://, sftp://, http://; default: the
+        /// upload_urls persisted by `origin config`)
+        #[arg(long = "upload-url")]
+        upload_urls: Vec<String>,
+        /// Authentication and backend-specific upload options
+        #[command(flatten)]
+        auth: CacheUploadAuthArgs,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -1377,8 +2013,8 @@ pub struct CacheUploadAuthArgs {
     /// AWS credentials profile name
     #[arg(long)]
     pub s3_profile: Option<String>,
-    /// Custom S3-compatible endpoint (MinIO, B2, etc.)
-    #[arg(long)]
+    /// Custom S3-compatible endpoint (MinIO, B2, R2, etc.)
+    #[arg(long, env = "S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
     /// Path to SSH private key
     #[arg(long)]
@@ -1503,6 +2139,196 @@ pub async fn run(
         return test_systemd_client::run(op, printer).await;
     }
 
+    if let PackageCommand::LoadEbpfLsmPolicies { system } = command {
+        if !*system {
+            bail!("_load-ebpf-lsm-policies requires --system");
+        }
+        return ebpf_lsm::load_system_policies();
+    }
+
+    // The on-host config-eval driver needs no apm config or profile: it reads
+    // the registry index and host.nix from disk and shells out to stock nix.
+    // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
+    if let PackageCommand::Eval {
+        host_nix,
+        base_lib,
+        desired,
+        module_abi,
+        out,
+        eval_root,
+        trusted_config_keys_dir,
+        require_signed_host_nix,
+    } = command
+    {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        return config_eval::run_eval_command(&config_eval::EvalCommand {
+            host_nix: host_nix.clone(),
+            base_lib: base_lib.clone(),
+            desired: desired.clone(),
+            module_abi: *module_abi,
+            out: out.clone(),
+            eval_root: eval_root.clone(),
+            verbose,
+            trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+            require_signed_host_nix: *require_signed_host_nix,
+        });
+    }
+
+    // `apm __materialize`: apply a converged manifest's
+    // /etc tree into a per-generation lower. Called by `activate` on the new
+    // path after the configuration fixpoint has converged.
+    if let PackageCommand::Materialize {
+        manifest,
+        etc_root,
+        job_scripts_runtime_dir,
+    } = command
+    {
+        return config_eval::materialize::materialize_manifest(
+            manifest,
+            etc_root,
+            job_scripts_runtime_dir,
+        );
+    }
+
+    // `apm switch [--dry-run]`: evaluate and diff against
+    // the live generation; the eval is a pure function of its inputs, so the
+    // same codepath runs off-host (CI) and on-host.
+    if let PackageCommand::Switch {
+        dry_run: switch_dry_run,
+        from,
+        diff_against,
+        base_label,
+        base_lib,
+        desired,
+        module_abi,
+        eval_root,
+        trusted_config_keys_dir,
+        require_signed_host_nix,
+        live_manifest,
+    } = command
+    {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let json_out = printer.mode() == OutputMode::Json;
+        // The candidate manifest is evaluated to a temp file; the diff reads it.
+        let candidate =
+            std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
+        let params = config_eval::dry_run::SwitchParams {
+            eval: config_eval::EvalCommand {
+                host_nix: from.clone(),
+                base_lib: base_lib.clone(),
+                desired: desired.clone(),
+                module_abi: *module_abi,
+                out: candidate,
+                eval_root: eval_root.clone(),
+                verbose,
+                trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
+                require_signed_host_nix: *require_signed_host_nix,
+            },
+            base_manifest: diff_against.clone(),
+            base_label: base_label.clone(),
+            dry_run: *switch_dry_run,
+            live_manifest: live_manifest.clone(),
+            json_out,
+        };
+        return config_eval::dry_run::run_switch(&params).map(|_| ());
+    }
+
+    // The graph compiler (`aos-graph-compile.service`) drives systemd
+    // over D-Bus and reads the eval output from /run/aos; it needs no apm
+    // config. Dispatch it before `ApmConfig::load` (like the eval driver).
+    if let PackageCommand::GraphCompile {
+        manifest,
+        graph,
+        run_root,
+    } = command
+    {
+        return graph_compile::run_graph_compile_command(manifest, graph, run_root.as_deref())
+            .await;
+    }
+
+    // The per-package fetch/render subverbs back the template `ExecStart=`s and
+    // run as system services. They own their own exit codes (fetch: 0/1;
+    // render-one: 0/1/2), so they exit directly rather than returning `Err`
+    // (which `main.rs` would flatten to 1) — mirroring the activate split.
+    if let PackageCommand::Fetch {
+        package,
+        manifest,
+        marker_root,
+    } = command
+    {
+        let config = config::ApmConfig::load(ProfileScope::System)?;
+        let json_out = printer.mode() == OutputMode::Json;
+        let code = graph_compile::subverbs::run_fetch(
+            &config,
+            package,
+            manifest,
+            marker_root,
+            json_out,
+            printer,
+        )
+        .await;
+        std::process::exit(code);
+    }
+    if let PackageCommand::RenderOne {
+        package,
+        manifest,
+        marker_root,
+        staging_root,
+    } = command
+    {
+        let config = config::ApmConfig::load(ProfileScope::System)?;
+        let json_out = printer.mode() == OutputMode::Json;
+        let code = graph_compile::subverbs::run_render_one(
+            &config,
+            package,
+            manifest,
+            marker_root,
+            staging_root,
+            json_out,
+            printer,
+        )
+        .await;
+        std::process::exit(code);
+    }
+
+    if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
+        return run_produce_package_attestation_quote(nonce, output_dir, printer);
+    }
+
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Quote {
+                nonce,
+                nonce_file,
+                output_dir,
+            },
+    } = command
+    {
+        let nonce = read_attestation_nonce(nonce, nonce_file)?;
+        return run_produce_package_attestation_quote(&nonce, output_dir, printer);
+    }
+
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Enroll {
+                quote_dir,
+                label,
+                method,
+                evidence_file,
+                catalog_file,
+            },
+    } = command
+    {
+        return run_enroll_package_attestation_quote(
+            quote_dir,
+            catalog_file,
+            label,
+            *method,
+            evidence_file,
+            printer,
+        );
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -1533,6 +2359,7 @@ pub async fn run(
     match command {
         PackageCommand::Install {
             packages,
+            from,
             registry,
             download_only,
             no_deps,
@@ -1548,7 +2375,26 @@ pub async fn run(
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if *install_system || image_fmt.is_some() {
+            if let Some(path) = from {
+                if !*install_system {
+                    anyhow::bail!("apm install --from requires --system");
+                }
+                if !packages.is_empty() {
+                    anyhow::bail!("apm install --from cannot be combined with package names");
+                }
+                if registry.is_some()
+                    || *download_only
+                    || *reinstall
+                    || *no_deps
+                    || image_fmt.is_some()
+                    || image_output.is_some()
+                {
+                    anyhow::bail!(
+                        "apm install --from cannot be combined with registry, download, reinstall, dependency, or image options"
+                    );
+                }
+                desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
+            } else if *install_system || image_fmt.is_some() {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::install_system(
                     &config,
@@ -1588,14 +2434,14 @@ pub async fn run(
             let outcome =
                 remove::run(&config, packages, auto_remove, dry_run, yes, printer).await?;
             if config.settings.auto_gc && auto_remove && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc_after_mutation(printer).await?;
+                clean::run_gc_after_mutation(config.scope, printer).await?;
             }
             Ok(())
         }
         PackageCommand::Autoremove => {
             let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
             if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
-                clean::run_gc_after_mutation(printer).await?;
+                clean::run_gc_after_mutation(config.scope, printer).await?;
             }
             Ok(())
         }
@@ -1639,6 +2485,7 @@ pub async fn run(
             names_only,
             installed,
             registry,
+            ..
         } => {
             query::search(
                 &config,
@@ -1650,14 +2497,21 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Show { package, registry } => {
-            query::show(&config, package, registry.as_deref(), printer).await
-        }
+        PackageCommand::Show {
+            package, registry, ..
+        } => query::show(&config, package, registry.as_deref(), printer).await,
+        PackageCommand::Info {
+            package,
+            registry,
+            permissions,
+            ..
+        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
         PackageCommand::List {
             installed,
             upgradable,
             held,
             registry,
+            ..
         } => {
             query::list(
                 &config,
@@ -1669,18 +2523,57 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Depends { package } => deps::depends(&config, package, printer).await,
-        PackageCommand::Rdepends { package } => deps::rdepends(&config, package, printer).await,
-        PackageCommand::Policy { package } => deps::policy(&config, package, printer).await,
-        PackageCommand::Files { package } => deps::files(&config, package, printer).await,
+        PackageCommand::Depends { package, .. } => deps::depends(&config, package, printer).await,
+        PackageCommand::Rdepends { package, .. } => deps::rdepends(&config, package, printer).await,
+        PackageCommand::Policy { package, .. } => deps::policy(&config, package, printer).await,
+        PackageCommand::Files { package, .. } => deps::files(&config, package, printer).await,
+        PackageCommand::Attest {
+            command:
+                AttestCommand::Verify {
+                    event_log,
+                    pcr15,
+                    quote_dir,
+                    nonce,
+                    nonce_file,
+                    quote_identity_files,
+                    catalog_files,
+                    pcr15_baseline,
+                    ..
+                },
+        } => {
+            let measurement = read_attestation_measurement(
+                pcr15,
+                quote_dir,
+                nonce,
+                nonce_file,
+                quote_identity_files,
+            )?;
+            run_verify_package_attestation(
+                &config,
+                event_log,
+                measurement,
+                catalog_files,
+                pcr15_baseline,
+                printer,
+            )
+        }
+        PackageCommand::Attest {
+            command: AttestCommand::Catalog { catalog_files, .. },
+        } => run_package_attestation_catalog(&config, catalog_files, printer),
+        PackageCommand::Attest {
+            command: AttestCommand::Quote { .. },
+        } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::Enroll { .. },
+        } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
-        PackageCommand::Held => hold::run_held(&config, printer).await,
-        PackageCommand::Orphans => query::orphans(&config, printer).await,
+        PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
+        PackageCommand::Orphans { .. } => query::orphans(&config, printer).await,
         PackageCommand::Clean { generations, keep } => {
             clean::run(&config, *generations, *keep, printer).await
         }
-        PackageCommand::Gc => clean::run_gc(printer).await,
+        PackageCommand::Gc => clean::run_gc(config.scope, printer).await,
         PackageCommand::Verify { package } => source::run_verify(&config, package, printer).await,
         PackageCommand::Source {
             package,
@@ -1688,6 +2581,7 @@ pub async fn run(
             fetch,
             verify,
         } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
+        PackageCommand::Credential(command) => credential::run(&config, command, printer),
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
@@ -1716,6 +2610,25 @@ pub async fn run(
             }
         }
         PackageCommand::Registry { command, .. } => run_registry(&config, command, printer).await,
+        PackageCommand::TestReconcileExposedUnits { .. } => {
+            exposed_units::reconcile_system_profile(&config, printer).await
+        }
+        PackageCommand::TestVerifyPackageAttestation {
+            event_log,
+            pcr15,
+            pcr15_baseline,
+            ..
+        } => run_verify_package_attestation(
+            &config,
+            event_log,
+            AttestationMeasurement::Pcr15(pcr15.clone()),
+            &[],
+            pcr15_baseline,
+            printer,
+        ),
+        PackageCommand::TestProducePackageAttestationQuote { .. } => {
+            unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
+        }
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1726,7 +2639,326 @@ pub async fn run(
         PackageCommand::ActivatePostEtcSwap { .. } => {
             unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
         }
+        PackageCommand::LoadEbpfLsmPolicies { .. } => {
+            unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
+        }
+        PackageCommand::Eval { .. } => {
+            unreachable!("Eval is handled before ApmConfig::load")
+        }
+        PackageCommand::Materialize { .. } => {
+            unreachable!("Materialize is handled before ApmConfig::load")
+        }
+        PackageCommand::Switch { .. } => {
+            unreachable!("Switch is handled before ApmConfig::load")
+        }
+        PackageCommand::GraphCompile { .. } => {
+            unreachable!("GraphCompile is handled before ApmConfig::load")
+        }
+        PackageCommand::Fetch { .. } => {
+            unreachable!("Fetch is handled before ApmConfig::load")
+        }
+        PackageCommand::RenderOne { .. } => {
+            unreachable!("RenderOne is handled before ApmConfig::load")
+        }
     }
+}
+
+#[derive(Debug)]
+enum AttestationMeasurement {
+    Pcr15(String),
+    Quote {
+        quote_dir: PathBuf,
+        nonce: String,
+        identity_files: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttestationQuoteTrust {
+    PcrValueOnly,
+    BundleSelfConsistent,
+    IdentityPinned { anchor: String, ak_ek_trusted: bool },
+}
+
+fn read_attestation_measurement(
+    pcr15: &Option<String>,
+    quote_dir: &Option<PathBuf>,
+    nonce: &Option<String>,
+    nonce_file: &Option<PathBuf>,
+    quote_identity_files: &[PathBuf],
+) -> Result<AttestationMeasurement> {
+    match (pcr15, quote_dir) {
+        (Some(_), Some(_)) => bail!("use either --pcr15 or --quote-dir, not both"),
+        (Some(pcr15), None) => {
+            if nonce.is_some() || nonce_file.is_some() {
+                bail!("--nonce and --nonce-file require --quote-dir");
+            }
+            if !quote_identity_files.is_empty() {
+                bail!("--quote-identity-file requires --quote-dir");
+            }
+            Ok(AttestationMeasurement::Pcr15(pcr15.clone()))
+        }
+        (None, Some(quote_dir)) => Ok(AttestationMeasurement::Quote {
+            quote_dir: quote_dir.clone(),
+            nonce: read_attestation_nonce(nonce, nonce_file)?,
+            identity_files: quote_identity_files.to_vec(),
+        }),
+        (None, None) => bail!("attest verify requires --pcr15 or --quote-dir"),
+    }
+}
+
+fn run_verify_package_attestation(
+    config: &config::ApmConfig,
+    event_log: &PathBuf,
+    measurement: AttestationMeasurement,
+    catalog_files: &[PathBuf],
+    pcr15_baseline: &Option<String>,
+    printer: &Printer,
+) -> Result<()> {
+    let (pcr15, trust) = match measurement {
+        AttestationMeasurement::Pcr15(pcr15) => (pcr15, AttestationQuoteTrust::PcrValueOnly),
+        AttestationMeasurement::Quote {
+            quote_dir,
+            nonce,
+            identity_files,
+        } => {
+            let quote = package_attestation::verify_attestation_quote_bundle(
+                &quote_dir,
+                &nonce,
+                &identity_files,
+            )?;
+            let trust = if quote.identity_pinned {
+                AttestationQuoteTrust::IdentityPinned {
+                    anchor: quote
+                        .identity_label
+                        .unwrap_or_else(|| "unlabeled".to_string()),
+                    ak_ek_trusted: quote.ak_ek_trusted,
+                }
+            } else {
+                AttestationQuoteTrust::BundleSelfConsistent
+            };
+            (quote.quoted_pcr15, trust)
+        }
+    };
+    let log = fs::read(event_log)
+        .with_context(|| format!("reading package event log {}", event_log.display()))?;
+    let log = package_attestation::decode_package_event_log_bytes(&log)
+        .with_context(|| format!("decoding package event log {}", event_log.display()))?;
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
+    let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
+        &log,
+        &pcr15,
+        pcr15_baseline.as_deref(),
+        &catalog,
+    )?;
+
+    if printer.mode() == OutputMode::Json {
+        let mut output = serde_json::json!({
+            "pcr15": verified.pcr15,
+            "package_count": verified.package_count,
+        });
+        if matches!(
+            trust,
+            AttestationQuoteTrust::BundleSelfConsistent
+                | AttestationQuoteTrust::IdentityPinned { .. }
+        ) {
+            output["quote_bundle_verified"] = serde_json::json!(true);
+            output["ak_ek_trusted"] = serde_json::json!(matches!(
+                &trust,
+                AttestationQuoteTrust::IdentityPinned {
+                    ak_ek_trusted: true,
+                    ..
+                }
+            ));
+            output["quote_identity_pinned"] = serde_json::json!(matches!(
+                &trust,
+                AttestationQuoteTrust::IdentityPinned { .. }
+            ));
+            if let AttestationQuoteTrust::IdentityPinned { anchor, .. } = &trust {
+                output["quote_identity_label"] = serde_json::json!(anchor);
+            }
+        }
+        printer.json(&output);
+    } else {
+        let mut message = format!(
+            "Package attestation event log verified ({} package events, PCR 15 {}).",
+            verified.package_count, verified.pcr15
+        );
+        if trust == AttestationQuoteTrust::BundleSelfConsistent {
+            message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
+        } else if let AttestationQuoteTrust::IdentityPinned {
+            anchor,
+            ak_ek_trusted,
+        } = trust
+        {
+            if ak_ek_trusted {
+                message.push_str(&format!(
+                    " Quote bundle matches enrolled identity '{anchor}'."
+                ));
+            } else {
+                message.push_str(&format!(
+                    " Quote bundle matches pinned identity '{anchor}'; AK/EK trust was not checked."
+                ));
+            }
+        }
+        printer.success(&message);
+    }
+    Ok(())
+}
+
+fn run_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+    printer: &Printer,
+) -> Result<()> {
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!(catalog));
+        return Ok(());
+    }
+    if catalog.is_empty() {
+        printer.info("No package attestation measurements in catalog.");
+        return Ok(());
+    }
+    for entry in catalog {
+        printer.plain(&format!(
+            "{} {} {} {}",
+            entry.name, entry.version, entry.root_digest, entry.measurement
+        ));
+    }
+    Ok(())
+}
+
+fn load_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let registries = install::load_registries(config)?;
+    let catalog = registries
+        .registries()
+        .iter()
+        .flat_map(|registry| registry.package_versions().cloned())
+        .collect::<Vec<_>>();
+    package_attestation_catalog_from_sources(
+        &catalog,
+        Some(Path::new(PACKAGE_ATTESTATION_SEED_CATALOG)),
+        catalog_files,
+    )
+}
+
+fn package_attestation_catalog_from_sources(
+    registry_packages: &[types::PackageMeta],
+    seed_catalog: Option<&Path>,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let mut catalog =
+        package_attestation::package_measurement_catalog_from_package_meta(registry_packages)?;
+    if let Some(seed_catalog) = seed_catalog {
+        append_optional_package_attestation_catalog(seed_catalog, &mut catalog)?;
+    }
+    for path in catalog_files {
+        append_package_attestation_catalog(path, &mut catalog)?;
+    }
+    package_attestation::canonical_package_measurement_catalog(&catalog)
+}
+
+fn append_optional_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    match read_package_attestation_catalog(path) {
+        Ok(entries) => {
+            catalog.extend(entries);
+            Ok(())
+        }
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|err| err.kind() == ErrorKind::NotFound) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn append_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    let entries = read_package_attestation_catalog(path)?;
+    catalog.extend(entries);
+    Ok(())
+}
+
+fn read_package_attestation_catalog(
+    path: &Path,
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package attestation catalog {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parsing package attestation catalog {}", path.display()))
+}
+
+fn read_attestation_nonce(nonce: &Option<String>, nonce_file: &Option<PathBuf>) -> Result<String> {
+    match (nonce.as_deref(), nonce_file.as_ref()) {
+        (Some(_), Some(_)) => bail!("use either --nonce or --nonce-file, not both"),
+        (Some(nonce), None) => Ok(nonce.to_string()),
+        (None, Some(path)) => fs::read_to_string(path)
+            .with_context(|| format!("reading attestation nonce {}", path.display()))
+            .map(|nonce| nonce.trim().to_string()),
+        (None, None) => bail!("attest quote requires --nonce or --nonce-file"),
+    }
+}
+
+fn run_produce_package_attestation_quote(
+    nonce: &str,
+    output_dir: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let quote = package_attestation::produce_package_quote(nonce, output_dir)?;
+    let json = serde_json::to_value(&quote).context("serializing package quote artifacts")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Package attestation quote written to {} ({}).",
+            output_dir.display(),
+            quote.pcr_selection
+        ));
+    }
+    Ok(())
+}
+
+fn run_enroll_package_attestation_quote(
+    quote_dir: &PathBuf,
+    catalog_file: &PathBuf,
+    label: &str,
+    method: AttestEnrollmentMethod,
+    evidence_file: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let enrollment = package_attestation::enroll_quote_identity(
+        quote_dir,
+        catalog_file,
+        label,
+        method.as_str(),
+        evidence_file,
+    )?;
+    let json = serde_json::to_value(&enrollment).context("serializing package quote enrollment")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Enrolled package attestation identity '{}' in {} ({}).",
+            enrollment.label,
+            catalog_file.display(),
+            enrollment.method
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1785,6 +3017,9 @@ async fn run_registry(
         }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
+        RegistryCommand::SbCerts { command } => {
+            registry_ops::run_sb_certs(config, command, printer)
+        }
         RegistryCommand::Create {
             name,
             remote,
@@ -1819,6 +3054,7 @@ async fn run_registry(
             source_drv,
             images,
             image_formats,
+            expose_manifest,
             bless,
             no_ca,
             no_commit,
@@ -1842,6 +3078,7 @@ async fn run_registry(
                 source_drv.as_deref(),
                 images,
                 image_formats,
+                expose_manifest.as_deref(),
                 *bless,
                 *no_ca,
                 *no_commit,
@@ -1993,6 +3230,9 @@ async fn run_registry(
         RegistryCommand::Channel { command } => {
             registry_ops::run_channel(config, command, printer).await
         }
+        RegistryCommand::Change { command } => {
+            registry_ops::run_change(config, command, printer).await
+        }
         RegistryCommand::Cache { command } => {
             registry_ops::run_cache(config, command, printer).await
         }
@@ -2002,6 +3242,7 @@ async fn run_registry(
         RegistryCommand::Origin { command } => {
             registry_ops::run_origin(config, command, printer).await
         }
+        RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
         RegistryCommand::Release {
             semver,
             store_path,
@@ -2024,15 +3265,17 @@ async fn run_registry(
             partitions,
             key,
             key_id,
-            cache_output,
+            rotate_from,
             cache_key,
             cache_url,
             cache_priority,
+            no_skip,
             upload_urls,
             auth,
             dry_run,
             resume,
             registry,
+            jobs,
         } => {
             registry_ops::release(
                 config,
@@ -2057,15 +3300,17 @@ async fn run_registry(
                 partitions.as_deref(),
                 key.as_deref(),
                 key_id.as_deref(),
-                cache_output.as_deref(),
+                rotate_from.as_deref(),
                 cache_key.as_deref(),
                 cache_url.as_deref(),
                 *cache_priority,
+                *no_skip,
                 upload_urls,
                 auth,
                 *dry_run,
                 *resume,
                 registry.as_deref(),
+                *jobs,
                 printer,
             )
             .await
@@ -2376,8 +3621,10 @@ async fn registry_add(
     printer.kv("URL", url);
     printer.kv("Priority", &priority.to_string());
 
-    let config_dir = config.scope.config_dir();
-    let registries_dir = config_dir.join("registries.d");
+    // A brand-new registry is a self-sufficient definition, written to the
+    // writable config layer (`/var/lib/apm/config` for --system), never the
+    // read-only `/etc/apm` seed.
+    let registries_dir = config.scope.writable_config_dir().join("registries.d");
     fs::create_dir_all(&registries_dir)
         .with_context(|| format!("creating {}", registries_dir.display()))?;
 
@@ -2557,49 +3804,157 @@ fn materialize_authoring_clone(
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let mut clone = gitcmd::transport();
-    clone.args(["clone", "--no-checkout", url]);
-    clone.arg(&clone_dir);
-    run_git_command(clone, format!("cloning registry '{name}' from {url}"))?;
-
-    if let Some(branch) = branch {
-        let remote_branch = format!("origin/{branch}");
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "-B", branch, &remote_branch]);
-        run_git_command(checkout, format!("checking out branch '{branch}'"))?;
-    } else if let Some(tag) = tag {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).args(["checkout", tag]);
-        run_git_command(checkout, format!("checking out tag '{tag}'"))?;
-    } else if let Some(commit) = commit {
-        let mut checkout = gitcmd::hermetic();
-        checkout
-            .current_dir(&clone_dir)
-            .args(["checkout", "--detach", commit]);
-        run_git_command(checkout, format!("checking out commit '{commit}'"))?;
-    } else {
-        let mut checkout = gitcmd::hermetic();
-        checkout.current_dir(&clone_dir).arg("checkout");
-        run_git_command(checkout, "checking out remote HEAD")?;
-    }
+    let normalized = url.strip_prefix("git+").unwrap_or(url);
+    clone_authoring_registry(&clone_dir, normalized, branch, tag, commit)
+        .with_context(|| format!("cloning registry '{name}' from {url}"))?;
 
     printer.info(&format!("Authoring clone ready at {}", clone_dir.display()));
     Ok(())
 }
 
-fn run_git_command(mut command: Command, context: impl Into<String>) -> Result<()> {
-    let context = context.into();
-    let output = command
-        .output()
-        .with_context(|| format!("running git command while {context}"))?;
-    if output.status.success() {
-        return Ok(());
+/// Clone `url` into `clone_dir` for authoring, then check out the requested
+/// ref, using libgit2 for smart transports (local, `git://`, `ssh://`) and the
+/// pure-Rust dumb-HTTP reader for static `http(s)://` origins.
+fn clone_authoring_registry(
+    clone_dir: &std::path::Path,
+    url: &str,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        // libgit2 cannot read the static dumb-HTTP object tree; init locally
+        // and fetch through the pure-Rust reader.
+        let repo = git2::Repository::init(clone_dir)
+            .with_context(|| format!("initializing {}", clone_dir.display()))?;
+        repo.remote("origin", url).context("adding origin remote")?;
+        let refspecs = vec![
+            "+refs/heads/*:refs/remotes/origin/*".to_string(),
+            "+refs/tags/*:refs/tags/*".to_string(),
+            // Capture the origin's default branch so a bare clone can check it
+            // out, mirroring `RepoBuilder`/`git clone` on smart transports.
+            "+HEAD:refs/remotes/origin/HEAD".to_string(),
+        ];
+        let dir = clone_dir.to_path_buf();
+        let fetch_url = url.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(registry::repo::fetch(&dir, &fetch_url, &refspecs))
+        })
+        .context("fetching registry objects")?;
+
+        // With no explicit ref, dumb-HTTP has no worktree checked out yet;
+        // resolve and check out the origin's default branch.
+        let default_branch;
+        let effective_branch = if branch.is_none() && tag.is_none() && commit.is_none() {
+            default_branch = default_remote_branch(&repo);
+            default_branch.as_deref()
+        } else {
+            branch
+        };
+        return checkout_authoring_ref(&repo, effective_branch, tag, commit);
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    bail!("{} failed: {}", context, stderr);
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(registry::repo::credentials);
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+    // RepoBuilder checks out the remote HEAD; only an explicit ref needs more.
+    let repo = builder
+        .clone(url, clone_dir)
+        .with_context(|| format!("cloning {url}"))?;
+    checkout_authoring_ref(&repo, branch, tag, commit)
+}
+
+/// Resolve the origin's default branch (the branch its `HEAD` points at) from
+/// the fetched `refs/remotes/origin/*`, by matching the captured
+/// `refs/remotes/origin/HEAD` object id. Returns `None` for an empty origin.
+fn default_remote_branch(repo: &git2::Repository) -> Option<String> {
+    let head_oid = repo.refname_to_id("refs/remotes/origin/HEAD").ok()?;
+    let references = repo.references_glob("refs/remotes/origin/*").ok()?;
+    for reference in references {
+        let Ok(reference) = reference else { continue };
+        let Ok(name) = reference.name() else { continue };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        if reference.target() == Some(head_oid) {
+            return name
+                .strip_prefix("refs/remotes/origin/")
+                .map(ToString::to_string);
+        }
+    }
+    None
+}
+
+/// Check out the branch, tag, commit, or remote HEAD an authoring clone wants.
+fn checkout_authoring_ref(
+    repo: &git2::Repository,
+    branch: Option<&str>,
+    tag: Option<&str>,
+    commit: Option<&str>,
+) -> Result<()> {
+    if let Some(branch) = branch {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let object = repo
+            .revparse_single(&remote_ref)
+            .with_context(|| format!("resolving origin/{branch}"))?;
+        let target = object
+            .peel_to_commit()
+            .context("remote branch is not a commit")?;
+        repo.branch(branch, &target, true)
+            .with_context(|| format!("creating local branch '{branch}'"))?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{branch}'"))?;
+        repo.set_head(&format!("refs/heads/{branch}"))
+            .with_context(|| format!("switching to '{branch}'"))?;
+    } else if let Some(spec) = tag.or(commit) {
+        let object = repo
+            .revparse_single(spec)
+            .with_context(|| format!("resolving '{spec}'"))?;
+        let target = object.peel_to_commit().context("target is not a commit")?;
+        repo.checkout_tree(&object, None)
+            .with_context(|| format!("checking out '{spec}'"))?;
+        repo.set_head_detached(target.id())
+            .with_context(|| format!("detaching HEAD at '{spec}'"))?;
+    }
+    // No branch resolved (e.g. an empty origin): nothing to check out. For
+    // smart transports `RepoBuilder` has already checked out the remote HEAD.
+    Ok(())
+}
+
+/// Version-control summary of the git repository at or above `dir`: the short
+/// `HEAD` commit, the branch name, and whether the working tree has
+/// uncommitted tracked changes.
+///
+/// Reads through libgit2, so it works without the `git` CLI on `PATH`. Every
+/// field degrades to `None`/`false` when it cannot be determined; this drives
+/// the best-effort `aos describe` output.
+pub fn local_git_info(dir: &Path) -> (Option<String>, Option<String>, bool) {
+    let Ok(repo) = git2::Repository::discover(dir) else {
+        return (None, None, false);
+    };
+    let head = repo.head().ok();
+    let branch = head
+        .as_ref()
+        .and_then(|h| h.shorthand().ok())
+        .map(ToString::to_string);
+    let commit = head
+        .as_ref()
+        .and_then(|h| h.peel_to_commit().ok())
+        .and_then(|c| {
+            let short = c.as_object().short_id().ok()?;
+            short.as_str().ok().map(ToString::to_string)
+        });
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false);
+    let dirty = repo
+        .statuses(Some(&mut opts))
+        .map(|statuses| !statuses.is_empty())
+        .unwrap_or(false);
+    (commit, branch, dirty)
 }
 
 /// `apr remove` — delete a registry's config file, metadata cache, local
@@ -2671,13 +4026,10 @@ async fn registry_remove(
         }
     }
 
-    let trusted_keys_removed = trusted_key_dir_sets_for_registry_removal(config, &toml_path)
-        .into_iter()
-        .try_fold(false, |removed, dirs| {
-            security::KeyStore::new(dirs)
-                .remove(name)
-                .map(|current| removed || current)
-        })?;
+    // Remove the runtime pin from the writable trusted-keys store and mask any
+    // colocated read-only seed anchor.
+    let trusted_keys_removed =
+        security::KeyStore::new(config.scope.trusted_keys_dirs()).remove(name)?;
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
@@ -2717,16 +4069,15 @@ async fn registry_set_enabled(
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(name)?;
-    let (reg_config, state) =
-        config
-            .find_registry(name)
-            .ok_or_else(|| AosError::RegistryError {
-                message: format!("registry '{name}' not found"),
-            })?;
+    let (reg_config, _) = config
+        .find_registry(name)
+        .ok_or_else(|| AosError::RegistryError {
+            message: format!("registry '{name}' not found"),
+        })?;
 
-    let toml_path = config.registry_config_path_for_update(name);
+    let toml_path = config.registry_overlay_path(name);
     let previous_enabled = reg_config.enabled;
-    write_registry_enabled(&toml_path, reg_config, state.as_ref(), enabled)?;
+    write_registry_enabled(&toml_path, enabled)?;
 
     let action = if enabled {
         "registry_enable"
@@ -2767,45 +4118,43 @@ async fn registry_set_enabled(
     Ok(())
 }
 
-/// Persist a registry's `enabled` flag, preserving the rest of its config.
-fn write_registry_enabled(
-    path: &std::path::Path,
-    reg_config: &types::RegistryConfig,
-    state: Option<&types::RegistryState>,
-    enabled: bool,
-) -> Result<()> {
-    if path.exists() {
+/// Persist a registry's `enabled` flag to the writable config layer.
+///
+/// When the writable-layer file already exists (an operator-added definition
+/// or a prior overlay), its `enabled` field is updated in place, preserving
+/// every other field. When it does not exist (a *seeded* registry), a minimal
+/// `[registry]` overlay carrying only `enabled` is written, so the registry's
+/// url/signing keep inheriting from the `/etc` seed rather than being shadowed
+/// by a full copy.
+///
+/// # Errors
+///
+/// Returns an error when an existing file cannot be read or parsed, when the
+/// parent directory cannot be created, or when the file cannot be written.
+fn write_registry_enabled(path: &std::path::Path, enabled: bool) -> Result<()> {
+    let mut root: toml::Value = if path.exists() {
         let content =
             fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut value: toml::Value =
-            toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
-        let registry = value
-            .get_mut("registry")
-            .and_then(toml::Value::as_table_mut)
-            .ok_or_else(|| anyhow::anyhow!("{}: missing [registry] table", path.display()))?;
-        registry.insert("enabled".into(), toml::Value::Boolean(enabled));
-        let rendered = toml::to_string_pretty(&value)?;
-        fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
-        return Ok(());
-    }
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-
-    let mut reg_config = reg_config.clone();
-    reg_config.enabled = enabled;
-    let mut registry = match toml::Value::try_from(reg_config)? {
-        toml::Value::Table(table) => table,
-        _ => bail!("registry config did not serialize as a TOML table"),
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        toml::Value::Table(toml::map::Map::new())
     };
-    if let Some(state) = state {
-        registry.insert("state".into(), toml::Value::try_from(state)?);
-    }
-    let mut root = toml::map::Map::new();
-    root.insert("registry".into(), toml::Value::Table(registry));
-    let rendered = toml::to_string_pretty(&toml::Value::Table(root))?;
+
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: top level is not a TOML table", path.display()))?;
+    let registry = table
+        .entry("registry".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("{}: [registry] is not a TOML table", path.display()))?;
+    registry.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+
+    let rendered = toml::to_string_pretty(&root)?;
     fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
@@ -2855,83 +4204,56 @@ fn count_packages_in_dir(dir: &std::path::Path) -> usize {
     count
 }
 
-/// Return the registry config file that `registry remove` should delete.
+/// Return the writable-layer config file that `registry remove` should delete.
 ///
-/// Removing a user-level config has different semantics than updating it:
-/// when a same-name system config exists underneath, deleting only the user
-/// layer would make the registry reappear from the fallback. Treat that as an
-/// ambiguous removal instead of reporting success for a registry that remains
-/// visible.
+/// Removal only ever deletes from the writable layer
+/// (`/var/lib/apm/config` for system scope). A registry that is (also) defined
+/// by a read-only seed below it — typically `/etc/apm`, baked into the image —
+/// cannot be removed this way: deleting the writable file would leave it
+/// visible from the seed, and apm never writes `/etc`. Such a removal is
+/// refused with guidance to blank the seed through signed host configuration.
 fn registry_config_path_for_removal(config: &config::ApmConfig, name: &str) -> Result<PathBuf> {
-    let primary = config
-        .scope
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if config.scope != ProfileScope::User {
-        return Ok(primary);
-    }
-
-    let fallback = ProfileScope::System
-        .config_dir()
-        .join("registries.d")
-        .join(format!("{name}.toml"));
-    if primary.exists() && fallback.exists() {
+    if registry_defined_by_seed(config, name) {
         return Err(AosError::RegistryError {
             message: format!(
-                "registry '{name}' also exists in system config at {}; refusing to remove only \
-                 the user config at {} because the system registry would remain visible",
-                fallback.display(),
-                primary.display(),
+                "registry '{name}' is defined by a read-only seed (e.g. /etc/apm) that apm \
+                 cannot modify. To remove a seeded registry, blank its seed file \
+                 (replace the contents of registries.d/{name}.toml) through signed host.nix."
             ),
         }
         .into());
     }
 
-    if primary.exists() || !fallback.exists() {
-        Ok(primary)
-    } else {
-        Ok(fallback)
-    }
+    Ok(config
+        .scope
+        .writable_config_dir()
+        .join("registries.d")
+        .join(format!("{name}.toml")))
 }
 
-/// Return the trust-store layers to clean up for a registry removal.
+/// Whether a layer strictly below the writable one defines registry `name`.
 ///
-/// Most user-scope removals should remove or mask user trust entries.
-/// When user scope is operating on a writable redirected system registry
-/// config, however, the registry itself is being removed from the system layer.
-/// In that case cleanup both layers: any colocated system trust key first,
-/// then user trust pins learned from the system registry during updates. The
-/// order matters because user cleanup masks read-only system anchors that
-/// remain; when the system key is being deleted too, no user revocation marker
-/// should be left behind for it.
-fn trusted_key_dir_sets_for_registry_removal(
-    config: &config::ApmConfig,
-    removed_config_path: &std::path::Path,
-) -> Vec<Vec<PathBuf>> {
-    if config.scope == ProfileScope::User {
-        if let Some(file_name) = removed_config_path.file_name() {
-            let system_registry_config = ProfileScope::System
-                .config_dir()
-                .join("registries.d")
-                .join(file_name);
-            if removed_config_path == system_registry_config {
-                return vec![
-                    ProfileScope::System.trusted_keys_dirs(),
-                    config.scope.trusted_keys_dirs(),
-                ];
-            }
-        }
-    }
-
-    vec![config.scope.trusted_keys_dirs()]
+/// A "definition" is a non-blank `registries.d/{name}.toml` that contributes a
+/// `url`. Seeds always carry a `url`; a writable-layer overlay that only
+/// adjusts state or `enabled` does not. Used to refuse removing a seeded
+/// registry (which apm cannot delete) — see [`registry_config_path_for_removal`].
+fn registry_defined_by_seed(config: &config::ApmConfig, name: &str) -> bool {
+    let layers = config.scope.config_layers();
+    // The last entry is the writable layer; everything below it is a seed.
+    let seed_layers = &layers[..layers.len().saturating_sub(1)];
+    seed_layers.iter().any(|layer| {
+        config::registry_file_has_url(&layer.join("registries.d").join(format!("{name}.toml")))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ApmConfig;
-    use crate::types::{ApmSettings, RegistryConfig};
+    use crate::types::{
+        ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
+        RegistryConfig,
+    };
     use tempfile::TempDir;
 
     fn make_config(
@@ -2983,10 +4305,69 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
         }
+    }
+
+    fn attested_package_meta(
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) -> PackageMeta {
+        PackageMeta {
+            name: name.into(),
+            version: version.into(),
+            description: String::new(),
+            homepage: None,
+            license: String::new(),
+            maintainer: String::new(),
+            platform: "x86_64-linux".into(),
+            store_path: format!("/nix/store/hash-{name}-{version}"),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 0,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec!["attestation-v1".into()],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_digest: Some(root_digest.into()),
+                root_hash: Some(root_digest.into()),
+                root_hash_sig: Some("root.roothash.p7s".into()),
+                provenance: None,
+                measurement: Some(measurement.into()),
+            },
+        }
+    }
+
+    fn write_catalog_file(
+        path: &Path,
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) {
+        let content = serde_json::json!([{
+            "name": name,
+            "version": version,
+            "root_digest": root_digest,
+            "measurement": measurement,
+        }]);
+        fs::write(path, serde_json::to_vec(&content).expect("catalog JSON"))
+            .expect("write catalog");
     }
 
     #[test]
@@ -2995,6 +4376,209 @@ mod tests {
             derive_registry_name("https://registry.aos.dev/core"),
             "core"
         );
+    }
+
+    #[test]
+    fn query_commands_honor_system_flag() {
+        // Query subcommands now select scope via --system, just like the
+        // mutating ones.
+        let list_system = PackageCommand::List {
+            installed: false,
+            upgradable: false,
+            held: false,
+            registry: None,
+            system: true,
+        };
+        assert!(list_system.is_system());
+
+        let list_user = PackageCommand::List {
+            installed: false,
+            upgradable: false,
+            held: false,
+            registry: None,
+            system: false,
+        };
+        assert!(!list_user.is_system());
+
+        assert!(PackageCommand::Orphans { system: true }.is_system());
+        assert!(!PackageCommand::Held { system: false }.is_system());
+        assert!(
+            PackageCommand::Show {
+                package: "curl".into(),
+                registry: None,
+                system: true,
+            }
+            .is_system()
+        );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Verify {
+                    system: true,
+                    event_log: "/run/log/aos-packages.cel".into(),
+                    pcr15: Some("00".repeat(32)),
+                    quote_dir: None,
+                    nonce: None,
+                    nonce_file: None,
+                    quote_identity_files: Vec::new(),
+                    catalog_files: Vec::new(),
+                    pcr15_baseline: None,
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Quote {
+                    nonce: Some("00".into()),
+                    nonce_file: None,
+                    output_dir: "/tmp/aos-quote".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Enroll {
+                    quote_dir: "/tmp/aos-quote".into(),
+                    label: "node-a".into(),
+                    method: AttestEnrollmentMethod::OutOfBand,
+                    evidence_file: "/tmp/evidence.txt".into(),
+                    catalog_file: "/tmp/quote-identity.json".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Catalog {
+                    system: true,
+                    catalog_files: Vec::new(),
+                },
+            }
+            .is_system()
+        );
+    }
+
+    #[test]
+    fn attest_nonce_reader_accepts_inline_or_file() {
+        assert_eq!(
+            read_attestation_nonce(&Some("0011".into()), &None).expect("inline nonce"),
+            "0011"
+        );
+
+        let tmp = TempDir::new().expect("tempdir");
+        let nonce_file = tmp.path().join("nonce");
+        fs::write(&nonce_file, "aabb\n").expect("nonce file");
+        assert_eq!(
+            read_attestation_nonce(&None, &Some(nonce_file)).expect("file nonce"),
+            "aabb"
+        );
+
+        let conflict =
+            read_attestation_nonce(&Some("0011".into()), &Some(tmp.path().join("nonce")))
+                .unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --nonce or --nonce-file"));
+    }
+
+    #[test]
+    fn attest_verify_measurement_args_require_one_source() {
+        let pcr15 = Some("00".repeat(32));
+        let quote_dir = Some(PathBuf::from("/run/aos-attest/quote"));
+        let nonce = Some("0011".to_string());
+        let no_nonce = None;
+        let no_nonce_file = None;
+
+        let pcr = read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &[])
+            .expect("pcr15 source");
+        assert!(matches!(pcr, AttestationMeasurement::Pcr15(_)));
+
+        let quote = read_attestation_measurement(&None, &quote_dir, &nonce, &no_nonce_file, &[])
+            .expect("quote source");
+        assert!(matches!(quote, AttestationMeasurement::Quote { .. }));
+
+        let conflict =
+            read_attestation_measurement(&pcr15, &quote_dir, &nonce, &no_nonce_file, &[])
+                .unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --pcr15 or --quote-dir"));
+
+        let missing =
+            read_attestation_measurement(&None, &None, &no_nonce, &no_nonce_file, &[]).unwrap_err();
+        assert!(format!("{missing:#}").contains("requires --pcr15 or --quote-dir"));
+
+        let stray_nonce =
+            read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file, &[]).unwrap_err();
+        assert!(format!("{stray_nonce:#}").contains("require --quote-dir"));
+
+        let identity_files = vec![PathBuf::from("/etc/aos/attestation-identity.json")];
+        let stray_trust =
+            read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &identity_files)
+                .unwrap_err();
+        assert!(format!("{stray_trust:#}").contains("--quote-identity-file"));
+    }
+
+    #[test]
+    fn package_attestation_catalog_file_parses_entries() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("catalog.json");
+        fs::write(
+            &path,
+            r#"[{"name":"web","version":"1.0","root_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","measurement":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]"#,
+        )
+        .expect("catalog file");
+
+        let entries = read_package_attestation_catalog(&path).expect("read catalog");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "web");
+        assert_eq!(entries[0].version, "1.0");
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_merge_registry_seed_and_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let seed = tmp.path().join("seed-catalog.json");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let web_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let seed_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let explicit_measurement =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        write_catalog_file(&seed, "seeded", "1.0", root_digest, seed_measurement);
+        write_catalog_file(&explicit, "extra", "2.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, web_measurement);
+
+        let catalog =
+            package_attestation_catalog_from_sources(&[registry], Some(&seed), &[explicit])
+                .expect("merged catalog");
+
+        let names = catalog
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["extra", "seeded", "web"]);
+        assert_eq!(catalog[0].measurement, explicit_measurement);
+        assert_eq!(catalog[1].measurement, seed_measurement);
+        assert_eq!(catalog[2].measurement, web_measurement);
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_reject_conflicting_explicit_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let registry_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let explicit_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        write_catalog_file(&explicit, "web", "1.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, registry_measurement);
+
+        let err =
+            package_attestation_catalog_from_sources(&[registry], None, &[explicit]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
 
     #[test]
@@ -3086,10 +4670,10 @@ mod tests {
         .unwrap();
 
         let parsed: types::RegistryFile = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.registry.name, "quoted-url");
+        assert_eq!(parsed.registry.name.as_deref(), Some("quoted-url"));
         assert_eq!(
-            parsed.registry.url,
-            "file:///tmp/registry with \"quotes\"\nand newline"
+            parsed.registry.url.as_deref(),
+            Some("file:///tmp/registry with \"quotes\"\nand newline")
         );
         assert_eq!(parsed.registry.priority, 750);
         assert!(parsed.registry.enabled);
@@ -3140,52 +4724,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_remove_user_config_cleans_user_trust_layer() {
+    fn registry_config_path_for_removal_targets_writable_layer() {
         let tmp = TempDir::new().unwrap();
         let config = make_config(&tmp, vec![]);
-        let removed_config = ProfileScope::User
-            .config_dir()
-            .join("registries.d")
-            .join("host-reg.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![ProfileScope::User.trusted_keys_dirs()]
-        );
-    }
-
-    #[test]
-    fn registry_remove_redirected_system_config_cleans_both_trust_layers() {
-        let tmp = TempDir::new().unwrap();
-        let config = make_config(&tmp, vec![]);
-        let removed_config = ProfileScope::System
-            .config_dir()
-            .join("registries.d")
-            .join("host-install-channel.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![
-                ProfileScope::System.trusted_keys_dirs(),
-                ProfileScope::User.trusted_keys_dirs()
-            ]
-        );
-    }
-
-    #[test]
-    fn registry_remove_system_scope_cleans_system_trust_layer() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = make_config(&tmp, vec![]);
-        config.scope = ProfileScope::System;
-        let removed_config = ProfileScope::System
-            .config_dir()
-            .join("registries.d")
-            .join("host-install-channel.toml");
-
-        assert_eq!(
-            trusted_key_dir_sets_for_registry_removal(&config, &removed_config),
-            vec![ProfileScope::System.trusted_keys_dirs()]
-        );
+        // A registry that no read-only seed defines resolves to the writable
+        // layer, never the `/etc` seed. (The unique name is absent from any
+        // real seed dir, so the seed check is deterministically false.)
+        let path = registry_config_path_for_removal(&config, "operator-added-xyz").unwrap();
+        assert!(path.starts_with(config.scope.writable_config_dir()));
+        assert!(path.ends_with("registries.d/operator-added-xyz.toml"));
     }
 
     #[test]

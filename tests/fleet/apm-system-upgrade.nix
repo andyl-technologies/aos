@@ -5,8 +5,8 @@
 # /etc overlay to the new generation (P1's activate script) AND reconcile the
 # running daemons against the new unit set (the hidden activate pre/post split,
 # driven by P2's diff engine over P3's X-* unit contract). The fleet harness
-# boots the real `systems.server` image with full systemd + dbus, which is what
-# the reconciler needs.
+# boots a server image with a direct upgrade fixture and full systemd + dbus,
+# which is what the reconciler needs.
 #
 # Single machine (N=1): the live upgrade is entirely local to the target — the
 # new generation's closure is pre-staged on its disk (extraClosures) and the
@@ -14,18 +14,18 @@
 # sync over the L2 is already covered by apm-e2e.nix.)
 #
 # Generation pairing:
-#   gen-1 = systems.server         (seeded into state.json at first boot by
-#                                   aos-seed-profiles.service: package "aos",
-#                                   version "0.1.0", registry "seed").
+#   gen-1 = systems.server + fixture
+#                                 (seeded into state.json at first boot by
+#                                  aos-seed-profiles.service: package "aos",
+#                                  version "0.1.0", registry "seed").
 #   gen-2 = systems/server-2.nix   (imports server.nix; bumps the version,
 #                                   adds an environment.etc marker, and gives
-#                                   the test-http-server role a new port, a
+#                                   the upgrade HTTP fixture a new port, a
 #                                   sysctl, a new oneshot unit, and one
 #                                   removed gen-1 oneshot unit).
-# The test-http-server role is bundled on BOTH gens (the server profile bundles
-# it), so the harness's `roles = ["test-http-server"]` merge resolves at first
-# boot; the upgrade then introduces the role's deltas as a *live* update —
-# exactly the reconciliation surface under test.
+# The target boots a gen-1 system with that same direct fixture. The upgrade
+# then introduces the fixture's gen-2 deltas as a *live* update — exactly the
+# reconciliation surface under test, without depending on legacy role modules.
 #
 # ── Why the upgrade needs no network ───────────────────────────────────
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
@@ -45,9 +45,33 @@
 # guest. `${pkgs...}` / `${...Top}` are Nix interpolations resolved at eval time.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
+  fleetSystem = evaluated: {
+    # Re-expose extendModules so the harness can bake per-VM identity.
+    inherit (evaluated) config options extendModules;
+    build = {
+      toplevel = evaluated.config.system.build.toplevel;
+      kernel = evaluated.config.system.build.kernel;
+      initrd = evaluated.config.system.build.initrd;
+      image = evaluated.config.system.build.image;
+    };
+    checks = evaluated.config.system.build.checks;
+  };
+
+  # server-test restores `nft` (and the other fleet CLI tools) on PATH; the
+  # test inspects the live firewall ruleset with `nft list set`, which image
+  # slimming dropped from the server profile.
+  server1 = fleetSystem (mkSystem [
+    ../../systems/server-test.nix
+    (import ../../systems/_upgrade-http-fixture.nix {
+      inherit lib pkgs;
+      generation = 1;
+    })
+  ]);
+
   # gen-2's toplevel. Pre-staged on the target via `extraClosures`; the
   # registry entry's `store_path` names this exact path.
   server2Top = systems.server-2.config.system.build.toplevel;
@@ -129,15 +153,14 @@
   };
 in {
   name = "apm-system-upgrade";
-  # One VM boot + role activation + a live generation switch (overlay swap +
+  # One VM boot + fixture activation + a live generation switch (overlay swap +
   # daemon reconcile) + rollback. Generous budget for sandbox CPU/IO contention.
   timeout = 600;
 
   machines = {
     # Python global `target`.
     target = {
-      system = systems.server;
-      roles = ["test-http-server"];
+      system = server1;
       # Pre-stage gen-2's full closure so `apm upgrade --system` fetches
       # nothing over the network (see the header note).
       extraClosures = [server2Top];
@@ -151,7 +174,7 @@ in {
       import json
       import pathlib
 
-      # ── 1. Target is on gen-1 with the test role already activated ───
+      # ── 1. Target is on gen-1 with the test fixture already active ───
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds(
           "systemctl is-active test-http-server.service", timeout=120
@@ -163,17 +186,14 @@ in {
       ).strip()
       assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
 
-      # Role drop-in baseline. gen-1's test-http-server role sets
-      # firewall.allowedTCP = [8000] (so the nftables drop-in exists) but no
-      # kernel.sysctl (so the sysctl drop-in does NOT exist yet — drop-ins are
-      # emitted only when the role option is non-empty,
-      # modules/roles/default.nix:108,124).
-      target.succeed("test -f /etc/nftables.d/50-role-test-http-server.nft")
-      target.fail("test -f /etc/sysctl.d/70-role-test-http-server.conf")
+      # Fixture baseline. gen-1 opens port 8000 in the base nftables ruleset
+      # but does not yet add tcp_keepalive_time to the kernel sysctl drop-in.
       nftd_before = target.succeed(
-          "cat /etc/nftables.d/50-role-test-http-server.nft"
+          "cat /etc/nftables.conf"
       )
       assert "8443" not in nftd_before, "gen-1 should not yet open port 8443"
+      sysctld_before = target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf")
+      assert "tcp_keepalive_time" not in sysctld_before, sysctld_before
 
       # gen-2-only surfaces are absent on gen-1.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
@@ -197,6 +217,17 @@ in {
       http_pid_before = int(target.succeed(
           "systemctl show -p MainPID --value test-http-server.service"
       ).strip())
+
+      # Record dbus's MainPID. gen-2 perturbs dbus.service (a serviceConfig
+      # limit), so the reconciler MUST act on it — but because dbus.service is
+      # reloadIfChanged it must *reload* (same daemon, same PID, live bus
+      # preserved), never restart. A restart would tear down the very bus the
+      # reconciler drives itself over and hang (the bug this guards). Asserted
+      # after the upgrade.
+      dbus_pid_before = int(target.succeed(
+          "systemctl show -p MainPID --value dbus.service"
+      ).strip())
+      assert dbus_pid_before > 0, "dbus.service has no MainPID before upgrade"
 
       # ── 2. Stage the registry in SYSTEM scope ───────────────────────
       # /etc/apm/registries.d/<name>.toml for the config + the package TOML in
@@ -284,12 +315,12 @@ in {
       osrel = target.succeed("cat /etc/os-release")
       assert "VERSION_ID=test-2" in osrel, osrel
 
-      # ── 8. Role drop-ins regenerated on the per-gen ignition lower ──
-      nftd = target.succeed("cat /etc/nftables.d/50-role-test-http-server.nft")
-      assert "8443" in nftd, "new nftables drop-in missing port 8443"
+      # ── 8. Base /etc policy reflects the gen-2 fixture ──────────────
+      nftd = target.succeed("cat /etc/nftables.conf")
+      assert "8443" in nftd, "new nftables ruleset missing port 8443"
 
       sysctld = target.succeed(
-          "cat /etc/sysctl.d/70-role-test-http-server.conf"
+          "cat /etc/sysctl.d/10-aos-kernel.conf"
       )
       assert "tcp_keepalive_time = 300" in sysctld, sysctld
 
@@ -305,7 +336,7 @@ in {
       )
 
       # nftables reloaded (it has ExecReload → reload) via its X-Reload-Triggers
-      # on /etc/nftables.d — port 8443 is now allowed.
+      # on /etc/nftables.conf — port 8443 is now allowed.
       nft_dump = target.succeed("nft list set inet filter allowed_tcp")
       assert "8443" in nft_dump, nft_dump
 
@@ -324,6 +355,33 @@ in {
       assert http_pid_before == http_pid_after, (
           "test-http-server.service was restarted unnecessarily: PID "
           f"{http_pid_before} -> {http_pid_after}"
+      )
+
+      # ── 12b. The perturbed dbus.service was RELOADED, not restarted ──
+      # This is the regression guard for the dbus-self-restart hang. gen-2
+      # changed dbus.service's unit text, so the reconciler had to act on it.
+      # Because dbus.service is reloadIfChanged with an ExecReload, it must be
+      # reloaded in place: the daemon keeps running (same MainPID) and the
+      # system bus the reconciler drives itself over is never torn down. A
+      # restart would change the PID — and, over the bus, would have hung the
+      # whole `apm upgrade` (which is exactly the bug we fixed). The bus must
+      # still be live and dbus still active.
+      target.succeed("systemctl is-active dbus.service")
+      target.succeed("test -S /run/dbus/system_bus_socket")
+      dbus_pid_after = int(target.succeed(
+          "systemctl show -p MainPID --value dbus.service"
+      ).strip())
+      assert dbus_pid_before == dbus_pid_after, (
+          "dbus.service was RESTARTED instead of reloaded (the self-restart "
+          f"hang regressed): PID {dbus_pid_before} -> {dbus_pid_after}"
+      )
+      # And the reconcile plan itself classified dbus as a reload, not a
+      # restart — belt-and-suspenders against a future X-* regression.
+      assert "restarting dbus.service" not in out, (
+          "reconcile scheduled a dbus.service RESTART:\n" + out
+      )
+      assert "reloading  dbus.service" in out, (
+          "reconcile did not reload dbus.service as expected:\n" + out
       )
 
       # ── 13. No failed units after the reconcile ─────────────────────

@@ -1,8 +1,10 @@
 ##! modules/base/nsswitch.nix — Name Service Switch configuration
 ##!
 ##! Writes /etc/nsswitch.conf so glibc activates the NSS modules built
-##! into systemd (nss-systemd, nss-myhostname, nss-mymachines,
-##! nss-resolve). Without this file, glibc falls back to its hardcoded
+##! into systemd (nss-systemd, nss-myhostname, nss-resolve).
+##! `nss-mymachines` is deliberately not shipped, so package/container
+##! reachability has to use explicit /etc/hosts entries or DNS. Without this
+##! file, glibc falls back to its hardcoded
 ##! compile-time defaults and the .so files installed by systemd are
 ##! never loaded — nss-resolve and nss-myhostname become dead code.
 ##!
@@ -27,14 +29,14 @@ in {
 
     hosts = lib.mkOption {
       type = lib.types.str;
-      default = "files myhostname mymachines resolve [!UNAVAIL=return] dns";
+      default = "files myhostname resolve [!UNAVAIL=return] dns";
       description = ''
         Lookup order for the "hosts" database. The default wires up
-        nss-myhostname (local hostname resolution), nss-mymachines
-        (systemd-nspawn container names — harmless if unused), and
-        nss-resolve (systemd-resolved). The [!UNAVAIL=return] guard
-        means: trust systemd-resolved's answer when it's reachable;
-        fall through to plain DNS when it's genuinely down.
+        nss-myhostname (local hostname resolution) and nss-resolve
+        (systemd-resolved). The [!UNAVAIL=return] guard means: trust
+        systemd-resolved's answer when it's reachable; fall through to
+        plain DNS when it's genuinely down. Package/container names must
+        be explicit in /etc/hosts or DNS.
       '';
     };
   };

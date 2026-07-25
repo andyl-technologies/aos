@@ -8,12 +8,7 @@
 ##! this, ${pkgs.cryptsetup}/lib/tmpfiles.d/cryptsetup.conf is invisible
 ##! to systemd, which only scans /etc, /run, and
 ##! ${pkgs.systemd}/lib/tmpfiles.d/.
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}: {
+{pkgs, ...}: {
   config = {
     # Base runtime directories and stale-lock cleanup.
     environment.etc."tmpfiles.d/aos-base.conf" = {
@@ -38,6 +33,21 @@
         R! /etc/group.lock           -    -    -    - -
         R! /etc/passwd.lock          -    -    -    - -
         R! /etc/shadow.lock          -    -    -    - -
+      '';
+    };
+
+    # systemd's stock home.conf tries to create /home and /srv, and
+    # provision.conf tries to create /root/.ssh from credentials. AOS keeps
+    # / read-only and routes SSH authorization through /etc/ssh/authorized_keys,
+    # so mask those snippets by basename in the higher-priority /etc directory.
+    environment.etc."tmpfiles.d/home.conf" = {
+      text = ''
+        # Masked by modules/base/tmpfiles.nix; /home and /srv are not created on AOS.
+      '';
+    };
+    environment.etc."tmpfiles.d/provision.conf" = {
+      text = ''
+        # Masked by modules/base/tmpfiles.nix; AOS does not use systemd credential provisioning for root SSH keys.
       '';
     };
 
