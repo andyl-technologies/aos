@@ -101,8 +101,8 @@ struct PreemptionScenarioOutcome {
 pub fn run_live_plugin_preemption_gate(
     config: &LivePluginQuantumGateConfig,
 ) -> Result<LivePluginPreemptionReport, LivePluginQuantumGateError> {
-    let step = config.schedule.ceiling_step_icount;
-    if step < 2 {
+    let ceiling_stride = config.schedule.ceiling_step_icount;
+    if ceiling_stride < 2 {
         return Err(probe_error(
             "preemption gate requires a ceiling step of at least two icount",
         ));
@@ -209,17 +209,17 @@ fn run_preemption_scenario(
         QemuMappedQuantumShmemHotPath::new(hot_path_config, region, GateSendAuthorizer)
             .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?;
 
-    let step = config.schedule.ceiling_step_icount;
+    let ceiling_stride = config.schedule.ceiling_step_icount;
     let mut host_observable_schedule = Vec::with_capacity(3);
     let (first_stop, first_event) =
-        scheduler::run_quantum(&mut hot_path, &mut child, &setup, step, config)?;
-    require_reached_ceiling(first_stop, step)?;
+        scheduler::run_quantum(&mut hot_path, &mut child, &setup, ceiling_stride, config)?;
+    require_reached_ceiling(first_stop, ceiling_stride)?;
     host_observable_schedule.push(first_event);
-    let first_sample = required_sample(&hot_path, step)?;
+    let first_sample = required_sample(&hot_path, ceiling_stride)?;
     let switch_from_vcpu = first_sample.rr_current_vcpu;
     let switch_to_vcpu = 1_u32.saturating_sub(switch_from_vcpu);
-    let switch_icount = step.saturating_add(1);
-    let switch_ceiling = step.saturating_mul(2);
+    let switch_icount = ceiling_stride.saturating_add(1);
+    let switch_ceiling = ceiling_stride.saturating_mul(2);
     let switch_sequence = hot_path
         .publish_preemption_command(SchedulerPreemptionCommand {
             at_icount: switch_icount,
@@ -253,7 +253,7 @@ fn run_preemption_scenario(
         ipi_rr_switch_quantum,
     )
     .ok_or_else(|| probe_error("live IPI RR-boundary delivery icount overflowed"))?;
-    let interrupt_ceiling = step.saturating_mul(3);
+    let interrupt_ceiling = ceiling_stride.saturating_mul(3);
     if interrupt_icount > interrupt_ceiling {
         return Err(probe_error(format!(
             "live IPI delivery {interrupt_icount} exceeds terminal ceiling {interrupt_ceiling}"
