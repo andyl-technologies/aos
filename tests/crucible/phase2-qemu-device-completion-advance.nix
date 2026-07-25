@@ -135,6 +135,8 @@ in
               echo PASS
               echo gate=gate:patch-microtests
               echo patch=${patchName}
+              echo patched_fixture_exercised=true
+              echo stock_negative_control=true
               echo patched_api_compiles=true
               echo stock_api_negative_control=true
               echo pending_wait_hook_source_verified=true

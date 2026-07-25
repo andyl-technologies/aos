@@ -604,7 +604,8 @@ in
             tasks=T-PATCH-9
             patch=0010-crucible-plugin-time-advance.patch
             patched_fixture_exercised=true
-            stock_negative_control=callback-return-before-queued-work
+            stock_negative_control=true
+            stock_negative_control_mode=callback-return-before-queued-work
             ${qemuPackageResultLines}
             qemu_time_control_public_predicate=true
             qemu_time_control_single_owner=true

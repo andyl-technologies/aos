@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 
-use super::common::{EXPECTED_PATCHES, assert_contains, patch_files, workspace_root};
+use super::common::{assert_contains, patch_files, workspace_root, EXPECTED_PATCHES};
 
 /// Asserts the carried-patch roster matches the on-disk series and that the
 /// aggregate microtest nix plus `default.nix` register every gate surface.
@@ -87,7 +87,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "grep -q '^vcpus=2$'");
     assert_contains(
         &aggregate,
-        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=16384)$'",
+        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304)$'",
     );
     assert_contains(
         &aggregate,

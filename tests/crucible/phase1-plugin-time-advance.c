@@ -513,7 +513,7 @@ main(void)
 
   puts("PASS");
   puts("patched_qemu_plugin_time_advance_fixture=true");
-  puts("stock_negative_control=callback-return-before-queued-work");
+  puts("stock_negative_control_mode=callback-return-before-queued-work");
   puts("time_control_predicate_symbol=qemu_plugin_has_time_control");
   puts("advance_symbol=qemu_plugin_advance_time_ns");
   puts("completion_symbol=qemu_plugin_register_time_advance_cb");
