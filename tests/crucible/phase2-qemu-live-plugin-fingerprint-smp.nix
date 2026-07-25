@@ -27,7 +27,7 @@
   smpVcpus ? "4",
   memoryMib ? "256",
   taskIds ? ["T-TIME-9" "T-QEMU-16" "T-PLUG-26"],
-  openTaskIds ? ["T-PLUG-24" "T-DET-30"],
+  openTaskIds ? ["T-PLUG-24"],
   timeoutSecs ? "300",
   secondRunLoad ? "1",
   probeIcount ? "6000000",
