@@ -2,8 +2,9 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostChannelGateWiring",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-15"],
+  taskIds ? ["T-GHC-15"],
+  openTaskIds ? [],
+  qemuLiveWhiteboxDoorbell ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -42,6 +43,7 @@
   anyGuestGate = builtins.readFile ./phase2-any-guest.nix;
   channelGate = builtins.readFile ./phase4-guest-host-channel-determinism.nix;
   emitterAbsenceGate = builtins.readFile ./phase4-guest-host-emitter-absence.nix;
+  liveWhiteboxGate = builtins.readFile ./phase2-qemu-live-whitebox-doorbell.nix;
   phaseGate = builtins.readFile ./phase4-guest-host-channel-gate-wiring.nix;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -85,12 +87,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-15 remains open";
-        needle = "- [ ] **T-GHC-15**";
+        label = "T-GHC-15 checklist complete";
+        needle = "- [x] **T-GHC-15**";
       }
       {
-        label = "T-GHC-15 partial-evidence note";
-        needle = "Partial structural evidence is provided by";
+        label = "T-GHC-15 completion note";
+        needle = "Completed by";
       }
       {
         label = "canonical channel wiring no longer deferred";
@@ -251,6 +253,24 @@
         needle = "canonical_gate_wiring=${canonicalGate}";
       }
     ]
+    ++ failuresFor "tests/crucible/phase2-qemu-live-whitebox-doorbell.nix" liveWhiteboxGate [
+      {
+        label = "live white-box off/on modes";
+        needle = "run_mode off off";
+      }
+      {
+        label = "live white-box marker mode";
+        needle = "run_mode on on";
+      }
+      {
+        label = "live off/on fingerprint equality";
+        needle = "test \"$off_fingerprint\" = \"$on_fingerprint\"";
+      }
+      {
+        label = "live marker host event-log admission";
+        needle = "marker_event_log_admission=true";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase4 channel gate wiring import";
@@ -262,7 +282,11 @@
       }
       {
         label = "phase4 channel gate wiring task id";
-        needle = "openTaskIds = [\"T-GHC-15\"]";
+        needle = "taskIds = [\"T-GHC-15\"]";
+      }
+      {
+        label = "phase4 channel gate consumes live white-box result";
+        needle = "qemuLiveWhiteboxDoorbell = phase2.qemuLiveWhiteboxDoorbell;";
       }
       {
         label = "phase2 single-VM fingerprint canonical gate attr";
@@ -409,6 +433,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+        qemuLiveWhiteboxDoorbell
       ];
       passthru.lazyGateDefinitions = {
         anyGuest = phase2AnyGuestDefinition;
@@ -469,6 +494,11 @@ in
               --test guest_host_channel_determinism \
               whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off \
               -- --test-threads=1
+
+            grep -Fxq PASS ${qemuLiveWhiteboxDoorbell}/result
+            grep -Fxq 'whitebox_modes=off,on' ${qemuLiveWhiteboxDoorbell}/result
+            grep -Fxq 'marker_event_log_admission=true' ${qemuLiveWhiteboxDoorbell}/result
+            grep -Fxq 'off_on_fingerprint_equal=true' ${qemuLiveWhiteboxDoorbell}/result
           '';
         }
         {
@@ -481,18 +511,19 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
-            evidence_scope=structural-gate-binding-without-live-whitebox-run
+            status=complete
+            evidence_scope=canonical-gate-binding-with-live-whitebox-run
             gate=gate:any-guest,gate:single-vm-fingerprint
             black_box_sufficiency=gate:any-guest:no-agent-no-content
             opt_in_additivity=whitebox-host-plugin-switch-no-guest-content
             real_qemu_black_box_sufficiency=gate:any-guest
             real_qemu_fingerprint_axis=gate:single-vm-fingerprint:icount-registers-ram
-            real_qemu_whitebox_off_on_fingerprint=not_claimed
+            real_qemu_whitebox_off_on_fingerprint=byte-identical
+            real_qemu_whitebox_marker_event_log_admission=true
             fingerprint_equality=host-plugin-off-on-gate-target-and-scheduler-marker-neutral
-            canonical_gate_wiring=partial-live-whitebox-pending
+            canonical_gate_wiring=complete
             lazy_gate_definitions=passthru.lazyGateDefinitions.anyGuest,passthru.lazyGateDefinitions.singleVmFingerprint,passthru.lazyGateDefinitions.channelDeterminism,passthru.lazyGateDefinitions.emitterAbsence
-            source_gates=checks.crucible.phase2.gates.anyGuest,checks.crucible.phase2.gates.singleVmFingerprint,checks.crucible.phase4.guestHostChannelDeterminism,checks.crucible.phase4.guestHostEmitterAbsence
+            source_gates=checks.crucible.phase2.gates.anyGuest,checks.crucible.phase2.gates.singleVmFingerprint,checks.crucible.phase2.qemuLiveWhiteboxDoorbell,checks.crucible.phase4.guestHostChannelDeterminism,checks.crucible.phase4.guestHostEmitterAbsence
             RESULT
           '';
         }

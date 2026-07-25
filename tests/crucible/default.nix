@@ -1129,8 +1129,9 @@ in rec {
     guestHostChannelGateWiring = import ./phase4-guest-host-channel-gate-wiring.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostChannelGateWiring";
-      taskIds = [];
-      openTaskIds = ["T-GHC-15"];
+      taskIds = ["T-GHC-15"];
+      openTaskIds = [];
+      qemuLiveWhiteboxDoorbell = phase2.qemuLiveWhiteboxDoorbell;
     };
     guestHostAppRandomDoorbell = import ./phase4-guest-host-app-random-doorbell.nix {
       inherit pkgs lib;

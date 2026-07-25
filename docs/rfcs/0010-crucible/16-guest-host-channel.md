@@ -943,32 +943,26 @@ the transport layer by construction.
   `WhiteboxDoorbellDecodeDiagnostic` before being dropped, while malformed
   app-random frames are turned into typed decode diagnostics and dropped without
   drawing a decision or writing a reply.
-- [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
+- [x] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
   with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30], [G-3]; spec
   §16.1, §16.7.
-  Partial structural evidence is provided by
+  Completed by
   `checks.crucible.phase4.guestHostChannelGateWiring`: the phase4
-  binding gate now carries the relevant gate definition files in lazy passthru,
+  binding gate carries the relevant gate definition files in lazy passthru,
   statically pins the phase2 canonical gate ordering in `tests/crucible/default.nix`
   including `qemuInert -> singleVmFingerprint -> anyGuest`, enforces their
   source/result contract text plus the phase4 channel determinism and
   emitter-absence result contracts, requires black-box no-agent/no-content
   sufficiency, records white-box as a host/plugin opt-in rather than guest content,
-  and preserves the real QEMU icount/register/RAM fingerprint axis. The gate does
-  not claim a live real-QEMU run with white-box events enabled; instead it binds
-  the explicit `gate_any_guest` host/plugin off/on switch contract to the scheduler
-  marker-neutrality proof, so white-box disabled, enabled-but-unused, and
-  marker-enabled modes are fingerprint-equal except for observational event-log
-  entries.
-  **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
-  black-box sufficiency clause is now proven on a real QEMU run — the live Rust
-  plugin fingerprints an unmodified guest with no in-guest agent and no injected
-  content, and the flipped phase2 `gate:single-vm-fingerprint` (which
-  `gate:any-guest` depends on) is certified by this live gate. Still open: a
-  live real-QEMU run with white-box events enabled proving white-box on/off
-  fingerprint-equality (this gate runs white-box off only), which lands with the
-  M5 guest-host-channel/white-box work.
+  and preserves the real QEMU icount/register/RAM fingerprint axis. It also
+  depends on `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`, whose paired
+  production-plugin runs execute the same standalone guest with white-box off
+  and with a live kind-4 coverage marker enabled, require byte-identical
+  execution fingerprints, and admit the enabled marker through the
+  plugin-to-host shared-memory ring at a completed quantum boundary. Together
+  with the scheduler marker-neutrality proof, this establishes black-box
+  sufficiency, opt-in additivity, and live white-box on/off fingerprint equality.
 - [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
