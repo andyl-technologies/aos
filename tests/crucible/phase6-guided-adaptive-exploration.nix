@@ -18,6 +18,7 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   guidedTest = builtins.readFile ../../crates/crucible/tests/gate_guided_adaptive_exploration.rs;
+  guidanceLintTest = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/guidance.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
@@ -99,19 +100,19 @@
       };
       T-ADV-18 = {
         testFilter = "gate_adaptive_strategy_selection_is_deterministic_and_fair";
-        result = "partial_adaptive=non-ucb-selection-scaffolding";
+        result = "adaptive=deterministic-fixed-point-ucb+integrated-campaign+realized-credit+fairness";
         docNeedles = [
           {
-            label = "T-ADV-18 remains open";
-            needle = "- [ ] **T-ADV-18**";
+            label = "T-ADV-18 is complete";
+            needle = "- [x] **T-ADV-18**";
           }
           {
-            label = "adaptive partial-evidence note";
-            needle = "Partial evidence from `checks.crucible.phase6.adaptiveStrategies`";
+            label = "adaptive completion note";
+            needle = "Completed by `checks.crucible.phase6.adaptiveStrategies`";
           }
           {
-            label = "adaptive UCB blocker";
-            needle = "required deterministic UCB default";
+            label = "adaptive integrated campaign proof";
+            needle = "`TemporalGraph::search_adaptive_campaign`";
           }
         ];
         modelNeedles = [
@@ -131,6 +132,18 @@
             label = "content-address graph fingerprint";
             needle = "fn adaptive_strategy_graph_fingerprint";
           }
+          {
+            label = "adaptive campaign config";
+            needle = "pub struct AdaptiveCampaignConfig";
+          }
+          {
+            label = "integrated adaptive search";
+            needle = "pub fn search_adaptive_campaign";
+          }
+          {
+            label = "integer UCB implementation";
+            needle = "fn integer_square_root";
+          }
         ];
         libNeedles = [
           {
@@ -147,23 +160,27 @@
             label = "content-address credit";
             needle = "AdaptiveStrategyCredit";
           }
+          {
+            label = "integrated adaptive test";
+            needle = "gate_adaptive_strategy_selection_is_deterministic_and_fair_in_integrated_campaign";
+          }
         ];
       };
       T-ADV-19 = {
         testFilter = "gate_guidance_determinism_lint_rejects_float_scores";
-        result = "partial_lint=synthetic-input-only";
+        result = "guidance_lint=actual-sources+comment-string-aware+mutation-negative";
         docNeedles = [
           {
-            label = "T-ADV-19 remains open";
-            needle = "- [ ] **T-ADV-19**";
+            label = "T-ADV-19 is complete";
+            needle = "- [x] **T-ADV-19**";
           }
           {
-            label = "guidance lint partial-evidence note";
-            needle = "Partial evidence from `checks.crucible.phase6.guidanceDeterminismLint`";
+            label = "guidance lint completion note";
+            needle = "Completed by `checks.crucible.phase6.guidanceDeterminismLint`";
           }
           {
-            label = "guidance actual-source lint blocker";
-            needle = "comment/string-aware scan of the actual signal and bandit ordering sources";
+            label = "guidance actual-source lint proof";
+            needle = "comment/string-aware token scan over the actual guidance";
           }
         ];
         modelNeedles = [
@@ -186,6 +203,20 @@
           {
             label = "lint test";
             needle = "gate_guidance_determinism_lint_rejects_float_scores";
+          }
+        ];
+        harnessNeedles = [
+          {
+            label = "actual-source guidance lint";
+            needle = "guidance_ordering_float_failures";
+          }
+          {
+            label = "guidance lint mutation negative";
+            needle = "rejects_float_types_but_ignores_comments_and_strings";
+          }
+          {
+            label = "adaptive campaign source coverage";
+            needle = "crucible/src/model/adaptive_campaign.rs";
           }
         ];
       };
@@ -350,6 +381,7 @@
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph taskSpec.modelNeedles
     ++ failuresFor "crates/crucible/src/lib.rs" libRs taskSpec.libNeedles
     ++ failuresFor "crates/crucible/tests/gate_guided_adaptive_exploration.rs" guidedTest taskSpec.testNeedles
+    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/guidance.rs" guidanceLintTest (taskSpec.harnessNeedles or [])
     ++ forbiddenFailuresFor "crates/crucible/tests/gate_guided_adaptive_exploration.rs" guidedTest [
       {
         label = "ignored red placeholder";
@@ -421,6 +453,17 @@ in
               --test gate_guided_adaptive_exploration \
               ${taskSpec.testFilter} \
               -- --test-threads=1
+            ${lib.optionalString (taskId == "T-ADV-19") ''
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-guided-adaptive-exploration-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-harness \
+                --test harness_lint \
+                guidance \
+                -- --test-threads=1
+            ''}
           '';
         }
         {

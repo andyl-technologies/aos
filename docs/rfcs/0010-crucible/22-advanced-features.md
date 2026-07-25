@@ -1222,7 +1222,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   configuration exactly reproduces `SearchStrategy::CoverageGuided`, composite
   proximity and rarity reorder real frontier expansion, and guidance remains
   reader-only with no configuration or checkpoint fingerprint effect.
-- [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
+- [x] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
   (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
   expansion arms with a deterministic reward model (new coverage, novelty gain,
   assertion-proximity progress, dominantly a confirmed failure; credited in
@@ -1230,25 +1230,26 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   reproducible as a unit and that its config is hashed into the campaign identity
   while the reproduction artifact stays a bare (def, seed, schedule) bundle. —
   satisfies [ADV-36], [ADV-37], [ADV-38]; spec §22.5.4; cross-ref §22.5.3, §22.8.
-  Partial evidence from `checks.crucible.phase6.adaptiveStrategies`: adaptive selection is
-  represented by an off-by-default `AdaptiveStrategyConfig`, deterministic
-  integer reward scoring over a fixed ordered arm set, content-address sorting of
-  caller-supplied reward credits, graph-fingerprinted seeded exploration bonuses,
-  a breadth-first fairness floor, and a campaign identity hash covering the
-  signal/bandit configuration while leaving individual reproduction candidates as
-  ordinary `(def, schedule)` configurations. Completion remains open on the
-  required deterministic UCB default and integration with real campaign expansion,
-  realized-graph reward credit, reduction, reproduction, and fairness behavior.
-- [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
+  Completed by `checks.crucible.phase6.adaptiveStrategies`: adaptive selection is
+  represented by an off-by-default `AdaptiveStrategyConfig` and integrated by
+  `TemporalGraph::search_adaptive_campaign` into the shared expansion path. The
+  default deterministic integer UCB rule selects from a fixed ordered arm set,
+  applies realized-node rewards in content-address order, makes confirmed failures
+  dominant, and enforces the breadth-first fairness floor. The campaign identity
+  hashes the signal/bandit configuration while each discovered failure keeps the
+  ordinary bare `(def, seed, schedule)` reproduction artifact. The gate repeats a
+  reduced campaign and proves identical arm choices, credits, graph, failures, and
+  artifacts as a unit.
+- [x] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
   paths (scores, weights, reward accumulation), enforcing fixed-point/integer
   arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
   cross-ref [INV-9], `gate:harness-lint`.
-  Partial evidence from `checks.crucible.phase6.guidanceDeterminismLint`: the guided
-  exploration model exposes `lint_guidance_determinism_source`, and the gate proves
-  `f64` score/reward source is rejected while fixed-point `u64` score source is
-  accepted in synthetic inputs. Completion remains open on wiring a
-  comment/string-aware scan of the actual signal and bandit ordering sources into
-  `gate:harness-lint`, with mutation negatives that prove the real path is covered.
+  Completed by `checks.crucible.phase6.guidanceDeterminismLint`: the model's
+  synthetic probe remains as a unit check, and `gate:harness-lint` now performs a
+  comment/string-aware token scan over the actual guidance, deterministic UCB,
+  reward, and frontier-ordering sources. Its mutation negative inserts a real
+  floating-point score type and proves rejection while comments and string
+  literals containing the forbidden tokens remain inert.
 - [x] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
   interrupt-timing) within the bounded [deadline, horizon] window — working for
   single-vCPU guests — with partial-order reduction over commuting preemptions and

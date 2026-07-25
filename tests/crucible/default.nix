@@ -2007,13 +2007,12 @@ in rec {
         phase6.coverageFeedback
       ];
     };
-    adaptiveStrategies = redBeforeAdvance {
+    adaptiveStrategies = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.adaptiveStrategies";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.adaptiveStrategies";
-        taskIds = [];
-        openTaskIds = ["T-ADV-18"];
+        taskIds = ["T-ADV-18"];
         gateName = "gate:adaptive-strategies";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -2026,19 +2025,13 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.guidanceSignals
       ];
-      phase = "phase6";
-      reason = "adaptive selection is not deterministic UCB and is not integrated with campaign expansion and reward credit";
-      taskIds = ["T-ADV-18"];
-      gateName = "gate:adaptive-strategies";
-      owner = "crucible";
     };
-    guidanceDeterminismLint = redBeforeAdvance {
+    guidanceDeterminismLint = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
-        taskIds = [];
-        openTaskIds = ["T-ADV-19"];
+        taskIds = ["T-ADV-19"];
         gateName = "gate:guidance-determinism-lint";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -2051,11 +2044,6 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.adaptiveStrategies
       ];
-      phase = "phase6";
-      reason = "guidance determinism lint scans synthetic inputs rather than actual ordering sources";
-      taskIds = ["T-ADV-19"];
-      gateName = "gate:guidance-determinism-lint";
-      owner = "crucible";
     };
     coverageGuidedFuzzing = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
