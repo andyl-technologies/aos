@@ -9,20 +9,24 @@ use std::error::Error;
 
 #[path = "support/guidance_search.rs"]
 mod guidance_search_support;
+#[path = "support/adaptive_campaign.rs"]
+mod adaptive_campaign_support;
 
+use adaptive_campaign_support::*;
 use guidance_search_support::*;
 
 use crucible::{
-    AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit, AdaptiveStrategyReward,
-    AppRandomBranchConfig, AppRandomDecision, AppRandomSampleBudget,
+    AdaptiveCampaignConfig, AdaptiveStrategyArm, AdaptiveStrategyConfig, AdaptiveStrategyCredit,
+    AdaptiveStrategyReward, AppRandomBranchConfig, AppRandomDecision, AppRandomSampleBudget,
     AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, Configuration, ContentHash,
     CoverageGuidanceSignal, Decision, EngineError, FrontierReductionPolicy, GuidanceScore,
     GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
     GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount, IrqVector,
     MAX_APP_RANDOM_SAMPLES_PER_DRAW, MaterializationPolicy, MaterializationTrigger, NodeId,
-    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
-    PreemptionKind, ReadyPoint, RngStreamId, ScenarioDef, SearchBudget, SearchStrategy, Seed,
-    TemporalGraph, VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
+    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, Plan,
+    PreemptionBranchConfig, PreemptionKind, Properties, ReadyPoint, RngStreamId, ScenarioDef,
+    ScenarioDefForm, SearchBudget, SearchFailureOracle, SearchStrategy, Seed, TemporalGraph, VcpuId,
+    WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
     app_random_draw_sites_from_schedule, bake, lint_guidance_determinism_source,
     preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
 };
@@ -295,6 +299,12 @@ fn gate_adaptive_strategy_selection_is_deterministic_and_fair() {
     );
     assert_ne!(first.campaign_identity, changed_identity);
     assert_ne!(first.graph_fingerprint, ContentHash::default());
+}
+
+#[test]
+fn gate_adaptive_strategy_selection_is_deterministic_and_fair_in_integrated_campaign()
+-> Result<(), Box<dyn Error>> {
+    run_integrated_adaptive_campaign_gate()
 }
 
 #[test]

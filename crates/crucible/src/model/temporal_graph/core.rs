@@ -1473,7 +1473,6 @@ impl TemporalGraph {
             None,
             None,
             None,
-            None,
         )
     }
 
@@ -1527,7 +1526,6 @@ impl TemporalGraph {
             None,
             None,
             None,
-            None,
         )
     }
 
@@ -1571,7 +1569,6 @@ impl TemporalGraph {
             Some(scenario),
             failure_oracle,
             max_depth,
-            None,
             None,
             None,
             None,
@@ -1624,7 +1621,6 @@ impl TemporalGraph {
             Some(scenario),
             failure_oracle,
             max_depth,
-            None,
             None,
             Some(sampling_config),
             Some(&mut replay_oracle_sampling),
@@ -1785,7 +1781,6 @@ impl TemporalGraph {
             trigger,
             None,
             &failure_oracle,
-            None,
             None,
             None,
             None,

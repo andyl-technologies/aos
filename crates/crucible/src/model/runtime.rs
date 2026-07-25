@@ -272,7 +272,7 @@ pub fn run_adaptive_strategy_selection(
         let arm =
             select_adaptive_strategy_arm(config, graph_fingerprint, &rewards, &pulls, sequence);
         let score =
-            adaptive_strategy_arm_score(config, graph_fingerprint, &rewards, &pulls, sequence, arm);
+            adaptive_strategy_arm_score(config, &rewards, &pulls, arm);
         pulls
             .entry(arm)
             .and_modify(|count| *count = count.saturating_add(1))
@@ -922,14 +922,8 @@ pub(super) fn select_adaptive_strategy_arm(
         .copied()
         .max_by_key(|arm| {
             (
-                adaptive_strategy_arm_score(
-                    config,
-                    graph_fingerprint,
-                    rewards,
-                    pulls,
-                    sequence,
-                    *arm,
-                ),
+                adaptive_strategy_arm_score(config, rewards, pulls, *arm),
+                adaptive_strategy_arm_tie_break(config.seed, graph_fingerprint, *arm),
                 std::cmp::Reverse(*arm),
             )
         })
@@ -938,19 +932,39 @@ pub(super) fn select_adaptive_strategy_arm(
 
 pub(super) fn adaptive_strategy_arm_score(
     config: &AdaptiveStrategyConfig,
-    graph_fingerprint: ContentHash,
     rewards: &BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward>,
     pulls: &BTreeMap<AdaptiveStrategyArm, u64>,
-    sequence: u64,
     arm: AdaptiveStrategyArm,
 ) -> u64 {
+    let pull_count = pulls.get(&arm).copied().unwrap_or_default();
+    if pull_count == 0 {
+        return u64::MAX;
+    }
     let reward = rewards.get(&arm).copied().unwrap_or_default();
     let reward_total = adaptive_strategy_reward_total(reward);
-    let pull_count = pulls.get(&arm).copied().unwrap_or(0).saturating_add(1);
-    let exploitation = reward_total / pull_count;
-    let exploration =
-        adaptive_strategy_exploration_bonus(config.seed, graph_fingerprint, sequence, arm)
-            / pull_count;
+    let exploitation = u128::from(reward_total)
+        .saturating_mul(u128::from(ADAPTIVE_UCB_SCORE_ONE_MICRO))
+        .checked_div(u128::from(pull_count))
+        .unwrap_or_default()
+        .min(u128::from(u64::MAX)) as u64;
+    let total_pulls = pulls
+        .values()
+        .copied()
+        .fold(0u64, u64::saturating_add)
+        .max(1);
+    let log2_total_micros = u64::from(total_pulls.saturating_add(1).ilog2())
+        .saturating_mul(ADAPTIVE_UCB_SCORE_ONE_MICRO);
+    let exploration_root = integer_square_root(
+        u128::from(log2_total_micros)
+            .saturating_mul(u128::from(ADAPTIVE_UCB_SCORE_ONE_MICRO))
+            .checked_div(u128::from(pull_count))
+            .unwrap_or_default(),
+    );
+    let exploration = u128::from(config.ucb_exploration_weight_micros)
+        .saturating_mul(exploration_root)
+        .checked_div(u128::from(ADAPTIVE_UCB_SCORE_ONE_MICRO))
+        .unwrap_or_default()
+        .min(u128::from(u64::MAX)) as u64;
     exploitation.saturating_add(exploration)
 }
 
@@ -967,21 +981,37 @@ pub(super) fn adaptive_strategy_reward_total(reward: AdaptiveStrategyReward) -> 
         .saturating_add(failure)
 }
 
-pub(super) fn adaptive_strategy_exploration_bonus(
+pub(super) fn adaptive_strategy_arm_tie_break(
     seed: Seed,
     graph_fingerprint: ContentHash,
-    sequence: u64,
     arm: AdaptiveStrategyArm,
 ) -> u64 {
     let material = format!(
-        "seed={}\ngraph={}\nsequence={sequence}\narm={arm:?}",
+        "seed={}\ngraph={}\narm={arm:?}",
         seed.to_hex(),
         graph_fingerprint.to_hex()
     );
     content_hash_low_u64(ContentHash::from_canonical_material(
-        "crucible.adaptive-strategy.exploration-bonus.v1",
+        "crucible.adaptive-strategy.ucb-tie-break.v1",
         &material,
-    )) % GUIDANCE_SCORE_ONE_MICRO
+    ))
+}
+
+pub(super) fn integer_square_root(value: u128) -> u128 {
+    if value < 2 {
+        return value;
+    }
+    let mut low = 1u128;
+    let mut high = value.min(u128::from(u64::MAX)).saturating_add(1);
+    while low.saturating_add(1) < high {
+        let midpoint = low.saturating_add(high.saturating_sub(low) / 2);
+        if midpoint <= value / midpoint {
+            low = midpoint;
+        } else {
+            high = midpoint;
+        }
+    }
+    low
 }
 
 pub(super) fn adaptive_strategy_rewards_from_credits(
@@ -1035,10 +1065,11 @@ pub(super) fn adaptive_strategy_config_material(config: &AdaptiveStrategyConfig)
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "seed={}\nenabled={}\nfairness_floor={}\narms={arms}",
+        "seed={}\nenabled={}\nfairness_floor={}\nucb_exploration_weight_micros={}\narms={arms}",
         config.seed.to_hex(),
         config.enabled,
-        config.breadth_first_floor_interval
+        config.breadth_first_floor_interval,
+        config.ucb_exploration_weight_micros
     )
 }
 

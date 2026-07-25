@@ -139,7 +139,7 @@ impl GuidanceSearchState {
         }
     }
 
-    fn observation_for(
+    pub(in crate::model) fn observation_for(
         &self,
         graph: &TemporalGraph,
         configuration: &Configuration,

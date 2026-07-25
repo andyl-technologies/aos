@@ -4,9 +4,12 @@ use super::*;
 
 #[path = "app_random_branching.rs"]
 mod app_random_branching;
+#[path = "adaptive_campaign.rs"]
+mod adaptive_campaign;
 #[path = "guidance_search.rs"]
 mod guidance_search;
 
+pub use adaptive_campaign::*;
 pub use app_random_branching::*;
 pub use guidance_search::*;
 
@@ -833,12 +836,14 @@ pub enum AdaptiveStrategyArm {
 /// Optional deterministic adaptive strategy-selection configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AdaptiveStrategyConfig {
-    /// Root seed for deterministic tie-breaking and exploration bonuses.
+    /// Root seed for deterministic UCB tie-breaking.
     pub seed: Seed,
     /// Fixed ordered expansion arms.
     pub arms: Vec<AdaptiveStrategyArm>,
     /// Every Nth expansion is forced to breadth-first when nonzero.
     pub breadth_first_floor_interval: u64,
+    /// Fixed-point multiplier for the deterministic UCB exploration term.
+    pub ucb_exploration_weight_micros: u64,
     /// Whether adaptive selection is enabled.
     pub enabled: bool,
 }
@@ -851,6 +856,7 @@ impl AdaptiveStrategyConfig {
             seed,
             arms: vec![AdaptiveStrategyArm::BreadthFirst],
             breadth_first_floor_interval: 1,
+            ucb_exploration_weight_micros: DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS,
             enabled: false,
         }
     }
@@ -872,8 +878,16 @@ impl AdaptiveStrategyConfig {
             seed,
             arms,
             breadth_first_floor_interval,
+            ucb_exploration_weight_micros: DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS,
             enabled: true,
         }
+    }
+
+    /// Replaces the deterministic UCB exploration multiplier.
+    #[must_use]
+    pub fn with_ucb_exploration_weight_micros(mut self, weight_micros: u64) -> Self {
+        self.ucb_exploration_weight_micros = weight_micros;
+        self
     }
 
     /// Computes the content-addressed campaign identity component for this config.

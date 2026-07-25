@@ -33,6 +33,7 @@ fn guidance_ordering_source(path: &Path, tokens: &[Token]) -> bool {
     let normalized = path.to_string_lossy().replace('\\', "/");
     let source_path = [
         "crucible/src/model/exploration.rs",
+        "crucible/src/model/adaptive_campaign.rs",
         "crucible/src/model/runtime.rs",
         "crucible/src/model/guidance_search.rs",
         "crucible/src/model/temporal_graph/guided_search.rs",
@@ -46,6 +47,7 @@ fn guidance_ordering_source(path: &Path, tokens: &[Token]) -> bool {
                 Some(
                     "GuidanceSignal"
                         | "GuidanceSearchConfig"
+                        | "AdaptiveCampaignConfig"
                         | "AdaptiveStrategyConfig"
                         | "run_adaptive_strategy_selection"
                 )
