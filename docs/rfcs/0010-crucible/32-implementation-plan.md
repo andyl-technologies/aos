@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:c14bf5173531c559`
+Checklist sync digest: `rfc0010-checklist-v1:69cb56beae7b8724`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -148,8 +148,9 @@ multi-vCPU (RR-TCG)**, where a single-threaded round-robin TCG core under icount
 makes an N-vCPU guest bit-identical (G-10).
 
 **Tasks.**
-- Shmem ABI (incl. the multi-vCPU and coverage-ring ABI tasks `T-SHM-16,
-  T-SHM-17`): `T-SHM-1 … T-SHM-17` ([`13`](13-shmem-abi.md)).
+- Shmem ABI (incl. the multi-vCPU, coverage-ring, and white-box marker-ring ABI
+  tasks `T-SHM-16, T-SHM-17, T-SHM-18`): `T-SHM-1 … T-SHM-18`
+  ([`13`](13-shmem-abi.md)).
 - Protocol: `T-PROTO-1 … T-PROTO-11` ([`14`](14-protocol.md)).
 - QEMU patch series + rebase pipeline + inertness (incl. the RR-TCG/multi-vCPU
   patches `T-PATCH-21 … T-PATCH-24`): `T-PATCH-1 … T-PATCH-24` ([`11`](11-qemu-patches.md)).
