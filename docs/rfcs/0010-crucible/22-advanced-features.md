@@ -1248,18 +1248,20 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   accepted in synthetic inputs. Completion remains open on wiring a
   comment/string-aware scan of the actual signal and bandit ordering sources into
   `gate:harness-lint`, with mutation negatives that prove the real path is covered.
-- [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
+- [x] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
   interrupt-timing) within the bounded [deadline, horizon] window — working for
   single-vCPU guests — with partial-order reduction over commuting preemptions and
   each preemption-branch child a content-addressed, oracle-validated temporal-graph
   node. — satisfies [ADV-39]; spec §22.5.5; cross-ref 05 §3, 08, 07 §6/§9.
-  Partial evidence from `checks.crucible.phase6.preemptionBranching`: `TemporalGraph`
-  now branches a frontier over bounded `Decision::Preemption` vCPU-switch and
-  interrupt-timing decisions, applies the existing frontier reduction policy,
-  records content-addressed child configurations, and materializes explored
-  children through the replay-oracle-checked fat checkpoint path. Completion
-  remains open on exercising and proving partial-order reduction for commuting
-  preemptions; the current gate explicitly disables reduction.
+  Completed by `checks.crucible.phase6.preemptionBranching`: `TemporalGraph`
+  branches bounded `[deadline, horizon]` frontiers over both
+  `Decision::Preemption` vCPU-switch and interrupt-timing decisions for
+  single-vCPU guests. The gate proves commuting decisions on distinct nodes are
+  collapsed by the explicit partial-order independence policy to the stable
+  content-addressed canonical schedule. Every explored child and each unique
+  representative of a covered child is materialized through the same
+  replay-oracle-checked fat checkpoint path, and the gate verifies their
+  content addresses and replay evidence.
 - [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
   randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
   served values, bounded by the per-scenario draw cap and a per-draw seeded

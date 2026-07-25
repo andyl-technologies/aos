@@ -178,20 +178,20 @@
         ];
       };
       T-ADV-20 = {
-        testFilter = "gate_preemption_branching_records_oracle_validated_children";
-        result = "partial_preemption=no-partial-order-reduction-proof";
+        testFilter = "gate_preemption_branching";
+        result = "preemption=bounded-single-vcpu+partial-order-reduction+content-addressed-oracle-validated-children";
         docNeedles = [
           {
-            label = "T-ADV-20 remains open";
-            needle = "- [ ] **T-ADV-20**";
+            label = "T-ADV-20 is complete";
+            needle = "- [x] **T-ADV-20**";
           }
           {
-            label = "preemption partial-evidence note";
-            needle = "Partial evidence from `checks.crucible.phase6.preemptionBranching`";
+            label = "preemption completion note";
+            needle = "Completed by `checks.crucible.phase6.preemptionBranching`";
           }
           {
-            label = "preemption reduction blocker";
-            needle = "the current gate explicitly disables reduction";
+            label = "preemption reduction proof";
+            needle = "collapsed by the explicit partial-order independence policy";
           }
         ];
         modelNeedles = [
@@ -202,6 +202,10 @@
           {
             label = "preemption graph branch";
             needle = "pub fn branch_preemptions";
+          }
+          {
+            label = "covered representative materialization";
+            needle = "fn materialize_preemption_branches";
           }
           {
             label = "vcpu switch branch";
@@ -220,8 +224,12 @@
         ];
         testNeedles = [
           {
-            label = "preemption test";
+            label = "preemption child test";
             needle = "gate_preemption_branching_records_oracle_validated_children";
+          }
+          {
+            label = "preemption POR test";
+            needle = "gate_preemption_branching_reduces_commuting_single_vcpu_preemptions";
           }
           {
             label = "preemption decision assertion";

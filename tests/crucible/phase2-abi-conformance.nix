@@ -15,7 +15,9 @@
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   harnessGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_abi_conformance.rs;
-  shmemGateTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
+  shmemGateTest =
+    builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs
+    + builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance/gate_cases.rs;
   protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
   protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
   pluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
