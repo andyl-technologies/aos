@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeContractADeterminism",
-  taskIds ? [],
-  openTaskIds ? ["T-TIME-8"],
+  taskIds ? ["T-TIME-8"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -238,8 +238,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-8 remains open";
-        needle = "- [ ] **T-TIME-8**";
+        label = "T-TIME-8 checklist complete";
+        needle = "- [x] **T-TIME-8**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -324,7 +324,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
+            status=complete
             evidence_scope=contract-a-simulation-model
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
@@ -332,6 +332,7 @@ in
             time_trajectory=icount_shift_pure_function
             time_fingerprint_fields=final_icount,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest
             host_adversary=speed-load-scheduling-cores-excluded
+            recorded_input_trajectory=boot-network-timer
             host_time_reads_on_time_path=false
             RESULT
           '';

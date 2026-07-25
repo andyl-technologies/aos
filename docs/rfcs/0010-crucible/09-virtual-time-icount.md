@@ -694,12 +694,21 @@ instruction-primary.
   ceiling (59,645,960), never self-extending past it, because the max-advance
   budget is computed as `ceiling - logical_offset`. The terminal icount is
   byte-identical on the second, host-loaded run.
-- [ ] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
+- [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
   time path. — satisfies [TIME-31], [TIME-32], [TIME-33]; spec §9.10.
-  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a single
+  - Completed by `checks.crucible.phase1.timeContractADeterminism`: the isolated
+    `ContractADriver` runs a single node from the same recorded input list
+    (`boot`, `network`, and `timer`, each stamped with its delivery icount) under
+    fast-many-core, loaded-single-core, and reordered-host-scheduling profiles.
+    Every profile produces the same complete `(icount, virtual_time)` trajectory,
+    time-derived fingerprint, and execution fingerprint. A payload-independence
+    control proves the time-only fingerprint depends on the icount horizon rather
+    than input bytes, overflow is rejected, and both the focused gate and the
+    workspace harness lint reject host-time reads on the time path.
+  - **Live corroboration (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a single
     live node (the Rust control plugin as sole time authority) is driven to a
     fixed ascending icount cadence and the whole scenario runs twice, the second
     under deliberate host CPU load. Both runs produce a byte-identical
@@ -710,11 +719,9 @@ instruction-primary.
     path stay lint-banned (the plugin advances virtual time from the retired
     icount; the only wall-clock reads are diagnostic advancement-rate windows
     that carry explicit `crucible-lint` allow annotations and never enter guest
-    state, the fingerprint, or the cross-run comparison). The task stays open for
-    its canonical closure by `checks.crucible.phase1.timeContractADeterminism`
-    and the recorded-icount-stamped-input-list variant: this live proof uses the
-    empty input list (no injection), so the injected-input trajectory clause is
-    not yet exercised.
+    state, the fingerprint, or the cross-run comparison). This real-QEMU proof
+    intentionally uses the empty input list; the focused Contract A gate above
+    covers the recorded-input trajectory clause.
 - [x] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the

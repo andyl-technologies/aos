@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? [],
-  openTaskIds ? ["T-TIME-9"],
+  taskIds ? ["T-TIME-9"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -356,7 +356,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
+            status=complete
             evidence_scope=multi-vcpu-clock-model
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint

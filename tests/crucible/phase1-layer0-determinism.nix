@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
-  openTaskIds ? ["T-TIME-8" "T-TIME-9" "T-DET-31"],
+  openTaskIds ? ["T-DET-31"],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
@@ -261,10 +261,12 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.grep
+        ]
+        ++ dependencies;
 
       phases = [
         {
@@ -412,17 +414,18 @@ in
               "ambient_fw_cfg_entropy=not-app-random-source"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
-              "tasks=" \
-              "open_tasks=T-TIME-8" \
-              "status=partial" \
+              "tasks=T-TIME-8" \
+              "open_tasks=" \
+              "status=complete" \
               "time_trajectory=icount_shift_pure_function" \
               "time_fingerprint_fields=final_icount,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest" \
+              "recorded_input_trajectory=boot-network-timer" \
               "host_time_reads_on_time_path=false"
             require_leaf ${timeMultiVcpuAggregateClock} \
               "gate=gate:layer0-determinism" \
-              "tasks=" \
-              "open_tasks=T-TIME-9" \
-              "status=partial" \
+              "tasks=T-TIME-9" \
+              "open_tasks=" \
+              "status=complete" \
               "aggregate_node_clock=true" \
               "per_vcpu_shmem_fields=false" \
               "rr_switch_quantum_units=node-icount" \
