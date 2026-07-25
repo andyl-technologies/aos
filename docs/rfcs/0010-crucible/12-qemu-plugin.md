@@ -1068,9 +1068,10 @@ component that makes that purity true *inside* the QEMU process.
   plugin lifecycle. The same real-backend gate now runs the production plugin
   with white-box mode both off and on: off mode emits no white-box callback
   record, and production fingerprint sampling produces the same execution
-  fingerprint in both modes. Still open are live setup collision discovery,
-  host event-log routing, the aarch64 live adapter, and the host-to-guest reply
-  path.
+  fingerprint in both modes. The enabled run also validates the exact stopped,
+  plugin-free machine's I/O map before registration and rejects a real
+  `isa-debugcon` collision at port `0x00e7`. Still open are host event-log
+  routing, the aarch64 live adapter, and the host-to-guest reply path.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],

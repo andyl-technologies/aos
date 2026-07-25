@@ -96,7 +96,7 @@ impl LiveInstallFixture {
 
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
-            "simfd={},slot=0,whitebox=on",
+            "simfd={},slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))

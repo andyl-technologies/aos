@@ -98,8 +98,9 @@ fn abi_install_parses_qemu_plugin_argv_before_runtime_activation() {
     assert!(!args.whitebox().is_on());
     assert!(args.coverage().is_on());
 
-    let (_strings, mut single_argv) =
-        plugin_argv(&["simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off"]);
+    let (_strings, mut single_argv) = plugin_argv(&[
+        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off",
+    ]);
     let args = parse_install_plugin_args_for_test(1, single_argv.as_mut_ptr())
         .unwrap_or_else(|error| panic!("single QEMU argv should parse: {error}"));
 

@@ -40,7 +40,8 @@ use crate::{
     QemuLaunchCommandError, QemuLaunchPluginConfig, QemuMappedQuantumShmemHotPath,
     QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QemuPluginIpcControlChannel,
     QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuSpawnError, QemuVmLaunchConfig,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuWhiteboxSetupError, complete_qemu_host_plugin_setup, probe_x86_whitebox_setup,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 /// Content-addressing domain for install-gate launch artifacts.
@@ -133,10 +134,7 @@ impl LivePluginInstallGateConfig {
 
     /// Returns this configuration with live boundary fingerprint sampling set.
     #[must_use]
-    pub const fn with_fingerprint(
-        mut self,
-        fingerprint: crate::QemuLaunchPluginSwitch,
-    ) -> Self {
+    pub const fn with_fingerprint(mut self, fingerprint: crate::QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
         self
     }
@@ -189,6 +187,8 @@ pub struct LivePluginInstallReport {
     pub orderly_child_exit: bool,
     /// No independent observation plugin owned time control during the run.
     pub time_authority_is_rust_plugin: bool,
+    /// Setup-time x86 port-map region observed at the reserved doorbell port.
+    pub whitebox_setup_region: Option<String>,
 }
 
 /// Failure returned by the production loaded-QEMU plugin install gate.
@@ -224,6 +224,12 @@ pub enum LivePluginInstallGateError {
     LaunchCommand {
         /// Underlying command-construction error.
         source: QemuLaunchCommandError,
+    },
+    /// Live QEMU reported a missing or colliding white-box doorbell port.
+    #[error("validate live QEMU white-box setup failed: {source}")]
+    WhiteboxSetup {
+        /// Underlying stopped-machine probe error.
+        source: QemuWhiteboxSetupError,
     },
     /// The shared-memory layout was invalid.
     #[error("build install shared-memory layout failed: {source}")]
@@ -362,15 +368,31 @@ pub fn run_live_plugin_install_gate(
 
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
-        .with_whitebox(config.whitebox)
+    let vm = vm_launch_config(config);
+    let plugin_base = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
         .with_fingerprint(config.fingerprint);
-    let command = profile
-        .qemu_launch_command(
-            vm_launch_config(config),
-            path_text(&config.qemu_executable),
-            plugin,
+    let (plugin, whitebox_setup_region) = if config.whitebox == crate::QemuLaunchPluginSwitch::On {
+        let probe_command = profile
+            .qemu_launch_command(
+                vm.clone(),
+                path_text(&config.qemu_executable),
+                plugin_base.clone(),
+            )
+            .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
+        let validation = probe_x86_whitebox_setup(&probe_command, run_directory)
+            .map_err(|source| LivePluginInstallGateError::WhiteboxSetup { source })?;
+        let region = validation.observed_region().to_owned();
+        (
+            plugin_base
+                .with_whitebox(config.whitebox)
+                .with_whitebox_setup(validation),
+            Some(region),
         )
+    } else {
+        (plugin_base.with_whitebox(config.whitebox), None)
+    };
+    let command = profile
+        .qemu_launch_command(vm, path_text(&config.qemu_executable), plugin)
         .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
 
     let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
@@ -463,6 +485,7 @@ pub fn run_live_plugin_install_gate(
         plugin_quit_consumed: true,
         orderly_child_exit: true,
         time_authority_is_rust_plugin: true,
+        whitebox_setup_region,
     })
 }
 

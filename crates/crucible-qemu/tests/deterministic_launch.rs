@@ -13,7 +13,7 @@ use crucible_qemu::{
     NodeClockSkewDeclaration, NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand,
     QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
     QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
-    validate_pre_spawn_qemu_launch_args,
+    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/launch_artifacts.rs"]
@@ -1274,10 +1274,11 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
             2,
         )
         .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(validated_whitebox_setup())
         .with_coverage(QemuLaunchPluginSwitch::On);
     assert_eq!(
         plugin_config.plugin_args_raw(),
-        "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on"
+        "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
     );
     let command = default_profile()
         .qemu_launch_command(vm_config, default_qemu_binary(), plugin_config)
@@ -1285,7 +1286,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     assert!(command.args().windows(2).any(|window| {
         window == [
             "-plugin",
-            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on",
+            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
         ]
     }));
     assert!(command.args().windows(2).any(|window| {
@@ -1308,6 +1309,13 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     ] {
         assert!(vm_material.contains(expected), "missing {expected}");
     }
+}
+
+fn validated_whitebox_setup() -> crucible_qemu::QemuWhiteboxSetupValidation {
+    validate_x86_whitebox_hmp_mtree(
+        "FlatView #2\n AS \"I/O\", root: io\n  00000000000000e0-00000000000000ef (prio 0, i/o): io @00000000000000e0\n",
+    )
+    .unwrap_or_else(|error| panic!("test white-box setup validation failed: {error}"))
 }
 
 #[test]

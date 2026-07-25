@@ -12,7 +12,7 @@ use crucible_qemu::{
     QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidationError, QemuSimulationMode, QemuVmLaunchConfig,
     qemu_entropy_elimination_microtests, validate_pre_spawn_qemu_launch_args,
-    validate_qemu_determinism_boundary,
+    validate_qemu_determinism_boundary, validate_x86_whitebox_hmp_mtree,
 };
 
 #[test]
@@ -187,6 +187,12 @@ fn plugin_config() -> QemuLaunchPluginConfig {
         0,
     )
     .with_whitebox(QemuLaunchPluginSwitch::On)
+    .with_whitebox_setup(
+        validate_x86_whitebox_hmp_mtree(
+            "FlatView #2\n AS \"I/O\", root: io\n  00000000000000e0-00000000000000ef (prio 0, i/o): io @00000000000000e0\n",
+        )
+        .unwrap_or_else(|error| panic!("test white-box setup validation failed: {error}")),
+    )
 }
 
 fn default_vm_config() -> QemuVmLaunchConfig {

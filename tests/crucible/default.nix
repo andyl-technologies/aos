@@ -1084,8 +1084,8 @@ in rec {
     guestHostDoorbellCollisionInertness = import ./phase4-guest-host-doorbell-collision-inertness.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostDoorbellCollisionInertness";
-      taskIds = [];
-      openTaskIds = ["T-GHC-6"];
+      taskIds = ["T-GHC-6"];
+      openTaskIds = [];
     };
     guestHostDoorbellFrame = import ./phase4-guest-host-doorbell-frame.nix {
       inherit pkgs lib;

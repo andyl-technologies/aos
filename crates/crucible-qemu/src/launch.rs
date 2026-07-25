@@ -13,6 +13,7 @@ mod crucible_shmem_network;
 mod entropy;
 mod modes;
 mod validation;
+mod whitebox_setup;
 
 use std::fmt;
 
@@ -44,6 +45,10 @@ pub use validation::{
     validate_pre_spawn_qemu_launch_args,
 };
 use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
+pub use whitebox_setup::{
+    QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
+    validate_x86_whitebox_hmp_mtree,
+};
 
 const DEFAULT_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
@@ -60,6 +65,8 @@ const PLUGIN_ARG_SLOT: &str = "slot";
 const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
+const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
@@ -925,6 +932,7 @@ pub struct QemuLaunchPluginConfig {
     plugin_path: String,
     slot: u32,
     whitebox: QemuLaunchPluginSwitch,
+    whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
 }
@@ -937,6 +945,7 @@ impl QemuLaunchPluginConfig {
             plugin_path: plugin_path.into(),
             slot,
             whitebox: QemuLaunchPluginSwitch::Off,
+            whitebox_setup: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
         }
@@ -946,6 +955,13 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_whitebox(mut self, whitebox: QemuLaunchPluginSwitch) -> Self {
         self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns a config carrying a live setup-time doorbell collision proof.
+    #[must_use]
+    pub fn with_whitebox_setup(mut self, validation: QemuWhiteboxSetupValidation) -> Self {
+        self.whitebox_setup = Some(validation);
         self
     }
 
@@ -1023,6 +1039,11 @@ impl QemuLaunchPluginConfig {
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
         ];
+        if self.whitebox == QemuLaunchPluginSwitch::On && self.whitebox_setup.is_some() {
+            args.push(format!(
+                "{PLUGIN_ARG_WHITEBOX_SETUP}={WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1}"
+            ));
+        }
         // Emit fingerprint only when enabled so the disabled default keeps a
         // byte-identical argv to the pre-fingerprint ABI (the plugin parser
         // treats an absent fingerprint key as off).
@@ -1047,6 +1068,15 @@ impl QemuLaunchPluginConfig {
         validate_fd(PLUGIN_ARG_SIMFD, FIXED_PLUGIN_SIM_FD)?;
         validate_fd(PLUGIN_ARG_SHMEMFD, FIXED_PLUGIN_SHMEM_FD)?;
         validate_fd(PLUGIN_ARG_WAKEFD, FIXED_PLUGIN_WAKE_FD)?;
+        match (self.whitebox, self.whitebox_setup.as_ref()) {
+            (QemuLaunchPluginSwitch::Off, None) | (QemuLaunchPluginSwitch::On, Some(_)) => {}
+            (QemuLaunchPluginSwitch::On, None) => {
+                return Err(QemuLaunchCommandError::MissingWhiteboxSetupValidation);
+            }
+            (QemuLaunchPluginSwitch::Off, Some(_)) => {
+                return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
+            }
+        }
         Ok(())
     }
 }
@@ -1054,6 +1084,12 @@ impl QemuLaunchPluginConfig {
 /// An error returned while building a QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {
+    /// White-box mode lacked a live QEMU port-map validation.
+    #[error("white-box QEMU launch requires live setup collision validation")]
+    MissingWhiteboxSetupValidation,
+    /// A white-box validation was attached while the callback was disabled.
+    #[error("white-box setup validation is forbidden when white-box mode is off")]
+    WhiteboxSetupValidationWhileDisabled,
     /// A command-line field was empty or could not be represented stably.
     #[error("{field} must be fixed non-empty text without newlines or NUL bytes")]
     InvalidLaunchText {

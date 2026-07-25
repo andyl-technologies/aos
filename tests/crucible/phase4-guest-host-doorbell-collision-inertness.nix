@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbellCollisionInertness",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-6"],
+  taskIds ? ["T-GHC-6"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,6 +14,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -55,12 +56,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-6 remains open";
-        needle = "- [ ] **T-GHC-6**";
+        label = "T-GHC-6 is complete";
+        needle = "- [x] **T-GHC-6**";
       }
       {
-        label = "T-GHC-6 partial-evidence note";
-        needle = "Partial callback-core evidence is provided by";
+        label = "T-GHC-6 live-evidence note";
+        needle = "Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`";
       }
       {
         label = "collision setup error";
@@ -158,6 +159,8 @@
         label = "off mode disabled plan";
         needle = "WhiteboxDoorbellRegistrationPlan::Disabled";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
       {
         label = "resource-backed setup validation";
         needle = "WhiteboxDoorbellSetupValidation::validate";
@@ -194,7 +197,7 @@
       }
       {
         label = "phase4 collision inertness task id";
-        needle = "openTaskIds = [\"T-GHC-6\"]";
+        needle = "taskIds = [\"T-GHC-6\"]";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
@@ -278,9 +281,10 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
-            evidence_scope=doorbell-collision-plan-model
+            status=complete
+            evidence_scope=doorbell-collision-model-plus-live-gate
             gate=gate:any-guest,gate:abi-conformance
+            live_setup_gate=checks.crucible.phase2.qemuLiveWhiteboxDoorbell
             setup_collision=validated-before-trap-install
             off_mode=disabled-plan-installs-no-trap
             inertness=disabled-doorbell-uninstalled

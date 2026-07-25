@@ -15,7 +15,7 @@ use crucible_qemu::{
     SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial, SingleVmFingerprintStream,
     SingleVmFingerprintTrigger, SingleVmNvcpuFingerprintMaterial, SingleVmRoundRobinCursor,
     SingleVmVcpuRegisterDigest, compare_coverage_opt_in_fingerprint_streams,
-    initial_single_vm_rolling_fingerprint,
+    initial_single_vm_rolling_fingerprint, validate_x86_whitebox_hmp_mtree,
 };
 
 #[test]
@@ -101,6 +101,12 @@ fn plugin_config(coverage: QemuLaunchPluginSwitch) -> QemuLaunchPluginConfig {
         0,
     )
     .with_whitebox(QemuLaunchPluginSwitch::On)
+    .with_whitebox_setup(
+        validate_x86_whitebox_hmp_mtree(
+            "FlatView #2\n AS \"I/O\", root: io\n  00000000000000e0-00000000000000ef (prio 0, i/o): io @00000000000000e0\n",
+        )
+        .unwrap_or_else(|error| panic!("test white-box setup validation failed: {error}")),
+    )
     .with_coverage(coverage)
 }
 
