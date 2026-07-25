@@ -20,10 +20,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static bool rr_crucible_sim_mode(void)
  {
      return strcmp(current_accel_name(), "sim") == 0 &&
-@@ -109,6 +114,115 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
-            !cpu->unplug;
- }
- 
+@@ -154,1 +159,110 @@ static inline int64_t rr_next_kick_time(void)
 +static unsigned int rr_crucible_sim_tcg_batch_limit(void)
 +{
 +    if (!rr_crucible_sim_mode() || rr_cpu_count() > 1) {
@@ -133,9 +130,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +    }
 +}
 +
- static bool rr_crucible_sim_maybe_fire_idle_callback(
-     CPUState *cpu, bool *idle_reported, bool *idle_advance_waiting)
- {
+ static inline int64_t rr_next_kick_time(void)
 @@ -428,30 +542,7 @@ static void *rr_cpu_thread_fn(void *arg)
              }
  

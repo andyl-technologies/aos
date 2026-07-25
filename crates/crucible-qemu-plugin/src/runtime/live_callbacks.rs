@@ -34,8 +34,9 @@ use crate::{
     QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn,
     QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn,
     QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn,
-    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, SchedulerCeiling,
-    TimeAdvanceCompletion, compute_idle_wake_plan, handle_network_rx_idle_callback,
+    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError,
+    SchedulerCeiling, TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
+    handle_network_rx_idle_callback,
 };
 
 use super::{
@@ -530,6 +531,8 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     exact_deadline: ExactDeadlineReader,
     queued_idle_advance: QueuedIdleAdvance,
     initialized_vcpus: Box<[AtomicBool]>,
+    halted_vcpus: Mutex<VcpuHaltTracker>,
+    all_halted_idle_handled: AtomicBool,
     last_raw_icount: AtomicU64,
     logical_icount_offset: AtomicU64,
     preemption_enqueue_active: AtomicBool,
@@ -613,6 +616,11 @@ impl LiveVcpuTimeCallbackState {
             exact_deadline,
             queued_idle_advance,
             initialized_vcpus,
+            halted_vcpus: Mutex::new(
+                VcpuHaltTracker::new(vcpu_count)
+                    .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?,
+            ),
+            all_halted_idle_handled: AtomicBool::new(false),
             last_raw_icount: AtomicU64::new(initial_raw_icount),
             logical_icount_offset: AtomicU64::new(logical_icount_offset),
             preemption_enqueue_active: AtomicBool::new(false),
@@ -763,6 +771,21 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
+        let all_halted = {
+            let mut halted_vcpus = self.try_halted_vcpus()?;
+            halted_vcpus
+                .mark_halted(vcpu_index)
+                .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
+            halted_vcpus.all_halted()
+        };
+        if !all_halted
+            || self
+                .all_halted_idle_handled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Ok(());
+        }
         let pending_idle_advance = self.try_pending_idle_advance()?;
         if pending_idle_advance.is_some() {
             return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
@@ -908,6 +931,21 @@ impl LiveVcpuTimeCallbackState {
             return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
         }
         drop(pending_idle_advance);
+        let was_halted = {
+            let mut halted_vcpus = self.try_halted_vcpus()?;
+            let was_halted = halted_vcpus
+                .is_halted(vcpu_index)
+                .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
+            halted_vcpus
+                .mark_running(vcpu_index)
+                .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
+            was_halted
+        };
+        if !was_halted {
+            return Ok(());
+        }
+        self.all_halted_idle_handled
+            .store(false, Ordering::Release);
         self.publish_current_icount(raw_icount)?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
         Ok(())
@@ -1129,6 +1167,8 @@ impl LiveVcpuTimeCallbackState {
             .store(pending.target_icount, Ordering::Release);
         let completed_target_icount = pending.target_icount;
         *pending_slot = None;
+        self.all_halted_idle_handled
+            .store(false, Ordering::Release);
         Ok(completed_target_icount)
     }
 
@@ -1275,6 +1315,18 @@ impl LiveVcpuTimeCallbackState {
             Err(TryLockError::WouldBlock) => Err(LiveVcpuTimeCallbackError::CallbackReentered),
             Err(TryLockError::Poisoned(_error)) => {
                 Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned)
+            }
+        }
+    }
+
+    fn try_halted_vcpus(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, VcpuHaltTracker>, LiveVcpuTimeCallbackError> {
+        match self.halted_vcpus.try_lock() {
+            Ok(halted_vcpus) => Ok(halted_vcpus),
+            Err(TryLockError::WouldBlock) => Err(LiveVcpuTimeCallbackError::CallbackReentered),
+            Err(TryLockError::Poisoned(_error)) => {
+                Err(LiveVcpuTimeCallbackError::HaltStatePoisoned)
             }
         }
     }
@@ -1755,6 +1807,12 @@ pub enum LiveVcpuTimeCallbackError {
     /// Another idle advance was armed before the current one completed.
     #[error("an idle time advance is already pending")]
     IdleAdvanceAlreadyPending,
+    /// QEMU reported an invalid per-vCPU halt or resume transition.
+    #[error("live per-vCPU halt tracking failed: {source}")]
+    VcpuHaltTracking {
+        /// Underlying deterministic halt-tracker error.
+        source: RoundRobinError,
+    },
     /// QEMU reported vCPU resume before the queued idle jump completed.
     #[error("vCPU resumed while an idle time advance was still pending")]
     ResumeWhileIdleAdvancePending,
@@ -1764,6 +1822,9 @@ pub enum LiveVcpuTimeCallbackError {
     /// A prior panic poisoned the pending idle-advance slot.
     #[error("live time callback pending state is poisoned")]
     CallbackStatePoisoned,
+    /// A prior panic poisoned the per-vCPU halt tracker.
+    #[error("live per-vCPU halt state is poisoned")]
+    HaltStatePoisoned,
     /// Raw guest instruction progress changed while a queued idle jump was pending.
     #[error(
         "raw icount changed during idle advance: expected {expected_raw_icount}, observed {observed_raw_icount}"

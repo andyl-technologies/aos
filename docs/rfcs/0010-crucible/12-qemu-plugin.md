@@ -945,8 +945,8 @@ component that makes that purity true *inside* the QEMU process.
   possible if virtual time is owned by the plugin and never sampled from a host
   clock. When the guest idles, the plugin advances virtual time by the authorized
   idle jump to the exact next timer deadline and the guest wakes and runs on: the
-  gate records a `terminal_icount` far past the idle-onset icount (15,825,232 →
-  55,836,152), confirming the plugin — not the host — drove the idle advance. The
+  gate records a `terminal_icount` 40 million instructions past the idle-onset
+  icount, confirming the plugin — not the host — drove the idle advance. The
   time-control, idle-loop, and deadline source
   paths are held free of wall-clock/monotonic/entropy APIs by the sibling
   `qemuPluginTimeControl` gate.
@@ -984,14 +984,14 @@ component that makes that purity true *inside* the QEMU process.
   architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
   Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
-  `prove_idle_jump` on: at idle onset (15,825,232) the plugin advances virtual
-  time by the authorized idle jump to the exact `QEMU_CLOCK_VIRTUAL` timer
-  deadline (55,645,960); the guest wakes at the deadline, runs on, and re-idles at
-  55,836,152 — below the published scheduler ceiling (59,645,960), never
-  self-extending past it — a ~40M-icount O(1) advance in ~23 ms. The terminal
-  architectural state is byte-identical on a second run taken under host CPU load,
-  proving the queued advance commits the same wake-point state regardless of host
-  timing. The advance rides QEMU patch 0010's `icount_advance_virtual_time_to_ns`
+  `prove_idle_jump` on: the diskless multiboot guest arms a periodic PIT timer,
+  parks in HLT, and the plugin advances virtual time by an authorized 40M-icount
+  O(1) jump through the exact `QEMU_CLOCK_VIRTUAL` timer deadline. The guest
+  wakes, runs, and re-idles below the published scheduler ceiling without
+  self-extending past it. The terminal architectural state is byte-identical on
+  a second run taken under host CPU load, proving the queued advance commits the
+  same wake-point state regardless of host timing. The advance rides QEMU patch
+  0010's `icount_advance_virtual_time_to_ns`
   primitive (replacing the qtest-only helper that spun under icount) with the
   reset-vs-advance completion drain in patch 0025, plus the plugin max-advance
   budget computed as `ceiling - logical_offset`.
@@ -1159,32 +1159,38 @@ component that makes that purity true *inside* the QEMU process.
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
   completed by T-HARN-21/T-PATCH-3. — satisfies [PLUG-49]; spec §12.10.4.
-- [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
+- [x] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
-  **Partial (kept open by intent).** Altitude: the normative *behavior* is
-  live-proven, but it deliberately lives in patched QEMU with the plugin holding
-  the verified model, and one named clause is not yet live at `-smp N`. The
+  Completed by `checks.crucible.phase2.qemuLivePluginQuantumSmp`, together with
+  `checks.crucible.phase2.qemuLivePluginFingerprintSmp`,
+  `checks.crucible.phase3.schedulerRrSubdivision`, and
+  `checks.crucible.phase3.schedulerAllVcpusIdle`. The
   deterministic RR sub-division (fixed `rr_switch_quantum`, fixed ascending
   rotation) and the all-vCPUs-halted predicate are *executed by QEMU*: patch 0002
-  pins the node-icount `rr_switch_quantum`, and patch 0025 fires the node idle
-  hook once at `all_cpu_threads_idle()`. The plugin holds the verified *model* of
-  the same mechanisms — `round_robin.rs` (`RoundRobinRunState` fixed-quantum
-  ascending rotation, `VcpuHaltTracker` per-vCPU halt tracking,
+  pins the node-icount `rr_switch_quantum`, while patch 0025 synchronizes every
+  QEMU vCPU's halted state into the production plugin. The plugin uses
+  `VcpuHaltTracker` to run the idle hot loop exactly once when the final vCPU
+  halts and suppresses resume until a queued idle advance completes. The same
+  mechanisms are also modeled in `round_robin.rs` (`RoundRobinRunState`
+  fixed-quantum ascending rotation, `VcpuHaltTracker` per-vCPU halt tracking,
   `compute_all_halted_idle_wake_plan` with `idle_wake = min` via
   `aggregate_multi_vcpu_deadline`) — unit-proven and covered by
   `checks.crucible.phase3.schedulerRrSubdivision` /
   `schedulerAllVcpusIdle`. The RR sub-division behavior is live at `-smp N`:
   `checks.crucible.phase2.qemuLivePluginFingerprintSmp` samples the authoritative
-  RR cursor deterministically over two runs at `-smp 4`. **Deferred:** the
-  all-vCPUs-halted node-idle predicate at `-smp N` is exercised live only at
-  `-smp 1` (`checks.crucible.phase2.qemuLivePluginQuantum`); the busy multi-vCPU
-  gate does not reach an idle window, and driving the node idle at `-smp N`
-  crosses the idle-warp window deferred by the M3 determinism scope. Closure of
-  the idle-at-`N` clause lands with that determinism-scope fix.
+  RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
+  quantum gate boots a hermetic multiboot guest with the same production plugin
+  at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
+  parks all four vCPUs in HLT, and arms a periodic PIT deadline on the BSP.
+  Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
+  hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
+  the parked APs have none. The gate performs the authorized idle jump, observes
+  the BSP wake and re-halt, and repeats under host CPU load with an identical
+  idle observation, execution fingerprint, and host-observable schedule.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an

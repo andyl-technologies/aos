@@ -139,6 +139,8 @@ pub struct LivePluginQuantumGateConfig {
     completion_timeout: Duration,
     second_run_host_load: bool,
     prove_idle_jump: bool,
+    smp_vcpus: u16,
+    memory_mib: u32,
 }
 
 impl LivePluginQuantumGateConfig {
@@ -164,6 +166,8 @@ impl LivePluginQuantumGateConfig {
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
             prove_idle_jump: false,
+            smp_vcpus: 1,
+            memory_mib: GATE_MEMORY_MIB,
         }
     }
 
@@ -224,6 +228,36 @@ impl LivePluginQuantumGateConfig {
     pub const fn with_prove_idle_jump(mut self, prove_idle_jump: bool) -> Self {
         self.prove_idle_jump = prove_idle_jump;
         self
+    }
+
+    /// Returns this configuration with a fixed guest vCPU count.
+    ///
+    /// The live idle callback is emitted by patched QEMU only after every
+    /// configured vCPU is halted. Values are validated by the deterministic
+    /// [`LaunchProfileCandidate`] when the launch command is assembled.
+    #[must_use]
+    pub const fn with_smp_vcpus(mut self, smp_vcpus: u16) -> Self {
+        self.smp_vcpus = smp_vcpus;
+        self
+    }
+
+    /// Returns the fixed guest vCPU count.
+    #[must_use]
+    pub const fn smp_vcpus(&self) -> u16 {
+        self.smp_vcpus
+    }
+
+    /// Returns this configuration with a fixed guest-memory size.
+    #[must_use]
+    pub const fn with_memory_mib(mut self, memory_mib: u32) -> Self {
+        self.memory_mib = memory_mib;
+        self
+    }
+
+    /// Returns the fixed guest-memory size in mebibytes.
+    #[must_use]
+    pub const fn memory_mib(&self) -> u32 {
+        self.memory_mib
     }
 
     /// Returns the multi-quantum schedule that drives one scenario.
@@ -299,6 +333,10 @@ struct ScenarioOutcome {
 /// Successful evidence from the production loaded-QEMU plugin quantum gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LivePluginQuantumReport {
+    /// Number of guest vCPUs covered by the all-halted idle observation.
+    pub smp_vcpus: u16,
+    /// Guest-memory size used by the live run, in mebibytes.
+    pub memory_mib: u32,
     /// Idle observation from the reference (first) run.
     pub idle: LivePluginIdleObservation,
     /// Advancement rates from the reference (first) run.
@@ -363,6 +401,8 @@ pub fn run_live_plugin_quantum_gate(
                 .saturating_mul(u128::from(config.schedule.min_idle_speedup_ratio));
 
     Ok(LivePluginQuantumReport {
+        smp_vcpus: config.smp_vcpus,
+        memory_mib: config.memory_mib,
         idle: reference.idle,
         rates: reference.rates,
         execution_fingerprint: reference.fingerprint,
@@ -411,7 +451,9 @@ fn run_one_scenario(
 
     let host_load = HostLoad::start_if(role.applies_host_load());
 
-    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
+    let mut candidate = LaunchProfileCandidate::default()
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus);
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
     }

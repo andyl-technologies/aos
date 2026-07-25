@@ -99,6 +99,12 @@ fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
     state
         .on_vcpu_init(70, 0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    state
+        .halted_vcpus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mark_halted(0)
+        .unwrap_or_else(|error| panic!("test vCPU should enter halted state: {error}"));
     header
         .request_shutdown([&slot])
         .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
@@ -195,6 +201,12 @@ fn shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected() {
     state
         .on_vcpu_init(72, 0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    state
+        .halted_vcpus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mark_halted(0)
+        .unwrap_or_else(|error| panic!("test vCPU should enter halted state: {error}"));
     header
         .request_shutdown([&slot])
         .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
@@ -434,6 +446,42 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
 }
 
 #[test]
+fn live_idle_callback_waits_for_every_vcpu_to_halt() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(73, 4, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    for vcpu_index in 0..4 {
+        state
+            .on_vcpu_init(73, vcpu_index)
+            .unwrap_or_else(|error| panic!("vCPU {vcpu_index} should initialize: {error}"));
+    }
+    TEST_CLOCK_DEADLINE_NS.set(7);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    for vcpu_index in 0..3 {
+        state
+            .on_vcpu_idle(vcpu_index, 0)
+            .unwrap_or_else(|error| panic!("partial halt set should remain runnable: {error}"));
+        assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+    }
+    state
+        .on_vcpu_idle(3, 0)
+        .unwrap_or_else(|error| panic!("final vCPU halt should queue exact timer: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
+    assert_eq!(slot.snapshot().status, STATUS_IDLE);
+
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
+        .unwrap_or_else(|error| panic!("all-halted completion should commit: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 7);
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
 fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
@@ -642,6 +690,12 @@ fn live_pending_advance_rejects_idle_resume_and_reentrant_publication() {
     state
         .on_vcpu_init(48, 0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    state
+        .halted_vcpus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .mark_halted(0)
+        .unwrap_or_else(|error| panic!("test vCPU should enter halted state: {error}"));
     let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
     let pending = queued

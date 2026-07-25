@@ -20,6 +20,9 @@
   pluginLiveCallbacks = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   pluginLiveCallbacksTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginIdleLoopTests =
+    builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -143,15 +146,15 @@
     ++ failuresFor "pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch" qemuIdleCallbacksPatch [
       {
         label = "queued idle-advance handoff";
-        needle = "rr_crucible_sim_process_queued_idle_advance";
+        needle = "rr_crucible_sim_drain_vcpu_work";
       }
       {
         label = "pending advance suppresses premature resume";
         needle = "qemu_plugin_time_advance_is_pending()";
       }
       {
-        label = "still-idle completion rearm";
-        needle = "rr_crucible_sim_maybe_rearm_idle_callback";
+        label = "still-idle callback resynchronization";
+        needle = "rr_crucible_sim_sync_vcpu_halt_callbacks";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
@@ -309,6 +312,8 @@
         label = "idle pending-completion signal";
         needle = "TimeAdvanceCompletionPending";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests" pluginIdleLoopTests [
       {
         label = "idle range failure test";
         needle = "idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged";
@@ -409,7 +414,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
       {
         label = "missing completion registration test";
-        needle = "missing_time_advance_completion";
+        needle = "live_time_completion_rejects_missing_or_mismatched_pending_state";
       }
       {
         label = "pending state remains unchanged until completion test";
@@ -521,6 +526,14 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               live_pending_advance_rejects_idle_resume_and_reentrant_publication \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-plugin-synchronous-idle-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              live_time_completion_rejects_missing_or_mismatched_pending_state \
               -- --test-threads=1
           '';
         }

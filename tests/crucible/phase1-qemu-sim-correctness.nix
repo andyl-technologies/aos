@@ -168,32 +168,32 @@
         needle = "qemu_plugin_register_vcpu_idle_resume_cb";
       }
       {
-        label = "idle callback boundary";
-        needle = "rr_crucible_sim_maybe_fire_idle_callback";
+        label = "per-vCPU halt callback synchronization";
+        needle = "rr_crucible_sim_sync_vcpu_halt_callbacks";
       }
       {
-        label = "resume callback boundary";
-        needle = "rr_crucible_sim_maybe_fire_resume_callback";
+        label = "per-vCPU resume callback boundary";
+        needle = "qemu_plugin_maybe_fire_vcpu_resume_cb(cpu)";
       }
       {
         label = "idle callback storage avoids plugin-core symbol collision";
         needle = "qemu_plugin_vcpu_idle_resume_idle_cb";
       }
       {
-        label = "missed wake guard";
-        needle = "if (!all_cpu_threads_idle())";
+        label = "all-vCPU halted guard";
+        needle = "rr_crucible_sim_all_vcpus_halted";
       }
       {
         label = "queued idle-advance work handoff";
-        needle = "rr_crucible_sim_process_queued_idle_advance";
+        needle = "rr_crucible_sim_drain_vcpu_work";
       }
       {
         label = "pending advance suppresses resume";
         needle = "qemu_plugin_time_advance_is_pending()";
       }
       {
-        label = "still-idle completion rearm";
-        needle = "rr_crucible_sim_maybe_rearm_idle_callback";
+        label = "still-idle callback resynchronization";
+        needle = "rr_crucible_sim_sync_vcpu_halt_callbacks();";
       }
       {
         # A parked-pending vCPU drains queued run_on_cpu work before re-parking,
@@ -201,7 +201,7 @@
         # cannot deadlock against the main-loop-dispatched advance completion.
         # The behavioral guard is the live idle-jump gate; this pins the drain.
         label = "parked-pending vCPU drains queued work";
-        needle = "cpu_work_list_empty(first_cpu)";
+        needle = "every vCPU's FIFO work queue";
       }
     ]
     else [
@@ -269,7 +269,8 @@
     )
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
     ++ lib.optionals (
-      patchName == "0024-crucible-sim-poll-immediate.patch"
+      patchName
+      == "0024-crucible-sim-poll-immediate.patch"
       && (hasInfix "main_loop_wait(" patchSource
         || hasInfix "aio_poll(" patchSource
         || hasInfix "aio_bh_poll(" patchSource)
@@ -354,10 +355,10 @@ in
               grep -F -q 's->wake_generation != observed_generation' block/crucible-shmem.c
               grep -F -q 'qemu_plugin_register_vcpu_idle_resume_cb' include/qemu/qemu-plugin.h
               grep -F -q 'qemu_plugin_maybe_fire_vcpu_idle_cb' accel/tcg/tcg-accel-ops-rr.c
-              grep -F -q 'if (!all_cpu_threads_idle())' accel/tcg/tcg-accel-ops-rr.c
-              grep -F -q 'rr_crucible_sim_process_queued_idle_advance' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'rr_crucible_sim_all_vcpus_halted' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'rr_crucible_sim_drain_vcpu_work' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'qemu_plugin_time_advance_is_pending()' accel/tcg/tcg-accel-ops-rr.c
-              grep -F -q 'rr_crucible_sim_maybe_rearm_idle_callback' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'rr_crucible_sim_sync_vcpu_halt_callbacks' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'tcg-accel-ops-sim-shmem.c' accel/tcg/meson.build
               grep -F -q 'qemu_plugin_register_sim_shmem_dispatch_cb' include/qemu/qemu-plugin.h
               grep -F -q 'crucible_sim_shmem_publish_current_icount' accel/tcg/tcg-accel-ops-rr.c

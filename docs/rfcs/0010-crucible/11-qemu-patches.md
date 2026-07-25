@@ -1464,11 +1464,11 @@ time-control primitives the whole design rests on.
     exact target under the vm_clock seqlock. The Rust plugin's
     completion-callback-driven idle state machine ([PATCH-18]) and the
     advance-barrier handoff ([PATCH-19]) are **live-proven** by
-    `checks.crucible.phase2.qemuLivePluginQuantum`: the idle guest idle-jumps to
-    the exact timer deadline (onset 15,825,232 → deadline 55,645,960),
-    completion-first, then wakes and re-idles at 55,836,152 — below the published
-    ceiling (59,645,960), never self-extending past it — a ~40M-icount O(1) advance
-    in ~23 ms (≈25× the boot rate), deterministic run-twice under host load. `checks.crucible.phase1.pluginTimeAdvance` models
+    `checks.crucible.phase2.qemuLivePluginQuantum`: the timer-driven multiboot
+    guest idle-jumps through the exact PIT deadline, completion-first, then
+    wakes and re-idles below the published ceiling without self-extension — a
+    40M-icount O(1) advance that is deterministic run-twice under host load.
+    `checks.crucible.phase1.pluginTimeAdvance` models
     the icount clock and asserts the qtest set-based advance cannot converge
     while the bias-bump reaches the target (the regression guard for this class).
   - The `crucible-plugin-device-wake` handoff ([PATCH-20]) is live-proven by

@@ -19,6 +19,8 @@
 //! CRUCIBLE_QUANTUM_MIN_IDLE_SPEEDUP    required idle:boot rate ratio
 //! CRUCIBLE_QUANTUM_TIMEOUT_SECS        per-quantum host wait bound (seconds)
 //! CRUCIBLE_QUANTUM_SECOND_RUN_LOAD     "0" disables second-run host load
+//! CRUCIBLE_QUANTUM_SMP_VCPUS           fixed guest vCPU count
+//! CRUCIBLE_QUANTUM_MEMORY_MIB          fixed guest-memory size
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -72,7 +74,9 @@ fn run() -> Result<(), String> {
                 240,
             )?))
             .with_second_run_host_load(env_flag("CRUCIBLE_QUANTUM_SECOND_RUN_LOAD", true)?)
-            .with_prove_idle_jump(env_flag("CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP", false)?);
+            .with_prove_idle_jump(env_flag("CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP", false)?)
+            .with_smp_vcpus(env_u16("CRUCIBLE_QUANTUM_SMP_VCPUS", 1)?)
+            .with_memory_mib(env_u32("CRUCIBLE_QUANTUM_MEMORY_MIB", 64)?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -92,6 +96,9 @@ fn run() -> Result<(), String> {
     println!("gate=gate:plugin-quantum-time-authority");
     println!("plugin_loaded=rust-control-cdylib");
     println!("time_authority=rust-plugin");
+    println!("smp_vcpus={}", report.smp_vcpus);
+    println!("memory_mib={}", report.memory_mib);
+    println!("all_vcpus_halted_idle_observed=true");
     println!("idle_onset_icount={}", report.idle.idle_onset_icount);
     println!(
         "idle_next_deadline_icount={}",
@@ -165,6 +172,34 @@ fn env_u64(key: &str, fallback: u64) -> Result<u64, String> {
             .trim()
             .parse::<u64>()
             .map_err(|error| format!("environment variable {key} is not a u64: {error}")),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(format!("environment variable {key} is not valid UTF-8"))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn env_u16(key: &str, fallback: u16) -> Result<u16, String> {
+    match env::var(key) {
+        Ok(value) => value
+            .trim()
+            .parse::<u16>()
+            .map_err(|error| format!("environment variable {key} is not a u16: {error}")),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(format!("environment variable {key} is not valid UTF-8"))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn env_u32(key: &str, fallback: u32) -> Result<u32, String> {
+    match env::var(key) {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| format!("environment variable {key} is not a u32: {error}")),
         Err(env::VarError::NotPresent) => Ok(fallback),
         Err(env::VarError::NotUnicode(_)) => {
             Err(format!("environment variable {key} is not valid UTF-8"))
