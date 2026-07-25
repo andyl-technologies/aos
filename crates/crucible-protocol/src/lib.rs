@@ -11,11 +11,9 @@
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
-//! `doorbell_frame` owns the shared white-box doorbell marker frame ABI;
-//! `doorbell_marker` owns the closed white-box marker-kind vocabulary and body
-//! codecs;
-//! `golden_vectors` owns the frozen ABI-conformance corpus, and `codec_fuzz`
-//! owns the structure-aware fuzz target and regression corpus.
+//! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
+//! owns the marker-kind vocabulary and body codecs; `preemption` owns deterministic IPI arithmetic;
+//! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -40,6 +38,7 @@ mod doorbell_abi;
 mod doorbell_frame;
 mod doorbell_marker;
 mod golden_vectors;
+mod preemption;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
@@ -83,6 +82,7 @@ pub use golden_vectors::{
     ControlGoldenVector, ControlGoldenVectorMessage, GOLDEN_CONTROL_VECTORS,
     GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
 };
+pub use preemption::deterministic_ipi_delivery_icount;
 
 use thiserror::Error;
 

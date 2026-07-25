@@ -13,6 +13,7 @@
   };
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  protocolPreemption = builtins.readFile ../../crates/crucible-protocol/src/preemption.rs;
   pluginPreemption =
     builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption.rs
     + builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption/injector.rs;
@@ -171,8 +172,8 @@
         needle = "pub struct DeterministicIpiDelivery";
       }
       {
-        label = "IPI boundary rounding helper";
-        needle = "fn next_round_robin_switch_boundary";
+        label = "shared IPI boundary rounding helper";
+        needle = "deterministic_ipi_delivery_icount";
       }
       {
         label = "same-vCPU IPI rejection";
@@ -225,6 +226,16 @@
       {
         label = "deterministic IPI error test";
         needle = "deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/src/preemption.rs" protocolPreemption [
+      {
+        label = "shared deterministic IPI boundary function";
+        needle = "pub const fn deterministic_ipi_delivery_icount";
+      }
+      {
+        label = "fixed latency and RR rounding unit proof";
+        needle = "ipi_delivery_adds_fixed_latency_and_rounds_to_rr_boundary";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [

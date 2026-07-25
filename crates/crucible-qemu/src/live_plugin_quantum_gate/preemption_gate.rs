@@ -3,6 +3,7 @@
 use std::fs;
 
 use crucible::{ExecutionFingerprint, SimDoubleHostScheduleEvent};
+use crucible_protocol::deterministic_ipi_delivery_icount;
 use crucible_shmem::{
     FingerprintSample, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, SchedulerPreemptionCommand,
     SchedulerPreemptionKind, mmap_setup_region,
@@ -36,6 +37,16 @@ pub struct LivePluginPreemptionReport {
     pub switch_consumed_sequence: u32,
     /// Exact node icount at which the interrupt was commanded.
     pub interrupt_icount: u64,
+    /// Node icount at which the sender emitted the modeled IPI.
+    pub ipi_send_icount: u64,
+    /// Fixed node-icount latency applied before RR-boundary rounding.
+    pub ipi_fixed_latency_icount: u64,
+    /// Earliest IPI delivery before RR-boundary rounding.
+    pub ipi_earliest_delivery_icount: u64,
+    /// Fixed round-robin quantum used to round IPI delivery.
+    pub ipi_rr_switch_quantum: u64,
+    /// vCPU that emitted the modeled IPI.
+    pub interrupt_sender_vcpu: u32,
     /// vCPU targeted by the commanded interrupt.
     pub interrupt_target_vcpu: u32,
     /// Interrupt vector delivered through patched QEMU.
@@ -61,6 +72,11 @@ struct PreemptionScenarioOutcome {
     switch_to_vcpu: u32,
     switch_consumed_sequence: u32,
     interrupt_icount: u64,
+    ipi_send_icount: u64,
+    ipi_fixed_latency_icount: u64,
+    ipi_earliest_delivery_icount: u64,
+    ipi_rr_switch_quantum: u64,
+    interrupt_sender_vcpu: u32,
     interrupt_target_vcpu: u32,
     interrupt_vector: u32,
     interrupt_consumed_sequence: u32,
@@ -115,6 +131,11 @@ pub fn run_live_plugin_preemption_gate(
         switch_to_vcpu: reference.switch_to_vcpu,
         switch_consumed_sequence: reference.switch_consumed_sequence,
         interrupt_icount: reference.interrupt_icount,
+        ipi_send_icount: reference.ipi_send_icount,
+        ipi_fixed_latency_icount: reference.ipi_fixed_latency_icount,
+        ipi_earliest_delivery_icount: reference.ipi_earliest_delivery_icount,
+        ipi_rr_switch_quantum: reference.ipi_rr_switch_quantum,
+        interrupt_sender_vcpu: reference.interrupt_sender_vcpu,
         interrupt_target_vcpu: reference.interrupt_target_vcpu,
         interrupt_vector: reference.interrupt_vector,
         interrupt_consumed_sequence: reference.interrupt_consumed_sequence,
@@ -217,10 +238,27 @@ fn run_preemption_scenario(
     host_observable_schedule.push(switch_event);
 
     let switch_sample = required_sample(&hot_path, switch_ceiling)?;
-    let interrupt_target_vcpu = switch_sample.rr_current_vcpu;
+    let interrupt_sender_vcpu = switch_sample.rr_current_vcpu;
+    let interrupt_target_vcpu = 1_u32.saturating_sub(interrupt_sender_vcpu);
     let interrupt_vector = 0xf1;
-    let interrupt_icount = switch_ceiling.saturating_add(1);
+    let ipi_send_icount = switch_ceiling;
+    let ipi_fixed_latency_icount = 17;
+    let ipi_earliest_delivery_icount = ipi_send_icount
+        .checked_add(ipi_fixed_latency_icount)
+        .ok_or_else(|| probe_error("live IPI earliest-delivery icount overflowed"))?;
+    let ipi_rr_switch_quantum = switch_sample.rr_switch_quantum;
+    let interrupt_icount = deterministic_ipi_delivery_icount(
+        ipi_send_icount,
+        ipi_fixed_latency_icount,
+        ipi_rr_switch_quantum,
+    )
+    .ok_or_else(|| probe_error("live IPI RR-boundary delivery icount overflowed"))?;
     let interrupt_ceiling = step.saturating_mul(3);
+    if interrupt_icount > interrupt_ceiling {
+        return Err(probe_error(format!(
+            "live IPI delivery {interrupt_icount} exceeds terminal ceiling {interrupt_ceiling}"
+        )));
+    }
     let interrupt_sequence = hot_path
         .publish_preemption_command(SchedulerPreemptionCommand {
             at_icount: interrupt_icount,
@@ -263,6 +301,11 @@ fn run_preemption_scenario(
         switch_to_vcpu,
         switch_consumed_sequence: switch_sequence,
         interrupt_icount,
+        ipi_send_icount,
+        ipi_fixed_latency_icount,
+        ipi_earliest_delivery_icount,
+        ipi_rr_switch_quantum,
+        interrupt_sender_vcpu,
         interrupt_target_vcpu,
         interrupt_vector,
         interrupt_consumed_sequence: interrupt_sequence,

@@ -83,6 +83,17 @@ fn run() -> Result<(), String> {
         report.switch_consumed_sequence
     );
     println!("interrupt_icount={}", report.interrupt_icount);
+    println!("ipi_send_icount={}", report.ipi_send_icount);
+    println!(
+        "ipi_fixed_latency_icount={}",
+        report.ipi_fixed_latency_icount
+    );
+    println!(
+        "ipi_earliest_delivery_icount={}",
+        report.ipi_earliest_delivery_icount
+    );
+    println!("ipi_rr_switch_quantum={}", report.ipi_rr_switch_quantum);
+    println!("interrupt_sender_vcpu={}", report.interrupt_sender_vcpu);
     println!("interrupt_target_vcpu={}", report.interrupt_target_vcpu);
     println!("interrupt_vector={}", report.interrupt_vector);
     println!(
