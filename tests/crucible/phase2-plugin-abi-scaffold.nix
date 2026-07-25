@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginAbiScaffold",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-1"],
+  taskIds ? ["T-PLUG-1"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -15,6 +15,7 @@
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -54,8 +55,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-1 remains open until the live callback registrar is complete";
-        needle = "- [ ] **T-PLUG-1**";
+        label = "T-PLUG-1 is complete";
+        needle = "- [x] **T-PLUG-1**";
       }
       {
         label = "plugin owns callbacks";
@@ -158,10 +159,6 @@
         needle = "QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL";
       }
       {
-        label = "supports N vCPUs under RR";
-        needle = "multi-vCPU RR-TCG should validate";
-      }
-      {
         label = "device callback kind registry";
         needle = "pub enum PluginDeviceCallbackKind";
       }
@@ -212,6 +209,12 @@
       {
         label = "vCPU lifecycle callbacks";
         needle = "crucible_qemu_plugin_inert_vcpu_idle_cb";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+      {
+        label = "supports N vCPUs under RR";
+        needle = "multi-vCPU RR-TCG should validate";
       }
       {
         label = "install boundary test";
@@ -327,13 +330,13 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             crate_type=cdylib
             qemu_plugin_api_version=4
             qemu_entrypoint=qemu_plugin_install
             qemu_version_symbol=qemu_plugin_version
             exported_symbols=qemu_plugin_install,qemu_plugin_version
-            install_scaffold=fail-closed-before-live-callback-adapters
+            install_scaffold=fail-closed-with-live-callback-adapters
             live_execution_mode_proof=qemu_plugin_crucible_single_threaded_rr
             tcg_threading=single-threaded-round-robin
             smp_vcpus_supported=N>=1
