@@ -661,7 +661,8 @@ instruction-primary.
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
   Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which loads no
-  observation plugin and drives an idle Linux guest end to end: the plugin
+  observation plugin and drives a diskless timer-driven multiboot guest end to
+  end: the plugin
   acquires time control before the first instruction (proven by the boot barrier
   advancing from cold boot to the exact first host ceiling), and when the guest
   idles it advances virtual time by the icount budget derived from the virtual
@@ -689,9 +690,9 @@ instruction-primary.
   Completed by `checks.crucible.phase2.qemuLivePluginQuantum` with
   `prove_idle_jump` on: the plugin converts the introspected deadline horizon to a
   ceiling icount, publishes ceiling/reached-icount in the shmem region, and hands
-  the idle vCPU off through the wake futex; the idle guest advances to the exact
-  deadline (55,645,960), wakes, and re-idles at 55,836,152 — below the published
-  ceiling (59,645,960), never self-extending past it, because the max-advance
+  the idle vCPU off through the wake futex; the idle guest advances through the
+  exact deadline by a 40M-icount O(1) jump, wakes, and re-idles below the
+  published ceiling, never self-extending past it, because the max-advance
   budget is computed as `ceiling - logical_offset`. The terminal icount is
   byte-identical on the second, host-loaded run.
 - [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a

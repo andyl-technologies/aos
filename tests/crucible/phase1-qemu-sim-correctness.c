@@ -10,12 +10,13 @@ typedef struct CPUState {
     bool stop;
     bool unplug;
     bool work_pending;
+    bool halted;
+    bool plugin_halted;
     struct CPUState *next;
 } CPUState;
 
 static CPUState first_fixture_cpu;
 static bool fixture_sim_mode;
-static bool fixture_all_idle;
 static unsigned int fixture_event_common_calls;
 static unsigned int fixture_cond_wait_calls;
 static unsigned int fixture_idle_callbacks;
@@ -35,6 +36,8 @@ static bool fixture_time_advance_pending;
 static bool fixture_timer_wake_before_completion;
 static bool fixture_resume_while_advance_pending;
 static unsigned int fixture_idle_advances_to_queue;
+static unsigned int fixture_plugin_halted_count;
+static bool fixture_all_halted_handled;
 
 typedef struct SimShmemFixture {
     uint64_t *published_icount;
@@ -106,7 +109,14 @@ static void rr_wait_io_event_second_pass_fixture(void)
 
 static bool all_cpu_threads_idle(void)
 {
-    return fixture_all_idle && !first_fixture_cpu.work_pending;
+    CPUState *cpu;
+
+    for (cpu = &first_fixture_cpu; cpu != NULL; cpu = cpu->next) {
+        if (!cpu->halted || cpu->work_pending) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void qemu_cond_wait_bql(void)
@@ -115,9 +125,10 @@ static void qemu_cond_wait_bql(void)
     if (fixture_time_advance_pending) {
         if (fixture_timer_wake_before_completion) {
             fixture_timer_wake_before_completion = false;
-            fixture_all_idle = false;
+            first_fixture_cpu.halted = false;
         } else {
             fixture_time_advance_pending = false;
+            fixture_all_halted_handled = false;
         }
     }
 }
@@ -127,88 +138,115 @@ static bool qemu_plugin_time_advance_is_pending(void)
     return fixture_time_advance_pending;
 }
 
-static bool rr_crucible_sim_maybe_fire_idle_callback(
-    bool *idle_reported, bool *idle_advance_waiting)
+static bool rr_crucible_sim_vcpu_is_halted(CPUState *cpu)
 {
-    if (!rr_crucible_sim_mode() || *idle_reported) {
-        return false;
-    }
+    return cpu->halted && !cpu->work_pending;
+}
 
+static bool rr_crucible_sim_all_vcpus_halted(void)
+{
+    CPUState *cpu;
+
+    for (cpu = &first_fixture_cpu; cpu != NULL; cpu = cpu->next) {
+        if (!rr_crucible_sim_vcpu_is_halted(cpu)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
+{
+    unsigned int vcpu_count = 0;
+    CPUState *candidate;
+
+    if (!cpu->plugin_halted) {
+        cpu->plugin_halted = true;
+        fixture_plugin_halted_count++;
+    }
+    for (candidate = &first_fixture_cpu; candidate != NULL;
+         candidate = candidate->next) {
+        vcpu_count++;
+    }
+    if (fixture_plugin_halted_count != vcpu_count ||
+        fixture_all_halted_handled) {
+        return;
+    }
+    fixture_all_halted_handled = true;
     fixture_idle_callbacks++;
     if (fixture_idle_advances_to_queue != 0) {
         fixture_idle_advances_to_queue--;
         fixture_time_advance_pending = true;
         first_fixture_cpu.work_pending = true;
     } else {
-        fixture_all_idle = false;
+        first_fixture_cpu.halted = false;
     }
-    *idle_reported = true;
-    *idle_advance_waiting = qemu_plugin_time_advance_is_pending();
-    return true;
 }
 
-static void rr_crucible_sim_maybe_rearm_idle_callback(
-    bool *idle_reported, bool *idle_advance_waiting)
+static void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
 {
-    if (!rr_crucible_sim_mode() || !*idle_advance_waiting ||
-        qemu_plugin_time_advance_is_pending()) {
+    if (!cpu->plugin_halted) {
         return;
     }
-
-    *idle_advance_waiting = false;
-    *idle_reported = false;
-}
-
-static void rr_crucible_sim_process_queued_idle_advance(
-    bool idle_callback_fired, bool idle_advance_waiting)
-{
-    if (!rr_crucible_sim_mode() || !idle_callback_fired ||
-        !idle_advance_waiting) {
-        return;
-    }
-
-    qemu_wait_io_event_common(&first_fixture_cpu);
-}
-
-static void rr_crucible_sim_maybe_fire_resume_callback(bool *idle_reported)
-{
-    if (!rr_crucible_sim_mode() || !*idle_reported) {
-        return;
-    }
-
+    cpu->plugin_halted = false;
+    fixture_plugin_halted_count--;
+    fixture_all_halted_handled = false;
     fixture_resume_callbacks++;
     fixture_resume_while_advance_pending =
         qemu_plugin_time_advance_is_pending();
-    *idle_reported = false;
+}
+
+static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
+{
+    CPUState *cpu;
+
+    if (!rr_crucible_sim_mode()) {
+        return;
+    }
+
+    for (cpu = &first_fixture_cpu; cpu != NULL; cpu = cpu->next) {
+        if (rr_crucible_sim_vcpu_is_halted(cpu)) {
+            qemu_plugin_maybe_fire_vcpu_idle_cb(cpu);
+        } else if (!qemu_plugin_time_advance_is_pending()) {
+            qemu_plugin_maybe_fire_vcpu_resume_cb(cpu);
+        }
+    }
+}
+
+static void rr_crucible_sim_drain_vcpu_work(void)
+{
+    CPUState *cpu;
+
+    for (cpu = &first_fixture_cpu; cpu != NULL; cpu = cpu->next) {
+        qemu_wait_io_event_common(cpu);
+    }
 }
 
 static void rr_wait_io_event_idle_fixture(void)
 {
-    bool idle_reported = false;
-    bool idle_advance_waiting = false;
+    rr_crucible_sim_drain_vcpu_work();
+    rr_crucible_sim_sync_vcpu_halt_callbacks();
 
     while (all_cpu_threads_idle() ||
            (rr_crucible_sim_mode() &&
-            qemu_plugin_time_advance_is_pending())) {
-        bool idle_callback_fired;
-
-        rr_crucible_sim_maybe_rearm_idle_callback(
-            &idle_reported, &idle_advance_waiting);
-        idle_callback_fired = rr_crucible_sim_maybe_fire_idle_callback(
-            &idle_reported, &idle_advance_waiting);
-        rr_crucible_sim_process_queued_idle_advance(
-            idle_callback_fired, idle_advance_waiting);
+            (rr_crucible_sim_all_vcpus_halted() ||
+             qemu_plugin_time_advance_is_pending()))) {
         if (qemu_plugin_time_advance_is_pending()) {
+            rr_crucible_sim_drain_vcpu_work();
+            rr_crucible_sim_sync_vcpu_halt_callbacks();
             qemu_cond_wait_bql();
             continue;
         }
-        if (!all_cpu_threads_idle()) {
+        rr_crucible_sim_drain_vcpu_work();
+        rr_crucible_sim_sync_vcpu_halt_callbacks();
+        if (!rr_crucible_sim_all_vcpus_halted()) {
             break;
         }
         qemu_cond_wait_bql();
     }
 
-    rr_crucible_sim_maybe_fire_resume_callback(&idle_reported);
+    rr_crucible_sim_drain_vcpu_work();
+    rr_crucible_sim_sync_vcpu_halt_callbacks();
 }
 
 static int64_t fixture_poll_callback(void)
@@ -426,7 +464,33 @@ int main(void)
     require_bool(crucible_shmem_poll_or_park_fixture() == -1,
                  "wake-fd failure did not fail the parked request");
 
-    fixture_all_idle = true;
+    first_fixture_cpu.next = &other_cpu;
+    first_fixture_cpu.halted = true;
+    first_fixture_cpu.plugin_halted = false;
+    other_cpu.halted = false;
+    other_cpu.plugin_halted = false;
+    other_cpu.work_pending = false;
+    fixture_plugin_halted_count = 0;
+    fixture_all_halted_handled = false;
+    fixture_idle_callbacks = 0;
+    fixture_idle_advances_to_queue = 0;
+    rr_crucible_sim_sync_vcpu_halt_callbacks();
+    require_bool(fixture_idle_callbacks == 0,
+                 "partial vCPU halt set fired the all-idle callback");
+    other_cpu.halted = true;
+    rr_crucible_sim_sync_vcpu_halt_callbacks();
+    require_bool(fixture_idle_callbacks == 1,
+                 "final vCPU halt did not fire the all-idle callback");
+    first_fixture_cpu.next = NULL;
+    first_fixture_cpu.plugin_halted = false;
+    other_cpu.plugin_halted = false;
+    fixture_plugin_halted_count = 0;
+    fixture_all_halted_handled = false;
+
+    first_fixture_cpu.halted = true;
+    first_fixture_cpu.plugin_halted = false;
+    fixture_plugin_halted_count = 0;
+    fixture_all_halted_handled = false;
     fixture_idle_callbacks = 0;
     fixture_resume_callbacks = 0;
     fixture_idle_advance_work_calls = 0;
@@ -443,7 +507,10 @@ int main(void)
     require_bool(fixture_cond_wait_calls == 0,
                  "idle callback wake was missed before qemu_cond_wait_bql");
 
-    fixture_all_idle = true;
+    first_fixture_cpu.halted = true;
+    first_fixture_cpu.plugin_halted = false;
+    fixture_plugin_halted_count = 0;
+    fixture_all_halted_handled = false;
     first_fixture_cpu.work_pending = false;
     fixture_event_common_calls = 0;
     fixture_idle_callbacks = 0;
@@ -465,7 +532,10 @@ int main(void)
                      !fixture_time_advance_pending,
                  "resume callback ran before idle-advance completion");
 
-    fixture_all_idle = true;
+    first_fixture_cpu.halted = true;
+    first_fixture_cpu.plugin_halted = false;
+    fixture_plugin_halted_count = 0;
+    fixture_all_halted_handled = false;
     first_fixture_cpu.work_pending = false;
     fixture_event_common_calls = 0;
     fixture_idle_callbacks = 0;
@@ -520,6 +590,7 @@ int main(void)
     puts("sim_block_wake_coqueue_microtest=true");
     puts("sim_block_prepark_wake_not_lost=true");
     puts("sim_block_wake_failure_fails_waiter=true");
+    puts("sim_all_vcpus_halted_callback_microtest=true");
     puts("sim_idle_callbacks_missed_wake_microtest=true");
     puts("sim_idle_advance_completion_barrier_microtest=true");
     puts("sim_idle_advance_rearms_while_halted=true");

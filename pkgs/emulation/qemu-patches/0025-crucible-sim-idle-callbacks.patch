@@ -1,128 +1,110 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -108,6 +108,63 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
+@@ -108,6 +108,49 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
             !cpu->unplug;
  }
  
-+static bool rr_crucible_sim_maybe_fire_idle_callback(
-+    CPUState *cpu, bool *idle_reported, bool *idle_advance_waiting)
++static bool rr_crucible_sim_vcpu_is_halted(CPUState *cpu)
 +{
-+    if (!rr_crucible_sim_mode() || *idle_reported) {
-+        return false;
-+    }
++    return cpu->halted && !cpu_has_work(cpu);
++}
 +
-+    qemu_plugin_maybe_fire_vcpu_idle_cb(cpu);
-+    *idle_reported = true;
-+    *idle_advance_waiting = qemu_plugin_time_advance_is_pending();
++static bool rr_crucible_sim_all_vcpus_halted(void)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        if (!rr_crucible_sim_vcpu_is_halted(cpu)) {
++            return false;
++        }
++    }
 +    return true;
 +}
 +
-+static void rr_crucible_sim_maybe_rearm_idle_callback(
-+    bool *idle_reported, bool *idle_advance_waiting)
++static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
 +{
-+    if (!rr_crucible_sim_mode() || !*idle_advance_waiting ||
-+        qemu_plugin_time_advance_is_pending()) {
++    CPUState *cpu;
++
++    if (!rr_crucible_sim_mode()) {
 +        return;
 +    }
 +
-+    /*
-+     * Completion ran in the normal main loop without making a vCPU runnable.
-+     * Re-enter the idle callback for the next authorized jump instead of
-+     * reporting a guest resume that never happened.
-+     */
-+    *idle_advance_waiting = false;
-+    *idle_reported = false;
++    CPU_FOREACH(cpu) {
++        if (rr_crucible_sim_vcpu_is_halted(cpu)) {
++            qemu_plugin_maybe_fire_vcpu_idle_cb(cpu);
++        } else if (!qemu_plugin_time_advance_is_pending()) {
++            qemu_plugin_maybe_fire_vcpu_resume_cb(cpu);
++        }
++    }
 +}
 +
-+static void rr_crucible_sim_process_queued_idle_advance(
-+    CPUState *cpu, bool idle_callback_fired, bool idle_advance_waiting)
++static void rr_crucible_sim_drain_vcpu_work(void)
 +{
-+    if (!rr_crucible_sim_mode() || !idle_callback_fired ||
-+        !idle_advance_waiting) {
-+        return;
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        qemu_wait_io_event_common(cpu);
 +    }
-+
-+    /*
-+     * The all-idle callback just queued exactly one vCPU work item. Process it
-+     * before testing all_cpu_threads_idle(), whose work-list check would
-+     * otherwise misclassify the queue handoff as a guest resume.
-+     */
-+    qemu_wait_io_event_common(cpu);
-+}
-+
-+static void rr_crucible_sim_maybe_fire_resume_callback(CPUState *cpu,
-+                                                       bool *idle_reported)
-+{
-+    if (!rr_crucible_sim_mode() || !*idle_reported) {
-+        return;
-+    }
-+
-+    qemu_plugin_maybe_fire_vcpu_resume_cb(cpu);
-+    *idle_reported = false;
 +}
 +
  static inline int64_t rr_next_kick_time(void)
  {
      return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
-@@ -154,9 +211,42 @@ static void rr_stop_kick_timer(void)
+@@ -154,9 +197,36 @@ static void rr_stop_kick_timer(void)
  static void rr_wait_io_event(void)
  {
      CPUState *cpu;
-+    bool crucible_sim_idle_reported = false;
-+    bool crucible_sim_idle_advance_waiting = false;
++
++    /*
++     * Drain host work before classifying guest halt state. A queued host work
++     * item is not a runnable guest vCPU, and callbacks can themselves enqueue
++     * work that must be drained before QEMU's stricter idle predicate is
++     * evaluated.
++     */
++    rr_crucible_sim_drain_vcpu_work();
++    rr_crucible_sim_sync_vcpu_halt_callbacks();
 +
 +    while (all_cpu_threads_idle() ||
 +           (rr_crucible_sim_mode() &&
-+            qemu_plugin_time_advance_is_pending())) {
-+        bool idle_callback_fired;
++            (rr_crucible_sim_all_vcpus_halted() ||
++             qemu_plugin_time_advance_is_pending()))) {
  
 -    while (all_cpu_threads_idle()) {
          rr_stop_kick_timer();
-+        rr_crucible_sim_maybe_rearm_idle_callback(
-+            &crucible_sim_idle_reported,
-+            &crucible_sim_idle_advance_waiting);
-+        idle_callback_fired = rr_crucible_sim_maybe_fire_idle_callback(
-+            first_cpu, &crucible_sim_idle_reported,
-+            &crucible_sim_idle_advance_waiting);
-+        rr_crucible_sim_process_queued_idle_advance(
-+            first_cpu, idle_callback_fired,
-+            crucible_sim_idle_advance_waiting);
 +        if (qemu_plugin_time_advance_is_pending()) {
 +            /*
-+             * A parked-pending vCPU must stay responsive to queued work. The
++             * Parked vCPUs must stay responsive to queued work. The
 +             * advance completion is dispatched from the main loop; a main-thread
 +             * run_on_cpu (e.g. a machine reset's device callback) that arrives
 +             * while we wait blocks the main loop until this vCPU drains it. Re-
-+             * parking without draining deadlocks: the main thread waits on this
-+             * vCPU while this vCPU waits on the main-loop-dispatched completion.
-+             * Drain any queued work first. It runs at the current post-advance
-+             * icount, which is deterministic under the single-vCPU sim scheduler
-+             * (one FIFO work queue, one park point).
++             * parking without draining deadlocks. The single RR thread drains
++             * every vCPU's FIFO work queue in ascending CPU-list order.
 +             */
-+            if (!cpu_work_list_empty(first_cpu)) {
-+                qemu_wait_io_event_common(first_cpu);
-+            }
++            rr_crucible_sim_drain_vcpu_work();
++            rr_crucible_sim_sync_vcpu_halt_callbacks();
 +            qemu_cond_wait_bql(first_cpu->halt_cond);
 +            continue;
 +        }
          if (icount_enabled()) {
              /*
               * Advancing the virtual clock from the host main-loop poll can make
-@@ -166,10 +256,16 @@ static void rr_wait_io_event(void)
+@@ -166,10 +236,18 @@ static void rr_wait_io_event(void)
               */
              icount_start_warp_timer();
              icount_handle_deadline();
 +            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
-+            if (!all_cpu_threads_idle()) {
++            rr_crucible_sim_drain_vcpu_work();
++            rr_crucible_sim_sync_vcpu_halt_callbacks();
++            if (!rr_crucible_sim_all_vcpus_halted()) {
 +                break;
 +            }
          }
          qemu_cond_wait_bql(first_cpu->halt_cond);
      }
  
-+    rr_crucible_sim_maybe_fire_resume_callback(first_cpu,
-+                                               &crucible_sim_idle_reported);
++    rr_crucible_sim_drain_vcpu_work();
++    rr_crucible_sim_sync_vcpu_halt_callbacks();
      rr_start_kick_timer();
  
      /*
