@@ -1056,9 +1056,12 @@ component that makes that purity true *inside* the QEMU process.
   callback's exact raw icount; and decodes the guest's golden coverage marker
   through the bounded callback core. The loaded-QEMU run records the live marker
   before reaching its exact scheduler ceiling and exits through the normal
-  plugin lifecycle. Still open are live setup collision discovery, off/on
-  inertness and fingerprint equality, host event-log routing, the aarch64 live
-  adapter, and the host-to-guest reply path.
+  plugin lifecycle. The same real-backend gate now runs the production plugin
+  with white-box mode both off and on: off mode emits no white-box callback
+  record, and production fingerprint sampling produces the same execution
+  fingerprint in both modes. Still open are live setup collision discovery,
+  host event-log routing, the aarch64 live adapter, and the host-to-guest reply
+  path.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],

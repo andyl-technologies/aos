@@ -76,6 +76,7 @@ pub struct LivePluginInstallGateConfig {
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
     whitebox: crate::QemuLaunchPluginSwitch,
+    fingerprint: crate::QemuLaunchPluginSwitch,
     horizon_icount: u64,
     completion_timeout: Duration,
 }
@@ -99,6 +100,7 @@ impl LivePluginInstallGateConfig {
             initrd: None,
             kernel_cmdline: None,
             whitebox: crate::QemuLaunchPluginSwitch::Off,
+            fingerprint: crate::QemuLaunchPluginSwitch::Off,
             horizon_icount: DEFAULT_HORIZON_ICOUNT,
             completion_timeout: DEFAULT_COMPLETION_TIMEOUT,
         }
@@ -126,6 +128,16 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub const fn with_whitebox(mut self, whitebox: crate::QemuLaunchPluginSwitch) -> Self {
         self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns this configuration with live boundary fingerprint sampling set.
+    #[must_use]
+    pub const fn with_fingerprint(
+        mut self,
+        fingerprint: crate::QemuLaunchPluginSwitch,
+    ) -> Self {
+        self.fingerprint = fingerprint;
         self
     }
 
@@ -351,7 +363,8 @@ pub fn run_live_plugin_install_gate(
     // A single production control plugin, no observation plugin: the Rust plugin
     // is the sole sim_shmem dispatch authority for virtual-time advancement.
     let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT)
-        .with_whitebox(config.whitebox);
+        .with_whitebox(config.whitebox)
+        .with_fingerprint(config.fingerprint);
     let command = profile
         .qemu_launch_command(
             vm_launch_config(config),

@@ -173,39 +173,61 @@ in
             -p crucible-qemu \
             --example crucible-qemu-live-plugin-install
 
-          run_dir="$TMPDIR/live-whitebox-run"
-          mkdir -p "$run_dir"
-          cp ${rootImage}/overlay.qcow2 "$run_dir/crucible-root-overlay.qcow2"
-          chmod u+w "$run_dir/crucible-root-overlay.qcow2"
-          report="$TMPDIR/live-whitebox.result"
-          qemu_log="$TMPDIR/live-whitebox.qemu.log"
-          if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
-            timeout -k 15 180 \
-            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
-            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-            ${guest}/whitebox-guest.elf \
-            ${rootImage}/root.qcow2 \
-            "$run_dir" \
-            > "$report" 2> "$qemu_log"; then
-            cat "$report" >&2
-            cat "$qemu_log" >&2
+          run_mode() {
+            label="$1"
+            mode="$2"
+            run_dir="$TMPDIR/live-whitebox-$label"
+            report="$TMPDIR/live-whitebox-$label.result"
+            qemu_log="$TMPDIR/live-whitebox-$label.qemu.log"
+            mkdir -p "$run_dir"
+            cp ${rootImage}/overlay.qcow2 "$run_dir/crucible-root-overlay.qcow2"
+            chmod u+w "$run_dir/crucible-root-overlay.qcow2"
+            if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX="$mode" \
+              CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+              timeout -k 15 180 \
+              "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${guest}/whitebox-guest.elf \
+              ${rootImage}/root.qcow2 \
+              "$run_dir" \
+              > "$report" 2> "$qemu_log"; then
+              cat "$report" >&2
+              cat "$qemu_log" >&2
+              exit 1
+            fi
+            grep -Fxq PASS "$report"
+            grep -Fxq "whitebox=$mode" "$report"
+            grep -Fxq 'fingerprint=on' "$report"
+            grep -Fxq 'plugin_loaded=rust-control-cdylib' "$report"
+            grep -Fxq 'setup_ack_ready=true' "$report"
+            grep -Fxq 'boot_barrier_ceiling_enforced=true' "$report"
+            grep -Fxq 'orderly_child_exit=true' "$report"
+          }
+
+          run_mode off off
+          run_mode on on
+
+          if grep -q '^CRUCIBLE_WHITEBOX_' "$TMPDIR/live-whitebox-off.qemu.log"; then
+            echo "FAIL: white-box off mode emitted a callback record" >&2
             exit 1
           fi
-          grep -Fxq PASS "$report"
-          grep -Fxq 'whitebox=on' "$report"
-          grep -Fxq 'plugin_loaded=rust-control-cdylib' "$report"
-          grep -Fxq 'setup_ack_ready=true' "$report"
-          grep -Fxq 'boot_barrier_ceiling_enforced=true' "$report"
-          grep -Fxq 'orderly_child_exit=true' "$report"
-          grep -Eq '^CRUCIBLE_WHITEBOX_MARKER icount=[1-9][0-9]* vcpu=0 kind=4 payload_len=10$' "$qemu_log"
+          grep -Eq '^CRUCIBLE_WHITEBOX_MARKER icount=[1-9][0-9]* vcpu=0 kind=4 payload_len=10$' \
+            "$TMPDIR/live-whitebox-on.qemu.log"
 
-          marker_icount=$(sed -n 's/^CRUCIBLE_WHITEBOX_MARKER icount=\([0-9][0-9]*\) .*/\1/p' "$qemu_log")
+          marker_icount=$(sed -n 's/^CRUCIBLE_WHITEBOX_MARKER icount=\([0-9][0-9]*\) .*/\1/p' \
+            "$TMPDIR/live-whitebox-on.qemu.log")
           test -n "$marker_icount"
+          off_fingerprint=$(sed -n 's/^execution_fingerprint=//p' "$TMPDIR/live-whitebox-off.result")
+          on_fingerprint=$(sed -n 's/^execution_fingerprint=//p' "$TMPDIR/live-whitebox-on.result")
+          test -n "$off_fingerprint"
+          test "$off_fingerprint" = "$on_fingerprint"
 
           mkdir -p "$out"
-          cp "$report" "$out/install-result"
-          cp "$qemu_log" "$out/qemu.log"
+          cp "$TMPDIR/live-whitebox-off.result" "$out/install-off-result"
+          cp "$TMPDIR/live-whitebox-on.result" "$out/install-on-result"
+          cp "$TMPDIR/live-whitebox-off.qemu.log" "$out/qemu-off.log"
+          cp "$TMPDIR/live-whitebox-on.qemu.log" "$out/qemu-on.log"
           {
             printf 'PASS\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
@@ -213,7 +235,8 @@ in
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'status=partial\n'
             printf 'plugin_loaded=rust-control-cdylib\n'
-            printf 'whitebox_mode=on\n'
+            printf 'whitebox_modes=off,on\n'
+            printf 'off_mode_callback_records=0\n'
             printf 'doorbell_architecture=x86_64\n'
             printf 'doorbell_instruction=out-dx-eax\n'
             printf 'doorbell_port=0x00e7\n'
@@ -224,6 +247,10 @@ in
             printf 'marker_icount=%s\n' "$marker_icount"
             printf 'marker_payload_len=10\n'
             printf 'exact_icount_callback=true\n'
+            printf 'fingerprint_sampling=production-plugin\n'
+            printf 'off_fingerprint=%s\n' "$off_fingerprint"
+            printf 'on_fingerprint=%s\n' "$on_fingerprint"
+            printf 'off_on_fingerprint_equal=true\n'
             printf 'production_whitebox_channel_implemented=x86_64-live-slice\n'
           } > "$out/result"
         '';
