@@ -4,8 +4,8 @@
 # what a new user has — the published raw image and apm:
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
-#                 UKI → systemd initrd). There is no runtime provisioning
-#                 Ignition: systemd-repart carves swap and var (taking the
+#                 UKI → systemd initrd). There is no metadata input;
+#                 systemd-repart carves swap and var (taking the
 #                 rest) in the trailing free space of the grown per-run disk.
 #                 root-a (the read-only erofs base) ships in the image
 #                 sized-to-fit and is never resized.
@@ -32,7 +32,7 @@
 #   registry: kernel-boot peer publishing the registry + static cache
 #             (same shape as apm-registry-upgrade.nix), with the
 #             server-2 toplevel and bc pre-staged in its store.
-#   target:   image boot with no metadata channel; identity is baked
+#   target:   image boot; identity is baked
 #             into /etc, systemd-repart carves swap/var.
 {
   lib,
@@ -46,7 +46,7 @@
   # production image (bundle = mkDefault false; modules/profiles/server.nix).
   # Re-bundle per machine: the registry serves the fixtures, and the
   # image-boot target needs the agent payload in its raw image so the
-  # harness can deliver it via ignition (lib/testing/fleet.nix).
+  # harness can activate it on the first boot (lib/testing/fleet.nix).
   # server-test bundles the guest agent and the registry-workflow CLI tools
   # (git for the registry seed, curl/git for the target's clone + cache probe)
   # that image slimming dropped from the server profile. The registry machine
@@ -123,13 +123,13 @@ in {
       # ════ 1+2. INSTALL + BOOT ═════════════════════════════════════════
       # Reaching this point already proves a lot: the driver's agent
       # handshake + system-ready gate ran against a machine that booted
-      # the stock raw image via OVMF/sd-boot/UKI, whose ignition (qemu
-      # platform, fw_cfg channel) partitioned and formatted the disk and
-      # activated the aos-test-agent package at first boot.
+      # the stock raw image via OVMF/sd-boot/UKI, whose initrd partitioned
+      # and formatted the disk and activated the aos-test-agent package at
+      # first boot.
       target.succeed("systemctl is-active multi-user.target")
 
       # The install layout exists: root-a ships in the image, systemd-repart
-      # carved swap + var in the trailing free space (no ignition-disks). (A
+      # carved swap + var in the trailing free space. (A
       # reserved root-b slot is future A/B work — see modules/services/repart.nix.)
       for label in ("root-a", "swap", "var"):
           target.succeed(f"test -e /dev/disk/by-partlabel/{label}")
@@ -152,7 +152,7 @@ in {
           f"erofs root is {fs_bytes} bytes; expected the small immutable base"
       )
 
-      # /var is the ignition-created partition, mounted by partlabel.
+      # /var is the repart-created partition, mounted by partlabel.
       var_dev = target.succeed(
           "readlink -f /dev/disk/by-partlabel/var"
       ).strip()

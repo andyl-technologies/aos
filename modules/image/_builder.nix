@@ -46,12 +46,33 @@
 
   # UEFI ESP partition GUID.
   espGuid = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
-  # Standard Linux filesystem partition GUID.
-  linuxGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-  # Discoverable Partitions Spec root-verity GUID (x86-64). The root-a-hash
-  # partition is discovered by partlabel either way, so the type GUID is
-  # cosmetic; using the DPS verity type keeps the table self-describing.
-  verityGuid = "2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5";
+  # Architecture-specific Discoverable Partitions Specification types keep
+  # immutable root slots in a separate matching domain from operator-created
+  # linux-generic data partitions. Discovery remains disabled; AOS still
+  # selects slots explicitly by partlabel.
+  dpsTypes = {
+    x86_64 = {
+      root = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709";
+      verity = "2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5";
+    };
+    aarch64 = {
+      root = "B921B045-1DF0-41C3-AF44-4C6F280D3FAE";
+      verity = "DF3300CE-D69F-4C92-978C-9BFB0F38D820";
+    };
+    i686 = {
+      root = "44479540-F297-41B2-9AF7-D131D5F0458A";
+      verity = "D13C5D3B-B5D1-422A-B29F-9454FDC89D76";
+    };
+    riscv64 = {
+      root = "72EC70A6-CF74-40E6-BD49-4BDA08E8F224";
+      verity = "B6ED5582-440B-4209-B8DA-5FF7C419EA3D";
+    };
+  };
+  dpsType =
+    dpsTypes.${lib.platform.constraints.cpu}
+    or (throw "no DPS root partition types for ${lib.system}");
+  rootGuid = dpsType.root;
+  verityGuid = dpsType.verity;
 
   mkRootfs = import ../../lib/build/rootfs.nix;
   # The image's root filesystem matches the system's declared root fstype, so
@@ -75,6 +96,7 @@
       pname = "aos-image-${name}-rootfs";
       label = "aos-root";
       fsType = rootFsType;
+      erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       shrinkToFit = true;
       headroomMiB = 64;
     }
@@ -286,7 +308,7 @@
             sfdisk image.raw <<PTABLE
             label: gpt
             size=$esp_sectors, type=${espGuid}, name="ESP"
-            size=$root_sectors, type=${linuxGuid}, name="root-a"${lib.optionalString verityEnabled ''
+            size=$root_sectors, type=${rootGuid}, name="root-a"${lib.optionalString verityEnabled ''
 
               size=$hash_sectors, type=${verityGuid}, name="root-a-hash"''}
             PTABLE
@@ -331,7 +353,7 @@
               "kernelParams": "${kernelParams}",
               "partitions": [
                 { "number": 1, "label": "ESP", "type": "esp", "filesystem": "vfat", "sizeMiB": $esp_size_mib },
-                { "number": 2, "label": "root-a", "type": "linux", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
+                { "number": 2, "label": "root-a", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
                               { "number": 3, "label": "root-a-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''}
               ],
               "esp": {

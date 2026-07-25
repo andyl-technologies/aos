@@ -32,6 +32,18 @@
   };
 
   positiveInt = types.addCheck types.int (v: v > 0);
+  extraDiskType = types.submodule {
+    options = {
+      serial = mkOption {
+        type = types.str;
+        description = "Stable virtio serial exposed below /dev/disk/by-id.";
+      };
+      sizeMiB = mkOption {
+        type = positiveInt;
+        description = "Capacity of the empty additional disk in MiB.";
+      };
+    };
+  };
 
   fleetMachineType = types.submodule ({config, ...}: {
     options = {
@@ -78,6 +90,17 @@
         '';
       };
 
+      metadata = mkOption {
+        type = types.attrsOf types.str;
+        default = {};
+        description = ''
+          Files exposed to the initrd on a read-only ISO labelled
+          `aos-metadata`. Attribute names are plain file names such as
+          `host.nix` and values are their exact contents. Use this
+          to exercise the production cloud-metadata provisioning path.
+        '';
+      };
+
       bootMode = mkOption {
         type = types.enum ["kernel" "image"];
         default = "kernel";
@@ -101,6 +124,28 @@
           `sgdisk -e` backup-header relocation). Must be large enough for
           the partitions systemd-repart carves in the trailing free space
           (swap + var); the default 40 GiB has ample headroom.
+        '';
+      };
+
+      extraDisks = mkOption {
+        type = types.listOf extraDiskType;
+        default = [];
+        description = ''
+          Empty virtio block devices attached in addition to the root disk.
+          Their serials appear as /dev/disk/by-id/virtio-<serial>, allowing
+          multi-device provisioning tests to use the production stable-path
+          contract.
+        '';
+      };
+
+      expectAgent = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether the harness waits for the guest agent during initial boot.
+          Set false only for a negative boot test that intentionally fails
+          closed before switch-root; its test body must assert the serial
+          diagnostic and on-disk outcome directly.
         '';
       };
 

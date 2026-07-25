@@ -11,7 +11,7 @@
 //! # The eval invocation
 //!
 //! ```text
-//! nix eval --json \
+//! nix-instantiate --store dummy:// --eval --strict --json \
 //!   --option restrict-eval true \                  # read only the eval root + store
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
 //!   -I <root> \
@@ -51,9 +51,10 @@ pub const DEFAULT_MANIFEST_PATH: &str = "/run/aos/manifest.json";
 /// A cold stock-Nix evaluator over a prepared eval root.
 ///
 /// Each [`NixEvaluator::evaluate`] call writes `entry.nix` into the root and
-/// runs `nix eval` under the determinism flags. The subprocess is expected to
-/// run inside the hardened transient scope authored by `aos-eval.service`; this
-/// type does not create the scope, it only invokes `nix` and classifies.
+/// runs `nix-instantiate --eval` under the determinism flags. The subprocess is
+/// expected to run inside the hardened transient scope authored by
+/// `aos-eval.service`; this type does not create the scope, it only invokes the
+/// evaluator and classifies.
 pub struct StockNixEvaluator {
     /// The eval root (`-I` search path and `entry.nix` location).
     root: PathBuf,
@@ -76,7 +77,7 @@ impl StockNixEvaluator {
     /// operator-provenance seam in `lib/modules.nix` / `default.nix` `mkSystem`)
     /// and each provider's config-only module is imported by store path. The
     /// expression evaluates to an attrset whose `manifest` attribute is the
-    /// rendered data contract forced by `nix eval ... manifest`.
+    /// rendered data contract forced by `nix-instantiate ... -A manifest`.
     ///
     /// The exact base-lib entrypoint (`evalHostConfig`) is provided by the
     /// in-image module library and is therefore builder-gated; this renderer
@@ -116,9 +117,8 @@ impl NixEvaluator for StockNixEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass> {
         let entry = self.write_entry(attempt)?;
 
-        let mut cmd = Command::new("nix");
-        cmd.arg("eval")
-            .arg("--json")
+        let mut cmd = Command::new("nix-instantiate");
+        cmd.args(["--store", "dummy://", "--eval", "--strict", "--json"])
             // `restrict-eval` WITHOUT `--pure-eval`: pure-eval forbids importing
             // the base-lib by absolute store path, which this evaluator must do.
             // restrict-eval still confines reads to the store + `-I` roots, and
@@ -141,12 +141,14 @@ impl NixEvaluator for StockNixEvaluator {
             }
         }
 
-        cmd.arg("-f").arg(&entry).arg("manifest");
+        cmd.arg("-A").arg("manifest").arg(&entry);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
 
-        let output = cmd.output().context("failed to spawn `nix eval`")?;
+        let output = cmd
+            .output()
+            .context("failed to spawn `nix-instantiate --eval`")?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         let kill = kill_reason(&output.status, &stderr);

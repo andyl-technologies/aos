@@ -100,10 +100,10 @@ job-script normalization, documented in the commit.
       incompatible modules pre-eval (mirror `trust_ctx.enforce_totality()`).
 - [ ] `aos-eval.service` (stage-2, `After=network-online.target`,
       `Before=aos-install-packages.service`, `Type=oneshot`, best-effort) running
-      sandboxed stock Nix (`--pure-eval --restrict-eval
-      --allow-import-from-derivation=false`) → manifest.
+      sandboxed stock Nix (`nix-instantiate --store dummy:// --eval --strict
+      --json`, `restrict-eval`, `allow-import-from-derivation=false`) → manifest.
 - [ ] Hardened transient eval scope: `MemoryMax=2G`/`MemoryHigh=1536M`/
-      `RuntimeMaxSec=120`/`TasksMax`, `ProtectSystem=strict`, read-only input
+      `TimeoutStartSec=120s`/`TasksMax`, `ProtectSystem=strict`, read-only input
       binds, `SystemCallFilter`; fail-closed on kill.
 
 ### Generations
@@ -121,8 +121,7 @@ job-script normalization, documented in the commit.
 
 ### Provisioning, substrate & orchestration (Ignition removal)
 
-systemd-native substrate + the `aos metadata` agent + the unit graph. Phased to
-keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Phasing).
+systemd-native substrate + the `aos metadata` agent + the unit graph.
 
 - [ ] **systemd-repart substrate.** Flip `-Drepart=enabled`/`-Dfdisk=enabled`
       in `pkgs/system/systemd.nix`; un-strip `systemd-repart` from the initrd
@@ -134,12 +133,43 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
 - [ ] **Lifecycle guards.** Render destructive ops as `Type=oneshot` +
       state-probe (`cryptsetup isLuks`/`blkid || mkfs`) / `ConditionFirstBoot=`;
       never guard convergent ops (repart/tmpfiles/sysusers).
-- [ ] **`aos metadata` agent.** `aos metadata detect` (port
-      `pkgs/boot/aos-platform-detect.nix`) + `fetch`; reuse `aos-net` +
-      `security.rs` SSHSIG + `TrustStore`. Transport-only in initrd; stash
-      `/run/aos-metadata/{host.nix,host.nix.sig,facts.json}`. Literal-Nix payload
-      + URL-pointer (`sha256` content-pin). Reuse surface in
-      [`provisioning.md`](provisioning.md) §Implementation.
+- [x] **`aos metadata` agent.** `aos metadata detect` + `fetch`; reuse
+      `aos-net` + `security.rs` SSHSIG + `KeyStore`; add `authorize` for the
+      exact literal `host.nix` bytes. Stash raw user-data, accepted `host.nix`,
+      facts, and trust evidence. Support a hash-pinned URL/signature pointer
+      only as transport metadata; remove `aos.provisioning/v1` and every
+      storage field outside `host.nix`.
+- [x] **Restricted provisioning eval.** Add
+      `baseLib.evalProvisioningConfig`, which declares only
+      `aos.provisioning`, runs in initrd under restrict-eval/no-IFD, and emits
+      `aos.provisioning-plan/v1` pure JSON. Add the undeclared-throw regression
+      that locks the non-strict/no-global-freeform invariant.
+- [x] **Typed storage renderer.** Deserialize the evaluated plan into a strict
+      Rust contract, reject unsafe devices/types/labels/formats/sizes, group by
+      device, and render generated per-device repart definitions. The
+      no-host.nix fallback evaluates the same default Nix module and uses the
+      same validator/renderer.
+- [x] **One-time provisioning commit.** Reserve a GPT marker as
+      `aos-provisioning-pending-v1`; dry-run all devices, apply all devices,
+      verify, then relabel it to `aos-provenance-operator-v1` or
+      `aos-provenance-fallback-v1`. Only committed labels suppress future
+      mutation. The root target is applied first so pending is durable before
+      any secondary device changes. Committed boots reacquire/evaluate
+      `host.nix`; `systemd-repart --dry-run` reports drift but can never reopen
+      disk mutation.
+- [x] **Durable evidence and recovery input.** Persist immutable first-commit
+      audit evidence and the normalized plan under
+      `/var/lib/aos-provisioning`; atomically persist the generated
+      per-device definitions for manual later-device provisioning. Cache
+      runtime input only after full evaluation succeeds and hash-check it
+      before last-known-good restoration.
+- [x] **Frozen-partition type isolation.** Build root-a with the
+      target-architecture DPS root GUID (and verity with the matching DPS
+      root-verity GUID), while operator data stays `linux-generic`. Reject all
+      frozen/reserved types in the host plan.
+- [x] **Complete initrd format closure.** Every admitted format has its
+      AOS-built tool in the repart unit (`e2fsprogs`, `dosfstools`, util-linux);
+      unsupported formats fail validation.
 - [ ] Net-new pieces (the rest is reuse): a **config-drive mount helper**
       (`blkid -L cidata|config-2|aos-metadata` + ISO9660/vfat mount — the one
       capability with no aos primitive); **vendor a YAML crate** (no
@@ -161,21 +191,46 @@ keep an Ignition-compat fallback (see [`provisioning.md`](provisioning.md) §Pha
 - [ ] `Wants=` for package pulls (degraded, not failed boot); `Requires=`/
       `BindsTo=` reserved for substrate edges; `Restart=on-failure` on fetch;
       `aos-activate` is the single atomic commit.
-- [ ] Phase out Ignition: keep `ignition-fetch` (payload-only) → `aos metadata`
-      for offline channels (ISO/NoCloud/config-drive/fw_cfg) → cloud IMDS
-      (AWS/GCP/DO/OpenStack); drop `pkgs.ignition`/`pkgs.butane`/
-      `lib/formats/ignition.nix` when the fallback is unused.
+- [ ] Remove Ignition, Butane, and `lib/formats/ignition.nix`; every supported
+      offline and cloud transport is implemented natively by `aos metadata` and
+      covered by recorded fixtures.
+
+### Golden-image / host-policy boundary
+
+- [ ] Split mixed server/edge/debug profiles into immutable image-capability
+      modules and runtime role modules bundled in the base library. Production
+      systems select no workload/debug role; `host.nix` selects
+      `aos.roles.server`/`edge` as needed.
+- [x] Remove production passwordless root autologin. Keep any initrd recovery
+      shell as an explicit image capability; make runtime diagnostics ordinary
+      desired packages selected by authenticated `host.nix`.
+- [ ] Replace image package declarations/presets with
+      `aos.apm.desiredPackages = [ <registry-name> ... ]`. Only
+      boot/eval/fetch/verify/activate/recovery packages are bundled by default.
+      Workload users, D-Bus policy, units, and files come from each resolved
+      package's config module.
+- [ ] Move hostname, locale, timezone, host state version, networking, users,
+      SSH, chrony, runtime security, firewall, audit, journald, monitoring,
+      PAM, runtime PKI, and registry routing to the host manifest. Keep image
+      version/module ABI, UKI/kernel/initrd settings, verity, measured boot,
+      and initial trust roots image-owned.
+- [ ] Replace config-dependent frozen artifacts with manifest/runtime
+      materialization: PAM limits as `/etc` text, extra CA roots as runtime
+      bundle inputs, package-derived D-Bus policy from the resolved package
+      set, and desired package profiles/presets from `host.nix`.
 
 ### Trust & secrets
 
-- [ ] `trusted-config-keys.d/<op>.pub` baked into the image
-      (`modules/base/apm-registries.nix`); evaluator verifies the `host.nix`
-      operator signature **before** eval.
+- [x] Provisioning trust policy: default `platform`; opt-in `signed` with a
+      vendor/fleet root included in the measured image and initrd plus optional
+      signed operator-key delegation. Authorize the exact `host.nix` bytes
+      before restricted evaluation and bind stage-2 to their accepted hash.
 - [ ] `secretRef` opaque type + activation resolution contract (reuse
       `credential_artifact.rs::reconcile_desired_credentials`); credentials-by-
       handle only, no plaintext constructor in the option type.
-- [ ] `gen-attestation/v1` record (generation_id, manifest_hash, signed input
-      set) quoted alongside PCR 7/11; reuse `expected_pcr11` from the registry
+- [ ] `gen-attestation/v1` record (generation_id, manifest_hash, authenticated
+      input set including trust mode and optional signer) quoted alongside PCR
+      7/11; reuse `expected_pcr11` from the registry
       catalog.
 
 ### Operability & migration
@@ -224,8 +279,11 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
       pre-verification `authorized_keys` seeding from the facts channel.
 - [ ] **Static-networking seed** from platform metadata in the initrd agent for
       DHCP-less clouds (DO/OpenStack) so stage-2 can reach the registry.
-- [ ] **First-boot substrate from image-baked `/usr/lib/repart.d` only**;
-      operator custom topologies via a two-boot (verify-then-apply) flow.
+- [x] **Authenticated first-boot `host.nix` projection**: absent `host.nix`
+      evaluates the base default `aos.provisioning.storage`; a present file is
+      authenticated then partially evaluated in initrd, validated in Rust,
+      rendered to transient `repart.d`, and committed once. Reject raw
+      fragments and invalid plans before GPT mutation with no fallback.
 - [ ] **Degraded commit = re-projected manifest** (full minus un-fetched),
       re-hashed, drop-set recorded — keeps the generation content-addressed.
 - [ ] **`gen-N/cfgsrc/<hash>` GC root** pinning the config-module source closure
@@ -249,11 +307,16 @@ mechanisms are specified in [`build-spec.md`](build-spec.md).
 - **P1:** `checks.config-eval` + `checks.config-parity` green; fleet
   conflict-no-op + dry-run-matches-realized + pointer-only-rollback green;
   on-host eval within the perf budget.
-- **Provisioning:** `systemd-repart` carves/grows `/var` on a fresh VM and is a
-  no-op on reboot (idempotent); `aos metadata` fetches+stashes literal-Nix
-  user-data across the offline channels; a single failing package yields
+- **Provisioning:** `systemd-repart` applies the baked default or an
+  authenticated `host.nix` storage projection on first boot and is
+  mutation-frozen but dry-run checked on reboot; invalid declared plans stop
+  before GPT mutation; pending-marker recovery fails closed; operator and
+  fallback provenance, signed-policy exact-byte verification, multi-device
+  grouping/root-first ordering, recurring runtime evaluation, durable audit
+  state, measured-boot raw `/var`, and pre-provisioned/out-of-band marker
+  requirements have regression coverage; `aos metadata` covers every
+  advertised offline and cloud channel natively; a single failing package yields
   `is-system-running = degraded` with `multi-user.target` reached and the box
-  SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`); Ignition fallback
-  path still green until each native fetcher lands.
+  SSH-reachable (`tests/fleet/apm-system-activation-fail.nix`).
 - **P2:** byte-identical manifest vs P1 stock-Nix on the full fixture corpus
   (the aos-nix parity discipline), plus the P1 gates still green.

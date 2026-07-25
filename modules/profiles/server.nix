@@ -1,4 +1,4 @@
-##! modules/profiles/server.nix — Server role profile
+##! modules/profiles/server.nix — host-selectable server runtime role
 ##!
 ##! Configures the system for server/cloud deployments: signed host
 ##! first-boot provisioning in the initrd, encrypted swap, NTP via chrony,
@@ -13,32 +13,22 @@
   lib,
   ...
 }: let
-  cfg = config.aos.profiles.server;
+  cfg = config.aos.roles.server;
 in {
-  options.aos.profiles.server = {
+  options.aos.roles.server = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        Enable the server profile. Configures ZFS storage, signed host
-        first-boot provisioning, chrony NTP, SSH, and standard security
-        defaults.
+        Enable the server runtime role from host.nix. Configures chrony, SSH,
+        server identities, package capabilities, and standard security policy.
+        Golden-image storage and kernel capabilities are defined by the system
+        variant rather than this host-selectable role.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    # Storage: zstd-compressed read-only erofs root (~3x smaller than ext4;
-    # the root is immutable, with writable state on /var, /etc overlay, and
-    # tmpfs). /var on its own ext4 partition created by systemd-repart at first
-    # boot. ZFS deferred.
-    aos.filesystems.zfs.enable = lib.mkDefault false;
-    aos.filesystems.rootFsType = lib.mkDefault "erofs";
-    aos.filesystems.rootReadOnly = lib.mkDefault true;
-
-    # Kernel modules for encrypted swap in stage 2.
-    aos.kernel.modules = ["dm-crypt" "aes" "xts"];
-
     # Time sync
     aos.services.chrony.enable = lib.mkDefault true;
 

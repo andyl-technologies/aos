@@ -1,18 +1,15 @@
-//! Detached-signature authentication for `host.nix`.
+//! Domain-separated configuration signature authentication.
 //!
-//! The initrd `aos metadata` agent is **transport-only**: it fetches the
-//! operator's `host.nix` (literal Nix or a `sha256`-pinned URL pointer) and
-//! stashes the bytes at `/run/aos-metadata/host.nix` plus an
-//! optional detached SSHSIG at `host.nix.sig` (see
-//! [`crate::metadata::stash`]). It performs no signature check itself.
+//! Secure first-boot provisioning verifies exact `host.nix` bytes in the
+//! initrd before either restricted or full evaluation.
+//! Manual configuration-evaluation commands can use the same implementation
+//! to verify a detached signature over a standalone `host.nix`.
 //!
-//! Deployments that select signed host configuration use this module before
-//! evaluation. It verifies the delivered bytes against an image-baked
+//! Both paths verify delivered bytes against an image-baked
 //! `trusted-config-keys.d/<op>.pub` set, reusing
 //! [`crate::security::KeyStore`] and
-//! [`crate::security::verify_payload_signature`] unchanged. An unsigned,
-//! badly-signed, or untrusted-key `host.nix` yields no [`HostNixTrust`] and the
-//! caller emits no manifest, leaving the prior configuration active.
+//! [`crate::security::verify_payload_signature`]. An unsigned, badly signed,
+//! or untrusted input yields no [`HostNixTrust`].
 //!
 //! ```text
 //! authenticate_host_nix(bytes, detached_sig, trusted_dirs):
@@ -24,10 +21,8 @@
 //!   Err(Untrusted)
 //! ```
 //!
-//! The SSHSIG namespace is the literal [`CONFIG_SIGNATURE_NAMESPACE`]
-//! (`aos-config`), distinct from the `git` namespace used for tag/commit
-//! signatures, so a config signature can never be replayed as a tag signature
-//! and vice versa.
+//! Host modules use [`CONFIG_SIGNATURE_NAMESPACE`], which is distinct from the
+//! `git` namespace and therefore prevents cross-protocol signature replay.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -124,6 +119,29 @@ pub fn authenticate_host_nix(
     detached_sig: Option<&str>,
     trusted_dirs: &[PathBuf],
 ) -> Result<HostNixTrust, HostNixTrustError> {
+    authenticate_config_payload(
+        host_nix,
+        detached_sig,
+        trusted_dirs,
+        CONFIG_SIGNATURE_NAMESPACE,
+    )
+}
+
+/// Authenticate arbitrary configuration bytes in a caller-selected SSHSIG
+/// namespace.
+///
+/// Callers must use a stable, domain-separated namespace. First boot uses
+/// [`CONFIG_SIGNATURE_NAMESPACE`] over the exact host module bytes.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`authenticate_host_nix`].
+pub fn authenticate_config_payload(
+    payload: &[u8],
+    detached_sig: Option<&str>,
+    trusted_dirs: &[PathBuf],
+    namespace: &str,
+) -> Result<HostNixTrust, HostNixTrustError> {
     let candidates = collect_trusted_config_keys(trusted_dirs);
     if candidates.is_empty() {
         return Err(HostNixTrustError::NoTrustedKeys);
@@ -136,7 +154,7 @@ pub fn authenticate_host_nix(
         // key line; we built `key_line` from a parsed KeyStore entry, so treat
         // any Err defensively as a non-match and keep scanning.
         if matches!(
-            verify_payload_signature(host_nix, sig, &key_line, CONFIG_SIGNATURE_NAMESPACE),
+            verify_payload_signature(payload, sig, &key_line, namespace),
             Ok(true)
         ) {
             return Ok(HostNixTrust {
@@ -326,6 +344,30 @@ mod tests {
             sign_payload_signature(&priv_path, "git", host_nix).expect("sign in git namespace");
 
         let err = authenticate_host_nix(host_nix, Some(&git_sig), &[keys]).unwrap_err();
+        assert_eq!(err, HostNixTrustError::Untrusted);
+    }
+
+    #[test]
+    fn config_namespace_binds_complete_host() {
+        let tmp = TempDir::new().unwrap();
+        let keys = tmp.path().join("trusted-config-keys.d");
+        let priv_path = enroll_operator(&keys, tmp.path(), "ops");
+        let host = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"8G\"; }";
+        let sig = sign_payload_signature(&priv_path, CONFIG_SIGNATURE_NAMESPACE, host).unwrap();
+
+        let trust = authenticate_config_payload(
+            host,
+            Some(&sig),
+            std::slice::from_ref(&keys),
+            CONFIG_SIGNATURE_NAMESPACE,
+        )
+        .unwrap();
+        assert_eq!(trust.operator_id, "ops");
+
+        let changed = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"9G\"; }";
+        let err =
+            authenticate_config_payload(changed, Some(&sig), &[keys], CONFIG_SIGNATURE_NAMESPACE)
+                .unwrap_err();
         assert_eq!(err, HostNixTrustError::Untrusted);
     }
 

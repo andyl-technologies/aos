@@ -13,7 +13,7 @@ As a guiding principle, every AOS binary has a clear and reproducible provenance
 ## Components
 
 - **Universal image** for cloud and metal
-- **Host provisioning** via cloud-init
+- **Host configuration** via `host.nix` delivered as cloud user-data
 - Runtime managed by **systemd**
 - Package management built with **Nix**
 
@@ -26,14 +26,13 @@ Requirements:
 
 - x86-64 with UEFI enabled (CSM disabled);
 - A boot drive with 50GB of capacity or more;
-- A thumb drive or (virtual) CD to hold the "cloud-init" instance metadata/userdata;
+- A thumb drive or (virtual) CD to hold instance metadata/user-data;
   - The commands below assume a thumb drive adapt them to your situation.
 - Your favorite Linux live CD with the following utilities installed:
   - any kind of HTTP client (`curl`, `wget`…);
   - `coreutils` (for `dd` & `base64`);
   - `xorriso` (might be packaged under `libisoburn`);
   - `sed`;
-- Your SSH public key.
 
 Boot your live CD then download the [AOS image] to flash it onto your boot drive:
 
@@ -43,12 +42,12 @@ printf "image path = %s\n" "${AOS_IMAGE:?"Please set AOS_IMAGE to the path where
 dd if="$AOS_IMAGE" of="$BOOT_DRIVE" bs=128k conv=fsync status=progress
 ```
 
-Next, build `aos-metadata.iso` with a [minimal `config.json`] for Ignition set with your SSH public key and the expected path of your boot drive block device:
+Next, write the host policy as literal Nix. Storage lives under the one-time
+`aos.provisioning` lifecycle namespace; normal runtime policy uses its ordinary
+module namespaces:
 
 ```bash
-printf "boot drive = %s\n" "${BOOT_DRIVE:?"Please set BOOT_DRIVE to the path of the block device for AOS"}"
-printf "ignition config path = %s\n" "${CONFIG_PATH:?"Please set CONFIG_PATH to the path of the ignition config.json"}"
-printf "ssh public key = %s\n" "${SSH_PUBLIC_KEY:?"Please set SSH_PUBLIC_KEY (e.g. \`from ssh-add -L | cut -d' ' -f2)'"}"
+printf "host.nix path = %s\n" "${HOST_NIX:?"Please set HOST_NIX to your host.nix"}"
 printf "aos-metadata iso path = %s\n" "${ISO_OUT:="./aos-metadata.iso"}"
 
 (
@@ -57,11 +56,7 @@ printf "aos-metadata iso path = %s\n" "${ISO_OUT:="./aos-metadata.iso"}"
     staging="$(mktemp --tmpdir -d aos-metadata-staging.XXXXXXXXXX)"
     trap "rm -rf $staging" EXIT
 
-    sed \
-        -e "s/REPLACE_ME_RUN_ssh-add_-L_pipe_base64_-w0/$SSH_PUBLIC_KEY/" \
-        -e "s#/dev/vda#$BOOT_DRIVE#" \
-        <"$CONFIG_PATH" \
-        >"$staging/config.json"
+    cp "$HOST_NIX" "$staging/host.nix"
 
     xorriso \
         -as mkisofs \
@@ -92,12 +87,13 @@ Once your drives are ready, reboot the machine from the boot drive and into AOS.
 
 Pre-requisites:
 
-Download the [minimal `config.json`] for Ignition and set your SSH public key in it, for example:
+Create a `host.nix` containing the machine's storage and runtime policy, for
+example:
 
-```bash
-printf "ignition config path = %s\n" "${CONFIG_PATH:?"Please set CONFIG_PATH to the path of the ignition config.json"}"
-printf "ssh public key = %s\n" "${SSH_PUBLIC_KEY:?"Please set SSH_PUBLIC_KEY (e.g. \`from ssh-add -L | cut -d' ' -f2)'"}"
-perl -i -pe "s/REPLACE_ME_RUN_ssh-add_-L_pipe_base64_-w0/$SSH_PUBLIC_KEY/" "$CONFIG_PATH"
+```nix
+{
+  aos.provisioning.storage.partitions.var.sizeMin = "8G";
+}
 ```
 
 Installation:
@@ -115,7 +111,7 @@ Installation:
     - Shared CPU instances are gonna be the cheapest.
   - [ ] Click *Configure Software* at the bottom once your form is ready;
     - [ ] Select *Snapshot* as your image and use the uploaded snapshot;
-    - [ ] Enable *Cloud-Init User Data* and paste the content from `$CONFIG_PATH`;
+    - [ ] Enable *Cloud-Init User Data* and paste the literal contents of `host.nix`;
     - [ ] Hit *Deploy*;
       - This should redirect you to the *Instance* page/table.
 - You can access the server's console or lookup its IP from its detail page.

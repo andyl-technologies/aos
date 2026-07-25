@@ -2176,7 +2176,7 @@ pub async fn run(
 
     // `apm __materialize`: apply a converged manifest's
     // /etc tree into a per-generation lower. Called by `activate` on the new
-    // path in place of re-running Ignition.
+    // path after the configuration fixpoint has converged.
     if let PackageCommand::Materialize {
         manifest,
         etc_root,

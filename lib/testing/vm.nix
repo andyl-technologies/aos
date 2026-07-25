@@ -39,8 +39,8 @@
   # Build a GPT disk image for VM testing
   # ---------------------------------------------------------------------------
   # Produces a single $out/disk.img with four partitions matching the
-  # production layout closely enough for the production initrd + ignition
-  # services to run unchanged against it:
+  # production layout closely enough for the production initrd and early-boot
+  # provisioning services to run unchanged against it:
   #
   #   1  boot  — 4 MiB, unformatted. Vestigial — kernel + initrd come in
   #              via `-kernel`/`-initrd`, partition 1 is never mounted.
@@ -55,7 +55,9 @@
   #              `dev-disk-by-partlabel-swap.device` would otherwise sit
   #              queued for 90 s on every boot waiting for udev to
   #              announce a partition that doesn't exist.
-  #   4  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
+  #   4  provenance — 1 MiB reserved AOS marker on baked-var disks. It
+  #              identifies this out-of-band layout as already committed.
+  #   5  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
   #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
@@ -82,7 +84,7 @@
     # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.
     extraClosures ? [],
-    # Size of the /var partition (partition 4) in MiB. Raise for tests
+    # Size of the /var partition (partition 5 on baked disks) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
     # Only consulted when `varProvisioning == "baked"`; under "repart"
@@ -280,8 +282,8 @@
         -f var/etc/ssh/ssh_host_ed25519_key </dev/null
 
       # NOTE: we deliberately do NOT seed /var/etc/os-release here.
-      # /var/etc is the highest-precedence /etc-overlay lower
-      # (modules/services/ignition.nix), so a var-seed os-release would
+      # /var/etc is the highest-precedence persistent /etc-overlay lower,
+      # so a var-seed os-release would
       # shadow the generation's EROFS os-release on every boot — masking
       # the real NAME/VERSION_ID and breaking upgrade tests that assert
       # the active generation's version. The toplevel's own os-release
@@ -423,6 +425,7 @@
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
             SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
+            SENTINEL_SECTORS=$(( 1 * 1024 * 1024 / 512 ))
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
@@ -431,7 +434,8 @@
               if bakeVar
               then ''
                 VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
-                VAR_START=$((  SWAP_START + SWAP_SECTORS ))
+                SENTINEL_START=$(( SWAP_START + SWAP_SECTORS ))
+                VAR_START=$(( SENTINEL_START + SENTINEL_SECTORS ))
                 DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
               ''
               else ''
@@ -443,8 +447,9 @@
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
-            # Standard Linux filesystem GUID for boot/root/var; Linux
-            # swap GUID for the swap stub. The partlabel `var` is what
+            # The x86-64 DPS root GUID isolates root-a from operator
+            # linux-generic data. The reserved AOS GUID marks a baked /var
+            # disk as provisioned out-of-band. The partlabel `var` is what
             # mount-var.service binds to via /dev/disk/by-partlabel/var.
             # The root partition is labelled `root-a` to match the
             # production A/B layout. The var line is omitted under "repart"
@@ -452,8 +457,9 @@
             {
               echo "label: gpt"
               echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
-              echo "size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root-a"
+              echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
+              ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk

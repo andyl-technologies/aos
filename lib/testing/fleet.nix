@@ -3,8 +3,9 @@
 # Each machine boots through the production initrd path (stage-1 systemd
 # → systemd-repart substrate → switch-root → stage-2 systemd). Per-machine
 # identity (hostname, /etc/hosts, eth0 .network, the guest-agent unit) is
-# baked into the image's /etc via `extendModules`,
-# so no metadata channel is attached.
+# baked into the image's /etc via `extendModules`. Tests may additionally
+# attach a read-only `aos-metadata` ISO to exercise the production
+# cloud-metadata provisioning path.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
 # UDP multicast carrying Ethernet frames — so no host bridge or tap setup
 # is required. CAP_NET_ADMIN is not needed.
@@ -97,8 +98,11 @@
       # bypassing fleet-spec validation.
       extraModules = m.extraModules or [];
       extraClosures = m.extraClosures or [];
+      metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
+      extraDisks = m.extraDisks or [];
+      expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
       name = mname;
@@ -124,8 +128,7 @@
   # onto the machine's already-evaluated system with `extendModules`. On the
   # the initrd `aos-config-seed` leaves the per-generation `/etc` lower empty,
   # so all of `/etc` comes from this baked EROFS — exactly what these entries
-  # populate. The same module flips the machine onto the new provisioning
-  # substrate (Ignition off, systemd-repart on).
+  # populate. The same module uses the production systemd-repart substrate.
   #
   #   `bakeAgentUnit` — emit `systemd.services.aos-test-agent` here. False for
   #   `baked`-var kernel machines, whose /var seed already carries the unit
@@ -235,9 +238,8 @@
   # `disk` is a function of `{system, extraClosures, varSizeMiB}`.
   # Nix dedups identical derivations, so two machines with matching
   # image inputs reference one disk.
-  # `metadataISO` is the only per-machine derivation; in interactive
-  # mode the SSH-key+DHCP fragment changes the ignition input, so
-  # interactive ISOs hash differently from sandboxed-test ISOs.
+  # `metadataISO` is an optional per-machine derivation containing only the
+  # files explicitly declared by the test spec.
   mkMachineBuilds = {
     machinesWithIndex,
     hostsEntries,
@@ -245,12 +247,54 @@
   }:
     builtins.map (
       m: let
-        # Every machine bakes per-VM identity + provisioning into its image /etc
-        # via extendModules; nothing rides a metadata channel.
+        # Every machine bakes per-VM identity into its image /etc. A test may
+        # independently attach provisioning input through the metadata channel.
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
+        metadataNames = builtins.attrNames m.metadata;
+        invalidMetadataNames =
+          builtins.filter
+          (name: builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" name == null)
+          metadataNames;
+        metadataFiles =
+          builtins.map
+          (name: {
+            inherit name;
+            source = pkgs.writeTextFile {
+              name = "aos-fleet-${m.name}-metadata-${name}";
+              text = m.metadata.${name};
+              destination = "/value";
+            };
+          })
+          metadataNames;
+        metadataISO =
+          if invalidMetadataNames != []
+          then
+            throw ''
+              fleet: machine "${m.name}" has invalid metadata file names:
+              ${lib.concatStringsSep ", " invalidMetadataNames}
+              Metadata entries must be plain file names containing only
+              letters, digits, dot, underscore, and hyphen.
+            ''
+          else if metadataFiles == []
+          then null
+          else
+            pkgs.runCommand "aos-fleet-${m.name}-metadata" {
+              buildDeps = [pkgs.libisoburn];
+            } ''
+              mkdir -p "$out/tree"
+              ${lib.concatMapStringsSep "\n" (file: ''
+                  cp ${file.source}/value "$out/tree/${file.name}"
+                '')
+                metadataFiles}
+              ${pkgs.libisoburn}/bin/xorriso -as mkisofs \
+                -V aos-metadata \
+                -o "$out/metadata.iso" \
+                "$out/tree"
+            '';
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB extraDisks expectAgent;
+          inherit metadataISO;
           system = effectiveSystem;
         }
         // (
@@ -267,9 +311,6 @@
               system = effectiveSystem;
               inherit (m) extraClosures varSizeMiB varProvisioning;
             };
-            # Identity baked into /etc, so no metadata channel — `metadataISO =
-            # null` tells the manifest to omit the SCSI CD-ROM.
-            metadataISO = null;
           }
         )
     )
@@ -311,6 +352,8 @@
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
+                expect_agent = mb.expectAgent;
+                extra_disks = mb.extraDisks;
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
@@ -323,7 +366,10 @@
                   fw_cfg = null;
                   firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
                   firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
-                  metadata = null;
+                  metadata =
+                    if mb.metadataISO == null
+                    then null
+                    else "${builtins.toString mb.metadataISO}/metadata.iso";
                 }
                 else
                   {
@@ -331,8 +377,6 @@
                     kernel = builtins.toString mb.kernel;
                     initrd = "${builtins.toString mb.initrd}/initrd.img";
                     disk = "${builtins.toString mb.disk}/disk.img";
-                    # `null` because identity is baked into /etc, so no
-                    # metadata ISO is attached (driver omits the SCSI CD-ROM).
                     metadata =
                       if mb.metadataISO == null
                       then null
@@ -423,9 +467,9 @@
   # ============================================================
   # mkFleetTestInteractive — outside-sandbox launcher.
   # ============================================================
-  # Same kernel/initrd/disk closure as `mkFleetTest`, but the metadata
-  # ISO carries an additional ignition fragment (root pubkey + DHCP on
-  # the user-mode NIC), and the launcher script attaches a second
+  # Same kernel/initrd/disk closure as `mkFleetTest`, but the effective image
+  # additionally bakes a root pubkey + DHCP on the user-mode NIC, and the
+  # launcher script attaches a second
   # virtio-net NIC with `-netdev user,hostfwd=tcp:127.0.0.1:$PORT-:22`
   # so the host can reach each guest's sshd.
   #
@@ -485,8 +529,10 @@
 
             cp "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
             chmod u+w "$FLEET_DIR/${mb.name}-disk.img"
-            cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
-            chmod u+w "$FLEET_DIR/${mb.name}-metadata.iso"
+            ${lib.optionalString (mb.metadataISO != null) ''
+              cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
+              chmod u+w "$FLEET_DIR/${mb.name}-metadata.iso"
+            ''}
 
             VMLINUZ_${mb.name}=$(ls "${mb.kernel}/boot/vmlinuz-"* | head -1)
             INITRD_${mb.name}="${mb.initrd}/initrd.img"
@@ -494,7 +540,9 @@
             echo "  Kernel:   ''${VMLINUZ_${mb.name}}"
             echo "  Initrd:   ''${INITRD_${mb.name}}"
             echo "  Disk:     $FLEET_DIR/${mb.name}-disk.img"
-            echo "  Metadata: $FLEET_DIR/${mb.name}-metadata.iso"
+            ${lib.optionalString (mb.metadataISO != null) ''
+              echo "  Metadata: $FLEET_DIR/${mb.name}-metadata.iso"
+            ''}
 
             "${pkgs.socat}/bin/socat" -u UNIX-LISTEN:"''${SERIAL_SOCK_${mb.name}}",reuseaddr,fork \
                                           OPEN:"''${SERIAL_LOG_${mb.name}}",creat,append &
@@ -524,9 +572,11 @@
               -initrd "''${INITRD_${mb.name}}" \
               -append "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 systemd.journald.forward_to_console=1 enforcing=0 net.ifnames=0" \
               -drive file="$FLEET_DIR/${mb.name}-disk.img",format=raw,if=virtio \
+              ${lib.optionalString (mb.metadataISO != null) ''
               -drive id=metadata,file="$FLEET_DIR/${mb.name}-metadata.iso",if=none,format=raw,readonly=on \
               -device virtio-scsi-pci,id=scsi0 \
               -device scsi-cd,drive=metadata,bus=scsi0.0 \
+            ''}
               -device virtio-serial \
               -device virtserialport,chardev=agent,name=aos.test.agent \
               -chardev socket,id=agent,path="''${AGENT_SOCK_${mb.name}}",server=on,wait=off \
@@ -572,7 +622,7 @@
       # preserved on eth0; an additional eth1 NIC carries QEMU user-mode
       # networking with TCP:22 forwarded to 127.0.0.1:<port>.
       #
-      # The supplied SSH key is baked into each per-machine metadata ISO;
+      # The supplied SSH key is baked into each per-machine image;
       # to use a different key, rebuild the launcher with the new key.
       set -euo pipefail
 

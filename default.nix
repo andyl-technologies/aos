@@ -96,7 +96,7 @@
       modules =
         modules
         ++ moduleList
-        ++ [{aos.config.evalAtBoot.baseLib = "${baseLib}";}];
+        ++ [{aos.config.evalAtBoot.baseLib = baseLib;}];
       inherit pkgs lib specialArgs operatorModules;
     };
 

@@ -17,6 +17,7 @@
   ...
 }: let
   cfg = config.aos.config.evalAtBoot;
+  provisioningStateDir = config.aos.provisioning.stateDir;
 in {
   options.aos.config.evalAtBoot = {
     hostNix = lib.mkOption {
@@ -43,18 +44,22 @@ in {
         instance.
 
         `signed` is the fail-closed mode for deployments that do not trust
-        their metadata transport. It requires a detached `host.nix.sig` that
-        verifies against a key in `aos.apm.configKeys`. Missing keys, missing
-        signatures, and invalid signatures all prevent evaluation.
+        their metadata transport. The initrd verifies the complete provisioning
+        input against `aos.apm.configKeys` before any storage mutation. Missing
+        keys, missing signatures, and invalid signatures all prevent boot-time
+        provisioning.
       '';
     };
 
     baseLib = lib.mkOption {
-      type = lib.types.str;
-      default = "";
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      internal = true;
+      readOnly = true;
       description = ''
         Store path of the in-image, ABI-pinned module library passed to the
-        evaluator as `--base-lib`.
+        evaluator as `--base-lib`. This is image-owned and cannot be replaced
+        by host.nix.
       '';
     };
 
@@ -84,7 +89,7 @@ in {
   config = {
     assertions = [
       {
-        assertion = cfg.baseLib != "";
+        assertion = cfg.baseLib != null;
         message = "aos.config.evalAtBoot.baseLib must be set to the in-image base library store path.";
       }
       {
@@ -95,15 +100,67 @@ in {
       }
     ];
 
+    systemd.services.aos-provisioning-persist = {
+      description = "Persist provisioning evidence and manual repart definitions";
+      wantedBy = ["multi-user.target"];
+      requires = ["local-fs.target"];
+      after = [
+        "local-fs.target"
+        "aos-config-seed.service"
+      ];
+      before = [
+        "aos-host-config-restore.service"
+        "aos-eval.service"
+        "multi-user.target"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        ${pkgs.aos}/bin/aos metadata persist-provisioning \
+          --state-dir ${provisioningStateDir} \
+          --module-abi ${toString cfg.moduleAbi} \
+          --image-version ${config.aos.system.version}
+      '';
+    };
+
+    systemd.services.aos-host-config-restore = {
+      description = "Restore the last fully evaluated host input";
+      wantedBy = ["multi-user.target"];
+      after = ["aos-provisioning-persist.service"];
+      before = [
+        "aos-eval.service"
+        "multi-user.target"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        if [ ! -e "${cfg.hostNix}" ]; then
+          ${pkgs.aos}/bin/aos metadata restore-runtime \
+            --state-dir ${provisioningStateDir} \
+            || echo "aos-eval: cached host input is unavailable or invalid; retaining the active generation" >&2
+        fi
+      '';
+    };
+
     systemd.services.aos-eval = {
       description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
       wants = ["network-online.target"];
+      requires = ["aos-host-config-restore.service"];
       after = [
         "network-online.target"
         "nix-overlay-setup.service"
         "aos-config-seed.service"
         "aos-seed-profiles.service"
+        "aos-host-config-restore.service"
       ];
       before = [
         "aos-install-baked-packages.service"
@@ -117,10 +174,14 @@ in {
         RemainAfterExit = true;
         # Per-eval hardened resource budget. A runaway is OOM- or
         # timeout-killed by the cgroup.
-        RuntimeMaxSec = 120;
+        TimeoutStartSec = "120s";
         MemoryMax = "2G";
         MemoryHigh = "1536M";
         TasksMax = 4096;
+        # These paths must exist before systemd constructs the service's mount
+        # namespace for ReadWritePaths. They are runtime state, not image
+        # contents, so create them for every boot.
+        RuntimeDirectory = ["aos" "aos-eval"];
         # Hardened scope: inputs read-only, only /run/aos* writable.
         ProtectSystem = "strict";
         ProtectHome = true;
@@ -134,12 +195,11 @@ in {
       script = ''
         set -u
         mkdir -p /run/aos-eval /run/aos
-        # Stage the metadata-agent-owned input into the hardened eval root.
-        # Signed mode authenticates the sibling SSHSIG before evaluation;
-        # platform mode relies on the deployment control plane that supplied
-        # the initrd metadata.
+        # Confirm that /run still contains the exact host bytes accepted by the
+        # initrd authorization step, then stage them into the hardened eval
+        # root. The trust decision itself precedes systemd-repart.
+        ${pkgs.aos}/bin/aos metadata verify-binding
         cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
-        cp -f "${cfg.hostNix}.sig" /run/aos-eval/host.nix.sig 2>/dev/null || true
 
         # Prefer the image's recorded module_abi; fall back to the option.
         module_abi="${toString cfg.moduleAbi}"
@@ -164,8 +224,26 @@ in {
           --module-abi "$module_abi" \
           --out "${cfg.manifest}" \
           --eval-root /run/aos-eval \
-          ${lib.optionalString (cfg.trust == "signed") "--require-signed-host-nix --trusted-config-keys-dir /etc/apm/trusted-config-keys.d"} \
           $desired_arg || exit 1
+      '';
+    };
+
+    systemd.services.aos-host-config-cache = {
+      description = "Cache the last fully evaluated host input";
+      wantedBy = ["multi-user.target"];
+      after = ["aos-eval.service"];
+      before = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "aos-provisioning";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        if [ -s "${cfg.manifest}" ] && [ -s "${cfg.hostNix}" ]; then
+          ${pkgs.aos}/bin/aos metadata cache-runtime \
+            --state-dir ${provisioningStateDir}
+        fi
       '';
     };
   };

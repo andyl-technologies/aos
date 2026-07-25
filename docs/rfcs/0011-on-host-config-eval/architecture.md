@@ -153,7 +153,8 @@ manifest contains **no secret values** — credentials appear only as handles
 ### P1 — stock C++ Nix (already in the image)
 
 Stock C++ Nix 2.24.12 is already built from source as an AOS package
-(`pkgs/tools/nix.nix`) with `nix eval` present and tested. P1 uses it directly.
+(`pkgs/tools/nix.nix`) with `nix-instantiate --eval` present and tested. P1
+uses it directly.
 Starting on stock Nix is not a compromise on the model: the module system is
 *our* Nix code (`lib/modules.nix`) and evaluates identically on either
 evaluator. The seam is exactly `eval entry.nix → JSON manifest`.
@@ -162,12 +163,11 @@ Invocation (eval-only by construction; the string-path discipline guarantees no
 instantiation even in a normal evaluator):
 
 ```text
-nix eval --json \
-  --pure-eval \                                  # determinism; blocks currentTime/getEnv/currentSystem
+nix-instantiate --store dummy:// --eval --strict --json \
   --option restrict-eval true \                  # read only /run/aos-eval + the store
   --option allow-import-from-derivation false \  # no IFD ⇒ no build can sneak in
   -I /run/aos-eval \
-  -f /run/aos-eval/entry.nix manifest
+  -A manifest /run/aos-eval/entry.nix
 ```
 
 Three capabilities stock Nix lacks vs aos-nix, each with a P1 stand-in:
@@ -200,57 +200,64 @@ this touches the registry format, the module contract, or the generations.
 
 ## Boot / first-boot bootstrap ordering
 
-> **Note on Ignition.** The initrd chain below names the `ignition-*` units as
-> they exist today; that is the **Phase A** state. In the end-state Ignition is
-> removed: substrate provisioning moves to `systemd-repart` + `cryptenroll`,
-> user-data fetch moves to the `aos metadata` agent, and the stage-2
-> install/activate monolith becomes a systemd unit graph. The eval *locus* and
-> the failure-safe properties below are unchanged by that swap. See
-> [`provisioning.md`](provisioning.md) (substrate + metadata agent) and
-> [`orchestration.md`](orchestration.md) (the unit graph) for the end-state, and
-> [`implementation-plan.md`](implementation-plan.md) for the phasing.
+The chain below is the end state: native metadata acquisition, authenticated
+first-boot storage, systemd-native substrate, and stage-2 evaluation. Ignition
+and its configuration format are absent.
 
-The first on-host eval runs **post-switch-root, in stage-2** — the same locus
-where APM reconciles at first boot today (`modules/base/apm.nix`). Initrd cannot
-host it: putting the evaluator + registry client in initrd would drag the
-toplevel into the initrd closure (the documented `initrd → toplevel → initrd`
-derivation cycle, `modules/services/ignition.nix:608-615`,
-`lib/build/rootfs.nix:241-249`), and registry trust anchors + DNS
-(`systemd-resolved`) are stage-2 constructs. Initrd's job is to **deliver
-inputs**; stage-2 **evaluates**.
+There are two projections of the same authenticated `host.nix`. The initrd
+evaluates only the closed `aos.provisioning` subtree from the in-image base
+library. It has no registry client, package config modules, or `system.build`
+read and therefore does not form the full evaluator/toplevel closure cycle.
+After switch-root, stage 2 performs the complete resolve/eval fixpoint where
+registry trust, DNS, package modules, and the writable store are available.
 
 ### Ordered chain
 
-**Initrd** (`modules/services/ignition.nix`):
+**Initrd**:
 
-1. `aos-platform-detect.service` — writes `/run/ignition/platform.env`.
-2. `aos-ignition-network.service` — baseline DHCP over the initrd
+1. `aos-metadata-detect.service` — writes
+   `/run/aos-metadata/platform.env`.
+2. `aos-metadata-network.service` — baseline DHCP over the initrd
    `80-dhcp.network` (no config-driven networking yet).
-3. `ignition-fetch.service` — fetches user-data carrying the signed leaf
-   `host.nix` + registry/trust config.
-4. `ignition-disks` → `mount-var` → `nix-overlay-setup` → `aos-seed-profiles`
+3. `aos-metadata-fetch.service` fetches exact literal `host.nix` bytes (or
+   resolves a hash-pinned transport pointer).
+4. `aos-metadata-authorize.service` applies the image's `platform` or
+   `signed` policy to those bytes.
+5. The restricted evaluator reads `aos.provisioning`, Rust validates the
+   normalized plan, and the renderer emits per-device `repart.d`. With no
+   `host.nix` on an uncommitted host, the same path evaluates the base default
+   module. Present-but-invalid input never falls through to defaults. With a
+   committed marker, a valid current plan is advisory and invalid/unavailable
+   input warns rather than blocking a working host.
+6. On first boot, `systemd-repart` preflights every target, applies the root
+   target first so the pending marker precedes any secondary-device mutation,
+   and relabels the marker committed only after all devices verify. Later
+   boots run dry-run coherence checks but never mutate automatically.
+7. `aos-var-crypt`/`mount-var` → `nix-overlay-setup` →
+   `aos-seed-profiles`
    (seeds **gen-0**) → `run-etc-setup`.
-5. `ignition-files.service` — writes the per-gen `/etc` lower: `host.nix`
-   (e.g. `/etc/aos/host.nix`), `/etc/apm/registries.d`, `trusted-keys.d`,
-   `trusted-config-keys.d`.
-6. `etc-overlay-setup.service` — assembles the three-layer `/etc` overlay from
+8. The accepted host.nix and validation record survive under `/run`; registry
+   trust configuration comes from gen-0. After `/var` mounts, AOS persists the
+   initial audit evidence and generated definitions under
+   `/var/lib/aos-provisioning`.
+9. `etc-overlay-setup.service` — assembles the three-layer `/etc` overlay from
    the seed toplevel.
-7. `switch_root` → stage-2.
+10. `switch_root` → stage-2.
 
 **Stage-2:**
 
-8. `systemd-networkd` + `systemd-resolved` come up from gen-0's baked `/etc`
+11. `systemd-networkd` + `systemd-resolved` come up from gen-0's baked `/etc`
    (DHCP-on-all-`en*` + `resolved.conf`); `network-online.target` reachable.
-9. **`aos-eval.service` (new)** — `After=network-online.target
-   nix-overlay-setup.service ignition-files.service aos-seed-profiles.service`,
+12. **`aos-eval.service` (new)** — `After=network-online.target
+   nix-overlay-setup.service aos-seed-profiles.service`,
    `Before=aos-install-packages.service`, `Type=oneshot`, best-effort. Runs the
    sandboxed evaluator over base-lib (in image) + per-package `config` modules
    (downloaded from the registry — needs net + DNS + store + trust) + the leaf
    `host.nix`. Emits the manifest (a `desired.toml`-shaped reconcile input).
-10. `aos-install-packages.service` — `apm install --system --from <manifest>`
+13. `aos-install-packages.service` — `apm install --system --from <manifest>`
     (`modules/base/apm.nix:385-406`), which materializes the manifest into a
     generation and invokes `activate.sh.in` for the atomic `/etc` swap.
-11. `aos-preset.service` — applies preset policy, starts `aos-pkg-*.target`.
+14. `aos-preset.service` — applies preset policy, starts `aos-pkg-*.target`.
 
 ### Chicken-and-egg resolution
 
@@ -259,7 +266,7 @@ the config modules. Resolved by the **gen-0 seed**: baseline DHCP-on-all-`en*`
 baked in the image reaches the registry; config-driven networking (static IPs,
 VLANs, bonds from `host.nix`) takes effect only after the first eval
 materializes a generation and `activate.sh.in` swaps `/etc`. The path is:
-**DHCP seed → Ignition delivers host.nix → fetch config closures → eval →
+**DHCP seed → metadata agent delivers host.nix → fetch config closures → eval →
 materialize → activate (real net applied at swap).**
 
 ### gen-0 seed
@@ -276,7 +283,7 @@ profile-state seed.
 ### Failure-safe by construction
 
 `aos-eval.service` produces **only a manifest; it never calls `activate`**. A
-failed eval or fetch (no network, registry unreachable, bad/unsigned host.nix)
+failed eval or fetch (no network, registry unreachable, rejected provisioning input)
 yields no manifest, so `aos-install-packages.service` (already
 `ConditionPathExists`-guarded, `modules/base/apm.nix:397`) is a no-op →
 `activate.sh.in` is never invoked → no `/etc` swap → the box stays fully live on
@@ -289,12 +296,11 @@ never leave a half-applied configuration.
 
 ### Steady-state reconfiguration
 
-Ignition is idempotent and does not re-run on later boots (guarded by
-`/sysroot/var/etc/.ignition-result.json`), so a reboot alone does not re-eval.
-Re-eval is triggered by an explicit reconcile (`aos eval` / `apm upgrade
---system`) or a control-plane action (RFC-0004). A changed `host.nix` is
-re-applied through a normal activation: `activate.sh.in`'s `prepare` stage
-re-runs Ignition fetch+files into the candidate `/etc` lower
-(`modules/base/activate.sh.in:183-208`), so reconfiguration uses the same
-atomic swap and the same staged-exit-code safety, and is rollback-capable via
-the per-generation profile pointer.
+The metadata agent reacquires and authorizes `host.nix` on every boot, and
+stage 2 performs the full evaluation on every boot. The committed GPT marker
+freezes storage mutation only. A changed runtime declaration is therefore
+reconciled without rebuilding the golden image or resetting storage. When
+fresh metadata is unavailable or rejected, stage 2 verifies and restores the
+last input that previously produced a complete manifest; partial or failed
+inputs are never cached. Explicit reconcile and control-plane actions may use
+the same evaluator path between boots.

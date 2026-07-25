@@ -5,9 +5,7 @@
 //! `aos.config-manifest/v1` document (`/run/aos/manifest.json`); this module
 //! *applies* it, rendering the manifest's `/etc` tree into a per-generation
 //! lower directory so a generation's `/etc` reflects the operator `host.nix`.
-//! Before this existed, `activate` re-ran Ignition to render per-host `/etc`;
-//! the manifest is the sole
-//! source of a generation's per-host `/etc`.
+//! The manifest is the sole source of a generation's per-host `/etc`.
 //!
 //! # The manifest (`aos.config-manifest/v1`)
 //!
