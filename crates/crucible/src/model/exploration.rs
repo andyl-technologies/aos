@@ -4,8 +4,11 @@ use super::*;
 
 #[path = "app_random_branching.rs"]
 mod app_random_branching;
+#[path = "guidance_search.rs"]
+mod guidance_search;
 
 pub use app_random_branching::*;
+pub use guidance_search::*;
 
 /// Result of an on-demand replay-oracle check.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

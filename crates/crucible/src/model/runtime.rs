@@ -1067,13 +1067,17 @@ pub(super) fn select_search_frontier_candidate(
     worklist: &[SearchFrontierCandidate],
     strategy: SearchStrategy,
     max_depth: Option<u64>,
+    guidance: Option<(&GuidanceSearchConfig, &GuidanceSearchState)>,
 ) -> Option<usize> {
     worklist
         .iter()
         .enumerate()
         .filter(|(_, candidate)| search_depth_allows_expansion(max_depth, candidate.depth))
-        .min_by(|(_, left), (_, right)| {
-            compare_search_frontier_candidates(graph, left, right, strategy)
+        .min_by(|(_, left), (_, right)| match (strategy, guidance) {
+            (SearchStrategy::CoverageGuided, Some((config, state))) => {
+                compare_guided_search_frontier_candidates(graph, left, right, config, state)
+            }
+            _ => compare_search_frontier_candidates(graph, left, right, strategy),
         })
         .map(|(index, _)| index)
 }
