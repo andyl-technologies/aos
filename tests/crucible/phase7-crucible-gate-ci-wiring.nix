@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase7.crucibleGateCiWiring",
   taskIds ? ["T-PKG-14"],
-  openTaskIds ? ["T-PKG-4"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   rootDefault = builtins.readFile ../../default.nix;
@@ -343,11 +343,11 @@
       }
       {
         label = "package patch-microtests completed task ownership";
-        needle = ''taskIds = ["T-PATCH-20" "T-PATCH-21"'';
+        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"'';
       }
       {
-        label = "package patch-microtests open task ownership";
-        needle = ''openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"]'';
+        label = "package patch-microtests has no open task ownership";
+        needle = "openTaskIds = [];";
       }
       {
         label = "package patch-microtests uses package self";
@@ -643,12 +643,12 @@
       needle = "- [x] **T-PKG-14**";
     }
     {
-      label = "T-PKG-4 checklist remains open until per-prefix semantic attribution exists";
-      needle = "- [ ] **T-PKG-4**";
+      label = "T-PKG-4 checklist complete";
+      needle = "- [x] **T-PKG-4**";
     }
     {
-      label = "T-PKG-4 partial implementation note";
-      needle = "Partial implementation by `checks.crucible.phase7.crucibleGateCiWiring`";
+      label = "T-PKG-4 completion note";
+      needle = "Completed by `checks.crucible.phase2.gates.patchMicrotests`";
     }
     {
       label = "T-PKG-14 completion note";
@@ -710,8 +710,8 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
-            evidence_scope=gate-ci-wiring-with-open-prefix-attribution
+            status=complete
+            evidence_scope=gate-ci-wiring-with-complete-per-patch-attribution
             eval_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) evalClassGates)}
             package_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) packageClassGates)}
             e2e_gate=gate:e2e-determinism

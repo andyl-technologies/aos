@@ -473,20 +473,17 @@ in rec {
         };
         dependencies = [abiConformance];
       };
-      patchMicrotests = redBeforeAdvance {
+      patchMicrotests = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
         # lint needle: patchMicrotests = import ./phase2-patch-microtests.nix
         gate = import ./phase2-patch-microtests.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-          taskIds = ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-          openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
+          taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          openTaskIds = [];
           dependencies = [layer1Injection.rawGate];
         };
         dependencies = [layer1Injection];
-        phase = "phase2";
-        reason = "prefix builds are proven, but semantic effects and inertness are still tested only on the fully patched stack";
-        taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
       };
       qemuInert = redBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.qemuInert";
@@ -501,7 +498,7 @@ in rec {
         };
         dependencies = [patchMicrotests];
         phase = "phase2";
-        reason = "the sim-off corpus is diagnostic until per-prefix semantic inertness and effect attribution are complete";
+        reason = "the sim-off corpus remains diagnostic until its raw guest-visible comparison and corpus definition are complete";
         taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
       };
       singleVmFingerprint = greenBeforeAdvance {
@@ -2605,7 +2602,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
       taskIds = ["T-PKG-14"];
-      openTaskIds = ["T-PKG-4"];
+      openTaskIds = [];
     };
     crucibleCas = import ./phase7-crucible-cas.nix {
       inherit pkgs lib;
@@ -2674,8 +2671,8 @@ in rec {
       patchMicrotestsGate = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-        openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
+        taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+        openTaskIds = [];
       };
     };
     crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix {

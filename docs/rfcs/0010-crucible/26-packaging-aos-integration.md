@@ -586,23 +586,18 @@ carries findings across an incompatible build.
   - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
     exposes `qemu-crucible-reference` from the same pinned source with
     `applyCruciblePatches = false` for the comparison.
-- [ ] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
+- [x] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
   build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
   series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
-  - Partial implementation by `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
+  - Completed by `checks.crucible.phase2.gates.patchMicrotests` and verified by
+    `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
     check collector exposes `qemu-crucible.checks.patch-microtests` as
     `checks.integration.qemu-crucible-patch-microtests`, and that integration
-    check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so the
-    apply-clean, patched build, and fully-patched semantic tests run against the
-    package output on series/pin/header drift. Closure remains blocked on
-    prefix-attributed sim-on and sim-off semantic micro-tests for every patch;
-    the existing semantic tests cannot attribute an effect to an individual
-    patch because they target the fully patched package. The package-check wiring
-    itself is complete and reachable: `checks.crucible.phase7.crucibleGateCiWiring`
-    verifies that integration import, so apply-clean, patched build, and the
-    semantic tests re-run against the package output on series/pin/header drift.
-    Semantic closure inherits T-PATCH-2's residual — the 7 composition patches
-    (per drop-one at series 074fb5a9a) lack patch-granular runtime attribution.
+    check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so
+    clean apply, prefix provenance, patched build, and live drop-one semantic
+    probes run against the package output on series/pin/header drift. All 40
+    patches have exactly one accepted attribution method, while composition and
+    structural fallback counts are enforced at zero.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.

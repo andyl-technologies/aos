@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
-  openTaskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2"],
+  taskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
+  openTaskIds ? [],
   qemuPackage ? pkgs.qemu-crucible,
   dependencies ? [],
 }: let
@@ -468,6 +468,8 @@ in
             grep -q '^gate=gate:patch-microtests$' "$out/patch-drop-one.result"
             grep -q '^every_patch_has_exactly_one_drop_one_method=true$' "$out/patch-drop-one.result"
             grep -q '^clean_conflict_split_recomputed_live=true$' "$out/patch-drop-one.result"
+            grep -q '^drop_one_composition_count=0$' "$out/patch-drop-one.result"
+            grep -q '^structural_fallback_count=0$' "$out/patch-drop-one.result"
             cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
             grep -q '^PASS$' "$out/patch-regeneration.result"
             grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
@@ -556,8 +558,8 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
-            evidence_scope=prefix-attributed-effects-plus-full-stack-semantics
+            status=complete
+            evidence_scope=per-patch-prefix-provenance-plus-live-drop-one-semantics
             gate=gate:patch-microtests
             patch_count=${toString (builtins.length patchFiles)}
             microtest_count=${toString (builtins.length perPatchMicrotests)}
@@ -573,6 +575,8 @@ in
             patch_drop_one_gate_passed=true
             every_patch_has_exactly_one_drop_one_grade_attribution=true
             drop_one_clean_conflict_split_recomputed_live=true
+            drop_one_composition_count=0
+            structural_fallback_count=0
             drop_one_methods_manifest=drop-one-methods.tsv
             interface_patches_strictly_attributed_by_symbol_first_appearance=true
             recorded_patches_source_attributed_by_unique_prefix_tree=true
