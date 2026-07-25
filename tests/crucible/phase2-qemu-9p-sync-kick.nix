@@ -280,6 +280,8 @@ in
             PASS
             gate=gate:patch-microtests
             patch=0040-crucible-9p-sync-kick.patch
+            patched_fixture_exercised=true
+            stock_negative_control=true
             prefix_negative_control=true
             patched_exact_source_fixture=true
             sim_icount_9p_kick_synchronous=true
