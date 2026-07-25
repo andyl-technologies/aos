@@ -15,7 +15,9 @@ use std::error::Error;
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
-use crucible_qemu::{LivePluginInstallGateConfig, run_live_plugin_install_gate};
+use crucible_qemu::{
+    LivePluginInstallGateConfig, QemuLaunchPluginSwitch, run_live_plugin_install_gate,
+};
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
@@ -57,6 +59,21 @@ fn run() -> Result<(), String> {
             .map_err(|_| String::from("kernel command line is not valid UTF-8"))?;
         config = config.with_kernel_cmdline(kernel_cmdline);
     }
+    let whitebox = match env::var("CRUCIBLE_LIVE_PLUGIN_WHITEBOX").as_deref() {
+        Ok("on") => QemuLaunchPluginSwitch::On,
+        Ok("off") | Err(env::VarError::NotPresent) => QemuLaunchPluginSwitch::Off,
+        Ok(value) => {
+            return Err(format!(
+                "CRUCIBLE_LIVE_PLUGIN_WHITEBOX must be `on` or `off`, got `{value}`"
+            ));
+        }
+        Err(env::VarError::NotUnicode(_value)) => {
+            return Err(String::from(
+                "CRUCIBLE_LIVE_PLUGIN_WHITEBOX is not valid UTF-8",
+            ));
+        }
+    };
+    config = config.with_whitebox(whitebox);
     let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
@@ -87,6 +104,7 @@ fn run() -> Result<(), String> {
         "time_authority_is_rust_plugin={}",
         report.time_authority_is_rust_plugin
     );
+    println!("whitebox={whitebox}");
     Ok(())
 }
 

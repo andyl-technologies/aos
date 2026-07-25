@@ -24,9 +24,8 @@ use crate::{
     IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
     NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
     PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering, PluginShutdownRequested,
-    QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
     QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue,
@@ -41,6 +40,7 @@ use super::{
     LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
     OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
+    live_whitebox::{LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb},
 };
 
 mod devices;
@@ -66,6 +66,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
     pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<QemuRegisterNinePCbFn>,
+    pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
 }
 
 /// Registrar for the joined live vCPU, time, network, block, and 9p callbacks.
@@ -141,12 +142,15 @@ impl LiveVcpuTimeCallbackRegistrar {
                 symbol: QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
             },
         )?;
-        if args.whitebox().is_on() {
-            return Err(LiveVcpuTimeCallbackError::WhiteboxCallbackAbiUnavailable {
-                trap_symbol: QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
-                guest_memory_read_symbol: QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
-            });
-        }
+        let whitebox = if args.whitebox().is_on() {
+            Some(LiveWhiteboxApis::resolve().map_err(|source| {
+                LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                }
+            })?)
+        } else {
+            None
+        };
         Ok(RequiredLiveVcpuTimeCapabilities {
             icount_raw: self.capabilities.icount_raw,
             exact_deadline,
@@ -160,6 +164,8 @@ impl LiveVcpuTimeCallbackRegistrar {
             register_block,
             register_block_wait,
             register_ninep,
+            request_shutdown: self.capabilities.request_shutdown,
+            whitebox,
         })
     }
 }
@@ -257,7 +263,33 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(devices::crucible_qemu_plugin_live_ninep_burst_done_cb),
             callback_state.cast(),
         );
-        Ok(OwnedCallbackRegistrationMask::base_required())
+        let mut mask = OwnedCallbackRegistrationMask::base_required();
+        if let Some(whitebox_apis) = capabilities.whitebox {
+            let whitebox_state = state
+                .as_mut()
+                .prepare_live_whitebox_state(
+                    whitebox_apis,
+                    self.execution_model.smp_vcpus(),
+                    capabilities.icount_raw,
+                    capabilities.request_shutdown,
+                )
+                .map_err(|source| {
+                    live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
+                        message: source.to_string(),
+                    })
+                })?;
+            whitebox_state.register(self.plugin_id).map_err(|source| {
+                live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    message: source.to_string(),
+                })
+            })?;
+            (capabilities.register_vcpu_init)(
+                self.plugin_id,
+                crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
+            );
+            mask = mask.with_whitebox();
+        }
+        Ok(mask)
     }
 }
 
@@ -275,6 +307,8 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_block: QemuRegisterBlkCbFn,
     register_block_wait: QemuRegisterBlkWaitCbFn,
     register_ninep: QemuRegisterNinePCbFn,
+    request_shutdown: crate::QemuRequestShutdownFn,
+    whitebox: Option<LiveWhiteboxApis>,
 }
 
 /// Stable shared-memory slot address retained by the setup mapping owner.
@@ -1451,15 +1485,11 @@ pub enum LiveVcpuTimeCallbackError {
         /// Missing QEMU symbol.
         symbol: &'static str,
     },
-    /// White-box mode lacks a concrete QEMU trap/read callback ABI.
-    #[error(
-        "white-box mode cannot register: no live trap adapter for {trap_symbol} and no typed guest-memory reader for {guest_memory_read_symbol}"
-    )]
-    WhiteboxCallbackAbiUnavailable {
-        /// Upstream callback surface currently modeled as the trap hook.
-        trap_symbol: &'static str,
-        /// Missing typed guest-memory read export.
-        guest_memory_read_symbol: &'static str,
+    /// The live white-box adapter failed preflight, registration, or dispatch.
+    #[error("live white-box callback failed: {message}")]
+    WhiteboxCallback {
+        /// Stable boundary diagnostic.
+        message: String,
     },
     /// Exact virtual-deadline introspection was unavailable during preflight.
     #[error("required exact-deadline capability failed: {source}")]

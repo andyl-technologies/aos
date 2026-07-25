@@ -411,6 +411,7 @@ in rec {
     qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
     qemuLiveGenesisExecutor = import ./phase2-qemu-live-genesis-executor.nix {inherit pkgs lib;};
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
+    qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuLiveNodeStep = import ./phase2-qemu-live-node-step.nix {inherit pkgs lib;};
     qemuLiveBlockIo = import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;};

@@ -1048,6 +1048,17 @@ component that makes that purity true *inside* the QEMU process.
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
   satisfies [PLUG-32], [PLUG-33], [PLUG-34]; spec §12.7.
+  The x86_64 guest-to-host live slice is exercised by
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: the packaged production
+  Rust plugin preflights the stock QEMU translation, instruction-execution,
+  register-read, and virtual-memory-read APIs; recognizes only the frozen
+  `out dx,eax` encoding and reserved `0x00e7` port; reads `rax`/`rcx` at the
+  callback's exact raw icount; and decodes the guest's golden coverage marker
+  through the bounded callback core. The loaded-QEMU run records the live marker
+  before reaching its exact scheduler ceiling and exits through the normal
+  plugin lifecycle. Still open are live setup collision discovery, off/on
+  inertness and fingerprint equality, host event-log routing, the aarch64 live
+  adapter, and the host-to-guest reply path.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],

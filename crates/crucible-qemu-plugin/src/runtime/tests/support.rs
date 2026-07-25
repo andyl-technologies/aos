@@ -320,7 +320,7 @@ extern "C" fn test_register_time_advance_cb(
     0
 }
 
-extern "C" fn test_request_shutdown(_failure: std::os::raw::c_int) {}
+pub(super) extern "C" fn test_request_shutdown(_failure: std::os::raw::c_int) {}
 
 extern "C" fn test_inject_preemption(
     _at: u64,
