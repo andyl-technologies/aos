@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "guidance.rs"]
+mod guidance;
+
 pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
     let scrubbed = scrub_comments_and_strings(content);
     let tokens = tokenize(&scrubbed);
@@ -137,6 +140,9 @@ pub(super) fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
     findings.extend(fault_apply_path_failures(path, content));
     findings.extend(distribution_metadata_flow_failures(path, content, &tokens));
+    findings.extend(guidance::guidance_ordering_float_failures(
+        path, content, &tokens,
+    ));
     findings.extend(allow_annotation_failures(path, content));
     filter_cfg_test_findings(content, findings)
 }
@@ -746,22 +752,6 @@ fn token_starts_call(tokens: &[Token], index: usize) -> bool {
             kind: TokenKind::Punct('(' | '!'),
             ..
         })
-    )
-}
-
-fn next_is_path_separator(tokens: &[Token], index: usize) -> bool {
-    matches!(
-        (tokens.get(index + 1), tokens.get(index + 2)),
-        (
-            Some(Token {
-                kind: TokenKind::Punct(':'),
-                ..
-            }),
-            Some(Token {
-                kind: TokenKind::Punct(':'),
-                ..
-            })
-        )
     )
 }
 
