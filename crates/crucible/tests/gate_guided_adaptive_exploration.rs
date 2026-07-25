@@ -13,10 +13,11 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, CoverageGuidanceSignal, Decision,
     EngineError, FrontierReductionPolicy, GuidanceScore, GuidanceSignal, GuidanceSignalComposition,
     GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount, IrqVector, NodeId,
-    NodeTemplate, NoveltyRarityGuidanceSignal, PreemptionBranchConfig, PreemptionKind, ReadyPoint,
-    RngStreamId, ScenarioDef, SearchBudget, Seed, TemporalGraph, VcpuId, WhiteBoxPolicy, World,
-    WorldNode, app_random_branch_decisions, bake, lint_guidance_determinism_source,
-    preemption_branch_decisions, reduce, run_adaptive_strategy_selection, try_step,
+    NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, PreemptionBranchConfig,
+    PreemptionKind, ReadyPoint, RngStreamId, ScenarioDef, SearchBudget, Seed, TemporalGraph,
+    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
+    lint_guidance_determinism_source, preemption_branch_decisions, reduce,
+    run_adaptive_strategy_selection, step, try_step,
 };
 
 #[test]
@@ -220,6 +221,67 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
 }
 
 #[test]
+fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
+-> Result<(), Box<dyn Error>> {
+    let world = two_single_vcpu_node_world("preemption-por")?;
+    let scenario = world.scenario_def();
+    let root = Configuration::genesis(scenario.clone());
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    let config_a = single_vcpu_preemption_config("guest-a");
+    let config_b = single_vcpu_preemption_config("guest-b");
+    let decision_a = preemption_branch_decisions(&config_a)
+        .into_iter()
+        .next()
+        .ok_or("guest-a should produce a preemption branch")?;
+    let decision_b = preemption_branch_decisions(&config_b)
+        .into_iter()
+        .next()
+        .ok_or("guest-b should produce a preemption branch")?;
+    let (frontier_decision, branch_decision, branch_config) =
+        if decision_a.reduction_order_key() > decision_b.reduction_order_key() {
+            (decision_a, decision_b, config_b)
+        } else {
+            (decision_b, decision_a, config_a)
+        };
+    let frontier = step(&root, frontier_decision.clone());
+    graph.record_step(&root, frontier_decision.clone())?;
+    let policy = FrontierReductionPolicy::none().with_partial_order(
+        PartialOrderReductionPolicy::new()
+            .with_independent_pair(&frontier_decision, &branch_decision),
+    );
+    let run = graph.branch_preemptions(&frontier, &branch_config, policy)?;
+
+    assert_eq!(run.decisions.len(), 2);
+    assert_eq!(run.report.covered.len(), 1);
+    assert_eq!(run.report.covered[0].decision, branch_decision);
+    assert_eq!(
+        run.report.covered[0].reason,
+        crucible::FrontierReductionReason::PartialOrder
+    );
+    assert_eq!(run.report.explored.len(), 1);
+    assert_eq!(run.materialized.len(), 2);
+    let materialized = run
+        .materialized
+        .iter()
+        .map(|checkpoint| checkpoint.id)
+        .collect::<BTreeSet<_>>();
+    assert!(materialized.contains(&run.report.covered[0].representative));
+    assert!(materialized.contains(&run.report.explored[0].configuration.id()));
+    assert!(
+        run.materialized
+            .iter()
+            .all(|checkpoint| checkpoint.kind == CheckpointKind::Fat)
+    );
+    assert!(run.materialized.iter().all(|checkpoint| {
+        graph
+            .checkpoint_configuration(checkpoint.id)
+            .is_some_and(|configuration| graph.replay(configuration).is_ok())
+    }));
+
+    Ok(())
+}
+
+#[test]
 fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Error>> {
     let world = single_node_world("app-random-branching")?;
     let scenario = world.scenario_def();
@@ -279,8 +341,19 @@ fn gate_app_random_branching_is_optional_and_bounded() -> Result<(), Box<dyn Err
 }
 
 fn single_node_world(label: &str) -> Result<World, EngineError> {
-    World::from_nodes(vec![WorldNode {
-        id: node("guest-a"),
+    World::from_nodes(vec![single_vcpu_world_node("guest-a", label)])
+}
+
+fn two_single_vcpu_node_world(label: &str) -> Result<World, EngineError> {
+    World::from_nodes(vec![
+        single_vcpu_world_node("guest-a", label),
+        single_vcpu_world_node("guest-b", label),
+    ])
+}
+
+fn single_vcpu_world_node(name: &str, label: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
         arch: NodeTemplate::DEFAULT_ARCH,
         memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: format!("crucible-guided-adaptive={label}"),
@@ -293,7 +366,20 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         kernel: None,
         root_image: None,
         initrd: None,
-    }])
+    }
+}
+
+fn single_vcpu_preemption_config(name: &str) -> PreemptionBranchConfig {
+    PreemptionBranchConfig {
+        node: node(name),
+        deadline: Icount { retired: 2 },
+        horizon: Icount { retired: 2 },
+        step: 1,
+        switch_from_vcpu: VcpuId { index: 0 },
+        switch_to_vcpu: VcpuId { index: 0 },
+        target_vcpu: VcpuId { index: 0 },
+        irq: IrqVector { vector: 32 },
+    }
 }
 
 fn node(name: &str) -> NodeId {

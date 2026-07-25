@@ -952,7 +952,7 @@ pub struct PreemptionBranchRun {
     pub decisions: Vec<Decision>,
     /// Reduced frontier report for the generated children.
     pub report: FrontierReductionReport,
-    /// Replay-oracle-validated materialized checkpoints for explored children.
+    /// Replay-oracle-validated checkpoints for explored children and covered representatives.
     pub materialized: Vec<Checkpoint>,
 }
 
