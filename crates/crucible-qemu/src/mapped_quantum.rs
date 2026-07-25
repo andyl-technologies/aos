@@ -9,7 +9,7 @@ use crucible_protocol::{
 };
 use crucible_shmem::{
     FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, RegionControlError, STATUS_DONE,
+    MappedSetupRegionAccessError, PreemptionMailboxError, RegionControlError, STATUS_DONE,
 };
 use thiserror::Error;
 
@@ -20,6 +20,9 @@ use crate::{
     QemuQuantumShmemHotPath, QemuQuantumShmemView, QemuShmemHotPathChannel,
     assert_qemu_quantum_hot_path_is_shmem_only,
 };
+
+#[path = "mapped_quantum/preemption.rs"]
+mod preemption;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {
@@ -505,6 +508,12 @@ pub enum QemuMappedQuantumShmemHotPathError {
     RegionControl {
         /// Underlying shared-memory control wake error.
         source: RegionControlError,
+    },
+    /// The live plugin preemption mailbox rejected a host command.
+    #[error("mapped QEMU preemption mailbox failed: {source}")]
+    PreemptionMailbox {
+        /// Underlying scheduler-to-plugin mailbox error.
+        source: PreemptionMailboxError,
     },
     /// The borrowed quantum adapter rejected the selected view.
     #[error("mapped QEMU quantum hot-path binding failed")]

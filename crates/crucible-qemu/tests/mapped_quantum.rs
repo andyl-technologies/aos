@@ -34,11 +34,35 @@ use crucible_qemu::{
 #[cfg(unix)]
 use crucible_shmem::{
     CoverageEntry, FrameEntry, MappedSetupRegion, RegionAllocation, RegionConfig, SLOT_NET_ROUTER,
-    WhiteboxMarkerEntry, authorize_advance_ceiling, mmap_setup_region,
+    SchedulerPreemptionCommand, SchedulerPreemptionKind, WhiteboxMarkerEntry,
+    authorize_advance_ceiling, mmap_setup_region,
 };
 
 #[cfg(unix)]
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(unix)]
+#[test]
+fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn Error>> {
+    let region = mapped_region(6, None, &[])?;
+    let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let command = SchedulerPreemptionCommand {
+        at_icount: 6,
+        deadline_icount: 6,
+        ceiling_icount: 6,
+        kind: SchedulerPreemptionKind::InterruptAt {
+            target_vcpu: 0,
+            irq: 41,
+        },
+    };
+
+    let sequence = hot_path.publish_preemption_command(command)?;
+
+    assert_eq!(sequence, 1);
+    assert_eq!(hot_path.consumed_preemption_sequence()?, 0);
+    assert!(hot_path.publish_preemption_command(command).is_err());
+    Ok(())
+}
 
 #[cfg(unix)]
 #[test]

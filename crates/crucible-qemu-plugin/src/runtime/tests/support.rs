@@ -223,6 +223,7 @@ pub(super) fn test_state() -> PluginStatePartition {
 pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
     LiveInstallCapabilities {
         icount_raw: test_icount_raw,
+        inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
         clock_deadline_ns: Some(test_deadline),
         advance_time_ns: Some(test_direct_advance),
@@ -322,7 +323,7 @@ extern "C" fn test_register_time_advance_cb(
 
 pub(super) extern "C" fn test_request_shutdown(_failure: std::os::raw::c_int) {}
 
-extern "C" fn test_inject_preemption(
+pub(super) extern "C" fn test_inject_preemption(
     _at: u64,
     _deadline: u64,
     _ceiling: u64,

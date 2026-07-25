@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use crucible_shmem::{
     DirectedRing, FingerprintSampleError, FingerprintSampleSlot, FrameEntry, FutexWaitOutcome,
     MappedDirectedRingMut, MappedSetupRegionAccessError, NodeSlot, NodeSlotError,
-    RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER,
+    PreemptionMailboxError, RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER,
+    SchedulerPreemptionKind,
 };
 use thiserror::Error;
 
@@ -23,7 +24,8 @@ use crate::{
     ExactDeadlineError, ExactDeadlineReader, FingerprintSamplerError, IdleHotLoopError,
     IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
     NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
-    PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering, PluginShutdownRequested,
+    PluginNetworkRx, PluginNetworkTx, PluginPreemptionDecision, PluginPreemptionInjector,
+    PluginShmemOrdering, PluginShutdownRequested, PreemptionError, PreemptionWindow,
     QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
@@ -46,6 +48,8 @@ use super::{
 mod devices;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
+#[cfg(test)]
+mod test_support;
 
 static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
@@ -54,6 +58,7 @@ static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
 #[derive(Clone, Copy)]
 pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) icount_raw: QemuIcountRawFn,
+    pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
     pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     pub(crate) register_vcpu_init: Option<QemuRegisterVcpuInitCbFn>,
@@ -95,6 +100,9 @@ impl LiveVcpuTimeCallbackRegistrar {
     ) -> Result<RequiredLiveVcpuTimeCapabilities, LiveVcpuTimeCallbackError> {
         let exact_deadline = ExactDeadlineReader::require(self.capabilities.clock_deadline_ns)
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineCapability { source })?;
+        let preemption_injector =
+            PluginPreemptionInjector::require(self.capabilities.inject_preemption)
+                .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
         let queued_idle_advance = QueuedIdleAdvance::require(self.capabilities.advance_time_ns)
             .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
         let register_vcpu_init = self.capabilities.register_vcpu_init.ok_or(
@@ -153,6 +161,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         };
         Ok(RequiredLiveVcpuTimeCapabilities {
             icount_raw: self.capabilities.icount_raw,
+            preemption_injector,
             exact_deadline,
             queued_idle_advance,
             register_vcpu_init,
@@ -201,6 +210,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 self.execution_model.smp_vcpus(),
                 args.slot(),
                 capabilities.icount_raw,
+                capabilities.preemption_injector,
                 (capabilities.icount_raw)(),
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
@@ -298,6 +308,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
 #[derive(Clone, Copy)]
 struct RequiredLiveVcpuTimeCapabilities {
     icount_raw: QemuIcountRawFn,
+    preemption_injector: PluginPreemptionInjector,
     exact_deadline: ExactDeadlineReader,
     queued_idle_advance: QueuedIdleAdvance,
     register_vcpu_init: QemuRegisterVcpuInitCbFn,
@@ -511,6 +522,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     shared_shutdown_signaled: AtomicBool,
     plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
+    preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
     icount_shift: u8,
     header: StableRegionHeaderHandle,
@@ -520,6 +532,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     initialized_vcpus: Box<[AtomicBool]>,
     last_raw_icount: AtomicU64,
     logical_icount_offset: AtomicU64,
+    preemption_enqueue_active: AtomicBool,
     last_icount: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
     network: Option<LiveNetworkCallbackState>,
@@ -535,6 +548,14 @@ struct LivePendingIdleAdvance {
     buffered_tx_payloads: Vec<Vec<u8>>,
 }
 
+struct PreemptionEnqueueGuard<'a>(&'a AtomicBool);
+
+impl Drop for PreemptionEnqueueGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl LiveVcpuTimeCallbackState {
     // crucible-lint: allow rust-allow -- construction binds the fixed QEMU identity, clock, mapping, and slot capabilities.
     #[allow(
@@ -544,6 +565,7 @@ impl LiveVcpuTimeCallbackState {
     pub(super) fn new(
         plugin_id: QemuPluginId,
         icount_raw: QemuIcountRawFn,
+        preemption_injector: PluginPreemptionInjector,
         vcpu_count: u32,
         icount_shift: u8,
         initial_raw_icount: u64,
@@ -583,6 +605,7 @@ impl LiveVcpuTimeCallbackState {
             shared_shutdown_signaled: AtomicBool::new(false),
             plugin_id,
             icount_raw,
+            preemption_injector,
             vcpu_count,
             icount_shift,
             header: StableRegionHeaderHandle::new(header),
@@ -592,6 +615,7 @@ impl LiveVcpuTimeCallbackState {
             initialized_vcpus,
             last_raw_icount: AtomicU64::new(initial_raw_icount),
             logical_icount_offset: AtomicU64::new(logical_icount_offset),
+            preemption_enqueue_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             pending_idle_advance: Mutex::new(None),
             network: None,
@@ -1284,7 +1308,7 @@ impl LiveVcpuTimeCallbackState {
     /// *halted* on device I/O (where the sim loop stops querying this callback
     /// altogether) is closed separately by the device-wait callback of the
     /// SCHED-8 delivery patch, not here.
-    fn max_advance_icount(&self) -> u64 {
+    fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
@@ -1295,7 +1319,51 @@ impl LiveVcpuTimeCallbackState {
         } else {
             ceiling
         };
-        effective_ceiling.saturating_sub(offset)
+        let raw_ceiling = effective_ceiling.saturating_sub(offset);
+        if self
+            .preemption_enqueue_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // QEMU validates a newly enqueued command by querying this callback.
+            // That nested query must observe the scheduler ceiling without
+            // attempting to enqueue the same mailbox command recursively.
+            return Ok(raw_ceiling);
+        }
+        let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
+        let Some(published) = self
+            .slot
+            .get()
+            .pending_preemption_command()
+            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
+        else {
+            return Ok(raw_ceiling);
+        };
+        let command = published.command;
+        let raw_at = logical_preemption_icount_to_raw("at", command.at_icount, offset)?;
+        let raw_deadline =
+            logical_preemption_icount_to_raw("deadline", command.deadline_icount, offset)?;
+        let raw_command_ceiling =
+            logical_preemption_icount_to_raw("ceiling", command.ceiling_icount, offset)?;
+        let window =
+            PreemptionWindow::new(raw_deadline, SchedulerCeiling::new(raw_command_ceiling))
+                .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
+        let decision = match command.kind {
+            SchedulerPreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+                PluginPreemptionDecision::vcpu_switch(raw_at, from_vcpu, to_vcpu)
+            }
+            SchedulerPreemptionKind::InterruptAt { target_vcpu, irq } => {
+                PluginPreemptionDecision::interrupt_at(raw_at, target_vcpu, irq)
+            }
+        };
+        self.preemption_injector
+            .enqueue_decision(decision, window, self.vcpu_count)
+            .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
+        self.slot
+            .get()
+            .acknowledge_preemption_command(published.sequence)
+            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?;
+        Ok(raw_ceiling.min(raw_at))
     }
 
     fn vcpu_flag(&self, vcpu_index: u32) -> Result<&AtomicBool, LiveVcpuTimeCallbackError> {
@@ -1385,7 +1453,24 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return state.last_icount.load(Ordering::SeqCst);
     };
-    state.max_advance_icount()
+    match state.max_advance_icount() {
+        Ok(max_advance_icount) => max_advance_icount,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+fn logical_preemption_icount_to_raw(
+    field: &'static str,
+    logical_icount: u64,
+    logical_icount_offset: u64,
+) -> Result<u64, LiveVcpuTimeCallbackError> {
+    logical_icount.checked_sub(logical_icount_offset).ok_or(
+        LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
+            field,
+            logical_icount,
+            logical_icount_offset,
+        },
+    )
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
@@ -1486,6 +1571,30 @@ pub enum LiveVcpuTimeCallbackError {
     CapabilityUnavailable {
         /// Missing QEMU symbol.
         symbol: &'static str,
+    },
+    /// The live preemption command or QEMU injection was rejected.
+    #[error("live preemption injection failed: {source}")]
+    Preemption {
+        /// Underlying command validation or QEMU capability error.
+        source: PreemptionError,
+    },
+    /// The shared-memory preemption mailbox could not be consumed.
+    #[error("live preemption mailbox failed: {source}")]
+    PreemptionMailbox {
+        /// Underlying mailbox publication or acknowledgement error.
+        source: PreemptionMailboxError,
+    },
+    /// A logical preemption icount precedes the restored raw-icount origin.
+    #[error(
+        "preemption {field} icount {logical_icount} precedes logical raw origin {logical_icount_offset}"
+    )]
+    PreemptionIcountBeforeRawOrigin {
+        /// Command field whose logical icount could not be translated.
+        field: &'static str,
+        /// Scheduler-authored logical icount.
+        logical_icount: u64,
+        /// Logical offset added to QEMU's raw retired count.
+        logical_icount_offset: u64,
     },
     /// The live white-box adapter failed preflight, registration, or dispatch.
     #[error("live white-box callback failed: {message}")]
