@@ -12,6 +12,7 @@
   };
 
   gateTest = builtins.readFile ../../crates/crucible/tests/fault_determinism_gate.rs;
+  gateSupport = builtins.readFile ../../crates/crucible/tests/fault_determinism_gate/support.rs;
   sessionWorldIo = builtins.readFile ../../crates/crucible-session/tests/world_io_runtime.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -53,12 +54,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
       {
-        label = "T-FAULT-15 remains open pending activation-icount and crash-discard proof";
-        needle = "- [ ] **T-FAULT-15**";
+        label = "T-FAULT-15 checked off";
+        needle = "- [x] **T-FAULT-15**";
       }
       {
-        label = "T-FAULT-15 partial evidence note";
-        needle = "Partial evidence is provided by `checks.crucible.phase4.faultDeterminismGate`";
+        label = "T-FAULT-15 completion note";
+        needle = "Completed by `checks.crucible.phase4.faultDeterminismGate`";
       }
     ]
     ++ failuresFor "crates/crucible/tests/fault_determinism_gate.rs" gateTest [
@@ -119,12 +120,16 @@
         needle = "Decision::FaultFires";
       }
       {
-        label = "first differing fault decision helper";
-        needle = "fn first_differing_fault_decision";
+        label = "activation node icount capture";
+        needle = "node_icounts: Vec<(String, u64)>";
       }
       {
-        label = "first differing raw decision helper";
-        needle = "fn first_differing_decision";
+        label = "in-flight work before crash";
+        needle = "pre-crash block work should enter the in-flight queue";
+      }
+      {
+        label = "concrete crash discard assertion";
+        needle = "the concrete crash must discard work that was already in flight";
       }
       {
         label = "network fault plan coverage";
@@ -209,6 +214,16 @@
       {
         label = "all declared device taxonomy helper";
         needle = "fn device_taxonomy_faults(world: &World)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/fault_determinism_gate/support.rs" gateSupport [
+      {
+        label = "first differing fault decision helper";
+        needle = "fn first_differing_fault_decision";
+      }
+      {
+        label = "first differing raw decision helper";
+        needle = "fn first_differing_decision";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

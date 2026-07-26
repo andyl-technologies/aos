@@ -10,14 +10,14 @@ use crucible::{
     Action, BlockFault, ConditionLeaf, ConditionLeafOracle, ContentAddressedBlobRef, ContentHash,
     DagStore, DeviceDelivery, EventGraphState, Fault, FaultBandwidthBitsPerSecond, FaultDecision,
     FaultDuration, FaultPlan, FaultPlanEntry, FaultRateBasisPoints, FaultSlowdownFactorBasisPoints,
-    FaultTag, Icount, IoFailureMode, LinkDef, LinkId, MembershipFault, MemoryDagStore,
-    NetworkCorruptionFault, NetworkFault, NetworkLinkDirection, NinePErrno, NinePFault,
-    NodeCounter, NodeFault, NodeId, NodeTemplate, PartitionDirection, Plan, ReadyPoint,
-    RestartPolicy, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant, SimOffset, SingleScheduler,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig,
-    WorldIoLayoutPolicy, WorldIoNode, WorldNinePLatency, WorldNode, WorldNodeDef,
+    FaultTag, Icount, IoFailureMode, LinkDef, LinkId, MemoryDagStore, NetworkCorruptionFault,
+    NetworkFault, NetworkLinkDirection, NinePErrno, NinePFault, NodeCounter, NodeFault, NodeId,
+    NodeTemplate, PartitionDirection, Plan, ReadyPoint, RestartPolicy,
+    SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario, SchedulerLookaheadEdge,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SimDuration, SimInstant, SimOffset, SingleScheduler, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoLayoutPolicy, WorldIoNode,
+    WorldNinePLatency, WorldNode, WorldNodeDef,
 };
 use crucible_device::ninep::codec;
 use crucible_device::{
@@ -25,9 +25,14 @@ use crucible_device::{
     Node, PastDeliveryPolicy,
 };
 
+#[path = "fault_determinism_gate/support.rs"]
+mod support;
+use support::*;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FaultGateFingerprint {
     activations: Vec<FaultActivationRecord>,
+    crash_applications: Vec<crucible::SchedulerNodeCrashApplication>,
     active_tags: Vec<(String, String)>,
     active_table: crucible::ActiveFaultTable,
     live_links: Vec<LinkEffectProbe>,
@@ -38,6 +43,8 @@ struct FaultGateFingerprint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FaultActivationRecord {
     at: u64,
+    activation_icount: u64,
+    node_icounts: Vec<(String, u64)>,
     tag: String,
     action: &'static str,
 }
@@ -56,20 +63,6 @@ struct DeviceEffectProbe {
     kind: SchedulingNodeKind,
     faults: IoFaults,
     deliveries: Vec<DeviceDelivery>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DecisionDivergence {
-    index: usize,
-    expected: Option<crucible::Decision>,
-    actual: Option<crucible::Decision>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FaultDecisionDivergence {
-    index: usize,
-    expected: Option<FaultDecision>,
-    actual: Option<FaultDecision>,
 }
 
 const PARTITION_A: &str = "partition-a";
@@ -102,6 +95,20 @@ fn gate_fault_determinism_run_twice_matches_activation_effects_and_draws() {
         "same seed and fault plan must produce identical activation/effect/draw fingerprints"
     );
     assert_eq!(first.activations.len(), fault_plan_entries(&world).len());
+    assert!(
+        first
+            .activations
+            .iter()
+            .all(|activation| activation.activation_icount == activation.at),
+        "shift-zero gate boundaries must record identical activation virtual times and node icounts"
+    );
+    assert!(
+        first
+            .activations
+            .iter()
+            .all(|activation| !activation.node_icounts.is_empty()),
+        "every activation must capture the live scheduler node counters"
+    );
     assert!(
         first
             .decisions
@@ -156,6 +163,19 @@ fn gate_fault_determinism_run_twice_matches_activation_effects_and_draws() {
         )
     );
     assert_eq!(node_effects.clock_skew, SimOffset { nanos: 11 });
+    let [crash] = first.crash_applications.as_slice() else {
+        panic!("the all-fault gate must apply exactly one concrete node crash");
+    };
+    assert_eq!(crash.node, node("db-0"));
+    assert_eq!(crash.counter, NodeCounter { ticks: 0 });
+    assert!(
+        !crash.discarded_io.is_empty(),
+        "the concrete crash must discard work that was already in flight"
+    );
+    assert_eq!(
+        crash.discarded_io[0].delivery_icount,
+        Icount { retired: 108 }
+    );
 
     let partition = link_probe(&first, "partition");
     assert!(partition.link_faults.partitioned);
@@ -539,6 +559,20 @@ fn run_fault_gate() -> FaultGateFingerprint {
     )
     .expect("World-backed scheduler should build");
     let mut state = EventGraphState::new();
+    let mut activations = Vec::new();
+    let mut observed_applications = 0;
+
+    {
+        let block = scheduler
+            .device_sub_nodes_for_mut(&node("db-0"))
+            .expect("db-0 must own its declared block device")
+            .iter_mut()
+            .find(|node| node.sub_node().kind == SchedulingNodeKind::Disk)
+            .expect("declared block device must be attached");
+        block
+            .submit(0, &BlockRequest::read(0xface, 0, 4))
+            .expect("pre-crash block work should enter the in-flight queue");
+    }
 
     for tick in 0..entries.len() as u64 {
         scheduler
@@ -548,6 +582,17 @@ fn run_fault_gate() -> FaultGateFingerprint {
         scheduler
             .apply_trigger_firings(&firings)
             .expect("trigger fault firing should apply");
+        for application in scheduler
+            .trigger_actions()
+            .applications
+            .iter()
+            .skip(observed_applications)
+        {
+            if let Some(record) = fault_activation_record(application, &scheduler, &world) {
+                activations.push(record);
+            }
+        }
+        observed_applications = scheduler.trigger_actions().applications.len();
     }
 
     let materialized = scheduler.materialized_scheduler_state();
@@ -571,70 +616,13 @@ fn run_fault_gate() -> FaultGateFingerprint {
     );
 
     FaultGateFingerprint {
-        activations: scheduler
-            .trigger_actions()
-            .applications
-            .iter()
-            .filter_map(fault_activation_record)
-            .collect(),
+        activations,
+        crash_applications: scheduler.node_crash_applications().to_vec(),
         active_tags,
         active_table: materialized.active_fault_table,
         live_links,
         live_devices,
         decisions,
-    }
-}
-
-fn first_differing_fault_decision(
-    expected: &[crucible::Decision],
-    actual: &[crucible::Decision],
-) -> Option<FaultDecisionDivergence> {
-    let len = expected.len().max(actual.len());
-    (0..len).find_map(|index| {
-        let expected = expected.get(index);
-        let actual = actual.get(index);
-        if expected == actual {
-            return None;
-        }
-
-        let expected = fault_decision(expected);
-        let actual = fault_decision(actual);
-        if expected.is_some() || actual.is_some() {
-            Some(FaultDecisionDivergence {
-                index,
-                expected,
-                actual,
-            })
-        } else {
-            None
-        }
-    })
-}
-
-fn first_differing_decision(
-    expected: &[crucible::Decision],
-    actual: &[crucible::Decision],
-) -> Option<DecisionDivergence> {
-    let len = expected.len().max(actual.len());
-    (0..len).find_map(|index| {
-        let expected = expected.get(index).cloned();
-        let actual = actual.get(index).cloned();
-        if expected == actual {
-            None
-        } else {
-            Some(DecisionDivergence {
-                index,
-                expected,
-                actual,
-            })
-        }
-    })
-}
-
-fn fault_decision(decision: Option<&crucible::Decision>) -> Option<FaultDecision> {
-    match decision {
-        Some(crucible::Decision::FaultFires(decision)) => Some(decision.clone()),
-        _ => None,
     }
 }
 
@@ -887,15 +875,31 @@ fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
 
 fn fault_activation_record(
     application: &crucible::TriggerActionApplication,
+    scheduler: &SingleScheduler,
+    world: &World,
 ) -> Option<FaultActivationRecord> {
+    let node_icounts = world
+        .vm_nodes()
+        .iter()
+        .map(|node| {
+            let projection = scheduler
+                .node_timing_projection(&node.id)
+                .expect("fault activation target must have a live scheduler projection");
+            (node.id.name.clone(), projection.counter.ticks)
+        })
+        .collect();
     match &application.action {
         Action::InjectFault { tag, .. } => Some(FaultActivationRecord {
             at: application.at.ticks,
+            activation_icount: application.at.ticks,
+            node_icounts,
             tag: tag.name.clone(),
             action: "inject",
         }),
         Action::HealFault { tag } => Some(FaultActivationRecord {
             at: application.at.ticks,
+            activation_icount: application.at.ticks,
+            node_icounts,
             tag: tag.name.clone(),
             action: "heal",
         }),
@@ -1391,16 +1395,6 @@ fn legacy_link_id(left: &str, right: &str) -> LinkId {
         (right, left)
     };
     LinkId::from_name(format!("{endpoint_a}--{endpoint_b}"))
-}
-
-fn membership_kind(fault: &MembershipFault) -> &'static str {
-    match fault {
-        MembershipFault::Crash { .. } => "crash",
-        MembershipFault::Partition { .. } => "partition",
-        MembershipFault::Isolate { .. } => "isolate",
-        MembershipFault::NotYetJoined { .. } => "not-yet-joined",
-        MembershipFault::Taxonomy { fault } => fault.kind_key(),
-    }
 }
 
 struct NoLeaves;
