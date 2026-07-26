@@ -497,7 +497,7 @@ pub(super) fn search_frontier_graph(
     scenario: &::crucible::ScenarioDefForm,
 ) -> Result<ValidationDag, Box<dyn Error>> {
     let baked = baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
-    Ok(empty_validation_dag().with_baked_genesis(&scenario.scenario_def(), baked)?)
+    Ok(sv::empty_validation_dag().with_baked_genesis(&scenario.scenario_def(), baked)?)
 }
 
 pub(super) fn baked_with_search_frontier_choices(

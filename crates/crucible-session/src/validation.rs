@@ -6,13 +6,16 @@
 //! as a binary-owned implementation detail.
 
 use crate::{CheckpointRef, Engine, SessionCommand, SessionError, SessionFork, SessionResume};
+use std::collections::BTreeMap;
+
 use crucible::{
-    Checkpoint, Configuration, ContentAddressedBlobRef, ContentHash, DagStore, Decision,
-    EngineError, GenesisCheckpoint, MaterializationPolicy, MaterializationTrigger, QuantumLoop,
-    ReplayOracleCheck, ScenarioDef, ScenarioDefForm, SearchBudget, SearchFailureOracle,
-    SearchReplayOracleSamplingConfig, SearchStrategy, TemporalGraph, TemporalGraphSampledSearchRun,
-    TemporalGraphSearchRun, TemporalGraphStoreError, TemporalGraphStoreKeys,
-    UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, reduce,
+    Checkpoint, CheckpointKind, Configuration, ContentAddressedBlobRef, ContentHash, DagStore,
+    Decision, EngineError, GenesisCheckpoint, MaterializationPolicy, MaterializationTrigger,
+    QuantumLoop, ReplayOracleCheck, ScenarioDef, ScenarioDefForm, ScheduleError, SearchBudget,
+    SearchFailureOracle, SearchReplayOracleSamplingConfig, SearchStrategy, TemporalGraph,
+    TemporalGraphSampledSearchRun, TemporalGraphSearchRun, TemporalGraphStoreError,
+    TemporalGraphStoreKeys, UnifiedGraphOperationEvidence, UnifiedGraphOperationReport,
+    VirtualTime, reduce,
 };
 use thiserror::Error;
 
@@ -69,6 +72,17 @@ pub enum ResumeRealizationError {
         /// Deterministic failure detail.
         message: String,
     },
+}
+
+/// Errors returned while materializing session-owned checkpoint state.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum RecordedCheckpointError {
+    /// The configuration's parent schedule prefix could not be derived.
+    #[error("checkpoint parent schedule prefix failed: {0}")]
+    SchedulePrefix(#[from] ScheduleError),
+    /// The checkpoint material did not satisfy the engine contract.
+    #[error("checkpoint materialization failed: {0}")]
+    Engine(#[from] EngineError),
 }
 
 /// Stable proof fields emitted for local resume realization.
@@ -338,6 +352,54 @@ fn format_optional_content_hash_ref(hash: Option<ContentHash>) -> String {
 #[must_use]
 pub fn empty_validation_dag() -> ValidationDag {
     ValidationDag::empty()
+}
+
+/// Materializes a fat checkpoint for a recorded configuration.
+///
+/// The session boundary derives the parent prefix and checkpoint material so
+/// CLI and API callers never construct canonical checkpoint state themselves.
+///
+/// # Errors
+///
+/// Returns [`RecordedCheckpointError`] when the schedule prefix cannot be
+/// derived or the checkpoint material is inconsistent with `configuration`.
+pub fn recorded_checkpoint_for_configuration(
+    configuration: &Configuration,
+    frontier: VirtualTime,
+) -> Result<Checkpoint, RecordedCheckpointError> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))?;
+        Some(Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Ok(Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        frontier,
+        BTreeMap::new(),
+        CheckpointKind::Fat,
+        BTreeMap::new(),
+    )?)
+}
+
+/// Creates a validation DAG with a session-owned baked genesis checkpoint.
+///
+/// # Errors
+///
+/// Returns [`RecordedCheckpointError`] when genesis checkpoint construction or
+/// temporal graph registration fails.
+pub fn validation_dag_with_baked_genesis(
+    scenario: &ScenarioDef,
+) -> Result<ValidationDag, RecordedCheckpointError> {
+    let genesis = Configuration::genesis(scenario.clone());
+    let checkpoint = recorded_checkpoint_for_configuration(&genesis, VirtualTime::default())?;
+    Ok(empty_validation_dag().with_baked_genesis(scenario, GenesisCheckpoint { checkpoint })?)
 }
 
 fn engine_from_validation_dag<L>(

@@ -271,29 +271,8 @@ pub(super) fn checkpoint_for_resume_configuration(
     configuration: &crucible::Configuration,
     frontier: VirtualTime,
 ) -> Result<Checkpoint, CliError> {
-    let parent = if configuration.schedule.is_empty() {
-        None
-    } else {
-        let prefix = configuration
-            .schedule
-            .prefix(configuration.schedule.len().saturating_sub(1))
-            .map_err(|error| {
-                CliError::Identity(format!("resume checkpoint schedule prefix failed: {error}"))
-            })?;
-        Some(crucible::Configuration {
-            def: configuration.def.clone(),
-            schedule: prefix,
-        })
-    };
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        parent.as_ref(),
-        frontier,
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
+    recorded_checkpoint_for_configuration(configuration, frontier)
+        .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
 }
 
 pub(super) fn resume_recording_loop_for_plan(

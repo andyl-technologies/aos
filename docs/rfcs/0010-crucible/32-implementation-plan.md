@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:7e06db0a063401e5`
+Checklist sync digest: `rfc0010-checklist-v1:c551c183f1e24f3e`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -380,7 +380,10 @@ long-held locks.
   to `SessionCommandKind::ALL` and actual `ControlClient` methods, treats
   CLI-held state only as daemon/content-addressed/artifact/savepoint handles, and
   rejects CLI-owned canonical state, scheduler logic, checkpoint materialization,
-  fork logic, or invented control capabilities.
+  fork logic, or invented control capabilities. The production-path check also
+  requires resume/fork checkpoint and baked-genesis setup to delegate to
+  `crucible_session::validation` and rejects direct checkpoint materialization
+  in the CLI command modules.
   `T-CLI-3` has partial evidence through `checks.crucible.phase5.cliBackendSelection`, which
   records a backend-selection route for each backend-routed subcommand, sends
   `--daemon` invocations over a fakeable API command runner without local

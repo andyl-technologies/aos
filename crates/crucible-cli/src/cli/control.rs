@@ -762,20 +762,7 @@ pub(super) fn validate_checkpoint_metadata(
 pub(super) fn save_validation_graph(
     scenario: &crucible::ScenarioDef,
 ) -> Result<ValidationDag, CliError> {
-    let genesis = crucible::Configuration::genesis(scenario.clone());
-    let checkpoint = Checkpoint::from_recorded_configuration(
-        &genesis,
-        None,
-        crucible::VirtualTime::default(),
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .map_err(|error| {
-        CliError::Identity(format!("save genesis checkpoint setup failed: {error}"))
-    })?;
-    empty_validation_dag()
-        .with_baked_genesis(scenario, GenesisCheckpoint { checkpoint })
+    validation_dag_with_baked_genesis(scenario)
         .map_err(|error| CliError::Identity(format!("save validation graph setup failed: {error}")))
 }
 

@@ -938,7 +938,7 @@ branch on the verdict without parsing output:
   focused parser tests assert the closed command set, global flag parsing, and
   unknown-command rejection; command execution and thin session/API dispatch
   remain T-CLI-2 and later CLI tasks.
-- [ ] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
+- [x] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
   into session commands (20 §4) / API calls (21); add a lint/test that the CLI
   holds no canonical run state and adds no control capability absent from 20/21. —
   satisfies [CLI-1], [CLI-2]; spec §1.
@@ -950,10 +950,12 @@ branch on the verdict without parsing output:
   method set. The focused tests cover all subcommand plans, recorder-emitted
   session/API operations including a remote `--daemon` route, and negative cases
   for CLI-owned state, scheduler logic, checkpoint materialization, fork logic,
-  and invented control capabilities. Adversarial production-path review reopened
-  this task: actual resume and fork dispatch still imports and executes
-  validation-DAG/checkpoint materialization logic inside the CLI. The plan-model
-  lint does not prove that the real dispatch path remains a thin wrapper.
+  and invented control capabilities. Production resume, fork, save, and search
+  paths delegate validation-DAG operations to `crucible_session::validation`;
+  parent-prefix derivation, fat checkpoint materialization, and baked-genesis DAG
+  registration are session-owned APIs. The gate scans the production command
+  modules and rejects direct checkpoint materialization in addition to checking
+  the plan model.
 - [ ] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
