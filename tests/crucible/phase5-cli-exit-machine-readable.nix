@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliExitMachineReadable",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-15"],
+  taskIds ? ["T-CLI-15"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -55,12 +55,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-15 remains open";
-        needle = "- [ ] **T-CLI-15** Implement and test the uniform exit-code mapping";
+        label = "T-CLI-15 checklist complete";
+        needle = "- [x] **T-CLI-15** Implement and test the uniform exit-code mapping";
       }
       {
         label = "T-CLI-15 machine-readable completion note";
-        needle = "Partial process-level evidence is provided by\n  `checks.crucible.phase5.cliExitMachineReadable`";
+        needle = "Completed by\n  `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
         label = "T-CLI-15 replay process coverage note";
@@ -71,8 +71,8 @@
         needle = "and `replay --to <SAVEPOINT>` JSONL output with parsed";
       }
       {
-        label = "T-CLI-15 open live gate range";
-        needle = "remains open until `T-CLI-10 … T-CLI-13` execute their required live backend";
+        label = "T-CLI-15 live-QEMU route coverage";
+        needle = "including the live-QEMU run/save/resume/fork/search/";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -88,11 +88,11 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 T-CLI-15 partial note";
-        needle = "`T-CLI-15` has partial evidence through `checks.crucible.phase5.cliExitMachineReadable`";
+        needle = "`T-CLI-15` is completed through `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
-        label = "phase5 T-CLI-15 open gate range";
-        needle = "remains open until the live behavior of\n  `T-CLI-10 … T-CLI-13` is complete";
+        label = "phase5 T-CLI-15 live-QEMU route coverage";
+        needle = "regression-testing the RFC §15 exit-code classes, including the live-QEMU";
       }
       {
         label = "phase5 T-CLI-15 qemu process coverage note";
@@ -412,7 +412,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=process-format-and-exit-code-model-routes
             component=crucible-cli
             contract=exit-codes-and-machine-readable-final-outcome

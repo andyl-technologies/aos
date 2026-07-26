@@ -894,12 +894,12 @@ touching the canonical run.
 > control-plane, fork, and event-log foundations they depend on ([ADV-1], [G-5],
 > [PLAN-4]).
 
-- [ ] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
+- [x] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
   configuration (05 §5, 10 §10.5) and the **fourth out-of-band gdbstub channel**
   (alongside plugin-IPC/shmem/QMP), mediated/proxied to a `--gdb-listen` gdb-protocol
   endpoint, carrying no per-quantum/frame data. — satisfies [DBG-1], [DBG-2],
   [DBG-3], [DBG-4], [DBG-5], [DBG-6]; spec §36.1, §36.2.
-  Partial evidence under `checks.crucible.phase6.debugAttach`: `TemporalGraph::debug_attach`
+  Completed under `checks.crucible.phase6.debugAttach`: `TemporalGraph::debug_attach`
   now accepts a resolved checkpoint configuration, realizes it through the same
   `resume`/`instantiate` path as ordinary graph operations, and reports the
   resulting runtime together with an explicit four-channel debug boundary:
@@ -908,13 +908,16 @@ touching the canonical run.
   `QemuGdbstubProxy` binds the operator `--gdb-listen` address, connects to
   QEMU's raw gdbstub endpoint, and forwards debugger bytes outside the scheduler
   hot path. The tests assert both the four-channel contract and local proxy
-  mediation, with no per-quantum timing or frame payload.
-- [ ] **T-DBG-2** Implement read-only inspection that appends no causal entry,
+  mediation, with no per-quantum timing or frame payload. The packaged
+  `crucible debug` route additionally requires a successful live QEMU/plugin
+  boot and reports its protocol/ABI/icount/fingerprint proof before exposing the
+  mediated debug plan.
+- [x] **T-DBG-2** Implement read-only inspection that appends no causal entry,
   mutates no config, and advances no virtual time, with a gate test that the
   canonical causal subsequence is byte-identical with/without a debugger and that
   attach/inspect/detach are recorded only as observational entries. — satisfies
   [DBG-8], [DBG-9], [DBG-10]; spec §36.3.1.
-  Partial evidence under `checks.crucible.phase6.readOnlyDebugInspection`:
+  Completed under `checks.crucible.phase6.readOnlyDebugInspection`:
   `TemporalGraph::read_only_debug_inspection` records attach/inspect/detach as
   `diagnostic` event-log entries whose class is observational, uses an immutable
   graph receiver, captures before/after graph, checkpoint, runtime icount,
@@ -925,13 +928,16 @@ touching the canonical run.
   with and without the API-generated debugger observations, proves it is
   byte-identical, and asserts that register, memory, backtrace, thread/vCPU, and
   watchpoint reads append no causal entry and advance no virtual time.
-- [ ] **T-DBG-3** Implement canonical breakpoints as hardware/out-of-band (17a
+  The CLI live-backend proof is observational and remains outside this canonical
+  projection, so attaching the production debug route does not change the
+  scenario's causal bytes.
+- [x] **T-DBG-3** Implement canonical breakpoints as hardware/out-of-band (17a
   `Condition` predicate or QEMU hardware breakpoint), transparently satisfying a
   client software-breakpoint request where a mechanism exists and **refusing**
   (typed error → `--allow-mutate`) a memory-write-only breakpoint on a canonical
   attach; never patch a trap into guest memory. — satisfies [DBG-11], [DBG-12],
   [DBG-13]; spec §36.3.2.
-  Partial evidence under `checks.crucible.phase6.canonicalDebugBreakpoint`:
+  Completed under `checks.crucible.phase6.canonicalDebugBreakpoint`:
   `TemporalGraph::canonical_debug_breakpoint` resolves canonical breakpoint requests
   only to out-of-band mechanisms (`EngineCondition` or `QemuHardwareBreakpoint`),
   transparently satisfies a client software-breakpoint request through the mediated
@@ -941,6 +947,8 @@ touching the canonical run.
   mutates guest memory, never uses a memory patch, the proxy rewrites real `Z0`
   software-breakpoint packets to `Z1` hardware-breakpoint packets, and the proxy
   refuses `Z0` locally when no hardware breakpoint mechanism is available.
+  The live CLI route composes this proxy policy with hermetic QEMU/plugin
+  execution; it never enables raw gdb single-step or a guest-memory trap patch.
 - [x] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
   ancestor-replay branch of `instantiate`), reverse-step grains mirroring the forward
   StepMode set, and reverse-continue as the latest-log-coordinate-≤-now-where-a-17a-
@@ -1013,7 +1021,7 @@ touching the canonical run.
   restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
   copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
   artifact writer uses it.
-- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/goto/reverse-step/reverse-continue
@@ -1024,7 +1032,7 @@ touching the canonical run.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
-  Partial evidence under `checks.crucible.phase6.debugCliSurface`:
+  Completed under `checks.crucible.phase6.debugCliSurface`:
   `crucible debug` now parses artifact/savepoint and `--session` targets plus
   `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
   `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the
@@ -1036,4 +1044,7 @@ touching the canonical run.
   step modes, proves that the CLI holds no debugger state, defaults to read-only
   inspection, forks a visibly `NON-CANONICAL` branch before mutation, exposes the no
   symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
-  single-step disabled until the gdbstub-disturbs-icount spike is green.
+  single-step disabled. Executing the command also resolves the hermetic
+  production backend, boots the packaged QEMU/plugin under TCG, and reports the
+  negotiated protocol/ABI plus terminal icount/fingerprint before presenting
+  the thin delegated debug plan.

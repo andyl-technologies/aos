@@ -107,6 +107,7 @@ fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<d
     let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")
@@ -199,6 +200,7 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
     let source = single_savepoint_handle(&save_artifact_dir, "resume-source")?;
 
     let resume_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")
@@ -284,6 +286,7 @@ fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box
     let source = single_savepoint_handle(&save_artifact_dir, "fork-source")?;
 
     let fork_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")

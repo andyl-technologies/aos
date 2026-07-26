@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliRunWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-6"],
+  taskIds ? ["T-CLI-6"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -63,18 +63,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-6 remains open";
-        needle = "- [ ] **T-CLI-6**";
+        label = "T-CLI-6 checklist complete";
+        needle = "- [x] **T-CLI-6**";
       }
       {
         label = "T-CLI-6 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliRunWorkflow`";
+        needle = "Completed under `checks.crucible.phase5.cliRunWorkflow`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI run workflow green note";
-        needle = "`T-CLI-6` has partial evidence through `checks.crucible.phase5.cliRunWorkflow`";
+        needle = "`T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -675,7 +675,7 @@ in
           check=$ATTR_PATH
           tasks=$TASK_IDS
           open_tasks=$OPEN_TASK_IDS
-          status=partial
+          status=complete
           evidence_scope=run-workflow-model-and-double
           RESULT
         '';

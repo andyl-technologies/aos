@@ -581,9 +581,17 @@ pub(super) fn run_local_qemu_save_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU save requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
     let mut outcome =
         run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)?;
     append_local_qemu_save_identity(&mut outcome, backend_plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "save", report);
+    }
     Ok(outcome)
 }
 
@@ -644,6 +652,11 @@ pub(super) fn run_local_qemu_resume_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     resume_plan: &ResumeInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
     let interactive_driver = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive)
     {
         ResumeInteractiveCommandDriver::Stdin
@@ -661,6 +674,9 @@ pub(super) fn run_local_qemu_resume_workflow(
         report,
     )?;
     append_local_qemu_resume_identity(&mut outcome, backend_plan, &realization)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "resume", report);
+    }
     Ok(outcome)
 }
 

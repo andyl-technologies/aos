@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugCliSurface",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-8" "T-CLI-18"],
+  taskIds ? ["T-DBG-8" "T-CLI-18"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -62,12 +62,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-8 remains open";
-        needle = "- [ ] **T-DBG-8**";
+        label = "T-DBG-8 checklist complete";
+        needle = "- [x] **T-DBG-8**";
       }
       {
         label = "T-DBG-8 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase6.debugCliSurface`";
+        needle = "Completed under `checks.crucible.phase6.debugCliSurface`";
       }
       {
         label = "no symbol server wording";
@@ -80,18 +80,18 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-18 remains open";
-        needle = "- [ ] **T-CLI-18**";
+        label = "T-CLI-18 checklist complete";
+        needle = "- [x] **T-CLI-18**";
       }
       {
         label = "T-CLI-18 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase6.debugCliSurface`";
+        needle = "Completed under `checks.crucible.phase6.debugCliSurface`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "T-DBG-8 plan summary";
-        needle = "`T-DBG-8`/`T-CLI-18` have partial evidence through `checks.crucible.phase6.debugCliSurface`";
+        needle = "`T-DBG-8`/`T-CLI-18` are completed through `checks.crucible.phase6.debugCliSurface`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -177,6 +177,10 @@
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "debug live QEMU execution";
+        needle = "crucible: debug live-qemu icount=";
+      }
       {
         label = "coordinate flag group";
         needle = "ArgGroup::new(\"debug_coordinate\")";
@@ -458,7 +462,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             evidence_scope=debug-cli-model-and-proxy
             gate=gate:debug-cli-surface
             surface=thin-session-wrapper,gdbstub-proxy,read-only-default,allow-mutate-non-canonical

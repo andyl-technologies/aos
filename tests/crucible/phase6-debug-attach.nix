@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugAttach",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-1"],
+  taskIds ? ["T-DBG-1"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -68,12 +68,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-1 remains open";
-        needle = "- [ ] **T-DBG-1**";
+        label = "T-DBG-1 checklist complete";
+        needle = "- [x] **T-DBG-1**";
       }
       {
         label = "T-DBG-1 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase6.debugAttach`";
+        needle = "Completed under `checks.crucible.phase6.debugAttach`";
       }
       {
         label = "attach is instantiate";
@@ -412,7 +412,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             evidence_scope=debug-attach-model-and-proxy
             gate=gate:debug-attach
             attach=instantiate-via-temporal-graph-resume

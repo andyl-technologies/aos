@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliReplayCheck",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-12"],
+  taskIds ? ["T-CLI-12"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -47,12 +47,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-12 remains open";
-        needle = "- [ ] **T-CLI-12** Implement `replay`";
+        label = "T-CLI-12 checklist complete";
+        needle = "- [x] **T-CLI-12** Implement `replay`";
       }
       {
         label = "T-CLI-12 replay check partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliReplayCheck`";
+        needle = "Completed under `checks.crucible.phase5.cliReplayCheck`";
       }
       {
         label = "replay bisect progress";
@@ -496,7 +496,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=replay-model-and-process-validation
             component=crucible-cli
             replay_check=byte-identical-canonical-log

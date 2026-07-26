@@ -175,18 +175,22 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             return Err(unsupported_fork_backend_error(fork_plan));
         }
         if let Some(search_plan) = &search_plan {
-            if backend_plan.target == BackendExecutionTarget::Local
-                && matches!(
-                    backend_plan.resolved_backend,
-                    Some(ResolvedLocalBackend::Double)
-                )
-            {
-                let outcome = run_local_double_search_workflow(
-                    &thin_plan,
-                    &backend_plan,
-                    ergonomics_plan.as_ref(),
-                    search_plan,
-                )?;
+            if backend_plan.target == BackendExecutionTarget::Local {
+                let outcome = match backend_plan.resolved_backend.as_ref() {
+                    Some(ResolvedLocalBackend::Double) => run_local_double_search_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        search_plan,
+                    ),
+                    Some(ResolvedLocalBackend::Qemu { .. }) => run_local_qemu_search_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        search_plan,
+                    ),
+                    None => Err(unsupported_search_backend_error(search_plan)),
+                }?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }
@@ -201,11 +205,38 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         if let Some(fuzz_plan) = &fuzz_plan {
             match fuzz_dispatch_route(&backend_plan, fuzz_plan) {
                 Some(FuzzDispatchRoute::BuiltInFaultCampaignProof) => {
+                    if let Some(backend @ ResolvedLocalBackend::Qemu { .. }) =
+                        backend_plan.resolved_backend.as_ref()
+                        && let Some(live) = run_live_qemu_backend_probe_for_command(backend)?
+                        && emit_human
+                    {
+                        println!(
+                            "crucible: fuzz live-qemu icount={} fingerprint={}",
+                            live.completed_icount,
+                            format_content_hash_ref(live.execution_fingerprint.hash)
+                        );
+                    }
                     run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
                     return Ok(());
                 }
                 Some(FuzzDispatchRoute::LocalDouble) => {
                     let outcome = run_local_double_fuzz_workflow(
+                        &thin_plan,
+                        &backend_plan,
+                        ergonomics_plan.as_ref(),
+                        fuzz_plan,
+                    )?;
+                    if emit_human && backend_plan.should_announce(cli.quiet) {
+                        println!("{}", backend_plan.announcement());
+                    }
+                    emit_backend_command_output(cli, &outcome)?;
+                    if outcome.status.is_non_passing() {
+                        return Err(CliError::Outcome(outcome.status));
+                    }
+                    return Ok(());
+                }
+                Some(FuzzDispatchRoute::LocalQemu) => {
+                    let outcome = run_local_qemu_fuzz_workflow(
                         &thin_plan,
                         &backend_plan,
                         ergonomics_plan.as_ref(),
@@ -277,13 +308,16 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             if !cli.quiet {
                 for gate in &report.gates {
                     println!(
-                        "crucible: selftest gate={} status={} runner={} corpus={} runs-per-entry={} qemu={}",
+                        "crucible: selftest gate={} status={} runner={} corpus={} runs-per-entry={} qemu={} live-icount={} live-fingerprint={}",
                         gate.name,
                         gate.status.label(),
                         gate.runner.label(),
                         gate.corpus_entries,
                         gate.runs_per_entry,
-                        gate.qemu_build_id.as_deref().unwrap_or("none")
+                        gate.qemu_build_id.as_deref().unwrap_or("none"),
+                        gate.live_qemu_icount
+                            .map_or_else(|| String::from("none"), |value| value.to_string()),
+                        gate.live_qemu_fingerprint.as_deref().unwrap_or("none")
                     );
                 }
                 for verified in report.verified {
@@ -337,6 +371,8 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Commands::Debug(args) => {
             let plan = plan_debug_invocation(cli, args)?;
+            let backend = require_selftest_qemu_backend(cli)?;
+            let live = run_live_qemu_backend_probe_for_command(&backend)?;
             if !cli.quiet {
                 println!(
                     "crucible: debug target={} coordinate={} mode={} listen={} verb={}",
@@ -346,6 +382,15 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     plan.gdb_listen,
                     plan.verb.label()
                 );
+                if let Some(report) = live {
+                    println!(
+                        "crucible: debug live-qemu icount={} fingerprint={} proto={} shmem-abi={}",
+                        report.completed_icount,
+                        format_content_hash_ref(report.execution_fingerprint.hash),
+                        report.negotiated_proto_version,
+                        report.negotiated_abi_version
+                    );
+                }
             }
             Ok(())
         }
@@ -492,32 +537,42 @@ pub(super) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestRep
         None
     };
     let verified = verify_selftest_corpus(args)?;
-    let gates = selected_gates
-        .into_iter()
-        .map(|gate| {
-            let runner = if REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()) {
-                SelftestGateRunner::RealQemu
-            } else {
-                SelftestGateRunner::DoubleBackedCorpus
-            };
-            let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
-                qemu_backend.as_ref().and_then(|backend| match backend {
-                    ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
-                    ResolvedLocalBackend::Double => None,
-                })
-            } else {
-                None
-            };
-            SelftestGateReport {
-                name: gate,
-                status: SelftestGateStatus::Passed,
-                corpus_entries: verified.len(),
-                runs_per_entry: DEFAULT_SELFTEST_RUNS,
-                runner,
-                qemu_build_id,
-            }
-        })
-        .collect();
+    let mut gates = Vec::with_capacity(selected_gates.len());
+    for gate in selected_gates {
+        let runner = if REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()) {
+            SelftestGateRunner::RealQemu
+        } else {
+            SelftestGateRunner::DoubleBackedCorpus
+        };
+        let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
+            qemu_backend.as_ref().and_then(|backend| match backend {
+                ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
+                ResolvedLocalBackend::Double => None,
+            })
+        } else {
+            None
+        };
+        let live = if runner == SelftestGateRunner::RealQemu {
+            let backend = qemu_backend
+                .as_ref()
+                .ok_or_else(|| backend_error("real-QEMU selftest requires a resolved backend"))?;
+            run_live_qemu_backend_probe_for_command(backend)?
+        } else {
+            None
+        };
+        gates.push(SelftestGateReport {
+            name: gate,
+            status: SelftestGateStatus::Passed,
+            corpus_entries: verified.len(),
+            runs_per_entry: DEFAULT_SELFTEST_RUNS,
+            runner,
+            qemu_build_id,
+            live_qemu_icount: live.as_ref().map(|report| report.completed_icount),
+            live_qemu_fingerprint: live
+                .as_ref()
+                .map(|report| format_content_hash_ref(report.execution_fingerprint.hash)),
+        });
+    }
     Ok(SelftestReport { gates, verified })
 }
 

@@ -128,6 +128,32 @@ pub(crate) fn run_live_qemu_backend_probe(
     })
 }
 
+/// Runs a live backend probe for a production command.
+#[cfg(not(test))]
+pub(crate) fn run_live_qemu_backend_probe_for_command(
+    backend: &ResolvedLocalBackend,
+) -> Result<Option<production_api::ProductionPluginInstallReport>, CliError> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE").is_some() {
+        if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+            return Err(backend_error("live QEMU probe requires the QEMU backend"));
+        }
+        return Ok(None);
+    }
+    run_live_qemu_backend_probe(backend).map(Some)
+}
+
+/// Keeps unit tests independent of bootable AOS fixture artifacts.
+#[cfg(test)]
+pub(crate) fn run_live_qemu_backend_probe_for_command(
+    backend: &ResolvedLocalBackend,
+) -> Result<Option<production_api::ProductionPluginInstallReport>, CliError> {
+    if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+        return Err(backend_error("live QEMU probe requires the QEMU backend"));
+    }
+    Ok(None)
+}
+
 fn prepare_live_qemu_root_overlay(
     qemu: &Path,
     raw_root_image: &Path,

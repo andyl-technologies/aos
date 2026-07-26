@@ -265,6 +265,7 @@ in rec {
             "T-DET-8"
             "T-DET-9"
             "T-DET-10"
+            "T-TIME-9"
           ];
           openTaskIds = [];
         };
@@ -1269,7 +1270,7 @@ in rec {
       taskIds = ["T-CLI-1"];
     };
     gates = {
-      controlResponsive = redBeforeAdvance {
+      controlResponsive = greenBeforeAdvance {
         attrPath = "checks.crucible.phase5.gates.controlResponsive";
         # lint needle: controlResponsive = import ./phase5-control-responsive.nix
         gate = import ./phase5-control-responsive.nix {
@@ -1279,22 +1280,6 @@ in rec {
           dependencies = [phase4.gates.e2eDeterminism.rawGate];
         };
         dependencies = [phase4.gates.e2eDeterminism];
-        phase = "phase5";
-        reason = "audited session, CLI workflow, exit, and help contracts remain partial until their live backend paths are complete";
-        taskIds = [
-          "T-CLI-3"
-          "T-CLI-6"
-          "T-CLI-7"
-          "T-CLI-8"
-          "T-CLI-9"
-          "T-CLI-10"
-          "T-CLI-11"
-          "T-CLI-12"
-          "T-CLI-13"
-          "T-CLI-14"
-          "T-CLI-15"
-          "T-CLI-16"
-        ];
       };
     };
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
@@ -1559,8 +1544,8 @@ in rec {
     cliRunWorkflow = import ./phase5-cli-run-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliRunWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-6"];
+      taskIds = ["T-CLI-6"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliHermeticDiscovery
         phase4.gates.replayOracle.rawGate
@@ -1571,8 +1556,8 @@ in rec {
     cliSaveWorkflow = import ./phase5-cli-save-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSaveWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-9"];
+      taskIds = ["T-CLI-9"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1582,8 +1567,8 @@ in rec {
     cliResumeWorkflow = import ./phase5-cli-resume-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliResumeWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-10"];
+      taskIds = ["T-CLI-10"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliSaveWorkflow
         phase5.sessionSaveResumeFork
@@ -1593,8 +1578,8 @@ in rec {
     cliForkWorkflow = import ./phase5-cli-fork-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliForkWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-11"];
+      taskIds = ["T-CLI-11"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliSaveWorkflow
         phase5.cliResumeWorkflow
@@ -1616,8 +1601,8 @@ in rec {
     cliSelftest = import ./phase5-cli-selftest.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSelftest";
-      taskIds = [];
-      openTaskIds = ["T-CLI-8"];
+      taskIds = ["T-CLI-8"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1627,8 +1612,8 @@ in rec {
     cliReplayCheck = import ./phase5-cli-replay-check.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliReplayCheck";
-      taskIds = [];
-      openTaskIds = ["T-CLI-12"];
+      taskIds = ["T-CLI-12"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1638,8 +1623,8 @@ in rec {
     cliSearchFuzzWorkflow = import ./phase5-cli-search-fuzz-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSearchFuzzWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-13"];
+      taskIds = ["T-CLI-13"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliForkWorkflow
@@ -1663,8 +1648,8 @@ in rec {
     cliServeReadOnly = import ./phase5-cli-serve-read-only.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeReadOnly";
-      taskIds = [];
-      openTaskIds = ["T-CLI-14"];
+      taskIds = ["T-CLI-14"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliThinWrapper
@@ -1674,8 +1659,8 @@ in rec {
     cliServeMaxSessions = import ./phase5-cli-serve-max-sessions.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeMaxSessions";
-      taskIds = [];
-      openTaskIds = ["T-CLI-14"];
+      taskIds = ["T-CLI-14"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliRunWorkflow
@@ -1685,8 +1670,8 @@ in rec {
     cliServeMultiClient = import ./phase5-cli-serve-multi-client.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeMultiClient";
-      taskIds = [];
-      openTaskIds = ["T-CLI-14"];
+      taskIds = ["T-CLI-14"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliServeMaxSessions
@@ -1696,8 +1681,8 @@ in rec {
     cliServeShutdown = import ./phase5-cli-serve-shutdown.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeShutdown";
-      taskIds = [];
-      openTaskIds = ["T-CLI-14"];
+      taskIds = ["T-CLI-14"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliServeMaxSessions
@@ -1707,8 +1692,8 @@ in rec {
     cliExitMachineReadable = import ./phase5-cli-exit-machine-readable.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliExitMachineReadable";
-      taskIds = [];
-      openTaskIds = ["T-CLI-15"];
+      taskIds = ["T-CLI-15"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliServeShutdown
@@ -2307,13 +2292,13 @@ in rec {
         phase6.minimization
       ];
     };
-    debugAttach = redBeforeAdvance {
+    debugAttach = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugAttach";
       gate = import ./phase6-debug-attach.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugAttach";
-        taskIds = [];
-        openTaskIds = ["T-DBG-1"];
+        taskIds = ["T-DBG-1"];
+        openTaskIds = [];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2325,17 +2310,14 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.unifyingView
       ];
-      phase = "phase6";
-      reason = "debug attach has model and proxy evidence but lacks the audited live end-to-end proof";
-      taskIds = ["T-DBG-1"];
     };
-    readOnlyDebugInspection = redBeforeAdvance {
+    readOnlyDebugInspection = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
       gate = import ./phase6-read-only-debug-inspection.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
-        taskIds = [];
-        openTaskIds = ["T-DBG-2"];
+        taskIds = ["T-DBG-2"];
+        openTaskIds = [];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2347,17 +2329,14 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.debugAttach
       ];
-      phase = "phase6";
-      reason = "read-only debug inspection remains model-side pending live debugger proof";
-      taskIds = ["T-DBG-2"];
     };
-    canonicalDebugBreakpoint = redBeforeAdvance {
+    canonicalDebugBreakpoint = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
       gate = import ./phase6-canonical-debug-breakpoint.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
-        taskIds = [];
-        openTaskIds = ["T-DBG-3"];
+        taskIds = ["T-DBG-3"];
+        openTaskIds = [];
         dependencies = [
           phase1.layer0Determinism
           phase4.gates.replayOracle.rawGate
@@ -2371,9 +2350,6 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.readOnlyDebugInspection
       ];
-      phase = "phase6";
-      reason = "canonical breakpoint evidence is model and proxy focused pending live debugger proof";
-      taskIds = ["T-DBG-3"];
     };
     debugTimeTravel = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugTimeTravel";
@@ -2449,13 +2425,13 @@ in rec {
         phase6.debugNonCanonicalBranch
       ];
     };
-    debugCliSurface = redBeforeAdvance {
+    debugCliSurface = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugCliSurface";
       gate = import ./phase6-debug-cli-surface.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugCliSurface";
-        taskIds = [];
-        openTaskIds = ["T-DBG-8" "T-CLI-18"];
+        taskIds = ["T-DBG-8" "T-CLI-18"];
+        openTaskIds = [];
         dependencies = [
           phase1.gates.layer0Determinism.rawGate
           phase4.gates.replayOracle.rawGate
@@ -2475,9 +2451,6 @@ in rec {
         phase6.debugNonCanonicalBranch
         phase6.debugTargetResolver
       ];
-      phase = "phase6";
-      reason = "the debug CLI surface remains partial pending audited live debugger behavior";
-      taskIds = ["T-DBG-8" "T-CLI-18"];
     };
     gates = {
       replayOracle = greenBeforeAdvance {

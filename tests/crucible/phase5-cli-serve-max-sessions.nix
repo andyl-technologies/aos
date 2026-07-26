@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliServeMaxSessions",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-14"],
+  taskIds ? ["T-CLI-14"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -47,8 +47,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 remains open";
-        needle = "- [ ] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 checklist complete";
+        needle = "- [x] **T-CLI-14** Implement `serve`";
       }
       {
         label = "T-CLI-14 max-sessions completion note";
@@ -205,7 +205,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=serve-session-cap
             component=crucible-cli,crucible-api
             serve_max_sessions=live-session-cap

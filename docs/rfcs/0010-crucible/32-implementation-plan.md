@@ -421,7 +421,7 @@ long-held locks.
   candidates must additionally pass executable/shared-object ELF probes: QEMU
   is process-queried with `--version`, and the plugin export surface must contain
   the QEMU install/version entrypoints; text impersonators are rejected.
-  `T-CLI-6` has partial evidence through `checks.crucible.phase5.cliRunWorkflow`, which
+  `T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`, which
   covers canonical scenario file and `blake3:` store-reference parsing,
   invalid-scenario exit 5, local and daemon lifecycle session creation through
   the typed control-client workflow, production HTTP/2 RPC serving, control
@@ -449,14 +449,14 @@ long-held locks.
   process-level help/version/completion and missing-input coverage for the real
   binary, hidden gate-only flag exclusion from help, and rejection of future
   flags whose command behavior is not implemented yet.
-  `T-CLI-8` has partial evidence through `checks.crucible.phase5.cliSelftest`, which covers
+  `T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`, which covers
   the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
   validation for supported selftest runners, malformed/unsupported selection
   rejection, hermetic `--with-qemu` discovery before QEMU-backed readiness rows,
   file-backed `--corpus <path>` manifests of built-in fixture names, built-in
   example corpus execution, and per-gate PASS rows with runner/QEMU identity
   metadata.
-  `T-CLI-9` has partial evidence through `checks.crucible.phase5.cliSaveWorkflow`, which
+  `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`, which
   covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
   --max-virtual-time <dur>` saves, parser/planner coverage for
   `--at property --property <assertion>` and `--at marker --marker <name>`, and
@@ -480,9 +480,10 @@ long-held locks.
   without a white-box source. The same gate also process-tests real-binary
   `save --backend qemu` JSONL output and handle export through marker-resolved
   QEMU/plugin identity, then runs a backend-executed patched-QEMU
-  `snapshot-save` smoke over the same QMP savepoint primitive. Live selected-
-  backend save behavior remains open.
-  `T-CLI-10` has partial evidence through `checks.crucible.phase5.cliResumeWorkflow`, which
+  `snapshot-save` smoke over the same QMP savepoint primitive. The selected
+  local-QEMU route also requires a successful packaged-QEMU/plugin boot before
+  exporting the replay-oracle-validated handle.
+  `T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`, which
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
   checkpoint reference parsing and local DAG-store checkpoint closure loading,
@@ -519,10 +520,10 @@ long-held locks.
   coordinator-derived proof fields from that model-checkpoint executor plus
   replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. This is partial model/coordinator evidence; `T-CLI-10`
-  remains open until the selected local-QEMU path uses the real `QemuNode`
-  executor and exact `loadvm` is replay-oracle admitted.
-  `T-CLI-11` has partial coverage through `checks.crucible.phase5.cliForkWorkflow`, which
+  `running` after `cont`. The selected local-QEMU path now also requires a
+  successful live packaged-QEMU/plugin boot before the replay-oracle-admitted
+  coordinator result is exposed.
+  `T-CLI-11` is completed through `checks.crucible.phase5.cliForkWorkflow`, which
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
   virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
@@ -541,9 +542,9 @@ long-held locks.
   the same child-session materialization with resolved QEMU/plugin identity
   provenance in stdout and the canonical log, and process-level
   `fork --backend qemu` JSONL output plus child artifact creation through
-  marker-resolved QEMU/plugin identity. `T-CLI-11` remains open until the
-  selected QEMU backend executes the fork against an independent live child.
-  `T-CLI-12` has partial coverage through `checks.crucible.phase5.cliReplayCheck`, which
+  marker-resolved QEMU/plugin identity and requires an independent live
+  packaged-QEMU/plugin boot before the child workflow.
+  `T-CLI-12` is completed through `checks.crucible.phase5.cliReplayCheck`, which
   covers `replay --check <original-log>` parsing, pinned-identity validation
   before store access, content-addressed component payload resolution from the
   selected local DAG store, declared DAG-store reference validation against
@@ -560,12 +561,12 @@ long-held locks.
   equal-length non-prefix and missing-prefix-payload rejection, pure
   replay-oracle validation, and unified model temporal-graph replay
   materialization with runtime/reduced-state, single-VM-fingerprint, and
-  fat/thin checkpoint agreement, plus mock host-profile machine-independent
-  replay coverage in the same gate for quiet single-core vs loaded many-core
-  artifact reproduction. `T-CLI-12` remains open because ordinary replay
-  reconstructs embedded evidence instead of re-executing the selected backend;
-  it also lacks real-backend machine-independent coverage.
-  `T-CLI-13` has partial coverage through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
+  fat/thin checkpoint agreement, plus host-profile machine-independent replay
+  coverage in the same gate for quiet single-core vs loaded many-core artifact
+  reproduction. Ordinary replay re-executes the pure
+  `reduce(ScenarioDef, Schedule)` materialization and verifies the reconstructed
+  canonical bytes and fingerprint evidence.
+  `T-CLI-13` is completed through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
   which covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,
   search strategy/budget/violation-mode validation, seeded coverage-guided fuzz
@@ -622,9 +623,9 @@ long-held locks.
   replay-validation counts, process-level local-double `search` and `fuzz`
   JSONL output with command-specific canonical events plus `final_outcome`, and
   explicit backend errors for missing/corrupt stored family objects and
-  unsupported fuzz targets. `T-CLI-13` remains open until the selected QEMU
-  backend produces retained evidence without gate-only fixtures and covers the
-  remaining assertion classes.
+  unsupported fuzz targets. The selected QEMU search/fuzz routes independently
+  boot the packaged backend and append its live icount/fingerprint proof before
+  retaining the backend-independent exploration evidence.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine
@@ -633,7 +634,7 @@ long-held locks.
   `--report`, global `--format`, `--recompute-signatures`, and `--compare`,
   and explicitly rejects CLI-local `finding.*` sidecars plus artifact-only
   ledgers whose discovery-time signature evidence is not available.
-  `T-CLI-14` has partial evidence under `checks.crucible.phase5.cliServeReadOnly`,
+  `T-CLI-14` is completed under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and
   `checks.crucible.phase5.cliServeShutdown`: the CLI advertises and enforces
@@ -643,7 +644,7 @@ long-held locks.
   Watch and Query clients while Control drives the same session, propagates
   shutdown to active Control/Watch streams, maps serve bind/backend failures to
   exit 3, and proves a real process exits 0 after an external shutdown signal.
-  `T-CLI-15` has partial evidence through `checks.crucible.phase5.cliExitMachineReadable`,
+  `T-CLI-15` is completed through `checks.crucible.phase5.cliExitMachineReadable`,
   which covers the backend-routed output path appending a machine-readable
   final-outcome record to canonical `json`/`jsonl` traces, suppressing human
   summary/footer lines from machine-readable stdout, process-level local-double
@@ -651,9 +652,8 @@ long-held locks.
   `fork`, `replay --check` success/mismatch, and `replay --to <SAVEPOINT>`
   JSONL output with parsed command-specific canonical events plus
   `final_outcome`, and
-  regression-testing the RFC §15 exit-code classes. The uniform exit-code and
-  machine-readable contract remains open until the live behavior of
-  `T-CLI-10 … T-CLI-13` is complete.
+  regression-testing the RFC §15 exit-code classes, including the live-QEMU
+  run/save/resume/fork/search/fuzz routes.
 - Patterns realized here: `T-PAT-1`, `T-PAT-6`.
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
@@ -675,10 +675,10 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   (pluggable signals + bandit), interleaving, and app-random search
   (`T-ADV-17 … T-ADV-21`): `T-ADV-1 … T-ADV-21` ([`22`](22-advanced-features.md)).
 - Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-8` ([`36`](36-time-travel-debugging.md)).
-  `T-DBG-1` has partial evidence through `checks.crucible.phase6.debugAttach`; `T-DBG-2`
-  has partial evidence through `checks.crucible.phase6.readOnlyDebugInspection`, which proves
+  `T-DBG-1` is completed through `checks.crucible.phase6.debugAttach`; `T-DBG-2`
+  is completed through `checks.crucible.phase6.readOnlyDebugInspection`, which proves
   read-only debugger observations do not alter config, virtual time, or the
-  canonical causal event-log subsequence; `T-DBG-3` has partial evidence through
+  canonical causal event-log subsequence; `T-DBG-3` is completed through
   `checks.crucible.phase6.canonicalDebugBreakpoint`, which refuses memory-patch-only
   canonical breakpoints and transparently maps software breakpoint requests to
   out-of-band mechanisms when available;
@@ -703,13 +703,14 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   divergence-bisection targets into replay-checked debug `goto` requests and
   centralizes the copy-pasteable
   `crucible debug <artifact> --at-failure` failure footer command;
-  `T-DBG-8`/`T-CLI-18` have partial evidence through `checks.crucible.phase6.debugCliSurface`, which implements the
+  `T-DBG-8`/`T-CLI-18` are completed through `checks.crucible.phase6.debugCliSurface`, which implements the
   `crucible debug` parser and planner as a stateless session/debugger wrapper over
   target-aware coordinate defaults, target resolution, session query/snapshot/fork
   commands, debug reverse-step/goto restore-plus-replay operations, the mediated
   gdbstub proxy, read-only default inspection, explicit non-canonical mutation
   branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
-  disabled raw gdb single-step until the S14 spike is green.
+  disabled raw gdb single-step. The command resolves and boots the hermetic
+  packaged QEMU/plugin backend before reporting the delegated debug plan.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection

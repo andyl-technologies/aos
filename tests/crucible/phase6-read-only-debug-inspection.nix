@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.readOnlyDebugInspection",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-2"],
+  taskIds ? ["T-DBG-2"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -58,12 +58,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-2 remains open";
-        needle = "- [ ] **T-DBG-2**";
+        label = "T-DBG-2 checklist complete";
+        needle = "- [x] **T-DBG-2**";
       }
       {
         label = "T-DBG-2 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase6.readOnlyDebugInspection`";
+        needle = "Completed under `checks.crucible.phase6.readOnlyDebugInspection`";
       }
       {
         label = "canonical causal byte identity";
@@ -340,7 +340,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             evidence_scope=read-only-debug-model
             gate=gate:read-only-debug-inspection
             causal_subsequence=byte-identical

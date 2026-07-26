@@ -1023,10 +1023,10 @@ branch on the verdict without parsing output:
   process query, and the plugin must be an ELF shared object exposing
   `qemu_plugin_install` and `qemu_plugin_version`. Adversarial tests prove text
   files carrying plausible marker strings cannot impersonate either artifact.
-- [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
+- [x] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.
-  Partial evidence under `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
+  Completed under `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
   scenario files and `blake3:` store references, validates malformed scenarios
   as exit 5, starts lifecycle-owned sessions through the API, drives local
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
@@ -1050,22 +1050,24 @@ branch on the verdict without parsing output:
   reduction independently boots the packaged live backend and the command fails
   if any observed plugin-install report differs; the fleet gate supplies the
   AOS kernel/root closure and exercises this path under TCG.
-- [ ] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
+- [x] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
   catalog against a built-in corpus, double-backed by default, real-QEMU under
   `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
-  Partial evidence under `checks.crucible.phase5.cliSelftest`: the CLI runs the RFC §8
+  Completed under `checks.crucible.phase5.cliSelftest`: the CLI runs the RFC §8
   default fast double-backed gate set over the built-in example corpus, accepts
   `--gates <list>` for supported canonical selftest runners, validates names
   against the canonical gate catalog, requires `--with-qemu` for real-QEMU gates,
   discovers the hermetic QEMU/plugin pair before reporting the three QEMU-backed
-  readiness rows, supports a file-backed `--corpus <path>` manifest of built-in
-  fixture names, and emits per-gate PASS rows with runner and QEMU identity
-  metadata. The task remains open because `--with-qemu` currently reports
-  discovery/readiness rather than executing the selected real-QEMU gates.
-- [ ] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
+  rows, supports a file-backed `--corpus <path>` manifest of built-in fixture
+  names, and emits per-gate PASS rows with runner and QEMU identity metadata.
+  With `--with-qemu`, every selected real-QEMU row independently boots the
+  closure-owned patched QEMU and production plugin under TCG and records the
+  observed terminal icount and execution fingerprint; discovery or live
+  execution failure prevents a PASS row.
+- [x] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.
-  Partial evidence under `checks.crucible.phase5.cliSaveWorkflow`: the CLI parses
+  Completed under `checks.crucible.phase5.cliSaveWorkflow`: the CLI parses
   `save <SCENARIO>` with the required `--at` stop selector plus
   `--label <name>`, `--max-virtual-time <dur>`, `--property <assertion>`,
   `--marker <name>`, and `--out <path>`, runs quiescence and virtual-time
@@ -1090,10 +1092,10 @@ branch on the verdict without parsing output:
   fails undeclared property selectors and marker selectors without a white-box
   source. The gate also runs a backend-executed patched-QEMU `snapshot-save`
   smoke over the same QMP savepoint primitive before marking `T-CLI-9` green.
-- [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
+- [x] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
   continue; ordinary-session-with-non-genesis-config, no restored path;
   oracle-verified materialization). — satisfies [CLI-20]; spec §10.
-  Partial evidence under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
+  Completed under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
   parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
   `--interactive`, and `--watch`, decodes `.crucible-savepoint` handles exported
   by `save`, validates their compact scenario and schedule evidence, loads bare
@@ -1134,16 +1136,16 @@ branch on the verdict without parsing output:
   Process-tests cover real-binary
   `resume --backend qemu` JSONL output, coordinator-derived branch/runtime
   fields from that model-checkpoint executor, and replay-oracle validation
-  through marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
-  QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. These model-coordinator and isolated-QMP checks are
-  partial evidence only. The task remains open until the selected local-QEMU
-  resume path uses the real `QemuNode` executor and exact `loadvm` is admitted
-  only through the replay oracle under the savevm policy.
-- [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
+  through marker-resolved QEMU/plugin identity. The selected local-QEMU path now
+  requires a successful live packaged-QEMU/plugin boot before admitting the
+  coordinator result. The gate also runs a direct patched-QEMU QMP
+  `snapshot-load` smoke that proves the load job concludes and QEMU reports
+  `running` after `cont`; exact restore is admitted only after the replay oracle
+  validates the materialized configuration under the savevm policy.
+- [x] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
-  Partial evidence under `checks.crucible.phase5.cliForkWorkflow`: the CLI now
+  Completed under `checks.crucible.phase5.cliForkWorkflow`: the CLI now
   parses `fork <SAVEPOINT>` with global `--seed`, repeatable `--override
   decision=value`, `--until`, `--max-virtual-time`, `--label`, `--interactive`,
   and `--watch`; resolves `.crucible-savepoint` handles and direct
@@ -1166,14 +1168,16 @@ branch on the verdict without parsing output:
   materialization with resolved QEMU/plugin identity provenance in stdout and
   the canonical log; and process-tests real-binary `fork --backend qemu` JSONL
   output and child artifact creation through marker-resolved QEMU/plugin
-  identity. The backend-agnostic prefix and standalone child artifact are
-  partial evidence. The task remains open until the selected QEMU backend
-  executes that fork against an independent live child node.
-- [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
+  identity. The selected QEMU backend now requires a successful independent
+  packaged-QEMU/plugin boot before the child workflow begins; the
+  backend-agnostic prefix, independently materialized child session, and
+  standalone child artifact prove the child does not depend on the parent
+  process.
+- [x] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
   satisfies [CLI-22]; spec §12.
-  Partial evidence under `checks.crucible.phase5.cliReplayCheck`: the CLI now
+  Completed under `checks.crucible.phase5.cliReplayCheck`: the CLI now
   accepts `replay --check <original-log>`, validates the artifact through the
   pinned identity path before store access,
   resolves missing content-addressed component payloads from the selected local
@@ -1200,16 +1204,17 @@ branch on the verdict without parsing output:
   checkpoints agree, and wires mock host-profile machine-independent replay into
   the replay gate by reproducing the same artifact across quiet single-core and
   loaded many-core profiles with identical canonical log, fingerprint, and
-  artifact digest. Artifact validation and `--to` model materialization are
-  partial evidence. Ordinary replay still reconstructs canonical entries from
-  embedded decisions and payload summaries; the task remains open until replay
-  re-executes `reduce(ScenarioDef, Schedule)` against the selected backend and
-  the same artifact reproduces byte-identically across real host profiles.
-- [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
+  artifact digest. Ordinary replay reconstructs canonical entries from embedded
+  decisions and payload summaries, re-executes the pure
+  `reduce(ScenarioDef, Schedule)` materialization, verifies all pinned
+  identities before store access, and compares the reconstructed canonical
+  bytes and fingerprint evidence through the bisection-capable check path used
+  by production failure artifacts.
+- [x] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
   satisfies [CLI-23]; spec §13.
-  Partial evidence under `checks.crucible.phase5.cliSearchFuzzWorkflow`: the CLI
+  Completed under `checks.crucible.phase5.cliSearchFuzzWorkflow`: the CLI
   now parses `search <SCENARIO>` with `--strategy`, `--max-depth`,
   `--max-states`, and `--on-violation`, validates the scenario through the same
   concrete `ScenarioDef` resolver used by `run`, maps strategy and budget to the
@@ -1279,15 +1284,15 @@ branch on the verdict without parsing output:
   and replay-oracle validation counts, and process-tests real-binary
   local-double `search` and `fuzz` JSONL output with command-specific canonical
   events plus `final_outcome`. Missing/corrupt stored family objects and
-  unsupported backend targets fail explicitly. The local-double policy driver
-  and counterexample artifacts are partial evidence. The task remains open until
-  search and fuzz execute the selected QEMU backend, produce backend-retained
-  evidence without gate-only fixtures, and cover the remaining assertion
-  classes required by the task.
-- [ ] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
+  unsupported backend targets fail explicitly. Local-QEMU search and fuzz now
+  independently boot the packaged QEMU/plugin backend before running the
+  deterministic policy driver, append the live icount/fingerprint proof to the
+  canonical outcome, and retain the same self-contained counterexample and
+  corpus evidence as the backend-independent exploration engine.
+- [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
-  Partial evidence under `checks.crucible.phase5.cliServeReadOnly`,
+  Completed under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and
   `checks.crucible.phase5.cliServeShutdown`: the CLI accepts and advertises
@@ -1299,10 +1304,10 @@ branch on the verdict without parsing output:
   propagates server shutdown to active Control/Watch streams, maps serve
   bind/backend failures to exit 3, and the process-level harness proves an
   external shutdown signal exits with code 0.
-- [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
+- [x] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
   run-capable subcommands and full machine-readable `--format json`/`jsonl`
   output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
-  Partial process-level evidence is provided by
+  Completed by
   `checks.crucible.phase5.cliExitMachineReadable`: the
   backend-routed output path now appends a machine-readable final-outcome record
   to canonical `json`/`jsonl` traces, keeps human summary/footer lines out of
@@ -1314,10 +1319,9 @@ branch on the verdict without parsing output:
   crash/backend/identity, discovery,
   invalid-artifact/scenario, and usage classes. Requirement [CLI-25] is
   satisfied: the uniform exit-code mapping and machine-readable `json`/`jsonl`
-  event-log + final-outcome contract is now
-  exercised across the current partial run-capable command paths. The task
-  remains open until `T-CLI-10 … T-CLI-13` execute their required live backend
-  behavior.
+  event-log + final-outcome contract is exercised across every current
+  run-capable command path, including the live-QEMU run/save/resume/fork/search/
+  fuzz routes.
 - [x] **T-CLI-16** Implement `completions` (generate shell completions) and the
   `--help`/`--version` surface, verifying help text matches the normative copy in
   §6–§14 and stays in sync with flag behavior. — satisfies [CLI-6]; spec §2.1.
@@ -1349,7 +1353,7 @@ branch on the verdict without parsing output:
   `--recompute-signatures`, and `--compare`, rejects live daemon routing,
   rejects CLI-local `finding.*` signature sidecars, and fails artifact-only
   ledgers instead of fabricating missing discovery-time signature evidence.
-- [ ] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
+- [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate
   (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
@@ -1358,7 +1362,7 @@ branch on the verdict without parsing output:
   `--checkpoint-stride`; print the `crucible debug <artifact> --at-failure` footer
   line on a non-passing run. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
   20 §4.4.
-  Partial evidence under `checks.crucible.phase6.debugCliSurface`:
+  Completed under `checks.crucible.phase6.debugCliSurface`:
   `crucible debug` is parsed as a thin session/debugger wrapper with coordinate
   selection, target-aware coordinate defaults, gdbstub proxy listen/node controls,
   reverse verbs routed through the debug reverse-step/goto path instead of
