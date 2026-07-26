@@ -320,12 +320,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 checklist remains open pending real multi-VM evidence";
-        needle = "- [ ] **T-HARN-23**";
+        label = "T-HARN-23 checklist complete";
+        needle = "- [x] **T-HARN-23**";
       }
       {
-        label = "T-HARN-23 partial mock evidence note";
-        needle = "Partial mock evidence is provided by `checks.crucible.phase7.gates.e2eDeterminism`";
+        label = "T-HARN-23 production fleet evidence note";
+        needle = "Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`";
       }
     ];
 in

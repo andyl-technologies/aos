@@ -2766,20 +2766,17 @@ in rec {
           "T-PERF-28"
         ];
       };
-      e2eDeterminism = redBeforeAdvance {
+      e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase7-e2e-determinism.nix
         gate = import ./phase7-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-          taskIds = [];
-          openTaskIds = ["T-PLAN-3" "T-HARN-23"];
+          taskIds = ["T-HARN-23"];
+          openTaskIds = [];
           dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
         dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
-        phase = "phase7";
-        reason = "terminal gate wiring and real multi-VM cross-machine acceptance remain incomplete";
-        taskIds = ["T-PLAN-3" "T-HARN-23"];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

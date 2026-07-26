@@ -1063,11 +1063,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   fingerprints, observer output, and empty evidence; shared artifact
   machine-profile reproduction is completed by T-HARN-25, while real AOS
   VM/fleet checks remain owned by the packaging tasks.
-- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
-  Partial mock evidence is provided by `checks.crucible.phase7.gates.e2eDeterminism`: the `crucible-cli`
-  gate target now runs the representative self-contained mock e2e artifact
+  Completed by `checks.crucible.phase7.gates.e2eDeterminism` and
+  `checks.fleet.crucible-e2e-determinism`: the `crucible-cli` gate target runs
+  the representative self-contained e2e artifact
   through the shared harness final-acceptance route, exercises the canonical
   adversarial host profile matrix, verifies byte-identical logs/fingerprints,
   replays from the artifact on different machine profiles, and rejects build
@@ -1076,8 +1077,14 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   closes the package-owned final acceptance target for the shared mock artifact
   route without adding new CLI subcommand semantics. The versioned shared
   artifact format and CLI produce/replay seam are completed by T-HARN-24; the
-  shared mock artifact machine-profile verifier is completed by T-HARN-25, and
-  real AOS VM/fleet wiring remains packaging work.
+  shared artifact machine-profile verifier is completed by T-HARN-25.
+  Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`,
+  which runs every independent reduction with `--backend qemu`, launches the
+  closure-owned patched QEMU and production plugin under TCG against the
+  AOS-built kernel/root fixture, then requires byte-identical canonical logs
+  across the adversarial profile matrix and successful reproduce/bisect
+  outcomes. The phase-7 Nix gate is green-before-advance and the fleet check
+  consumes its raw result as a required precondition.
 - [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into

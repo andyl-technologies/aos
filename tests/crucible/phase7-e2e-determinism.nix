@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
-  taskIds ? [],
-  openTaskIds ? ["T-PLAN-3" "T-HARN-23"],
+  taskIds ? ["T-HARN-23"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -59,12 +59,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 remains open";
-        needle = "- [ ] **T-HARN-23**";
+        label = "T-HARN-23 checklist complete";
+        needle = "- [x] **T-HARN-23**";
       }
       {
-        label = "T-HARN-23 phase7 partial note";
-        needle = "Partial mock evidence is provided by `checks.crucible.phase7.gates.e2eDeterminism`";
+        label = "T-HARN-23 production fleet evidence";
+        needle = "Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
@@ -245,7 +245,7 @@ in
             gate=gate:e2e-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
+            status=complete
             owner=crucible-cli
             phase=phase7
             scenario=shared-mock-multi-node-fault-injected-artifact
@@ -254,7 +254,7 @@ in
             cross_machine_reproduction=different-machine-profile-replay
             shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
             machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
-            real_host_reproduction=deferred-to-packaging-and-fleet-gates
+            real_host_reproduction=checks.fleet.crucible-e2e-determinism
             ci_check_class=fleet-check-surface
             fleet_check_surface=checks.fleet.crucible-e2e-determinism
             ci_wiring_guard=checks.crucible.phase7.crucibleGateCiWiring

@@ -604,8 +604,8 @@
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
-        label = "phase7 acceptance gate records fleet handoff";
-        needle = "real_host_reproduction=deferred-to-packaging-and-fleet-gates";
+        label = "phase7 acceptance gate records production fleet evidence";
+        needle = "real_host_reproduction=checks.fleet.crucible-e2e-determinism";
       }
       {
         label = "phase7 acceptance gate records fleet check class";
