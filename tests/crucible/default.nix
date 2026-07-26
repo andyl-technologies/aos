@@ -92,7 +92,7 @@ in rec {
     s6KaslrAslr = import ./phase0-s6.nix {inherit pkgs lib;};
     s7DeadlineCeiling = import ./phase0-s7.nix {inherit pkgs lib;};
     s9QemuBuildIdentity = import ./phase0-s9.nix {inherit pkgs lib;};
-    s10Aarch64Doorbell = import ./phase0-s10.nix {inherit pkgs;};
+    s10Aarch64Doorbell = import ./phase0-s10.nix {inherit pkgs lib;};
     s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
     s12PreemptionDecision = import ./phase0-s12.nix {inherit pkgs;};
     s13RrSwitchQuantumFallback = import ./phase0-s13.nix {inherit pkgs lib;};
@@ -1071,8 +1071,8 @@ in rec {
     guestHostDoorbell = import ./phase4-guest-host-doorbell.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostDoorbell";
-      taskIds = [];
-      openTaskIds = ["T-GHC-4"];
+      taskIds = ["T-GHC-4"];
+      openTaskIds = [];
     };
     guestHostDoorbellAbi = import ./phase4-guest-host-doorbell-abi.nix {
       inherit pkgs lib;
@@ -1202,8 +1202,8 @@ in rec {
         };
         dependencies = [replayOracle phase1.simDouble];
         phase = "phase4";
-        reason = "the remaining white-box channel work requires aarch64, crash-control, network, and multi-node production evidence";
-        taskIds = ["T-GHC-4" "T-GHC-6" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
+        reason = "the remaining white-box channel work requires crash-control, network, and multi-node production evidence";
+        taskIds = ["T-GHC-6" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
       };
     };
   };

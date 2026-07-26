@@ -62,7 +62,6 @@ shape-line|crates/crucible-harness/tests/support/testing_standards.rs|710
 shape-line|crates/crucible-protocol/src/doorbell_marker.rs|821
 shape-line|crates/crucible-protocol/src/lib.rs|2796
 shape-line|crates/crucible-qemu-plugin/src/abi.rs|2747
-shape-line|crates/crucible-qemu-plugin/src/abi/tests.rs|771
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|1763
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1696
 shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|696
@@ -80,7 +79,6 @@ shape-line|crates/crucible-qemu-plugin/src/runtime.rs|2095
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|2011
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|1117
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|875
-shape-line|crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|734
 shape-line|crates/crucible-qemu-plugin/src/runtime/tests.rs|1313
 shape-line|crates/crucible-qemu-plugin/src/setup.rs|1245
 shape-line|crates/crucible-qemu-plugin/src/time_control.rs|1217

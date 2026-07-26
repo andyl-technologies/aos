@@ -119,8 +119,8 @@
     ++ lib.optionals (!(hasInfix "qemu_sim_capability=none" referenceQemu.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible-reference: inertness reference QEMU must not advertise Crucible sim capability"
     ]
-    ++ lib.optionals (!(builtins.elem "--target-list=x86_64-softmmu" patchedQemu.qemuConfigureFlags)) [
-      "pkgs.qemu-crucible: missing x86_64-softmmu target-list configure flag"
+    ++ lib.optionals (!(builtins.elem "--target-list=x86_64-softmmu,aarch64-softmmu" patchedQemu.qemuConfigureFlags)) [
+      "pkgs.qemu-crucible: missing x86_64-softmmu,aarch64-softmmu target-list configure flag"
     ]
     ++ lib.optionals (!(builtins.elem "--enable-plugins" patchedQemu.qemuConfigureFlags)) [
       "pkgs.qemu-crucible: missing plugin configure flag"

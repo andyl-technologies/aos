@@ -238,6 +238,10 @@
       kind = "interface";
       symbols = ["qemu_plugin_crucible_write_memory_vaddr"];
     };
+    "0042-crucible-aarch64-det-ipi-adapter.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

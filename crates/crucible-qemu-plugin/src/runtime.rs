@@ -319,6 +319,7 @@ impl OwnedCallbackRuntimeState {
         self: Pin<&mut Self>,
         apis: live_whitebox::LiveWhiteboxApis,
         args: &crate::PluginArgs,
+        target_architecture: crate::abi::QemuPluginTargetArchitecture,
         vcpu_count: u32,
         icount_raw: crate::QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
@@ -343,7 +344,7 @@ impl OwnedCallbackRuntimeState {
         };
         let callback_state = live_whitebox::LiveWhiteboxState::new(
             apis,
-            args.whitebox_setup(),
+            live_whitebox::LiveWhiteboxTarget::new(target_architecture, args.whitebox_setup()),
             vcpu_count,
             icount_raw,
             request_shutdown,
@@ -919,12 +920,14 @@ impl FailClosedOwnedCallbackRegistrar {
     pub(crate) const fn production(
         plugin_id: QemuPluginId,
         execution_model: crate::QemuPluginExecutionModel,
+        target_architecture: crate::abi::QemuPluginTargetArchitecture,
         capabilities: &LiveInstallCapabilities,
     ) -> Self {
         Self {
             live_vcpu_time: LiveVcpuTimeCallbackRegistrar::new(
                 plugin_id,
                 execution_model,
+                target_architecture,
                 LiveVcpuTimeCallbackCapabilities {
                     icount_raw: capabilities.icount_raw,
                     inject_preemption: capabilities.inject_preemption,

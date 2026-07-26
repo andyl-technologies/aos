@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbell",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-4"],
+  taskIds ? ["T-GHC-4"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,6 +14,9 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxDoorbellWithTests =
+    pluginWhiteboxDoorbell
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -56,12 +59,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-4 remains open";
-        needle = "- [ ] **T-GHC-4**";
+        label = "T-GHC-4 completed";
+        needle = "- [x] **T-GHC-4**";
       }
       {
-        label = "T-GHC-4 partial-evidence note";
-        needle = "Partial callback-core evidence is provided by";
+        label = "T-GHC-4 completion note";
+        needle = "Completed by";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -84,7 +87,7 @@
         needle = "WhiteboxDoorbellTrapEvent";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs and tests.rs" pluginWhiteboxDoorbellWithTests [
       {
         label = "white-box state";
         needle = "pub struct PluginWhiteboxDoorbell";
@@ -197,7 +200,7 @@
       }
       {
         label = "phase4 doorbell task id";
-        needle = "openTaskIds = [\"T-GHC-4\"]";
+        needle = "taskIds = [\"T-GHC-4\"]";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [

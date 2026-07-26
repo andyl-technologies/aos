@@ -1052,7 +1052,7 @@ component that makes that purity true *inside* the QEMU process.
   burst-wide device hold, and progresses to the scheduler ceiling. The host-load
   leg delays response publication by 100 ms while preserving the modeled
   latency.
-- [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
+- [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
@@ -1072,7 +1072,11 @@ component that makes that purity true *inside* the QEMU process.
   plugin-free machine's I/O map before registration and rejects a real
   `isa-debugcon` collision at port `0x00e7`. The gate also routes observations
   into the host event log and proves the live host-to-guest app-random reply
-  path. The remaining open slice is the aarch64 live adapter.
+  path. The same gate now builds and boots the AOS `qemu-system-aarch64`
+  target with a raw `virt` guest, recognizes only the frozen
+  `hlt #0x04c1` encoding, reads `x0`/`x1`, decodes the same golden marker,
+  enforces the exact scheduler ceiling, and tears down normally. Both
+  architecture adapters therefore exercise the production callback path.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],

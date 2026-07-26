@@ -2,11 +2,30 @@
 
 use thiserror::Error;
 
+pub(super) fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
+    // SAFETY: `bytes` is a valid readable slice for the duration of the call.
+    // The fixed descriptor is stderr, and no ownership is transferred.
+    let written = unsafe { libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len()) };
+    if written < 0 {
+        Err(std::io::Error::last_os_error())
+    } else if written as usize != bytes.len() {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            format!(
+                "short live white-box diagnostic write: wrote {written} of {} bytes",
+                bytes.len()
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Reports a failure at the live QEMU white-box ABI boundary.
 #[derive(Debug, Error)]
 pub enum LiveWhiteboxError {
-    /// The host did not attest a collision-free x86 port map at setup.
-    #[error("live white-box registration requires an x86 port-map setup attestation")]
+    /// The host did not provide the architecture's collision-free attestation.
+    #[error("live white-box registration requires a matching architecture setup attestation")]
     SetupAttestationMissing,
     /// A guest requested app-random without a seeded launch configuration.
     #[error("live app-random doorbell request arrived without seeded configuration")]

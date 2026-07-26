@@ -14,6 +14,7 @@
   pixman,
   zlib,
   libslirp,
+  dtc,
   pname ? "qemu",
   enablePlugins ? false,
   applyCruciblePatches ? false,
@@ -81,7 +82,7 @@
     then "--enable-plugins"
     else "--disable-plugins";
   qemuConfigureFlags = [
-    "--target-list=x86_64-softmmu"
+    "--target-list=x86_64-softmmu,aarch64-softmmu"
     "--enable-kvm"
     pluginFlag
     "--enable-slirp"
@@ -110,7 +111,7 @@
     "--disable-libssh"
     "--disable-smartcard"
     "--disable-vhost-net"
-    "--disable-fdt"
+    "--enable-fdt=system"
     "--audio-drv-list="
     "--enable-pie"
   ];
@@ -123,7 +124,7 @@
     qemu_source_hash=${series.qemuSourceHash}
     qemu_nix_hash=${qemuNixHash}
     qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-    qemu_configure_target_list=x86_64-softmmu
+    qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
     qemu_patch_count=${toString patchCount}
     qemu_patch_series_hash=${patchSeriesHash}
     qemu_patch_branch_ref=${series.patchBranchRef}
@@ -198,6 +199,7 @@
   # patch -p1 < ${./qemu-patches/0039-crucible-blk-device-completion-advance.patch}
   # patch -p1 < ${./qemu-patches/0040-crucible-9p-sync-kick.patch}
   # patch -p1 < ${./qemu-patches/0041-crucible-whitebox-guest-write.patch}
+  # patch -p1 < ${./qemu-patches/0042-crucible-aarch64-det-ipi-adapter.patch}
 in
   mkDerivation {
     inherit pname;
@@ -224,6 +226,7 @@ in
       pixman
       zlib
       libslirp
+      dtc
     ];
     propagatedDeps = [];
 
@@ -315,7 +318,7 @@ in
           qemu_source_hash=${series.qemuSourceHash}
           qemu_nix_hash=${qemuNixHash}
           qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-          qemu_configure_target_list=x86_64-softmmu
+          qemu_configure_target_list=x86_64-softmmu,aarch64-softmmu
           qemu_patch_count=${toString patchCount}
           qemu_patch_series_hash=${patchSeriesHash}
           qemu_patch_branch_ref=${series.patchBranchRef}

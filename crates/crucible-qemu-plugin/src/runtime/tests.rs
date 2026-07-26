@@ -862,6 +862,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
         live: LiveVcpuTimeCallbackRegistrar::new(
             51,
             execution_model,
+            crate::QemuPluginTargetArchitecture::X86_64,
             LiveVcpuTimeCallbackCapabilities {
                 icount_raw: test_icount_raw,
                 inject_preemption: Some(test_inject_preemption),
@@ -1059,6 +1060,7 @@ fn enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_ef
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         43,
         state.lifecycle_core().execution_model(),
+        crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let error = install_live_runtime(
@@ -1112,6 +1114,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,
         state.lifecycle_core().execution_model(),
+        crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let mut reservation =
@@ -1150,6 +1153,7 @@ fn missing_live_vcpu_time_capability_fails_preflight_before_control_io() {
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         52,
         state.lifecycle_core().execution_model(),
+        crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let mut reservation =
@@ -1192,6 +1196,7 @@ fn missing_live_network_capability_fails_preflight_before_control_io() {
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         53,
         state.lifecycle_core().execution_model(),
+        crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let mut reservation =
@@ -1237,6 +1242,7 @@ fn missing_live_ninep_capability_prevents_every_qemu_registration() {
     let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         55,
         state.lifecycle_core().execution_model(),
+        crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
     let mut reservation =

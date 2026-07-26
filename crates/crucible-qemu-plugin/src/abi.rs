@@ -61,6 +61,15 @@ pub struct QemuPluginInfo {
     system: QemuPluginSystemInfo,
 }
 
+/// Guest instruction-set architecture reported by QEMU at plugin install.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuPluginTargetArchitecture {
+    /// The `x86_64-softmmu` target.
+    X86_64,
+    /// The `aarch64-softmmu` target.
+    Aarch64,
+}
+
 /// QEMU install return value meaning the plugin loaded successfully.
 pub const QEMU_PLUGIN_INSTALL_OK: c_int = 0;
 /// QEMU install return value meaning plugin registration failed.
@@ -657,6 +666,18 @@ pub enum QemuPluginAbiError {
     /// QEMU did not provide plugin information.
     #[error("QEMU plugin install info pointer is null")]
     MissingInfo,
+    /// QEMU did not provide a target architecture name.
+    #[error("QEMU plugin target name pointer is null")]
+    MissingTargetName,
+    /// QEMU's target architecture name was not valid UTF-8.
+    #[error("QEMU plugin target name is not valid UTF-8")]
+    InvalidTargetNameUtf8,
+    /// QEMU loaded the plugin for an architecture Crucible does not support.
+    #[error("QEMU plugin target architecture `{target}` is unsupported")]
+    UnsupportedTargetArchitecture {
+        /// Rejected QEMU target name.
+        target: String,
+    },
     /// One plugin argument pointer was null.
     #[error("QEMU plugin install argv[{index}] is null")]
     NullArgvEntry {
@@ -1843,6 +1864,7 @@ pub(crate) fn duplicate_control_stream(fd: c_int) -> std::io::Result<UnixStream>
 struct OwnedInstallBoundary {
     args: PluginArgs,
     execution_model: QemuPluginExecutionModel,
+    target_architecture: QemuPluginTargetArchitecture,
 }
 
 #[cfg(unix)]
@@ -1865,10 +1887,32 @@ unsafe fn copy_install_boundary(
     // guarantees a live info object; only scalar data is copied into owned state.
     let info = unsafe { &*info };
     let execution_model = observed_execution_model(info, resolve_qemu_single_threaded_rr_symbol)?;
+    let target_architecture = target_architecture_from_qemu_info(info)?;
     Ok(OwnedInstallBoundary {
         args,
         execution_model,
+        target_architecture,
     })
+}
+
+fn target_architecture_from_qemu_info(
+    info: &QemuPluginInfo,
+) -> Result<QemuPluginTargetArchitecture, QemuPluginAbiError> {
+    if info.target_name.is_null() {
+        return Err(QemuPluginAbiError::MissingTargetName);
+    }
+    // SAFETY: QEMU guarantees `target_name` is a live NUL-terminated string for
+    // the duration of the install callback.
+    let target = unsafe { CStr::from_ptr(info.target_name) }
+        .to_str()
+        .map_err(|_source| QemuPluginAbiError::InvalidTargetNameUtf8)?;
+    match target {
+        "x86_64" => Ok(QemuPluginTargetArchitecture::X86_64),
+        "aarch64" => Ok(QemuPluginTargetArchitecture::Aarch64),
+        _ => Err(QemuPluginAbiError::UnsupportedTargetArchitecture {
+            target: target.to_owned(),
+        }),
+    }
 }
 
 #[cfg(unix)]
@@ -1944,6 +1988,7 @@ fn install_owned_boundary(
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
         plugin_id,
         boundary.execution_model,
+        boundary.target_architecture,
         &capabilities,
     );
     crate::runtime::install_live_runtime(

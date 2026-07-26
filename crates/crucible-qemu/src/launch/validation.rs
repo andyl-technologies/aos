@@ -387,6 +387,11 @@ pub(super) fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfi
     if base == "host" {
         return Err(LaunchProfileError::CpuModelUsesHost);
     }
+    let aarch64_model =
+        base.starts_with("cortex-") || base.starts_with("neoverse-") || base == "a64fx";
+    if aarch64_model {
+        return Ok(cpu_model.to_owned());
+    }
     reject_enabled_entropy_feature(&lower, "rdrand")?;
     reject_enabled_entropy_feature(&lower, "rdseed")?;
 

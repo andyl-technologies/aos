@@ -770,12 +770,12 @@ the transport layer by construction.
   parameters during world validation, rejects network-idle nodes with no
   incident links, and treats the optional `AgentSignal` policy as white-box-only
   rather than black-box resolvable.
-- [ ] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
+- [x] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
   plugin, serviced inline at the exact retirement icount, with payload via shared
   page or register ptr+len; forbid a virtio-serial/device data channel for the
   reasons of §16.3.1. — satisfies [GHC-10], [GHC-11], [GHC-13], [GHC-14]; spec
   §16.3, §16.3.1, §16.4.
-  Partial callback-core evidence is provided by
+  Completed by
   `checks.crucible.phase4.guestHostDoorbell`: the QEMU plugin model now
   exposes a typed white-box doorbell callback core and registration plan that
   selects the reserved trapped-instruction callback in white-box mode, services
@@ -792,7 +792,10 @@ the transport layer by construction.
   no callback record and that servicing the observational marker leaves the
   production execution fingerprint unchanged. Live collision validation,
   decoded host event-log routing, and host-to-guest replies are now covered by
-  the same gate. The item remains open only for the aarch64 live adapter.
+  the same gate. Its AArch64 leg boots the packaged `qemu-system-aarch64`
+  target, executes the frozen `hlt #0x04c1` instruction, reads `x0`/`x1`
+  inline, admits the same marker at the live callback boundary, reaches the
+  exact host-published ceiling, and exits through normal plugin teardown.
 - [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],

@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "60868fd4a3f83a9c5201f5d58301c96bc5cc1e15b5781fafd7bf1207c5f1f98a";
+  patchBranchBundleSha256 = "4cfe85313bdc1cbdeb0e7ce3bef9f93bb5682c60724346c0e5cfa16d275a7229";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "df6ba5186e6e1024b0b912e5e86d2743a0dc6821";
+  patchBranchHeadCommit = "0a5e6d3298e1ac510aa7e3c1f40392e223a69171";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -384,6 +384,15 @@ let
       class = "F";
       enforces = "PLUG-34,PLUG-51,GHC-32,GHC-37";
       capability = "callback-scoped guest virtual-memory writes for synchronous white-box doorbell replies";
+    }
+    {
+      file = "0042-crucible-aarch64-det-ipi-adapter.patch";
+      branchCommit = "0a5e6d3298e1ac510aa7e3c1f40392e223a69171";
+      branchTree = "55b8309d36643ab31c39d650bad229d5a23db5d2";
+      catalogName = "crucible-aarch64-det-ipi-adapter";
+      class = "D";
+      enforces = "DET-4,PLUG-14,GHC-4";
+      capability = "AArch64 deterministic IPI adapter for the shared RR and commanded-preemption paths";
     }
   ];
   catalogOnlyCapabilities = [

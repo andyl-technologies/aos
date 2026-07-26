@@ -405,4 +405,3 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
     assert_eq!(clock.current_icount(), 20);
     assert_eq!(slot.snapshot().status, STATUS_RUNNING);
 }
-

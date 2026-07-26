@@ -1577,24 +1577,21 @@ disabled, and emits a manifest-derived QEMU build identity. The run reported
 result, and `gate:qemu-inert` owns the separate upstream-vs-patched sim-off
 inertness proof.
 
-**RISK-17** is resolved by `T-RISK-10` with the aarch64 black-box-only fallback:
-`checks.crucible.phase0.s10Aarch64Doorbell` inspected the current AOS QEMU and
-white-box surfaces and found the aarch64 doorbell cannot be tested yet. The active
-`qemu-crucible` package is built with `qemu_target_list=x86_64-softmmu` and reports
-`qemu_aarch64_softmmu_target=false`,
-`qemu_system_aarch64_available=false`,
-`crucible_guest_workspace_member=true` (the white-box guest emitter has since
-landed in the workspace and encodes the aarch64 doorbell instruction ABI), and
-`production_aarch64_doorbell_trap_implemented=false`. The spike therefore records
-`whitebox_on_trap_tested=false`, `whitebox_off_inertness_tested=false`,
-`marker_icount_reproducible=not_tested`, `payload_read_result=not_tested`,
-`aarch64_whitebox_supported=false`, `aarch64_blackbox_only_fallback=true`, and
-`fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`. This
-resolves the Phase-0 product decision by disabling aarch64 white-box support
-rather than treating it as available. It does not claim the chosen aarch64
-reserved-immediate instruction traps precisely; that remains gated on adding an
-AOS-built aarch64 QEMU target, implementing the aarch64 doorbell trap, and
-rerunning S10 (`crucible-guest` itself is now implemented).
+**RISK-17** is retired by `T-RISK-10`.
+`checks.crucible.phase0.s10Aarch64Doorbell` consumes the real-backend
+`checks.crucible.phase2.qemuLiveWhiteboxDoorbell` result. The active
+`qemu-crucible` package records
+`qemu_target_list=x86_64-softmmu,aarch64-softmmu`,
+`qemu_aarch64_softmmu_target=true`, `qemu_system_aarch64_available=true`, and
+`production_aarch64_doorbell_trap_implemented=true`. A raw AArch64 `virt` guest
+executes the frozen `hlt #0x04c1` instruction, the production Rust plugin reads
+the `x0`/`x1` virtual pointer and length synchronously, admits `hot-path` at the
+observed trap icount, reaches the exact scheduler ceiling, and exits normally.
+The spike records `whitebox_on_trap_tested=true`,
+`whitebox_off_inertness_tested=true`, a numeric
+`marker_icount_reproducible`, `payload_read_result=pass`,
+`aarch64_whitebox_supported=true`, `aarch64_blackbox_only_fallback=false`, and
+`fallback_adopted=none`.
 
 **RISK-25** is retired by `T-RISK-17`.
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the stock Linux diskless
@@ -1849,11 +1846,11 @@ never tolerated). Results live in the decision register (31).
 - [x] **T-RISK-10** Run **S10**: aarch64 doorbell traps synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
-  instruction traps precisely. Phase 0 found no aarch64 QEMU target, no
-  `crucible-guest` workspace member, and no production aarch64 doorbell trap, so
-  aarch64 white-box remains disabled and the architecture is black-box-only until
-  those surfaces land and S10 is rerun. — satisfies [RISK-17], [GHC-16]; spec
-  §30.11.
+  instruction traps precisely. The AOS-built `qemu-system-aarch64` target now
+  boots a raw `virt` guest through the production plugin; the live gate observes
+  the frozen `hlt #0x04c1` marker through `x0`/`x1`, enforces the exact ceiling,
+  and completes normal teardown. No fallback is active. — satisfies [RISK-17],
+  [GHC-16]; spec §30.11.
 - [x] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec
