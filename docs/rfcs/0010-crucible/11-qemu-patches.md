@@ -178,6 +178,7 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, DET-13, E18
   crucible-rr-quantum-icount .... RR switch @ node-icount    D    PATCH-44, DET-1, QEMU-43
   crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    PATCH-45, DET-1, INV-7
+  crucible-aarch64-det-ipi-adapter AArch64 IPI delivery adapter D  DET-4, PLUG-14, GHC-4
   crucible-det-virtio-ioeventfd . sync virtio-rng vq dispatch D    DET-1, E7
   crucible-det-rng-delivery ..... sync virtio-rng completion  D    DET-1, E7, E9
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
@@ -1734,11 +1735,16 @@ time-control primitives the whole design rests on.
   with a cross-run identical-delivery-icount micro-test on a multi-vCPU guest. —
   satisfies [PATCH-45]; spec §11.4.
   - Completed by `0028-crucible-det-ipi.patch`,
-    `checks.crucible.phase2.qemuDetIpi`, and `gate:patch-microtests`: sim-mode
+    `0042-crucible-aarch64-det-ipi-adapter.patch`,
+    `checks.crucible.phase2.qemuDetIpi`,
+    `checks.crucible.phase2.qemuAarch64DetIpiAdapter`, and
+    `gate:patch-microtests`: sim-mode
     APIC inter-vCPU FIXED/INIT/SIPI deliveries are queued only when
     `-accel sim`, precise icount, and a pinned `rr_switch_quantum` are active;
     the round-robin handoff path drains the queue before the next vCPU runs;
-    non-sim, unpinned, and self-IPI paths fall through to upstream behavior; and
+    the AArch64 adapter maps the same deterministic RR drain and commanded
+    preemption callbacks onto the architecture's hard-interrupt path; non-sim,
+    unpinned, and self-IPI paths fall through to upstream behavior; and
     the trace plugin records `det_ipi` delivery rows while the bounded
     multi-vCPU S11 fixture diffs INIT/SIPI delivery-icount traces plus an
     opt-in commanded FIXED delivery probe across jittered runs.
