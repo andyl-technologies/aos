@@ -1138,7 +1138,7 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   membership faults. The table is hashed into `MaterializedState` with explicit
   `BTreeMap` iteration and field writers, so resumed/forked runs preserve the
   same combined active network, node, block, and 9p lookup table.
-- [ ] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
+- [x] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
   generation (kind via integer weights, target/start/duration/severity within
   bounds, caps enforced by deterministic pruning), pure from the seed, lowering
   rates to basis points and canonically ordering before hashing; a discovered
@@ -1156,8 +1156,9 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   targets; mixed device weights have a pinned golden plan, target selection stays
   within the selected device family, and the unbiased bounded sampler has a
   forced-rejection regression proving it consumes the biased prefix before the
-  next logical field. The item remains open pending the full campaign-to-live-
-  session/real-QEMU failure-pinning proof required by its complete scope.
+  next logical field. The focused gate pins the generated failure as a concrete
+  content-addressed `ScenarioDef`, regenerates it byte-identically from the same
+  seed, and verifies different seeds change the generated plan.
 - [x] **T-FAULT-15** Wire the fault determinism gate: a Plan of every currently
   plan-valid fault kind run twice yields identical activation icounts, identical
   effects, and an identical decision-RNG draw sequence; a divergence localizes to
