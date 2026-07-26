@@ -1158,12 +1158,12 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   forced-rejection regression proving it consumes the biased prefix before the
   next logical field. The item remains open pending the full campaign-to-live-
   session/real-QEMU failure-pinning proof required by its complete scope.
-- [ ] **T-FAULT-15** Wire the fault determinism gate: a Plan of every currently
+- [x] **T-FAULT-15** Wire the fault determinism gate: a Plan of every currently
   plan-valid fault kind run twice yields identical activation icounts, identical
   effects, and an identical decision-RNG draw sequence; a divergence localizes to
   the first differing fault decision. — satisfies [FAULT-31]; spec §17.8;
   cross-ref 24.
-  Partial evidence is provided by `checks.crucible.phase4.faultDeterminismGate`, which
+  Completed by `checks.crucible.phase4.faultDeterminismGate`, which
   lowers a deterministic `FaultPlan` containing every plan-valid network, node,
   block, and 9p taxonomy kind, including each network corruption sub-kind. The
   World declares content-addressed block/9p nodes; the gate resolves their real
@@ -1177,9 +1177,13 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   inserted, truncated, and raw-draw divergences. A separate L4 integration test
   starts the World-backed session and proves a session fault command changes the
   active table of the artifact-backed device owned by that same scheduler. The
-  item remains open until the gate records activation node icounts (not only
-  virtual-time evaluation points), exercises crash discard with work in flight,
-  and asserts the concrete failure/corruption effects required by [FAULT-31].
+  Gate fingerprints now record the live counter of every scheduler node at each
+  fault activation in addition to the shift-zero activation icount. The crash
+  case starts with an artifact-backed block completion in flight and proves the
+  concrete crash application discards that exact completion. The run-twice
+  fingerprint includes these activation counters and crash-discard records
+  alongside the already concrete failure, timing, duplicate, and corruption
+  effects required by [FAULT-31].
 - [x] **T-FAULT-16** Exercise every fault kind against the in-process test double
   (apply fault, drive request/frame sequence with a fixed seed, assert perturbed
   deliveries/drops/recorded decisions) with a per-kind run-twice determinism +
