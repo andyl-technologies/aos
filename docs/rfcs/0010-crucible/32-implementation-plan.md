@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:68869b0ffc22a1bf`
+Checklist sync digest: `rfc0010-checklist-v1:22fda067cc669bac`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -402,7 +402,9 @@ long-held locks.
   event-log entry stream with `jsonl` emitted entry by entry, rejects `markdown`
   for canonical event-log traces, propagates non-passing outcomes through the
   process exit-code path after writing artifacts, and gates CLI/model/session
-  canonical paths against wall-clock APIs.
+  canonical paths against wall-clock APIs. Failed local runs embed their exact
+  compact scenario, observed canonical entries, resolved identity, and observed
+  fingerprint stream rather than substituting mock gate evidence.
   `T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`,
   which resolves QEMU/plugin candidates in explicit flag,
   `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN`, then AOS package-set order, rejects host

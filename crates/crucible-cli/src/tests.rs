@@ -7,6 +7,8 @@ use std::error::Error;
 use crucible_harness::reproduction::{ReproductionArtifact, mock_e2e_reproduction_artifact};
 use tempfile::TempDir;
 
+#[path = "tests/actual_failure.rs"]
+mod actual_failure;
 #[path = "tests/graph_support.rs"]
 mod graph_support;
 #[path = "tests/replay_artifact.rs"]

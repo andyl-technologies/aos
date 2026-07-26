@@ -973,7 +973,7 @@ branch on the verdict without parsing output:
   canonical-log digest, and artifact digest projections. This is partial routing
   evidence: the task remains open until the QEMU choice executes the live local
   backend and the equivalence check compares actual local and remote sessions.
-- [ ] **T-CLI-4** Implement determinism ergonomics: seed resolution
+- [x] **T-CLI-4** Implement determinism ergonomics: seed resolution
   (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
   artifact + copy-pasteable repro command, and the three trace formats
   (jsonl/json/table) over the canonical log; assert no wall-clock feeds canonical
@@ -994,9 +994,11 @@ branch on the verdict without parsing output:
   `markdown` for event-log traces, and propagates non-passing outcomes through
   the process exit-code path after writing artifacts. The gate scans the CLI plus
   canonical model/session sources for wall-clock APIs on canonical paths. This
-  task is reopened because the generic failure path still substitutes a mock
-  scenario, decision, and fingerprint rather than serializing the actual failed
-  run; that artifact cannot reproduce the reported failure.
+  Generic failed local runs now serialize their exact compact scenario form,
+  observed canonical entries, resolved seed and backend identity, and observed
+  execution-fingerprint stream. An adversarial test decodes the emitted
+  artifact and proves its scenario, event decision, and fingerprint came from
+  the failed run rather than the gate-only mock fixture.
 - [x] **T-CLI-5** Implement hermetic QEMU/plugin discovery
   (flag → env → AOS package set, no host `$PATH`), clear fail-with-exit-4 on
   absence/mismatch, and pinning the AOS QEMU build identity + plugin ABI version
