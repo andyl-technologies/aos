@@ -1,6 +1,7 @@
 //! Breakpoint host predicate and symbol-metadata unit tests.
 
 use super::*;
+use crate::engine::{MemoryCmp, MemoryWidth};
 
 #[tokio::test]
 async fn breakpoint_named_host_predicate_fires_at_no_entry_quantum_boundary() {
