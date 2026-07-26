@@ -26,22 +26,26 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{
-    EventLog, EventLogCoverageObservation, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId,
-    SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
-    event_log_coverage_projection,
+    DecisionRecorder, EventLog, EventLogCoverageObservation, ExecutionFingerprint,
+    ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
+    SchedulerSendAuthorizer, Seed, event_log_coverage_projection,
 };
-use crucible_shmem::{
-    RegionAllocation, RegionConfig, RegionLayoutError, SLOT_NET_ROUTER, SetupRegionMapError,
-    mmap_setup_region,
-};
-use thiserror::Error;
+// crucible-lint: allow host-nondeterminism-state -- this seeded value is reconstructed before admission.
+use crucible::Configuration;
+// crucible-lint: allow host-nondeterminism-state -- live causal values remain untrusted until recorder validation.
+use crucible::Decision;
+// crucible-lint: allow host-nondeterminism-state -- the gate reconstructs fixed scenario material rather than host timing.
+use crucible::ScenarioDef;
+use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+mod error;
+// crucible-lint: allow host-nondeterminism-state -- this typed error exports failures, not host-derived state.
+pub use error::LivePluginInstallGateError;
 
 use crate::{
-    LaunchProfileCandidate, LaunchProfileError, QemuHostPluginSetupError, QemuLaunchArtifact,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuMappedQuantumShmemHotPath,
-    QemuMappedQuantumShmemHotPathError, QemuNodeChannelError, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuSpawnError, QemuVmLaunchConfig,
-    QemuWhiteboxSetupError, complete_qemu_host_plugin_setup, probe_x86_whitebox_setup,
+    LaunchProfileCandidate, QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchPluginConfig,
+    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
+    complete_qemu_host_plugin_setup, probe_x86_whitebox_setup,
     spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -78,6 +82,7 @@ pub struct LivePluginInstallGateConfig {
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
     whitebox: crate::QemuLaunchPluginSwitch,
+    app_random: Option<QemuLaunchAppRandomConfig>,
     fingerprint: crate::QemuLaunchPluginSwitch,
     horizon_icount: u64,
     completion_timeout: Duration,
@@ -102,6 +107,7 @@ impl LivePluginInstallGateConfig {
             initrd: None,
             kernel_cmdline: None,
             whitebox: crate::QemuLaunchPluginSwitch::Off,
+            app_random: None,
             fingerprint: crate::QemuLaunchPluginSwitch::Off,
             horizon_icount: DEFAULT_HORIZON_ICOUNT,
             completion_timeout: DEFAULT_COMPLETION_TIMEOUT,
@@ -130,6 +136,13 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub const fn with_whitebox(mut self, whitebox: crate::QemuLaunchPluginSwitch) -> Self {
         self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns this configuration with the seeded app-random path enabled.
+    #[must_use]
+    pub fn with_app_random(mut self, app_random: QemuLaunchAppRandomConfig) -> Self {
+        self.app_random = Some(app_random);
         self
     }
 
@@ -196,147 +209,14 @@ pub struct LivePluginInstallReport {
     pub whitebox_marker_icount: Option<u64>,
     /// Semantic point of the first admitted guest coverage marker, when present.
     pub whitebox_marker_point: Option<String>,
-}
-
-/// Failure returned by the production loaded-QEMU plugin install gate.
-#[derive(Debug, Error)]
-pub enum LivePluginInstallGateError {
-    /// The requested horizon was zero.
-    #[error("loaded-QEMU install horizon must be non-zero")]
-    ZeroHorizon,
-    /// Preparing the run directory failed.
-    #[error("prepare install run directory `{path}` failed: {source}")]
-    PrepareRunDirectory {
-        /// Run directory that could not be prepared.
-        path: PathBuf,
-        /// Underlying filesystem error.
-        source: std::io::Error,
-    },
-    /// The conservative deterministic launch profile was invalid.
-    #[error("build deterministic launch profile failed: {source}")]
-    LaunchProfile {
-        /// Underlying launch-profile error.
-        source: LaunchProfileError,
-    },
-    /// Writing the deterministic guest entropy seed failed.
-    #[error("write guest entropy seed into `{path}` failed: {source}")]
-    GuestEntropySeed {
-        /// Run directory the seed could not be written into.
-        path: PathBuf,
-        /// Underlying filesystem error.
-        source: std::io::Error,
-    },
-    /// The concrete QEMU launch command was invalid.
-    #[error("build install QEMU launch command failed: {source}")]
-    LaunchCommand {
-        /// Underlying command-construction error.
-        source: QemuLaunchCommandError,
-    },
-    /// Live QEMU reported a missing or colliding white-box doorbell port.
-    #[error("validate live QEMU white-box setup failed: {source}")]
-    WhiteboxSetup {
-        /// Underlying stopped-machine probe error.
-        source: QemuWhiteboxSetupError,
-    },
-    /// The shared-memory layout was invalid.
-    #[error("build install shared-memory layout failed: {source}")]
-    RegionLayout {
-        /// Underlying layout error.
-        source: RegionLayoutError,
-    },
-    /// QEMU could not be spawned with the fixed inherited descriptors.
-    #[error("spawn install loaded QEMU failed: {source}")]
-    Spawn {
-        /// Underlying spawn error.
-        source: QemuSpawnError,
-    },
-    /// The live plugin setup handshake failed.
-    #[error("complete install loaded-QEMU plugin setup failed: {source}")]
-    HostSetup {
-        /// Underlying setup error.
-        source: QemuHostPluginSetupError,
-    },
-    /// The plugin replied `SetupAck` with a non-ready status.
-    #[error("install plugin refused to become schedulable after SetupAck")]
-    SetupAckNotReady,
-    /// Mapping the completed shared-memory setup region failed.
-    #[error("map install loaded-QEMU shared-memory region failed: {source}")]
-    RegionMap {
-        /// Underlying mapping error.
-        source: SetupRegionMapError,
-    },
-    /// Binding the mapped hot path failed.
-    #[error("bind install loaded-QEMU shared-memory hot path failed: {source}")]
-    MappedHotPath {
-        /// Underlying hot-path error.
-        source: QemuMappedQuantumShmemHotPathError,
-    },
-    /// A live shared-memory or control-channel operation failed.
-    #[error("install loaded-QEMU operation `{operation}` failed: {source}")]
-    Channel {
-        /// Gate operation being attempted.
-        operation: &'static str,
-        /// Underlying channel error.
-        source: QemuNodeChannelError,
-    },
-    /// Appending drained plugin observations to the unified event log failed.
-    #[error("append install loaded-QEMU observations to event log failed: {source}")]
-    EventLog {
-        /// Underlying scheduler event-log error.
-        source: SchedulerError,
-    },
-    /// QEMU did not publish the requested icount before the host bound expired.
-    #[error(
-        "install loaded QEMU did not reach icount {horizon_icount} within {timeout:?}; last icount was {last_icount}"
-    )]
-    CompletionTimeout {
-        /// Required exact boundary.
-        horizon_icount: u64,
-        /// Last observed QEMU icount.
-        last_icount: u64,
-        /// Host-side diagnostic timeout.
-        timeout: Duration,
-    },
-    /// QEMU exited before publishing the requested exact boundary.
-    #[error("install QEMU exited before reaching icount {horizon_icount}: {status}")]
-    ChildExitBeforeBoundary {
-        /// Required exact boundary.
-        horizon_icount: u64,
-        /// Exact platform exit-status diagnostic.
-        status: String,
-    },
-    /// A run crossed rather than stopped at the requested exact boundary.
-    #[error("install loaded QEMU completed at icount {actual}, expected {expected}")]
-    InexactBoundary {
-        /// Required exact boundary.
-        expected: u64,
-        /// Published boundary.
-        actual: u64,
-    },
-    /// The plugin did not publish `Done` after consuming control `Quit`.
-    #[error("install plugin did not publish teardown Done within {timeout:?}")]
-    PluginQuitTimeout {
-        /// Host-side diagnostic timeout.
-        timeout: Duration,
-    },
-    /// The QEMU child did not exit naturally after plugin teardown.
-    #[error("install QEMU did not exit naturally within {timeout:?}")]
-    ChildExitTimeout {
-        /// Host-side diagnostic timeout.
-        timeout: Duration,
-    },
-    /// Polling the QEMU child failed.
-    #[error("poll install QEMU natural exit failed: {source}")]
-    ChildWait {
-        /// Underlying child wait error.
-        source: crate::QemuShutdownTargetError,
-    },
-    /// QEMU exited naturally but reported failure or signal termination.
-    #[error("install QEMU teardown exit was not clean: {status}")]
-    ChildExitUnclean {
-        /// Exact platform exit-status diagnostic.
-        status: String,
-    },
+    /// Number of live app-random decisions validated against the host recorder.
+    pub app_random_decision_count: usize,
+    /// First guest request id served by the live path.
+    pub app_random_request_id: Option<u64>,
+    /// First live value validated against the scenario-seeded host recorder.
+    pub app_random_value: Option<u64>,
+    /// First live app-random width in bits.
+    pub app_random_width_bits: Option<u8>,
 }
 
 /// Runs the Rust control plugin through its full install lifecycle in real QEMU.
@@ -350,6 +230,7 @@ pub enum LivePluginInstallGateError {
 /// Returns [`LivePluginInstallGateError`] when launch preparation, the live
 /// plugin handshake, descriptor handover, shared-memory execution, exact
 /// boundary enforcement, run-control silence, teardown, or child reaping fails.
+// crucible-lint: allow host-nondeterminism-state -- this public gate validates live observations before returning its report.
 pub fn run_live_plugin_install_gate(
     config: &LivePluginInstallGateConfig,
 ) -> Result<LivePluginInstallReport, LivePluginInstallGateError> {
@@ -395,14 +276,19 @@ pub fn run_live_plugin_install_gate(
         let validation = probe_x86_whitebox_setup(&probe_command, run_directory)
             .map_err(|source| LivePluginInstallGateError::WhiteboxSetup { source })?;
         let region = validation.observed_region().to_owned();
-        (
-            plugin_base
-                .with_whitebox(config.whitebox)
-                .with_whitebox_setup(validation),
-            Some(region),
-        )
+        let mut plugin = plugin_base
+            .with_whitebox(config.whitebox)
+            .with_whitebox_setup(validation);
+        if let Some(app_random) = &config.app_random {
+            plugin = plugin.with_app_random(app_random.clone());
+        }
+        (plugin, Some(region))
     } else {
-        (plugin_base.with_whitebox(config.whitebox), None)
+        let mut plugin = plugin_base.with_whitebox(config.whitebox);
+        if let Some(app_random) = &config.app_random {
+            plugin = plugin.with_app_random(app_random.clone());
+        }
+        (plugin, None)
     };
     let command = profile
         .qemu_launch_command(vm, path_text(&config.qemu_executable), plugin)
@@ -467,6 +353,9 @@ pub fn run_live_plugin_install_gate(
     }
     let execution_fingerprint = QemuShmemHotPathChannel::execution_fingerprint(&mut hot_path)
         .map_err(|source| channel_error("read execution fingerprint", source))?;
+    let causal_decisions = QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
+        .map_err(|source| channel_error("drain boundary causal decisions", source))?;
+    let app_random_evidence = validate_app_random_decisions(config, causal_decisions)?;
     let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| channel_error("drain boundary observations", source))?;
     let mut event_log = EventLog::new();
@@ -524,7 +413,74 @@ pub fn run_live_plugin_install_gate(
         whitebox_marker_count,
         whitebox_marker_icount,
         whitebox_marker_point,
+        app_random_decision_count: app_random_evidence.count,
+        app_random_request_id: app_random_evidence.request_id,
+        app_random_value: app_random_evidence.value,
+        app_random_width_bits: app_random_evidence.width_bits,
     })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LiveAppRandomEvidence {
+    count: usize,
+    request_id: Option<u64>,
+    value: Option<u64>,
+    width_bits: Option<u8>,
+}
+
+fn validate_app_random_decisions(
+    config: &LivePluginInstallGateConfig,
+    // crucible-lint: allow host-nondeterminism-state -- this batch is verified against the authoritative seeded recorder.
+    decisions: Vec<Decision>,
+) -> Result<LiveAppRandomEvidence, LivePluginInstallGateError> {
+    if decisions.is_empty() {
+        return Ok(LiveAppRandomEvidence::default());
+    }
+    let app_random = config
+        .app_random
+        .as_ref()
+        .ok_or(LivePluginInstallGateError::AppRandomNotConfigured)?;
+    // crucible-lint: allow host-nondeterminism-state -- fixed gate material reconstructs the authoritative scenario.
+    let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+        GATE_DOMAIN,
+        "scenario=live-app-random-doorbell",
+        Seed::from_u64(app_random.scenario_seed),
+        app_random.draw_cap,
+    );
+    // crucible-lint: allow host-nondeterminism-state -- this configuration is seeded canonical material, not a host observation.
+    let mut recorder = DecisionRecorder::new(Configuration::genesis(scenario));
+    let mut evidence = LiveAppRandomEvidence::default();
+    for decision in decisions {
+        // crucible-lint: allow host-nondeterminism-state -- the plugin conjecture is compared and rejected on any mismatch.
+        let Decision::AppRandom(expected) = decision else {
+            return Err(LivePluginInstallGateError::UnsupportedCausalDecision {
+                decision: format!("{decision:?}"),
+            });
+        };
+        let host_value = recorder
+            .serve_app_random_request(
+                expected.node.clone(),
+                expected.stream.clone(),
+                expected.request_id,
+                expected.width,
+            )
+            .map_err(|error| LivePluginInstallGateError::AppRandomRecorder {
+                message: error.to_string(),
+            })?;
+        if host_value != expected.value {
+            return Err(LivePluginInstallGateError::AppRandomValueMismatch {
+                actual: expected.value,
+                expected: host_value,
+            });
+        }
+        if evidence.count == 0 {
+            evidence.request_id = Some(expected.request_id);
+            evidence.value = Some(expected.value);
+            evidence.width_bits = Some(expected.width);
+        }
+        evidence.count = evidence.count.saturating_add(1);
+    }
+    Ok(evidence)
 }
 
 // crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds QEMU liveness only.

@@ -790,9 +790,9 @@ the transport layer by construction.
   and reports the exact trap icount before the run reaches its exact scheduler
   ceiling. Its paired off/on runs also prove that disabling white-box installs
   no callback record and that servicing the observational marker leaves the
-  production execution fingerprint unchanged. The item remains open for live
-  collision validation, aarch64, and routing the decoded observation into the
-  host event log.
+  production execution fingerprint unchanged. Live collision validation,
+  decoded host event-log routing, and host-to-guest replies are now covered by
+  the same gate. The item remains open only for the aarch64 live adapter.
 - [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
@@ -891,11 +891,11 @@ the transport layer by construction.
   black-box observable-I/O condition firings, and backend fingerprints while
   rejecting any named or guest-marker leaf fallback and any guest-marker event-log
   entry.
-- [ ] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
+- [x] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
   read at the exact trap icount; host→guest direction (if any) obeys the injection
   contract; fingerprint-identical with markers on vs off. — satisfies [GHC-30],
   [GHC-31], [GHC-32]; spec §16.7.
-  Partial callback-core and scheduler-model evidence is provided by
+  Callback-core and scheduler-model evidence is provided by
   `checks.crucible.phase4.guestHostChannelDeterminism`: the QEMU plugin model
   routes generic marker traps through the shared trap-icount payload
   reader, and `whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount`
@@ -913,6 +913,12 @@ the transport layer by construction.
   still moves the witness. Canonical `gate:any-guest` and
   `gate:single-vm-fingerprint` wiring is bound by
   `checks.crucible.phase4.guestHostChannelGateWiring`.
+  Live host-to-guest closure is provided by
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: the reply write occurs
+  synchronously through the current-vCPU guest-memory mapping at the trap
+  icount, the guest validates it before acknowledging, the causal decision is
+  independently reconstructed by the host, and off/on fingerprints remain
+  equal.
 - [x] **T-GHC-13** Run the guest virtual-vs-physical address spike for the payload
   read; default to the conservative physical/identity-mapped shared page until
   resolved. — satisfies [GHC-33]; spec §16.7.
@@ -963,14 +969,14 @@ the transport layer by construction.
   plugin-to-host shared-memory ring at a completed quantum boundary. Together
   with the scheduler marker-neutrality proof, this establishes black-box
   sufficiency, opt-in additivity, and live white-box on/off fingerprint equality.
-- [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
+- [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
   record a `Decision::AppRandom` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
   client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
-  Partial callback-core and engine-model evidence is provided by
+  Callback-core and engine-model evidence is provided by
   `checks.crucible.phase4.guestHostAppRandomDoorbell`: the phase4
   gate binds the existing golden-vectored kind-5 `random_request` protocol
   surface to the plugin's trap-time guest-memory read and host-to-guest injection
@@ -985,6 +991,12 @@ the transport layer by construction.
   icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random
   reply-range client of that guest-memory path, and reruns the random-request
   doorbell-frame and marker-payload golden-vector tests.
+  Live closure is provided by
+  `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: a real x86 guest submits
+  request `0x01020304` for three bytes on tag `live-rng`, the production plugin
+  returns the scenario-seeded value through patched QEMU at the trap icount,
+  and the host consumes the typed shmem record as an authoritative
+  `Decision::AppRandom` only after independently deriving the same value.
 - [x] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
   hash; exceeding fails loud) and prove the engine functions with zero app-random
   requests (fingerprint-identical with app-random compiled in vs out); add the

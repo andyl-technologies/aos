@@ -1,6 +1,7 @@
 //! Public fault bridges, scheduler traits, liveness gate, runtime nodes, and errors.
 
 use super::*;
+mod quantum_loop;
 /// Applies combined node timing faults to a scheduler VM node.
 ///
 /// This is the scheduler-facing bridge used by trigger/fault application code:
@@ -46,37 +47,6 @@ impl SchedulerSendAuthorizer for SingleScheduler {
         consumer: &SchedulerNodeId,
     ) -> Result<SchedulerSendAuthorization, SchedulerError> {
         SingleScheduler::authorize_cross_node_send(self, producer, consumer)
-    }
-}
-
-impl QuantumLoop for SingleScheduler {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        self.drive_authoritative_quantum(request)
-    }
-
-    fn apply_control_at_boundary(
-        &mut self,
-        control: Vec<ControlOperation>,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        self.admit_control_at_boundary(control);
-        let SchedulerControlDrain {
-            events,
-            applications,
-        } = self.drain_control_events()?;
-        let at = SimInstant {
-            nanos: self.frontier.ticks,
-        };
-        let event_log = self.emit_quantum_event_log(&events, &[], &[], at, false)?;
-        self.commit_control_applications(applications);
-        self.yield_to_control_inbox();
-        Ok(event_log.entries)
-    }
-
-    fn append_backend_observable_events(
-        &mut self,
-        events: Vec<ObservableEvent>,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        self.append_observable_events(events)
     }
 }
 

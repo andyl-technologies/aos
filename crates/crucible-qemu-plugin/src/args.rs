@@ -11,9 +11,13 @@
 //! entry point will call it before opening the control fd or touching QEMU state.
 
 use std::collections::BTreeSet;
-
 use thiserror::Error;
 
+mod app_random;
+pub use app_random::{
+    AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE,
+    PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
+};
 /// The required host-to-plugin control-socket argument key.
 pub const PLUGIN_ARG_SIMFD: &str = "simfd";
 /// The required shared-memory node-slot argument key.
@@ -41,6 +45,7 @@ pub struct PluginArgs {
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
+    app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
 }
@@ -61,6 +66,7 @@ impl PluginArgs {
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = parse_whitebox_setup(&parsed, whitebox)?;
+        let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
@@ -71,6 +77,7 @@ impl PluginArgs {
             inherited_fds,
             whitebox,
             whitebox_setup,
+            app_random,
             coverage,
             fingerprint,
         })
@@ -104,6 +111,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn whitebox_setup(&self) -> Option<WhiteboxSetupAttestation> {
         self.whitebox_setup
+    }
+
+    /// Returns the optional seeded live app-random configuration.
+    #[must_use]
+    pub const fn app_random(&self) -> Option<&PluginAppRandomConfig> {
+        self.app_random.as_ref()
     }
 
     /// Returns whether coverage hooks are enabled.
@@ -244,6 +257,9 @@ pub enum PluginArgsParseError {
         /// Rejected attestation.
         value: String,
     },
+    /// The app-random argument group was malformed.
+    #[error(transparent)]
+    AppRandom(#[from] AppRandomArgsParseError),
     /// Only one of the inherited descriptor keys was supplied.
     #[error("plugin inherited descriptors require both `shmemfd` and `wakefd`")]
     IncompleteInheritedDescriptors,
@@ -407,7 +423,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
-    )
+    ) || app_random::is_key(key)
 }
 
 #[cfg(test)]
@@ -424,6 +440,7 @@ mod tests {
         assert_eq!(args.inherited_fds(), None);
         assert_eq!(args.whitebox(), PluginSwitch::Off);
         assert_eq!(args.whitebox_setup(), None);
+        assert_eq!(args.app_random(), None);
         assert_eq!(args.coverage(), PluginSwitch::Off);
         assert_eq!(args.fingerprint(), PluginSwitch::Off);
         assert_eq!(args.validate_slot_index(3), Ok(()));

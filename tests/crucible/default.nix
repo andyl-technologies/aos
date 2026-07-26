@@ -390,6 +390,7 @@ in rec {
     qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
     qemuDeviceCompletionAdvance = import ./phase2-qemu-device-completion-advance.nix {inherit pkgs lib;};
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
+    qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
     qemuRawStateExport = import ./phase2-qemu-raw-state-export.nix {inherit pkgs lib;};
     qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
@@ -1133,6 +1134,7 @@ in rec {
       taskIds = ["T-GHC-15"];
       openTaskIds = [];
       qemuLiveWhiteboxDoorbell = phase2.qemuLiveWhiteboxDoorbell;
+      qemuWhiteboxGuestWrite = phase2.qemuWhiteboxGuestWrite;
     };
     guestHostAppRandomDoorbell = import ./phase4-guest-host-app-random-doorbell.nix {
       inherit pkgs lib;

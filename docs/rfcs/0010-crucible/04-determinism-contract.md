@@ -894,13 +894,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     the ABI-v5 mailbox and `qemu_plugin_inject_preemption`. The exact delivery,
     mailbox acknowledgement, terminal fingerprint, and host-observable schedule
     repeat byte-identically under host CPU load and match `SimDouble`.
-- [ ] **T-DET-31** Implement app-requested randomness served from the single
+- [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection
   contract; assert the contract holds byte-identically with zero app-random
   requests and distinguish it from opaque ambient `fw_cfg` entropy. — satisfies
   [DET-44]; spec §4.7.
-  - Partial model and callback-core evidence is provided by `checks.crucible.phase1.decisionRecording` and
+  - Model and callback-core evidence is provided by `checks.crucible.phase1.decisionRecording` and
     `checks.crucible.phase2.qemuPluginAppRandomDoorbell`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: `DecisionRecorder` owns
     the single seeded `DecisionRng`, forks streams by the canonical
@@ -912,3 +912,12 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     App-requested randomness is reported separately from ambient `fw_cfg` entropy,
     which remains launch-time guest CSPRNG seeding rather than an app-random
     source.
+  - Live closure is provided by
+    `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: a real guest issues one
+    kind-5 request, the production plugin derives its synchronous conjecture
+    from the scenario's frozen decision-RNG root and per-node/tag name-hashed
+    stream, writes the reply at the trap icount, and sends the typed causal
+    record through shmem. The host independently reconstructs the value with
+    `DecisionRecorder`, rejects any mismatch, and records the authoritative
+    `RngDraw` plus `Decision::AppRandom`. The same gate's off/unused legs retain
+    identical fingerprints and zero app-random decisions.

@@ -5,12 +5,12 @@
 //! concepts from leaking into the pure state vocabulary.
 
 use std::collections::BTreeMap;
-use std::error::Error;
-use std::fmt;
 
 use crate::{
-    Checkpoint, CheckpointKind, ContentHash, Icount, NodeId, ObservableEvent, VirtualTime,
+    Checkpoint, CheckpointKind, ContentHash, Decision, Icount, NodeId, ObservableEvent, VirtualTime,
 };
+mod error;
+pub use error::BackendError;
 
 /// A VM backend boundary declared by the engine.
 pub trait Backend {
@@ -98,6 +98,20 @@ pub trait SimulationBackend {
     /// Returns a [`BackendError`] when the observational transport is corrupt,
     /// exceeds the completed boundary, or cannot be drained completely.
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
+        Ok(Vec::new())
+    }
+
+    /// Drains causal decisions produced by synchronous backend callbacks.
+    ///
+    /// The authoritative scheduler validates and appends these decisions before
+    /// it admits observational events or begins another step. Backends without
+    /// a causal callback transport return an empty batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when the causal transport is corrupt or
+    /// cannot be drained completely at the completed boundary.
+    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
         Ok(Vec::new())
     }
 
@@ -353,42 +367,6 @@ pub struct BackendInput {
     /// The payload bytes.
     pub payload: Vec<u8>,
 }
-
-/// A backend-boundary error.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BackendError {
-    /// The backend operation is not implemented by this backend.
-    NotImplemented {
-        /// The operation whose implementation is deferred.
-        operation: &'static str,
-    },
-    /// The backend does not support an optional capability.
-    Unsupported {
-        /// Optional capability rejected by this backend.
-        capability: &'static str,
-    },
-    /// The backend rejected a request.
-    Rejected {
-        /// A deterministic diagnostic message.
-        message: String,
-    },
-}
-
-impl fmt::Display for BackendError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotImplemented { operation } => {
-                write!(f, "backend operation {operation} is not implemented yet")
-            }
-            Self::Unsupported { capability } => {
-                write!(f, "backend capability {capability} is unsupported")
-            }
-            Self::Rejected { message } => f.write_str(message),
-        }
-    }
-}
-
-impl Error for BackendError {}
 
 fn validate_gdb_endpoint(field: &'static str, value: &str) -> Result<(), BackendError> {
     if value.is_empty() || value.chars().any(|ch| matches!(ch, '\n' | '\0')) {

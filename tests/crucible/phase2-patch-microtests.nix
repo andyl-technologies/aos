@@ -281,6 +281,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0041-crucible-whitebox-guest-write.patch";
+      check = import ./phase2-qemu-whitebox-guest-write.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

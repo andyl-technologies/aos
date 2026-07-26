@@ -595,7 +595,7 @@ carries findings across an incompatible build.
     `checks.integration.qemu-crucible-patch-microtests`, and that integration
     check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so
     clean apply, prefix provenance, patched build, and live drop-one semantic
-    probes run against the package output on series/pin/header drift. All 40
+    probes run against the package output on series/pin/header drift. All 41
     patches have exactly one accepted attribution method, while composition and
     structural fallback counts are enforced at zero.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible

@@ -280,8 +280,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 .as_mut()
                 .prepare_live_whitebox_state(
                     whitebox_apis,
-                    args.whitebox_setup(),
-                    args.slot(),
+                    args,
                     self.execution_model.smp_vcpus(),
                     capabilities.icount_raw,
                     capabilities.request_shutdown,
@@ -298,7 +297,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             })?;
             (capabilities.register_vcpu_init)(
                 self.plugin_id,
-                crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
+                crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb,
             );
             mask = mask.with_whitebox();
         }
@@ -944,8 +943,7 @@ impl LiveVcpuTimeCallbackState {
         if !was_halted {
             return Ok(());
         }
-        self.all_halted_idle_handled
-            .store(false, Ordering::Release);
+        self.all_halted_idle_handled.store(false, Ordering::Release);
         self.publish_current_icount(raw_icount)?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
         Ok(())
@@ -1167,8 +1165,7 @@ impl LiveVcpuTimeCallbackState {
             .store(pending.target_icount, Ordering::Release);
         let completed_target_icount = pending.target_icount;
         *pending_slot = None;
-        self.all_halted_idle_handled
-            .store(false, Ordering::Release);
+        self.all_halted_idle_handled.store(false, Ordering::Release);
         Ok(completed_target_icount)
     }
 
@@ -1455,6 +1452,14 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_init_cb(
     if let Err(error) = state.on_vcpu_init(plugin_id, vcpu_index) {
         abort_live_callback(error);
     }
+}
+
+extern "C" fn crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb(
+    plugin_id: QemuPluginId,
+    vcpu_index: c_uint,
+) {
+    crucible_qemu_plugin_live_vcpu_init_cb(plugin_id, vcpu_index);
+    crucible_qemu_plugin_live_whitebox_vcpu_init_cb(plugin_id, vcpu_index);
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(

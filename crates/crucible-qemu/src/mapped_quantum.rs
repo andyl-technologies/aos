@@ -1,17 +1,22 @@
 //! Owned mapped shared-memory adapter for QEMU quantum channels.
 
 use crucible::{
-    BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount, ObservableEvent,
-    SchedulerSendAuthorizer, observable_event_from_whitebox_marker_payload,
+    AppRandomDecision, BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount,
+    ObservableEvent, RngStreamId, SchedulerSendAuthorizer,
+    observable_event_from_whitebox_marker_payload,
+};
+// crucible-lint: allow host-nondeterminism-state -- mapped callback records remain untrusted until scheduler validation.
+use crucible::Decision;
+use crucible_protocol::app_random_transport::{
+    AppRandomDecisionTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
+    app_random_stream_name,
 };
 use crucible_protocol::{
     PluginBasicBlockCoverageObservation, WhiteboxDoorbellFrame, decode_whitebox_marker_payload,
 };
 use crucible_shmem::{
-    FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, PreemptionMailboxError, RegionControlError, STATUS_DONE,
+    FingerprintSample, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, STATUS_DONE,
 };
-use thiserror::Error;
 
 use crate::{
     QemuAsyncQuantumCompletion, QemuBasicBlockCoverageBridge, QemuCoverageError, QemuInboundFrame,
@@ -21,8 +26,11 @@ use crate::{
     assert_qemu_quantum_hot_path_is_shmem_only,
 };
 
+#[path = "mapped_quantum/error.rs"]
+mod error;
 #[path = "mapped_quantum/preemption.rs"]
 mod preemption;
+pub use error::QemuMappedQuantumShmemHotPathError;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {
@@ -35,6 +43,9 @@ pub struct QemuMappedQuantumShmemHotPath {
     seen_coverage_map_indices: Vec<bool>,
     next_marker_sequence: u64,
     last_marker_icount: Option<u64>,
+    pending_marker_events: Vec<ObservableEvent>,
+    // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
+    pending_app_random_decisions: Vec<Decision>,
     send_authorizer: Box<dyn SchedulerSendAuthorizer>,
 }
 
@@ -161,6 +172,8 @@ impl QemuMappedQuantumShmemHotPath {
             seen_coverage_map_indices,
             next_marker_sequence,
             last_marker_icount: None,
+            pending_marker_events: Vec::new(),
+            pending_app_random_decisions: Vec::new(),
             send_authorizer: Box::new(send_authorizer),
         })
     }
@@ -306,7 +319,7 @@ impl QemuMappedQuantumShmemHotPath {
     fn drain_markers_at_quantum_boundary(
         &mut self,
         boundary_icount: u64,
-    ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+    ) -> Result<(), QemuNodeChannelError> {
         let node = self.config.node.clone();
         let ring = self
             .region
@@ -325,7 +338,6 @@ impl QemuMappedQuantumShmemHotPath {
             ));
         }
 
-        let mut events = Vec::new();
         while let Some(entry) =
             ring.header
                 .dequeue_whitebox_marker(ring.entries)
@@ -357,30 +369,49 @@ impl QemuMappedQuantumShmemHotPath {
                     ),
                 ));
             }
-            let frame =
-                WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
+            if entry.kind() == WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION {
+                let record =
+                    AppRandomDecisionTransportRecord::decode(entry.payload()).map_err(|error| {
+                        QemuNodeChannelError::new("drain app-random decisions", error.to_string())
+                    })?;
+                self.pending_app_random_decisions
+                    // crucible-lint: allow host-nondeterminism-state -- decoding does not admit the plugin conjecture as authoritative state.
+                    .push(Decision::AppRandom(AppRandomDecision {
+                        node: node.clone(),
+                        stream: RngStreamId::from_name(app_random_stream_name(
+                            &node.name,
+                            record.stream_tag(),
+                        )),
+                        request_id: u64::from(record.request_id()),
+                        width: record.width_bytes().saturating_mul(8),
+                        value: record.value(),
+                    }));
+            } else {
+                let frame =
+                    WhiteboxDoorbellFrame::new(entry.kind(), entry.payload()).map_err(|error| {
+                        QemuNodeChannelError::new("drain white-box markers", error.to_string())
+                    })?;
+                let payload = decode_whitebox_marker_payload(&frame).map_err(|error| {
                     QemuNodeChannelError::new("drain white-box markers", error.to_string())
                 })?;
-            let payload = decode_whitebox_marker_payload(&frame).map_err(|error| {
-                QemuNodeChannelError::new("drain white-box markers", error.to_string())
-            })?;
-            let event = observable_event_from_whitebox_marker_payload(
-                Icount {
-                    retired: entry.current_icount(),
-                },
-                node.clone(),
-                &payload,
-            )
-            .ok_or_else(|| {
-                QemuNodeChannelError::new(
-                    "drain white-box markers",
-                    format!(
-                        "marker kind {} is not observational and cannot enter the marker ring",
-                        entry.kind()
-                    ),
+                let event = observable_event_from_whitebox_marker_payload(
+                    Icount {
+                        retired: entry.current_icount(),
+                    },
+                    node.clone(),
+                    &payload,
                 )
-            })?;
-            events.push(event);
+                .ok_or_else(|| {
+                    QemuNodeChannelError::new(
+                        "drain white-box markers",
+                        format!(
+                            "marker kind {} is not observational and cannot enter the marker ring",
+                            entry.kind()
+                        ),
+                    )
+                })?;
+                self.pending_marker_events.push(event);
+            }
             self.last_marker_icount = Some(entry.current_icount());
             self.next_marker_sequence =
                 self.next_marker_sequence.checked_add(1).ok_or_else(|| {
@@ -390,7 +421,7 @@ impl QemuMappedQuantumShmemHotPath {
                     )
                 })?;
         }
-        Ok(events)
+        Ok(())
     }
 }
 
@@ -444,9 +475,19 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
         let mut events = self.drain_coverage_at_quantum_boundary(boundary_icount)?;
-        events.extend(self.drain_markers_at_quantum_boundary(boundary_icount)?);
+        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        events.append(&mut self.pending_marker_events);
         events.sort_by_key(ObservableEvent::at);
         Ok(events)
+    }
+
+    // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
+    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, QemuNodeChannelError> {
+        let boundary_icount = self.with_hot_path("causal boundary", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        self.drain_markers_at_quantum_boundary(boundary_icount)?;
+        Ok(std::mem::take(&mut self.pending_app_random_decisions))
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
@@ -492,55 +533,6 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 struct QemuMappedPendingQuantum {
     pending: QemuPendingQuantum,
     start_operations: Vec<QemuQuantumOperation>,
-}
-
-/// An error produced while binding a mapped QEMU quantum hot path.
-#[derive(Debug, Error)]
-pub enum QemuMappedQuantumShmemHotPathError {
-    /// The mapped shared-memory region could not expose the requested node rings.
-    #[error("mapped QEMU quantum shared-memory access failed")]
-    RegionAccess {
-        /// Underlying mapped-region access error.
-        source: MappedSetupRegionAccessError,
-    },
-    /// Publishing a mapped shared-memory control action failed.
-    #[error("mapped QEMU quantum shared-memory control failed")]
-    RegionControl {
-        /// Underlying shared-memory control wake error.
-        source: RegionControlError,
-    },
-    /// The live plugin preemption mailbox rejected a host command.
-    #[error("mapped QEMU preemption mailbox failed: {source}")]
-    PreemptionMailbox {
-        /// Underlying scheduler-to-plugin mailbox error.
-        source: PreemptionMailboxError,
-    },
-    /// The borrowed quantum adapter rejected the selected view.
-    #[error("mapped QEMU quantum hot-path binding failed")]
-    Quantum {
-        /// Underlying quantum hot-path error.
-        source: QemuQuantumError,
-    },
-    /// Coverage policy or consumer construction failed.
-    #[error("mapped QEMU coverage bridge configuration failed")]
-    Coverage {
-        /// Underlying coverage bridge error.
-        source: QemuCoverageError,
-    },
-    /// The ABI queue cardinality differed from the configured coverage map.
-    #[error("coverage map has {map_entries} entries but mapped queue has {queue_capacity}")]
-    CoverageQueueCapacity {
-        /// Engine map cardinality.
-        map_entries: usize,
-        /// Mapped queue cardinality.
-        queue_capacity: usize,
-    },
-}
-
-impl QemuMappedQuantumShmemHotPathError {
-    fn into_channel_error(self, operation: &'static str) -> QemuNodeChannelError {
-        QemuNodeChannelError::new(operation, self.to_string())
-    }
 }
 
 fn validate_config(

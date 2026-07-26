@@ -16,7 +16,8 @@ use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    LivePluginInstallGateConfig, QemuLaunchPluginSwitch, run_live_plugin_install_gate,
+    LivePluginInstallGateConfig, QemuLaunchAppRandomConfig, QemuLaunchPluginSwitch,
+    run_live_plugin_install_gate,
 };
 
 #[cfg(target_os = "linux")]
@@ -62,6 +63,9 @@ fn run() -> Result<(), String> {
     let whitebox = env_switch("CRUCIBLE_LIVE_PLUGIN_WHITEBOX")?;
     let fingerprint = env_switch("CRUCIBLE_LIVE_PLUGIN_FINGERPRINT")?;
     config = config.with_whitebox(whitebox).with_fingerprint(fingerprint);
+    if let Some(app_random) = app_random_env()? {
+        config = config.with_app_random(app_random);
+    }
     let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:plugin-install-lifecycle");
@@ -114,8 +118,58 @@ fn run() -> Result<(), String> {
             .as_deref()
             .unwrap_or("not-observed")
     );
+    println!(
+        "app_random_decision_count={}",
+        report.app_random_decision_count
+    );
+    println!(
+        "app_random_request_id={}",
+        report
+            .app_random_request_id
+            .map_or_else(|| "not-observed".to_owned(), |value| value.to_string())
+    );
+    println!(
+        "app_random_value={}",
+        report
+            .app_random_value
+            .map_or_else(|| "not-observed".to_owned(), |value| value.to_string())
+    );
+    println!(
+        "app_random_width_bits={}",
+        report
+            .app_random_width_bits
+            .map_or_else(|| "not-observed".to_owned(), |value| value.to_string())
+    );
     println!("fingerprint={fingerprint}");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
+    let seed = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED");
+    let cap = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP");
+    let node = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE");
+    match (seed, cap, node) {
+        (
+            Err(env::VarError::NotPresent),
+            Err(env::VarError::NotPresent),
+            Err(env::VarError::NotPresent),
+        ) => Ok(None),
+        (Ok(seed), Ok(cap), Ok(node)) => {
+            let root_seed = seed.parse::<u64>().map_err(|_error| {
+                String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED must be a u64")
+            })?;
+            let draw_cap = cap.parse::<u64>().map_err(|_error| {
+                String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP must be a u64")
+            })?;
+            Ok(Some(QemuLaunchAppRandomConfig::new(
+                root_seed, draw_cap, node,
+            )))
+        }
+        _ => Err(String::from(
+            "live app-random requires seed, cap, and node environment variables together",
+        )),
+    }
 }
 
 #[cfg(target_os = "linux")]

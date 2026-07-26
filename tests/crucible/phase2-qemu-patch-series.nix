@@ -300,6 +300,13 @@
       enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
       capability = "sim-mode virtio-9p kicks enter deterministic raw-message forwarding synchronously";
     }
+    {
+      file = "0041-crucible-whitebox-guest-write.patch";
+      catalogName = "crucible-whitebox-guest-write";
+      class = "F";
+      enforces = "PLUG-14,GHC-12,GHC-16";
+      capability = "synchronous plugin callbacks can write typed white-box replies through the current vCPU guest-memory mapping";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

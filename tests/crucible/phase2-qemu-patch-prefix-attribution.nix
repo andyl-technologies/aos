@@ -234,6 +234,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0041-crucible-whitebox-guest-write.patch" = {
+      kind = "interface";
+      symbols = ["qemu_plugin_crucible_write_memory_vaddr"];
+    };
   };
 
   unclassified =

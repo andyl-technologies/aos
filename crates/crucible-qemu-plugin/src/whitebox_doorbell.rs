@@ -52,7 +52,7 @@ pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL
 /// QEMU capability label for reading guest memory at the trap icount.
 pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_read_memory_vaddr";
 /// QEMU capability label for writing white-box replies into guest memory.
-pub const QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL: &str = "qemu_plugin_guest_memory_write";
+pub const QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL: &str = "qemu_plugin_crucible_write_memory_vaddr";
 /// Maximum random-request reply width in bytes.
 pub const WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES: u8 =
     WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES;

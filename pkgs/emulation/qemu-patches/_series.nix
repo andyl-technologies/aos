@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "6b6f63d62269f2066e0a06616745676ae5b3e058725952501f657b0b6dff1abe";
+  patchBranchBundleSha256 = "60868fd4a3f83a9c5201f5d58301c96bc5cc1e15b5781fafd7bf1207c5f1f98a";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "ad366f75622186b0b4f45d5fcd269699cf78c780";
+  patchBranchHeadCommit = "df6ba5186e6e1024b0b912e5e86d2743a0dc6821";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -375,6 +375,15 @@ let
       class = "D";
       enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
       capability = "sim-mode virtio-9p kicks enter deterministic raw-message forwarding synchronously";
+    }
+    {
+      file = "0041-crucible-whitebox-guest-write.patch";
+      branchCommit = "df6ba5186e6e1024b0b912e5e86d2743a0dc6821";
+      branchTree = "01809e44d48b3340d44613379d7936ee97cb0ea3";
+      catalogName = "crucible-whitebox-guest-write";
+      class = "F";
+      enforces = "PLUG-34,PLUG-51,GHC-32,GHC-37";
+      capability = "callback-scoped guest virtual-memory writes for synchronous white-box doorbell replies";
     }
   ];
   catalogOnlyCapabilities = [
