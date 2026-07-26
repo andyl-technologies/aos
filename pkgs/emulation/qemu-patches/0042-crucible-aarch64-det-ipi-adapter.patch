@@ -1,7 +1,7 @@
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
-@@ -20,6 +20,7 @@
+@@ -22,6 +22,7 @@
  #include "qemu/qemu-print.h"
  #include "qemu/timer.h"
  #include "qemu/log.h"
@@ -18,7 +18,10 @@ diff --git a/target/arm/cpu.c b/target/arm/cpu.c
  #include "kvm_arm.h"
  #include "disas/capstone.h"
  #include "fpu/softfloat.h"
-@@ -55,1 +58,35 @@
+@@ -52,6 +55,40 @@
+ #include "target/arm/cpu-qom.h"
+ #include "target/arm/gtimer.h"
+ 
 +/*
 + * ARM interrupt-controller delivery is already serialized by the single RR
 + * thread. There is therefore no target-side pending queue to drain at the RR
@@ -54,3 +57,5 @@ diff --git a/target/arm/cpu.c b/target/arm/cpu.c
 +}
 +
  static void arm_cpu_set_pc(CPUState *cs, vaddr value)
+ {
+     ARMCPU *cpu = ARM_CPU(cs);

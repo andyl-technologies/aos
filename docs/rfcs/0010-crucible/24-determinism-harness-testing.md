@@ -924,45 +924,25 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
-- [ ] **T-HARN-6** Implement the execution fingerprint (icount + register +
+- [x] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
-  - The trace importer now covers aggregate icount, all-vCPU registers, the RR
-    cursor, SHA-256 writable-RAM output, and SHA-256 serialized current non-RAM
-    VMState. A stopped, zero-icount definition-only QEMU preflight pins the
-    register and non-RAM VMState schemas independently of both runs, while
-    allowing serialized VMState value length to vary. The live acceptance path
-    samples the exact horizon event. Live
-    frame-delivery and fault-activation boundary hooks and the integrated
-    fixed-input runner remain absent; therefore this task remains open.
-  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
-    integrated fixed-input runner now exists (`PluginFingerprintRunner`) and does
-    icount-driven, observation-only sampling through the live Rust plugin (not
-    QMP): registers, guest-RAM, and non-RAM VMState digests are read into the
-    per-node fingerprint slot at each host-ceiling boundary along a fixed
-    aggregate-icount cadence, and folded into the rolling hash. Still absent: the
-    frame-delivery and fault-activation boundary sampling triggers, which are
-    implemented as honest hooks but cannot fire until the M4/M5 live-I/O and
-    fault paths deliver real events (the runner never synthesizes them).
-- [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
+  - Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`: the live
+    Rust plugin samples all-vCPU registers, the RR cursor, writable RAM, and
+    non-RAM VMState at fixed cadence boundaries plus a frame delivered through
+    the production inbound ring and a fault applied through the production
+    preemption mailbox. Every event is acknowledged before its sample is
+    accepted.
+- [x] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
-  - The model comparator, provenance-bound real-QEMU comparison, exact
-    bisection-report invariants, and typed both-side state-dump schema exist, but
-    trace mutations provide only coarse post-processing localization.
-  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the live
-    runner hook for instruction-exact refinement now exists — `PluginFingerprintRunner`
-    boots one unmodified guest twice and compares the fingerprint streams live
-    (byte-identical, the second run under host CPU load), and
-    `SingleVmFingerprintProbeRunner` refines by RESTART to an exact icount
-    (`loadvm` stays policy-disabled; the probe replays from the same immutable
-    inputs), with restart-probe equality attested at an interior icount. On this
-    evidence the phase2 `gate:single-vm-fingerprint` is advanced to
-    `greenBeforeAdvance`, and `gate:any-guest` depends on it. The task stays open
-    only for the real both-side architectural state dump at a divergence: the
-    deterministic gate proves equality so that path is unreached, and
-    `dump_single_vm_fingerprint_state` fails loud rather than fabricating a dump,
-    pending the M4/M5 whitebox register/memory value capture.
+  - Completed by the same live gate. The ordinary pass boots one unmodified
+    fixed guest twice and proves identical streams under second-run host load.
+    The negative-control pass forces a real QEMU divergence, performs
+    ordinal-aware RESTART refinement to the exact first differing instruction,
+    and emits both sides' complete architectural register bytes, paired
+    differing RAM ranges, complete non-RAM VMState, and a stable dump content
+    address. Snapshot restore remains policy-disabled.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.

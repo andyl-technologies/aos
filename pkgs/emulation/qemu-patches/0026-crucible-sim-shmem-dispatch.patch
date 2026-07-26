@@ -19,7 +19,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -413,6 +414,19 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -395,6 +396,19 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
  
@@ -39,7 +39,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
              if (cpu_can_run(cpu)) {
                  int r;
  
-@@ -424,6 +438,10 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -406,6 +420,10 @@ static void *rr_cpu_thread_fn(void *arg)
                  if (icount_enabled()) {
                      icount_process_data(cpu);
                  }

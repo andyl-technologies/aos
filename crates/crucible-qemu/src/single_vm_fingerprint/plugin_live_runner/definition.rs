@@ -13,7 +13,9 @@
 //! status=canonical
 //! cadence_icount=4000000
 //! target=4000000
+//! target=4000001
 //! target=8000000
+//! target=8000001
 //! target=12000000
 //! component=aggregate-icount
 //! component=all-vcpu-register-files-sha256-v1
@@ -61,6 +63,18 @@ pub const CADENCE_ICOUNT: u64 = 4_000_000;
 /// host-published ceiling, giving an instruction-exact, deterministic guest
 /// state at every boundary. The last target is the run horizon.
 pub const TARGET_ICOUNTS: [u64; 3] = [4_000_000, 8_000_000, 12_000_000];
+/// Exact boundary at which a real inbound frame becomes guest-visible.
+pub const FRAME_DELIVERY_ICOUNT: u64 = 4_000_001;
+/// Exact boundary at which a scheduler-commanded interrupt fault activates.
+pub const FAULT_ACTIVATION_ICOUNT: u64 = 8_000_001;
+/// Complete ascending periodic and event-driven sampling plan.
+pub const SAMPLE_ICOUNTS: [u64; 5] = [
+    4_000_000,
+    FRAME_DELIVERY_ICOUNT,
+    8_000_000,
+    FAULT_ACTIVATION_ICOUNT,
+    12_000_000,
+];
 
 /// The width of a 64-character lowercase-hex build digest string.
 const BUILD_DIGEST_HEX_LEN: usize = 64;
@@ -150,8 +164,8 @@ impl RustPluginFingerprintDefinition {
 
     /// Returns the ascending aggregate-icount sample targets.
     #[must_use]
-    pub const fn targets(&self) -> [u64; 3] {
-        TARGET_ICOUNTS
+    pub const fn targets(&self) -> [u64; 5] {
+        SAMPLE_ICOUNTS
     }
 
     /// Returns the 32-byte content-addressed fingerprint definition digest.
@@ -166,7 +180,7 @@ impl RustPluginFingerprintDefinition {
             "status=canonical".to_owned(),
             format!("cadence_icount={CADENCE_ICOUNT}"),
         ];
-        for target in TARGET_ICOUNTS {
+        for target in SAMPLE_ICOUNTS {
             lines.push(format!("target={target}"));
         }
         lines.extend(

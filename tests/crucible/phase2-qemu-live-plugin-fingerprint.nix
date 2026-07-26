@@ -6,13 +6,14 @@
   # the patched QEMU once with `fingerprint=on`, drives the shared-memory quantum
   # hot path to a fixed ascending cadence of aggregate-icount targets, and reads
   # the black-box fingerprint sample it publishes into its per-node slot at each
-  # boundary. The whole scenario runs twice (the second under host CPU load) and
-  # must reproduce byte-for-byte. Proves the live half of T-QEMU-11, T-DET-8,
+  # boundary, including a real delivered frame and a scheduler-commanded fault.
+  # The whole scenario runs twice (the second under host CPU load) and must
+  # reproduce byte-for-byte. A negative-control pass changes the second frame,
+  # bisects the real QEMU divergence, and exports both sides' complete raw state.
+  # Proves the live half of T-QEMU-11, T-DET-8,
   # T-TIME-8, T-HARN-4/7, and the single-VM slice of T-GHC-15.
-  taskIds ? ["T-QEMU-11" "T-DET-8" "T-TIME-8" "T-HARN-4" "T-HARN-7" "T-GHC-15"],
-  # T-HARN-6's frame-delivery and fault-activation sampling triggers are M4/M5
-  # scope; this gate exercises only the periodic aggregate-icount cadence.
-  openTaskIds ? ["T-HARN-6"],
+  taskIds ? ["T-QEMU-11" "T-DET-8" "T-TIME-8" "T-HARN-4" "T-HARN-6" "T-HARN-7" "T-GHC-15"],
+  openTaskIds ? [],
   timeoutSecs ? "240",
   secondRunLoad ? "1",
   probeIcount ? "6000000",
@@ -127,8 +128,8 @@ in
           grep -Fxq 'fingerprint_authority=rust-plugin' "$report"
           grep -Fxq 'definition_domain=crucible.qemu.rust-plugin-fingerprint.v1' "$report"
           grep -Eq '^definition_digest=[0-9a-f]{64}$' "$report"
-          grep -Fxq 'sample_count=3' "$report"
-          grep -Fxq 'sample_target_icounts=4000000,8000000,12000000' "$report"
+          grep -Fxq 'sample_count=5' "$report"
+          grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "$report"
           grep -Fxq 'run_horizon_icount=12000000' "$report"
           grep -Fxq 'vcpu_count=1' "$report"
           grep -Fxq 'rr_switch_quantum=4096' "$report"
@@ -138,13 +139,37 @@ in
           grep -Fxq 'probe_prefix_equal_at_6000000=true' "$report"
           grep -Eq '^probe_count=[1-9][0-9]*$' "$report"
 
+          divergence_report="$TMPDIR/live-plugin-fingerprint-divergence.result"
+          CRUCIBLE_FP_DIVERGENCE_DUMP=1 \
+            timeout -k 15 1790 \
+            "$TMPDIR/live-plugin-fingerprint-example/debug/examples/crucible-qemu-live-plugin-fingerprint" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            "$vmlinuz" \
+            "$GUEST_FIRMWARE" \
+            "$run_dir/divergence" \
+            "$GUEST_INITRD" \
+            "$GUEST_KERNEL_APPEND" \
+            > "$divergence_report"
+          cat "$divergence_report"
+          grep -Fxq PASS "$divergence_report"
+          grep -Fxq 'divergence_negative_control=true' "$divergence_report"
+          grep -Eq '^first_different_icount=[1-9][0-9]*$' "$divergence_report"
+          grep -Eq '^state_dump_content_address=blake3:[0-9a-f]{64}$' "$divergence_report"
+          grep -Fxq 'first_vcpu_register_files=1' "$divergence_report"
+          grep -Fxq 'second_vcpu_register_files=1' "$divergence_report"
+          grep -Eq '^first_device_state_bytes=[1-9][0-9]*$' "$divergence_report"
+          grep -Eq '^second_device_state_bytes=[1-9][0-9]*$' "$divergence_report"
+          grep -Fxq 'both_side_raw_state_dump=true' "$divergence_report"
+
           mkdir -p "$out"
           cp "$report" "$out/result"
+          cp "$divergence_report" "$out/divergence-result"
           {
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=rust-plugin-fingerprint-authority,periodic-cadence-sampling,run-twice-determinism,restart-probe-equality\n'
+            printf 'proven=rust-plugin-fingerprint-authority,periodic-cadence-sampling,frame-delivery-sampling,fault-activation-sampling,run-twice-determinism,restart-probe-equality,instruction-exact-bisection,both-side-raw-state-dump\n'
           } >> "$out/result"
         '';
       }

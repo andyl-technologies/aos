@@ -1,7 +1,7 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -179,20 +179,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -222,20 +222,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
          int r;
  
          if (rr_crucible_sim_mode() &&
@@ -56,7 +56,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
              }
          }
  
-@@ -211,6 +235,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -254,6 +278,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
          qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
          bql_lock();
  
@@ -69,7 +69,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          if (rr_crucible_sim_mode() &&
              crucible_sim_shmem_dispatch_registered() &&
              crucible_sim_preemption_apply_due(cpu_ptr)) {
-@@ -545,19 +575,44 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -527,19 +557,44 @@ static void *rr_cpu_thread_fn(void *arg)
                                (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
  
              if (rr_crucible_sim_mode() &&

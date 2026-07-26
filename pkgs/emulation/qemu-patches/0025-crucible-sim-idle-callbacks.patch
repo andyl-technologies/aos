@@ -51,11 +51,11 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static inline int64_t rr_next_kick_time(void)
  {
      return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
-@@ -154,9 +197,36 @@ static void rr_stop_kick_timer(void)
- static void rr_wait_io_event(void)
+@@ -155,8 +198,35 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
-+
+ 
+-    while (all_cpu_threads_idle()) {
 +    /*
 +     * Drain host work before classifying guest halt state. A queued host work
 +     * item is not a runnable guest vCPU, and callbacks can themselves enqueue
@@ -69,8 +69,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +           (rr_crucible_sim_mode() &&
 +            (rr_crucible_sim_all_vcpus_halted() ||
 +             qemu_plugin_time_advance_is_pending()))) {
- 
--    while (all_cpu_threads_idle()) {
++
          rr_stop_kick_timer();
 +        if (qemu_plugin_time_advance_is_pending()) {
 +            /*

@@ -310,7 +310,7 @@ in rec {
         };
         dependencies = [contentAddress phase1.simDouble];
       };
-      singleVmFingerprint = redBeforeAdvance {
+      singleVmFingerprint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
         # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
         gate = import ./phase1-single-vm-fingerprint-gate.nix {
@@ -320,9 +320,6 @@ in rec {
           dependencies = [replayOracle.rawGate phase1.simDouble];
         };
         dependencies = [replayOracle phase1.simDouble];
-        phase = "phase1";
-        reason = "the live fingerprint still lacks frame/fault interaction sampling and an integrated rerun hook for exact refinement and both-side state dumps";
-        taskIds = ["T-DET-8" "T-HARN-6" "T-HARN-7" "T-TIME-8" "T-TIME-9"];
       };
       divergenceBisect = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.divergenceBisect";

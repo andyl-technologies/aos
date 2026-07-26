@@ -25,8 +25,8 @@ use crate::{
     IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
     NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
     PluginNetworkRx, PluginNetworkTx, PluginPreemptionDecision, PluginPreemptionInjector,
-    PluginShmemOrdering, PluginShutdownRequested, PreemptionError, PreemptionWindow,
-    QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
+    PluginRawStateDump, PluginShmemOrdering, PluginShutdownRequested, PreemptionError,
+    PreemptionWindow, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
@@ -208,6 +208,15 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         } else {
             None
         };
+        let state_dump = args
+            .state_dump()
+            .map(|config| PluginRawStateDump::resolve(config, self.execution_model.smp_vcpus()))
+            .transpose()
+            .map_err(|source| {
+                live_callback_registration_error(LiveVcpuTimeCallbackError::RawStateDump {
+                    message: source.to_string(),
+                })
+            })?;
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
@@ -221,6 +230,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
                 fingerprint,
+                state_dump,
             )
             .map_err(live_callback_registration_error)?;
         LIVE_VCPU_TIME_STATE
@@ -545,6 +555,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     network: Option<LiveNetworkCallbackState>,
     devices: Option<Mutex<LiveDeviceCallbackState>>,
     fingerprint: Option<LiveFingerprintCallbackState>,
+    state_dump: Option<PluginRawStateDump>,
 }
 
 #[derive(Debug)]
@@ -633,6 +644,7 @@ impl LiveVcpuTimeCallbackState {
             network: None,
             devices: None,
             fingerprint: None,
+            state_dump: None,
         })
     }
 
@@ -712,6 +724,12 @@ impl LiveVcpuTimeCallbackState {
         self
     }
 
+    /// Binds the optional terminal raw-state exporter to this pinned callback state.
+    pub(super) fn attach_state_dump(mut self, state_dump: PluginRawStateDump) -> Self {
+        self.state_dump = Some(state_dump);
+        self
+    }
+
     /// Captures and publishes a black-box fingerprint sample stamped at `icount`.
     ///
     /// A no-op unless the launch enabled `fingerprint=on`. Callers invoke it only
@@ -745,7 +763,15 @@ impl LiveVcpuTimeCallbackState {
             .slot
             .get()
             .publish(&sample)
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintPublish { source })
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintPublish { source })?;
+        if let Some(state_dump) = self.state_dump.as_ref() {
+            state_dump.request_if_target(icount).map_err(|source| {
+                LiveVcpuTimeCallbackError::RawStateDump {
+                    message: source.to_string(),
+                }
+            })?;
+        }
+        Ok(())
     }
 
     fn idle_advance_is_pending(&self) -> Result<bool, LiveVcpuTimeCallbackError> {
@@ -1714,6 +1740,12 @@ pub enum LiveVcpuTimeCallbackError {
     FingerprintPublish {
         /// Underlying shared-memory fingerprint slot error.
         source: FingerprintSampleError,
+    },
+    /// Terminal raw-state export setup or boundary activation failed.
+    #[error("terminal raw-state dump failed: {message}")]
+    RawStateDump {
+        /// Stable underlying raw-state export diagnostic.
+        message: String,
     },
     /// A mapped callback ring unexpectedly had no backing entries.
     #[error("mapped callback ring {ring_index} has no backing entries")]

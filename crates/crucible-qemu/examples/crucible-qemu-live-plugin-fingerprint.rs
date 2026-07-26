@@ -14,6 +14,7 @@
 //! CRUCIBLE_FP_SECOND_RUN_LOAD  "0" disables second-run host load (default on)
 //! CRUCIBLE_FP_TIMEOUT_SECS     per-quantum host wait bound (default 240)
 //! CRUCIBLE_FP_PROBE_ICOUNT     interior probe icount (default 6000000)
+//! CRUCIBLE_FP_DIVERGENCE_DUMP  "1" enables the live mismatch/dump negative control
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -41,10 +42,10 @@ mod linux {
     use crucible::ContentHash;
     use crucible_qemu::{
         PLUGIN_FINGERPRINT_TARGET_ICOUNTS, PluginFingerprintRunner, PluginFingerprintRunnerConfig,
-        SingleVmFingerprintGateReport, SingleVmFingerprintProbeRequest,
-        SingleVmFingerprintProbeRunner, SingleVmFingerprintRunInputs,
-        SingleVmFingerprintRunOrdinal, SingleVmFingerprintScenario, SingleVmHostProfile,
-        SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
+        SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
+        SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
+        SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal, SingleVmFingerprintScenario,
+        SingleVmHostProfile, SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
     };
 
     /// Default vCPU count when `CRUCIBLE_FP_SMP_VCPUS` is unset.
@@ -81,6 +82,7 @@ mod linux {
         let timeout_secs = env_u64("CRUCIBLE_FP_TIMEOUT_SECS", 240)?;
         let probe_icount = env_u64("CRUCIBLE_FP_PROBE_ICOUNT", 6_000_000)?;
         let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
+        let divergence_dump = env_flag("CRUCIBLE_FP_DIVERGENCE_DUMP", false)?;
         let memory_mib = u32::try_from(env_u64(
             "CRUCIBLE_FP_MEMORY_MIB",
             u64::from(DEFAULT_MEMORY_MIB),
@@ -92,6 +94,7 @@ mod linux {
                 .map_err(|error| error.to_string())?
                 .with_completion_timeout(Duration::from_secs(timeout_secs))
                 .with_second_run_host_load(second_run_host_load)
+                .with_second_run_divergence_control(divergence_dump)
                 .with_smp_vcpus(vcpu_count)
                 .with_memory_mib(memory_mib);
         let kernel_cmdline_text = match &kernel_cmdline {
@@ -125,6 +128,10 @@ mod linux {
             SingleVmHostProfile::phase1_adversarial(),
         )
         .map_err(|error| error.to_string())?;
+
+        if divergence_dump {
+            return run_divergence_dump_negative_control(&mut runner, &scenario);
+        }
 
         let report = run_single_vm_fingerprint_gate(&mut runner, &scenario)
             .map_err(|error| error.to_string())?;
@@ -189,6 +196,53 @@ mod linux {
             "device_state_digest_matches_run_twice={}",
             evidence.device_state_digest_matches_run_twice
         );
+        Ok(())
+    }
+
+    fn run_divergence_dump_negative_control(
+        runner: &mut PluginFingerprintRunner,
+        scenario: &SingleVmFingerprintScenario,
+    ) -> Result<(), String> {
+        let error = run_single_vm_fingerprint_gate(runner, scenario)
+            .err()
+            .ok_or_else(|| String::from("divergence negative control unexpectedly matched"))?;
+        let SingleVmFingerprintGateError::Mismatch { bisection, .. } = error else {
+            return Err(format!(
+                "divergence negative control did not produce a validated mismatch: {error}"
+            ));
+        };
+        let dump = bisection.state_dump();
+        println!("PASS");
+        println!("divergence_negative_control=true");
+        println!(
+            "first_different_icount={}",
+            bisection.first_different_icount()
+        );
+        println!(
+            "state_dump_content_address={}",
+            bisection.state_dump_content_address()
+        );
+        println!(
+            "first_vcpu_register_files={}",
+            dump.first().vcpu_registers().len()
+        );
+        println!(
+            "second_vcpu_register_files={}",
+            dump.second().vcpu_registers().len()
+        );
+        println!(
+            "paired_differing_memory_regions={}",
+            dump.first().differing_memory_regions().len()
+        );
+        println!(
+            "first_device_state_bytes={}",
+            dump.first().device_state().len()
+        );
+        println!(
+            "second_device_state_bytes={}",
+            dump.second().device_state().len()
+        );
+        println!("both_side_raw_state_dump=true");
         Ok(())
     }
 
