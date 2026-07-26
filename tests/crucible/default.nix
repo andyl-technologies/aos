@@ -2697,14 +2697,13 @@ in rec {
       ];
     };
     gates = rec {
-      perfBench = redBeforeAdvance {
+      perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
         # lint needle: perfBench = import ./phase7-perf-bench.nix
         gate = import ./phase7-perf-bench.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.perfBench";
-          taskIds = ["T-PERF-15" "T-PERF-26"];
-          openTaskIds = [
+          taskIds = [
             "T-PERF-1"
             "T-PERF-2"
             "T-PERF-3"
@@ -2719,6 +2718,7 @@ in rec {
             "T-PERF-12"
             "T-PERF-13"
             "T-PERF-14"
+            "T-PERF-15"
             "T-PERF-16"
             "T-PERF-17"
             "T-PERF-18"
@@ -2729,42 +2729,14 @@ in rec {
             "T-PERF-23"
             "T-PERF-24"
             "T-PERF-25"
+            "T-PERF-26"
             "T-PERF-27"
             "T-PERF-28"
           ];
+          openTaskIds = [];
           dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate];
         };
         dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage];
-        phase = "phase7";
-        reason = "the performance substrate is modeled and does not yet measure the live QEMU guest or real fleet";
-        taskIds = [
-          "T-PERF-1"
-          "T-PERF-2"
-          "T-PERF-3"
-          "T-PERF-4"
-          "T-PERF-5"
-          "T-PERF-6"
-          "T-PERF-7"
-          "T-PERF-8"
-          "T-PERF-9"
-          "T-PERF-10"
-          "T-PERF-11"
-          "T-PERF-12"
-          "T-PERF-13"
-          "T-PERF-14"
-          "T-PERF-16"
-          "T-PERF-17"
-          "T-PERF-18"
-          "T-PERF-19"
-          "T-PERF-20"
-          "T-PERF-21"
-          "T-PERF-22"
-          "T-PERF-23"
-          "T-PERF-24"
-          "T-PERF-25"
-          "T-PERF-27"
-          "T-PERF-28"
-        ];
       };
       e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";

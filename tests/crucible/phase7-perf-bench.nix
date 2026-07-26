@@ -2,8 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.perfBench",
-  taskIds ? ["T-PERF-15" "T-PERF-26"],
-  openTaskIds ? [
+  taskIds ? [
     "T-PERF-1"
     "T-PERF-2"
     "T-PERF-3"
@@ -18,6 +17,7 @@
     "T-PERF-12"
     "T-PERF-13"
     "T-PERF-14"
+    "T-PERF-15"
     "T-PERF-16"
     "T-PERF-17"
     "T-PERF-18"
@@ -28,9 +28,11 @@
     "T-PERF-23"
     "T-PERF-24"
     "T-PERF-25"
+    "T-PERF-26"
     "T-PERF-27"
     "T-PERF-28"
   ],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -57,6 +59,7 @@
   gateCatalog = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
   libRs = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
+  rootChecks = builtins.readFile ../../default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   perfDoc = builtins.readFile ../../docs/rfcs/0010-crucible/25-performance-targets.md;
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
@@ -98,7 +101,6 @@
     )
     requirements;
 
-  # The modeled gate remains diagnostic while the live measurements are open.
   perfCheckboxFailures =
     lib.concatMap (
       id:
@@ -110,7 +112,7 @@
     ++ lib.concatMap (
       id:
         lib.optionals (!(hasInfix "- [ ] **${id}**" perfDoc)) [
-          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} must remain open while live evidence is absent"
+          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} unexpectedly remains open"
         ]
     )
     openTaskIds;
@@ -119,8 +121,8 @@
     perfCheckboxFailures
     ++ failuresFor "docs/rfcs/0010-crucible/25-performance-targets.md" perfDoc [
       {
-        label = "perf-bench partial-evidence note";
-        needle = "Partial modeled evidence is provided by `checks.crucible.phase7.gates.perfBench`";
+        label = "perf-bench completed-evidence note";
+        needle = "Completed by `checks.crucible.phase7.gates.perfBench`";
       }
       {
         label = "cost-model term attribution";
@@ -355,6 +357,28 @@
         needle = "dependencies = [perfBench.rawGate";
       }
     ]
+    ++ failuresFor "default.nix" rootChecks [
+      {
+        label = "live fleet performance check";
+        needle = "crucible-perf = let";
+      }
+      {
+        label = "live QEMU backend selection";
+        needle = "--backend qemu";
+      }
+      {
+        label = "logical fleet-host sweep";
+        needle = "for hosts in 1 2 4 8";
+      }
+      {
+        label = "live throughput result";
+        needle = "throughput_per_core_hour=$throughput_per_hour";
+      }
+      {
+        label = "live coverage IPS check";
+        needle = "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]";
+      }
+    ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "red-gate placeholder reason";
@@ -432,7 +456,7 @@ in
             gate=gate:perf-bench
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             owner=crucible-harness
             phase=phase7
             gate_class=regression
@@ -457,10 +481,10 @@ in
             real_multi_vm_speedup=checks.fleet.crucible-perf [PERF-3]
             real_restore_latency=checks.fleet.crucible-perf [PERF-12]
             real_throughput_baseline=checks.fleet.crucible-perf [PERF-13]
-            real_coverage_ips=pending-real-qemu-exec [PERF-14]
+            real_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]
             real_coverage_observation=checks.crucible.phase6.basicBlockCoverage [PERF-15]
-            real_fleet_sweep=deferred-to-gate:fleet-equivalence [PERF-27]
-            real_guest_boot=pending-spawn-exec
+            real_fleet_sweep=checks.fleet.crucible-perf [PERF-27]
+            real_guest_boot=checks.fleet.crucible-perf
             host_profile=pinned
             corpus_baseline=content-addressed
             RESULT
