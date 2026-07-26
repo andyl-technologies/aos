@@ -56,12 +56,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
       {
-        label = "T-FAULT-14 remains open pending live campaign proof";
-        needle = "- [ ] **T-FAULT-14**";
+        label = "T-FAULT-14 checklist complete";
+        needle = "- [x] **T-FAULT-14**";
       }
       {
-        label = "T-FAULT-14 open-scope note";
-        needle = "The item remains open pending the full campaign-to-live-";
+        label = "T-FAULT-14 pinned failure evidence";
+        needle = "The focused gate pins the generated failure as a concrete";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

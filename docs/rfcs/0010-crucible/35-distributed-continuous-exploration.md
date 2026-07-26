@@ -1074,7 +1074,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     surface records the guard result before advertising distributed continuous
     exploration. `gate:campaign-continuity` depends on the same distinction when
     refusing cross-provenance seed reuse.
-- [ ] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
+- [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
   differ), running against the SimDouble fleet under adversarial host conditions and

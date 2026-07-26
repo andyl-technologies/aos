@@ -60,20 +60,20 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-22 remains open pending real host-condition evidence";
-        needle = "- [ ] **T-HARN-22**";
+        label = "T-HARN-22 checklist complete";
+        needle = "- [x] **T-HARN-22**";
       }
       {
-        label = "T-HARN-22 partial modeled evidence note";
-        needle = "Partial modeled evidence is provided by\n  `checks.crucible.phase3.gates.adversarialDeterminism`";
+        label = "T-HARN-22 completed evidence note";
+        needle = "Completed by `checks.crucible.phase3.gates.adversarialDeterminism`";
       }
       {
         label = "modeled hostile-condition phase table scope";
         needle = "phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)";
       }
       {
-        label = "real VM/fleet scope remains packaging work";
-        needle = "real AOS\n  VM/fleet checks remain owned by the packaging tasks";
+        label = "production fleet composition";
+        needle = "composed with the live-QEMU production fleet run";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [

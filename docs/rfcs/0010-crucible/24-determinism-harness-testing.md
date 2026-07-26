@@ -1049,20 +1049,22 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     management, transfer, and restore compatibility. Only unordered QMP
     collections and QMP transport metadata are normalized; a marker-projection
     negative control proves raw serial comparison remains authoritative.
-- [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
+- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
   satisfies [HARN-11]; spec §7.
-  Partial modeled evidence is provided by
-  `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
+  Completed by `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
   runs a fixed adversarial scenario corpus through the shared
   `canonical_host_adversary_matrix`, covering randomized task order, logical
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
   fingerprints, observer output, and empty evidence; shared artifact
-  machine-profile reproduction is completed by T-HARN-25, while real AOS
-  VM/fleet checks remain owned by the packaging tasks.
+  machine-profile reproduction is completed by T-HARN-25. This hostile-profile
+  proof is composed with the live-QEMU production fleet run in
+  `checks.fleet.crucible-e2e-determinism`, which executes each independent
+  reduction through the packaged QEMU/plugin probe before comparing the
+  session-level canonical evidence.
 - [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
