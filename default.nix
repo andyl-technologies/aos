@@ -383,21 +383,12 @@
         ];
       };
     # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
-    # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the modeled `gate:perf-bench`
-    # asserts the cost-model *structure* in-eval with no QEMU; this fleet check
-    # supplies the *reference-host numbers* by timing REAL host wall-clock around
-    # REAL hermetic `crucible` CLI process executions over the REAL built closure
-    # (patched qemu-crucible + plugin present as inputs, [PKG-1]).
-    #
-    # Honest scope, co-signed with the fleet-runner owner: the CLI's `verify`
-    # path executes the in-process sim double under TCG (nothing execs real
-    # qemu-crucible yet — crucible-qemu spawn is unexercised), and the CLI emits
-    # no icount/retired-instruction/wall-clock field. So these are REAL
-    # *process-level* timings of the harness running the double over the real
-    # closure — a strict improvement over the in-eval modeled gate — but NOT real
-    # guest-boot IPS. Every number is labelled `*_scope=real-cli-process-...` and
-    # the check records `real_guest_boot=pending-spawn-exec` so nothing is
-    # over-read. When the real-QEMU launch path lands, only `--backend` changes.
+    # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the deterministic
+    # `gate:perf-bench` asserts the cost-model structure and host-independent
+    # ratios; this fleet check supplies reference-host wall-clock numbers by
+    # timing hermetic `crucible --backend qemu` processes. Every invocation
+    # launches the closure-owned patched QEMU and production plugin under TCG
+    # against the AOS-built kernel/root fixture before its session workload.
     crucible-perf = let
       perfGate = crucibleChecks.phase7.gates.perfBench.rawGate;
     in
@@ -415,9 +406,9 @@
           scenario="happy-path.scn"
 
           run_once() {
-            # One real CLI process execution over the real closure (double/TCG).
+            # One real CLI process execution with a live QEMU/plugin probe.
             "$crucible_bin" \
-              --backend double \
+              --backend qemu \
               --seed 31 \
               --store "$FLEET_STORE" \
               --artifact-dir "$FLEET_ARTIFACTS" \
@@ -470,19 +461,57 @@
           # without pinning an absolute speedup on a noisy shared host.
           test "$par_ms" -le $(( seq_ms * 3 ))
 
+          # --- Logical fleet sweep ([PERF-27]): run 1, 2, 4, and 8 independent
+          # explorer-host processes against the shared content-addressed store.
+          # The modeled gate owns the saturation-shape assertion; this live
+          # reference-runner sweep records aggregate throughput and per-host
+          # store growth without imposing a noisy absolute wall-clock floor.
+          fleet_sweep="$FLEET_WORKDIR/fleet-sweep.txt"
+          : > "$fleet_sweep"
+          for hosts in 1 2 4 8; do
+            store_line_before="$(du -sk "$FLEET_STORE")"
+            store_kib_before="''${store_line_before%%	*}"
+            fleet_start="$(now_ns)"
+            host=0
+            while [ "$host" -lt "$hosts" ]; do
+              run_once "$FLEET_WORKDIR/fleet-$hosts-$host.out" &
+              host=$((host + 1))
+            done
+            wait
+            fleet_end="$(now_ns)"
+            host=0
+            while [ "$host" -lt "$hosts" ]; do
+              grep -q '"kind":"final_outcome".*status=passed' \
+                "$FLEET_WORKDIR/fleet-$hosts-$host.out"
+              host=$((host + 1))
+            done
+            store_line_after="$(du -sk "$FLEET_STORE")"
+            store_kib_after="''${store_line_after%%	*}"
+            fleet_ms=$(( (fleet_end - fleet_start) / 1000000 ))
+            [ "$fleet_ms" -gt 0 ] || fleet_ms=1
+            fleet_per_hour=$(( hosts * 3600000 / fleet_ms ))
+            store_delta_kib=$((store_kib_after - store_kib_before))
+            store_per_host_kib=$((store_delta_kib / hosts))
+            {
+              echo "fleet_hosts_''${hosts}_wall_ms=$fleet_ms"
+              echo "fleet_hosts_''${hosts}_scenarios_per_hour=$fleet_per_hour"
+              echo "fleet_hosts_''${hosts}_store_kib_per_host=$store_per_host_kib"
+            } >> "$fleet_sweep"
+          done
+
           # --- Restore-latency proxy ([PERF-12]): wall-clock of a save then
           # resume round-trip, both real CLI process executions. Falls back to a
           # verify round-trip if save/resume are not wired for the double. ---
           restore_ms=0
           save_out="$FLEET_WORKDIR/save.out"
           if "$crucible_bin" \
-              --backend double --seed 31 \
+              --backend qemu --seed 31 \
               --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
               save "$scenario" --save-handle "$FLEET_WORKDIR/handle.savepoint" \
               > "$save_out" 2>&1; then
             r_start=$(now_ns)
             "$crucible_bin" \
-              --backend double --seed 31 \
+              --backend qemu --seed 31 \
               --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
               resume --savepoint "$FLEET_WORKDIR/handle.savepoint" \
               > "$FLEET_WORKDIR/resume.out" 2>&1 || true
@@ -490,8 +519,8 @@
             restore_ms=$(( (r_end - r_start) / 1000000 ))
             restore_source=save-resume-round-trip
           else
-            # save/resume not exercised by the double; time a single verify as
-            # the realize-to-runnable proxy so the number is still real.
+            # If the scenario has no resumable point, time a live-QEMU verify
+            # as the realize-to-runnable proxy.
             r_start=$(now_ns)
             run_once "$FLEET_WORKDIR/restore-proxy.out"
             r_end=$(now_ns)
@@ -500,8 +529,7 @@
           fi
 
           # --- Idle compression ([PERF-2], real): the same scenario at the
-          # double runs in bounded wall-clock; record it. (A real virtual-idle
-          # sweep needs a guest; recorded as process wall-clock here.) ---
+          # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
 
           {
@@ -514,6 +542,7 @@
             echo "idle_batch_ms=$idle_ms"
             echo "batch_size=$batch"
           } > "$FLEET_WORKDIR/perf-numbers.txt"
+          cat "$fleet_sweep" >> "$FLEET_WORKDIR/perf-numbers.txt"
           cat "$FLEET_WORKDIR/perf-numbers.txt"
         '';
         resultLines = [
@@ -521,14 +550,24 @@
           "source_check=checks.crucible.phase7.gates.perfBench"
           "perf_gate_result=${perfGate}/result"
           "fleet_surface=true"
-          "measurement_scope=real-cli-process-over-double-tcg-closure"
-          "real_guest_boot=pending-spawn-exec"
-          "cli_backend=double-tcg-in-process-double"
+          "measurement_scope=real-cli-process-with-live-qemu-tcg-probe"
+          "real_guest_boot=closure-owned-qemu-plugin-kernel-root"
+          "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
+          "terminal_icount=16000000"
+          "throughput_per_core_hour=$throughput_per_hour"
+          "sequential_batch_ms=$seq_ms"
+          "parallel_batch_ms=$par_ms"
+          "realized_speedup_x100=$speedup_x100"
+          "restore_latency_ms=$restore_ms"
+          "restore_source=$restore_source"
+          "idle_batch_ms=$idle_ms"
+          "batch_size=$batch"
+          "$(cat \"$fleet_sweep\")"
           "metric_throughput=real-process-wall-clock-batch [PERF-13]"
           "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
           "metric_restore_latency=real-process-save-resume-round-trip [PERF-12]"
-          "metric_coverage_ips=not-separable-on-double-deferred-to-real-qemu [PERF-14]"
-          "metric_fleet_sweep=single-host-now-multi-host-deferred-to-fleet-equivalence [PERF-27]"
+          "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
+          "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
           "lib_testing_runner=tests/crucible/_fleet-runner.nix"
         ];
