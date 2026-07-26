@@ -832,5 +832,11 @@ maintained two ways:
   ordering: the doc lint fails if a topic checklist's task order differs from the
   master phase-order projection or if the ordered task-text digest drifts. —
   satisfies [PLAN-3]; spec §"How to use".
-- [ ] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
+- [x] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
   a CI target that blocks the next phase. — satisfies [PLAN-4], [G-5]; spec §"The phase ladder".
+  Completed by `checks.crucible.phase1.phaseGateWiring`,
+  `checks.crucible.phase1.phaseGateOrdering`, and the `greenBeforeAdvance`
+  wrappers in `tests/crucible/default.nix`: the checks derive the canonical gate
+  inventory from §24, require every phase exit target to exist in the Nix check
+  tree and master plan, enforce lower-layer/earlier-phase dependencies, and keep
+  the terminal phase-7 e2e occurrence in the acceptance set.

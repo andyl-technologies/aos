@@ -376,7 +376,8 @@
           "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam"
           "adversarial_matrix=hostile-host-condition-profiles"
           "reproduce=verify-reduction-bisection"
-          "cli_backend=double-tcg-in-process-double"
+          "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
+          "live_qemu_per_reduction=true"
           "lib_testing_runner=tests/crucible/_fleet-runner.nix"
           "tcg_only_vm_runner=crucible-cli-verify-adversarial-bisect"
         ];

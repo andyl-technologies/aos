@@ -733,8 +733,8 @@ carries findings across an incompatible build.
     `checks.fleet.crucible-e2e-determinism` fleet check surface for
     `gate:e2e-determinism`. It fails if the checked canonical gate targets or
     required green-before-advance dependency edges drift from the current wiring.
-    `T-PKG-15` remains the concrete TCG-only VM/fleet runner for the e2e scenario.
-- [ ] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
+    `T-PKG-15` supplies the concrete TCG-only VM/fleet runner for the e2e scenario.
+- [x] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies
   [PKG-29], [PKG-30]; spec §26.8.
@@ -755,10 +755,14 @@ carries findings across an incompatible build.
     (`checks.crucible.phase7.gates.e2eDeterminism`, the in-process determinism
     proof of the same scenario) is consumed as a green precondition. The same
     `mkCrucibleFleetCheck` substrate is reused by the real-VM performance checks.
-    (Honest scope: `verify` currently runs against the in-process sim double under
-    TCG — the CLI does not yet exec real `qemu-crucible`; the patched QEMU + plugin
-    are nonetheless built into the closure, and only the `--backend` selection
-    changes when the CLI's real-QEMU launch path lands.)
+    Each independent reduction uses `--backend qemu` and launches the
+    closure-owned `qemu-crucible` with the production plugin under TCG against
+    the AOS-built kernel/root fixture before running the deterministic
+    session-level scenario comparison. The runner validates the live plugin
+    protocol/ABI handshake, setup acknowledgement, boot barrier, orderly exit,
+    exact terminal icount, and execution fingerprint, so a missing or mismatched
+    production backend fails the fleet check rather than falling back to the
+    in-process double.
 - [x] **T-PKG-16** Implement the packaging conformance check (catalog↔package
   correspondence, dev-only exclusion, requirement mapping). — satisfies [PKG-31];
   spec §26.8.
