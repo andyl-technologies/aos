@@ -18,7 +18,9 @@
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-clock-deadline.c;
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  pluginAbiTests =
+    builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
@@ -37,20 +39,9 @@
       qemu_package_version=${qemuPackage.version}
     '';
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
