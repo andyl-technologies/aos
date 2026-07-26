@@ -318,8 +318,7 @@ impl OwnedCallbackRuntimeState {
     fn prepare_live_whitebox_state(
         self: Pin<&mut Self>,
         apis: live_whitebox::LiveWhiteboxApis,
-        setup_attestation: Option<crate::WhiteboxSetupAttestation>,
-        slot_index: u32,
+        args: &crate::PluginArgs,
         vcpu_count: u32,
         icount_raw: crate::QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
@@ -330,7 +329,7 @@ impl OwnedCallbackRuntimeState {
         let marker_ring = state
             .setup
             .mapped_region_mut()
-            .whitebox_marker_ring_mut(slot_index)
+            .whitebox_marker_ring_mut(args.slot())
             .map_err(|source| live_whitebox::LiveWhiteboxError::MappedMarkerQueue { source })?;
         // SAFETY: `state.setup` owns the mapping for at least as long as the
         // sibling live white-box callback owner. The mapped accessor returns
@@ -344,11 +343,12 @@ impl OwnedCallbackRuntimeState {
         };
         let callback_state = live_whitebox::LiveWhiteboxState::new(
             apis,
-            setup_attestation,
+            args.whitebox_setup(),
             vcpu_count,
             icount_raw,
             request_shutdown,
             marker_output,
+            args.app_random(),
         )?;
         let mut callback_state = Box::pin(callback_state);
         // SAFETY: the independently boxed state is pinned and retained by this

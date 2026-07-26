@@ -85,6 +85,9 @@
       "qemu_plugin_register_blk_wait_cb"
     ];
     "0040-crucible-9p-sync-kick.patch" = [];
+    "0041-crucible-whitebox-guest-write.patch" = [
+      "qemu_plugin_crucible_write_memory_vaddr"
+    ];
   };
 
   dropOnes =

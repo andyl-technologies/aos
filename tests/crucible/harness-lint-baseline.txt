@@ -166,7 +166,6 @@ confinement	crates/crucible-qemu/src/live_plugin_gate.rs	host monotonic time	Ins
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		4
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	public export from nondeterministic boundary source	const		4
-confinement	crates/crucible-qemu/src/live_plugin_gate.rs	public export from nondeterministic boundary source	enum		1
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	public export from nondeterministic boundary source	fn		4
 confinement	crates/crucible-qemu/src/live_plugin_gate.rs	public export from nondeterministic boundary source	struct		2
 confinement	crates/crucible-qemu/src/live_plugin_quantum_gate/scheduler.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	7

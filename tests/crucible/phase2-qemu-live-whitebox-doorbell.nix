@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveWhiteboxDoorbell",
-  taskIds ? ["T-GHC-6" "T-GHC-9"],
+  taskIds ? ["T-DET-31" "T-PLUG-27" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-16"],
   openTaskIds ? ["T-PLUG-14" "T-GHC-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -87,10 +87,78 @@
           }
           GUEST_LD
 
+          cat > app-random-guest.S <<'APP_RANDOM_GUEST_ASM'
+          .section .multiboot,"a"
+          .align 4
+          .long 0x1badb002
+          .long 0x00000003
+          .long -(0x1badb002 + 0x00000003)
+
+          .section .text,"ax"
+          .code32
+          .global _start
+          _start:
+            cli
+            movl $stack_top, %esp
+            movl $random_request_frame, %eax
+            movl $27, %ecx
+            movl $0x00e7, %edx
+            outl %eax, %dx
+            cmpl $0x4c425243, random_request_frame
+            je workload_loop
+            movl $reply_marker_frame, %eax
+            movl $26, %ecx
+            movl $0x00e7, %edx
+            outl %eax, %dx
+          workload_loop:
+            addl $0x9e3779b9, %eax
+            roll $7, %eax
+            xorl $0xa5a5a5a5, %eax
+            movl %eax, scratch
+            movl scratch, %edx
+            movb %al, 0x000b8000
+            outb %al, $0x80
+            jmp workload_loop
+
+          .section .rodata
+          .align 16
+          reply_marker_frame:
+            .byte 0x43, 0x52, 0x42, 0x4c
+            .byte 0x02, 0x00
+            .byte 0x04, 0x00
+            .byte 0x0e, 0x00, 0x00, 0x00
+            .byte 0x0c, 0x00
+            .ascii "random-reply"
+
+          .section .data
+          .align 16
+          random_request_frame:
+            .byte 0x43, 0x52, 0x42, 0x4c
+            .byte 0x02, 0x00
+            .byte 0x05, 0x00
+            .byte 0x0f, 0x00, 0x00, 0x00
+            .byte 0x04, 0x03, 0x02, 0x01
+            .byte 0x03
+            .byte 0x08, 0x00
+            .ascii "live-rng"
+
+          .section .bss
+          .align 16
+          scratch:
+            .skip 4
+          stack_bottom:
+            .skip 16384
+          stack_top:
+          APP_RANDOM_GUEST_ASM
+
           mkdir -p "$out"
           as --32 guest.S -o guest.o
           ld -m elf_i386 -nostdlib -T guest.ld -o "$out/whitebox-guest.elf" guest.o
           strip --strip-all "$out/whitebox-guest.elf"
+          as --32 app-random-guest.S -o app-random-guest.o
+          ld -m elf_i386 -nostdlib -T guest.ld \
+            -o "$out/app-random-guest.elf" app-random-guest.o
+          strip --strip-all "$out/app-random-guest.elf"
         '';
       }
     ];
@@ -219,6 +287,37 @@ in
           run_mode off off
           run_mode on on
 
+          app_random_dir="$TMPDIR/live-whitebox-app-random"
+          app_random_report="$TMPDIR/live-whitebox-app-random.result"
+          app_random_log="$TMPDIR/live-whitebox-app-random.qemu.log"
+          mkdir -p "$app_random_dir"
+          cp ${rootImage}/overlay.qcow2 "$app_random_dir/crucible-root-overlay.qcow2"
+          chmod u+w "$app_random_dir/crucible-root-overlay.qcow2"
+          if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
+            CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED=1048598 \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP=1 \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE=plugin-install-gate-vm \
+            timeout -k 15 180 \
+            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            ${guest}/app-random-guest.elf \
+            ${rootImage}/root.qcow2 \
+            "$app_random_dir" \
+            > "$app_random_report" 2> "$app_random_log"; then
+            cat "$app_random_report" >&2
+            cat "$app_random_log" >&2
+            exit 1
+          fi
+          grep -Fxq PASS "$app_random_report"
+          grep -Fxq 'app_random_decision_count=1' "$app_random_report"
+          grep -Fxq 'app_random_request_id=16909060' "$app_random_report"
+          grep -Eq '^app_random_value=[0-9]+$' "$app_random_report"
+          grep -Fxq 'app_random_width_bits=24' "$app_random_report"
+          grep -Fxq 'whitebox_marker_count=1' "$app_random_report"
+          grep -Fxq 'whitebox_marker_point=random-reply' "$app_random_report"
+
           collision_map="$TMPDIR/live-whitebox-collision.mtree"
           collision_result="$TMPDIR/live-whitebox-collision.result"
           collision_error="$TMPDIR/live-whitebox-collision.error"
@@ -263,6 +362,8 @@ in
           cp "$TMPDIR/live-whitebox-on.result" "$out/install-on-result"
           cp "$TMPDIR/live-whitebox-off.qemu.log" "$out/qemu-off.log"
           cp "$TMPDIR/live-whitebox-on.qemu.log" "$out/qemu-on.log"
+          cp "$app_random_report" "$out/app-random-result"
+          cp "$app_random_log" "$out/qemu-app-random.log"
           cp "$collision_map" "$out/collision.mtree"
           cp "$collision_error" "$out/collision.error"
           {
@@ -297,6 +398,10 @@ in
             printf 'on_fingerprint=%s\n' "$on_fingerprint"
             printf 'off_on_fingerprint_equal=true\n'
             printf 'production_whitebox_channel_implemented=x86_64-live-slice\n'
+            printf 'app_random_live_decisions=1\n'
+            printf 'app_random_guest_reply_observed=true\n'
+            printf 'app_random_host_seed_reconstruction=true\n'
+            printf 'app_random_reply_api=qemu_plugin_crucible_write_memory_vaddr\n'
           } > "$out/result"
         '';
       }

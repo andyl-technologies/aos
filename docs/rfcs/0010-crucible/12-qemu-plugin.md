@@ -1070,8 +1070,9 @@ component that makes that purity true *inside* the QEMU process.
   record, and production fingerprint sampling produces the same execution
   fingerprint in both modes. The enabled run also validates the exact stopped,
   plugin-free machine's I/O map before registration and rejects a real
-  `isa-debugcon` collision at port `0x00e7`. Still open are host event-log
-  routing, the aarch64 live adapter, and the host-to-guest reply path.
+  `isa-debugcon` collision at port `0x00e7`. The gate also routes observations
+  into the host event log and proves the live host-to-guest app-random reply
+  path. The remaining open slice is the aarch64 live adapter.
 - [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
@@ -1225,9 +1226,19 @@ component that makes that purity true *inside* the QEMU process.
   under a restart probe, so sampling perturbs neither guest state nor the
   execution trace. The N-vCPU fingerprint mints under the new
   `crucible.qemu.rust-plugin-fingerprint.v2` domain.
-- [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
+- [x] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
   serve a `random_request` by drawing from the seeded decision source and
   replying at the trap icount under the injection contract, record a
   `Decision::AppRandom`, keep it side-effect-free except the requested value, and
   ensure the engine functions with zero requests. — satisfies [PLUG-51]; spec
   §12.7.
+  Completed by `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`. The
+  production plugin accepts the seeded app-random launch tuple only with
+  white-box enabled, bounds the scenario draw count, traps the kind-5 request,
+  derives the requested per-node/tag stream value synchronously, and writes the
+  little-endian reply through
+  `qemu_plugin_crucible_write_memory_vaddr`. It then emits a typed causal shmem
+  record that the host scheduler independently reconstructs with
+  `DecisionRecorder`; any value drift fails the run before schedule admission.
+  The real guest validates the reply and emits `random-reply`, while the
+  zero-request off/on runs preserve the same execution fingerprint.

@@ -12,18 +12,22 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crucible_shmem::{MAX_FRAME_DATA, RingHeader, SpscRingError, WhiteboxMarkerEntry};
-use thiserror::Error;
 
 use crate::{
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
-    PluginSwitch, PluginWhiteboxDoorbell, QemuIcountRawFn, QemuPluginId, QemuPluginInsn,
-    QemuPluginTb, QemuRequestShutdownFn, WHITEBOX_DOORBELL_X86_64_ABI,
+    PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuIcountRawFn, QemuPluginId,
+    QemuPluginInsn, QemuPluginTb, QemuRequestShutdownFn, WHITEBOX_DOORBELL_X86_64_ABI,
     WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
     WhiteboxDoorbellCapabilities, WhiteboxDoorbellDecodeDiagnostic,
     WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
     WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarker, WhiteboxMarkerSink,
     WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
 };
+
+mod app_random;
+mod error;
+use app_random::LiveAppRandomState;
+pub use error::LiveWhiteboxError;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
@@ -36,6 +40,7 @@ const REGISTER_INSN_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_insn_e
 const GET_REGISTERS_SYMBOL_C: &[u8] = b"qemu_plugin_get_registers\0";
 const READ_REGISTER_SYMBOL_C: &[u8] = b"qemu_plugin_read_register\0";
 const READ_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_read_memory_vaddr\0";
+const WRITE_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_write_memory_vaddr\0";
 const G_ARRAY_FREE_SYMBOL_C: &[u8] = b"g_array_free\0";
 const G_BYTE_ARRAY_NEW_SYMBOL_C: &[u8] = b"g_byte_array_new\0";
 const G_BYTE_ARRAY_FREE_SYMBOL_C: &[u8] = b"g_byte_array_free\0";
@@ -77,6 +82,7 @@ type QemuRegisterInsnExecCbFn =
 type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
 type QemuReadRegisterFn = extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> c_int;
 type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
+type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
 type GArrayFreeFn = extern "C" fn(*mut GArray, bool) -> *mut c_char;
 type GByteArrayNewFn = extern "C" fn() -> *mut GByteArray;
 type GByteArrayFreeFn = extern "C" fn(*mut GByteArray, bool) -> *mut u8;
@@ -92,6 +98,7 @@ pub(crate) struct LiveWhiteboxApis {
     get_registers: QemuGetRegistersFn,
     read_register: QemuReadRegisterFn,
     read_memory_vaddr: QemuReadMemoryVaddrFn,
+    write_memory_vaddr: QemuWriteMemoryVaddrFn,
     g_array_free: GArrayFreeFn,
     g_byte_array_new: GByteArrayNewFn,
     g_byte_array_free: GByteArrayFreeFn,
@@ -122,6 +129,10 @@ impl LiveWhiteboxApis {
             read_memory_vaddr: resolve_symbol(
                 READ_MEMORY_VADDR_SYMBOL_C,
                 "qemu_plugin_read_memory_vaddr",
+            )?,
+            write_memory_vaddr: resolve_symbol(
+                WRITE_MEMORY_VADDR_SYMBOL_C,
+                "qemu_plugin_crucible_write_memory_vaddr",
             )?,
             g_array_free: resolve_symbol(G_ARRAY_FREE_SYMBOL_C, "g_array_free")?,
             g_byte_array_new: resolve_symbol(G_BYTE_ARRAY_NEW_SYMBOL_C, "g_byte_array_new")?,
@@ -238,6 +249,7 @@ pub(crate) struct LiveWhiteboxState {
     icount_raw: QemuIcountRawFn,
     request_shutdown: QemuRequestShutdownFn,
     marker_sink: LiveMarkerSink,
+    app_random: Option<LiveAppRandomState>,
 }
 
 impl LiveWhiteboxState {
@@ -254,6 +266,7 @@ impl LiveWhiteboxState {
         icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
         marker_output: LiveWhiteboxMarkerShmemProducer,
+        app_random_config: Option<&PluginAppRandomConfig>,
     ) -> Result<Self, LiveWhiteboxError> {
         if setup_attestation != Some(crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1) {
             return Err(LiveWhiteboxError::SetupAttestationMissing);
@@ -280,8 +293,13 @@ impl LiveWhiteboxState {
             doorbell.trap(),
             WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[]),
         );
+        let capabilities = if app_random_config.is_some() {
+            WhiteboxDoorbellCapabilities::bidirectional()
+        } else {
+            WhiteboxDoorbellCapabilities::guest_to_host()
+        };
         let plan = doorbell
-            .registration_plan(WhiteboxDoorbellCapabilities::guest_to_host(), validation)
+            .registration_plan(capabilities, validation)
             .map_err(|source| LiveWhiteboxError::RegistrationPlan {
                 message: source.to_string(),
             })?;
@@ -290,6 +308,17 @@ impl LiveWhiteboxState {
                 message: "enabled live white-box plan did not install a trap".to_owned(),
             });
         }
+
+        let app_random = app_random_config
+            .map(|config| {
+                doorbell
+                    .require_guest_input_capability(capabilities)
+                    .map(|capability| LiveAppRandomState::new(config, capability))
+            })
+            .transpose()
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
+                message: source.to_string(),
+            })?;
 
         Ok(Self {
             apis,
@@ -301,6 +330,7 @@ impl LiveWhiteboxState {
             marker_sink: LiveMarkerSink {
                 output: marker_output,
             },
+            app_random,
         })
     }
 
@@ -406,11 +436,29 @@ impl LiveWhiteboxState {
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, address, len),
         );
         let mut reader = LiveGuestMemoryReader { apis: self.apis };
-        handle_whitebox_doorbell_callback(&self.doorbell, &mut reader, &mut self.marker_sink, event)
+        let payload = reader
+            .read_guest_memory(
+                event.vcpu_index(),
+                event.current_icount(),
+                event.payload_range(),
+            )
+            .map_err(|source| LiveWhiteboxError::Callback {
+                message: source.to_string(),
+            })?;
+        if app_random::is_request(&payload) {
+            self.handle_app_random(&mut reader, event, current_icount, vcpu_index)
+        } else {
+            handle_whitebox_doorbell_callback(
+                &self.doorbell,
+                &mut reader,
+                &mut self.marker_sink,
+                event,
+            )
             .map(|_marker| ())
             .map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
             })
+        }
     }
 
     fn read_register_u64(
@@ -592,81 +640,6 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
     if let Err(error) = state.initialize_vcpu(vcpu_index as usize) {
         state.fail_loud(&error);
     }
-}
-
-/// Failure at the live QEMU white-box ABI boundary.
-#[derive(Debug, Error)]
-pub enum LiveWhiteboxError {
-    /// The host did not attest a collision-free x86 port map at setup.
-    #[error("live white-box registration requires an x86 port-map setup attestation")]
-    SetupAttestationMissing,
-    /// The mapped setup region could not expose this VM's marker queue.
-    #[error("mapped live white-box marker queue is unavailable")]
-    MappedMarkerQueue {
-        /// Underlying mapped-region access error.
-        source: crucible_shmem::MappedSetupRegionAccessError,
-    },
-    /// A required upstream QEMU or GLib symbol was absent.
-    #[error("required live white-box capability `{symbol}` is unavailable")]
-    CapabilityUnavailable {
-        /// Missing process symbol.
-        symbol: &'static str,
-    },
-    /// The QEMU vCPU count exceeded the fixed callback-state bound.
-    #[error("live white-box vCPU count {vcpu_count} is outside 1..={maximum}")]
-    UnsupportedVcpuCount {
-        /// Observed count.
-        vcpu_count: u64,
-        /// Supported maximum.
-        maximum: usize,
-    },
-    /// The safe registration plan rejected the live configuration.
-    #[error("live white-box registration plan failed: {message}")]
-    RegistrationPlan {
-        /// Stable diagnostic.
-        message: String,
-    },
-    /// Another live white-box state was already published.
-    #[error("live white-box callback state is already published")]
-    StateAlreadyPublished,
-    /// QEMU invoked the callback for an unexpected vCPU.
-    #[error("live white-box callback saw vCPU {vcpu_index}, configured count {vcpu_count}")]
-    UnexpectedVcpu {
-        /// Callback vCPU.
-        vcpu_index: usize,
-        /// Configured vCPU count.
-        vcpu_count: usize,
-    },
-    /// QEMU did not return a register descriptor array.
-    #[error("QEMU register list is unavailable for live white-box vCPU {vcpu_index}")]
-    RegisterListUnavailable {
-        /// Callback vCPU.
-        vcpu_index: usize,
-    },
-    /// The x86 payload or port register was absent.
-    #[error("required rax/rcx/rdx registers are unavailable for live white-box vCPU {vcpu_index}")]
-    RequiredRegistersUnavailable {
-        /// Callback vCPU.
-        vcpu_index: usize,
-    },
-    /// GLib could not allocate a byte-array adapter.
-    #[error("GLib byte-array allocation failed")]
-    ByteArrayAllocation,
-    /// QEMU rejected a requested register read.
-    #[error("QEMU register read failed in live white-box callback")]
-    RegisterRead,
-    /// A guest-provided payload length did not fit the host address size.
-    #[error("guest white-box payload length {len} does not fit host usize")]
-    PayloadLengthOverflow {
-        /// Guest-provided length.
-        len: u64,
-    },
-    /// The safe doorbell callback rejected the live event.
-    #[error("safe white-box callback failed: {message}")]
-    Callback {
-        /// Stable callback diagnostic.
-        message: String,
-    },
 }
 
 #[cfg(test)]

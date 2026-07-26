@@ -220,6 +220,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
   crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
+  crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-14, GHC-12, GHC-16
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -974,6 +975,24 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — outside sim-mode icount the
   upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
 - **Risk:** D.
+
+### crucible-whitebox-guest-write — return synchronous doorbell replies
+
+- **Enforces:** [PLUG-14], [GHC-12], [GHC-16].
+- **Mechanism:** exports an additive plugin API that writes an exact byte range
+  through the current vCPU's debug-memory translation. The white-box callback
+  invokes it synchronously before the trapped guest instruction retires, so an
+  application-random request can receive its typed reply without introducing an
+  asynchronous input or a host-time-dependent wakeup.
+- **Micro-test:** reconstruct the exact QEMU prefix through patch 0040 and prove
+  the API is absent, apply patch 0041, then exercise the exported function's
+  zero-length rejection, successful exact write, and failed out-of-range write.
+  The live white-box gate additionally boots a real x86 guest, traps its
+  application-random request, writes the authoritative deterministic reply into
+  guest memory, and requires the guest to validate and acknowledge that reply.
+- **Inertness:** [PATCH-3](c) — this is an additive export reached only when the
+  Crucible plugin explicitly calls it from a registered white-box callback.
+- **Risk:** F.
 
 ### crucible-blk-write-sentinel — explicit pending sentinel for writes/flush
 

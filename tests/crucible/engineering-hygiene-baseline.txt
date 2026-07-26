@@ -79,7 +79,7 @@ shape-line|crates/crucible-qemu-plugin/src/round_robin.rs|786
 shape-line|crates/crucible-qemu-plugin/src/runtime.rs|2095
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|2011
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|1117
-shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|837
+shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|875
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|734
 shape-line|crates/crucible-qemu-plugin/src/runtime/tests.rs|1313
 shape-line|crates/crucible-qemu-plugin/src/setup.rs|1245
@@ -97,7 +97,7 @@ shape-line|crates/crucible-qemu/src/launch/validation.rs|863
 shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|845
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701
 shape-line|crates/crucible-qemu/src/live_plugin_gate.rs|666
-shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|773
+shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|815
 shape-line|crates/crucible-qemu/src/node.rs|2146
 shape-line|crates/crucible-qemu/src/node_factory.rs|697
 shape-line|crates/crucible-qemu/src/node_factory/tests.rs|808
@@ -168,7 +168,6 @@ shape-line|crates/crucible/src/model/workload.rs|1070
 shape-line|crates/crucible/src/scheduler/control_state.rs|1102
 shape-line|crates/crucible/src/scheduler/event_codec.rs|2488
 shape-line|crates/crucible/src/scheduler/event_log.rs|1786
-shape-line|crates/crucible/src/scheduler/liveness.rs|606
 shape-line|crates/crucible/src/scheduler/scenario.rs|712
 shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|2113
 shape-line|crates/crucible/src/scheduler/single_scheduler_state.rs|2027

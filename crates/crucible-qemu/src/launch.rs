@@ -11,6 +11,7 @@ mod crucible_shmem_9p;
 mod crucible_shmem_block;
 mod crucible_shmem_network;
 mod entropy;
+mod error;
 mod modes;
 mod validation;
 mod whitebox_setup;
@@ -21,7 +22,7 @@ use canonical::{
     canonical_node_clock_skew_lines, canonical_node_icount_shift_lines, validate_icount_shift,
 };
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{ContentHash, NodeClockSkew};
+use crucible::{ContentHash, NodeClockSkew, Seed};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
@@ -35,11 +36,11 @@ pub use crucible_shmem_network::{
 };
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
+pub use error::QemuLaunchCommandError;
 pub use modes::{
     DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, IcountShiftSetting, InputPolicy,
     MachineResetMode,
 };
-use thiserror::Error;
 pub use validation::{
     LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
     validate_pre_spawn_qemu_launch_args,
@@ -66,6 +67,9 @@ const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
+const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
+const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
 const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
@@ -917,6 +921,32 @@ pub enum QemuLaunchPluginSwitch {
     On,
 }
 
+/// Seed and bound passed to the production plugin's app-random doorbell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuLaunchAppRandomConfig {
+    /// Small scenario seed used to reconstruct the authoritative host scenario.
+    pub scenario_seed: u64,
+    /// Derived L0 decision-RNG root consumed by the synchronous plugin adapter.
+    pub decision_rng_root_seed: u64,
+    /// Scenario-hashed maximum number of app-random draws.
+    pub draw_cap: u64,
+    /// Canonical scheduler node name used in the name-hashed stream identity.
+    pub node_name: String,
+}
+
+impl QemuLaunchAppRandomConfig {
+    /// Builds a complete live app-random launch configuration.
+    #[must_use]
+    pub fn new(root_seed: u64, draw_cap: u64, node_name: impl Into<String>) -> Self {
+        Self {
+            scenario_seed: root_seed,
+            decision_rng_root_seed: Seed::from_u64(root_seed).decision_rng_root_seed(),
+            draw_cap,
+            node_name: node_name.into(),
+        }
+    }
+}
+
 impl fmt::Display for QemuLaunchPluginSwitch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -933,6 +963,7 @@ pub struct QemuLaunchPluginConfig {
     slot: u32,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
+    app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
 }
@@ -946,6 +977,7 @@ impl QemuLaunchPluginConfig {
             slot,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
+            app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
         }
@@ -962,6 +994,13 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_whitebox_setup(mut self, validation: QemuWhiteboxSetupValidation) -> Self {
         self.whitebox_setup = Some(validation);
+        self
+    }
+
+    /// Returns a config carrying the seeded live app-random decision source.
+    #[must_use]
+    pub fn with_app_random(mut self, config: QemuLaunchAppRandomConfig) -> Self {
+        self.app_random = Some(config);
         self
     }
 
@@ -1044,6 +1083,20 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_WHITEBOX_SETUP}={WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1}"
             ));
         }
+        if let Some(app_random) = &self.app_random {
+            args.push(format!(
+                "{PLUGIN_ARG_APP_RANDOM_SEED}={}",
+                app_random.decision_rng_root_seed
+            ));
+            args.push(format!(
+                "{PLUGIN_ARG_APP_RANDOM_CAP}={}",
+                app_random.draw_cap
+            ));
+            args.push(format!(
+                "{PLUGIN_ARG_APP_RANDOM_NODE}={}",
+                app_random.node_name
+            ));
+        }
         // Emit fingerprint only when enabled so the disabled default keeps a
         // byte-identical argv to the pre-fingerprint ABI (the plugin parser
         // treats an absent fingerprint key as off).
@@ -1077,70 +1130,17 @@ impl QemuLaunchPluginConfig {
                 return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
             }
         }
+        if let Some(app_random) = &self.app_random {
+            if self.whitebox != QemuLaunchPluginSwitch::On {
+                return Err(QemuLaunchCommandError::AppRandomWhileWhiteboxDisabled);
+            }
+            validate_launch_text(PLUGIN_ARG_APP_RANDOM_NODE, &app_random.node_name)?;
+            if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
+                return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
+            }
+        }
         Ok(())
     }
-}
-
-/// An error returned while building a QEMU launch command.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum QemuLaunchCommandError {
-    /// White-box mode lacked a live QEMU port-map validation.
-    #[error("white-box QEMU launch requires live setup collision validation")]
-    MissingWhiteboxSetupValidation,
-    /// A white-box validation was attached while the callback was disabled.
-    #[error("white-box setup validation is forbidden when white-box mode is off")]
-    WhiteboxSetupValidationWhileDisabled,
-    /// A command-line field was empty or could not be represented stably.
-    #[error("{field} must be fixed non-empty text without newlines or NUL bytes")]
-    InvalidLaunchText {
-        /// Invalid command-line field.
-        field: &'static str,
-    },
-    /// An immutable launch input was not resolved to an AOS store path.
-    #[error("{field} must be an AOS store path, got `{path}`")]
-    InvalidStorePath {
-        /// Invalid immutable input field.
-        field: &'static str,
-        /// Invalid path.
-        path: String,
-    },
-    /// The CoW overlay file name was not a stable relative file name.
-    #[error("root overlay file name must be stable relative text, got `{file_name}`")]
-    InvalidOverlayFileName {
-        /// Invalid overlay file name.
-        file_name: String,
-    },
-    /// The QMP socket file name was not a stable relative file name.
-    #[error("QMP socket file name must be stable relative text, got `{file_name}`")]
-    InvalidQmpSocketFileName {
-        /// Invalid socket file name.
-        file_name: String,
-    },
-    /// A crucible-shmem device length was zero, not a sector multiple, or too large.
-    #[error(
-        "crucible-shmem block size must be a nonzero sector multiple within bounds, got {size}"
-    )]
-    InvalidCrucibleShmemBlockSize {
-        /// Rejected device length in bytes.
-        size: u64,
-    },
-    /// A plugin path contained a comma, which would be ambiguous in QEMU's plugin option.
-    #[error("plugin path must not contain a comma")]
-    PluginPathContainsComma,
-    /// A plugin descriptor was negative.
-    #[error("plugin argument `{field}` has invalid descriptor {fd}")]
-    InvalidFileDescriptor {
-        /// Invalid descriptor field.
-        field: &'static str,
-        /// Invalid descriptor value.
-        fd: i32,
-    },
-    /// The resulting argv failed the pre-spawn QEMU launch validator.
-    #[error("QEMU launch command failed pre-spawn validation: {source}")]
-    PreSpawnValidation {
-        /// Validator error.
-        source: QemuPreSpawnLaunchValidationError,
-    },
 }
 
 /// A validated QEMU launch profile for Contract-A hermeticity.
