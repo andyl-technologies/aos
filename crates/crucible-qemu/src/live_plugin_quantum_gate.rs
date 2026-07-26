@@ -141,6 +141,7 @@ pub struct LivePluginQuantumGateConfig {
     prove_idle_jump: bool,
     smp_vcpus: u16,
     memory_mib: u32,
+    rr_switch_quantum: u64,
 }
 
 impl LivePluginQuantumGateConfig {
@@ -168,6 +169,7 @@ impl LivePluginQuantumGateConfig {
             prove_idle_jump: false,
             smp_vcpus: 1,
             memory_mib: GATE_MEMORY_MIB,
+            rr_switch_quantum: 4096,
         }
     }
 
@@ -258,6 +260,23 @@ impl LivePluginQuantumGateConfig {
     #[must_use]
     pub const fn memory_mib(&self) -> u32 {
         self.memory_mib
+    }
+
+    /// Returns this configuration with a fixed round-robin vCPU switch quantum.
+    ///
+    /// The value is denominated in node icount and is validated by the
+    /// deterministic [`LaunchProfileCandidate`] when the launch command is
+    /// assembled.
+    #[must_use]
+    pub const fn with_rr_switch_quantum(mut self, rr_switch_quantum: u64) -> Self {
+        self.rr_switch_quantum = rr_switch_quantum;
+        self
+    }
+
+    /// Returns the fixed round-robin vCPU switch quantum in node icount.
+    #[must_use]
+    pub const fn rr_switch_quantum(&self) -> u64 {
+        self.rr_switch_quantum
     }
 
     /// Returns the multi-quantum schedule that drives one scenario.
@@ -453,7 +472,8 @@ fn run_one_scenario(
 
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(config.memory_mib)
-        .with_smp_vcpus(config.smp_vcpus);
+        .with_smp_vcpus(config.smp_vcpus)
+        .with_rr_switch_quantum(config.rr_switch_quantum);
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
     }

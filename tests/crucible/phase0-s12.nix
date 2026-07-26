@@ -17,6 +17,12 @@
     name = "crucible-rfc0010-docs";
   };
   s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
+  livePreemption = import ./phase2-qemu-live-plugin-preemption.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase0.s12PreemptionDecision.livePreemption";
+    taskIds = [];
+    openTaskIds = [];
+  };
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s12-preemption-decision";
@@ -42,6 +48,7 @@ in
     CRATES_SRC = builtins.toString cratesSource;
     RFC_DOCS = builtins.toString rfcDocs;
     S11_RESULT = "${s11MultiVcpuFingerprint}/result";
+    LIVE_PREEMPTION_RESULT = "${livePreemption}/result";
 
     phases = [
       {
@@ -108,10 +115,18 @@ in
           require_fixed "$S11_RESULT" "accelerator=sim,thread=single"
           require_fixed "$S11_RESULT" "vcpus=4"
           require_fixed "$S11_RESULT" "rr_switch_quantum=4096"
-          require_fixed "$S11_RESULT" "horizon_icount=3300000000"
+          require_fixed "$S11_RESULT" "horizon_icount=4000000000"
           require_fixed "$S11_RESULT" "workload_affinity_active=true"
           require_fixed "$S11_RESULT" "extended_fingerprint_match=true"
           require_fixed "$S11_RESULT" "fallback=smp1_not_needed"
+
+          require_fixed "$LIVE_PREEMPTION_RESULT" "PASS"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "gate=gate:live-plugin-preemption"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "ipi_rr_switch_quantum=4096"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "switch_consumed_sequence=1"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "interrupt_consumed_sequence=2"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "deterministic_under_host_load=true"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "sim_double_schedule_matches=true"
 
           decision_doc="rfc-docs/31-decision-register.md"
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
@@ -122,7 +137,7 @@ in
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
           require_fixed "$decision_doc" "\`s11_result_status=PASS\`"
           require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
-          require_fixed "$decision_doc" "\`s11_horizon_icount=3300000000\`"
+          require_fixed "$decision_doc" "\`s11_horizon_icount=4000000000\`"
           require_fixed "$decision_doc" "\`s11_extended_fingerprint_match=true\`"
 
           mkdir -p "$out"
@@ -131,8 +146,9 @@ in
           cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
           cp "$decision_doc" "$out/31-decision-register.md"
           cp "$S11_RESULT" "$out/s11-result"
+          cp "$LIVE_PREEMPTION_RESULT" "$out/live-preemption-result"
           {
-            echo PASS_WITH_PATCH_SURFACE
+            echo PASS
             echo spike=decision-preemption
             echo check=checks.crucible.phase0.s12PreemptionDecision
             echo qemu_package=qemu-crucible
@@ -144,13 +160,13 @@ in
             echo vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject
             echo interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject
             echo commanded_preemption_choices_tested=2
-            echo commanded_preemption_reproducible=patch_microtest
-            echo commanded_preemption_discriminating=modeled
+            echo commanded_preemption_reproducible=production_loaded_qemu_host_load_repeat
+            echo commanded_preemption_discriminating=model_race_plus_live_command_application
             echo known_race_manifested_under_one_choice=modeled
             echo known_race_absent_under_another_choice=modeled
             echo single_vcpu_interrupt_variation_distinct=modeled
             echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
-            echo commanded_preemption_injection_witness=checks.crucible.phase2.qemuPreemptionInject
+            echo commanded_preemption_injection_witness=gate:live-plugin-preemption
             echo default_determinism_prereqs_green=true
             echo default_determinism_prereqs_source=decision_register_s1_s11
             echo s1_decision_entry_consumed=true
@@ -160,10 +176,13 @@ in
             echo s11_decision_entry_consumed=true
             echo s11_result_status=PASS
             echo s11_rr_switch_quantum=4096
-            echo s11_horizon_icount=3300000000
+            echo s11_horizon_icount=4000000000
             echo s11_extended_fingerprint_match=true
-            echo decision_preemption_exploration_enabled=false
-            echo fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending
+            echo live_preemption_rr_switch_quantum=4096
+            echo live_preemption_deterministic_under_host_load=true
+            echo live_preemption_sim_double_schedule_matches=true
+            echo decision_preemption_exploration_enabled=true
+            echo fallback_adopted=none
             echo s12_complete=true
           } > "$out/result"
         '';
@@ -171,6 +190,6 @@ in
     ];
 
     meta = {
-      description = "Crucible Phase 0 S12 Decision::Preemption fallback spike";
+      description = "Crucible Phase 0 S12 live Decision::Preemption spike";
     };
   }

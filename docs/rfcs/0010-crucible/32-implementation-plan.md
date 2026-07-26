@@ -770,7 +770,7 @@ acceptance gate.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28`): `T-PERF-1 … T-PERF-28` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
-- Open-decision spikes that gate release: `T-D-1 … T-D-4` ([`31`](31-decision-register.md)).
+- Completed decision spikes: `T-D-1 … T-D-4` ([`31`](31-decision-register.md)).
 
 **Exit gates.** `gate:perf-bench` (cost-model metrics meet baselines, no
 regression), `gate:e2e-determinism` (final acceptance: a representative multi-VM,

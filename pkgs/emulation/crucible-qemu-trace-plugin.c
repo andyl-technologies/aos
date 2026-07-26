@@ -408,7 +408,7 @@ digest_registers_for_vcpu(
     uint64_t *canonical_retired_out,
     unsigned char digest[32])
 {
-  unsigned char canonical_registers[4096];
+  unsigned char *canonical_registers = NULL;
   size_t canonical_register_len = 0;
   uint64_t canonical_retired = 0;
 
@@ -422,40 +422,72 @@ digest_registers_for_vcpu(
   }
 
   /*
-   * The batched export already canonicalizes every register name, feature,
-   * width, and value. Hash it once instead of reading the same register file
-   * a second time through the descriptor-at-a-time compatibility API.
+   * Size the fast path from the architecture's descriptor count. The generous
+   * per-register allowance keeps ordinary exports to one side-effect-free
+   * read, while the ABI-reported required length permits an exact retry for an
+   * unusually large future register.
    */
-  const int canonical_status = qemu_plugin_read_vcpu_regs(
+  if (register_sets[vcpu_index].count > (SIZE_MAX - 4096) / 256) {
+    *failures += 1;
+    return false;
+  }
+  size_t canonical_register_capacity =
+      4096 + register_sets[vcpu_index].count * 256;
+  canonical_registers = malloc(canonical_register_capacity);
+  if (canonical_registers == NULL) {
+    *failures += 1;
+    return false;
+  }
+
+  canonical_register_len = canonical_register_capacity;
+  int canonical_status = qemu_plugin_read_vcpu_regs(
       vcpu_index,
       canonical_registers,
-      sizeof(canonical_registers),
+      canonical_register_capacity,
       &canonical_register_len,
       &canonical_retired);
+  if (canonical_status != 0 &&
+      canonical_register_len > canonical_register_capacity) {
+    unsigned char *resized = realloc(canonical_registers, canonical_register_len);
+    if (resized == NULL) {
+      free(canonical_registers);
+      *failures += 1;
+      return false;
+    }
+    canonical_registers = resized;
+    canonical_register_capacity = canonical_register_len;
+    canonical_status = qemu_plugin_read_vcpu_regs(
+        vcpu_index,
+        canonical_registers,
+        canonical_register_capacity,
+        &canonical_register_len,
+        &canonical_retired);
+  }
   if (canonical_status != 0 || canonical_register_len == 0 ||
-      canonical_register_len > sizeof(canonical_registers)) {
+      canonical_register_len > canonical_register_capacity) {
+    free(canonical_registers);
     *failures += 1;
-    *register_file_bytes = 0;
     return false;
-  } else {
-    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  }
 
-    if (checksum == NULL) {
-      *failures += 1;
-      return false;
-    }
-    *register_file_bytes = canonical_register_len;
-    *canonical_retired_out = canonical_retired;
-    checksum_string(checksum, "crucible.qemu.register-file.v1");
-    checksum_u64(checksum, vcpu_index);
-    checksum_bytes(checksum, canonical_registers, canonical_register_len);
-    const bool ok = checksum_finish(checksum, digest);
-    g_checksum_free(checksum);
-    if (!ok) {
-      *failures += 1;
-      memset(digest, 0, 32);
-      return false;
-    }
+  GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  if (checksum == NULL) {
+    free(canonical_registers);
+    *failures += 1;
+    return false;
+  }
+  *register_file_bytes = canonical_register_len;
+  *canonical_retired_out = canonical_retired;
+  checksum_string(checksum, "crucible.qemu.register-file.v1");
+  checksum_u64(checksum, vcpu_index);
+  checksum_bytes(checksum, canonical_registers, canonical_register_len);
+  const bool ok = checksum_finish(checksum, digest);
+  g_checksum_free(checksum);
+  free(canonical_registers);
+  if (!ok) {
+    *failures += 1;
+    memset(digest, 0, 32);
+    return false;
   }
 
   return true;

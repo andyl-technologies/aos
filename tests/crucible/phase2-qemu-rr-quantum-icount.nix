@@ -205,7 +205,7 @@
       }
       {
         label = "S11 default uses the fixed predeclared horizon";
-        needle = "stopAt ? 3300000000";
+        needle = "stopAt ? 4000000000";
       }
       {
         label = "S11 numeric stop_at sustains the validated workload";
