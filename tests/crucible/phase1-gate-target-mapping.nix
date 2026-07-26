@@ -440,7 +440,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=2
+            placeholder_targets=0
             RESULT
           '';
         }

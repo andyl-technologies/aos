@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
-  openTaskIds ? ["T-DET-31"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
@@ -15,7 +15,7 @@
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.decisionRecording";
     taskIds = [];
-    openTaskIds = ["T-DET-31"];
+    openTaskIds = [];
   };
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
@@ -34,7 +34,7 @@
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
     taskIds = [];
-    openTaskIds = ["T-DET-31" "T-PLUG-27"];
+    openTaskIds = [];
   };
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
@@ -205,7 +205,7 @@
       }
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=2";
+        needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -248,8 +248,8 @@
         needle = "- [x] **T-DET-30**";
       }
       {
-        label = "T-DET-31 remains open";
-        needle = "- [ ] **T-DET-31**";
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
       }
     ];
 in
@@ -345,8 +345,8 @@ in
             require_leaf ${decisionRecording} \
               "gate=gate:layer0-determinism" \
               "tasks=" \
-              "open_tasks=T-DET-31" \
-              "status=partial" \
+              "open_tasks=" \
+              "status=complete" \
               "rng_source=crucible-sim::DecisionRng" \
               "app_random_source=single-seeded-decision-rng" \
               "app_random_stream_fork=per-node-stream-name" \
@@ -402,8 +402,8 @@ in
             require_leaf ${qemuPluginAppRandomDoorbell} \
               "gate=gate:layer0-determinism" \
               "tasks=" \
-              "open_tasks=T-DET-31,T-PLUG-27" \
-              "status=partial" \
+              "open_tasks=" \
+              "status=complete" \
               "doorbell_kind=random_request" \
               "whitebox_opt_in=required" \
               "decision=Decision::AppRandom" \

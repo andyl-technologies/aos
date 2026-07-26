@@ -14,7 +14,7 @@
 pub mod engine {
     pub use crucible::{
         AssertionId, AssertionPhase, AssertionQuantifierKind, BlackBoxHostOracle,
-        CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, ChoiceTag,
+        CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
         ConditionEventLogPrefix, Configuration, ContentAddressedBlobRef, ContentHash,
         CoverageGuidedCorpusConfig, CoverageGuidedCorpusRun, CoverageGuidedFuzzConfig,
         CoverageGuidedFuzzRun, DagStore, DagStoreError, DebugCheckpointStride,
@@ -32,21 +32,22 @@ pub mod engine {
         FindingDiscoveryPath, FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint,
         HAPPY_PATH_SCENARIO_NAME, HostAssertionEvaluator, HostAssertionOutcomeKind,
         HostAssertionViolation, Icount, LocalDagStore, MarkerId, MaterializationPolicy,
-        MaterializationTrigger, MemoryDagStore, MinimizationConfig, MinimizationRun, NodeId,
-        NodeTemplate, OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop,
-        QuantumOutcome, QuantumRequest, ReadyPoint, RecordedAssertionLog, ReplayOracleCheck,
-        ReproductionArtifact, RngDecision, RngStreamId, SHMEM_ABI_VERSION, ScenarioDef,
-        ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError, SchedulerEventLogEntry,
-        SchedulerQuiescence, SchedulingPoint, SearchBudget, SearchDiscoveredFailure,
-        SearchFailureOracle, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
-        SearchRetainedLogAssertionEvidence, SearchScheduleNamedPredicateKey,
-        SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, SeedSpace, SignaturePolicy,
-        SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,
-        TemporalGraphSampledSearchRun, TemporalGraphStoreError, TopologyShape, TopologySizeRange,
-        UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-        VirtualTime, VmArchitecture, WhiteBoxPolicy, World, built_in_example_corpus,
-        crash_restart_scenario, fault_campaign_family, happy_path_scenario,
-        partition_recovery_scenario, run_fault_campaign_example, try_step,
+        MaterializationTrigger, MemPlace, MemoryCmp, MemoryDagStore, MemoryWidth,
+        MinimizationConfig, MinimizationRun, NodeId, NodeTemplate, OverrideDecision,
+        PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome, QuantumRequest,
+        ReadyPoint, RecordedAssertionLog, ReplayOracleCheck, ReproductionArtifact,
+        ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, SHMEM_ABI_VERSION,
+        ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError,
+        SchedulerEventLogEntry, SchedulerQuiescence, SchedulingPoint, SearchBudget,
+        SearchDiscoveredFailure, SearchFailureOracle, SearchReplayOracleSamplingConfig,
+        SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
+        SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
+        SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimDuration,
+        SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphStoreError,
+        TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence, UnifiedGraphOperationKind,
+        UnifiedGraphOperationReport, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
+        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
+        happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
         verify_example_scenario_runs,
     };
 }
@@ -61,18 +62,19 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Action, BackendError, Checkpoint, Condition, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Configuration, ContentHash,
-    ControlOperation, ControlOperationKind, DagStore, DebugAttachReport, DebugAttachRequest,
-    DebugGotoReport, DebugGotoRequest, DebugNonCanonicalBranchReport,
-    DebugNonCanonicalBranchRequest, DebugReverseContinueReport, DebugReverseContinueRequest,
-    DebugReverseStepGrain, DebugReverseStepReport, DebugReverseStepRequest, Decision, EngineError,
-    Fault, FaultTag, FingerprintSample, GdbListen, NodeId, ObservableEventPayload, QuantumLoop,
-    QuantumOutcome, QuantumRequest, RuntimeState, Schedule, ScheduledEventPayload, SchedulerError,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerQuiescence,
-    SchedulerWorldInstantiationError, SimDuration, SingleScheduler, TemporalGraph, VirtualTime,
-    WhiteBoxPolicy, World, WorldIoLayoutPolicy,
+    Action, BackendError, Checkpoint, CodePoint, Condition, ConditionEvaluationError,
+    ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle,
+    Configuration, ContentHash, ControlOperation, ControlOperationKind, DagStore,
+    DebugAttachReport, DebugAttachRequest, DebugGotoReport, DebugGotoRequest,
+    DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest, DebugReverseContinueReport,
+    DebugReverseContinueRequest, DebugReverseStepGrain, DebugReverseStepReport,
+    DebugReverseStepRequest, Decision, EngineError, Fault, FaultTag, FingerprintSample, GdbListen,
+    MemPlace, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
+    ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule, ScheduledEventPayload,
+    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario,
+    SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration, SingleScheduler,
+    TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -82,6 +84,8 @@ use tokio::sync::oneshot;
 
 #[path = "session/actor.rs"]
 mod session_actor;
+#[path = "session/breakpoint_metadata.rs"]
+mod session_breakpoint_metadata;
 #[path = "session/commands.rs"]
 mod session_commands;
 #[path = "session/core.rs"]
@@ -94,6 +98,7 @@ mod session_exploration;
 mod session_streams;
 
 pub use session_actor::*;
+pub use session_breakpoint_metadata::*;
 pub use session_commands::*;
 pub use session_core::*;
 pub use session_engine::*;

@@ -37,6 +37,7 @@ pub struct Engine<L> {
     pub(super) breakpoint_firings: Vec<BreakpointFiring>,
     pub(super) next_breakpoint_firing_sequence: u64,
     pub(super) white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    pub(super) breakpoint_host_metadata: BreakpointHostMetadata,
 }
 
 impl<L> Engine<L> {
@@ -68,6 +69,7 @@ impl<L> Engine<L> {
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
             white_box_policies: BTreeMap::new(),
+            breakpoint_host_metadata: BreakpointHostMetadata::new(),
         }
     }
 
@@ -126,6 +128,7 @@ impl<L> Engine<L> {
             breakpoint_firings: Vec::new(),
             next_breakpoint_firing_sequence: 0,
             white_box_policies: BTreeMap::new(),
+            breakpoint_host_metadata: BreakpointHostMetadata::new(),
         }
     }
 
@@ -266,7 +269,8 @@ impl<L> Engine<L> {
             runtime,
             &branch_checkpoint,
         )
-        .with_white_box_policies(self.white_box_policies.clone());
+        .with_white_box_policies(self.white_box_policies.clone())
+        .with_breakpoint_host_metadata(self.breakpoint_host_metadata.clone());
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let child_actor = SessionActor::new(child_engine, receiver);
 
@@ -321,7 +325,8 @@ impl<L> Engine<L> {
             runtime.clone(),
             &checkpoint_record,
         )
-        .with_white_box_policies(self.white_box_policies.clone());
+        .with_white_box_policies(self.white_box_policies.clone())
+        .with_breakpoint_host_metadata(self.breakpoint_host_metadata.clone());
         let (session_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let session_actor = SessionActor::new(session_engine, receiver);
 
@@ -398,7 +403,8 @@ impl<L> Engine<L> {
             runtime,
             &branch_checkpoint,
         )
-        .with_white_box_policies(self.white_box_policies.clone());
+        .with_white_box_policies(self.white_box_policies.clone())
+        .with_breakpoint_host_metadata(self.breakpoint_host_metadata.clone());
         let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
         let child_actor = SessionActor::new(child_engine, receiver);
 
@@ -718,10 +724,14 @@ impl<L> Engine<L> {
             .breakpoints
             .iter()
             .map(|(id, spec, was_true)| {
-                let mut pass =
-                    ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoBreakpointLeaves)
-                        .with_once_latches(self.breakpoints.once_latches(id))
-                        .with_white_box_policies(self.white_box_policies.clone());
+                let mut pass = ConditionEvaluationPass::from_log_prefix(
+                    prefix.clone(),
+                    self.breakpoint_host_metadata.oracle_at(self.frontier),
+                )
+                .with_once_latches(self.breakpoints.once_latches(id))
+                .with_white_box_policies(self.white_box_policies.clone())
+                .with_resolved_code_points(self.breakpoint_host_metadata.resolved_code_points())
+                .with_resolved_mem_places(self.breakpoint_host_metadata.resolved_mem_places());
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
@@ -752,34 +762,6 @@ impl<L> Engine<L> {
         }
 
         Ok(())
-    }
-
-    fn breakpoint_condition_prefix(
-        &self,
-        event_log_entries: &[SchedulerEventLogEntry],
-        emitted_event_log_entries: usize,
-    ) -> Result<Option<ConditionEventLogPrefix>, SessionError> {
-        if emitted_event_log_entries == 0 {
-            if self.scheduler_quiescence.is_some() {
-                return ConditionEventLogPrefix::from_scheduler_event_log_entries_with_evaluation_boundary(
-                    event_log_entries.to_vec(),
-                    usize_to_u64(self.event_log_len),
-                    self.frontier,
-                    SchedulerEvaluationBoundaryKind::Quantum,
-                )
-                .map(Some)
-                .map_err(|error| SessionError::BreakpointConditionPrefix {
-                    reason: error.to_string(),
-                });
-            }
-            return Ok(None);
-        }
-
-        ConditionEventLogPrefix::from_scheduler_event_log_entries(event_log_entries.to_vec())
-            .map(Some)
-            .map_err(|error| SessionError::BreakpointConditionPrefix {
-                reason: error.to_string(),
-            })
     }
 
     fn fire_breakpoint(
