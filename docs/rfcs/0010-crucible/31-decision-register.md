@@ -2198,7 +2198,7 @@ register.
   is the same interface via `SharedDagStore`, and the ratchet substrate is a
   later drop-in behind the unchanged seam — neither a separate store nor a
   ratchet dependency.
-- [ ] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
+- [x] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
   choose the minimum link-latency floor value, and decide clamp-vs-reject for
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
