@@ -2109,7 +2109,7 @@ register.
     surface. The check proves the active QEMU patch series now carries
     `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
     `checks.crucible.phase2.qemuPreemptionInject` covers command validation and
-    `gate:live-plugin-preemption` covers acknowledged vCPU-switch and interrupt
+    `gate:single-vm-fingerprint` covers acknowledged vCPU-switch and interrupt
     application at fixed icounts under differing host load. It
     requires green S1 and S11 decision-register entries as
     default-determinism prerequisites; both are green. It also witnesses that

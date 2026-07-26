@@ -6,27 +6,18 @@
   dependencies ? [],
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
+  casSource =
+    builtins.readFile ../../crates/crucible-cas/src/lib.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
   fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (

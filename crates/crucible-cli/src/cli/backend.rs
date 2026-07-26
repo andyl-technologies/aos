@@ -661,6 +661,7 @@ pub(super) fn validate_readable_file_artifact(
 pub(super) fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
     CliError::Backend(reason.into())
 }
+
 pub(super) fn required_qemu_plugin_abi() -> String {
     shmem_abi_label_for_version(&crucible::SHMEM_ABI_VERSION.to_string())
 }

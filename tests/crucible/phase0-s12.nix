@@ -121,7 +121,7 @@ in
           require_fixed "$S11_RESULT" "fallback=smp1_not_needed"
 
           require_fixed "$LIVE_PREEMPTION_RESULT" "PASS"
-          require_fixed "$LIVE_PREEMPTION_RESULT" "gate=gate:live-plugin-preemption"
+          require_fixed "$LIVE_PREEMPTION_RESULT" "gate=gate:single-vm-fingerprint"
           require_fixed "$LIVE_PREEMPTION_RESULT" "ipi_rr_switch_quantum=4096"
           require_fixed "$LIVE_PREEMPTION_RESULT" "switch_consumed_sequence=1"
           require_fixed "$LIVE_PREEMPTION_RESULT" "interrupt_consumed_sequence=2"
@@ -166,7 +166,7 @@ in
             echo known_race_absent_under_another_choice=modeled
             echo single_vcpu_interrupt_variation_distinct=modeled
             echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
-            echo commanded_preemption_injection_witness=gate:live-plugin-preemption
+            echo commanded_preemption_injection_witness=gate:single-vm-fingerprint
             echo default_determinism_prereqs_green=true
             echo default_determinism_prereqs_source=decision_register_s1_s11
             echo s1_decision_entry_consumed=true

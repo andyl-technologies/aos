@@ -101,6 +101,7 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
 }
 
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
 fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("qemu-save-artifacts");
@@ -166,6 +167,7 @@ fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<d
 }
 
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
 fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("resume-source-artifacts");
@@ -256,6 +258,7 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
 }
 
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
 fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("fork-source-artifacts");

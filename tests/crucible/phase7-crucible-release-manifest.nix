@@ -67,6 +67,7 @@
     pixman = null;
     zlib = null;
     libslirp = null;
+    dtc = null;
   };
   releaseManifest = import ../../pkgs/tools/crucible/_release-manifest.nix {
     inherit lib;
@@ -81,20 +82,9 @@
   sourceStoreName = baseNameOf crucibleSrc;
   sourceStoreHash = builtins.substring 0 32 sourceStoreName;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (

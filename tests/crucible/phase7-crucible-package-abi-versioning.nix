@@ -14,7 +14,9 @@
   patchMicrotestsCheck = builtins.readFile ./phase2-patch-microtests.nix;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   shmemHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderTest = builtins.readFile ../../crates/crucible-shmem/tests/generated_abi_header.rs;
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
@@ -67,6 +69,7 @@
     pixman = null;
     zlib = null;
     libslirp = null;
+    dtc = null;
   };
   qemuPackageShmemAbi = qemuPackageMetadataProbe.shmemAbi;
   qemuPackageShmemAbiVersion = qemuPackageMetadataProbe.shmemAbiVersion;
@@ -74,20 +77,9 @@
   qemuPackageShmemHeaderInstallPath = qemuPackageMetadataProbe.shmemHeaderInstallPath;
   qemuIdentityMaterialLine = "qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash";
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (

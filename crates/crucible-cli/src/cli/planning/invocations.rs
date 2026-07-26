@@ -276,8 +276,7 @@ pub(crate) struct FuzzDriverPlan {
 pub(crate) enum FuzzDispatchRoute {
     BuiltInFaultCampaignProof,
     LocalDouble,
-    /// Runs the deterministic driver after a live packaged-QEMU proof.
-    LocalQemu,
+    LocalPackagedBackend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -782,8 +781,7 @@ impl EngineLoop for SimBackendLifecycleLoop {
 ///
 /// # Errors
 ///
-/// Returns [`CliError`] when the scenario cannot be resolved or a run budget
-/// or terminal-condition combination is invalid.
+/// Returns [`CliError`] when scenario resolution, budgets, or terminal conditions are invalid.
 pub(crate) fn plan_run_invocation(
     args: &RunArgs,
     store_root: &Path,
