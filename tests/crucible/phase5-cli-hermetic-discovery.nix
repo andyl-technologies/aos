@@ -95,7 +95,7 @@
       }
       {
         label = "plugin ABI derives from shmem";
-        needle = "crucible_shmem::ABI_VERSION";
+        needle = "crucible::SHMEM_ABI_VERSION";
       }
       {
         label = "required plugin ABI helper";
@@ -140,6 +140,22 @@
       {
         label = "plugin marker validation";
         needle = "fn read_plugin_build_marker";
+      }
+      {
+        label = "QEMU executable probe";
+        needle = "fn probe_qemu_executable";
+      }
+      {
+        label = "QEMU version process query";
+        needle = ".arg(\"--version\")";
+      }
+      {
+        label = "plugin shared-object probe";
+        needle = "fn probe_qemu_plugin";
+      }
+      {
+        label = "plugin install symbol query";
+        needle = "qemu_plugin_install";
       }
       {
         label = "patched QEMU marker check";
@@ -201,6 +217,10 @@
         label = "artifact identity pinning test";
         needle = "cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts";
       }
+      {
+        label = "text impersonation rejection test";
+        needle = "cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation";
+      }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
       {
@@ -227,7 +247,7 @@
       }
       {
         label = "runtime QEMU closure";
-        needle = "runtimeDeps = [qemu-crucible crucible-qemu-plugin]";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
@@ -336,8 +356,18 @@ in
             "$qemu_fixture/share/aos/crucible" \
             "$plugin_fixture/lib" \
             "$plugin_fixture/nix-support"
-          printf 'patched-qemu\n' > "$qemu_fixture/bin/qemu-system-x86_64"
-          printf 'plugin\n' > "$plugin_fixture/lib/libcrucible_qemu_plugin.so"
+          printf '%s\n' \
+            '#include <stdio.h>' \
+            'int main(void) { puts("qemu-crucible fixture"); return 0; }' \
+            > "$TMPDIR/qemu-fixture.c"
+          "$CC" "$TMPDIR/qemu-fixture.c" \
+            -o "$qemu_fixture/bin/qemu-system-x86_64"
+          printf '%s\n' \
+            'int qemu_plugin_version = 1;' \
+            'void qemu_plugin_install(void) {}' \
+            > "$TMPDIR/plugin-fixture.c"
+          "$CC" -shared -fPIC "$TMPDIR/plugin-fixture.c" \
+            -o "$plugin_fixture/lib/libcrucible_qemu_plugin.so"
           {
             printf 'qemu_plugins_enabled=true\n'
             printf 'qemu_crucible_patches_applied=true\n'

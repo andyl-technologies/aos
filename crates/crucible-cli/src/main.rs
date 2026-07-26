@@ -39,7 +39,7 @@ use crucible_session::engine::{
     QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
 };
 use crucible_session::validation::{
-    self as sv, ValidationDag, ValidationDagStoreError, fork_session_from_validation_base,
+    ValidationDag, ValidationDagStoreError, fork_session_from_validation_base,
     fork_session_from_validation_checkpoint, recorded_checkpoint_for_configuration,
     resume_session_from_validation_dag, validation_dag_with_baked_genesis,
 };

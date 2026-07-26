@@ -493,37 +493,6 @@ pub(super) fn search_retained_evidence_world() -> Result<::crucible::World, Box<
     ])?)
 }
 
-pub(super) fn search_frontier_graph(
-    scenario: &::crucible::ScenarioDefForm,
-) -> Result<ValidationDag, Box<dyn Error>> {
-    let baked = baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
-    Ok(sv::empty_validation_dag().with_baked_genesis(&scenario.scenario_def(), baked)?)
-}
-
-pub(super) fn baked_with_search_frontier_choices(
-    world: &::crucible::World,
-    decisions: Vec<::crucible::Decision>,
-) -> Result<::crucible::GenesisCheckpoint, Box<dyn Error>> {
-    let mut baked = ::crucible::bake(world)?;
-    let state =
-        baked.checkpoint.state.as_ref().ok_or_else(|| {
-            std::io::Error::other("search frontier genesis checkpoint missing state")
-        })?;
-    let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = ::crucible::SearchFrontierChoices::from_decisions(decisions);
-    baked.checkpoint.state = Some(
-        ::crucible::MaterializedState::from_components_with_event_log_segments(
-            state.vm_snapshots.clone(),
-            state.device_overlays.clone(),
-            scheduler,
-            state.decision_rng.clone(),
-            state.event_log,
-            state.event_log_segments.clone(),
-        ),
-    );
-    Ok(baked)
-}
-
 pub(super) fn search_frontier_decisions() -> Vec<::crucible::Decision> {
     vec![
         ::crucible::Decision::FaultFires(::crucible::FaultDecision {
@@ -872,13 +841,40 @@ pub(super) fn qemu_artifacts_in_dir(
     fs::create_dir_all(dir)?;
     let qemu = dir.join("qemu-system-x86_64");
     let plugin = dir.join("crucible-qemu-plugin.so");
-    fs::write(&qemu, b"patched-qemu")?;
-    fs::write(&plugin, b"plugin")?;
+    fs::copy(std::env::current_exe()?, &qemu)?;
+    fs::write(&plugin, qemu_plugin_elf_fixture())?;
     write_qemu_artifact_markers(dir, qemu_build_id, plugin_abi)?;
     Ok((
         qemu.to_string_lossy().into_owned(),
         plugin.to_string_lossy().into_owned(),
     ))
+}
+
+fn qemu_plugin_elf_fixture() -> Vec<u8> {
+    let mut bytes = vec![0_u8; 64];
+    bytes[..4].copy_from_slice(b"\x7fELF");
+    bytes[4] = 2;
+    bytes[5] = 1;
+    bytes[16..18].copy_from_slice(&3_u16.to_le_bytes());
+    bytes.extend_from_slice(b"qemu_plugin_install\0qemu_plugin_version\0");
+    bytes
+}
+
+#[test]
+fn cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+    fs::write(&qemu, b"#!/bin/false\n")?;
+    let error = validate_qemu_artifacts(Path::new(&qemu), Path::new(&plugin))
+        .expect_err("a text file must not impersonate the patched executable");
+    assert!(error.to_string().contains("ELF artifact"));
+
+    fs::copy(std::env::current_exe()?, &qemu)?;
+    fs::write(&plugin, b"qemu_plugin_install\0qemu_plugin_version\0")?;
+    let error = validate_qemu_artifacts(Path::new(&qemu), Path::new(&plugin))
+        .expect_err("symbol-shaped text must not impersonate the plugin");
+    assert!(error.to_string().contains("ELF artifact"));
+    Ok(())
 }
 
 pub(super) fn write_qemu_artifact_markers(

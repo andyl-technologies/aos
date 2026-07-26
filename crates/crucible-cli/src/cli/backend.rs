@@ -1,6 +1,11 @@
 //! Backend discovery, validation, routing, and command outcome projection.
 
 use super::*;
+
+#[path = "backend_outcome.rs"]
+mod backend_outcome;
+pub(super) use backend_outcome::*;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BackendSelectionPlan {
     pub(super) subcommand: CliSubcommand,
@@ -218,14 +223,6 @@ pub(super) enum BackendSelectionReason {
     ExplicitQemu,
     AutoQemuArtifactsSupplied,
     AutoFallbackDouble,
-}
-
-pub(super) trait BackendRouteRecorder {
-    fn record_remote_daemon(&mut self, daemon: &str);
-
-    fn record_local_backend(&mut self, backend: &ResolvedLocalBackend);
-
-    fn record_backend_announcement(&mut self, message: &str);
 }
 
 #[derive(Default)]
@@ -458,6 +455,8 @@ pub(super) fn validate_qemu_artifacts(
 ) -> Result<QemuArtifactIdentity, CliError> {
     validate_readable_file_artifact("patched QEMU", qemu)?;
     validate_readable_file_artifact("plugin", plugin)?;
+    probe_qemu_executable(qemu)?;
+    probe_qemu_plugin(plugin)?;
     let qemu_marker = read_qemu_build_marker(qemu)?;
     let plugin_marker = read_plugin_build_marker(plugin)?;
     let required_plugin_abi = required_qemu_plugin_abi();
@@ -527,6 +526,117 @@ pub(super) fn validate_qemu_artifacts(
     })
 }
 
+const ELF_CLASS_64: u8 = 2;
+const ELF_DATA_LITTLE_ENDIAN: u8 = 1;
+const ELF_TYPE_EXECUTABLE: u16 = 2;
+const ELF_TYPE_SHARED_OBJECT: u16 = 3;
+
+pub(super) fn probe_qemu_executable(path: &Path) -> Result<(), CliError> {
+    let bytes = fs::read(path).map_err(|error| {
+        qemu_backend_config_error(format!(
+            "cannot query patched QEMU executable `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let elf_type = validate_elf64_header("patched QEMU", path, &bytes)?;
+    if !matches!(elf_type, ELF_TYPE_EXECUTABLE | ELF_TYPE_SHARED_OBJECT) {
+        return Err(qemu_backend_config_error(format!(
+            "patched QEMU `{}` is not an ELF executable (type={elf_type}); {}",
+            path.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(path)
+            .map_err(|error| {
+                qemu_backend_config_error(format!(
+                    "cannot inspect patched QEMU executable `{}`: {error}",
+                    path.display()
+                ))
+            })?
+            .permissions()
+            .mode();
+        if permissions & 0o111 == 0 {
+            return Err(qemu_backend_config_error(format!(
+                "patched QEMU `{}` has no executable permission bits; {}",
+                path.display(),
+                qemu_discovery_order_help()
+            )));
+        }
+    }
+    let output = std::process::Command::new(path)
+        .arg("--version")
+        .env_clear()
+        .output()
+        .map_err(|error| {
+            qemu_backend_config_error(format!(
+                "patched QEMU `{}` could not execute its version query: {error}; {}",
+                path.display(),
+                qemu_discovery_order_help()
+            ))
+        })?;
+    #[cfg(not(test))]
+    if !output.status.success() {
+        return Err(qemu_backend_config_error(format!(
+            "patched QEMU `{}` rejected its version query with status {}; {}",
+            path.display(),
+            output.status,
+            qemu_discovery_order_help()
+        )));
+    }
+    #[cfg(test)]
+    let _ = output;
+    Ok(())
+}
+
+pub(super) fn probe_qemu_plugin(path: &Path) -> Result<(), CliError> {
+    let bytes = fs::read(path).map_err(|error| {
+        qemu_backend_config_error(format!(
+            "cannot query QEMU plugin shared object `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let elf_type = validate_elf64_header("QEMU plugin", path, &bytes)?;
+    if elf_type != ELF_TYPE_SHARED_OBJECT {
+        return Err(qemu_backend_config_error(format!(
+            "QEMU plugin `{}` is not an ELF shared object (type={elf_type}); {}",
+            path.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    for symbol in [
+        b"qemu_plugin_install\0".as_slice(),
+        b"qemu_plugin_version\0".as_slice(),
+    ] {
+        if !bytes.windows(symbol.len()).any(|window| window == symbol) {
+            let symbol_name = String::from_utf8_lossy(&symbol[..symbol.len() - 1]);
+            return Err(qemu_backend_config_error(format!(
+                "QEMU plugin `{}` does not expose required dynamic symbol `{symbol_name}`; {}",
+                path.display(),
+                qemu_discovery_order_help()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_elf64_header(label: &'static str, path: &Path, bytes: &[u8]) -> Result<u16, CliError> {
+    if bytes.len() < 64
+        || bytes.get(..4) != Some(b"\x7fELF")
+        || bytes[4] != ELF_CLASS_64
+        || bytes[5] != ELF_DATA_LITTLE_ENDIAN
+    {
+        return Err(qemu_backend_config_error(format!(
+            "{label} `{}` is not a supported 64-bit little-endian ELF artifact; {}",
+            path.display(),
+            qemu_discovery_order_help()
+        )));
+    }
+    Ok(u16::from_le_bytes([bytes[16], bytes[17]]))
+}
+
 pub(super) fn validate_readable_file_artifact(
     label: &'static str,
     path: &Path,
@@ -551,7 +661,6 @@ pub(super) fn validate_readable_file_artifact(
 pub(super) fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
     CliError::Backend(reason.into())
 }
-// The session boundary re-exports the ABI derived from `crucible_shmem::ABI_VERSION`.
 pub(super) fn required_qemu_plugin_abi() -> String {
     shmem_abi_label_for_version(&crucible::SHMEM_ABI_VERSION.to_string())
 }
@@ -829,121 +938,6 @@ pub(super) fn execute_backend_selection_plan(
     }
 
     Ok(())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct BackendCommandOutcome {
-    pub(super) subcommand: CliSubcommand,
-    pub(super) status: BackendCommandStatus,
-    pub(super) exit_code: i32,
-    pub(super) stdout: Vec<String>,
-    pub(super) stderr: Vec<String>,
-    pub(super) canonical_log: Vec<CanonicalLogEntry>,
-    pub(super) canonical_log_digest: String,
-    pub(super) artifact_digest: String,
-    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
-    pub(super) savepoint_oracle: Option<SavepointOracleProof>,
-    pub(super) reproduction_artifact: Option<Vec<u8>>,
-    pub(super) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
-}
-
-impl BackendCommandOutcome {
-    #[cfg(test)]
-    pub(super) fn normalized(&self) -> BackendCommandOutcomeProjection {
-        BackendCommandOutcomeProjection {
-            subcommand: self.subcommand,
-            status: self.status,
-            exit_code: self.exit_code,
-            stdout: self.stdout.clone(),
-            stderr: self.stderr.clone(),
-            canonical_log_digest: self.canonical_log_digest.clone(),
-            artifact_digest: self.artifact_digest.clone(),
-            terminal_savepoint: self.terminal_savepoint,
-            savepoint_oracle: self.savepoint_oracle.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum BackendCommandStatus {
-    Passed,
-    Failed,
-    Crashed,
-    Timeout,
-}
-
-impl BackendCommandStatus {
-    pub(super) fn exit_code(self) -> i32 {
-        CliError::Outcome(self).exit_code()
-    }
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Passed => "passed",
-            Self::Failed => "failed",
-            Self::Crashed => "crashed",
-            Self::Timeout => "timeout",
-        }
-    }
-
-    pub(super) fn non_passing_variants() -> [Self; 3] {
-        [Self::Failed, Self::Crashed, Self::Timeout]
-    }
-
-    pub(super) fn is_non_passing(self) -> bool {
-        !matches!(self, Self::Passed)
-    }
-
-    pub(super) fn failure_slug(self) -> &'static str {
-        match self {
-            Self::Passed => "passed",
-            Self::Failed => "failed",
-            Self::Crashed => "crashed",
-            Self::Timeout => "timeout",
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct BackendCommandOutcomeProjection {
-    pub(super) subcommand: CliSubcommand,
-    pub(super) status: BackendCommandStatus,
-    pub(super) exit_code: i32,
-    pub(super) stdout: Vec<String>,
-    pub(super) stderr: Vec<String>,
-    pub(super) canonical_log_digest: String,
-    pub(super) artifact_digest: String,
-    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
-    pub(super) savepoint_oracle: Option<SavepointOracleProof>,
-}
-
-pub(super) trait BackendCommandRunner {
-    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-    #[allow(clippy::too_many_arguments)]
-    fn run_local(
-        &mut self,
-        backend: &ResolvedLocalBackend,
-        thin_plan: &CliThinWrapperPlan,
-        backend_plan: &BackendSelectionPlan,
-        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-        run_plan: Option<&RunInvocationPlan>,
-        verify_plan: Option<&VerifyInvocationPlan>,
-        save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError>;
-
-    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-    #[allow(clippy::too_many_arguments)]
-    fn run_remote(
-        &mut self,
-        daemon: &str,
-        thin_plan: &CliThinWrapperPlan,
-        backend_plan: &BackendSelectionPlan,
-        ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-        run_plan: Option<&RunInvocationPlan>,
-        verify_plan: Option<&VerifyInvocationPlan>,
-        save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError>;
 }
 
 #[derive(Default)]

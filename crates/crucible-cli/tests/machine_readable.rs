@@ -11,6 +11,10 @@ use std::process::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/machine.rs"]
+mod machine_support;
+use machine_support::*;
+
 #[test]
 fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -781,8 +785,8 @@ fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Erro
     fs::create_dir_all(dir)?;
     let qemu = dir.join("qemu-system-x86_64");
     let plugin = dir.join("crucible-qemu-plugin.so");
-    fs::write(&qemu, b"patched-qemu")?;
-    fs::write(&plugin, b"plugin")?;
+    fs::copy(env!("CARGO_BIN_EXE_crucible"), &qemu)?;
+    fs::write(&plugin, qemu_plugin_elf_fixture())?;
     let shmem_abi_version = crucible::SHMEM_ABI_VERSION;
     let plugin_abi = qemu_process_plugin_abi();
     fs::write(
@@ -800,33 +804,18 @@ fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Erro
     Ok((qemu, plugin))
 }
 
-fn qemu_process_plugin_abi() -> String {
-    format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION)
+fn qemu_plugin_elf_fixture() -> Vec<u8> {
+    let mut bytes = vec![0_u8; 64];
+    bytes[..4].copy_from_slice(b"\x7fELF");
+    bytes[4] = 2;
+    bytes[5] = 1;
+    bytes[16..18].copy_from_slice(&3_u16.to_le_bytes());
+    bytes.extend_from_slice(b"qemu_plugin_install\0qemu_plugin_version\0");
+    bytes
 }
 
-fn single_savepoint_handle(dir: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let prefix = format!("savepoint-{label}-");
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid_data(format!("non-UTF-8 entry in `{}`", dir.display())))?;
-        if file_name.starts_with(&prefix) && file_name.ends_with(".crucible-savepoint") {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    match paths.as_slice() {
-        [path] => Ok(path.clone()),
-        _ => Err(invalid_data(format!(
-            "expected one savepoint handle with prefix `{prefix}` in `{}`, found {}",
-            dir.display(),
-            paths.len()
-        ))
-        .into()),
-    }
+fn qemu_process_plugin_abi() -> String {
+    format!("crucible-shmem-abi-v{}", crucible::SHMEM_ABI_VERSION)
 }
 
 #[derive(Debug)]

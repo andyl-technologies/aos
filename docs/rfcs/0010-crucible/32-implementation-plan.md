@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:c551c183f1e24f3e`
+Checklist sync digest: `rfc0010-checklist-v1:68869b0ffc22a1bf`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -412,7 +412,10 @@ long-held locks.
   pairs with exit 4 and actionable discovery guidance, wires the packaged CLI
   with compile-time AOS store-path hints for `qemu-crucible` and
   `crucible-qemu-plugin`, and pins the selected QEMU build identity plus plugin
-  ABI into replay identity checks and failure reproduction artifacts.
+  ABI into replay identity checks and failure reproduction artifacts. Selected
+  candidates must additionally pass executable/shared-object ELF probes: QEMU
+  is process-queried with `--version`, and the plugin export surface must contain
+  the QEMU install/version entrypoints; text impersonators are rejected.
   `T-CLI-6` has partial evidence through `checks.crucible.phase5.cliRunWorkflow`, which
   covers canonical scenario file and `blake3:` store-reference parsing,
   invalid-scenario exit 5, local and daemon lifecycle session creation through
