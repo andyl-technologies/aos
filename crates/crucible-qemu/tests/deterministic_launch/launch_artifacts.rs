@@ -1,6 +1,30 @@
 //! Content-addressed launch-artifact integration cases.
 
 use super::*;
+use crucible_qemu::QemuRootImageFormat;
+
+#[test]
+fn raw_root_image_format_is_pinned_in_identity_and_backing_driver() {
+    let command = default_profile()
+        .qemu_launch_command(
+            default_vm_config().with_root_image_format(QemuRootImageFormat::Raw),
+            default_qemu_binary(),
+            default_plugin_config(),
+        )
+        .unwrap_or_else(|error| panic!("raw root-image launch should build: {error}"));
+
+    assert!(
+        command
+            .args()
+            .iter()
+            .any(|arg| arg.contains("backing.driver=raw"))
+    );
+    assert!(
+        command
+            .vm_launch_hash_material()
+            .contains("root_image_format=raw")
+    );
+}
 
 #[test]
 fn launch_profile_binds_fw_cfg_file_to_guest_entropy_seed() {

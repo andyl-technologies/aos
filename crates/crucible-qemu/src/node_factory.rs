@@ -28,8 +28,8 @@ use crate::{
     QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
     QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
     QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    QemuShutdownPolicy, QemuSpawnError, QmpError, QmpTimeoutStream, complete_qemu_host_plugin_setup,
-    spawn_qemu_child_with_fds_in_directory,
+    QemuShutdownPolicy, QemuSpawnError, QmpError, QmpTimeoutStream,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
 /// QMP machine-control adapter that only exposes graceful shutdown.
@@ -391,8 +391,9 @@ fn prime_off_boot_barrier(
 ) -> Result<(), QemuWarmRestoreLaunchError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuWarmRestoreLaunchError::PrimeRegionMap { source })?;
-    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, PrimeSendAuthorizer)
-        .map_err(|source| QemuWarmRestoreLaunchError::PrimeHotPath { source })?;
+    let mut hot_path =
+        QemuMappedQuantumShmemHotPath::new(shmem_config, region, PrimeSendAuthorizer)
+            .map_err(|source| QemuWarmRestoreLaunchError::PrimeHotPath { source })?;
 
     let horizon = ExecutionHorizon {
         icount: Icount {

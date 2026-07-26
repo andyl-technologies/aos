@@ -956,11 +956,11 @@ branch on the verdict without parsing output:
   registration are session-owned APIs. The gate scans the production command
   modules and rejects direct checkpoint materialization in addition to checking
   the plan model.
-- [ ] **T-CLI-3** Implement backend selection and the local/remote split
+- [x] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
   [CLI-8]; spec §3.
-  Partial evidence under `checks.crucible.phase5.cliBackendSelection`: the CLI now builds
+  Completed by `checks.crucible.phase5.cliBackendSelection`: the CLI builds
   and executes a `BackendSelectionPlan` for every backend-routed subcommand,
   routes `--daemon` invocations to a fakeable remote API command runner without
   selecting a local backend, resolves local `--backend auto` through the
@@ -970,9 +970,12 @@ branch on the verdict without parsing output:
   cannot produce a valid patched-QEMU/plugin pair, while `--backend double`
   never resolves to QEMU. The focused tests record local and remote
   command-runner invocations and compare stdout/stderr, exit code,
-  canonical-log digest, and artifact digest projections. This is partial routing
-  evidence: the task remains open until the QEMU choice executes the live local
-  backend and the equivalence check compares actual local and remote sessions.
+  canonical-log digest, and artifact digest projections. The selected QEMU path
+  now boots the closure-owned patched QEMU, stock AOS kernel, raw fixture root,
+  and production Rust plugin through the API boundary. It records the negotiated
+  protocol/ABI, exact icount, execution fingerprint, boot-barrier proof, and
+  orderly child exit alongside the session result; the remote route exercises
+  the production HTTP/2 lifecycle session with the same output and exit contract.
 - [x] **T-CLI-4** Implement determinism ergonomics: seed resolution
   (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
   artifact + copy-pasteable repro command, and the three trace formats
@@ -1033,17 +1036,20 @@ branch on the verdict without parsing output:
   status, materializes real terminal savepoint handles for `--save-on`, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
-- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+- [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.
-  Partial evidence under `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
+  Completed by `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
   executes fresh local-double, local-QEMU, and remote-daemon verify reductions,
   compares canonical log bytes and execution-fingerprint streams, applies the
   hostile-profile matrix for `--adversarial`, localizes the first differing
   decision/sample/byte with a bisection report, emits both-side reproduction
   artifacts on divergence, supports `verify --compare <a> <b>`, maps
   deterministic/divergent outcomes to exit 0/1, and records the resolved
-  QEMU/plugin build identity for local-QEMU verify runs.
+  QEMU/plugin build identity for local-QEMU verify runs. Every local-QEMU
+  reduction independently boots the packaged live backend and the command fails
+  if any observed plugin-install report differs; the fleet gate supplies the
+  AOS kernel/root closure and exercises this path under TCG.
 - [ ] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
   catalog against a built-in corpus, double-backed by default, real-QEMU under
   `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.

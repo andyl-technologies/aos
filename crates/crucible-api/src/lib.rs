@@ -86,6 +86,9 @@ pub use rpc_abi::{
 // (control-plane boundary): the CLI depends on `crucible-api`, which legally
 // depends on `crucible-protocol`.
 pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
+// Re-exported with backend-neutral names so process-local control clients can
+// launch and attest the production backend without depending on its
+// implementation crate directly.
 pub use server::{
     LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
@@ -107,4 +110,9 @@ pub use streaming::{
 pub use vm_resume::{
     ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
     realize_model_checkpoint_vm_resume_from_savepoint,
+};
+pub use vm_resume::{
+    ProductionGuestArchitecture, ProductionPluginInstallConfig, ProductionPluginInstallError,
+    ProductionPluginInstallReport, ProductionPluginSwitch, ProductionRootImageFormat,
+    run_production_plugin_install_gate,
 };

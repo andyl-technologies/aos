@@ -308,11 +308,8 @@
     # gate (in-process determinism proof of the same scenario) is consumed as a
     # precondition so this fleet check advances only behind a green harness.
     #
-    # Honest scope: the CLI's `verify` runs today against the in-process sim
-    # double under TCG (the CLI does not yet exec real qemu-crucible; the patched
-    # QEMU + plugin are nonetheless built into the closure per [PKG-1]). When the
-    # CLI's real-QEMU launch path lands, only the `--backend` selection changes;
-    # the runner, closure, and TCG-only guarantees are unaffected.
+    # Each independent reduction launches the closure-owned patched QEMU and
+    # production plugin under TCG before the session-level comparison.
     crucible-e2e-determinism = let
       e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
     in
@@ -341,7 +338,7 @@
           do
             verify_out="$FLEET_WORKDIR/verify-$scenario.out"
             "$crucible_bin" \
-              --backend double \
+              --backend qemu \
               --seed 31 \
               --store "$FLEET_STORE" \
               --artifact-dir "$FLEET_ARTIFACTS" \

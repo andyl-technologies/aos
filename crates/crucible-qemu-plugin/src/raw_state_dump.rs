@@ -251,18 +251,13 @@ impl PluginRawStateDump {
         result
     }
 
-    fn write_failure(&self, error: &PluginRawStateDumpError) {
+    fn write_failure(&self, error: &PluginRawStateDumpError) -> io::Result<()> {
         let partial = partial_path(&self.output_path);
-        let result = (|| -> io::Result<()> {
-            let mut output = File::create(&partial)?;
-            output.write_all(ERROR_MAGIC)?;
-            output.write_all(error.to_string().as_bytes())?;
-            output.sync_all()?;
-            fs::rename(partial, &self.output_path)
-        })();
-        if result.is_err() {
-            eprintln!("crucible-qemu-plugin: terminal state dump failed: {error}");
-        }
+        let mut output = File::create(&partial)?;
+        output.write_all(ERROR_MAGIC)?;
+        output.write_all(error.to_string().as_bytes())?;
+        output.sync_all()?;
+        fs::rename(partial, &self.output_path)
     }
 }
 
@@ -275,7 +270,7 @@ extern "C" fn export_paused(status: c_int, userdata: *mut c_void) {
     // successful request, before plugin teardown releases no callback storage.
     let exporter = unsafe { &*userdata.cast::<PluginRawStateDump>() };
     if let Err(error) = exporter.export(status) {
-        exporter.write_failure(&error);
+        let _write_error = exporter.write_failure(&error);
     }
 }
 

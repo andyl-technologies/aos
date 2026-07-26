@@ -2,9 +2,6 @@
 
 use super::super::*;
 
-
-
-
 use super::support::*;
 use crate::NetworkRxQueueError;
 use crucible_shmem::{KIND_VM, RingHeader, STATUS_IDLE, STATUS_RUNNING};
@@ -381,13 +378,7 @@ fn idle_loop_rejects_raw_late_inbound_delivery_before_publishing() {
     let before = slot.snapshot();
 
     assert_eq!(
-        PluginIdleHotLoop::begin_idle(
-            &slot,
-            &clock,
-            &deadline_reader(deadline_80),
-            Some(9),
-            None
-        ),
+        PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_80), Some(9), None),
         Err(IdleHotLoopError::InboundFrames {
             source: InboundFrameError::DeliveryAlreadyPassed {
                 ring_index: None,

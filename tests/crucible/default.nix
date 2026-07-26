@@ -1524,8 +1524,8 @@ in rec {
     cliBackendSelection = import ./phase5-cli-backend-selection.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliBackendSelection";
-      taskIds = [];
-      openTaskIds = ["T-CLI-3"];
+      taskIds = ["T-CLI-3"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliThinWrapper
         phase5.apiNondeterminism
@@ -1605,8 +1605,8 @@ in rec {
     cliVerifyWorkflow = import ./phase5-cli-verify-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
-      taskIds = [];
-      openTaskIds = ["T-CLI-7"];
+      taskIds = ["T-CLI-7"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.e2eDeterminism.rawGate

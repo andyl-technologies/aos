@@ -12,7 +12,10 @@
   };
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  launchLib =
+    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs;
   launchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
@@ -160,8 +163,12 @@
         needle = "\"-drive\".to_owned(),";
       }
       {
-        label = "root backing driver appears in drive argv";
-        needle = "backing.driver=qcow2";
+        label = "typed root backing driver appears in drive argv";
+        needle = "self.root_image_format.qemu_driver()";
+      }
+      {
+        label = "raw root backing format";
+        needle = "QemuRootImageFormat::Raw";
       }
       {
         label = "root backing file driver appears in drive argv";

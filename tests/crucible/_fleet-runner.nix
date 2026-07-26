@@ -67,6 +67,8 @@
 
   qemuBinary = "${qemuCrucible}/bin/qemu-system-x86_64";
   pluginLibrary = "${cruciblePlugin}/lib/libcrucible_qemu_plugin.so";
+  kernelImage = "${linuxCrucible}/boot/vmlinuz-${linuxCrucible.version}";
+  rootImage = "${crucibleFixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4";
 
   mkCrucibleFleetCheck = {
     name,
@@ -119,6 +121,9 @@
             export CRUCIBLE="${crucible}"
             export CRUCIBLE_QEMU="${qemuBinary}"
             export CRUCIBLE_PLUGIN="${pluginLibrary}"
+            export CRUCIBLE_KERNEL="${kernelImage}"
+            export CRUCIBLE_ROOT_IMAGE="${rootImage}"
+            export CRUCIBLE_KERNEL_CMDLINE="${linuxCrucible.passthru.crucibleFixtureKernelCmdline} init=/init"
             export LINUX_CRUCIBLE="${linuxCrucible}"
             export CRUCIBLE_FIXTURES="${crucibleFixtures}"
 
@@ -133,6 +138,8 @@
             test -x "$CRUCIBLE/bin/crucible"
             test -x "$CRUCIBLE_QEMU"
             test -e "$CRUCIBLE_PLUGIN"
+            test -e "$CRUCIBLE_KERNEL"
+            test -e "$CRUCIBLE_ROOT_IMAGE"
             test -e "$LINUX_CRUCIBLE"
             test -e "$CRUCIBLE_FIXTURES"
 

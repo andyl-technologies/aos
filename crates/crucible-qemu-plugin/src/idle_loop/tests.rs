@@ -4,6 +4,6 @@
 //! purely to keep each source file within the engineering-hygiene size limits;
 //! there is no behavioural grouping beyond the two case families.
 
+mod inbound_cases;
 mod support;
 mod wake_cases;
-mod inbound_cases;

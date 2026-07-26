@@ -640,6 +640,25 @@ impl QemuLaunchArtifact {
     }
 }
 
+/// On-disk format of an immutable root-image backing artifact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QemuRootImageFormat {
+    /// The backing artifact is a QCOW2 image.
+    #[default]
+    Qcow2,
+    /// The backing artifact is a raw disk or filesystem image.
+    Raw,
+}
+
+impl QemuRootImageFormat {
+    const fn qemu_driver(self) -> &'static str {
+        match self {
+            Self::Qcow2 => "qcow2",
+            Self::Raw => "raw",
+        }
+    }
+}
+
 /// VM launch inputs derived from one static `World` VM node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmLaunchConfig {
@@ -648,6 +667,7 @@ pub struct QemuVmLaunchConfig {
     root_image: Option<QemuLaunchArtifact>,
     firmware: Option<QemuLaunchArtifact>,
     initrd: Option<QemuLaunchArtifact>,
+    root_image_format: QemuRootImageFormat,
     root_overlay_file_name: String,
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
     crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
@@ -668,6 +688,7 @@ impl QemuVmLaunchConfig {
             root_image: Some(root_image),
             firmware: None,
             initrd: None,
+            root_image_format: QemuRootImageFormat::Qcow2,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
@@ -692,6 +713,7 @@ impl QemuVmLaunchConfig {
             root_image: None,
             firmware: Some(firmware),
             initrd: None,
+            root_image_format: QemuRootImageFormat::Qcow2,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
@@ -717,6 +739,13 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub fn with_root_overlay_file_name(mut self, file_name: impl Into<String>) -> Self {
         self.root_overlay_file_name = file_name.into();
+        self
+    }
+
+    /// Returns a config with the declared immutable root-image format.
+    #[must_use]
+    pub const fn with_root_image_format(mut self, format: QemuRootImageFormat) -> Self {
+        self.root_image_format = format;
         self
     }
 
@@ -823,6 +852,9 @@ impl QemuVmLaunchConfig {
                     content_hash_hex(root_image.content_hash)
                 ));
                 lines.push(format!("root_image_path={}", root_image.path));
+                if self.root_image_format == QemuRootImageFormat::Raw {
+                    lines.push("root_image_format=raw".to_owned());
+                }
                 lines.push("root_disk_policy=copy-on-write-overlay".to_owned());
                 lines.push(format!("root_overlay_file={}", self.root_overlay_file_name));
                 lines.push(format!("root_drive_id={ROOT_DRIVE_ID}"));
@@ -865,8 +897,10 @@ impl QemuVmLaunchConfig {
             args.extend([
                 "-drive".to_owned(),
                 format!(
-                    "id={ROOT_DRIVE_ID},file={},backing.driver=qcow2,backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
-                    self.root_overlay_file_name, root_image.path
+                    "id={ROOT_DRIVE_ID},file={},backing.driver={},backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                    self.root_overlay_file_name,
+                    self.root_image_format.qemu_driver(),
+                    root_image.path
                 ),
                 "-device".to_owned(),
                 format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}"),

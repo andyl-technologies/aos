@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliVerifyWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-7"],
+  taskIds ? ["T-CLI-7"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -54,18 +54,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-7 remains open";
-        needle = "- [ ] **T-CLI-7** Implement `verify`";
+        label = "T-CLI-7 is complete";
+        needle = "- [x] **T-CLI-7** Implement `verify`";
       }
       {
-        label = "T-CLI-7 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliVerifyWorkflow`";
+        label = "T-CLI-7 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-7 partial note";
-        needle = "`T-CLI-7` has partial evidence through `checks.crucible.phase5.cliVerifyWorkflow`";
+        label = "phase5 T-CLI-7 completion note";
+        needle = "`T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -144,6 +144,14 @@
       {
         label = "local QEMU verify workflow";
         needle = "fn run_local_qemu_verify_workflow";
+      }
+      {
+        label = "independent live QEMU verify probes";
+        needle = "fn run_live_qemu_verify_probes";
+      }
+      {
+        label = "live QEMU report identity comparison";
+        needle = "independent live QEMU verify reductions diverged";
       }
       {
         label = "local QEMU verify identity line";
@@ -268,10 +276,10 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
-            evidence_scope=verify-model-and-selected-backends
+            status=complete
+            evidence_scope=verify-live-qemu-model-and-production-api
             component=crucible-cli
-            contract=verify-workflow-progress
+            contract=verify-workflow-complete
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

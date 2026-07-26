@@ -15,12 +15,10 @@ use crate::{
     PluginArgs, PluginRegistrationSequence, PluginTimeControlOwnership,
 };
 
-
 thread_local! {
     static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
     static BLOCKED_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
 }
-
 
 pub(super) fn owned_clock(initial_icount: u64, icount_shift: u8) -> PluginVirtualClock {
     match PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
@@ -50,7 +48,9 @@ pub(super) fn blocked_queued_idle_advance() -> QueuedIdleAdvance {
     }
 }
 
-pub(super) fn expect_pending(result: Result<IdleHotLoopResult, IdleHotLoopError>) -> PendingIdleAdvance {
+pub(super) fn expect_pending(
+    result: Result<IdleHotLoopResult, IdleHotLoopError>,
+) -> PendingIdleAdvance {
     match result {
         Err(IdleHotLoopError::TimeAdvanceCompletionPending {
             pending_advance, ..
@@ -87,7 +87,9 @@ pub(super) extern "C" fn test_direct_advance(target_virtual_ns: i64) -> std::os:
     0
 }
 
-pub(super) extern "C" fn test_blocked_direct_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
+pub(super) extern "C" fn test_blocked_direct_advance(
+    target_virtual_ns: i64,
+) -> std::os::raw::c_int {
     set_blocked_direct_advance_ns(target_virtual_ns);
     0
 }
@@ -155,7 +157,9 @@ pub(super) extern "C" fn idle_loop_test_deadline() -> i64 {
     1
 }
 
-pub(super) extern "C" fn idle_loop_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+pub(super) extern "C" fn idle_loop_test_direct_advance(
+    _target_virtual_ns: i64,
+) -> std::os::raw::c_int {
     0
 }
 

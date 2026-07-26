@@ -2,9 +2,6 @@
 
 use super::super::*;
 
-
-
-
 use super::support::*;
 use crucible_shmem::{KIND_VM, STATUS_DONE, STATUS_IDLE, STATUS_RUNNING};
 
