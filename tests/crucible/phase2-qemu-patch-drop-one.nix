@@ -88,6 +88,7 @@
     "0041-crucible-whitebox-guest-write.patch" = [
       "qemu_plugin_crucible_write_memory_vaddr"
     ];
+    "0042-crucible-aarch64-det-ipi-adapter.patch" = [];
   };
 
   dropOnes =

@@ -510,4 +510,3 @@ fn idle_timer_deadline_conversion_ceils_to_icount() {
         Err(IdleHotLoopError::InvalidIcountShift { icount_shift: 64 })
     );
 }
-

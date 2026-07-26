@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginWhiteboxDoorbell",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-14"],
+  taskIds ? ["T-PLUG-14"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -76,8 +76,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-14 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-14**";
+        label = "T-PLUG-14 completed by live QEMU callback integration";
+        needle = "- [x] **T-PLUG-14**";
       }
       {
         label = "white-box doorbell wording";

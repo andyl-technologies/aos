@@ -307,6 +307,13 @@
       enforces = "PLUG-14,GHC-12,GHC-16";
       capability = "synchronous plugin callbacks can write typed white-box replies through the current vCPU guest-memory mapping";
     }
+    {
+      file = "0042-crucible-aarch64-det-ipi-adapter.patch";
+      catalogName = "crucible-aarch64-det-ipi-adapter";
+      class = "D";
+      enforces = "DET-4,PLUG-14,GHC-4";
+      capability = "AArch64 deterministic IPI adapter for the shared RR and commanded-preemption paths";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

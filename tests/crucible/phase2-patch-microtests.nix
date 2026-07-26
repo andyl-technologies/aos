@@ -287,6 +287,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0042-crucible-aarch64-det-ipi-adapter.patch";
+      check = import ./phase2-qemu-aarch64-det-ipi-adapter.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

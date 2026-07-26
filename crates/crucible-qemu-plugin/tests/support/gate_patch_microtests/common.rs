@@ -58,6 +58,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0039-crucible-blk-device-completion-advance.patch",
     "0040-crucible-9p-sync-kick.patch",
     "0041-crucible-whitebox-guest-write.patch",
+    "0042-crucible-aarch64-det-ipi-adapter.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

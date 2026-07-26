@@ -11,7 +11,9 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crucible_protocol::WHITEBOX_DOORBELL_X86_64_RESERVED_PORT;
+use crucible_protocol::{
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+};
 use thiserror::Error;
 
 use super::QemuLaunchCommand;
@@ -21,21 +23,34 @@ const UNASSIGNED_X86_IO_REGION: &str = "io";
 /// A setup-time proof that the frozen x86 doorbell port is unclaimed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuWhiteboxSetupValidation {
-    port: u16,
+    trap: QemuWhiteboxSetupTrap,
     observed_region: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QemuWhiteboxSetupTrap {
+    X86Port,
+    Aarch64Hlt,
 }
 
 impl QemuWhiteboxSetupValidation {
     /// Returns the collision-checked reserved port.
     #[must_use]
     pub const fn port(&self) -> u16 {
-        self.port
+        WHITEBOX_DOORBELL_X86_64_RESERVED_PORT
     }
 
     /// Returns the QEMU I/O region observed at the reserved port.
     #[must_use]
     pub fn observed_region(&self) -> &str {
         &self.observed_region
+    }
+
+    pub(super) const fn attestation(&self) -> &'static str {
+        match self.trap {
+            QemuWhiteboxSetupTrap::X86Port => super::WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+            QemuWhiteboxSetupTrap::Aarch64Hlt => super::WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1,
+        }
     }
 
     fn parse_hmp_mtree(output: &str) -> Result<Self, QemuWhiteboxSetupError> {
@@ -84,7 +99,7 @@ impl QemuWhiteboxSetupValidation {
                 });
             }
             return Ok(Self {
-                port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+                trap: QemuWhiteboxSetupTrap::X86Port,
                 observed_region: region.to_owned(),
             });
         }
@@ -92,6 +107,31 @@ impl QemuWhiteboxSetupValidation {
             port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
         })
     }
+}
+
+/// Validates that the frozen aarch64 HLT immediate is unclaimed.
+///
+/// The caller supplies the complete reserved-immediate catalog for the exact
+/// guest/platform pair being launched. Unlike x86 port I/O, QEMU has no runtime
+/// device map for architectural HLT immediates, so the versioned guest contract
+/// is the setup authority.
+///
+/// # Errors
+///
+/// Returns [`QemuWhiteboxSetupError::Aarch64ImmediateCollision`] when the
+/// reserved catalog already contains Crucible's frozen immediate.
+pub fn validate_aarch64_whitebox_setup(
+    reserved_immediates: &[u16],
+) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
+    if reserved_immediates.contains(&WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE) {
+        return Err(QemuWhiteboxSetupError::Aarch64ImmediateCollision {
+            immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+        });
+    }
+    Ok(QemuWhiteboxSetupValidation {
+        trap: QemuWhiteboxSetupTrap::Aarch64Hlt,
+        observed_region: "aarch64-hlt-04c1".to_owned(),
+    })
 }
 
 /// Probes the exact stopped QEMU machine and validates its x86 I/O port map.
@@ -252,6 +292,12 @@ pub enum QemuWhiteboxSetupError {
         port: u16,
         /// QEMU memory-region owner.
         region: String,
+    },
+    /// The guest/platform contract already reserves Crucible's HLT immediate.
+    #[error("reserved aarch64 white-box HLT immediate {immediate:#06x} is already in use")]
+    Aarch64ImmediateCollision {
+        /// Colliding HLT immediate.
+        immediate: u16,
     },
 }
 

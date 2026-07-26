@@ -14,6 +14,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let missing_preemption = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
             inject_preemption: None,
@@ -46,6 +47,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let missing_init = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
             inject_preemption: Some(super::super::test_support::accept_preemption),
@@ -76,6 +78,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let missing_sim_dispatch = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
             inject_preemption: Some(super::super::test_support::accept_preemption),
@@ -106,6 +109,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let missing_time_advance_completion = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
             inject_preemption: Some(super::super::test_support::accept_preemption),
@@ -136,6 +140,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
     let missing_block_wait = LiveVcpuTimeCallbackRegistrar::new(
         1,
         execution_model,
+        crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
             inject_preemption: Some(super::super::test_support::accept_preemption),

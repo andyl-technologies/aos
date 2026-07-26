@@ -16,8 +16,8 @@ use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    LivePluginInstallGateConfig, QemuLaunchAppRandomConfig, QemuLaunchPluginSwitch,
-    run_live_plugin_install_gate,
+    LivePluginGuestArchitecture, LivePluginInstallGateConfig, QemuLaunchAppRandomConfig,
+    QemuLaunchPluginSwitch, run_live_plugin_install_gate,
 };
 
 #[cfg(target_os = "linux")]
@@ -49,8 +49,15 @@ fn run() -> Result<(), String> {
         return Err(usage(&program));
     }
 
-    let mut config =
-        LivePluginInstallGateConfig::new(qemu, plugin, kernel, root_image, run_directory);
+    let architecture = guest_architecture_env()?;
+    let mut config = LivePluginInstallGateConfig::new(
+        qemu,
+        plugin,
+        kernel,
+        root_image,
+        run_directory,
+        architecture,
+    );
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
@@ -142,6 +149,20 @@ fn run() -> Result<(), String> {
     );
     println!("fingerprint={fingerprint}");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn guest_architecture_env() -> Result<LivePluginGuestArchitecture, String> {
+    match env::var("CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH").as_deref() {
+        Ok("x86_64") | Err(env::VarError::NotPresent) => Ok(LivePluginGuestArchitecture::X86_64),
+        Ok("aarch64") => Ok(LivePluginGuestArchitecture::Aarch64),
+        Ok(value) => Err(format!(
+            "CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH must be `x86_64` or `aarch64`, got `{value}`"
+        )),
+        Err(env::VarError::NotUnicode(_value)) => Err(String::from(
+            "CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH is not valid UTF-8",
+        )),
+    }
 }
 
 #[cfg(target_os = "linux")]

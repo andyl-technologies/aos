@@ -1,33 +1,38 @@
-//! Live QEMU adapters for the optional x86_64 white-box doorbell.
+//! Live QEMU adapters for the optional per-architecture white-box doorbell.
 //!
-//! The adapter recognizes the single-source `out dx,eax` instruction encoding
-//! during translation and installs a register-reading instruction callback only
-//! on those instructions. At execution it rejects every port except the
-//! reserved white-box port, reads the `(pointer, length)` payload registers, and
-//! delegates bounded frame decoding to [`crate::PluginWhiteboxDoorbell`].
+//! The adapter recognizes the single-source x86_64 `out dx,eax` or aarch64
+//! `hlt #0x04c1` encoding during translation and installs a register-reading
+//! execution callback only on that instruction. It reads the architecture's
+//! `(pointer, length)` payload registers and delegates bounded frame decoding to
+//! [`crate::PluginWhiteboxDoorbell`].
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use crucible_shmem::{MAX_FRAME_DATA, RingHeader, SpscRingError, WhiteboxMarkerEntry};
+use crucible_shmem::MAX_FRAME_DATA;
 
 use crate::{
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
     PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuIcountRawFn, QemuPluginId,
-    QemuPluginInsn, QemuPluginTb, QemuRequestShutdownFn, WHITEBOX_DOORBELL_X86_64_ABI,
-    WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
-    WhiteboxDoorbellCapabilities, WhiteboxDoorbellDecodeDiagnostic,
+    QemuPluginInsn, QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxDoorbellCapabilities,
     WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
-    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarker, WhiteboxMarkerSink,
-    WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
+    WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerSinkError,
+    handle_whitebox_doorbell_callback,
 };
 
 mod app_random;
 mod error;
+mod marker;
 use app_random::LiveAppRandomState;
 pub use error::LiveWhiteboxError;
+use error::write_stderr;
+use marker::LiveMarkerSink;
+pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
@@ -168,81 +173,24 @@ fn resolve_symbol<T: Copy>(
 
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
-    rax: Option<NonNull<QemuPluginRegister>>,
-    rcx: Option<NonNull<QemuPluginRegister>>,
-    rdx: Option<NonNull<QemuPluginRegister>>,
+    pointer: Option<NonNull<QemuPluginRegister>>,
+    length: Option<NonNull<QemuPluginRegister>>,
+    port: Option<NonNull<QemuPluginRegister>>,
 }
 
 impl LiveWhiteboxRegisters {
-    const fn complete(self) -> bool {
-        self.rax.is_some() && self.rcx.is_some() && self.rdx.is_some()
-    }
-}
-
-/// Pinned raw producer view of one ABI-validated white-box marker ring.
-#[derive(Debug)]
-pub(crate) struct LiveWhiteboxMarkerShmemProducer {
-    header: *const RingHeader,
-    entries: *mut WhiteboxMarkerEntry,
-    capacity: usize,
-}
-
-impl LiveWhiteboxMarkerShmemProducer {
-    /// Builds a producer retained by the process-lifetime callback owner.
-    ///
-    /// # Safety
-    ///
-    /// `header` and the `capacity` entries starting at `entries` must remain
-    /// mapped, aligned, and exclusively producer-owned until the callback owner
-    /// is destroyed. The host may access them only as the SPSC consumer.
-    pub(crate) unsafe fn from_raw_parts(
-        header: *const RingHeader,
-        entries: *mut WhiteboxMarkerEntry,
-        capacity: usize,
-    ) -> Self {
-        Self {
-            header,
-            entries,
-            capacity,
-        }
-    }
-
-    fn ring_parts(&mut self) -> (&RingHeader, &mut [WhiteboxMarkerEntry]) {
-        // SAFETY: construction requires both raw ranges to remain valid and
-        // producer-exclusive. Single-threaded RR serializes trap callbacks.
-        unsafe {
-            (
-                &*self.header,
-                std::slice::from_raw_parts_mut(self.entries, self.capacity),
-            )
-        }
-    }
-
-    fn record(
-        &mut self,
-        current_icount: u64,
-        vcpu_index: u32,
-        kind: u16,
-        payload: &[u8],
-    ) -> Result<(), WhiteboxMarkerSinkError> {
-        let entry = WhiteboxMarkerEntry::new(current_icount, vcpu_index, kind, payload)
-            .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
-        let (header, entries) = self.ring_parts();
-        header
-            .enqueue_whitebox_marker(entries, entry)
-            .map_err(|error| {
-                if matches!(error, SpscRingError::QueueFull { .. }) {
-                    WhiteboxMarkerSinkError::new("live white-box marker queue is full")
-                } else {
-                    WhiteboxMarkerSinkError::new("live white-box marker queue rejected an entry")
-                }
-            })
+    const fn complete(self, architecture: QemuPluginTargetArchitecture) -> bool {
+        self.pointer.is_some()
+            && self.length.is_some()
+            && (matches!(architecture, QemuPluginTargetArchitecture::Aarch64)
+                || self.port.is_some())
     }
 }
 
 /// Heap-stable callback state retained by the process-lifetime runtime owner.
 pub(crate) struct LiveWhiteboxState {
     apis: LiveWhiteboxApis,
+    architecture: QemuPluginTargetArchitecture,
     doorbell: PluginWhiteboxDoorbell,
     registers: [LiveWhiteboxRegisters; MAX_LIVE_WHITEBOX_VCPUS],
     vcpu_count: usize,
@@ -250,6 +198,26 @@ pub(crate) struct LiveWhiteboxState {
     request_shutdown: QemuRequestShutdownFn,
     marker_sink: LiveMarkerSink,
     app_random: Option<LiveAppRandomState>,
+}
+
+/// Architecture-specific trap identity admitted by setup validation.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveWhiteboxTarget {
+    architecture: QemuPluginTargetArchitecture,
+    setup_attestation: Option<crate::WhiteboxSetupAttestation>,
+}
+
+impl LiveWhiteboxTarget {
+    /// Binds the observed QEMU target to its setup-time trap attestation.
+    pub(crate) const fn new(
+        architecture: QemuPluginTargetArchitecture,
+        setup_attestation: Option<crate::WhiteboxSetupAttestation>,
+    ) -> Self {
+        Self {
+            architecture,
+            setup_attestation,
+        }
+    }
 }
 
 impl LiveWhiteboxState {
@@ -261,14 +229,23 @@ impl LiveWhiteboxState {
     /// safe doorbell registration plan rejects its capabilities or setup state.
     pub(crate) fn new(
         apis: LiveWhiteboxApis,
-        setup_attestation: Option<crate::WhiteboxSetupAttestation>,
+        target: LiveWhiteboxTarget,
         vcpu_count: u32,
         icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
         marker_output: LiveWhiteboxMarkerShmemProducer,
         app_random_config: Option<&PluginAppRandomConfig>,
     ) -> Result<Self, LiveWhiteboxError> {
-        if setup_attestation != Some(crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1) {
+        let architecture = target.architecture;
+        let expected_attestation = match architecture {
+            QemuPluginTargetArchitecture::X86_64 => {
+                crate::WhiteboxSetupAttestation::X86Port00e7UnclaimedV1
+            }
+            QemuPluginTargetArchitecture::Aarch64 => {
+                crate::WhiteboxSetupAttestation::Aarch64Hlt04c1UnclaimedV1
+            }
+        };
+        if target.setup_attestation != Some(expected_attestation) {
             return Err(LiveWhiteboxError::SetupAttestationMissing);
         }
         let vcpu_count = usize::try_from(vcpu_count).map_err(|_source| {
@@ -284,11 +261,11 @@ impl LiveWhiteboxState {
             });
         }
 
-        let doorbell = PluginWhiteboxDoorbell::from_abi(
-            PluginSwitch::On,
-            WHITEBOX_DOORBELL_X86_64_ABI,
-            MAX_FRAME_DATA,
-        );
+        let abi = match architecture {
+            QemuPluginTargetArchitecture::X86_64 => WHITEBOX_DOORBELL_X86_64_ABI,
+            QemuPluginTargetArchitecture::Aarch64 => WHITEBOX_DOORBELL_AARCH64_ABI,
+        };
+        let doorbell = PluginWhiteboxDoorbell::from_abi(PluginSwitch::On, abi, MAX_FRAME_DATA);
         let validation = WhiteboxDoorbellSetupValidation::validate(
             doorbell.trap(),
             WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[]),
@@ -322,14 +299,13 @@ impl LiveWhiteboxState {
 
         Ok(Self {
             apis,
+            architecture,
             doorbell,
             registers: [LiveWhiteboxRegisters::default(); MAX_LIVE_WHITEBOX_VCPUS],
             vcpu_count,
             icount_raw,
             request_shutdown,
-            marker_sink: LiveMarkerSink {
-                output: marker_output,
-            },
+            marker_sink: LiveMarkerSink::new(marker_output),
             app_random,
         })
     }
@@ -386,15 +362,21 @@ impl LiveWhiteboxState {
             let raw_name = unsafe { CStr::from_ptr(descriptor.name) }.to_bytes();
             let name = raw_name.strip_prefix(b"%").unwrap_or(raw_name);
             let handle = NonNull::new(descriptor.handle);
-            match name {
-                b"rax" => registers.rax = handle,
-                b"rcx" => registers.rcx = handle,
-                b"rdx" => registers.rdx = handle,
+            match (self.architecture, name) {
+                (QemuPluginTargetArchitecture::X86_64, b"rax")
+                | (QemuPluginTargetArchitecture::Aarch64, b"x0") => {
+                    registers.pointer = handle;
+                }
+                (QemuPluginTargetArchitecture::X86_64, b"rcx")
+                | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
+                    registers.length = handle;
+                }
+                (QemuPluginTargetArchitecture::X86_64, b"rdx") => registers.port = handle,
                 _ => {}
             }
         }
         (self.apis.g_array_free)(array.as_ptr(), true);
-        if !registers.complete() {
+        if !registers.complete(self.architecture) {
             return Err(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index });
         }
         self.registers[vcpu_index] = registers;
@@ -409,22 +391,24 @@ impl LiveWhiteboxState {
             });
         }
         let registers = self.registers[vcpu_index];
-        let port = self.read_register_u64(
-            registers
-                .rdx
-                .ok_or(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index })?,
-        )? as u16;
-        if port != WHITEBOX_DOORBELL_X86_64_RESERVED_PORT {
-            return Ok(());
+        if matches!(self.architecture, QemuPluginTargetArchitecture::X86_64) {
+            let port = self.read_register_u64(
+                registers
+                    .port
+                    .ok_or(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index })?,
+            )? as u16;
+            if port != WHITEBOX_DOORBELL_X86_64_RESERVED_PORT {
+                return Ok(());
+            }
         }
         let address = self.read_register_u64(
             registers
-                .rax
+                .pointer
                 .ok_or(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index })?,
         )?;
         let len_u64 = self.read_register_u64(
             registers
-                .rcx
+                .length
                 .ok_or(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index })?,
         )?;
         let len = usize::try_from(len_u64)
@@ -535,50 +519,6 @@ impl GuestMemoryReader for LiveGuestMemoryReader {
     }
 }
 
-struct LiveMarkerSink {
-    output: LiveWhiteboxMarkerShmemProducer,
-}
-
-fn write_stderr(bytes: &[u8]) -> Result<(), String> {
-    // SAFETY: `bytes` is a valid readable slice for the duration of the call.
-    // The fixed descriptor is stderr, and no ownership is transferred.
-    let written = unsafe { libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len()) };
-    if written < 0 {
-        Err(format!(
-            "write live white-box diagnostic to stderr failed: {}",
-            std::io::Error::last_os_error()
-        ))
-    } else if written as usize != bytes.len() {
-        Err(format!(
-            "short live white-box diagnostic write: wrote {written} of {} bytes",
-            bytes.len()
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-impl WhiteboxMarkerSink for LiveMarkerSink {
-    fn record_whitebox_marker(
-        &mut self,
-        marker: &WhiteboxMarker,
-    ) -> Result<(), WhiteboxMarkerSinkError> {
-        self.output.record(
-            marker.marker_icount(),
-            marker.vcpu_index(),
-            marker.kind(),
-            marker.payload(),
-        )
-    }
-
-    fn record_whitebox_decode_diagnostic(
-        &mut self,
-        _diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
-    ) -> Result<(), WhiteboxMarkerSinkError> {
-        Ok(())
-    }
-}
-
 extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
     _plugin_id: QemuPluginId,
     tb: *mut QemuPluginTb,
@@ -600,7 +540,11 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
         }
         let mut bytes = [0_u8; 4];
         let copied = (state.apis.insn_data)(insn, bytes.as_mut_ptr().cast(), bytes.len());
-        if bytes[..copied.min(bytes.len())] == WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES {
+        let trap_bytes: &[u8] = match state.architecture {
+            QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+            QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+        };
+        if bytes[..copied.min(bytes.len())] == *trap_bytes {
             (state.apis.register_insn_exec_cb)(
                 insn,
                 Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb),
@@ -639,69 +583,5 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
     let state = unsafe { state.as_mut() };
     if let Err(error) = state.initialize_vcpu(vcpu_index as usize) {
         state.fail_loud(&error);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn live_marker_producer_publishes_exact_entry_to_shmem() {
-        let header = RingHeader::new();
-        let mut entries = vec![WhiteboxMarkerEntry::default(); 4];
-        {
-            // SAFETY: the test-owned header and entry array outlive the producer,
-            // and no other producer accesses them.
-            let mut producer = unsafe {
-                LiveWhiteboxMarkerShmemProducer::from_raw_parts(
-                    std::ptr::from_ref(&header),
-                    entries.as_mut_ptr(),
-                    entries.len(),
-                )
-            };
-
-            if let Err(error) = producer.record(913, 2, 4, b"MARK") {
-                panic!("live marker producer should enqueue: {error}");
-            }
-        }
-
-        let entry = match header.dequeue_whitebox_marker(&entries) {
-            Ok(Some(entry)) => entry,
-            Ok(None) => panic!("live marker ring should contain one entry"),
-            Err(error) => panic!("live marker ring should dequeue: {error}"),
-        };
-        assert_eq!(entry.current_icount(), 913);
-        assert_eq!(entry.vcpu_index(), 2);
-        assert_eq!(entry.kind(), 4);
-        assert_eq!(entry.payload(), b"MARK");
-        assert_eq!(entry.validate(), Ok(entry));
-    }
-
-    #[test]
-    fn live_marker_producer_fails_loud_when_queue_is_full() {
-        let header = RingHeader::new();
-        let mut entries = vec![WhiteboxMarkerEntry::default(); 2];
-        // SAFETY: the test-owned header and entry array outlive the producer,
-        // and no other producer accesses them.
-        let mut producer = unsafe {
-            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
-                std::ptr::from_ref(&header),
-                entries.as_mut_ptr(),
-                entries.len(),
-            )
-        };
-
-        if let Err(error) = producer.record(1, 0, 4, b"a") {
-            panic!("first marker should enqueue: {error}");
-        }
-        if let Err(error) = producer.record(2, 0, 4, b"b") {
-            panic!("second marker should enqueue: {error}");
-        }
-        let error = match producer.record(3, 0, 4, b"c") {
-            Ok(()) => panic!("full marker ring must reject a third entry"),
-            Err(error) => error,
-        };
-        assert!(error.message().contains("queue is full"));
     }
 }

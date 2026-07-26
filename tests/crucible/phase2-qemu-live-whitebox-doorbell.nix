@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveWhiteboxDoorbell",
-  taskIds ? ["T-DET-31" "T-PLUG-27" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-16"],
-  openTaskIds ? ["T-PLUG-14" "T-GHC-4"],
+  taskIds ? ["T-DET-31" "T-PLUG-14" "T-PLUG-27" "T-GHC-4" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-16"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -159,6 +159,21 @@
           ld -m elf_i386 -nostdlib -T guest.ld \
             -o "$out/app-random-guest.elf" app-random-guest.o
           strip --strip-all "$out/app-random-guest.elf"
+
+          # QEMU's aarch64 virt direct-kernel loader enters a raw image at
+          # 0x40080000. The image loads x0/x1 with the frame pointer/length,
+          # executes the frozen hlt #0x04c1 doorbell, then remains live in a
+          # deterministic arithmetic loop.
+          dd if=/dev/zero of="$out/whitebox-guest-aarch64.img" \
+            bs=65536 count=1 status=none
+          printf '%b' \
+            '\300\000\000\130\301\002\200\322\040\230\100\324' \
+            '\102\004\000\221\143\000\002\312\376\377\377\027' \
+            '\040\000\010\100\000\000\000\000' \
+            '\103\122\102\114\002\000\004\000\012\000\000\000' \
+            '\010\000hot-path' \
+            | dd of="$out/whitebox-guest-aarch64.img" \
+              conv=notrunc status=none
         '';
       }
     ];
@@ -287,6 +302,36 @@ in
           run_mode off off
           run_mode on on
 
+          aarch64_dir="$TMPDIR/live-whitebox-aarch64"
+          aarch64_report="$TMPDIR/live-whitebox-aarch64.result"
+          aarch64_log="$TMPDIR/live-whitebox-aarch64.qemu.log"
+          mkdir -p "$aarch64_dir"
+          cp ${rootImage}/overlay.qcow2 "$aarch64_dir/crucible-root-overlay.qcow2"
+          chmod u+w "$aarch64_dir/crucible-root-overlay.qcow2"
+          if ! CRUCIBLE_LIVE_PLUGIN_GUEST_ARCH=aarch64 \
+            CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
+            CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=off \
+            timeout -k 15 180 \
+            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-aarch64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            ${guest}/whitebox-guest-aarch64.img \
+            ${rootImage}/root.qcow2 \
+            "$aarch64_dir" \
+            > "$aarch64_report" 2> "$aarch64_log"; then
+            cat "$aarch64_report" >&2
+            cat "$aarch64_log" >&2
+            exit 1
+          fi
+          grep -Fxq PASS "$aarch64_report"
+          grep -Fxq 'whitebox=on' "$aarch64_report"
+          grep -Fxq 'whitebox_setup_region=aarch64-hlt-04c1' "$aarch64_report"
+          grep -Fxq 'whitebox_marker_count=1' "$aarch64_report"
+          grep -Fxq 'whitebox_marker_point=hot-path' "$aarch64_report"
+          grep -Fxq 'fingerprint=off' "$aarch64_report"
+          grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_report"
+          grep -Fxq 'orderly_child_exit=true' "$aarch64_report"
+
           app_random_dir="$TMPDIR/live-whitebox-app-random"
           app_random_report="$TMPDIR/live-whitebox-app-random.result"
           app_random_log="$TMPDIR/live-whitebox-app-random.qemu.log"
@@ -362,6 +407,8 @@ in
           cp "$TMPDIR/live-whitebox-on.result" "$out/install-on-result"
           cp "$TMPDIR/live-whitebox-off.qemu.log" "$out/qemu-off.log"
           cp "$TMPDIR/live-whitebox-on.qemu.log" "$out/qemu-on.log"
+          cp "$aarch64_report" "$out/install-aarch64-result"
+          cp "$aarch64_log" "$out/qemu-aarch64.log"
           cp "$app_random_report" "$out/app-random-result"
           cp "$app_random_log" "$out/qemu-app-random.log"
           cp "$collision_map" "$out/collision.mtree"
@@ -371,7 +418,7 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'status=partial\n'
+            printf 'status=complete\n'
             printf 'plugin_loaded=rust-control-cdylib\n'
             printf 'whitebox_modes=off,on\n'
             printf 'off_mode_callback_records=0\n'
@@ -397,7 +444,12 @@ in
             printf 'off_fingerprint=%s\n' "$off_fingerprint"
             printf 'on_fingerprint=%s\n' "$on_fingerprint"
             printf 'off_on_fingerprint_equal=true\n'
-            printf 'production_whitebox_channel_implemented=x86_64-live-slice\n'
+            printf 'production_whitebox_channel_implemented=x86_64,aarch64\n'
+            printf 'aarch64_setup_attestation=aarch64-hlt-04c1-unclaimed-v1\n'
+            printf 'aarch64_doorbell_instruction=hlt-0x04c1\n'
+            printf 'aarch64_payload_registers=x0,x1\n'
+            printf 'aarch64_live_marker_observed=true\n'
+            printf 'aarch64_boot_barrier_ceiling_enforced=true\n'
             printf 'app_random_live_decisions=1\n'
             printf 'app_random_guest_reply_observed=true\n'
             printf 'app_random_host_seed_reconstruction=true\n'

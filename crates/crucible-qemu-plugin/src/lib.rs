@@ -79,6 +79,7 @@ pub mod time_control;
 pub mod vcpu_introspection;
 pub mod whitebox_doorbell;
 
+pub(crate) use abi::QemuPluginTargetArchitecture;
 pub use abi::{
     InertDeviceCallback, MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS,
     PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginRuntimeApis,
@@ -121,7 +122,8 @@ pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD,
     PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP,
     PluginAppRandomConfig, PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginSwitch,
-    WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
+    WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,

@@ -14,9 +14,14 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 mod app_random;
+mod whitebox;
 pub use app_random::{
     AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE,
     PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
+};
+pub use whitebox::{
+    WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WhiteboxSetupAttestation,
 };
 /// The required host-to-plugin control-socket argument key.
 pub const PLUGIN_ARG_SIMFD: &str = "simfd";
@@ -30,8 +35,6 @@ pub const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 pub const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 /// The setup-time white-box collision-validation attestation argument key.
 pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
-/// The only accepted x86 setup attestation for the frozen doorbell ABI.
-pub const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 /// The optional coverage hook switch argument key.
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
@@ -65,7 +68,7 @@ impl PluginArgs {
         let sim_fd = parse_required_fd(&parsed, PLUGIN_ARG_SIMFD)?;
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
-        let whitebox_setup = parse_whitebox_setup(&parsed, whitebox)?;
+        let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
@@ -169,13 +172,6 @@ pub enum PluginSwitch {
     Off,
     /// The feature is enabled.
     On,
-}
-
-/// A host-produced setup validation consumed before white-box registration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WhiteboxSetupAttestation {
-    /// The observed x86 QEMU I/O map leaves reserved port `0x00e7` unclaimed.
-    X86Port00e7UnclaimedV1,
 }
 
 impl PluginSwitch {
@@ -370,28 +366,6 @@ fn parse_optional_switch(
         Some("off") | None => Ok(PluginSwitch::Off),
         Some(value) => Err(PluginArgsParseError::InvalidSwitch {
             key,
-            value: value.to_owned(),
-        }),
-    }
-}
-
-fn parse_whitebox_setup(
-    parsed: &ParsedPluginArgs<'_>,
-    whitebox: PluginSwitch,
-) -> Result<Option<WhiteboxSetupAttestation>, PluginArgsParseError> {
-    match (whitebox, parsed.value(PLUGIN_ARG_WHITEBOX_SETUP)) {
-        (PluginSwitch::Off, None) => Ok(None),
-        (PluginSwitch::Off, Some(_)) => Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
-            key: PLUGIN_ARG_WHITEBOX_SETUP,
-        }),
-        (PluginSwitch::On, None) => Err(PluginArgsParseError::MissingWhiteboxSetup {
-            key: PLUGIN_ARG_WHITEBOX_SETUP,
-        }),
-        (PluginSwitch::On, Some(WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1)) => {
-            Ok(Some(WhiteboxSetupAttestation::X86Port00e7UnclaimedV1))
-        }
-        (PluginSwitch::On, Some(value)) => Err(PluginArgsParseError::InvalidWhiteboxSetup {
-            key: PLUGIN_ARG_WHITEBOX_SETUP,
             value: value.to_owned(),
         }),
     }

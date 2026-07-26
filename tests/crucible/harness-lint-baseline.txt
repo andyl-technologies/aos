@@ -151,7 +151,6 @@ error-logging	crates/crucible/src/model/exploration.rs	erased error	dyn Error		1
 error-logging	crates/crucible/src/model/reproduction.rs	erased error	dyn Error		1
 error-logging	crates/crucible/src/trigger/assertions.rs	erased error	dyn Error		2
 error-logging	crates/crucible/src/trigger/observability.rs	erased error	dyn Error		1
-error-logging	crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs	stringly error	Result<_, String>		1
 confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_io_gate.rs	host nondeterminism reaching State	ExecutionHorizon		1
 confinement	crates/crucible-qemu/src/supervision/block_node_gate.rs	host nondeterminism reaches API/session route	ExecutionHorizon		1

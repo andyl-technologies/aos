@@ -48,8 +48,18 @@ pub use validation::{
 use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
 pub use whitebox_setup::{
     QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
-    validate_x86_whitebox_hmp_mtree,
+    validate_aarch64_whitebox_setup, validate_x86_whitebox_hmp_mtree,
 };
+
+/// Guest architecture selected by a deterministic QEMU launch profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LivePluginGuestArchitecture {
+    /// Boots the x86_64 PC machine contract.
+    #[default]
+    X86_64,
+    /// Boots the aarch64 `virt` machine contract.
+    Aarch64,
+}
 
 const DEFAULT_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
@@ -71,6 +81,7 @@ const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
 const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
+const WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1: &str = "aarch64-hlt-04c1-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
@@ -1078,9 +1089,12 @@ impl QemuLaunchPluginConfig {
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
         ];
-        if self.whitebox == QemuLaunchPluginSwitch::On && self.whitebox_setup.is_some() {
+        if self.whitebox == QemuLaunchPluginSwitch::On
+            && let Some(validation) = self.whitebox_setup.as_ref()
+        {
             args.push(format!(
-                "{PLUGIN_ARG_WHITEBOX_SETUP}={WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1}"
+                "{PLUGIN_ARG_WHITEBOX_SETUP}={}",
+                validation.attestation()
             ));
         }
         if let Some(app_random) = &self.app_random {

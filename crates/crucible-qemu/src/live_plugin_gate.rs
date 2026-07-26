@@ -46,7 +46,7 @@ use crate::{
     QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuPluginIpcControlChannel,
     QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
     complete_qemu_host_plugin_setup, probe_x86_whitebox_setup,
-    spawn_qemu_child_with_fds_in_directory,
+    spawn_qemu_child_with_fds_in_directory, validate_aarch64_whitebox_setup,
 };
 
 /// Content-addressing domain for install-gate launch artifacts.
@@ -81,6 +81,7 @@ pub struct LivePluginInstallGateConfig {
     run_directory: PathBuf,
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
+    architecture: crate::LivePluginGuestArchitecture,
     whitebox: crate::QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     fingerprint: crate::QemuLaunchPluginSwitch,
@@ -97,6 +98,7 @@ impl LivePluginInstallGateConfig {
         kernel: impl Into<PathBuf>,
         root_image: impl Into<PathBuf>,
         run_directory: impl Into<PathBuf>,
+        architecture: crate::LivePluginGuestArchitecture,
     ) -> Self {
         Self {
             qemu_executable: qemu_executable.into(),
@@ -106,6 +108,7 @@ impl LivePluginInstallGateConfig {
             run_directory: run_directory.into(),
             initrd: None,
             kernel_cmdline: None,
+            architecture,
             whitebox: crate::QemuLaunchPluginSwitch::Off,
             app_random: None,
             fingerprint: crate::QemuLaunchPluginSwitch::Off,
@@ -246,6 +249,11 @@ pub fn run_live_plugin_install_gate(
     })?;
 
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
+    if config.architecture == crate::LivePluginGuestArchitecture::Aarch64 {
+        candidate = candidate
+            .with_machine_type("virt-9.2")
+            .with_cpu_model("cortex-a57");
+    }
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
     }
@@ -273,8 +281,13 @@ pub fn run_live_plugin_install_gate(
                 plugin_base.clone(),
             )
             .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
-        let validation = probe_x86_whitebox_setup(&probe_command, run_directory)
-            .map_err(|source| LivePluginInstallGateError::WhiteboxSetup { source })?;
+        let validation = match config.architecture {
+            crate::LivePluginGuestArchitecture::X86_64 => {
+                probe_x86_whitebox_setup(&probe_command, run_directory)
+            }
+            crate::LivePluginGuestArchitecture::Aarch64 => validate_aarch64_whitebox_setup(&[]),
+        }
+        .map_err(|source| LivePluginInstallGateError::WhiteboxSetup { source })?;
         let region = validation.observed_region().to_owned();
         let mut plugin = plugin_base
             .with_whitebox(config.whitebox)

@@ -146,7 +146,8 @@ series ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point is that the
   (compiled out or behind a `diag=` plugin arg). *Gate:* `gate:qemu-inert`.
   *Spec:* §26.3; satisfies [INV-7], [PATCH-36].
 
-- **[PKG-12]** `qemu-crucible` MUST be built with `--target-list=x86_64-softmmu`
+- **[PKG-12]** `qemu-crucible` MUST be built with
+  `--target-list=x86_64-softmmu,aarch64-softmmu`
   and `-smp 1` semantics in mind ([NG-1]); KVM MAY be enabled in the build but is
   never used by Crucible (it runs TCG, [G-1]). The sim build MUST NOT disable any
   feature the production QEMU build enables that the determinism corpus exercises

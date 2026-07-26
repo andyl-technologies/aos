@@ -1,7 +1,9 @@
-{pkgs}: let
+{
+  pkgs,
+  lib,
+  liveDoorbell ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
+}: let
   qemuNixSource = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  cratesManifestSource = builtins.readFile ../../crates/Cargo.toml;
-  pluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s10-aarch64-doorbell";
@@ -9,26 +11,22 @@ in
     src = null;
 
     qemuNix = qemuNixSource;
-    cratesManifest = cratesManifestSource;
-    plugin = pluginSource;
-    passAsFile = [
-      "qemuNix"
-      "cratesManifest"
-      "plugin"
-    ];
+    passAsFile = ["qemuNix"];
 
     buildDeps = [
       pkgs.coreutils
-      pkgs.gawk
       pkgs.grep
       pkgs.qemu-crucible
+      liveDoorbell
     ];
 
     QEMU_OUT = builtins.toString pkgs.qemu-crucible;
+    LIVE_RESULT = "${liveDoorbell}/result";
+    LIVE_AARCH64_RESULT = "${liveDoorbell}/install-aarch64-result";
 
     phases = [
       {
-        name = "run-s10-aarch64-doorbell-preflight";
+        name = "run-s10-aarch64-doorbell";
         script = ''
           set -eu
 
@@ -38,64 +36,52 @@ in
           }
 
           cp "$qemuNixPath" qemu.nix
-          cp "$cratesManifestPath" Cargo.toml
-          cp "$pluginPath" crucible-qemu-trace-plugin.c
-
           [ -x "$QEMU_OUT/bin/qemu-system-x86_64" ] \
             || fail "qemu-crucible x86_64 system emulator is missing"
-          if [ -e "$QEMU_OUT/bin/qemu-system-aarch64" ]; then
-            fail "S10 fallback expected qemu-system-aarch64 to be absent"
-          fi
+          [ -x "$QEMU_OUT/bin/qemu-system-aarch64" ] \
+            || fail "qemu-crucible aarch64 system emulator is missing"
+          grep -F -q -- '--target-list=x86_64-softmmu,aarch64-softmmu' qemu.nix \
+            || fail "qemu.nix does not pin both committed system targets"
 
-          grep -F -q -- '--target-list=x86_64-softmmu' qemu.nix \
-            || fail "qemu.nix no longer pins x86_64-softmmu"
-          if grep -F -q -- 'aarch64-softmmu' qemu.nix; then
-            fail "S10 fallback expected qemu.nix to omit aarch64-softmmu"
-          fi
+          grep -Fxq PASS "$LIVE_RESULT"
+          grep -Fxq 'status=complete' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_doorbell_instruction=hlt-0x04c1' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_payload_registers=x0,x1' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_live_marker_observed=true' "$LIVE_RESULT"
+          grep -Fxq 'aarch64_boot_barrier_ceiling_enforced=true' "$LIVE_RESULT"
+          grep -Fxq PASS "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox=on' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox_setup_region=aarch64-hlt-04c1' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox_marker_count=1' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'whitebox_marker_point=hot-path' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'boot_barrier_ceiling_enforced=true' "$LIVE_AARCH64_RESULT"
+          grep -Fxq 'orderly_child_exit=true' "$LIVE_AARCH64_RESULT"
 
-          # The white-box guest emitter has landed since the original spike
-          # run: it is a workspace member and encodes the aarch64 doorbell
-          # instruction ABI. The aarch64 fallback now rests solely on the
-          # missing aarch64 QEMU target and doorbell trap.
-          grep -F -q -- 'crucible-guest' Cargo.toml \
-            || fail "S10 expected the crucible-guest workspace member"
-          if grep -E -q 'whitebox|doorbell|aarch64|BRK|HLT|hvc' crucible-qemu-trace-plugin.c; then
-            fail "S10 fallback expected production trace plugin to omit aarch64 doorbell handling"
-          fi
-
-          qemu_aarch64_softmmu_target=false
-          qemu_system_aarch64_available=false
-          crucible_guest_workspace_member=true
-          production_aarch64_doorbell_trap_implemented=false
-          whitebox_on_trap_tested=false
-          whitebox_off_inertness_tested=false
-          marker_icount_reproducible=not_tested
-          payload_read_result=not_tested
-          aarch64_whitebox_supported=false
-          aarch64_blackbox_only_fallback=true
-          fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell
+          marker_icount=$(sed -n \
+            's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' \
+            "$LIVE_AARCH64_RESULT")
+          test -n "$marker_icount"
 
           mkdir -p "$out"
           cp qemu.nix "$out/qemu.nix"
-          cp Cargo.toml "$out/Cargo.toml"
-          cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
+          cp "$LIVE_RESULT" "$out/live-doorbell.result"
+          cp "$LIVE_AARCH64_RESULT" "$out/live-aarch64.result"
           {
-            echo PASS_WITH_FALLBACK
+            echo PASS
             echo spike=aarch64-doorbell
             echo check=checks.crucible.phase0.s10Aarch64Doorbell
             echo qemu_package=qemu-crucible
-            echo qemu_target_list=x86_64-softmmu
-            echo qemu_aarch64_softmmu_target="$qemu_aarch64_softmmu_target"
-            echo qemu_system_aarch64_available="$qemu_system_aarch64_available"
-            echo crucible_guest_workspace_member="$crucible_guest_workspace_member"
-            echo production_aarch64_doorbell_trap_implemented="$production_aarch64_doorbell_trap_implemented"
-            echo whitebox_on_trap_tested="$whitebox_on_trap_tested"
-            echo whitebox_off_inertness_tested="$whitebox_off_inertness_tested"
-            echo marker_icount_reproducible="$marker_icount_reproducible"
-            echo payload_read_result="$payload_read_result"
-            echo aarch64_whitebox_supported="$aarch64_whitebox_supported"
-            echo aarch64_blackbox_only_fallback="$aarch64_blackbox_only_fallback"
-            echo fallback_adopted="$fallback_adopted"
+            echo qemu_target_list=x86_64-softmmu,aarch64-softmmu
+            echo qemu_aarch64_softmmu_target=true
+            echo qemu_system_aarch64_available=true
+            echo production_aarch64_doorbell_trap_implemented=true
+            echo whitebox_on_trap_tested=true
+            echo whitebox_off_inertness_tested=true
+            echo marker_icount_reproducible="$marker_icount"
+            echo payload_read_result=pass
+            echo aarch64_whitebox_supported=true
+            echo aarch64_blackbox_only_fallback=false
+            echo fallback_adopted=none
             echo s10_complete=true
           } > "$out/result"
         '';
@@ -103,6 +89,6 @@ in
     ];
 
     meta = {
-      description = "Crucible Phase 0 S10 aarch64 doorbell spike";
+      description = "Crucible Phase 0 S10 live aarch64 doorbell spike";
     };
   }

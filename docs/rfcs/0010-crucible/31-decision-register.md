@@ -998,14 +998,11 @@ genuinely unresolved and is tracked as a spike in
   unchanged), *arch-specific-with-known-analogue* (the seal exists on aarch64 but
   binds to a different instruction/device, named below), or *empirical-gate*
   (correct-by-derivation but must be **gated** by running the x86_64 procedure on
-  an aarch64 image before it is claimed). Because AOS builds **no aarch64 QEMU
-  target today** (S10 ground truth: `qemu_target_list=x86_64-softmmu`,
-  `qemu_system_aarch64_available=false`), the aarch64 gates **cannot run yet**;
-  the derived matrix is therefore recorded as **conditional on an AOS-built
-  aarch64 `qemu-system-aarch64` target landing**, with
-  `checks.crucible.phase0.s10Aarch64Doorbell` as the **activation trigger** (the
-  same gate that flips `qemu_system_aarch64_available` to `true` unblocks the
-  aarch64 black-box S1 fingerprint run and the white-box doorbell). This
+  an aarch64 image before it is claimed). AOS now builds the committed
+  `qemu-system-aarch64` target, and
+  `checks.crucible.phase0.s10Aarch64Doorbell` has passed the production
+  white-box activation gate. The derived matrix remains conditional only on the
+  outstanding AArch64 black-box S1 fingerprint and S6 KASLR/ASLR gates. This
   supersedes D-19's "whether/which further architectures … is unresolved" with a
   committed aarch64 target, a derived seal map, and a named riscv64 verdict.
 - **Rationale — the derived aarch64 seal map (E1–E24):** the elimination
@@ -1050,20 +1047,18 @@ genuinely unresolved and is tracked as a spike in
     (black-box determinism on an aarch64 image, per RISK-17's note that "aarch64
     black-box determinism is covered by S1 run on an aarch64 image") and (ii) an
     aarch64 **S6** KASLR/ASLR bit-stability run (E11/E12), plus (iii) the aarch64
-    **S10** doorbell for the *white-box* channel. None can run without the target.
-- **Evidence — why the aarch64 gates cannot run yet (S10 ground truth):**
-  `checks.crucible.phase0.s10Aarch64Doorbell` records that the active
-  `qemu-crucible` package is built with `qemu_target_list=x86_64-softmmu` and
-  reports `qemu_aarch64_softmmu_target=false`,
-  `qemu_system_aarch64_available=false`, and
-  `production_aarch64_doorbell_trap_implemented=false`, while
-  `crucible_guest_workspace_member=true` (the white-box guest emitter has landed
-  and already encodes the aarch64 doorbell instruction ABI). The active fallback
-  is `fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`.
-  This is exactly why the aarch64 seal map is recorded as **derived and
-  conditional**, not empirically claimed: the derivation is sound, but the
-  contract is only *established* for an architecture once its S1/S6/S10 gates run
-  green, and those are blocked on adding the AOS-built aarch64 QEMU target.
+    **S10** doorbell for the *white-box* channel. S10 is now green; S1 and S6
+    remain required before the complete AArch64 seal set is empirically claimed.
+- **Evidence — AArch64 target and S10 activation:** the active
+  `qemu-crucible` package records
+  `qemu_target_list=x86_64-softmmu,aarch64-softmmu`,
+  `qemu_aarch64_softmmu_target=true`, and
+  `qemu_system_aarch64_available=true`.
+  `checks.crucible.phase0.s10Aarch64Doorbell` consumes a real production-plugin
+  run and records `production_aarch64_doorbell_trap_implemented=true`,
+  `aarch64_whitebox_supported=true`, and `fallback_adopted=none`. The AArch64
+  seal map is still described as **derived and conditional** until its separate
+  S1 and S6 black-box gates are green.
 - **Evidence — riscv64 feasibility (assessment only):** riscv64 is judged
   **feasible** under the same contract shape — it is a well-supported QEMU TCG
   softmmu target, `-icount` applies, and it has direct analogues for the
@@ -1073,21 +1068,18 @@ genuinely unresolved and is tracked as a spike in
   No riscv64-specific blocker to the elimination set is identified. It is
   **deferred** rather than committed because (a) it adds a third per-arch gating
   cost (its own S1/S6/S10 runs and an AOS-built `qemu-system-riscv64` target)
-  that is not yet scheduled, and (b) aarch64 must be green first to validate the
+    that is not yet scheduled, and (b) aarch64 must be green first to validate the
   "derive-then-gate" method on one non-x86 arch before a second is committed.
   This is a **feasibility verdict**, not an empirical result — no riscv64
   fingerprint has been produced.
 - **Alternatives considered:**
   - *Leave the matrix Open (D-19's position).* Rejected: the seal-by-seal
     derivation is tractable now and yields a committed aarch64 target and a named
-    riscv64 verdict; the only genuinely-unresolvable part (empirical aarch64
-    gating) is bounded and named (blocked on the aarch64 QEMU target), which is a
-    resolved *plan*, not an open *question*.
-  - *Claim aarch64 as green now on the strength of the derivation.* Rejected as
-    dishonest: no aarch64 QEMU target exists, so S1/S6/S10 cannot run; a derived
-    seal is correct-by-construction but the contract is only *established* by a
-    green gate. The matrix is recorded as conditional-on-target for exactly this
-    reason.
+    riscv64 verdict; the remaining empirical AArch64 gating is bounded to the
+    named S1/S6 checks, which is a resolved *plan*, not an open *question*.
+  - *Claim aarch64 as fully green after S10 alone.* Rejected: the target and
+    synchronous doorbell are live, but the architecture contract is only
+    established after the separate S1 fingerprint and S6 KASLR/ASLR gates pass.
   - *Commit riscv64 now alongside aarch64.* Rejected: premature; it triples the
     per-arch gating cost before the derive-then-gate method is validated on
     aarch64, and no riscv64 target is built. Feasible-but-deferred is the honest
@@ -1096,9 +1088,10 @@ genuinely unresolved and is tracked as a spike in
     multi-arch posture; aarch64 is committed.
 - **Affects:** [DET-18] (per-arch entropy set E1–E24), [DET-20], [G-2]; files 04
   (§4.6, the E1–E24 table), 10, 16 ([GHC-16] aarch64 doorbell), 30 (S10 / RISK-17);
-  gate `checks.crucible.phase0.s10Aarch64Doorbell` (the activation trigger).
-  References D-2, D-22, D-31 (KASLR/ASLR seeded host-side), and the aarch64
-  black-box-only fallback recorded under RISK-17 / T-RISK-10.
+  gate `checks.crucible.phase0.s10Aarch64Doorbell` (the completed activation
+  trigger).
+  References D-2, D-22, D-31 (KASLR/ASLR seeded host-side), and the retired
+  RISK-17 / T-RISK-10 fallback.
 - **Supersedes:** [D-19] (the Open "whether/which further architectures … is
   unresolved" framing) — for the aarch64 and riscv64 dimensions. D-19's *general*
   principle ("each architecture's §4.6 set must be re-derived and re-gated") is
@@ -1251,9 +1244,9 @@ becomes a new `Decided` entry referencing the one it supersedes).
 > **Superseded by [D-33].** The T-D-1 spike re-derived the §4.6 entropy-elimination
 > set (E1–E24) for **aarch64** seal-by-seal (most seals arch-neutral; the rest
 > bind to known aarch64 analogues — `RNDR`/`RNDRRS`, `CNTVCT_EL0`, GICv2/v3), made
-> aarch64 a **committed** target recorded as **conditional on an AOS-built
-> `qemu-system-aarch64` target** (the aarch64 gates cannot run today —
-> `qemu_target_list=x86_64-softmmu`), and judged **riscv64 feasible-but-deferred**.
+> aarch64 a **committed** target. The AOS-built `qemu-system-aarch64` target and
+> S10 white-box gate have now landed; S1/S6 black-box gating remains before the
+> full seal set is claimed. The spike judged **riscv64 feasible-but-deferred**.
 > D-19's general "re-derive and re-gate per arch" principle is retained; D-33
 > performs that derivation. D-19 is kept below as the original Open framing.
 
@@ -1784,32 +1777,25 @@ register.
     fallback remains useful only as provenance for the older 9.2.4 spike.
 
 - **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
-  - **Status:** PASS WITH FALLBACK; aarch64 white-box support is not available in
-    the current AOS QEMU/guest-emitter surface, so aarch64 remains black-box-only
-    until the aarch64 target and doorbell implementation land.
+  - **Status:** PASS; the AOS-built AArch64 QEMU target and production
+    synchronous doorbell adapter are live.
   - **Check:** `checks.crucible.phase0.s10Aarch64Doorbell`.
   - **Result:** `qemu_package=qemu-crucible`,
-    `qemu_target_list=x86_64-softmmu`,
-    `qemu_aarch64_softmmu_target=false`,
-    `qemu_system_aarch64_available=false`,
-    `crucible_guest_workspace_member=false`,
-    `production_aarch64_doorbell_trap_implemented=false`,
-    `whitebox_on_trap_tested=false`, `whitebox_off_inertness_tested=false`,
-    `marker_icount_reproducible=not_tested`,
-    `payload_read_result=not_tested`, `aarch64_whitebox_supported=false`,
-    `aarch64_blackbox_only_fallback=true`,
-    `fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`,
+    `qemu_target_list=x86_64-softmmu,aarch64-softmmu`,
+    `qemu_aarch64_softmmu_target=true`,
+    `qemu_system_aarch64_available=true`,
+    `production_aarch64_doorbell_trap_implemented=true`,
+    `whitebox_on_trap_tested=true`, `whitebox_off_inertness_tested=true`,
+    `marker_icount_reproducible=<numeric trap icount>`,
+    `payload_read_result=pass`, `aarch64_whitebox_supported=true`,
+    `aarch64_blackbox_only_fallback=false`,
+    `fallback_adopted=none`,
     `s10_complete=true`.
-  - **Scope:** validates the Phase-0 S10 decision for the current repository
-    surface. The check proves the packaged QEMU target list is x86_64-only, the
-    `qemu-system-aarch64` binary is absent, `crucible-guest` is not a workspace
-    member, and the production trace plugin contains no aarch64 white-box
-    doorbell trap path. It therefore does not run an aarch64 guest and does not
-    prove any `HLT`/`BRK`/`hvc` immediate traps precisely.
-  - **Fallback:** ship aarch64 as black-box-only for Crucible until an AOS-built
-    aarch64 QEMU target, single-source aarch64 doorbell encoding, production
-    plugin trap, and `crucible-guest` emitter exist; rerun S10 before enabling
-    aarch64 white-box markers.
+  - **Scope:** the check consumes the real-backend production-plugin gate. It
+    boots a raw AArch64 `virt` guest, executes `hlt #0x04c1`, reads the `x0`/`x1`
+    virtual payload, admits the marker at the live callback boundary, reaches
+    the exact host-published ceiling, and tears down normally.
+  - **Fallback:** none.
 
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
@@ -2197,10 +2183,10 @@ register.
   [`30-risks-spikes.md`](30-risks-spikes.md), §04.6. Resolved by [D-33]: aarch64
   is a committed target with the E1–E24 set re-derived seal-by-seal (most
   arch-neutral; `RNDR`/`RNDRRS`, `CNTVCT_EL0`, GICv2/v3 the named analogues),
-  recorded conditional on an AOS-built `qemu-system-aarch64` target with
-  `checks.crucible.phase0.s10Aarch64Doorbell` as the activation trigger (the
-  aarch64 S1/S6/S10 gates cannot run until that target lands); riscv64 judged
-  feasible-but-deferred (assessment only).
+  backed by the AOS-built `qemu-system-aarch64` target and green
+  `checks.crucible.phase0.s10Aarch64Doorbell` activation gate; the AArch64 S1
+  fingerprint and S6 KASLR/ASLR legs remain before this task closes. riscv64 is
+  judged feasible-but-deferred (assessment only).
 - [x] **T-D-2** Run the remote-checkpoint-store spike: confirm the local
   content-addressed store's interface is backend-pluggable and decide whether the
   remote backend is satisfied by the gated ratchet substrate (D-17) or a separate

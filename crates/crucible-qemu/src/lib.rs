@@ -125,14 +125,15 @@ pub use launch::{
     DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC, DeterministicLaunchProfile, DiskImageMode,
     GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed, GuestEntropySeedFile,
-    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeClockSkewDeclaration, NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD,
-    QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig, QemuLaunchArtifact,
-    QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
-    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidation,
-    QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuVmLaunchConfig,
-    QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
-    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
+    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError,
+    LivePluginGuestArchitecture, MachineResetMode, NodeClockSkewDeclaration, NodeIcountShift,
+    QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig,
+    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
+    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    probe_x86_whitebox_setup, validate_aarch64_whitebox_setup, validate_pre_spawn_qemu_launch_args,
+    validate_x86_whitebox_hmp_mtree,
 };
 #[cfg(target_os = "linux")]
 pub use live_coverage_gate::{

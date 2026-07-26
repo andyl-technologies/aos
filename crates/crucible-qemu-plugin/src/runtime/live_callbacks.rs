@@ -32,10 +32,11 @@ use crate::{
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
     QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue,
     QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn,
-    QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn,
-    QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn,
-    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError,
-    SchedulerCeiling, TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
+    QemuPluginTargetArchitecture, QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn,
+    QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
+    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
+    QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling,
+    TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
     handle_network_rx_idle_callback,
 };
 
@@ -79,6 +80,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
 pub(crate) struct LiveVcpuTimeCallbackRegistrar {
     plugin_id: QemuPluginId,
     execution_model: QemuPluginExecutionModel,
+    target_architecture: QemuPluginTargetArchitecture,
     capabilities: LiveVcpuTimeCallbackCapabilities,
 }
 
@@ -86,11 +88,13 @@ impl LiveVcpuTimeCallbackRegistrar {
     pub(crate) const fn new(
         plugin_id: QemuPluginId,
         execution_model: QemuPluginExecutionModel,
+        target_architecture: QemuPluginTargetArchitecture,
         capabilities: LiveVcpuTimeCallbackCapabilities,
     ) -> Self {
         Self {
             plugin_id,
             execution_model,
+            target_architecture,
             capabilities,
         }
     }
@@ -281,6 +285,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 .prepare_live_whitebox_state(
                     whitebox_apis,
                     args,
+                    self.target_architecture,
                     self.execution_model.smp_vcpus(),
                     capabilities.icount_raw,
                     capabilities.request_shutdown,
