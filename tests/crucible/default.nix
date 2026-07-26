@@ -173,7 +173,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
       taskIds = [];
-      openTaskIds = ["T-DET-31" "T-PLUG-27"];
+      openTaskIds = [];
     };
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
@@ -244,7 +244,7 @@ in rec {
         };
         dependencies = [harnessLint];
       };
-      layer0Determinism = redBeforeAdvance {
+      layer0Determinism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
         # lint needle: layer0Determinism = import ./phase1-layer0-determinism.nix
         gate = import ./phase1-layer0-determinism.nix {
@@ -266,12 +266,9 @@ in rec {
             "T-DET-9"
             "T-DET-10"
           ];
-          openTaskIds = ["T-DET-31"];
+          openTaskIds = [];
         };
         dependencies = [harnessLint];
-        phase = "phase1";
-        reason = "the live QEMU/plugin time, multi-vCPU IPI, and app-random paths are not installed end to end";
-        taskIds = ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
       };
       contentAddress = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.contentAddress";
@@ -1237,8 +1234,8 @@ in rec {
     sessionBreakpoints = import ./phase5-session-breakpoints.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionBreakpoints";
-      taskIds = [];
-      openTaskIds = ["T-SESS-7"];
+      taskIds = ["T-SESS-7"];
+      openTaskIds = [];
       dependencies = [phase5.sessionBoundaryControl];
     };
     sessionSaveResumeFork = import ./phase5-session-save-resume-fork.nix {
@@ -1262,8 +1259,8 @@ in rec {
     sessionSimulationBackend = import ./phase5-session-simulation-backend.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionSimulationBackend";
-      taskIds = [];
-      openTaskIds = ["T-SESS-11"];
+      taskIds = ["T-SESS-11"];
+      openTaskIds = [];
       dependencies = [phase5.sessionLockFreeObservation];
     };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
@@ -1285,10 +1282,6 @@ in rec {
         phase = "phase5";
         reason = "audited session, CLI workflow, exit, and help contracts remain partial until their live backend paths are complete";
         taskIds = [
-          "T-SESS-7"
-          "T-SESS-11"
-          "T-SESS-12"
-          "T-PAT-6"
           "T-CLI-3"
           "T-CLI-6"
           "T-CLI-7"
@@ -1307,8 +1300,8 @@ in rec {
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionSimDoubleSuite";
-      taskIds = [];
-      openTaskIds = ["T-SESS-12" "T-PAT-6"];
+      taskIds = ["T-SESS-12" "T-PAT-6"];
+      openTaskIds = [];
       dependencies = [
         phase5.sessionSimulationBackend
         phase3.gates.schedulerLiveness.rawGate

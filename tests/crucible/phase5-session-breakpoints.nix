@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionBreakpoints",
-  taskIds ? [],
-  openTaskIds ? ["T-SESS-7"],
+  taskIds ? ["T-SESS-7"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -50,18 +50,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-7 remains open";
-        needle = "- [ ] **T-SESS-7**";
+        label = "T-SESS-7 is complete";
+        needle = "- [x] **T-SESS-7**";
       }
       {
-        label = "T-SESS-7 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.sessionBreakpoints`";
+        label = "T-SESS-7 completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionBreakpoints`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 breakpoint status note";
-        needle = "`T-SESS-7` has partial evidence through `checks.crucible.phase5.sessionBreakpoints`";
+        label = "phase5 breakpoint completion note";
+        needle = "`T-SESS-7` is completed by `checks.crucible.phase5.sessionBreakpoints`";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
@@ -212,6 +212,18 @@
       {
         label = "step one-shot test";
         needle = "step_modes_are_expressible_as_one_shot_breakpoints";
+      }
+      {
+        label = "deterministic breakpoint host metadata";
+        needle = "pub struct BreakpointHostMetadata";
+      }
+      {
+        label = "named host predicate no-entry boundary test";
+        needle = "breakpoint_named_host_predicate_fires_at_no_entry_quantum_boundary";
+      }
+      {
+        label = "symbol metadata breakpoint test";
+        needle = "breakpoint_symbol_metadata_resolves_coverage_and_memory_leaves";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" triggerLib [

@@ -746,7 +746,7 @@
       }
       {
         label = "placeholder target count";
-        needle = "placeholder_targets=2";
+        needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [

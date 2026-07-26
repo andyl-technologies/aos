@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimDoubleSuite",
-  taskIds ? [],
-  openTaskIds ? ["T-SESS-12" "T-PAT-6"],
+  taskIds ? ["T-SESS-12" "T-PAT-6"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -99,12 +99,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-12 remains open";
-        needle = "- [ ] **T-SESS-12**";
+        label = "T-SESS-12 is complete";
+        needle = "- [x] **T-SESS-12**";
       }
       {
-        label = "T-SESS-12 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.sessionSimDoubleSuite`";
+        label = "T-SESS-12 completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
       }
       {
         label = "SESS-28 control-plane double rule";
@@ -113,12 +113,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsDoc [
       {
-        label = "T-PAT-6 remains open";
-        needle = "- [ ] **T-PAT-6**";
+        label = "T-PAT-6 is complete";
+        needle = "- [x] **T-PAT-6**";
       }
       {
-        label = "T-PAT-6 session backend partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.sessionSimulationBackend` and";
+        label = "T-PAT-6 session backend completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend` and";
       }
       {
         label = "T-PAT-6 SimDouble suite completion note";
@@ -139,8 +139,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 SimDouble suite status note";
-        needle = "`T-SESS-12` has partial evidence through `checks.crucible.phase5.sessionSimDoubleSuite`";
+        label = "phase5 SimDouble suite completion note";
+        needle = "`T-SESS-12` is completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessDoc [
@@ -430,8 +430,8 @@
         needle = "sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix";
       }
       {
-        label = "phase5 SimDouble suite carries open session and pattern tasks";
-        needle = "openTaskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
+        label = "phase5 SimDouble suite carries completed session and pattern tasks";
+        needle = "taskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
       }
       {
         label = "phase5 SimDouble suite attr path";

@@ -15,6 +15,8 @@ use crucible::{
 
 #[path = "tests/actor_runtime.rs"]
 mod actor_runtime;
+#[path = "tests/breakpoint_metadata.rs"]
+mod breakpoint_metadata;
 #[path = "tests/engine_state.rs"]
 mod engine_state;
 

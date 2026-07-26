@@ -160,7 +160,7 @@
       }
       {
         label = "remaining placeholder count";
-        needle = "placeholder_targets=2";
+        needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-e2e-determinism.nix" phase4E2e [

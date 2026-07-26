@@ -557,15 +557,6 @@ pub(super) fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHas
     )
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct NoBreakpointLeaves;
-
-impl ConditionLeafOracle for NoBreakpointLeaves {
-    fn leaf_is_true(&mut self, _leaf: ConditionLeaf<'_>) -> bool {
-        false
-    }
-}
-
 pub(super) fn breakpoint_action_kind(action: &Action) -> &'static str {
     match action {
         Action::InjectFault { .. } => "inject-fault",

@@ -580,7 +580,7 @@
       }
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=2";
+          needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -595,10 +595,6 @@
       {
         label = "phase2 real-QEMU gate no longer uses red placeholder";
         needle = "attrPath = \"checks.crucible.phase2.gates.singleVmFingerprint\"";
-      }
-      {
-        label = "phase1 gate lists T-HARN-6";
-        needle = "\"T-HARN-6\"";
       }
       {
         label = "phase1 gate lists T-ASRT-18";

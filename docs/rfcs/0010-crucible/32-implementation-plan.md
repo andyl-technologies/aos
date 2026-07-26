@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b7cbfba4fb3152e5`
+Checklist sync digest: `rfc0010-checklist-v1:7e06db0a063401e5`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -130,7 +130,7 @@ all land and are gated. Everything later is built on this.
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
 - Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-26` ([`24`](24-determinism-harness-testing.md)).
 - Patterns tracked here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9`;
-  the backend pattern remains partial and carries into the phase-5 backend work
+  the backend pattern is completed by the phase-5 backend and SimDouble suite
   ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:harness-lint`, `gate:layer0-determinism`,
@@ -242,17 +242,18 @@ long-held locks.
   frontier/quanta-keyed session control log, verifies scheduler-backed control
   delivery and stopped-state terminal drain, and checks pause/stop take effect
   at the boundary without an extra quantum while stop invokes shutdown.
-  `T-SESS-7` has partial evidence through `checks.crucible.phase5.sessionBreakpoints`,
+  `T-SESS-7` is completed by `checks.crucible.phase5.sessionBreakpoints`,
   which evaluates actor-owned breakpoints through the shared 17a condition
   prefix/evaluator, threads scheduler quiescence evidence into session
-  breakpoint evaluation including no-entry quiescent boundaries, records
+  breakpoint evaluation including every no-entry quantum boundary, records
   deterministic firing entries and action scheduler controls, verifies
   suspend/trace/action and OneShot/Repeatable behavior including persistent
   `Once` latches, derives `After`/`Timer` facts from the canonical trigger log,
   rejects unsupported or unrepresentable action breakpoints before applying
   scheduler controls, and evaluates step stop points through one-shot breakpoint
-  conditions. Host-oracle `Named` predicates and metadata-backed white-box/symbol
-  leaves remain dependent on a session-visible host metadata/oracle surface.
+  conditions. Its session-visible `BreakpointHostMetadata` supplies
+  virtual-time-keyed `Named` truths plus resolved code/memory symbols, and that
+  metadata is inherited across resume and fork.
   `T-SESS-8` is green through `checks.crucible.phase5.sessionSaveResumeFork`,
   which keeps save/resume/fork on the temporal graph: savepoint materialization
   uses `save_checkpoint`, checkpoint resume resolves the recorded configuration
@@ -274,14 +275,14 @@ long-held locks.
   and streams actor-owned full `EngineState` transitions through
   `SessionStateTransitionBus` with lag-or-drop behavior instead of subscriber
   back-pressure.
-  `T-SESS-11` has partial evidence through `checks.crucible.phase5.sessionSimulationBackend`,
+  `T-SESS-11` is completed by `checks.crucible.phase5.sessionSimulationBackend`,
   which defines the pluggable `SimulationBackend` contract, exports its
   observation/effect/snapshot/fingerprint data types, and verifies the mock,
   `SimBackend`, `SimDouble`, and QEMU `QemuNode` implementations against the
   same scheduler-supplied timing boundary, including full SimDouble
   snapshot/restore, QEMU restore-time mirror updates, and rejection of
   trait-level SimDouble outbound sends without scheduler authorization.
-  `T-SESS-12` has partial evidence through `checks.crucible.phase5.sessionSimDoubleSuite`,
+  `T-SESS-12` is completed by `checks.crucible.phase5.sessionSimDoubleSuite`,
   which runs the full `crucible-session` suite plus the API/daemon
   control-responsive tests under in-process `crucible::SimDouble` quantum-loop
   adapters, and runs `gate:scheduler-liveness` under `test-double` with an
@@ -640,7 +641,7 @@ long-held locks.
   regression-testing the RFC §15 exit-code classes. The uniform exit-code and
   machine-readable contract remains open until the live behavior of
   `T-CLI-10 … T-CLI-13` is complete.
-- Patterns realized here: `T-PAT-1`; `T-PAT-6` remains partial with the backend work above.
+- Patterns realized here: `T-PAT-1`, `T-PAT-6`.
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
 bounded number of quanta, under a long-running step).

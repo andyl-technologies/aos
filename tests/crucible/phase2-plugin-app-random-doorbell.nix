@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginAppRandomDoorbell",
   taskIds ? [],
-  openTaskIds ? ["T-DET-31" "T-PLUG-27"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -80,8 +80,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
       {
-        label = "T-DET-31 remains open";
-        needle = "- [ ] **T-DET-31**";
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
       }
       {
         label = "T-DET-31 completion note names app-random doorbell check";
@@ -94,8 +94,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-27 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-27**";
+        label = "T-PLUG-27 checklist complete";
+        needle = "- [x] **T-PLUG-27**";
       }
       {
         label = "app-random task wording";
@@ -403,7 +403,7 @@ in
             gate=gate:layer0-determinism
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             doorbell_kind=random_request
             whitebox_opt_in=required
             decision=Decision::AppRandom

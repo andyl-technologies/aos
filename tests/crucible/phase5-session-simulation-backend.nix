@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimulationBackend",
-  taskIds ? [],
-  openTaskIds ? ["T-SESS-11"],
+  taskIds ? ["T-SESS-11"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -56,12 +56,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-11 remains open";
-        needle = "- [ ] **T-SESS-11**";
+        label = "T-SESS-11 is complete";
+        needle = "- [x] **T-SESS-11**";
       }
       {
-        label = "T-SESS-11 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.sessionSimulationBackend`";
+        label = "T-SESS-11 completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend`";
       }
       {
         label = "synchronous SimulationBackend sketch";
@@ -74,8 +74,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 simulation backend status note";
-        needle = "`T-SESS-11` has partial evidence through `checks.crucible.phase5.sessionSimulationBackend`";
+        label = "phase5 simulation backend completion note";
+        needle = "`T-SESS-11` is completed by `checks.crucible.phase5.sessionSimulationBackend`";
       }
     ]
     ++ failuresFor "crates/crucible/src/backend.rs" backendLib [
@@ -274,8 +274,8 @@
         needle = ''attrPath = "checks.crucible.phase5.sessionSimulationBackend"'';
       }
       {
-        label = "phase5 simulation backend open task id";
-        needle = ''openTaskIds = ["T-SESS-11"]'';
+        label = "phase5 simulation backend completed task id";
+        needle = ''taskIds = ["T-SESS-11"]'';
       }
       {
         label = "phase5 simulation backend depends on lock-free observation";

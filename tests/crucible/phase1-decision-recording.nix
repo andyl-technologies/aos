@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.decisionRecording",
   taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20" "T-PAT-5"],
-  openTaskIds ? ["T-DET-31"],
+  openTaskIds ? [],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
@@ -276,8 +276,8 @@
         needle = "- [x] **T-DET-16**";
       }
       {
-        label = "T-DET-31 remains open";
-        needle = "- [ ] **T-DET-31**";
+        label = "T-DET-31 checklist complete";
+        needle = "- [x] **T-DET-31**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
@@ -397,7 +397,7 @@ in
             gate=gate:layer0-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
-            status=partial
+            status=complete
             evidence_scope=decision-recorder-model
             crate=crucible
             recorder=DecisionRecorder

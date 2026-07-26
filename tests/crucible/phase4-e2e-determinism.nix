@@ -307,7 +307,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=2";
+        needle = "placeholder_targets=0";
       }
       {
         label = "implemented crucible e2e target in Nix lint";
