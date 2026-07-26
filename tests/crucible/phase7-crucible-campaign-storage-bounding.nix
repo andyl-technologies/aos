@@ -6,30 +6,27 @@
   dependencies ? [],
 }: let
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
+  casSource =
+    builtins.readFile ../../crates/crucible-cas/src/lib.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
   fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
-  crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crucibleLib =
+    builtins.readFile ../../crates/crucible/src/lib.rs
+    + builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   fleetStore = pkgs.crucible-fleet-store;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
@@ -174,7 +171,7 @@
       }
       {
         label = "retention merge guard unit proof";
-        needle = "campaign_retention_merge_retry_does_not_expand_over_cap";
+        needle = "campaign_retention_merge_attempts_do_not_expand_over_cap";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" crucibleModel [

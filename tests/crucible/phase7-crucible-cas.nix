@@ -8,23 +8,18 @@
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible-cas/Cargo.toml);
-  casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
+  casSource =
+    builtins.readFile ../../crates/crucible-cas/src/lib.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
