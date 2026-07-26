@@ -997,7 +997,7 @@ branch on the verdict without parsing output:
   task is reopened because the generic failure path still substitutes a mock
   scenario, decision, and fingerprint rather than serializing the actual failed
   run; that artifact cannot reproduce the reported failure.
-- [ ] **T-CLI-5** Implement hermetic QEMU/plugin discovery
+- [x] **T-CLI-5** Implement hermetic QEMU/plugin discovery
   (flag → env → AOS package set, no host `$PATH`), clear fail-with-exit-4 on
   absence/mismatch, and pinning the AOS QEMU build identity + plugin ABI version
   into the artifact. — satisfies [CLI-13], [CLI-14], [CLI-15]; spec §5.
@@ -1013,11 +1013,11 @@ branch on the verdict without parsing output:
   fails with exit code 4 and a message listing the discovery order and stating
   that host `$PATH` QEMU is never used. Resolved QEMU backends carry the pinned
   QEMU build identity and plugin ABI into replay identity checks and failure
-  reproduction artifacts. This remains partial: candidate validation currently
-  proves only regular-file readability plus adjacent marker consistency, so a
-  text file can impersonate both QEMU and the plugin. Completion requires the
-  selected packaged executable and shared object to be queried or loaded before
-  their identities are admitted.
+  reproduction artifacts. Before marker identities are admitted, the selected
+  QEMU must be an executable 64-bit ELF that accepts an actual `--version`
+  process query, and the plugin must be an ELF shared object exposing
+  `qemu_plugin_install` and `qemu_plugin_version`. Adversarial tests prove text
+  files carrying plausible marker strings cannot impersonate either artifact.
 - [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.
