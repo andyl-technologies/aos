@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:e17b5bab3d1b63af`
+Checklist sync digest: `rfc0010-checklist-v1:6fb91d2c378c8a5a`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -384,7 +384,7 @@ long-held locks.
   requires resume/fork checkpoint and baked-genesis setup to delegate to
   `crucible_session::validation` and rejects direct checkpoint materialization
   in the CLI command modules.
-  `T-CLI-3` has partial evidence through `checks.crucible.phase5.cliBackendSelection`, which
+  `T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`, which
   records a backend-selection route for each backend-routed subcommand, sends
   `--daemon` invocations over a fakeable API command runner without local
   backend selection, resolves local `auto` through hermetic QEMU/plugin
@@ -392,6 +392,9 @@ long-held locks.
   double with an announcement, fails explicit QEMU discovery/configuration
   errors with exit 4, proves explicit double never resolves to QEMU, and compares recorded
   local/remote stdout/stderr, exit-code, canonical-log, and artifact projections.
+  The selected local QEMU route boots the closure-owned emulator, stock AOS
+  kernel/root fixture, and production plugin through the API boundary and
+  records exact-icount, fingerprint, boot-barrier, and child-exit evidence.
   `T-CLI-4` is green through `checks.crucible.phase5.cliDeterminismErgonomics`,
   which resolves seed sources in explicit flag, `CRUCIBLE_SEED`, generated order
   before run-identity dispatch, prints the resolved seed unless quiet, treats
@@ -428,13 +431,15 @@ long-held locks.
   savepoint handles for `--save-on`, incremental stdin acknowledgements for
   interactive commands, and non-passing outcome exit propagation with a
   reproduction artifact.
-  `T-CLI-7` has partial evidence through `checks.crucible.phase5.cliVerifyWorkflow`, which
+  `T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`, which
   covers fresh local-double, local-QEMU, and remote-daemon verify reductions,
   canonical-log byte comparison, execution-fingerprint stream comparison,
   adversarial hostile profiles, divergence localization with first
   decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
+  Each local-QEMU reduction also performs an independent production plugin boot
+  and rejects non-identical live reports.
   `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
   covers Bash, Elvish, Fish, PowerShell, and Zsh completion generation, exact
   long/short `--version`, normalized exact §6–§14 subcommand usage/help

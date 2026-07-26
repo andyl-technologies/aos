@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// Borrowed scenario component embedded in a reproduction artifact.
+pub(crate) struct ReproductionScenarioPayload<'a> {
+    /// Stable component name recorded in the artifact.
+    pub(crate) name: &'a str,
+    /// Media type describing the encoded scenario bytes.
+    pub(crate) media_type: &'a str,
+    /// Self-contained scenario payload.
+    pub(crate) bytes: &'a [u8],
+}
+
 pub(crate) fn verify_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
@@ -31,9 +41,11 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
     reproduction_artifact_bytes_with_scenario_payload(
         seed,
         backend,
-        "verify.scn",
-        "application/vnd.crucible.scenario+text",
-        &scenario_bytes,
+        ReproductionScenarioPayload {
+            name: "verify.scn",
+            media_type: "application/vnd.crucible.scenario+text",
+            bytes: &scenario_bytes,
+        },
         canonical_log,
         fingerprint_samples,
         extra_payloads,
@@ -50,9 +62,11 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     reproduction_artifact_bytes_with_scenario_payload(
         seed,
         backend,
-        "run-scenario.crucible-scenario",
-        "application/vnd.crucible.scenario.compact-binary",
-        &scenario.to_compact_binary(),
+        ReproductionScenarioPayload {
+            name: "run-scenario.crucible-scenario",
+            media_type: "application/vnd.crucible.scenario.compact-binary",
+            bytes: &scenario.to_compact_binary(),
+        },
         canonical_log,
         fingerprint_samples,
         &[],

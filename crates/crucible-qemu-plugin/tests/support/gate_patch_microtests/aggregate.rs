@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 
-use super::common::{assert_contains, patch_files, workspace_root, EXPECTED_PATCHES};
+use super::common::{EXPECTED_PATCHES, assert_contains, patch_files, workspace_root};
 
 /// Asserts the carried-patch roster matches the on-disk series and that the
 /// aggregate microtest nix plus `default.nix` register every gate surface.

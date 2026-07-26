@@ -1,6 +1,12 @@
 //! Local run/save workflows and remote resume control setup.
 
 use super::*;
+use crucible_api as production_api;
+
+#[path = "run_save/qemu_live.rs"]
+mod qemu_live;
+pub(super) use qemu_live::*;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RunWorkflowReport {
     pub(super) status: BackendCommandStatus,
@@ -567,38 +573,6 @@ pub(super) fn run_local_double_verify_workflow(
         verify_plan,
         report,
     )
-}
-
-pub(super) fn run_local_qemu_verify_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    verify_plan: &VerifyInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = LifecycleControlPlane::new(
-        "crucible-cli-qemu-verify",
-        Vec::new(),
-        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-    );
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_verify_workflow_async(
-        &client,
-        verify_plan,
-        backend_plan.resolved_backend.as_ref(),
-        ergonomics_plan,
-    ))?;
-    let mut outcome = finish_verify_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        verify_plan,
-        report,
-    )?;
-    append_local_qemu_verify_identity(&mut outcome, backend_plan)?;
-    Ok(outcome)
 }
 
 pub(super) fn run_local_qemu_save_workflow(

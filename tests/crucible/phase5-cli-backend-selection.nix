@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-3"],
+  taskIds ? ["T-CLI-3"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -57,18 +57,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-3 remains open";
-        needle = "- [ ] **T-CLI-3**";
+        label = "T-CLI-3 is complete";
+        needle = "- [x] **T-CLI-3**";
       }
       {
-        label = "T-CLI-3 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliBackendSelection`";
+        label = "T-CLI-3 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI backend-selection status note";
-        needle = "`T-CLI-3` has partial evidence through `checks.crucible.phase5.cliBackendSelection`";
+        needle = "`T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -119,6 +119,14 @@
       {
         label = "qemu resolved backend";
         needle = "ResolvedLocalBackend::Qemu";
+      }
+      {
+        label = "live QEMU backend execution";
+        needle = "fn run_live_qemu_backend_probe";
+      }
+      {
+        label = "API-owned live plugin gate";
+        needle = "production_api::run_production_plugin_install_gate";
       }
       {
         label = "double resolved backend";
@@ -327,8 +335,8 @@ in
           check=$ATTR_PATH
           tasks=$TASK_IDS
           open_tasks=$OPEN_TASK_IDS
-          status=partial
-          evidence_scope=backend-routing-model
+          status=complete
+          evidence_scope=backend-routing-live-qemu-and-production-api
           RESULT
         '';
       }

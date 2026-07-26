@@ -19,6 +19,7 @@ crucible-session = { path = "../crucible-session" }
 serde = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 crucible = { path = "../crucible", features = ["test-double"] }
@@ -26,4 +27,3 @@ crucible-harness = { path = "../crucible-harness" }
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }

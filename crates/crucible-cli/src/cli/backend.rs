@@ -1005,11 +1005,13 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                 ResolvedLocalBackend::Double => {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
                 }
-                ResolvedLocalBackend::Qemu { .. } => Ok(backend_command_outcome(
+                ResolvedLocalBackend::Qemu { .. } => run_local_qemu_workflow(
+                    backend,
                     thin_plan,
                     backend_plan,
                     ergonomics_plan,
-                )),
+                    run_plan,
+                ),
             };
         }
         Ok(backend_command_outcome(

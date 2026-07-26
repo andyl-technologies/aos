@@ -667,17 +667,15 @@ pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
     left.get(..len) == right.get(..len)
 }
 
-pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
+fn reproduction_artifact_bytes_with_scenario_payload(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
-    scenario_name: &str,
-    scenario_media_type: &str,
-    scenario_bytes: &[u8],
+    scenario: ReproductionScenarioPayload<'_>,
     canonical_log: &[CanonicalLogEntry],
     fingerprint_samples: &[VerifyFingerprintSample],
     extra_payloads: &[ReproductionArtifactComponentPayload],
 ) -> Result<Vec<u8>, CliError> {
-    let scenario_digest = content_address_bytes(&scenario_bytes);
+    let scenario_digest = content_address_bytes(scenario.bytes);
     let store_uri = format!("cas:{scenario_digest}");
     let identity = expected_replay_identity_for_backend(backend);
     let decisions = cli_decisions_from_canonical_log(canonical_log);
@@ -718,11 +716,11 @@ pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
         &[
             "scenario",
             "scenario_def",
-            scenario_name,
+            scenario.name,
             &scenario_digest,
             &store_uri,
-            scenario_media_type,
-            &scenario_bytes.len().to_string(),
+            scenario.media_type,
+            &scenario.bytes.len().to_string(),
         ],
     );
     artifact_line(
@@ -730,11 +728,11 @@ pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
         &[
             "component",
             "scenario_def",
-            scenario_name,
+            scenario.name,
             &scenario_digest,
             &store_uri,
-            scenario_media_type,
-            &scenario_bytes.len().to_string(),
+            scenario.media_type,
+            &scenario.bytes.len().to_string(),
         ],
     );
     for component in &extra_components {
@@ -761,7 +759,7 @@ pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
     }
     artifact_line(
         &mut text,
-        &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
+        &["payload", &scenario_digest, &hex_bytes(scenario.bytes)],
     );
     for (component, payload) in extra_components.iter().zip(extra_payloads) {
         artifact_line(

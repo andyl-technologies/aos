@@ -123,8 +123,8 @@
         needle = "cargo test \\\n        --doc";
       }
       {
-        label = "runtime closure uses AOS QEMU/plugin";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin];";
+        label = "runtime closure uses AOS QEMU/plugin/kernel/fixtures";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
         label = "workspace build info";

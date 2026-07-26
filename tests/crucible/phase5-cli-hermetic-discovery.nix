@@ -247,7 +247,7 @@
       }
       {
         label = "runtime QEMU closure";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin]";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [

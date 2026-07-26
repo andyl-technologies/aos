@@ -81,6 +81,7 @@ pub struct LivePluginInstallGateConfig {
     run_directory: PathBuf,
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
+    root_image_format: crate::QemuRootImageFormat,
     architecture: crate::LivePluginGuestArchitecture,
     whitebox: crate::QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -108,6 +109,7 @@ impl LivePluginInstallGateConfig {
             run_directory: run_directory.into(),
             initrd: None,
             kernel_cmdline: None,
+            root_image_format: crate::QemuRootImageFormat::Qcow2,
             architecture,
             whitebox: crate::QemuLaunchPluginSwitch::Off,
             app_random: None,
@@ -132,6 +134,13 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub fn with_kernel_cmdline(mut self, kernel_cmdline: impl Into<String>) -> Self {
         self.kernel_cmdline = Some(kernel_cmdline.into());
+        self
+    }
+
+    /// Returns this configuration with the declared immutable root-image format.
+    #[must_use]
+    pub fn with_root_image_format(mut self, format: crate::QemuRootImageFormat) -> Self {
+        self.root_image_format = format;
         self
     }
 
@@ -582,7 +591,8 @@ fn vm_launch_config(config: &LivePluginInstallGateConfig) -> QemuVmLaunchConfig 
         GATE_NODE,
         launch_artifact("kernel", &config.kernel),
         launch_artifact("root-image", &config.root_image),
-    );
+    )
+    .with_root_image_format(config.root_image_format);
     match &config.initrd {
         Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
         None => vm,

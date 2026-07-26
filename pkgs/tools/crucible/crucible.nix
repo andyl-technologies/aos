@@ -8,6 +8,8 @@
   pkg-config,
   qemu-crucible,
   crucible-qemu-plugin,
+  linux-crucible,
+  crucible-fixtures,
 }: let
   version = "0.1.0";
   cargoDepsHash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
@@ -80,7 +82,7 @@ in
     cargoTestFlags = workspaceCargoFlags;
     doCheck = true;
     buildDeps = [rust.dev pkg-config openssl];
-    runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin];
+    runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
@@ -88,6 +90,9 @@ in
     OPENSSL_STATIC = "0";
     CRUCIBLE_AOS_QEMU = "${qemu-crucible}/bin/qemu-system-x86_64";
     CRUCIBLE_AOS_PLUGIN = "${crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
+    CRUCIBLE_AOS_KERNEL = "${linux-crucible}/boot/vmlinuz-${linux-crucible.version}";
+    CRUCIBLE_AOS_ROOT_IMAGE = "${crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4";
+    CRUCIBLE_AOS_KERNEL_CMDLINE = "${linux-crucible.passthru.crucibleFixtureKernelCmdline} init=/init";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,

@@ -47,7 +47,7 @@ pub(super) fn read_raw_state_artifact(
         });
     }
     let mut input = Input::new(&bytes, path);
-    input.expect(DUMP_MAGIC)?;
+    input.consume_expected(DUMP_MAGIC)?;
     let icount = input.u64()?;
     let vcpu_count = input.u32()?;
     let mut registers = Vec::with_capacity(vcpu_count as usize);
@@ -210,7 +210,7 @@ impl<'a> Input<'a> {
         &self.bytes[self.offset..]
     }
 
-    fn expect(&mut self, expected: &[u8]) -> Result<(), PluginFingerprintRunnerError> {
+    fn consume_expected(&mut self, expected: &[u8]) -> Result<(), PluginFingerprintRunnerError> {
         let actual = self.take(expected.len())?;
         if actual == expected {
             Ok(())

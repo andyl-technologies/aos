@@ -131,7 +131,7 @@ pub use launch::{
     QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
-    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    QemuRootImageFormat, QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
     probe_x86_whitebox_setup, validate_aarch64_whitebox_setup, validate_pre_spawn_qemu_launch_args,
     validate_x86_whitebox_hmp_mtree,
 };

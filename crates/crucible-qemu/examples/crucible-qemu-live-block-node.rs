@@ -54,12 +54,13 @@ fn run() -> Result<(), String> {
         return Err(usage(&program));
     }
 
-    let mut config = QemuLiveBlockNodeGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
-        .with_busy_ceiling_icount(env_u64("CRUCIBLE_BLOCK_NODE_BUSY_CEILING", 12_000_000)?)
-        .with_completion_timeout(Duration::from_secs(env_u64(
-            "CRUCIBLE_BLOCK_NODE_TIMEOUT_SECS",
-            60,
-        )?));
+    let mut config =
+        QemuLiveBlockNodeGateConfig::new(qemu, plugin, kernel, firmware, run_directory)
+            .with_busy_ceiling_icount(env_u64("CRUCIBLE_BLOCK_NODE_BUSY_CEILING", 12_000_000)?)
+            .with_completion_timeout(Duration::from_secs(env_u64(
+                "CRUCIBLE_BLOCK_NODE_TIMEOUT_SECS",
+                60,
+            )?));
     if let Some(size) = env_opt_u64("CRUCIBLE_BLOCK_NODE_DEVICE_SIZE")? {
         config = config.with_device_size_bytes(size);
     }
