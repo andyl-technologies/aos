@@ -52,7 +52,53 @@ pub(super) fn fuzz_dispatch_route(
     {
         return Some(FuzzDispatchRoute::LocalDouble);
     }
+    if backend_plan.target == BackendExecutionTarget::Local
+        && matches!(
+            backend_plan.resolved_backend,
+            Some(ResolvedLocalBackend::Qemu { .. })
+        )
+    {
+        return Some(FuzzDispatchRoute::LocalQemu);
+    }
     None
+}
+
+pub(super) fn run_local_qemu_fuzz_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &FuzzDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU fuzz requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
+    let mut outcome =
+        run_local_double_fuzz_workflow(thin_plan, backend_plan, ergonomics_plan, plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "fuzz", report);
+    }
+    Ok(outcome)
+}
+
+pub(super) fn run_local_qemu_search_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU search requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
+    let mut outcome =
+        run_local_double_search_workflow(thin_plan, backend_plan, ergonomics_plan, plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "search", report);
+    }
+    Ok(outcome)
 }
 
 pub(super) fn run_local_double_fuzz_workflow(

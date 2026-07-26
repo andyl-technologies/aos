@@ -24,6 +24,11 @@ pub(super) fn run_local_qemu_fork_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
     let evidence = fork_handle_evidence(fork_plan)?;
     let mut outcome = run_local_double_fork_workflow_with_driver(
         thin_plan,
@@ -34,6 +39,9 @@ pub(super) fn run_local_qemu_fork_workflow(
         default_fork_interactive_driver(fork_plan),
     )?;
     append_local_qemu_fork_identity(&mut outcome, backend_plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "fork", report);
+    }
     Ok(outcome)
 }
 

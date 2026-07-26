@@ -489,6 +489,8 @@ pub(super) struct SelftestGateReport {
     pub(super) runs_per_entry: usize,
     pub(super) runner: SelftestGateRunner,
     pub(super) qemu_build_id: Option<String>,
+    pub(super) live_qemu_icount: Option<u64>,
+    pub(super) live_qemu_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

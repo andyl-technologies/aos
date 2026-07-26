@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliResumeWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-10"],
+  taskIds ? ["T-CLI-10"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -62,12 +62,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-10 remains open";
-        needle = "- [ ] **T-CLI-10** Implement `resume`";
+        label = "T-CLI-10 checklist complete";
+        needle = "- [x] **T-CLI-10** Implement `resume`";
       }
       {
         label = "T-CLI-10 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliResumeWorkflow`";
+        needle = "Completed under `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "T-CLI-10 local resume progress";
@@ -109,7 +109,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI resume completion note";
-        needle = "`T-CLI-10` has partial evidence through `checks.crucible.phase5.cliResumeWorkflow`";
+        needle = "`T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "phase5 CLI resume local-QEMU coordinator progress";
@@ -184,6 +184,10 @@
       {
         label = "resume local-QEMU runner";
         needle = "fn run_local_qemu_resume_workflow";
+      }
+      {
+        label = "resume local-QEMU live backend execution";
+        needle = "append_live_qemu_backend_proof(&mut outcome, \"resume\", report)";
       }
       {
         label = "resume local-QEMU realization output";
@@ -879,7 +883,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=resume-model-and-qmp-smoke
             component=crucible-cli
             contract=resume-workflow-progress

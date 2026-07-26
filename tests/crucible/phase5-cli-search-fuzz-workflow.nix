@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSearchFuzzWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-13"],
+  taskIds ? ["T-CLI-13"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -50,12 +50,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-13 remains open";
-        needle = "- [ ] **T-CLI-13** Implement `search`/`fuzz`";
+        label = "T-CLI-13 checklist complete";
+        needle = "- [x] **T-CLI-13** Implement `search`/`fuzz`";
       }
       {
         label = "T-CLI-13 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliSearchFuzzWorkflow`";
+        needle = "Completed under `checks.crucible.phase5.cliSearchFuzzWorkflow`";
       }
       {
         label = "T-CLI-13 local-double search progress";
@@ -500,6 +500,22 @@
       {
         label = "local-double fuzz runner";
         needle = "fn run_local_double_fuzz_workflow";
+      }
+      {
+        label = "local-QEMU search runner";
+        needle = "fn run_local_qemu_search_workflow";
+      }
+      {
+        label = "local-QEMU fuzz runner";
+        needle = "fn run_local_qemu_fuzz_workflow";
+      }
+      {
+        label = "search live backend evidence";
+        needle = "append_live_qemu_backend_proof(&mut outcome, \"search\", report)";
+      }
+      {
+        label = "fuzz live backend evidence";
+        needle = "append_live_qemu_backend_proof(&mut outcome, \"fuzz\", report)";
       }
       {
         label = "stored fuzz family loader";
@@ -1105,7 +1121,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=search-fuzz-model-and-local-double
             component=crucible-cli
             contract=search-fuzz-workflow-progress

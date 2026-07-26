@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.canonicalDebugBreakpoint",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-3"],
+  taskIds ? ["T-DBG-3"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -61,12 +61,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-3 remains open";
-        needle = "- [ ] **T-DBG-3**";
+        label = "T-DBG-3 checklist complete";
+        needle = "- [x] **T-DBG-3**";
       }
       {
         label = "T-DBG-3 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase6.canonicalDebugBreakpoint`";
+        needle = "Completed under `checks.crucible.phase6.canonicalDebugBreakpoint`";
       }
       {
         label = "hardware/out-of-band spec";
@@ -404,7 +404,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=complete
             evidence_scope=canonical-breakpoint-model-and-proxy
             gate=gate:canonical-debug-breakpoint
             breakpoint=out-of-band

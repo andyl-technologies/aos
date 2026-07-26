@@ -276,6 +276,8 @@ pub(crate) struct FuzzDriverPlan {
 pub(crate) enum FuzzDispatchRoute {
     BuiltInFaultCampaignProof,
     LocalDouble,
+    /// Runs the deterministic driver after a live packaged-QEMU proof.
+    LocalQemu,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSelftest",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-8"],
+  taskIds ? ["T-CLI-8"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -55,18 +55,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-8 remains open";
-        needle = "- [ ] **T-CLI-8** Implement `selftest`";
+        label = "T-CLI-8 checklist complete";
+        needle = "- [x] **T-CLI-8** Implement `selftest`";
       }
       {
         label = "T-CLI-8 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliSelftest`";
+        needle = "Completed under `checks.crucible.phase5.cliSelftest`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI selftest partial note";
-        needle = "`T-CLI-8` has partial evidence through `checks.crucible.phase5.cliSelftest`";
+        needle = "`T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
@@ -115,6 +115,14 @@
       {
         label = "per-gate selftest report";
         needle = "struct SelftestGateReport";
+      }
+      {
+        label = "real-QEMU gates execute the live backend";
+        needle = "run_live_qemu_backend_probe_for_command(backend)?";
+      }
+      {
+        label = "real-QEMU selftest icount evidence";
+        needle = "live_qemu_icount";
       }
       {
         label = "per-gate output row";
@@ -271,7 +279,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=double-backed-selftest-and-qemu-readiness
             component=crucible-cli
             selftest=fast-double-backed-plus-real-qemu

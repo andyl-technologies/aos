@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSaveWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-9"],
+  taskIds ? ["T-CLI-9"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -54,12 +54,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-9 remains open";
-        needle = "- [ ] **T-CLI-9** Implement `save`";
+        label = "T-CLI-9 checklist complete";
+        needle = "- [x] **T-CLI-9** Implement `save`";
       }
       {
         label = "T-CLI-9 partial-evidence note";
-        needle = "Partial evidence under `checks.crucible.phase5.cliSaveWorkflow`";
+        needle = "Completed under `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "T-CLI-9 oracle validated save scope";
@@ -81,7 +81,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI save completion note";
-        needle = "`T-CLI-9` has partial evidence through `checks.crucible.phase5.cliSaveWorkflow`";
+        needle = "`T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "phase5 CLI remote save progress";
@@ -105,6 +105,10 @@
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "save local-QEMU live backend execution";
+        needle = "append_live_qemu_backend_proof(&mut outcome, \"save\", report)";
+      }
       {
         label = "save arguments";
         needle = "struct SaveArgs";
@@ -769,7 +773,7 @@ in
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
-            status=partial
+            status=complete
             evidence_scope=save-model-and-qmp-smoke
             component=crucible-cli
             contract=save-workflow-progress
