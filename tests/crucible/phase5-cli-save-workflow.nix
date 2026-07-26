@@ -21,26 +21,16 @@
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  apiControlClient = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  apiControlClientContracts = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/contract_tests.rs;
+  apiControlClientConformance = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/conformance.rs;
   apiLifecycleUnary = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
   saveWorkflowGate = builtins.readFile ./phase5-cli-save-workflow.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
@@ -434,7 +424,7 @@
         needle = "CreateSessionRequest::inline_form(scenario_form, seed)";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" apiControlClient [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client/contract_tests.rs" apiControlClientContracts [
       {
         label = "RPC inline form wire snapshot";
         needle = "create-session-inline-form-request";
@@ -443,6 +433,12 @@
         label = "RPC inline form payload assertion";
         needle = "form-bearing inline create-session must transfer source payload";
       }
+      {
+        label = "RPC inline form typed request";
+        needle = "CreateSessionRequest::inline_form";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client/conformance.rs" apiControlClientConformance [
       {
         label = "RPC inline form conformance marker";
         needle = "create-session-inline-form";
