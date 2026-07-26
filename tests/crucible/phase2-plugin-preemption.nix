@@ -19,7 +19,9 @@
     + builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption/injector.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  pluginAbiTests =
+    builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs
+    + builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs;
   pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -398,8 +400,8 @@ in
               preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow \
               preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow
             run_exact_test \
-              abi::tests::abi_install_requires_preemption_injection_symbol \
-              abi::tests::abi_install_requires_preemption_injection_symbol
+              abi::tests::capabilities::abi_install_requires_preemption_injection_symbol \
+              abi::tests::capabilities::abi_install_requires_preemption_injection_symbol
           '';
         }
         {
