@@ -39,9 +39,9 @@ use crucible_session::engine::{
     QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
 };
 use crucible_session::validation::{
-    ValidationDag, ValidationDagStoreError, empty_validation_dag,
-    fork_session_from_validation_base, fork_session_from_validation_checkpoint,
-    resume_session_from_validation_dag,
+    self as sv, ValidationDag, ValidationDagStoreError, fork_session_from_validation_base,
+    fork_session_from_validation_checkpoint, recorded_checkpoint_for_configuration,
+    resume_session_from_validation_dag, validation_dag_with_baked_genesis,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply,
@@ -49,10 +49,9 @@ use crucible_session::{
     QueryResult, SessionCommand, SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
-        FindingReproductionArtifact, GenesisCheckpoint, MaterializationPolicy,
-        MaterializationTrigger, MemoryDagStore, OverrideDecision, RecordedAssertionLog, Schedule,
-        SchedulingPoint, SearchDiscoveredFailure, SearchFailureOracle,
-        SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
+        FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
+        OverrideDecision, RecordedAssertionLog, Schedule, SchedulingPoint, SearchDiscoveredFailure,
+        SearchFailureOracle, SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
 #[cfg(test)]

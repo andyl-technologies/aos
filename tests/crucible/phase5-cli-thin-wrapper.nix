@@ -15,7 +15,10 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliControl = builtins.readFile ../../crates/crucible-cli/src/cli/control.rs;
+  cliResumeFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
+  sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -69,6 +72,28 @@
       {
         label = "phase5 CLI thin-wrapper status note";
         needle = "`T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/validation.rs" sessionValidation [
+      {
+        label = "session-owned checkpoint materialization";
+        needle = "pub fn recorded_checkpoint_for_configuration(";
+      }
+      {
+        label = "session-owned baked genesis DAG setup";
+        needle = "pub fn validation_dag_with_baked_genesis(";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/control.rs" cliControl [
+      {
+        label = "save delegates baked genesis DAG setup";
+        needle = "validation_dag_with_baked_genesis(scenario)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/resume_fork.rs" cliResumeFork [
+      {
+        label = "resume and fork delegate checkpoint materialization";
+        needle = "recorded_checkpoint_for_configuration(configuration, frontier)";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -299,6 +324,18 @@
       {
         label = "CLI wall-clock canonical input";
         needle = "SystemTime::now";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/cli/control.rs" cliControl [
+      {
+        label = "CLI-owned checkpoint materialization";
+        needle = "Checkpoint::from_recorded_configuration(";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/cli/resume_fork.rs" cliResumeFork [
+      {
+        label = "CLI-owned checkpoint materialization";
+        needle = "Checkpoint::from_recorded_configuration(";
       }
     ];
 
