@@ -1138,8 +1138,8 @@ branch on the verdict without parsing output:
   fields from that model-checkpoint executor, and replay-oracle validation
   through marker-resolved QEMU/plugin identity. The selected local-QEMU path now
   requires a successful live packaged-QEMU/plugin boot before admitting the
-  coordinator result. The gate also runs a direct patched-QEMU QMP
-  `snapshot-load` smoke that proves the load job concludes and QEMU reports
+  coordinator result. The gate also runs a direct patched-QEMU
+  QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
   `running` after `cont`; exact restore is admitted only after the replay oracle
   validates the materialized configuration under the savevm policy.
 - [x] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
