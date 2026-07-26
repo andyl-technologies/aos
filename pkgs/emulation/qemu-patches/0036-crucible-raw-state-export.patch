@@ -433,7 +433,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
-@@ -932,6 +935,363 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -932,6 +935,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
      return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
  }
  
@@ -476,17 +476,19 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    struct CrucibleTerminalPauseRequest *request = opaque;
 +    int status = 0;
 +
-+    if (runstate_is_running()) {
-+        aio_bh_schedule_oneshot(qemu_get_aio_context(),
-+                                crucible_terminal_pause_bh, request);
-+        return;
-+    }
-+    crucible_terminal_pause_pending = NULL;
 +    if (!bql_locked()) {
 +        status = -EPERM;
++    } else if (runstate_is_running()) {
++        status = vm_stop(RUN_STATE_PAUSED);
++        if (status == 0) {
++            aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                                    crucible_terminal_pause_bh, request);
++            return;
++        }
 +    } else if (!runstate_check(RUN_STATE_PAUSED)) {
 +        status = -ECANCELED;
 +    }
++    qatomic_set(&crucible_terminal_pause_pending, NULL);
 +    request->callback(status, request->userdata);
 +    g_free(request);
 +}
@@ -496,27 +498,21 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    void *userdata)
 +{
 +    struct CrucibleTerminalPauseRequest *request;
-+    int status;
++    struct CrucibleTerminalPauseRequest *prior;
 +
 +    if (!callback) {
 +        return -EINVAL;
 +    }
-+    if (!bql_locked()) {
-+        return -EPERM;
-+    }
-+    if (crucible_terminal_pause_pending ||
-+        crucible_terminal_vmstate_export_latched) {
++    if (qatomic_read(&crucible_terminal_vmstate_export_latched)) {
 +        return -EALREADY;
 +    }
 +    request = g_new0(struct CrucibleTerminalPauseRequest, 1);
 +    request->callback = callback;
 +    request->userdata = userdata;
-+    crucible_terminal_pause_pending = request;
-+    status = vm_stop(RUN_STATE_PAUSED);
-+    if (status != 0) {
-+        crucible_terminal_pause_pending = NULL;
++    prior = qatomic_cmpxchg(&crucible_terminal_pause_pending, NULL, request);
++    if (prior != NULL) {
 +        g_free(request);
-+        return status;
++        return -EALREADY;
 +    }
 +    aio_bh_schedule_oneshot(qemu_get_aio_context(),
 +                            crucible_terminal_pause_bh, request);

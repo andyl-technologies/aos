@@ -235,6 +235,7 @@ impl OwnedCallbackRuntimeState {
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
         fingerprint: Option<crate::PluginFingerprintSampling>,
+        state_dump: Option<crate::PluginRawStateDump>,
     ) -> Result<*mut live_callbacks::LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
         // SAFETY: this projection does not move the pinned parent or any
         // independently pinned callback allocation. The new allocation is
@@ -307,6 +308,10 @@ impl OwnedCallbackRuntimeState {
                     })?;
                 callback_state.attach_fingerprint(sampling, slot)
             }
+            None => callback_state,
+        };
+        let callback_state = match state_dump {
+            Some(state_dump) => callback_state.attach_state_dump(state_dump),
             None => callback_state,
         };
         let callback_state = Box::pin(callback_state);

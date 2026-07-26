@@ -866,40 +866,20 @@ determinism contract (04).
   `gate:qemu-inert` corpus is implemented by
   `checks.crucible.phase2.gates.qemuInert`; the N-vCPU fingerprint expansion is
   covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
-- [ ] **T-QEMU-11** Implement the single-VM fingerprint hook for
+- [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
-  **Implemented partial slice:** `crucible-qemu-fingerprint` imports two
-  versioned real-QEMU trace-plugin streams into the canonical Rust stream under
-  a separately content-addressed definition. An independent, stopped,
-  zero-icount preflight pins exact QMP topology, register layout, writable-RAM
-  coverage, non-RAM VMState section schema, RR quantum, and build/launch
-  identities. Samples carry SHA-256 register, RAM, and current serialized
-  non-RAM VMState digests; the 64-bit rolling composition is diagnostic only.
-  The Phase 2 gate runs the same bounded VM twice with second-run host load,
-  validates exact provenance and topology, and exercises parser/comparator red
-  controls for every component and VMState-schema drift. Exact probe and
-  both-side dump contracts now exist, but the shell still owns the live QEMU
-  launches and its mutations are post-processing controls. The task remains
-  open until a production Rust runner performs fresh exact-input launches,
-  instruction-exact refinement, real dumps, and all required interaction
-  boundaries.
-  **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** a
-  production Rust runner (`PluginFingerprintRunner`) now performs the fresh
-  exact-input launches itself — it boots QEMU with the Rust plugin as the sole
-  fingerprint authority and `fingerprint=on`, drives the shmem quantum hot path
-  to a fixed content-addressed cadence (domain
-  `crucible.qemu.rust-plugin-fingerprint.v1`, identity bound to
-  `rust_plugin_build_digest`), runs the scenario twice (second under host CPU
-  load) with byte-identical streams, and performs instruction-exact refinement
-  by RESTART to an exact icount (`SingleVmFingerprintProbeRunner`, restart-probe
-  equality attested). Still open for full closure: real both-side architectural
-  state dumps at a divergence (the deterministic gate proves equality, so this
-  path is unreached; `dump_single_vm_fingerprint_state` fails loud rather than
-  fabricating one) and the frame-delivery / fault-activation interaction
-  boundaries, both of which land with the M4/M5 live-I/O and fault work.
+  Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
+  production Rust runner performs fresh exact-input launches, applies
+  adversarial host load to the second run, and compares a content-addressed
+  five-boundary stream containing periodic, real frame-delivery, and real
+  fault-activation samples. Its negative control proves the complete diagnostic
+  path: ordinal-aware fresh-run probes localize a real launch divergence to one
+  instruction, and the plugin's terminal paused callback exports complete
+  per-vCPU registers, writable RAM, and serialized non-RAM VMState from both
+  QEMU processes for a validated, content-addressed dump.
 - [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
   futex wake → advance → frame inject/emit / I/O), entirely over shmem with no

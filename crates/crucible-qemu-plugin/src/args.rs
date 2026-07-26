@@ -11,6 +11,7 @@
 //! entry point will call it before opening the control fd or touching QEMU state.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod app_random;
@@ -39,6 +40,31 @@ pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+/// The optional terminal raw-state dump target-icount argument key.
+pub const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
+/// The optional terminal raw-state dump output-path argument key.
+pub const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
+
+/// A terminal raw-state dump requested at one exact fingerprint boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginStateDumpConfig {
+    target_icount: u64,
+    output_path: PathBuf,
+}
+
+impl PluginStateDumpConfig {
+    /// Returns the exact aggregate icount at which QEMU must pause and dump.
+    #[must_use]
+    pub const fn target_icount(&self) -> u64 {
+        self.target_icount
+    }
+
+    /// Returns the absolute output path for the atomic dump artifact.
+    #[must_use]
+    pub fn output_path(&self) -> &Path {
+        &self.output_path
+    }
+}
 
 /// Parsed QEMU plugin launch arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +77,7 @@ pub struct PluginArgs {
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
+    state_dump: Option<PluginStateDumpConfig>,
 }
 
 impl PluginArgs {
@@ -72,6 +99,7 @@ impl PluginArgs {
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
+        let state_dump = parse_state_dump(&parsed, fingerprint)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
@@ -83,6 +111,7 @@ impl PluginArgs {
             app_random,
             coverage,
             fingerprint,
+            state_dump,
         })
     }
 
@@ -132,6 +161,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn fingerprint(&self) -> PluginSwitch {
         self.fingerprint
+    }
+
+    /// Returns the optional exact-boundary terminal raw-state dump request.
+    #[must_use]
+    pub const fn state_dump(&self) -> Option<&PluginStateDumpConfig> {
+        self.state_dump.as_ref()
     }
 
     /// Validates the slot against the host-advertised node count.
@@ -259,6 +294,24 @@ pub enum PluginArgsParseError {
     /// Only one of the inherited descriptor keys was supplied.
     #[error("plugin inherited descriptors require both `shmemfd` and `wakefd`")]
     IncompleteInheritedDescriptors,
+    /// Only one member of the terminal state-dump argument pair was supplied.
+    #[error("plugin terminal state dump requires both target and output path")]
+    IncompleteStateDump,
+    /// A terminal state dump was requested without fingerprint boundary sampling.
+    #[error("plugin terminal state dump requires `fingerprint=on`")]
+    StateDumpWithoutFingerprint,
+    /// The terminal state-dump target was not a nonzero instruction count.
+    #[error("plugin state-dump target is invalid: `{value}`")]
+    InvalidStateDumpTarget {
+        /// Rejected target text.
+        value: String,
+    },
+    /// The terminal state-dump path was not an absolute comma-free path.
+    #[error("plugin state-dump path is invalid: `{value}`")]
+    InvalidStateDumpPath {
+        /// Rejected path text.
+        value: String,
+    },
     /// The slot was not within `0..node_count`.
     #[error("plugin slot {slot} is outside 0..{node_count}")]
     SlotOutOfRange {
@@ -386,6 +439,44 @@ fn parse_inherited_fds(
     }
 }
 
+fn parse_state_dump(
+    parsed: &ParsedPluginArgs<'_>,
+    fingerprint: PluginSwitch,
+) -> Result<Option<PluginStateDumpConfig>, PluginArgsParseError> {
+    match (
+        parsed.value(PLUGIN_ARG_STATE_DUMP_TARGET),
+        parsed.value(PLUGIN_ARG_STATE_DUMP_PATH),
+    ) {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(PluginArgsParseError::IncompleteStateDump),
+        (Some(target), Some(path)) => {
+            if !fingerprint.is_on() {
+                return Err(PluginArgsParseError::StateDumpWithoutFingerprint);
+            }
+            let target_icount = target.parse::<u64>().map_err(|_source| {
+                PluginArgsParseError::InvalidStateDumpTarget {
+                    value: target.to_owned(),
+                }
+            })?;
+            if target_icount == 0 {
+                return Err(PluginArgsParseError::InvalidStateDumpTarget {
+                    value: target.to_owned(),
+                });
+            }
+            let output_path = PathBuf::from(path);
+            if !output_path.is_absolute() || path.contains(',') || path.contains('=') {
+                return Err(PluginArgsParseError::InvalidStateDumpPath {
+                    value: path.to_owned(),
+                });
+            }
+            Ok(Some(PluginStateDumpConfig {
+                target_icount,
+                output_path,
+            }))
+        }
+    }
+}
+
 fn is_known_key(key: &str) -> bool {
     matches!(
         key,
@@ -397,178 +488,10 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
+            | PLUGIN_ARG_STATE_DUMP_TARGET
+            | PLUGIN_ARG_STATE_DUMP_PATH
     ) || app_random::is_key(key)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plugin_args_parse_required_simfd_and_slot() {
-        let args = PluginArgs::parse("simfd=3,slot=2")
-            .unwrap_or_else(|error| panic!("minimal args should parse: {error}"));
-
-        assert_eq!(args.sim_fd(), 3);
-        assert_eq!(args.slot(), 2);
-        assert_eq!(args.inherited_fds(), None);
-        assert_eq!(args.whitebox(), PluginSwitch::Off);
-        assert_eq!(args.whitebox_setup(), None);
-        assert_eq!(args.app_random(), None);
-        assert_eq!(args.coverage(), PluginSwitch::Off);
-        assert_eq!(args.fingerprint(), PluginSwitch::Off);
-        assert_eq!(args.validate_slot_index(3), Ok(()));
-    }
-
-    #[test]
-    fn plugin_args_parse_optional_fds_and_switches() {
-        let args = PluginArgs::parse(
-            "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on",
-        )
-        .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
-
-        assert_eq!(args.sim_fd(), 4);
-        assert_eq!(args.slot(), 1);
-        assert_eq!(
-            args.inherited_fds(),
-            Some(PluginInheritedFds {
-                shmem_fd: 5,
-                wake_fd: 6,
-            })
-        );
-        assert!(args.whitebox().is_on());
-        assert_eq!(
-            args.whitebox_setup(),
-            Some(WhiteboxSetupAttestation::X86Port00e7UnclaimedV1)
-        );
-        assert!(!args.coverage().is_on());
-        assert!(args.fingerprint().is_on());
-    }
-
-    #[test]
-    fn plugin_args_reject_missing_required_keys() {
-        assert_eq!(
-            PluginArgs::parse("slot=0"),
-            Err(PluginArgsParseError::MissingRequiredKey { key: "simfd" })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3"),
-            Err(PluginArgsParseError::MissingRequiredKey { key: "slot" })
-        );
-    }
-
-    #[test]
-    fn plugin_args_reject_malformed_unknown_and_duplicate_keys() {
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot"),
-            Err(PluginArgsParseError::MalformedArgument {
-                argument: String::from("slot"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,mode=on"),
-            Err(PluginArgsParseError::UnknownKey {
-                key: String::from("mode"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,slot=1"),
-            Err(PluginArgsParseError::DuplicateKey {
-                key: String::from("slot"),
-            })
-        );
-    }
-
-    #[test]
-    fn plugin_args_reject_bad_fd_slot_and_switch_values() {
-        assert_eq!(
-            PluginArgs::parse("simfd=-1,slot=0"),
-            Err(PluginArgsParseError::InvalidFd {
-                key: "simfd",
-                value: String::from("-1"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=control,slot=0"),
-            Err(PluginArgsParseError::InvalidFd {
-                key: "simfd",
-                value: String::from("control"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=guest"),
-            Err(PluginArgsParseError::InvalidSlot {
-                key: "slot",
-                value: String::from("guest"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,coverage=true"),
-            Err(PluginArgsParseError::InvalidSwitch {
-                key: "coverage",
-                value: String::from("true"),
-            })
-        );
-    }
-
-    #[test]
-    fn plugin_args_require_whitebox_setup_attestation_exactly_when_enabled() {
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,whitebox=on"),
-            Err(PluginArgsParseError::MissingWhiteboxSetup {
-                key: PLUGIN_ARG_WHITEBOX_SETUP,
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e8-unclaimed-v1"
-            ),
-            Err(PluginArgsParseError::InvalidWhiteboxSetup {
-                key: PLUGIN_ARG_WHITEBOX_SETUP,
-                value: String::from("x86-port-00e8-unclaimed-v1"),
-            })
-        );
-        assert_eq!(
-            PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
-            ),
-            Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
-                key: PLUGIN_ARG_WHITEBOX_SETUP,
-            })
-        );
-    }
-
-    #[test]
-    fn plugin_args_reject_partial_inherited_descriptor_pair() {
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,shmemfd=4"),
-            Err(PluginArgsParseError::IncompleteInheritedDescriptors)
-        );
-        assert_eq!(
-            PluginArgs::parse("simfd=3,slot=0,wakefd=5"),
-            Err(PluginArgsParseError::IncompleteInheritedDescriptors)
-        );
-    }
-
-    #[test]
-    fn plugin_args_validate_slot_against_node_count() {
-        let args = PluginArgs::parse("simfd=3,slot=2")
-            .unwrap_or_else(|error| panic!("args should parse: {error}"));
-
-        assert_eq!(args.validate_slot_index(3), Ok(()));
-        assert_eq!(
-            args.validate_slot_index(2),
-            Err(PluginArgsParseError::SlotOutOfRange {
-                slot: 2,
-                node_count: 2,
-            })
-        );
-        assert_eq!(
-            args.validate_slot_index(0),
-            Err(PluginArgsParseError::SlotOutOfRange {
-                slot: 2,
-                node_count: 0,
-            })
-        );
-    }
-}
+mod tests;

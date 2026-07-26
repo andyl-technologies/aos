@@ -12,6 +12,7 @@ mod crucible_shmem_block;
 mod crucible_shmem_network;
 mod entropy;
 mod error;
+mod helpers;
 mod modes;
 mod validation;
 mod whitebox_setup;
@@ -37,6 +38,10 @@ pub use crucible_shmem_network::{
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
 pub use error::QemuLaunchCommandError;
+use helpers::{
+    content_hash_hex, validate_fd, validate_launch_text, validate_node_icount_shifts,
+    validate_overlay_file_name, validate_store_path,
+};
 pub use modes::{
     DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, IcountShiftSetting, InputPolicy,
     MachineResetMode,
@@ -84,6 +89,8 @@ const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1: &str = "aarch64-hlt-04c1-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
+const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
 const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
 const FIXED_PLUGIN_WAKE_FD: i32 = 5;
@@ -977,6 +984,7 @@ pub struct QemuLaunchPluginConfig {
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    state_dump: Option<(u64, String)>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -991,6 +999,7 @@ impl QemuLaunchPluginConfig {
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            state_dump: None,
         }
     }
 
@@ -1030,6 +1039,17 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
+        self
+    }
+
+    /// Returns a config that terminally exports full raw state at `target_icount`.
+    #[must_use]
+    pub fn with_terminal_state_dump(
+        mut self,
+        target_icount: u64,
+        output_path: impl Into<String>,
+    ) -> Self {
+        self.state_dump = Some((target_icount, output_path.into()));
         self
     }
 
@@ -1117,6 +1137,10 @@ impl QemuLaunchPluginConfig {
         if self.fingerprint == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
         }
+        if let Some((target_icount, output_path)) = &self.state_dump {
+            args.push(format!("{PLUGIN_ARG_STATE_DUMP_TARGET}={target_icount}"));
+            args.push(format!("{PLUGIN_ARG_STATE_DUMP_PATH}={output_path}"));
+        }
         args.join(",")
     }
 
@@ -1151,6 +1175,18 @@ impl QemuLaunchPluginConfig {
             validate_launch_text(PLUGIN_ARG_APP_RANDOM_NODE, &app_random.node_name)?;
             if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
                 return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
+            }
+        }
+        if let Some((target_icount, output_path)) = &self.state_dump {
+            if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
+                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
+            }
+            validate_launch_text(PLUGIN_ARG_STATE_DUMP_PATH, output_path)?;
+            if !output_path.starts_with('/')
+                || output_path.contains(',')
+                || output_path.contains('=')
+            {
+                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
             }
         }
         Ok(())
@@ -1476,77 +1512,6 @@ impl DeterministicLaunchProfile {
                 icount,
                 shift: self.icount_shift,
             })
-    }
-}
-
-fn validate_node_icount_shifts(
-    scenario_shift: u8,
-    node_shifts: &[NodeIcountShift],
-) -> Result<(), LaunchProfileError> {
-    canonical_node_icount_shift_lines(scenario_shift, node_shifts)?;
-    Ok(())
-}
-
-fn validate_launch_text(field: &'static str, value: &str) -> Result<(), QemuLaunchCommandError> {
-    if value.is_empty() || value.contains('\n') || value.contains('\0') {
-        Err(QemuLaunchCommandError::InvalidLaunchText { field })
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_store_path(field: &'static str, path: &str) -> Result<(), QemuLaunchCommandError> {
-    validate_launch_text(field, path)?;
-    if path.starts_with("/nix/store/")
-        && !path.contains("/../")
-        && !path.ends_with("/..")
-        && !path.contains("/./")
-        && !path.ends_with("/.")
-        && !path.contains('\\')
-        && !path.contains(',')
-    {
-        Ok(())
-    } else {
-        Err(QemuLaunchCommandError::InvalidStorePath {
-            field,
-            path: path.to_owned(),
-        })
-    }
-}
-
-fn validate_overlay_file_name(file_name: &str) -> Result<(), QemuLaunchCommandError> {
-    validate_launch_text("root_overlay_file_name", file_name)?;
-    if file_name.contains('/') || file_name.contains('\\') || file_name.contains(',') {
-        Err(QemuLaunchCommandError::InvalidOverlayFileName {
-            file_name: file_name.to_owned(),
-        })
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_fd(field: &'static str, fd: i32) -> Result<(), QemuLaunchCommandError> {
-    if fd < 0 {
-        Err(QemuLaunchCommandError::InvalidFileDescriptor { field, fd })
-    } else {
-        Ok(())
-    }
-}
-
-fn content_hash_hex(hash: ContentHash) -> String {
-    let mut hex = String::with_capacity(hash.bytes.len() * 2);
-    for byte in hash.bytes {
-        hex.push(nibble_to_hex(byte >> 4));
-        hex.push(nibble_to_hex(byte & 0x0f));
-    }
-    hex
-}
-
-fn nibble_to_hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'a' + (nibble - 10)) as char,
-        _ => unreachable!("nibble is masked to four bits"),
     }
 }
 

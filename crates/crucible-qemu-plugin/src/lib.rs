@@ -68,6 +68,7 @@ pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
 pub mod preemption;
+pub mod raw_state_dump;
 pub mod registration;
 pub mod round_robin;
 #[cfg(unix)]
@@ -121,9 +122,9 @@ pub use args::{
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_SEED,
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD,
     PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP,
-    PluginAppRandomConfig, PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginSwitch,
-    WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
-    WhiteboxSetupAttestation,
+    PluginAppRandomConfig, PluginArgs, PluginArgsParseError, PluginInheritedFds,
+    PluginStateDumpConfig, PluginSwitch, WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1,
+    WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
@@ -208,6 +209,7 @@ pub use preemption::{
     QEMU_PREEMPTION_KIND_VCPU_SWITCH, QEMU_PREEMPTION_UNUSED_ARG, QemuInjectPreemptionFn,
     QemuPreemptionCommand, plan_deterministic_ipi_delivery,
 };
+pub use raw_state_dump::{PluginRawStateDump, PluginRawStateDumpError};
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,

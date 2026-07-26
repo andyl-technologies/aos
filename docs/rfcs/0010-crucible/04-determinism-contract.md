@@ -678,37 +678,21 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.
-- [ ] **T-DET-8** Implement the execution fingerprint (periodic icount +
+- [x] **T-DET-8** Implement the execution fingerprint (periodic icount +
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.
-  - The `crucible-qemu-fingerprint` importer converts versioned real-QEMU
-    trace-plugin observations into a separately content-addressed stream. A
-    definition-only QEMU preflight pauses before guest execution and pins the
-    exact QMP CPU set, register schemas and byte counts, RAM coverage,
-    registered non-RAM VMState section schema, RR quantum, and
-    launch/QEMU/plugin identities independently of both comparison runs. The
-    preflight must observe an actually stopped VM at aggregate icount zero.
-    Each run then validates monotonic per-vCPU retired counts, current
-    registers, RAM, non-RAM VMState, the RR cursor, periodic cadence, and the
-    exact horizon boundary. The scenario also content-addresses the exact guest
-    image, command line, seed,
-    injected-input sequence, and launch definition. Register-file, writable-RAM,
-    and serialized non-RAM VMState components use SHA-256; the old 64-bit
-    rolling values remain diagnostics only. The live path still samples only
-    the horizon interaction boundary; frame-delivery and fault-activation
-    sampling and an integrated launcher/rerun adapter for instruction-exact
-    bisection and both-side state dumps remain absent, so this task remains open.
-  - **Live half (`checks.crucible.phase2.qemuLivePluginFingerprint`):** the
-    integrated launcher/rerun adapter now exists as the Rust `PluginFingerprintRunner`,
-    which computes the execution fingerprint black-box from the host with the
-    Rust plugin as the sole authority. It samples a periodic aggregate-icount
-    cadence (not only the horizon) — SHA-256 register-file, writable-RAM, and
-    non-RAM VMState digests per boundary — under the fixed content-addressed
-    definition `crucible.qemu.rust-plugin-fingerprint.v1`, and performs
-    instruction-exact bisection by RESTART to an exact icount. Still absent:
-    frame-delivery and fault-activation sampling and real both-side state dumps
-    at a divergence, both M4/M5 scope.
+  - Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
+    production `PluginFingerprintRunner` boots the fixed guest twice with the
+    Rust plugin as the sole fingerprint authority and samples SHA-256
+    register-file, writable-RAM, and serialized non-RAM VMState material at
+    periodic boundaries, an actual shared-memory frame delivery, and an
+    acknowledged exact-icount fault activation. The definition binds cadence,
+    event plan, topology, RR quantum, and QEMU/plugin build identities. The
+    negative-control pass introduces a real second-launch divergence, refines it
+    by fresh-run exact-icount probes, terminally exports complete registers,
+    writable RAM, and VMState from both live QEMU processes, and validates the
+    content-addressed structured dump.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.

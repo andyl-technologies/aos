@@ -21,7 +21,9 @@
 //! including the second run under deliberate host CPU load.
 
 mod definition;
+mod error;
 mod probe;
+mod raw_dump;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,30 +32,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crucible::{
-    AdvanceOutcome, ContentHash, ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer,
-};
-use crucible_shmem::{
-    FingerprintSample, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
-};
-use thiserror::Error;
-
 use crate::single_vm_fingerprint::{
-    PluginFingerprintBoundary, SingleVmFingerprintGateError, SingleVmFingerprintRunError,
+    PluginFingerprintBoundary, SingleVmFingerprintEventBoundary, SingleVmFingerprintRunError,
     SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, build_plugin_fingerprint_stream,
 };
 use crate::{
     LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodeChild,
-    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
+    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+};
+use crucible::{
+    AdvanceOutcome, BackendInput, ContentHash, ExecutionHorizon, Icount, SchedulerError,
+    SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+};
+use crucible_shmem::{
+    FingerprintSample, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, SchedulerPreemptionCommand,
+    SchedulerPreemptionKind, mmap_setup_region,
 };
 
 pub use definition::{
-    CADENCE_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN, RustPluginFingerprintDefinition, TARGET_ICOUNTS,
+    CADENCE_ICOUNT, FAULT_ACTIVATION_ICOUNT, FRAME_DELIVERY_ICOUNT, RUST_PLUGIN_FINGERPRINT_DOMAIN,
+    RustPluginFingerprintDefinition, SAMPLE_ICOUNTS,
 };
+pub use error::PluginFingerprintRunnerError;
+use error::{channel_error, hash_file, node_id, path_text, to_run_error};
+use raw_dump::{PreparedStateDumpPair, RawStateArtifact, read_raw_state_artifact};
 
 /// Content-addressing domain for the fingerprint runner's launch artifacts.
 const RUNNER_DOMAIN: &str = "crucible.rust-plugin-fingerprint-runner.v1";
@@ -99,6 +104,7 @@ pub struct PluginFingerprintRunnerConfig {
     kernel_cmdline: Option<String>,
     completion_timeout: Duration,
     second_run_host_load: bool,
+    second_run_divergence_control: bool,
     qemu_build_digest: String,
     rust_plugin_build_digest: String,
     rr_switch_quantum: u64,
@@ -137,6 +143,7 @@ impl PluginFingerprintRunnerConfig {
             kernel_cmdline: None,
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
+            second_run_divergence_control: false,
             qemu_build_digest,
             rust_plugin_build_digest,
             rr_switch_quantum: 0,
@@ -201,6 +208,18 @@ impl PluginFingerprintRunnerConfig {
         self
     }
 
+    /// Enables a gate-only negative control that changes second-run live inputs.
+    ///
+    /// Production callers leave this disabled. Live acceptance tests enable it
+    /// to vary the second launch's guest command line, delivered frame, and
+    /// injected interrupt, forcing a real QEMU architectural divergence and
+    /// exercising exact bisection plus both-side raw-state dumping end to end.
+    #[must_use]
+    pub const fn with_second_run_divergence_control(mut self, enabled: bool) -> Self {
+        self.second_run_divergence_control = enabled;
+        self
+    }
+
     /// Returns the content digest of the pinned QEMU build.
     #[must_use]
     pub fn qemu_build_digest(&self) -> &str {
@@ -224,6 +243,7 @@ pub struct PluginFingerprintRunner {
     config: PluginFingerprintRunnerConfig,
     definition: RustPluginFingerprintDefinition,
     probe_count: u64,
+    state_dump_cache: Option<PreparedStateDumpPair>,
 }
 
 impl PluginFingerprintRunner {
@@ -252,6 +272,7 @@ impl PluginFingerprintRunner {
             config,
             definition,
             probe_count: 0,
+            state_dump_cache: None,
         })
     }
 
@@ -283,6 +304,34 @@ impl PluginFingerprintRunner {
         role: RunRole,
         targets: &[u64],
     ) -> Result<Vec<(u64, FingerprintSample)>, PluginFingerprintRunnerError> {
+        self.run_to_targets_inner(role, targets, None)
+            .map(|result| result.boundaries)
+    }
+
+    /// Drives one fresh run and terminally exports full state at one target.
+    fn run_to_targets_with_state_dump(
+        &self,
+        role: RunRole,
+        target: u64,
+    ) -> Result<RawStateArtifact, PluginFingerprintRunnerError> {
+        let mut targets = SAMPLE_ICOUNTS
+            .into_iter()
+            .filter(|boundary| *boundary < target)
+            .collect::<Vec<_>>();
+        targets.push(target);
+        self.run_to_targets_inner(role, &targets, Some(target))?
+            .state_dump
+            .ok_or(PluginFingerprintRunnerError::MissingStateDump {
+                target_icount: target,
+            })
+    }
+
+    fn run_to_targets_inner(
+        &self,
+        role: RunRole,
+        targets: &[u64],
+        state_dump_target: Option<u64>,
+    ) -> Result<PluginRunResult, PluginFingerprintRunnerError> {
         let run_directory = self.config.run_directory.join(role.subdir());
         fs::create_dir_all(&run_directory).map_err(|source| {
             PluginFingerprintRunnerError::PrepareRunDirectory {
@@ -297,7 +346,14 @@ impl PluginFingerprintRunner {
             .with_memory_mib(self.config.memory_mib)
             .with_smp_vcpus(self.config.smp_vcpus);
         if let Some(cmdline) = &self.config.kernel_cmdline {
-            candidate = candidate.with_kernel_cmdline(cmdline.clone());
+            let cmdline = if self.config.second_run_divergence_control
+                && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+            {
+                format!("{cmdline} crucible_negative_control=1")
+            } else {
+                cmdline.clone()
+            };
+            candidate = candidate.with_kernel_cmdline(cmdline);
         }
         let profile = candidate
             .try_into_deterministic()
@@ -312,8 +368,24 @@ impl PluginFingerprintRunner {
 
         // A single production control plugin with fingerprint sampling enabled:
         // the Rust plugin is the sole time authority and the fingerprint author.
-        let plugin = QemuLaunchPluginConfig::new(path_text(&self.config.plugin), RUNNER_SLOT)
+        let mut plugin = QemuLaunchPluginConfig::new(path_text(&self.config.plugin), RUNNER_SLOT)
             .with_fingerprint(QemuLaunchPluginSwitch::On);
+        let state_dump_path =
+            state_dump_target.map(|target| run_directory.join(format!("state-dump-{target}.bin")));
+        if let Some(path) = &state_dump_path {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(PluginFingerprintRunnerError::PrepareStateDump {
+                        path: path.clone(),
+                        source,
+                    });
+                }
+            }
+            plugin = plugin
+                .with_terminal_state_dump(state_dump_target.unwrap_or_default(), path_text(path));
+        }
         let command = profile
             .qemu_launch_command(
                 self.vm_launch_config(),
@@ -353,7 +425,60 @@ impl PluginFingerprintRunner {
 
         let mut boundaries = Vec::with_capacity(targets.len());
         for &target in targets {
+            if target == FRAME_DELIVERY_ICOUNT {
+                let payload = if self.config.second_run_divergence_control
+                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                {
+                    b"crucible-fingerprint-frame-negative-control-v1".to_vec()
+                } else {
+                    b"crucible-fingerprint-frame-v1".to_vec()
+                };
+                QemuShmemHotPathChannel::deliver_frame(
+                    &mut hot_path,
+                    BackendInput {
+                        node: node_id(RUNNER_NODE),
+                        payload,
+                    },
+                )
+                .map_err(|source| channel_error("enqueue fingerprint frame event", source))?;
+            }
+            let preemption_sequence = if target == FAULT_ACTIVATION_ICOUNT {
+                let irq = if self.config.second_run_divergence_control
+                    && matches!(role, RunRole::HostLoad | RunRole::Repeat)
+                {
+                    0xf2
+                } else {
+                    0xf1
+                };
+                Some(
+                    hot_path
+                        .publish_preemption_command(SchedulerPreemptionCommand {
+                            at_icount: target,
+                            deadline_icount: target,
+                            ceiling_icount: target,
+                            kind: SchedulerPreemptionKind::InterruptAt {
+                                target_vcpu: 0,
+                                irq,
+                            },
+                        })
+                        .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?,
+                )
+            } else {
+                None
+            };
             let reached = self.drive_to_target(&mut hot_path, &mut child, &setup, target)?;
+            if let Some(expected) = preemption_sequence {
+                let observed = hot_path
+                    .consumed_preemption_sequence()
+                    .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?;
+                if observed != expected {
+                    return Err(PluginFingerprintRunnerError::FaultActivationNotConsumed {
+                        target_icount: target,
+                        expected_sequence: expected,
+                        observed_sequence: observed,
+                    });
+                }
+            }
             let sample = hot_path
                 .fingerprint_sample()
                 .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?
@@ -372,6 +497,14 @@ impl PluginFingerprintRunner {
             boundaries.push((reached, sample));
         }
 
+        let state_dump = match state_dump_path {
+            Some(path) => {
+                self.wait_for_state_dump(&path, state_dump_target.unwrap_or_default())?;
+                Some(read_raw_state_artifact(&path)?)
+            }
+            None => None,
+        };
+
         setup
             .assert_run_control_silent()
             .map_err(|source| channel_error("prove run control silence", source))?;
@@ -388,7 +521,40 @@ impl PluginFingerprintRunner {
         drop(child);
         drop(host_load);
 
-        Ok(boundaries)
+        Ok(PluginRunResult {
+            boundaries,
+            state_dump,
+        })
+    }
+
+    // crucible-lint: allow clippy-disallowed-method -- host timeout bounds terminal export liveness only.
+    #[allow(clippy::disallowed_methods)]
+    fn wait_for_state_dump(
+        &self,
+        path: &Path,
+        target_icount: u64,
+    ) -> Result<(), PluginFingerprintRunnerError> {
+        let started = Instant::now();
+        loop {
+            match fs::metadata(path) {
+                Ok(metadata) if metadata.len() > 0 => return Ok(()),
+                Ok(_) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(PluginFingerprintRunnerError::ReadStateDump {
+                        path: path.to_path_buf(),
+                        source,
+                    });
+                }
+            }
+            if started.elapsed() >= self.config.completion_timeout {
+                return Err(PluginFingerprintRunnerError::StateDumpTimeout {
+                    target_icount,
+                    timeout: self.config.completion_timeout,
+                });
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
     }
 
     /// Raises the ceiling to `target` in one quantum and returns the reached icount.
@@ -531,7 +697,7 @@ impl PluginFingerprintRunner {
             .iter()
             .map(|(icount, sample)| PluginFingerprintBoundary {
                 icount: *icount,
-                trigger: SingleVmFingerprintTrigger::Periodic,
+                trigger: trigger_for_icount(*icount),
                 sample,
             })
             .collect::<Vec<_>>();
@@ -563,6 +729,18 @@ impl PluginFingerprintRunner {
             ContentHash::from_canonical_material(RUNNER_DOMAIN, &format!("{kind}={path}")),
             path,
         )
+    }
+}
+
+fn trigger_for_icount(icount: u64) -> SingleVmFingerprintTrigger {
+    match icount {
+        FRAME_DELIVERY_ICOUNT => {
+            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FrameDelivery)
+        }
+        FAULT_ACTIVATION_ICOUNT => {
+            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FaultActivation)
+        }
+        _ => SingleVmFingerprintTrigger::Periodic,
     }
 }
 
@@ -615,7 +793,11 @@ enum RunRole {
     Reference,
     HostLoad,
     Repeat,
-    Probe,
+}
+
+struct PluginRunResult {
+    boundaries: Vec<(u64, FingerprintSample)>,
+    state_dump: Option<RawStateArtifact>,
 }
 
 impl RunRole {
@@ -624,7 +806,6 @@ impl RunRole {
             Self::Reference => "run-reference",
             Self::HostLoad => "run-host-load",
             Self::Repeat => "run-repeat",
-            Self::Probe => "run-probe",
         }
     }
 
@@ -694,206 +875,5 @@ impl SchedulerSendAuthorizer for RunnerSendAuthorizer {
             consumer: consumer.clone(),
             topology_epoch: 0,
         })
-    }
-}
-
-/// An error produced while running the live Rust-plugin fingerprint backend.
-#[derive(Debug, Error)]
-pub enum PluginFingerprintRunnerError {
-    /// A QEMU or plugin build artifact could not be read for hashing.
-    #[error("cannot read build artifact {path} for content hashing")]
-    ReadBuildArtifact {
-        /// Artifact path that could not be read.
-        path: PathBuf,
-        /// Underlying I/O error.
-        source: std::io::Error,
-    },
-    /// The fingerprint definition could not be minted.
-    #[error("cannot mint the rust-plugin fingerprint definition: {0}")]
-    Definition(SingleVmFingerprintGateError),
-    /// The per-run directory could not be prepared.
-    #[error("cannot prepare run directory {path}")]
-    PrepareRunDirectory {
-        /// Directory that could not be created.
-        path: PathBuf,
-        /// Underlying I/O error.
-        source: std::io::Error,
-    },
-    /// The deterministic launch profile could not be derived.
-    #[error("cannot derive deterministic launch profile")]
-    LaunchProfile {
-        /// Underlying launch profile error.
-        source: crate::LaunchProfileError,
-    },
-    /// The guest entropy seed file could not be written.
-    #[error("cannot write guest entropy seed into {path}")]
-    GuestEntropySeed {
-        /// Directory that could not receive the seed.
-        path: PathBuf,
-        /// Underlying I/O error.
-        source: std::io::Error,
-    },
-    /// The QEMU launch command could not be assembled.
-    #[error("cannot assemble QEMU launch command")]
-    LaunchCommand {
-        /// Underlying launch command error.
-        source: crate::QemuLaunchCommandError,
-    },
-    /// The shared-memory region layout could not be computed.
-    #[error("cannot compute shared-memory region layout")]
-    RegionLayout {
-        /// Underlying region layout error.
-        source: crucible_shmem::RegionLayoutError,
-    },
-    /// The QEMU child could not be spawned with passed descriptors.
-    #[error("cannot spawn QEMU child with passed descriptors")]
-    Spawn {
-        /// Underlying spawn error.
-        source: crate::QemuSpawnError,
-    },
-    /// The host plugin setup handshake failed.
-    #[error("QEMU host plugin setup handshake failed")]
-    HostSetup {
-        /// Underlying host setup error.
-        source: crate::QemuHostPluginSetupError,
-    },
-    /// The setup acknowledgement was not schedulable.
-    #[error("QEMU setup acknowledgement was not schedulable")]
-    SetupAckNotReady,
-    /// The setup shared-memory region could not be mapped.
-    #[error("cannot map the setup shared-memory region")]
-    RegionMap {
-        /// Underlying region map error.
-        source: crucible_shmem::SetupRegionMapError,
-    },
-    /// The mapped quantum hot path could not be bound or read.
-    #[error("mapped quantum hot path failed")]
-    MappedHotPath {
-        /// Underlying mapped hot-path error.
-        source: crate::QemuMappedQuantumShmemHotPathError,
-    },
-    /// A quantum stopped without reaching the requested target.
-    #[error("quantum for target {target_icount} stopped at {reached_icount} ({outcome})")]
-    TargetNotReached {
-        /// Requested aggregate-icount target.
-        target_icount: u64,
-        /// Aggregate icount actually reached.
-        reached_icount: u64,
-        /// The plugin's reported advance outcome.
-        outcome: String,
-    },
-    /// The guest parked idle before reaching a busy-phase target.
-    #[error(
-        "guest idled at {idle_icount} (deadline {deadline_icount}) before target {target_icount}"
-    )]
-    GuestIdledBeforeTarget {
-        /// Requested aggregate-icount target.
-        target_icount: u64,
-        /// Aggregate icount at which the guest parked.
-        idle_icount: u64,
-        /// Published next virtual-timer deadline.
-        deadline_icount: u64,
-    },
-    /// The plugin published no fingerprint sample at a boundary.
-    #[error("no fingerprint sample was published at target {target_icount}")]
-    MissingFingerprintSample {
-        /// Target with no published sample.
-        target_icount: u64,
-    },
-    /// A published fingerprint sample was stamped with an unexpected icount.
-    #[error(
-        "fingerprint sample icount {sample_icount} != reached {reached_icount} for target {target_icount}"
-    )]
-    FingerprintSampleIcountMismatch {
-        /// Requested aggregate-icount target.
-        target_icount: u64,
-        /// Aggregate icount actually reached.
-        reached_icount: u64,
-        /// The icount stamped into the sample.
-        sample_icount: u64,
-    },
-    /// A quantum did not reach its boundary before the host timeout.
-    #[error("quantum for target {target_icount} timed out at {last_icount} after {timeout:?}")]
-    QuantumTimeout {
-        /// Requested aggregate-icount target.
-        target_icount: u64,
-        /// Last observed aggregate icount.
-        last_icount: u64,
-        /// Host completion bound.
-        timeout: Duration,
-    },
-    /// The QEMU child exited before a quantum boundary.
-    #[error("QEMU child exited before target {target_icount}: {status}")]
-    ChildExitBeforeBoundary {
-        /// Target the child never reached.
-        target_icount: u64,
-        /// Child exit status text.
-        status: String,
-    },
-    /// Waiting on the QEMU child failed.
-    #[error("cannot wait on the QEMU child")]
-    ChildWait {
-        /// Underlying wait error.
-        source: crate::QemuShutdownTargetError,
-    },
-    /// The plugin did not publish terminal teardown before the host timeout.
-    #[error("plugin teardown did not complete within {timeout:?}")]
-    PluginQuitTimeout {
-        /// Host completion bound.
-        timeout: Duration,
-    },
-    /// The QEMU child did not exit naturally before the host timeout.
-    #[error("QEMU child did not exit within {timeout:?}")]
-    ChildExitTimeout {
-        /// Host completion bound.
-        timeout: Duration,
-    },
-    /// The QEMU child exited with a non-success status.
-    #[error("QEMU child exited uncleanly: {status}")]
-    ChildExitUnclean {
-        /// Child exit status text.
-        status: String,
-    },
-    /// A shared-memory hot-path channel operation failed.
-    #[error("hot-path channel operation '{operation}' failed: {source}")]
-    Channel {
-        /// The failing operation name.
-        operation: &'static str,
-        /// Underlying channel error.
-        source: QemuNodeChannelError,
-    },
-    /// The fingerprint stream could not be assembled from the samples.
-    #[error("cannot build fingerprint stream: {0}")]
-    BuildStream(SingleVmFingerprintGateError),
-}
-
-/// Converts a runner error into the trait-level run error.
-fn to_run_error(error: PluginFingerprintRunnerError) -> SingleVmFingerprintRunError {
-    SingleVmFingerprintRunError::new(error.to_string())
-}
-
-fn channel_error(
-    operation: &'static str,
-    source: QemuNodeChannelError,
-) -> PluginFingerprintRunnerError {
-    PluginFingerprintRunnerError::Channel { operation, source }
-}
-
-fn hash_file(path: &Path) -> Result<String, PluginFingerprintRunnerError> {
-    let bytes =
-        fs::read(path).map_err(|source| PluginFingerprintRunnerError::ReadBuildArtifact {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    Ok(ContentHash::from_bytes(&bytes).to_hex())
-}
-
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn node_id(name: &str) -> NodeId {
-    NodeId {
-        name: name.to_owned(),
     }
 }

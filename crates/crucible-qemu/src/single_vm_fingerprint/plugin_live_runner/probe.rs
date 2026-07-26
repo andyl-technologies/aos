@@ -8,26 +8,20 @@
 //! contract (see `savevm_policy.rs` / the phase2 `qemuSavevmFallback` gate),
 //! which forbids restoring VM state into the deterministic replay path. Every
 //! probe therefore reproduces state from the same immutable launch inputs.
-//!
-//! Because both fixed runs are the same deterministic guest, every probe pair
-//! matches; the runner asserts this launch-identity equality by echoing the
-//! scenario's definition and run-input digests into each probe, so a probe that
-//! silently drifted to a different launch could never validate. The coarse gate
-//! proves equality, so the divergence state dump is unreached there; capturing
-//! full both-side architectural state at a real divergence depends on the live
-//! whitebox register/memory value capture that lands with M4/M5, so
-//! [`PluginFingerprintRunner::dump_single_vm_fingerprint_state`] fails loudly
-//! rather than fabricating a dump.
+//! Full divergence dumps use two additional fresh runs. At the requested exact
+//! boundary, the plugin terminally pauses QEMU and exports complete register,
+//! writable-RAM, and non-RAM VMState bytes through the patched raw-state API.
 
 use crucible_shmem::FingerprintSample;
 
 use crate::single_vm_fingerprint::{
     SingleVmFingerprintBisectionError, SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest,
-    SingleVmFingerprintProbeRunner, SingleVmFingerprintScenario, SingleVmFingerprintStateDumpProbe,
-    initial_single_vm_rolling_fingerprint,
+    SingleVmFingerprintProbeRunner, SingleVmFingerprintRunOrdinal, SingleVmFingerprintScenario,
+    SingleVmFingerprintStateDumpProbe, initial_single_vm_rolling_fingerprint,
 };
 
-use super::{PluginFingerprintRunner, PluginFingerprintRunnerError, RunRole, TARGET_ICOUNTS};
+use super::raw_dump::build_state_dump_pair;
+use super::{PluginFingerprintRunner, PluginFingerprintRunnerError, RunRole, SAMPLE_ICOUNTS};
 
 impl SingleVmFingerprintProbeRunner for PluginFingerprintRunner {
     fn probe_single_vm_fingerprint(
@@ -38,7 +32,7 @@ impl SingleVmFingerprintProbeRunner for PluginFingerprintRunner {
         let scenario = request.scenario();
         let target = request.target_icount();
         let prefix = self
-            .prefix_fingerprint_at(scenario, target)
+            .prefix_fingerprint_at(scenario, request.ordinal(), target)
             .map_err(to_bisection_error)?;
         let definition_digest = digest_array(scenario.fingerprint_definition_digest())?;
         let run_inputs_digest = scenario.run_inputs().content_digest();
@@ -56,12 +50,35 @@ impl SingleVmFingerprintProbeRunner for PluginFingerprintRunner {
         &mut self,
         request: &SingleVmFingerprintProbeRequest,
     ) -> Result<SingleVmFingerprintStateDumpProbe, SingleVmFingerprintBisectionError> {
-        Err(SingleVmFingerprintBisectionError::new(format!(
-            "live both-side state dump at icount {} requires full whitebox register/memory value \
-             capture (M4/M5); the deterministic run-twice gate proves equality, so this divergence \
-             path is unreached",
-            request.target_icount()
-        )))
+        let target = request.target_icount();
+        if self
+            .state_dump_cache
+            .as_ref()
+            .is_none_or(|cached| cached.target_icount != target)
+        {
+            let first = self
+                .run_to_targets_with_state_dump(RunRole::Reference, target)
+                .map_err(to_bisection_error)?;
+            let second_role = self.role_for(SingleVmFingerprintRunOrdinal::Second);
+            let second = self
+                .run_to_targets_with_state_dump(second_role, target)
+                .map_err(to_bisection_error)?;
+            self.state_dump_cache =
+                Some(build_state_dump_pair(target, first, second).map_err(to_bisection_error)?);
+        }
+        let cached = self.state_dump_cache.as_ref().ok_or_else(|| {
+            SingleVmFingerprintBisectionError::new("terminal state-dump cache was not populated")
+        })?;
+        let state = match request.ordinal() {
+            SingleVmFingerprintRunOrdinal::First => cached.first.clone(),
+            SingleVmFingerprintRunOrdinal::Second => cached.second.clone(),
+        };
+        Ok(SingleVmFingerprintStateDumpProbe::new(
+            request.ordinal(),
+            digest_array(request.scenario().fingerprint_definition_digest())?,
+            request.scenario().run_inputs().content_digest(),
+            state,
+        ))
     }
 }
 
@@ -75,6 +92,7 @@ impl PluginFingerprintRunner {
     fn prefix_fingerprint_at(
         &self,
         scenario: &SingleVmFingerprintScenario,
+        ordinal: SingleVmFingerprintRunOrdinal,
         target: u64,
     ) -> Result<[u8; 32], PluginFingerprintRunnerError> {
         if target == 0 {
@@ -83,13 +101,13 @@ impl PluginFingerprintRunner {
                     .map_err(PluginFingerprintRunnerError::BuildStream)?;
             return digest_array_runner(&initial);
         }
-        let mut sub_targets: Vec<u64> = TARGET_ICOUNTS
+        let mut sub_targets: Vec<u64> = SAMPLE_ICOUNTS
             .into_iter()
             .filter(|cadence| *cadence < target)
             .collect();
         sub_targets.push(target);
         let samples: Vec<(u64, FingerprintSample)> =
-            self.run_to_targets(RunRole::Probe, &sub_targets)?;
+            self.run_to_targets(self.role_for(ordinal), &sub_targets)?;
         let stream = self.stream_from_samples(&samples, target)?;
         digest_array_runner(&stream.final_fingerprint)
     }

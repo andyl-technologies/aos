@@ -1,7 +1,7 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -353,6 +353,14 @@ static void rr_kick_thread(void *opaque)
+@@ -339,6 +339,14 @@ static void rr_kick_thread(void *opaque)
  
  static void rr_start_kick_timer(void)
  {
