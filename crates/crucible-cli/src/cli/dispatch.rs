@@ -235,7 +235,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                     return Ok(());
                 }
-                Some(FuzzDispatchRoute::LocalQemu) => {
+                Some(FuzzDispatchRoute::LocalPackagedBackend) => {
                     let outcome = run_local_qemu_fuzz_workflow(
                         &thin_plan,
                         &backend_plan,
@@ -526,68 +526,8 @@ pub(super) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, Cl
     Ok(requested.into_iter().map(ToOwned::to_owned).collect())
 }
 
-pub(super) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
-    let selected_gates = plan_selftest_gates(args)?;
-    let qemu_backend = if selected_gates
-        .iter()
-        .any(|gate| REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()))
-    {
-        Some(require_selftest_qemu_backend(cli)?)
-    } else {
-        None
-    };
-    let verified = verify_selftest_corpus(args)?;
-    let mut gates = Vec::with_capacity(selected_gates.len());
-    for gate in selected_gates {
-        let runner = if REAL_QEMU_SELFTEST_GATES.contains(&gate.as_str()) {
-            SelftestGateRunner::RealQemu
-        } else {
-            SelftestGateRunner::DoubleBackedCorpus
-        };
-        let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
-            qemu_backend.as_ref().and_then(|backend| match backend {
-                ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
-                ResolvedLocalBackend::Double => None,
-            })
-        } else {
-            None
-        };
-        let live = if runner == SelftestGateRunner::RealQemu {
-            let backend = qemu_backend
-                .as_ref()
-                .ok_or_else(|| backend_error("real-QEMU selftest requires a resolved backend"))?;
-            run_live_qemu_backend_probe_for_command(backend)?
-        } else {
-            None
-        };
-        gates.push(SelftestGateReport {
-            name: gate,
-            status: SelftestGateStatus::Passed,
-            corpus_entries: verified.len(),
-            runs_per_entry: DEFAULT_SELFTEST_RUNS,
-            runner,
-            qemu_build_id,
-            live_qemu_icount: live.as_ref().map(|report| report.completed_icount),
-            live_qemu_fingerprint: live
-                .as_ref()
-                .map(|report| format_content_hash_ref(report.execution_fingerprint.hash)),
-        });
-    }
-    Ok(SelftestReport { gates, verified })
-}
-
-#[cfg(not(test))]
-pub(super) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
-    require_qemu_artifacts(
-        cli,
-        &ProcessQemuDiscoveryEnvironment,
-        &CompileTimeAosQemuPackageSet,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
-    require_qemu_artifacts(cli, &ProcessQemuDiscoveryEnvironment, &NoAosQemuPackageSet)
+pub(super) fn selftest_gate_uses_real_backend(gate: &str) -> bool {
+    REAL_QEMU_SELFTEST_GATES.contains(&gate)
 }
 
 pub(super) fn verify_selftest_corpus(

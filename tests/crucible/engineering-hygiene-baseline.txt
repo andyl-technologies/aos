@@ -215,7 +215,6 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume_fork.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume_fork.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save.rs|qemu

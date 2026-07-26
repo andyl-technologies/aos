@@ -2,6 +2,127 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(crate) struct SelftestGateReport {
+    pub(crate) name: String,
+    pub(crate) status: SelftestGateStatus,
+    pub(crate) corpus_entries: usize,
+    pub(crate) runs_per_entry: usize,
+    pub(crate) runner: SelftestGateRunner,
+    pub(crate) qemu_build_id: Option<String>,
+    pub(crate) live_qemu_icount: Option<u64>,
+    pub(crate) live_qemu_fingerprint: Option<String>,
+}
+
+pub(crate) fn is_packaged_backend(backend_plan: &BackendSelectionPlan) -> bool {
+    matches!(
+        backend_plan.resolved_backend,
+        Some(ResolvedLocalBackend::Qemu { .. })
+    )
+}
+
+pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+    let selected_gates = plan_selftest_gates(args)?;
+    let qemu_backend = if selected_gates
+        .iter()
+        .any(|gate| selftest_gate_uses_real_backend(gate))
+    {
+        Some(require_selftest_qemu_backend(cli)?)
+    } else {
+        None
+    };
+    let verified = verify_selftest_corpus(args)?;
+    let mut gates = Vec::with_capacity(selected_gates.len());
+    for gate in selected_gates {
+        let runner = if selftest_gate_uses_real_backend(&gate) {
+            SelftestGateRunner::RealQemu
+        } else {
+            SelftestGateRunner::DoubleBackedCorpus
+        };
+        let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
+            qemu_backend.as_ref().and_then(|backend| match backend {
+                ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
+                ResolvedLocalBackend::Double => None,
+            })
+        } else {
+            None
+        };
+        let live = if runner == SelftestGateRunner::RealQemu {
+            let backend = qemu_backend
+                .as_ref()
+                .ok_or_else(|| backend_error("real-QEMU selftest requires a resolved backend"))?;
+            run_live_qemu_backend_probe_for_command(backend)?
+        } else {
+            None
+        };
+        gates.push(SelftestGateReport {
+            name: gate,
+            status: SelftestGateStatus::Passed,
+            corpus_entries: verified.len(),
+            runs_per_entry: DEFAULT_SELFTEST_RUNS,
+            runner,
+            qemu_build_id,
+            live_qemu_icount: live.as_ref().map(|report| report.completed_icount),
+            live_qemu_fingerprint: live
+                .as_ref()
+                .map(|report| format_content_hash_ref(report.execution_fingerprint.hash)),
+        });
+    }
+    Ok(SelftestReport { gates, verified })
+}
+
+#[cfg(not(test))]
+pub(crate) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+    require_qemu_artifacts(
+        cli,
+        &ProcessQemuDiscoveryEnvironment,
+        &CompileTimeAosQemuPackageSet,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+    require_qemu_artifacts(cli, &ProcessQemuDiscoveryEnvironment, &NoAosQemuPackageSet)
+}
+
+pub(crate) fn run_local_qemu_fuzz_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &FuzzDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU fuzz requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
+    let mut outcome =
+        run_local_double_fuzz_workflow(thin_plan, backend_plan, ergonomics_plan, plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "fuzz", report);
+    }
+    Ok(outcome)
+}
+
+pub(crate) fn run_local_qemu_search_workflow(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &SearchDriverPlan,
+) -> Result<BackendCommandOutcome, CliError> {
+    let backend = backend_plan
+        .resolved_backend
+        .as_ref()
+        .ok_or_else(|| backend_error("local QEMU search requires a resolved backend"))?;
+    let live = run_live_qemu_backend_probe_for_command(backend)?;
+    let mut outcome =
+        run_local_double_search_workflow(thin_plan, backend_plan, ergonomics_plan, plan)?;
+    if let Some(report) = live.as_ref() {
+        append_live_qemu_backend_proof(&mut outcome, "search", report);
+    }
+    Ok(outcome)
+}
+
 /// Runs a local scenario after proving the packaged QEMU backend is live.
 pub(crate) fn run_local_qemu_workflow(
     backend: &ResolvedLocalBackend,

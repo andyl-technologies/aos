@@ -15,24 +15,12 @@
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   artifactFormatGate = builtins.readFile ./phase7-reproduction-artifact-format.nix;
   releaseManifestGate = builtins.readFile ./phase7-crucible-release-manifest.nix;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -47,7 +35,6 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
 
-  shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
     sourceConst
     "guest-host protocol version"
@@ -167,7 +154,11 @@
       }
       {
         label = "mock e2e shmem ABI source";
-        needle = "shmem_abi_version: String::from(\"${shmemAbiVersion}\")";
+        needle = "shmem_abi_version: CANONICAL_SHMEM_ABI_VERSION.to_string()";
+      }
+      {
+        label = "mock e2e canonical shmem ABI declaration";
+        needle = "pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!(\"../../crucible-shmem/src/abi_version.in\")";
       }
       {
         label = "mock e2e guest-host ABI source";
@@ -217,7 +208,7 @@
       }
       {
         label = "replay-oracle shmem ABI source";
-        needle = "shmem_abi_version: String::from(\"${shmemAbiVersion}\")";
+        needle = "shmem_abi_version: crate::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string()";
       }
       {
         label = "replay-oracle guest-host ABI source";
@@ -251,7 +242,7 @@
       }
       {
         label = "engine replay-oracle shmem ABI source";
-        needle = "shmem_abi_version: String::from(\"${shmemAbiVersion}\")";
+        needle = "shmem_abi_version: crucible_shmem::ABI_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle guest-host ABI source";

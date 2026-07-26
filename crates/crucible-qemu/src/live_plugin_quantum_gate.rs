@@ -1,43 +1,21 @@
 //! Loaded-QEMU proof that the Rust control plugin owns virtual time end to end.
 //!
-//! This module owns the production integration gate that boots the patched QEMU
-//! binary once with the real Rust control plugin loaded, then drives a
-//! multi-quantum scheduler that proves the plugin is the sole virtual-time
-//! authority through its idle-loop, deadline-introspection, and idle-jump paths.
-//!
-//! Unlike [`crate::run_live_plugin_install_gate`], which proves a single exact
-//! boot-barrier quantum, this gate advances the guest through several quanta:
+//! The production integration gate boots patched QEMU with the real control
+//! plugin, then drives several quanta to prove that the plugin is the sole
+//! virtual-time authority:
 //!
 //! 1. **Boot phase.** The scheduler raises the ceiling in fixed steps while the
-//!    guest is busy. Each busy quantum stops exactly at the host-published
-//!    ceiling, which is only possible if the plugin honors the max-advance
-//!    ceiling as time authority.
-//! 2. **Idle observation.** The first quantum whose guest parks in an idle
-//!    `sti; hlt` wait pauses with the node reported `IDLE` and a computed
-//!    `next_deadline` beyond the ceiling. That is the live proof the plugin read
-//!    QEMU's exact virtual-timer deadline and published a deterministic idle
-//!    wake (T-PLUG-5/6, T-TIME-6).
-//! 3. **Idle-jump advancement.** A single wide quantum then lets the parked
-//!    guest idle-jump toward a far ceiling. The plugin advances virtual time in
-//!    O(1) timer-deadline jumps rather than the per-instruction wall-clock crawl
-//!    of the busy boot phase, which the gate measures and asserts (T-PLUG-7,
-//!    T-TIME-5/7). This step is gated by
-//!    [`LivePluginQuantumGateConfig::with_prove_idle_jump`] and is currently
-//!    **descoped** (`prove_idle_jump = false`): live tracing showed the plugin
-//!    reads the deadline, releases, enqueues, and arms the advance correctly, but
-//!    the QEMU-side queued-time-advance completion never commits, so the parked
-//!    guest does not advance. The scenario therefore stops at the idle
-//!    observation and reports `idle_jump_proven = false` until that QEMU-patch
-//!    defect is fixed, at which point flipping the flag re-enables the assertion.
+//!    guest is busy and requires every stop at the host-published ceiling.
+//! 2. **Idle observation.** The parked guest must report `IDLE` and an exact
+//!    `next_deadline` beyond the ceiling (T-PLUG-5/6, T-TIME-6).
+//! 3. **Idle-jump advancement.** When enabled with
+//!    [`LivePluginQuantumGateConfig::with_prove_idle_jump`], a wide quantum must
+//!    advance in O(1) deadline jumps (T-PLUG-7, T-TIME-5/7). It remains descoped
+//!    by default until QEMU commits the queued time advance for a parked guest.
 //!
 //! The whole scenario runs twice — the second run under deliberate host CPU
-//! load — and the two runs must produce byte-identical execution fingerprints
-//! and identical idle observations. Determinism under host timing is the proof
-//! that virtual time is icount-derived and host-time-independent, i.e. that the
-//! Rust plugin, not the host or wall clock, owns the clock (T-PLUG-4, T-TIME-5).
-//!
-//! The emitted report records idle and advancement evidence plus `time_authority=rust-plugin`
-//! so the Rust plugin remains the sole time owner.
+//! load — and requires byte-identical fingerprints and idle observations,
+//! proving icount-derived, host-time-independent execution (T-PLUG-4, T-TIME-5).
 
 mod errors;
 mod preemption_gate;

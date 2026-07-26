@@ -1649,7 +1649,7 @@ is absent under another), and a single-vCPU interrupt-timing variation yields
 distinct replayable schedules. The model witness is
 `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
 and the production command-application witness is
-`gate:live-plugin-preemption`. Together they demonstrate that the discriminating
+`gate:single-vm-fingerprint`. Together they demonstrate that the discriminating
 model decisions map to exact, acknowledged live vCPU-switch and interrupt
 commands and reproduce under host load.
 
@@ -1898,7 +1898,7 @@ never tolerated). Results live in the decision register (31).
   known-race discrimination witness with the production loaded-QEMU gate, and
   exercises exact acknowledged vCPU-switch and interrupt landing twice under
   differing host load. `Decision::Preemption` exploration is therefore enabled
-  with no fallback. — resolves [RISK-26]; satisfies [SCHED-46] and [DET-12];
+  with no fallback. — resolves and satisfies [RISK-26]; satisfies [SCHED-46] and [DET-12];
   spec §30.11b.
 - [x] **T-RISK-19** Run **S13**: consume the non-fallback S12 result, sweep the
   `rr_switch_quantum` throughput model, run the production loaded-QEMU
@@ -1906,7 +1906,7 @@ never tolerated). Results live in the decision register (31).
   `rr_switch_quantum=4096` against green four-vCPU sim-mode S11 evidence. The
   sweep records `race_yield_tested=true`, selects the smallest candidate above
   the throughput floor after a five-way race-yield tie, and closes D-25 through
-  D-36 with no fallback. — resolves [RISK-27], [D-25]; satisfies [SCHED-45],
+  D-36 with no fallback. — resolves [D-25]; satisfies [RISK-27], [SCHED-45],
   [G-9]; spec §30.11c.
 - [x] **T-RISK-20** Run **S14** fallback: scan the current debug implementation
   surface, record that no hermetic gdb client package or AOS QEMU gdbstub

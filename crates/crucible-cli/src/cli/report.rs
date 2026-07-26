@@ -1,6 +1,8 @@
 //! User-facing reports, debug plans, selftest reports, and CLI errors.
 
 use super::*;
+
+type OptionalHashPair = (Option<crucible::ContentHash>, Option<crucible::ContentHash>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TriageRunReport {
     pub(super) plan: TriageInvocationPlan,
@@ -165,9 +167,7 @@ impl TriageResultSummary {
         if text.lines().next() != Some("crucible.failure-triage.result.v1") {
             return Err(artifact_error("unsupported triage result artifact schema"));
         }
-        let mut by_index =
-            BTreeMap::<usize, (Option<crucible::ContentHash>, Option<crucible::ContentHash>)>::new(
-            );
+        let mut by_index = BTreeMap::<usize, OptionalHashPair>::new();
         for line in text.lines() {
             let Some(rest) = line.strip_prefix("report.") else {
                 continue;
@@ -479,18 +479,6 @@ pub(super) enum DebugEngineOperation {
 pub(super) struct SelftestReport {
     pub(super) gates: Vec<SelftestGateReport>,
     pub(super) verified: Vec<crucible::ExampleScenarioVerifyReport>,
-}
-
-#[derive(Debug)]
-pub(super) struct SelftestGateReport {
-    pub(super) name: String,
-    pub(super) status: SelftestGateStatus,
-    pub(super) corpus_entries: usize,
-    pub(super) runs_per_entry: usize,
-    pub(super) runner: SelftestGateRunner,
-    pub(super) qemu_build_id: Option<String>,
-    pub(super) live_qemu_icount: Option<u64>,
-    pub(super) live_qemu_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

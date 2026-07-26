@@ -108,7 +108,7 @@ in
 
             cat "$report"
             grep -Fxq PASS "$report"
-            grep -Fxq 'gate=gate:live-plugin-preemption' "$report"
+            grep -Fxq 'gate=gate:single-vm-fingerprint' "$report"
             grep -Fxq 'smp_vcpus=2' "$report"
             grep -Eq '^switch_icount=[1-9][0-9]*$' "$report"
             grep -Eq '^switch_from_vcpu=[01]$' "$report"

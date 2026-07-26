@@ -74,7 +74,7 @@ fn run() -> Result<(), String> {
 
     let report = run_live_plugin_preemption_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
-    println!("gate=gate:live-plugin-preemption");
+    println!("gate=gate:single-vm-fingerprint");
     println!("smp_vcpus=2");
     println!("switch_icount={}", report.switch_icount);
     println!("switch_from_vcpu={}", report.switch_from_vcpu);
