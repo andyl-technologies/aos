@@ -93,6 +93,7 @@ in rec {
     s7DeadlineCeiling = import ./phase0-s7.nix {inherit pkgs lib;};
     s9QemuBuildIdentity = import ./phase0-s9.nix {inherit pkgs lib;};
     s10Aarch64Doorbell = import ./phase0-s10.nix {inherit pkgs lib;};
+    aarch64S1S6 = import ./phase0-aarch64-s1-s6.nix {inherit pkgs lib;};
     s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
     s12PreemptionDecision = import ./phase0-s12.nix {inherit pkgs;};
     s13RrSwitchQuantumFallback = import ./phase0-s13.nix {inherit pkgs lib;};

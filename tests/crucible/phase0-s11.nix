@@ -11,10 +11,10 @@
   realtimeDeadlineProbe ? false,
   cadence ? 100000000,
   requireGuestPass ? true,
-  # The finite four-vCPU workload completed at retired icount 3,215,171,189
-  # during calibration. The fixed default leaves 84,828,811 instructions of
-  # sustained contention before the predeclared fingerprint horizon.
-  stopAt ? 3300000000,
+  # The finite four-vCPU workload completes before the 4-billion-instruction
+  # default, leaving a deterministic sustained-contention window before the
+  # predeclared fingerprint horizon.
+  stopAt ? 4000000000,
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
@@ -905,8 +905,11 @@ in
 
           for label in a b; do
             if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
-              grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log" \
-                || fail "guest $label did not report TEST_RESULT:PASS"
+              if ! grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log"; then
+                cat "$TMPDIR/serial-$label.log" >&2
+                diagnose_trace_structure "$label"
+                fail "guest $label did not report TEST_RESULT:PASS"
+              fi
               grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
                 || fail "guest $label did not run the SMP workload"
               if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then

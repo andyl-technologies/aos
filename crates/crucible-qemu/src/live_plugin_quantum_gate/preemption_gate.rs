@@ -162,7 +162,8 @@ fn run_preemption_scenario(
     let host_load = HostLoad::start_if(apply_host_load);
     let mut candidate = LaunchProfileCandidate::default()
         .with_memory_mib(GATE_MEMORY_MIB)
-        .with_smp_vcpus(2);
+        .with_smp_vcpus(2)
+        .with_rr_switch_quantum(config.rr_switch_quantum());
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
     }

@@ -52,6 +52,7 @@ fn run() -> Result<(), String> {
                 idle_horizon_margin_icount: 0,
                 min_idle_speedup_ratio: 1,
             })
+            .with_rr_switch_quantum(env_u64("CRUCIBLE_PREEMPTION_RR_SWITCH_QUANTUM", 4096)?)
             .with_completion_timeout(Duration::from_secs(env_u64(
                 "CRUCIBLE_PREEMPTION_TIMEOUT_SECS",
                 240,
