@@ -1816,15 +1816,6 @@ pub(super) fn finish_run_workflow_outcome(
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     outcome.status = report.status;
     outcome.exit_code = report.status.exit_code();
-    if outcome.status.is_non_passing() && backend_plan.target == BackendExecutionTarget::Local {
-        let artifact_seed = ergonomics_plan.map(|plan| plan.seed.value).unwrap_or(0);
-        let artifact = mock_failure_reproduction_artifact_bytes_for_backend(
-            artifact_seed,
-            backend_plan.resolved_backend.as_ref(),
-        )?;
-        outcome.artifact_digest = content_address_bytes(&artifact);
-        outcome.reproduction_artifact = Some(artifact);
-    }
     outcome.stdout.push(format!(
         "run-session\tcreated={}\tfinal={}\toutcome={}\tsavepoint={}\tfrontier_ticks={}\tquanta={}\tevents={}\tacks={}",
         report.created_state,
@@ -1866,6 +1857,26 @@ pub(super) fn finish_run_workflow_outcome(
             ),
         });
         outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    }
+    if outcome.status.is_non_passing() && backend_plan.target == BackendExecutionTarget::Local {
+        let artifact_seed = ergonomics_plan
+            .map(|plan| plan.seed.value)
+            .unwrap_or_else(|| {
+                seed_to_u64(
+                    run_plan
+                        .request_seed
+                        .unwrap_or_else(|| run_plan.scenario.scenario_def().seed()),
+                )
+            });
+        let artifact = run_failure_reproduction_artifact_bytes(
+            artifact_seed,
+            backend_plan.resolved_backend.as_ref(),
+            run_plan.scenario.scenario_form(),
+            &outcome.canonical_log,
+            &run_fingerprint_samples(&report),
+        )?;
+        outcome.artifact_digest = content_address_bytes(&artifact);
+        outcome.reproduction_artifact = Some(artifact);
     }
     Ok(outcome)
 }

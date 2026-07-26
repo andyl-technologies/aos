@@ -1,6 +1,11 @@
 //! Verification comparison, canonical witnesses, and daemon service entrypoints.
 
 use super::*;
+
+#[path = "artifact_capture.rs"]
+mod artifact_capture;
+pub(super) use artifact_capture::*;
+
 pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
     verify_plan: &VerifyInvocationPlan,
@@ -379,11 +384,16 @@ pub(super) fn push_canonical_wire_line(output: &mut String, key: &str, value: &s
 pub(super) fn verify_fingerprint_samples(
     report: &RunWorkflowReport,
 ) -> Result<Vec<VerifyFingerprintSample>, CliError> {
-    if report.execution_fingerprints.is_empty() {
+    let samples = run_fingerprint_samples(report);
+    if samples.is_empty() {
         return Err(backend_error(
             "verify did not collect any backend execution fingerprint samples",
         ));
     }
+    Ok(samples)
+}
+
+pub(super) fn run_fingerprint_samples(report: &RunWorkflowReport) -> Vec<VerifyFingerprintSample> {
     let mut samples = Vec::new();
     for (index, sample) in report.execution_fingerprints.iter().enumerate() {
         let index = u64::try_from(index).unwrap_or(u64::MAX);
@@ -398,7 +408,7 @@ pub(super) fn verify_fingerprint_samples(
             ),
         });
     }
-    Ok(samples)
+    samples
 }
 
 pub(super) fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u8> {
@@ -657,32 +667,16 @@ pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
     left.get(..len) == right.get(..len)
 }
 
-pub(super) fn verify_reproduction_artifact_bytes(
+pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
-    scenario: &crucible::ScenarioDef,
-    canonical_log: &[CanonicalLogEntry],
-    fingerprint_samples: &[VerifyFingerprintSample],
-) -> Result<Vec<u8>, CliError> {
-    verify_reproduction_artifact_bytes_with_components(
-        seed,
-        backend,
-        scenario,
-        canonical_log,
-        fingerprint_samples,
-        &[],
-    )
-}
-
-pub(super) fn verify_reproduction_artifact_bytes_with_components(
-    seed: u64,
-    backend: Option<&ResolvedLocalBackend>,
-    scenario: &crucible::ScenarioDef,
+    scenario_name: &str,
+    scenario_media_type: &str,
+    scenario_bytes: &[u8],
     canonical_log: &[CanonicalLogEntry],
     fingerprint_samples: &[VerifyFingerprintSample],
     extra_payloads: &[ReproductionArtifactComponentPayload],
 ) -> Result<Vec<u8>, CliError> {
-    let scenario_bytes = scenario_identity_bytes(scenario);
     let scenario_digest = content_address_bytes(&scenario_bytes);
     let store_uri = format!("cas:{scenario_digest}");
     let identity = expected_replay_identity_for_backend(backend);
@@ -724,10 +718,10 @@ pub(super) fn verify_reproduction_artifact_bytes_with_components(
         &[
             "scenario",
             "scenario_def",
-            "verify.scn",
+            scenario_name,
             &scenario_digest,
             &store_uri,
-            "application/vnd.crucible.scenario+text",
+            scenario_media_type,
             &scenario_bytes.len().to_string(),
         ],
     );
@@ -736,10 +730,10 @@ pub(super) fn verify_reproduction_artifact_bytes_with_components(
         &[
             "component",
             "scenario_def",
-            "verify.scn",
+            scenario_name,
             &scenario_digest,
             &store_uri,
-            "application/vnd.crucible.scenario+text",
+            scenario_media_type,
             &scenario_bytes.len().to_string(),
         ],
     );

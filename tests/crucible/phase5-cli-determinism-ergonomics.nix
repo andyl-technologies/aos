@@ -187,8 +187,8 @@
         needle = "self_contained_artifact: true";
       }
       {
-        label = "mock artifact carries resolved seed";
-        needle = "mock_failure_reproduction_artifact_bytes_for_backend";
+        label = "actual failed-run artifact builder";
+        needle = "fn run_failure_reproduction_artifact_bytes";
       }
       {
         label = "backend outcome status";
@@ -224,7 +224,11 @@
       }
       {
         label = "generic non-passing outcome artifact path";
-        needle = "fn mark_mock_failure_outcome";
+        needle = "run_failure_reproduction_artifact_bytes(";
+      }
+      {
+        label = "actual failed-run artifact adversarial test";
+        needle = "cli_non_passing_run_artifact_captures_actual_run_evidence";
       }
       {
         label = "generic backend output emission";
@@ -296,11 +300,11 @@
       }
       {
         label = "canonical model scanned for wall-clock";
-        needle = "include_str!(\"../../crucible/src/model.rs\")";
+        needle = "include_str!(\"../../../../crucible/src/model.rs\")";
       }
       {
         label = "canonical session scanned for wall-clock";
-        needle = "include_str!(\"../../crucible-session/src/lib.rs\")";
+        needle = "include_str!(\"../../../../crucible-session/src/lib.rs\")";
       }
       {
         label = "determinism ergonomics recorder";
