@@ -16,7 +16,10 @@
   pluginVcpu = builtins.readFile ../../crates/crucible-qemu-plugin/src/vcpu_introspection.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  pluginAbiTests = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
+  ];
   pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -26,20 +29,9 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (
@@ -338,8 +330,8 @@ in
               vcpu_introspection::tests::vcpu_introspection_cursor_can_be_derived_from_local_round_robin_state \
               vcpu_introspection::tests::vcpu_introspection_cursor_can_be_derived_from_local_round_robin_state
             run_exact_test \
-              abi::tests::abi_install_requires_vcpu_introspection_symbols \
-              abi::tests::abi_install_requires_vcpu_introspection_symbols
+              abi::tests::capabilities::abi_install_requires_vcpu_introspection_symbols \
+              abi::tests::capabilities::abi_install_requires_vcpu_introspection_symbols
           '';
         }
         {
