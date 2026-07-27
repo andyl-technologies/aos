@@ -500,8 +500,7 @@ in
             }
 
             wait_for_guest_ready() {
-              label="$1"
-              serial="$TMPDIR/serial-$label.log"
+              serial="$1"
               waited=0
               while [ "$waited" -lt 1200 ]; do
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_READY' "$serial"; then
@@ -519,8 +518,7 @@ in
             }
 
             wait_for_guest_done() {
-              label="$1"
-              serial="$TMPDIR/serial-$label.log"
+              serial="$1"
               waited=0
               while [ "$waited" -lt 1200 ]; do
                 if [ -f "$serial" ] && grep -q 'AOS_ANY_GUEST_DONE' "$serial"; then
@@ -580,9 +578,9 @@ in
               run_name="$2"
               disk_mode="$3"
               label="$case_name-$run_name"
-              qmp_socket="$TMPDIR/qmp-$label.sock"
-              serial="$TMPDIR/serial-$label.log"
-              trace="$TMPDIR/trace-$label.jsonl"
+              qmp_socket="$TMPDIR/qmp-$case_name.sock"
+              serial="$TMPDIR/serial-$case_name.log"
+              trace="$TMPDIR/trace-$case_name.jsonl"
               rm -f "$qmp_socket" "$serial" "$trace"
 
               # Stock guest cmdline (D-31): no entropy-suppression flags. Determinism
@@ -619,12 +617,13 @@ in
                 cow)
                   cow_append="$append aos.any_guest.disk=cow"
                   base="$TMPDIR/base-$case_name.img"
-                  overlay="$TMPDIR/overlay-$label.qcow2"
+                  overlay="$TMPDIR/overlay-$case_name.qcow2"
                   if [ ! -f "$base" ]; then
                     cp "$BASE_IMAGE" "$base"
                     chmod u+w "$base"
                     sha256sum "$base" | gawk '{print $1}' > "$TMPDIR/base-$case_name.before"
                   fi
+                  rm -f "$overlay"
                   "$QEMU_IMG" create -f qcow2 -F raw -b "$base" "$overlay" >/dev/null
                   set -- "$QEMU" \
                     -nodefaults \
@@ -665,8 +664,8 @@ in
               qemu_pid="$!"
 
               wait_for_socket "$qmp_socket" || fail "$label QMP socket did not appear"
-              wait_for_guest_ready "$label" || fail "$label did not boot to ready marker"
-              wait_for_guest_done "$label" || fail "$label did not reach deterministic shutdown marker"
+              wait_for_guest_ready "$serial" || fail "$label did not boot to ready marker"
+              wait_for_guest_done "$serial" || fail "$label did not reach deterministic shutdown marker"
               qmp_quit "$qmp_socket"
               wait_for_qemu_exit "$label"
 
@@ -681,8 +680,8 @@ in
                   and .memory_events_enabled == false
                   and .device_event_capture == false
                   and .device_event_hash == null
-                  and (.register_hashes | type == "array")
-                  and (.register_hashes | length) == 1
+                  and (.register_digests | type == "array")
+                  and (.register_digests | length) == 1
                   and (.register_counts | type == "array")
                   and (.register_counts | length) == 1
                   and .register_counts[0] > 0

@@ -525,9 +525,9 @@ in
             input="$1"
             output="$2"
             # This projection is retained only as a focused workload-evidence
-            # artifact. The gate separately byte-compares the complete raw
-            # guest serial streams, so filtering here cannot hide a
-            # guest-visible divergence.
+            # artifact. The gate separately byte-compares the authoritative
+            # raw guest serial prefixes through TEST_RESULT:PASS, so filtering
+            # here cannot hide a guest-visible divergence.
             grep -E '^(CRUCIBLE_QEMU_INERT_|TEST_RESULT:)' "$input" > "$output"
           }
 
@@ -746,7 +746,7 @@ in
             if wait_for_guest_pass "$serial" "$qemu_pid"; then
               gawk '
                 { print }
-                /^TEST_RESULT:PASS$/ { exit }
+                /^TEST_RESULT:PASS\r?$/ { exit }
               ' "$serial" > "$TMPDIR/authoritative-serial-$label.log"
             else
               wait_status="$?"
