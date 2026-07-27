@@ -724,7 +724,11 @@ in
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
             argv_launcher="$TMPDIR/qemu-argv-launcher"
             cadence=600000000
-            horizon=1500000000
+            # The stock-entropy SMP guest reaches its four-thread affinity
+            # workload at the S11-certified 3.6-billion-instruction horizon.
+            # Earlier boot-only horizons leave secondary vCPUs with zero
+            # retired instructions and therefore do not prove QEMU-34.
+            horizon=3600000000
             quantum=4096
             memory_mib=128
             qemu_binary="${pkgs.qemu-crucible}/bin/qemu-system-x86_64"
@@ -1263,8 +1267,8 @@ in
               2> "$TMPDIR/fingerprint-negative.err"; then
               fail "mutated vCPU register trace unexpectedly compared equal"
             fi
-            last_sample_index=$((horizon / cadence))
-            previous_icount=$(((horizon / cadence) * cadence))
+            last_sample_index=$(((horizon - 1) / cadence))
+            previous_icount=$(((horizon - 1) / cadence * cadence))
             grep -q "^first_differing_sample=$last_sample_index\$" "$TMPDIR/fingerprint-negative.err"
             grep -q "^previous_matching_icount=$previous_icount\$" "$TMPDIR/fingerprint-negative.err"
             grep -q "^first_different_icount=$horizon\$" "$TMPDIR/fingerprint-negative.err"
@@ -1432,7 +1436,7 @@ in
             guest_entropy_path=stock-kaslr-aslr-with-fixed-qemu-seed
             guest_entropy_seal=fw-cfg-plus-seeded-rng-builtin-no-rdrand-rdseed
             firmware_artifact_digest_bound=true
-            guest_horizon=1500000000-non-cadence
+            guest_horizon=3600000000-cadence-aligned
             all_vcpus_retired_at_horizon=true
             live_device_io_observed=true
             zero_observation_hashes_rejected=true
