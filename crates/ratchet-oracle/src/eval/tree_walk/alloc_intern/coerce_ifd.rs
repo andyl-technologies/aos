@@ -224,6 +224,9 @@ impl TreeWalk {
                             span,
                         ));
                     };
+                    #[cfg(feature = "collection_poll_probe")]
+                    self.final_force_ifd_realizations
+                        .set(self.final_force_ifd_realizations.get().saturating_add(1));
                     self.materialize_ifd_derivation(id, span, path, element, op)?;
                     realizer.realize(request).map_err(|source| {
                         TreeWalkError::new(

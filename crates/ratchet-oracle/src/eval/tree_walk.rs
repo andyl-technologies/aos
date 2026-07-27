@@ -433,6 +433,8 @@ pub struct TreeWalk {
     warning_output: Vec<EvalWarningOutput>,
     impure_input_trace: Vec<ImpureInputFingerprint>,
     impure_input_trace_complete: bool,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_ifd_realizations: std::cell::Cell<u64>,
     force_cache_impure_trace_epoch: u64,
     active_memo_read_nodes: Vec<ActiveMemoReadNode>,
     active_derivation_trace_cursors: Vec<ImpureInputTraceCursor>,

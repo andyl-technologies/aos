@@ -80,6 +80,51 @@ enum FinalForceResumeState {
     Suspended { ordinal: u64 },
 }
 
+/// Observable-effect cursor for one replayable FinalForce attempt.
+#[cfg(feature = "collection_poll_probe")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FinalForceEffectCursor {
+    ifd_realizations: u64,
+    trace_events: usize,
+    warning_events: usize,
+    impure_input_events: usize,
+    impure_input_complete: bool,
+    text_store_realizations: usize,
+    source_store_realizations: usize,
+    import_cache_entries: usize,
+    known_derivations: usize,
+    memo_events: u64,
+}
+
+#[cfg(feature = "collection_poll_probe")]
+impl FinalForceEffectCursor {
+    /// Returns the number of independently changed effect classes.
+    fn changed_classes(self, other: Self) -> usize {
+        usize::from(self.ifd_realizations != other.ifd_realizations)
+            .saturating_add(usize::from(self.trace_events != other.trace_events))
+            .saturating_add(usize::from(self.warning_events != other.warning_events))
+            .saturating_add(usize::from(
+                self.impure_input_events != other.impure_input_events,
+            ))
+            .saturating_add(usize::from(
+                self.impure_input_complete != other.impure_input_complete,
+            ))
+            .saturating_add(usize::from(
+                self.text_store_realizations != other.text_store_realizations,
+            ))
+            .saturating_add(usize::from(
+                self.source_store_realizations != other.source_store_realizations,
+            ))
+            .saturating_add(usize::from(
+                self.import_cache_entries != other.import_cache_entries,
+            ))
+            .saturating_add(usize::from(
+                self.known_derivations != other.known_derivations,
+            ))
+            .saturating_add(usize::from(self.memo_events != other.memo_events))
+    }
+}
+
 /// Default-off ownership and coverage state for one whole demand.
 #[derive(Debug, Default)]
 pub(super) struct WholeDemandDispatcherRuntime {
@@ -115,6 +160,16 @@ pub(super) struct WholeDemandDispatcherRuntime {
     final_force_resume_publish_depth: usize,
     final_force_resume_publish_shape: Option<&'static str>,
     final_force_resume_publish_lag: u64,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_epoch: Option<FinalForceEffectCursor>,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_checks: u64,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_clean: u64,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_dirty: u64,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_last_changed_classes: usize,
     pub(super) corridor_census: super::whole_demand_corridor_census::WholeDemandCorridorCensus,
     speed_pmu_windows: Option<super::demand_epoch_probe::DemandWindowController>,
 }
@@ -280,6 +335,10 @@ impl TreeWalk {
 
     /// Marks entry into one synchronous attr-path semantic leaf.
     fn enter_whole_demand_oracle(&mut self, control: WholeDemandControl) {
+        #[cfg(feature = "collection_poll_probe")]
+        let final_force_effect_epoch = (self.whole_demand_dispatcher.active
+            && matches!(control, WholeDemandControl::FinalForce { segment: 5 }))
+        .then(|| self.final_force_effect_cursor());
         let census_enabled = self.whole_demand_dispatcher.corridor_census.is_enabled();
         let allocation_cursor = census_enabled.then(|| {
             (
@@ -295,6 +354,10 @@ impl TreeWalk {
         runtime.generic_oracle_depth = runtime.generic_oracle_depth.saturating_add(1);
         runtime.oracle_calls = runtime.oracle_calls.saturating_add(1);
         runtime.control.push(control);
+        #[cfg(feature = "collection_poll_probe")]
+        if final_force_effect_epoch.is_some() {
+            runtime.final_force_effect_epoch = final_force_effect_epoch;
+        }
         if census_enabled {
             runtime.corridor_census.enter_outer(control);
         }
@@ -379,6 +442,24 @@ impl TreeWalk {
         else {
             return Ok(());
         };
+        #[cfg(feature = "collection_poll_probe")]
+        {
+            let current = self.final_force_effect_cursor();
+            let changed_classes = self
+                .whole_demand_dispatcher
+                .final_force_effect_epoch
+                .map_or(usize::MAX, |epoch| epoch.changed_classes(current));
+            let runtime = &mut self.whole_demand_dispatcher;
+            runtime.final_force_effect_checks = runtime.final_force_effect_checks.saturating_add(1);
+            runtime.final_force_effect_last_changed_classes = changed_classes;
+            if changed_classes == 0 {
+                runtime.final_force_effect_clean =
+                    runtime.final_force_effect_clean.saturating_add(1);
+            } else {
+                runtime.final_force_effect_dirty =
+                    runtime.final_force_effect_dirty.saturating_add(1);
+            }
+        }
         if !self.final_force_replay_is_effect_clean() {
             self.whole_demand_dispatcher.final_force_resume_state = FinalForceResumeState::Running;
             self.whole_demand_dispatcher.final_force_resume_declines = self
@@ -425,6 +506,41 @@ impl TreeWalk {
             && self.impure_input_trace.is_empty()
             && self.text_store.is_empty()
             && self.source_store_string_cache.is_empty()
+    }
+
+    /// Captures the observable effect classes owned by one FinalForce attempt.
+    #[cfg(feature = "collection_poll_probe")]
+    fn final_force_effect_cursor(&self) -> FinalForceEffectCursor {
+        let stats = &self.stats;
+        let memo_events = stats
+            .memo_l0_hits
+            .saturating_add(stats.memo_l0_misses)
+            .saturating_add(stats.memo_l0_admissions)
+            .saturating_add(stats.memo_l0_declines)
+            .saturating_add(stats.memo_l1_hits)
+            .saturating_add(stats.memo_l1_misses)
+            .saturating_add(stats.memo_l1_admissions)
+            .saturating_add(stats.memo_l1_declines)
+            .saturating_add(stats.memo_l2_secondary_hits)
+            .saturating_add(stats.memo_l2_secondary_misses)
+            .saturating_add(stats.memo_l2_promotions)
+            .saturating_add(stats.memo_l2_reval_failures)
+            .saturating_add(stats.memo_net_hits)
+            .saturating_add(stats.memo_net_misses)
+            .saturating_add(stats.memo_net_errors)
+            .saturating_add(stats.memo_net_reval_failures);
+        FinalForceEffectCursor {
+            ifd_realizations: self.final_force_ifd_realizations.get(),
+            trace_events: self.trace_output.len(),
+            warning_events: self.warning_output.len(),
+            impure_input_events: self.impure_input_trace.len(),
+            impure_input_complete: self.impure_input_trace_complete,
+            text_store_realizations: self.text_store.len(),
+            source_store_realizations: self.source_store_string_cache.len(),
+            import_cache_entries: self.import_cache.len(),
+            known_derivations: self.known_derivations.len(),
+            memo_events,
+        }
     }
 
     /// Stores one leaf result in the dispatcher slot and proves its loop head.
@@ -883,6 +999,15 @@ impl TreeWalk {
                 runtime.final_force_resume_publish_shape.unwrap_or("none"),
                 runtime.final_force_resume_publish_lag,
             );
+            #[cfg(feature = "collection_poll_probe")]
+            eprintln!(
+                "aos_nix_final_force_effect_epoch checks={} clean={} dirty={} \
+                 last_changed_classes={} report_only=true",
+                runtime.final_force_effect_checks,
+                runtime.final_force_effect_clean,
+                runtime.final_force_effect_dirty,
+                runtime.final_force_effect_last_changed_classes,
+            );
         }
         eprintln!(
             "aos_nix_whole_demand_dispatcher_probe \
@@ -1161,6 +1286,21 @@ mod tests {
         runtime.lambda_tokens.reserve(102);
         runtime.import_tokens.reserve(151);
         assert!(runtime.modeled_storage_bytes() < STORAGE_CAP_BYTES);
+    }
+
+    #[cfg(feature = "collection_poll_probe")]
+    #[test]
+    fn final_force_effect_cursor_counts_independent_changed_classes() {
+        let baseline = FinalForceEffectCursor::default();
+        let changed = FinalForceEffectCursor {
+            ifd_realizations: 1,
+            impure_input_events: 2,
+            import_cache_entries: 3,
+            ..baseline
+        };
+
+        assert_eq!(baseline.changed_classes(changed), 3);
+        assert_eq!(changed.changed_classes(changed), 0);
     }
 
     #[test]

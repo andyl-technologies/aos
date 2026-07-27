@@ -303,6 +303,8 @@ impl TreeWalk {
             warning_output: Vec::new(),
             impure_input_trace: Vec::new(),
             impure_input_trace_complete: true,
+            #[cfg(feature = "collection_poll_probe")]
+            final_force_ifd_realizations: std::cell::Cell::new(0),
             force_cache_impure_trace_epoch: 0,
             active_memo_read_nodes: Vec::new(),
             active_derivation_trace_cursors: Vec::new(),
