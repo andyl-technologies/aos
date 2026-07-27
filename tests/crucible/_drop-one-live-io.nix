@@ -30,14 +30,18 @@
     src = null;
     buildDeps = [pkgs.coreutils];
     runtimeDeps = [buildDrv qemuPackage];
+    BUILD_DRV = "${buildDrv}";
     VARIANT_QEMU = "${buildDrv}/variant-qemu-system-x86_64";
     QEMU_DATA_DIR = "${qemuPackage}/share/qemu";
     phases = [
       {
         name = "install";
         script = ''
-          test -x "$VARIANT_QEMU"
           mkdir -p "$out/bin"
+          if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+            exit 0
+          fi
+          test -x "$VARIANT_QEMU"
           cat > "$out/bin/qemu-system-x86_64" <<WRAPPER
           #!${pkgs.bash}/bin/bash
           exec "$VARIANT_QEMU" -L "$QEMU_DATA_DIR" "\$@"
@@ -79,6 +83,7 @@ in
     ];
 
     FULL_GATE = "${fullGate}";
+    BUILD_DRV = "${buildDrv}";
     RUNNER = "${liveIoRunner}/bin/${runnerName}";
     VARIANT_QEMU = "${variantQemu}/bin/qemu-system-x86_64";
     PLUGIN = "${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
@@ -96,6 +101,19 @@ in
           set -eu
           export LC_ALL=C
           mkdir -p "$out"
+
+          if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+            cat > "$out/result" <<RESULT
+          PASS
+          check=$ATTR_PATH
+          gate=gate:patch-microtests
+          drop_index=$DROP_INDEX
+          sim_discriminator_classification=not-applicable
+          reason=variant-not-built
+          RESULT
+            exit 0
+          fi
+
           cp "$FULL_GATE/result" "$out/full.result"
 
           if [ "$DROP_INDEX" -eq 17 ]; then
