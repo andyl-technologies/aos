@@ -40,8 +40,10 @@ pub use execution::{
     MixedMachineRuntime,
 };
 pub use oracle_lower::{
-    MixedOracleNodeBlock, MixedOracleNodeDecline, MixedOracleNodeLowerError,
-    MixedOracleNodeLowerOutcome, lower_mixed_oracle_node,
+    MixedOracleCallTargetBlock, MixedOracleNodeBlock, MixedOracleNodeDecline,
+    MixedOracleNodeLowerError, MixedOracleNodeLowerOutcome, MixedOraclePlanDecline,
+    MixedOraclePlanLowerError, MixedOraclePlanLowerOutcome, lower_mixed_oracle_apply_force_plan,
+    lower_mixed_oracle_node,
 };
 
 /// Encoding and semantic-layout version of mixed-machine plans.
