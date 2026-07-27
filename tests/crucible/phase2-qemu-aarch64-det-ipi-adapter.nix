@@ -88,6 +88,8 @@ in
             PASS
             gate=gate:patch-microtests
             patch=0042-crucible-aarch64-det-ipi-adapter.patch
+            patched_fixture_exercised=true
+            stock_negative_control=true
             prefix_negative_control=true
             aarch64_rr_drain_adapter=true
             aarch64_commanded_ipi_adapter=true
