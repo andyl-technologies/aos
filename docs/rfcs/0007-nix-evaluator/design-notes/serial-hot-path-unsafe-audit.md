@@ -7870,6 +7870,14 @@ lower the real mixed plan into an explicit generated machine and make its
 statepoints own writable slots before attempting the dead-first packed
 rotation.
 
+The generic packed-STG interpreter confirms that real explicit ownership alone
+is insufficient for the speed gate. It successfully owns 18,376 primary Apply
+thunks and executes 71,320 nested Apply continuations without semantic failure,
+but an alternating same-binary comparison regresses retired instructions by
+0.716% (16,816,054,470 versus 16,696,446,405 median). Its stacks remain useful
+as a statepoint model; its per-node dispatch must not be promoted as the
+production executor.
+
 ### Matched lean-control recovery
 
 The apparent 16.069-billion-instruction current control was not a production

@@ -13498,6 +13498,16 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       hand-specialize a purportedly small ordinal-160 continuation: this
       measurement promotes generated whole-demand statepoints, which can own
       that suffix while also providing the real-plan speed path.
+      The existing explicit packed-STG executor is not itself that speed path.
+      On the same diagnostic binary it completes 18,376 real Apply thunks,
+      69,780 thunk continuations, and 71,320 Apply continuations with zero
+      errors or panics. Three alternating instruction legs nevertheless measure
+      16,816,054,470 median with STG enabled versus 16,696,446,405 disabled, a
+      119,608,065-instruction or 0.716% regression. This exact-binary comparison
+      is admissible as a rejection of the interpreted STG executor, not as a
+      global lean control. Reuse its explicit ownership concepts, but require
+      direct mixed-plan lowering/native execution to remove dispatch rather than
+      enabling this interpreter in production.
       The residual factor-speed partition is now bounded. The measured sampled
       virtualizable families total 59.65% of instructions and 55.40% of
       cycles, approximately 8.37B/3.26B on the 14.027B/5.890B lean run.
