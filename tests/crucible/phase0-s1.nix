@@ -2,7 +2,11 @@
   pkgs,
   lib,
   enableJitter ? true,
-  hostAdversary ? (if enableJitter then "jitter-load" else "none"),
+  hostAdversary ? (
+    if enableJitter
+    then "jitter-load"
+    else "none"
+  ),
   sampleCount ? 36,
 }: let
   cadence = 100000000;
@@ -615,9 +619,12 @@ in
             fail "S1 extended fingerprint mismatch"
           fi
           for label in a b; do
+            # The exact horizon sample is authoritative. The post-quit record
+            # can reflect host-timed VMState cleanup and is used only as stop
+            # evidence, so exclude its serialized value size and digest.
             jq -c '
               if .final == true
-              then del(.device_state_digest, .diagnostic_extended_fnv)
+              then del(.device_state_digest, .device_state_bytes, .diagnostic_extended_fnv)
               else .
               end
             ' "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/trace-$label-exit-comparable.jsonl"
