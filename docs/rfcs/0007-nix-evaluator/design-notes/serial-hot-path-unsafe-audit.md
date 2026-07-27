@@ -7856,3 +7856,40 @@ boundary. Generated whole-demand statepoints can provide those ownership-clean
 loop heads while simultaneously scalar-replacing promises/frames. Earlier
 packed rotation and native superblocks are therefore coupled requirements, not
 independent optimizations that can be accepted separately.
+
+### Matched lean-control recovery
+
+The apparent 16.069-billion-instruction current control was not a production
+regression. It compiled `collection_poll_probe`, whose experiment surface has
+grown since the preserved control was built. Running the preserved
+`target-whole-demand-dispatcher` binary against the exact current source and
+derivation retired 14,064,967,345 instructions, proving that neither the
+workload nor derivation priming accounts for the approximately two-billion
+instruction difference. A current-binary instruction profile attributed large
+fractions to compile-time diagnostic paths even with their runtime doors off,
+including lifetime and continuation shadows, indexed transient roots,
+whole-demand census begin/end hooks, and reservation page-liveness recording.
+The dispatcher with its census explicitly disabled still retired
+16,081,801,350 instructions, so the dispatcher runtime door itself is not the
+cause.
+
+The actual lean composition is
+`candidate_c_value,final_config_trie_canary`, with
+`AOS_NIX_FINAL_CONFIG_TRIE_CANARY=1`. Two fresh same-source runs produced the
+exact derivation
+`/nix/store/xprnwjcpdd1mz5l1g9lpzs7hkgcl9gy8-aos-system-toplevel.drv` and
+retired 14,521,903,689 and 14,522,110,686 instructions. They used 465,088 and
+461,600 KiB peak RSS. The current same-source C++ control retired
+21,093,302,818 instructions and used 465,460 KiB peak RSS. Thus the lean
+evaluator is approximately 1.45-fold better by retired instructions. Crossing
+the strict greater-than-twofold gate requires fewer than 10,546,651,409
+instructions, another 27.4% reduction from the lean median. Crossing half of
+this C++ run's RSS requires less than 232,730 KiB, another 49.6% reduction from
+the lower lean observation.
+
+Cycle readings during this battery varied with builder contention and are not
+used to revise the cycle gate. Broad probe compositions can still be used for
+falsification evidence, but they are not admissible lean controls. Every future
+control records the exact Cargo feature fingerprint, and runtime-off probe
+comparisons use the same feature binary rather than comparing a diagnostic
+binary with the lean composition.
