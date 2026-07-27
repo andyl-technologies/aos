@@ -241,7 +241,7 @@ pub enum QemuEntropyElimination {
     /// The RTC base is fixed and its clock source is virtual time.
     FixedRtcVirtualClock,
     /// Guest-visible boot entropy is supplied entirely host-side by a
-    /// content-addressed fw_cfg random-seed and a seeded builtin RNG device, so
+    /// content-addressed fw_cfg random-seed and a deterministic RNG device, so
     /// determinism holds for any unmodified guest without cmdline shaping.
     GuestEntropyFwCfgSeed,
     /// QEMU-internal pseudo-randomness is seeded from scenario material.
