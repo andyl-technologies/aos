@@ -672,12 +672,9 @@ in
           exercise_serial_normalization_negative_control
 
           seed="$TMPDIR/seed.bin"
-          rng_input="$TMPDIR/rng-input.bin"
           block_image="$TMPDIR/block.img"
           ninep_root="$TMPDIR/9p-root"
           printf 'crucible-phase2-qemu-inert-seed-v1\n' > "$seed"
-          printf 'crucible-phase2-qemu-inert-rng-input-v1\n' > "$rng_input"
-          dd if=/dev/zero bs=1 count=128 status=none >> "$rng_input"
           dd if=/dev/zero of="$block_image" bs=1M count=8 status=none
           printf 'CRUCIBLE_QEMU_INERT_BLOCK payload v1\n' \
             | dd of="$block_image" bs=1 seek=0 conv=notrunc status=none
@@ -726,7 +723,7 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c001 \
               -fw_cfg name=opt/crucible/seed,file="$seed" \
-              -object rng-random,id=inert-rng0,filename="$rng_input" \
+              -object rng-random,id=inert-rng0,filename=/dev/zero \
               -device virtio-rng-pci,rng=inert-rng0,id=inert-vrng0 \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
@@ -993,7 +990,7 @@ in
           reference_vs_patched_boot_plain_icount_identical=true
           reference_vs_patched_device_io_identical=true
           real_virtio_rng_hwrng_request_exercised=true
-          virtio_rng_fixed_file_backend=true
+          virtio_rng_fixed_zero_backend=true
           raw_serial_authority=through-test-result-pass
           reference_vs_patched_rng_output_tcg_identical=true
           reference_vs_patched_rng_output_plain_icount_identical=true
