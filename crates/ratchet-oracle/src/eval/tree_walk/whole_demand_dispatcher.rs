@@ -170,6 +170,10 @@ pub(super) struct WholeDemandDispatcherRuntime {
     final_force_effect_dirty: u64,
     #[cfg(feature = "collection_poll_probe")]
     final_force_effect_last_changed_classes: usize,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_last_start: Option<FinalForceEffectCursor>,
+    #[cfg(feature = "collection_poll_probe")]
+    final_force_effect_last_end: Option<FinalForceEffectCursor>,
     pub(super) corridor_census: super::whole_demand_corridor_census::WholeDemandCorridorCensus,
     speed_pmu_windows: Option<super::demand_epoch_probe::DemandWindowController>,
 }
@@ -445,13 +449,13 @@ impl TreeWalk {
         #[cfg(feature = "collection_poll_probe")]
         {
             let current = self.final_force_effect_cursor();
-            let changed_classes = self
-                .whole_demand_dispatcher
-                .final_force_effect_epoch
-                .map_or(usize::MAX, |epoch| epoch.changed_classes(current));
+            let epoch = self.whole_demand_dispatcher.final_force_effect_epoch;
+            let changed_classes = epoch.map_or(usize::MAX, |epoch| epoch.changed_classes(current));
             let runtime = &mut self.whole_demand_dispatcher;
             runtime.final_force_effect_checks = runtime.final_force_effect_checks.saturating_add(1);
             runtime.final_force_effect_last_changed_classes = changed_classes;
+            runtime.final_force_effect_last_start = epoch;
+            runtime.final_force_effect_last_end = Some(current);
             if changed_classes == 0 {
                 runtime.final_force_effect_clean =
                     runtime.final_force_effect_clean.saturating_add(1);
@@ -1002,11 +1006,13 @@ impl TreeWalk {
             #[cfg(feature = "collection_poll_probe")]
             eprintln!(
                 "aos_nix_final_force_effect_epoch checks={} clean={} dirty={} \
-                 last_changed_classes={} report_only=true",
+                 last_changed_classes={} start={:?} end={:?} report_only=true",
                 runtime.final_force_effect_checks,
                 runtime.final_force_effect_clean,
                 runtime.final_force_effect_dirty,
                 runtime.final_force_effect_last_changed_classes,
+                runtime.final_force_effect_last_start,
+                runtime.final_force_effect_last_end,
             );
         }
         eprintln!(
