@@ -89,7 +89,10 @@ impl IrDependencyFootprint {
             .iter()
             .enumerate()
             .filter_map(|(index, facts)| {
-                facts.strictness.is_demanded().then(|| IrId::new(index as u32))
+                facts
+                    .strictness
+                    .is_demanded()
+                    .then(|| IrId::new(index as u32))
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();

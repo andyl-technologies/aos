@@ -119,7 +119,9 @@ pub(crate) fn embedded_constant_words(value: Value) -> Result<[i64; VALUE_WORDS]
         ValueTag::Bool => {
             let boolean = value
                 .as_bool()
-                .map_err(|_| JitLowerError::ArenaBackedConstant { tag: ValueTag::Bool })?;
+                .map_err(|_| JitLowerError::ArenaBackedConstant {
+                    tag: ValueTag::Bool,
+                })?;
             CompressedValueWord::boolean(boolean)
         }
         ValueTag::Null => CompressedValueWord::null(),

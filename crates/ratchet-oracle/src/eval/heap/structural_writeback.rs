@@ -14,6 +14,7 @@ use super::environment_writeback::EnvironmentWritebackStage;
 #[cfg(test)]
 use super::roots::{
     CollectorPollDirectHeapFieldWrite, MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+    StagedFlatClosureWrite,
 };
 use super::*;
 
@@ -37,6 +38,7 @@ impl EvalHeap {
             Vec<(usize, HeapObjectValue)>,
             Vec<(NonNull<HeapObject>, NixList)>,
             Vec<(NonNull<HeapObject>, FlatAttrs)>,
+            Vec<StagedFlatClosureWrite>,
             EnvironmentWritebackStage,
             StructuralWritebackStage,
         ),
@@ -51,31 +53,32 @@ impl EvalHeap {
         })?;
         let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         let mut staged_flat_attrs: Vec<(NonNull<HeapObject>, FlatAttrs)> = Vec::new();
-        let mut staged_environment = EnvironmentWritebackStage::try_new(writes.len()).map_err(
-            |_| EvalHeapError::RootScanAllocationFailed {
-                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
-                entries: writes.len(),
-            },
-        )?;
+        let mut staged_flat_closures = Vec::new();
+        let mut staged_environment =
+            EnvironmentWritebackStage::try_new(writes.len()).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                    entries: writes.len(),
+                }
+            })?;
 
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
             writes,
             &mut staged,
             &mut staged_flat_lists,
             &mut staged_flat_attrs,
+            &mut staged_flat_closures,
             &mut staged_environment,
             writes.len(),
         )?;
-        let staged_structural = self.stage_structural_writebacks(
-            &staged,
-            &staged_flat_lists,
-            &staged_flat_attrs,
-        )?;
+        let staged_structural =
+            self.stage_structural_writebacks(&staged, &staged_flat_lists, &staged_flat_attrs)?;
 
         Ok((
             staged,
             staged_flat_lists,
             staged_flat_attrs,
+            staged_flat_closures,
             staged_environment,
             staged_structural,
         ))
@@ -129,11 +132,7 @@ impl EvalHeap {
         let list_cons = lists_changed
             .then(|| {
                 self.list_cons.try_rekey_committed(|value| {
-                    self.projected_list_structural_hash(
-                        *value,
-                        staged_records,
-                        staged_flat_lists,
-                    )
+                    self.projected_list_structural_hash(*value, staged_records, staged_flat_lists)
                 })
             })
             .transpose()?;
@@ -198,7 +197,7 @@ impl EvalHeap {
         {
             return Ok(list_structural_hash(list));
         }
-        if self.flat_lists.kind_of(ptr).is_some() {
+        if self.flat_lists.kind_of(ptr) == Some(FlatObjectKind::List) {
             return Ok(list_structural_hash(self.flat_list_payload(ptr)?));
         }
         let Some(index) = self.records.index_of_address(ptr.as_ptr() as usize) else {
@@ -322,7 +321,10 @@ mod tests {
             .flat_lists
             .resolve(ptr, FlatObjectKind::List)
             .expect("parent list resolves");
-        assert_eq!(object.structural_hash(), list_structural_hash(&expected).raw());
+        assert_eq!(
+            object.structural_hash(),
+            list_structural_hash(&expected).raw()
+        );
         assert!(!heap.flat_stale_hashes.contains(&(ptr.as_ptr() as usize)));
         let identical = heap.alloc_list(expected).expect("identical list admits");
         assert!(identical.raw_eq(parent));
@@ -346,8 +348,8 @@ mod tests {
         let key = symbols.intern(b"name").expect("symbol interns");
         let child = lambda(&mut heap, 1);
         let destination = lambda(&mut heap, 2);
-        let attrs = FlatAttrs::new(vec![AttrEntry::new(key, child)], &symbols)
-            .expect("attrs build");
+        let attrs =
+            FlatAttrs::new(vec![AttrEntry::new(key, child)], &symbols).expect("attrs build");
         let parent = heap.alloc_attrs(0, attrs).expect("parent attrs allocate");
         let request = promote(&mut heap, child, destination);
         let write = AllocationCollectorPollDirectHeapFieldWrite::new(
@@ -385,8 +387,8 @@ mod tests {
             .alloc_attrs(0, expected)
             .expect("identical attrs admit");
         assert!(identical.raw_eq(parent));
-        let old_attrs = FlatAttrs::new(vec![AttrEntry::new(key, child)], &symbols)
-            .expect("old attrs rebuild");
+        let old_attrs =
+            FlatAttrs::new(vec![AttrEntry::new(key, child)], &symbols).expect("old attrs rebuild");
         let old = heap
             .alloc_attrs(0, old_attrs)
             .expect("old payload allocates independently");

@@ -17,6 +17,51 @@ candidate_c_value = [
   "ratchet-jit/candidate_c_value",
   "ratchet-runtime-ffi/candidate_c_value",
 ]
+# Default-off serial Apply/GenList active packed-thunk experiment.
+active_packed_thunk_probe = ["candidate_c_value", "ratchet-oracle/active_packed_thunk_probe"]
+# Compile-time-only Ready-import ownership and reuse-window census.
+ready_exclusive_probe = ["candidate_c_value", "ratchet-oracle/ready_exclusive_probe"]
+# Compile-time-only projected duplicate-work census.
+maximal_laziness_probe = ["candidate_c_value", "ratchet-oracle/maximal_laziness_probe"]
+# Compile-time-only allocation-byte and statepoint shadow census.
+demand_region_shadow_probe = ["candidate_c_value", "ratchet-oracle/demand_region_shadow_probe"]
+whole_demand_trace_shadow_probe = [
+  "demand_region_shadow_probe",
+  "ratchet-oracle/whole_demand_trace_shadow_probe",
+]
+# Compile-time-only chronological lifetime-cohort aggregate probe.
+lifetime_cohort_probe = ["candidate_c_value", "ratchet-oracle/lifetime_cohort_probe"]
+# Compile-time-only root-session continuation coverage shadow.
+root_continuation_probe = ["candidate_c_value", "ratchet-oracle/root_continuation_probe"]
+# Compile-time-only no-collection explicit-dispatcher safepoint preflight.
+collection_poll_probe = ["candidate_c_value", "ratchet-oracle/collection_poll_probe"]
+# Default-off report-only admission planner for nested nonmoving retirement.
+nested_nonmoving_retirement_probe = [
+  "candidate_c_value",
+  "ratchet-oracle/nested_nonmoving_retirement_probe",
+]
+# Default-off exact string-list deduplication canary.
+dedup_string_list_canary = ["candidate_c_value", "ratchet-oracle/dedup_string_list_canary"]
+# Default-off exact finalConfig trie-fold canary.
+final_config_trie_canary = ["candidate_c_value", "ratchet-oracle/final_config_trie_canary"]
+option_map_fold_probe = ["candidate_c_value", "ratchet-oracle/option_map_fold_probe"]
+# Compile-time-only read-only evacuation-plan and first-slice census.
+evacuation_plan_probe = ["candidate_c_value", "ratchet-oracle/evacuation_plan_probe"]
+# Compile-time-only all-object immutable-cohort packing projection.
+immutable_cohort_projection_probe = [
+  "candidate_c_value",
+  "ratchet-oracle/immutable_cohort_projection_probe",
+]
+# Compile-time-only read-only chronological segment projection.
+young_increment_projection_probe = [
+  "candidate_c_value",
+  "ratchet-oracle/young_increment_projection_probe",
+]
+# Default-off mutating immutable/scalar publication at the rooted FinalForce portal.
+packed_portal_cutover = [
+  "young_increment_projection_probe",
+  "ratchet-oracle/packed_portal_cutover",
+]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -11,7 +11,8 @@ use std::collections::TryReserveError;
 use std::sync::Arc;
 
 use super::{
-    CapturedRootOwner, EvalEnv, EvalEnvError, EvalThunkKind, HeapEdgeSource, HeapObjectValue, Value,
+    CapturedRootOwner, EvalEnv, EvalEnvError, EvalThunkKind, FlatClosurePayload, HeapEdgeSource,
+    HeapObjectValue, Value,
 };
 use crate::eval::EvalFrame;
 
@@ -44,6 +45,31 @@ pub(super) fn validate_captured_environment_source(
     };
     frame.validate_set(slot)?;
     Ok(true)
+}
+
+/// Returns whether `source` names a writable frame captured by a flat closure.
+///
+/// # Errors
+///
+/// Returns [`EvalEnvError`] if the named frame slot cannot be written under its
+/// current publication or borrow state.
+pub(super) fn validate_flat_closure_captured_environment_source(
+    payload: &FlatClosurePayload,
+    source: &HeapEdgeSource,
+) -> Result<bool, EvalEnvError> {
+    let (env, owner) = match payload {
+        FlatClosurePayload::Lambda(lambda) => (lambda.env(), CapturedRootOwner::Lambda),
+        FlatClosurePayload::Thunk(thunk) => match thunk.kind() {
+            EvalThunkKind::Node { env, .. } => (env, CapturedRootOwner::Thunk),
+            _ => return Ok(false),
+        },
+        FlatClosurePayload::SharedThunk(thunk) => match thunk.kind() {
+            EvalThunkKind::Node { env, .. } => (env, CapturedRootOwner::Thunk),
+            _ => return Ok(false),
+        },
+        FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => return Ok(false),
+    };
+    validate_captured_environment_source_for_env(env, owner, source)
 }
 
 impl EnvironmentWritebackStage {
@@ -89,6 +115,45 @@ impl EnvironmentWritebackStage {
         Ok(true)
     }
 
+    /// Stages one shared frame rewrite owned by a flat closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError`] if the source names a frame slot that cannot be
+    /// written under the frame's current publication or borrow state.
+    pub(super) fn stage_flat_closure(
+        &mut self,
+        payload: &FlatClosurePayload,
+        source: &HeapEdgeSource,
+        replacement: Value,
+    ) -> Result<bool, EvalEnvError> {
+        let (env, owner) = match payload {
+            FlatClosurePayload::Lambda(lambda) => (lambda.env(), CapturedRootOwner::Lambda),
+            FlatClosurePayload::Thunk(thunk) => match thunk.kind() {
+                EvalThunkKind::Node { env, .. } => (env, CapturedRootOwner::Thunk),
+                _ => return Ok(false),
+            },
+            FlatClosurePayload::SharedThunk(thunk) => match thunk.kind() {
+                EvalThunkKind::Node { env, .. } => (env, CapturedRootOwner::Thunk),
+                _ => return Ok(false),
+            },
+            FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => return Ok(false),
+        };
+        let Some((frame, slot)) = captured_environment_target_for_env(env, owner, source) else {
+            return Ok(false);
+        };
+        let Ok(slot) = u32::try_from(slot) else {
+            return Ok(false);
+        };
+        frame.validate_set(slot)?;
+        self.writebacks.push(StagedEnvironmentWriteback {
+            frame: Arc::clone(frame),
+            slot,
+            replacement,
+        });
+        Ok(true)
+    }
+
     /// Commits prevalidated shared frame-slot rewrites without allocation.
     pub(super) fn commit(self) {
         for writeback in self.writebacks {
@@ -114,6 +179,35 @@ fn captured_environment_target<'a>(
         },
         _ => return None,
     };
+    captured_frame(env, *frame).map(|frame| (frame, *slot))
+}
+
+fn validate_captured_environment_source_for_env(
+    env: &EvalEnv,
+    owner: CapturedRootOwner,
+    source: &HeapEdgeSource,
+) -> Result<bool, EvalEnvError> {
+    let Some((frame, slot)) = captured_environment_target_for_env(env, owner, source) else {
+        return Ok(false);
+    };
+    let Ok(slot) = u32::try_from(slot) else {
+        return Ok(false);
+    };
+    frame.validate_set(slot)?;
+    Ok(true)
+}
+
+fn captured_environment_target_for_env<'a>(
+    env: &'a EvalEnv,
+    expected_owner: CapturedRootOwner,
+    source: &HeapEdgeSource,
+) -> Option<(&'a Arc<EvalFrame>, usize)> {
+    let HeapEdgeSource::CapturedEnv { owner, frame, slot } = source else {
+        return None;
+    };
+    if *owner != expected_owner {
+        return None;
+    }
     captured_frame(env, *frame).map(|frame| (frame, *slot))
 }
 

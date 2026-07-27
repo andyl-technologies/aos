@@ -21,7 +21,14 @@ fn arena(nodes: Vec<IrNode>) -> IrArena {
 /// self-callee as upvalue `(1, 3)` and lazy-wrapped call arguments.
 fn fib_arena() -> (IrArena, IrId, IrId) {
     let nodes = vec![
-        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 0 */
+        node(
+            IrKind::Formal,
+            IrData::Formal {
+                name: Symbol::new(0),
+                default: None,
+            },
+        ),
         /* 1 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
         /* 2 */ node(IrKind::Int, IrData::Int(2)),
         /* 3 */
@@ -134,7 +141,14 @@ fn fib_shape_lowers_with_two_self_calls() {
 #[test]
 fn mixed_callee_upvalues_are_rejected() {
     let nodes = vec![
-        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 0 */
+        node(
+            IrKind::Formal,
+            IrData::Formal {
+                name: Symbol::new(0),
+                default: None,
+            },
+        ),
         /* 1 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
         /* 2 */ node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
         /* 3 */ node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 1 }),
@@ -170,14 +184,28 @@ fn mixed_callee_upvalues_are_rejected() {
         IrId::new(0),
         IrId::new(5)
     ));
-    assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(5), TIER2_NATIVE_DEPTH_BUDGET).is_err());
+    assert!(
+        lower_tier2_self_recursive_lambda(
+            &arena,
+            IrId::new(0),
+            IrId::new(5),
+            TIER2_NATIVE_DEPTH_BUDGET
+        )
+        .is_err()
+    );
 }
 
 /// A body outside the arithmetic grammar (a bare upvalue read) is rejected.
 #[test]
 fn non_grammar_body_is_rejected() {
     let nodes = vec![
-        node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        node(
+            IrKind::Formal,
+            IrData::Formal {
+                name: Symbol::new(0),
+                default: None,
+            },
+        ),
         node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
         node(
             IrKind::Lambda,
@@ -189,7 +217,15 @@ fn non_grammar_body_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(1), TIER2_NATIVE_DEPTH_BUDGET).is_err());
+    assert!(
+        lower_tier2_self_recursive_lambda(
+            &arena,
+            IrId::new(0),
+            IrId::new(1),
+            TIER2_NATIVE_DEPTH_BUDGET
+        )
+        .is_err()
+    );
 }
 
 /// A formal-set pattern is outside the tier-2 grammar.
@@ -215,14 +251,28 @@ fn formal_set_pattern_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(1), TIER2_NATIVE_DEPTH_BUDGET).is_err());
+    assert!(
+        lower_tier2_self_recursive_lambda(
+            &arena,
+            IrId::new(0),
+            IrId::new(1),
+            TIER2_NATIVE_DEPTH_BUDGET
+        )
+        .is_err()
+    );
 }
 
 /// An `if` condition that is not statically boolean is rejected.
 #[test]
 fn dynamic_if_condition_is_rejected() {
     let nodes = vec![
-        node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        node(
+            IrKind::Formal,
+            IrData::Formal {
+                name: Symbol::new(0),
+                default: None,
+            },
+        ),
         node(IrKind::LocalVar, IrData::Local { slot: 0 }),
         node(IrKind::Int, IrData::Int(1)),
         node(IrKind::Int, IrData::Int(2)),
@@ -244,5 +294,13 @@ fn dynamic_if_condition_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(4), TIER2_NATIVE_DEPTH_BUDGET).is_err());
+    assert!(
+        lower_tier2_self_recursive_lambda(
+            &arena,
+            IrId::new(0),
+            IrId::new(4),
+            TIER2_NATIVE_DEPTH_BUDGET
+        )
+        .is_err()
+    );
 }

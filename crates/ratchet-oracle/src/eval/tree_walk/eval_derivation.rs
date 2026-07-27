@@ -1,6 +1,7 @@
 //! Evaluation of `derivation`/`derivationStrict` and derivation attribute handling.
 
 use super::*;
+use crate::eval::heap::{EvalAttrsView, EvalListView};
 
 mod aterm_cache;
 mod demand_fanout;
@@ -31,33 +32,12 @@ impl TreeWalk {
         )
     }
 
-    pub(super) fn clone_attr_entries(
+    pub(super) fn clone_attr_entries<'a>(
         id: IrId,
         span: Span,
-        attrs: &FlatAttrs,
+        attrs: impl Into<EvalAttrsView<'a>>,
     ) -> Result<Vec<AttrEntry>, TreeWalkError> {
-        let entries = attrs.entries_by_symbol();
-        let mut cloned = Vec::new();
-        cloned.try_reserve_exact(entries.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Attr {
-                    id,
-                    source: AttrError::AllocationFailed {
-                        entries: entries.len(),
-                    },
-                },
-                span,
-            )
-        })?;
-        cloned.extend_from_slice(entries);
-        Ok(cloned)
-    }
-
-    pub(super) fn clone_attr_entries_source_order(
-        id: IrId,
-        span: Span,
-        attrs: &FlatAttrs,
-    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let attrs = attrs.into();
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(attrs.len()).map_err(|_| {
             TreeWalkError::new(
@@ -70,15 +50,16 @@ impl TreeWalk {
                 span,
             )
         })?;
-        cloned.extend(attrs.iter_source_order().copied());
+        cloned.extend(attrs.iter_by_symbol());
         Ok(cloned)
     }
 
-    pub(super) fn clone_attr_entries_lexicographic(
+    pub(super) fn clone_attr_entries_source_order<'a>(
         id: IrId,
         span: Span,
-        attrs: &FlatAttrs,
+        attrs: impl Into<EvalAttrsView<'a>>,
     ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let attrs = attrs.into();
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(attrs.len()).map_err(|_| {
             TreeWalkError::new(
@@ -91,27 +72,49 @@ impl TreeWalk {
                 span,
             )
         })?;
-        cloned.extend(attrs.iter_lexicographic().copied());
+        cloned.extend(attrs.iter_source_order());
         Ok(cloned)
     }
 
-    pub(super) fn clone_list_elements(
+    pub(super) fn clone_attr_entries_lexicographic<'a>(
         id: IrId,
         span: Span,
-        list: &NixList,
+        attrs: impl Into<EvalAttrsView<'a>>,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let attrs = attrs.into();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend(attrs.iter_lexicographic());
+        Ok(cloned)
+    }
+
+    pub(super) fn clone_list_elements<'a>(
+        id: IrId,
+        span: Span,
+        list: impl Into<EvalListView<'a>>,
     ) -> Result<Vec<Value>, TreeWalkError> {
-        let elements = list.as_slice();
+        let list = list.into();
         let mut cloned = Vec::new();
-        cloned.try_reserve_exact(elements.len()).map_err(|_| {
+        cloned.try_reserve_exact(list.len()).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ListAllocationFailed {
                     id,
-                    len: elements.len(),
+                    len: list.len(),
                 },
                 span,
             )
         })?;
-        cloned.extend_from_slice(elements);
+        cloned.extend(list.iter());
         Ok(cloned)
     }
 
@@ -332,7 +335,7 @@ impl TreeWalk {
             ));
         }
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -374,7 +377,8 @@ impl TreeWalk {
         let mut content_addressed = false;
         let mut impure = false;
 
-        for entry in entries {
+        let mut entries = entries.into_iter();
+        while let Some(entry) = entries.next() {
             let key = {
                 let key = self.symbols.resolve(entry.key).ok_or_else(|| {
                     TreeWalkError::new(
@@ -388,6 +392,23 @@ impl TreeWalk {
                 Self::copy_bytes_for_node(argument, argument_span, key)?
             };
 
+            #[cfg(feature = "collection_poll_probe")]
+            let remaining = entries.as_slice();
+            #[cfg(feature = "collection_poll_probe")]
+            let root_count = remaining.len().checked_add(1).unwrap_or(usize::MAX);
+            #[cfg(feature = "collection_poll_probe")]
+            let value = self.with_bounded_native_root_manifest(
+                super::native_continuation_shadow::NativeContinuationKind::DerivationAttributeForce,
+                argument,
+                root_count,
+                super::native_continuation_shadow::NativeContinuationEdge::ForceValue,
+                |roots| {
+                    roots.push(entry.value);
+                    roots.extend(remaining.iter().map(|entry| entry.value));
+                },
+                |eval| eval.force_value(argument, argument_span, entry.value),
+            )?;
+            #[cfg(not(feature = "collection_poll_probe"))]
             let value = self.force_value(argument, argument_span, entry.value)?;
             // Parallel fan-out (L2-P3b): list-valued non-special attributes
             // are string-coerced element by element below; publish the
@@ -838,7 +859,7 @@ impl TreeWalk {
         }
 
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: value_id,
@@ -860,7 +881,25 @@ impl TreeWalk {
             )
         })?;
         let mut context = StringContext::empty();
-        for element in elements {
+        let mut elements = elements.into_iter();
+        while let Some(element) = elements.next() {
+            #[cfg(feature = "collection_poll_probe")]
+            let remaining = elements.as_slice();
+            #[cfg(feature = "collection_poll_probe")]
+            let root_count = remaining.len().checked_add(1).unwrap_or(usize::MAX);
+            #[cfg(feature = "collection_poll_probe")]
+            let value = self.with_bounded_native_root_manifest(
+                super::native_continuation_shadow::NativeContinuationKind::DerivationArgumentForce,
+                value_id,
+                root_count,
+                super::native_continuation_shadow::NativeContinuationEdge::ForceValue,
+                |roots| {
+                    roots.push(element);
+                    roots.extend_from_slice(remaining);
+                },
+                |eval| eval.force_value(value_id, value_span, element),
+            )?;
+            #[cfg(not(feature = "collection_poll_probe"))]
             let value = self.force_value(value_id, value_span, element)?;
             let rendered =
                 self.derivation_to_string_value(id, span, value_id, value_span, value)?;
@@ -893,7 +932,7 @@ impl TreeWalk {
             ));
         }
 
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: value_id,
@@ -903,8 +942,9 @@ impl TreeWalk {
             )
         })?;
         let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
-        let context = StringContext::empty()
-            .union(string.context())
+        let context = string
+            .context()
+            .try_to_owned()
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok((bytes, context))
     }
@@ -928,7 +968,7 @@ impl TreeWalk {
             ));
         }
 
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: value_id,

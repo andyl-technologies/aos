@@ -29,7 +29,7 @@ impl TreeWalk {
         }
 
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: value_id,
@@ -38,7 +38,7 @@ impl TreeWalk {
                     value_span,
                 )
             })?;
-            Self::clone_list_elements(value_id, value_span, list)?
+            Self::clone_list_view_elements(value_id, value_span, list)?
         };
         let mut outputs = BTreeMap::new();
         let mut output_names = Vec::new();

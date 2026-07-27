@@ -59,9 +59,10 @@ impl TreeWalk {
             // Force-cache subjects are computed while forcing a claimed thunk,
             // before its captures can be shed; a released kind has no work to
             // cache and admits nothing.
-            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2(_) | EvalThunkKind::Released => {
-                None
-            }
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
+            | EvalThunkKind::Apply2(_)
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -325,6 +326,7 @@ impl TreeWalk {
                     })
             }
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::Released => false,

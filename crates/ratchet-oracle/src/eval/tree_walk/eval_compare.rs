@@ -94,10 +94,10 @@ impl TreeWalk {
         left: Value,
         right: Value,
     ) -> Result<Value, TreeWalkError> {
-        let left = self.heap.get_string(left).map_err(|source| {
+        let left = self.heap.get_string_view(left).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
-        let right = self.heap.get_string(right).map_err(|source| {
+        let right = self.heap.get_string_view(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
@@ -111,10 +111,10 @@ impl TreeWalk {
         left: Value,
         right: Value,
     ) -> Result<Value, TreeWalkError> {
-        let left = self.heap.get_path(left).map_err(|source| {
+        let left = self.heap.get_path_view(left).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
-        let right = self.heap.get_path(right).map_err(|source| {
+        let right = self.heap.get_path_view(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
@@ -141,6 +141,8 @@ impl TreeWalk {
         right: Value,
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if !equality_guard.enter(left, right) {
             return Ok(op.compare_equal());
         }
@@ -161,13 +163,13 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_elements = {
-            let list = self.heap.get_list(left).map_err(|source| {
+            let list = self.heap.get_list_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
         };
         let right_elements = {
-            let list = self.heap.get_list(right).map_err(|source| {
+            let list = self.heap.get_list_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
@@ -299,6 +301,8 @@ impl TreeWalk {
     ) -> Result<bool, TreeWalkError> {
         let left_identity = self.nested_identity_value(id, node.span, left)?;
         let right_identity = self.nested_identity_value(id, node.span, right)?;
+        self.heap.observe_value_identity(left_identity);
+        self.heap.observe_value_identity(right_identity);
         let shared_heap_identity =
             left_identity.raw_eq(right_identity) && left_identity.tag().is_heap();
         if shared_heap_identity && left_identity.tag() != ValueTag::Thunk {
@@ -307,6 +311,8 @@ impl TreeWalk {
 
         let left = self.force_value(left_id, left_span, left_identity)?;
         let right = self.force_value(right_id, right_span, right_identity)?;
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if shared_heap_identity
             && left.raw_eq(right)
             && left.tag().is_heap()
@@ -341,6 +347,8 @@ impl TreeWalk {
         right: Value,
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if !equality_guard.enter(left, right) {
             return Ok(true);
         }
@@ -359,13 +367,13 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_elements = {
-            let list = self.heap.get_list(left).map_err(|source| {
+            let list = self.heap.get_list_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
         };
         let right_elements = {
-            let list = self.heap.get_list(right).map_err(|source| {
+            let list = self.heap.get_list_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
@@ -400,6 +408,8 @@ impl TreeWalk {
         right: Value,
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if !equality_guard.enter(left, right) {
             return Ok(true);
         }
@@ -418,13 +428,13 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_entries = {
-            let attrs = self.heap.get_attrs(left).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_attr_entries(id, node.span, attrs)?
         };
         let right_entries = {
-            let attrs = self.heap.get_attrs(right).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_attr_entries(id, node.span, attrs)?

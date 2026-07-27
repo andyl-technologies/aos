@@ -423,10 +423,8 @@ fn capture_plans_translate_nested_lambda_coordinates() {
     let ir = annotate_captures("x: y: x");
     let lambdas = lambda_nodes(&ir);
     assert_eq!(lambdas.len(), 2);
-    let mut slot_sets: Vec<Vec<(u16, u16)>> = lambdas
-        .iter()
-        .map(|id| flat_plan_slots(&ir, *id))
-        .collect();
+    let mut slot_sets: Vec<Vec<(u16, u16)>> =
+        lambdas.iter().map(|id| flat_plan_slots(&ir, *id)).collect();
     slot_sets.sort();
     assert_eq!(slot_sets, vec![vec![], vec![(0, 0)]]);
 }
@@ -446,7 +444,10 @@ fn capture_plans_assign_constant_indices_to_captured_reads() {
     assert_eq!(accesses.len(), 1, "only `a` crosses the lambda frame");
     assert_eq!(accesses[0].1.site, lambda);
     assert_eq!(accesses[0].1.index, 0);
-    assert!(matches!(node(&ir, accesses[0].0).data, IrData::Upval { .. }));
+    assert!(matches!(
+        node(&ir, accesses[0].0).data,
+        IrData::Upval { .. }
+    ));
 }
 
 #[test]
@@ -484,16 +485,13 @@ fn capture_plans_flow_transitively_through_nested_closures() {
     // The thunk body allocates a lambda that reads two enclosing frames; both
     // coordinates surface in the thunk's own plan, shifted to its boundary.
     let ir = annotate_captures("let a = 1; in let b = 2; c = (x: a + b + x); in c");
-    let bindings = let_binding_values(
-        &ir,
-        {
-            // The outer let's body is the inner let.
-            let IrData::Let { body, .. } = node(&ir, ir.root).data else {
-                panic!("outer let expected");
-            };
-            body
-        },
-    );
+    let bindings = let_binding_values(&ir, {
+        // The outer let's body is the inner let.
+        let IrData::Let { body, .. } = node(&ir, ir.root).data else {
+            panic!("outer let expected");
+        };
+        body
+    });
     // Binding `c` is slot 1 of the inner let: its thunk reads `b` from its
     // own frame (depth 0) and `a` from the outer frame (depth 1).
     assert_eq!(flat_plan_slots(&ir, bindings[1]), vec![(0, 0), (1, 0)]);
@@ -928,9 +926,10 @@ fn raw_identity_thunk_ir(root: IrId, aggregate_child: IrId, with_chains: Box<[Ir
     ir
 }
 
+mod chunk_e;
 mod dead_binding;
 mod escape_signature;
 mod scalar_replacement;
-mod chunk_e; mod strictness;
+mod strictness;
 mod thunk_sharing;
 mod worker_wrapper;

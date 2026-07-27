@@ -119,11 +119,11 @@ impl ShapeTable {
     /// be reserved.
     pub fn replica(&self) -> Result<Self, ShapeError> {
         let mut records = Vec::new();
-        records
-            .try_reserve_exact(self.records.len())
-            .map_err(|_| ShapeError::TableAllocationFailed {
+        records.try_reserve_exact(self.records.len()).map_err(|_| {
+            ShapeError::TableAllocationFailed {
                 shapes: self.records.len(),
-            })?;
+            }
+        })?;
         records.extend(self.records.iter().cloned());
         let mut by_fingerprint = HashMap::new();
         by_fingerprint

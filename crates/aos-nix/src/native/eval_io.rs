@@ -57,7 +57,10 @@ pub(super) fn native_source_file(file: &Path, options: &TreeWalkOptions) -> Resu
     })
 }
 
-pub(super) fn check_native_filesystem_path_access(options: &TreeWalkOptions, path: &[u8]) -> Result<()> {
+pub(super) fn check_native_filesystem_path_access(
+    options: &TreeWalkOptions,
+    path: &[u8],
+) -> Result<()> {
     if options.eval_mode() == EvalMode::Impure {
         return Ok(());
     }

@@ -73,6 +73,9 @@ fn empty_pass_set_preserves_arena_and_side_tables() {
             simplified.arena.child_pool(),
             "child pool changed for `{source}`"
         );
-        assert_eq!(original.root, simplified.root, "root changed for `{source}`");
+        assert_eq!(
+            original.root, simplified.root,
+            "root changed for `{source}`"
+        );
     }
 }

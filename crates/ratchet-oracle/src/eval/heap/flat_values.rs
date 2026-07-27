@@ -49,9 +49,18 @@ use crate::heap::flat::{
 use super::record_table::AddressHasher;
 use super::*;
 
-pub(super) mod attrs;
 mod active_values;
+pub(super) mod attrs;
 pub(super) mod closures;
+#[cfg(feature = "candidate_c_value")]
+pub(super) mod evacuated_closures;
+#[cfg(feature = "candidate_c_value")]
+pub(super) mod evacuated_permanent;
+#[cfg(feature = "candidate_c_value")]
+pub(super) mod permanent_batch_copy;
+#[cfg(feature = "candidate_c_value")]
+pub(super) mod permanent_publication;
+pub(super) mod thunk_heads;
 // The Candidate-B/-C `Value <-> word` bridges exist to exercise the compressed
 // codecs against the baseline 16-byte carrier. Under the `candidate_c_value`
 // carrier the runtime value already IS the compressed word, so the bridges are
@@ -62,6 +71,424 @@ mod lists;
 mod scalars;
 #[cfg(not(feature = "candidate_c_value"))]
 mod tagged_values;
+
+#[cfg(feature = "candidate_c_value")]
+use evacuated_closures::EvacuatedClosureGeneration;
+#[cfg(feature = "candidate_c_value")]
+use evacuated_permanent::EvacuatedPermanentGeneration;
+
+/// Owns every typed store in one compact Candidate-C destination generation.
+///
+/// Construction creates exactly one reservation/domain and gives each typed
+/// subowner a clone of that shared arena. The arena field is declared last so
+/// aggregate teardown drops every payload-owning store before releasing the
+/// final reservation handle.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Debug)]
+pub(in crate::eval::heap) struct EvacuatedGeneration {
+    closures: EvacuatedClosureGeneration,
+    permanent: EvacuatedPermanentGeneration,
+    arena: SharedFlatStoreArena,
+}
+
+#[cfg(feature = "candidate_c_value")]
+impl EvacuatedGeneration {
+    /// Creates an empty compact generation over one Candidate-C reservation.
+    ///
+    /// Returns `None` when Candidate-C reservation backing is unavailable.
+    pub(in crate::eval::heap) fn new() -> Option<Self> {
+        let arena = SharedFlatStoreArena::new();
+        arena.arena_domain_id()?;
+        let closures = EvacuatedClosureGeneration::with_shared_arena(arena.clone());
+        let permanent = EvacuatedPermanentGeneration::with_shared_arena(arena.clone());
+        Some(Self {
+            closures,
+            permanent,
+            arena,
+        })
+    }
+
+    /// Returns the compact generation's single Candidate-C domain.
+    pub(in crate::eval::heap) fn domain(&self) -> Option<crate::heap::ArenaDomainId> {
+        self.arena.arena_domain_id()
+    }
+
+    /// Returns the reserved virtual capacity backing the aggregate generation.
+    pub(in crate::eval::heap) fn reservation_capacity(&self) -> Option<usize> {
+        self.arena
+            .reservation_stats()
+            .map(|stats| stats.virtual_reserved_bytes)
+    }
+
+    /// Returns mutable access to the aggregate-owned closure stores.
+    pub(in crate::eval::heap) fn closures_mut(&mut self) -> &mut EvacuatedClosureGeneration {
+        &mut self.closures
+    }
+
+    /// Returns shared access to the aggregate-owned closure stores.
+    pub(in crate::eval::heap) fn closures(&self) -> &EvacuatedClosureGeneration {
+        &self.closures
+    }
+
+    /// Returns mutable access to the aggregate-owned permanent stores.
+    pub(in crate::eval::heap) fn permanent_mut(&mut self) -> &mut EvacuatedPermanentGeneration {
+        &mut self.permanent
+    }
+
+    /// Returns shared access to the aggregate-owned permanent stores.
+    pub(in crate::eval::heap) fn permanent(&self) -> &EvacuatedPermanentGeneration {
+        &self.permanent
+    }
+
+    /// Resolves a string pointer through the aggregate permanent stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live string.
+    pub(in crate::eval::heap) fn get_string_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&NixString, EvalHeapError> {
+        self.permanent
+            .get_string(self.value_for_ptr(ValueTag::String, ptr)?)
+    }
+
+    /// Resolves a path pointer through the aggregate permanent stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live path.
+    pub(in crate::eval::heap) fn get_path_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&NixString, EvalHeapError> {
+        self.permanent
+            .get_path(self.value_for_ptr(ValueTag::Path, ptr)?)
+    }
+
+    /// Resolves a list pointer through the aggregate permanent stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live list.
+    pub(in crate::eval::heap) fn get_list_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&NixList, EvalHeapError> {
+        self.permanent
+            .get_list(self.value_for_ptr(ValueTag::List, ptr)?)
+    }
+
+    /// Resolves an attribute-set pointer through the aggregate permanent stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live attribute set.
+    pub(in crate::eval::heap) fn get_attrs_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&FlatAttrs, EvalHeapError> {
+        self.permanent
+            .get_attrs(self.value_for_ptr(ValueTag::Attrs, ptr)?)
+    }
+
+    /// Resolves the complete attribute-set payload through the aggregate stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live attribute set.
+    pub(in crate::eval::heap) fn get_attrs_payload_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&FlatAttrsPayload, EvalHeapError> {
+        self.permanent
+            .get_attrs_payload(self.value_for_ptr(ValueTag::Attrs, ptr)?)
+    }
+
+    /// Resolves attribute-set metadata through the aggregate permanent stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is outside this generation or does
+    /// not reference a live attribute set.
+    pub(in crate::eval::heap) fn get_attrs_metadata_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        self.permanent
+            .get_attrs_metadata(self.value_for_ptr(ValueTag::Attrs, ptr)?)
+    }
+
+    fn value_for_ptr(
+        &self,
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Value, EvalHeapError> {
+        let domain = self.domain().ok_or(EvalHeapError::ShedRejected {
+            address: ptr.as_ptr() as usize,
+            reason: "evacuated aggregate generation has no Candidate-C domain",
+        })?;
+        let index = self
+            .arena
+            .index_for_pointer(ptr)
+            .ok_or(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "evacuated pointer is outside the aggregate reservation",
+            })?;
+        Value::from_domain_index(tag, domain, index).map_err(EvalHeapError::Value)
+    }
+
+    /// Extracts the closure owner for the phase-one installation seam.
+    ///
+    /// This compatibility door consumes the aggregate, so an independently
+    /// constructed closure reservation remains impossible. The closure
+    /// stores retain their clone of the aggregate arena.
+    pub(in crate::eval::heap) fn into_closure_generation(self) -> EvacuatedClosureGeneration {
+        self.closures
+    }
+
+    /// Extracts the permanent owner for focused phase-one relocation tests.
+    ///
+    /// This compatibility door consumes the aggregate and retains the same
+    /// shared reservation through the permanent stores' arena clone.
+    pub(in crate::eval::heap) fn into_permanent_generation(self) -> EvacuatedPermanentGeneration {
+        self.permanent
+    }
+}
+
+#[cfg(all(test, feature = "candidate_c_value"))]
+mod evacuated_generation_tests {
+    use super::*;
+    use crate::attrs::AttrEntry;
+    use crate::syntax::SymbolTable;
+
+    #[test]
+    fn mixed_destination_kinds_share_one_domain_and_global_index_space() {
+        let mut source = EvalHeap::new();
+        let Some(mut destination) = EvacuatedGeneration::new() else {
+            return;
+        };
+        let primop = source
+            .alloc_primop(EvalPrimOp::with_args(
+                Symbol::new(17),
+                vec![EvalPrimOpArg::new(
+                    IrId::new(18),
+                    Span::new(19, 20),
+                    Value::int(21),
+                )],
+            ))
+            .expect("source primop allocates");
+        let string = source
+            .alloc_string(NixString::from_bytes(vec![b's'; FLAT_INLINE_BYTES_MAX + 1]))
+            .expect("source string allocates");
+        let path = source
+            .alloc_path(NixString::from_bytes(vec![b'p'; FLAT_INLINE_BYTES_MAX + 1]))
+            .expect("source path allocates");
+        let list_allocation = source
+            .flat_lists
+            .alloc_with_aux(
+                FlatObjectKind::List,
+                flat_aux_for_len(2),
+                0x51_57,
+                73,
+                NixList::new(vec![Value::int(3), Value::int(5)]),
+            )
+            .expect("source list allocates");
+        let list = source
+            .value_for_flat_allocation(ValueTag::List, list_allocation.ptr)
+            .expect("source list value publishes");
+        let mut symbols = SymbolTable::new();
+        let first = symbols.intern(b"first").expect("first symbol interns");
+        let second = symbols.intern(b"second").expect("second symbol interns");
+        let attrs_payload = FlatAttrs::new(
+            vec![
+                AttrEntry::new(first, Value::int(13)),
+                AttrEntry::new(second, Value::int(21)),
+            ],
+            &symbols,
+        )
+        .expect("source attrs build");
+        let attrs_metadata = EvalHeapAttrsMetadata::new(41, AttrSetReprKind::Flat);
+        let attrs_allocation = source
+            .flat_attrs
+            .alloc_with_aux(
+                FlatObjectKind::Attrs,
+                flat_aux_for_len(2),
+                0xa7_75,
+                89,
+                FlatAttrsPayload {
+                    metadata: attrs_metadata,
+                    attrs: attrs_payload,
+                },
+            )
+            .expect("source attrs allocate");
+        let attrs = source
+            .value_for_flat_allocation(ValueTag::Attrs, attrs_allocation.ptr)
+            .expect("source attrs value publishes");
+
+        let moved_primop = source
+            .relocate_plain_primop_to_generation(destination.closures_mut(), primop, |value| value)
+            .expect("primop relocates");
+        let moved_string = destination
+            .permanent_mut()
+            .relocate_string_from(&mut source.flat, string)
+            .expect("string relocates");
+        let moved_path = destination
+            .permanent_mut()
+            .relocate_path_from(&mut source.flat, path)
+            .expect("path relocates");
+        let moved_list = destination
+            .permanent_mut()
+            .relocate_list_from(&mut source.flat_lists, list, |value| value)
+            .expect("list relocates");
+        let moved_attrs = destination
+            .permanent_mut()
+            .relocate_attrs_from(&mut source.flat_attrs, attrs, |value| value)
+            .expect("attrs relocate");
+
+        let domain = destination
+            .domain()
+            .expect("aggregate has one Candidate-C domain");
+        assert_eq!(moved_primop.word().arena_domain(), Some(domain));
+        assert_eq!(moved_string.word().arena_domain(), Some(domain));
+        assert_eq!(moved_path.word().arena_domain(), Some(domain));
+        assert_eq!(moved_list.word().arena_domain(), Some(domain));
+        assert_eq!(moved_attrs.word().arena_domain(), Some(domain));
+        assert_eq!(destination.closures().domain(), Some(domain));
+        assert_eq!(destination.permanent().domain(), Some(domain));
+
+        let primop_index = moved_primop
+            .word()
+            .arena_index()
+            .expect("moved primop has an arena index");
+        let string_index = moved_string
+            .word()
+            .arena_index()
+            .expect("moved string has an arena index");
+        assert_ne!(primop_index, string_index);
+        assert_eq!(
+            destination.arena.pointer_for_index(primop_index),
+            Some(
+                moved_primop
+                    .as_primop_ptr()
+                    .expect("moved primop has a pointer")
+            )
+        );
+        assert_eq!(
+            destination.arena.pointer_for_index(string_index),
+            Some(
+                moved_string
+                    .as_string_ptr()
+                    .expect("moved string has a pointer")
+            )
+        );
+        assert_eq!(
+            destination
+                .closures()
+                .get_primop(moved_primop)
+                .expect("closure store resolves")
+                .symbol(),
+            Symbol::new(17)
+        );
+        assert_eq!(
+            destination
+                .permanent()
+                .get_string(moved_string)
+                .expect("permanent store resolves")
+                .bytes()[0],
+            b's'
+        );
+
+        let string_ptr = moved_string
+            .as_string_ptr()
+            .expect("moved string has a pointer");
+        let path_ptr = moved_path.as_path_ptr().expect("moved path has a pointer");
+        let list_ptr = moved_list.as_list_ptr().expect("moved list has a pointer");
+        let attrs_ptr = moved_attrs
+            .as_attrs_ptr()
+            .expect("moved attrs has a pointer");
+        source
+            .install_evacuated_closure_generation(destination)
+            .expect("aggregate owner and resolver install together");
+        assert_eq!(
+            source
+                .get_primop(moved_primop)
+                .expect("installed closure subowner remains routable")
+                .symbol(),
+            Symbol::new(17)
+        );
+        assert_eq!(
+            source
+                .get_string(moved_string)
+                .expect("installed string routes by value"),
+            source
+                .get_string_ptr(string_ptr)
+                .expect("installed string routes by pointer")
+        );
+        assert_eq!(
+            source
+                .get_path(moved_path)
+                .expect("installed path routes by value"),
+            source
+                .get_path_ptr(path_ptr)
+                .expect("installed path routes by pointer")
+        );
+        assert!(std::ptr::eq(
+            source
+                .get_list(moved_list)
+                .expect("installed list routes by value"),
+            source
+                .get_list_ptr(list_ptr)
+                .expect("installed list routes by pointer")
+        ));
+        assert!(std::ptr::eq(
+            source
+                .get_attrs(moved_attrs)
+                .expect("installed attrs route by value"),
+            source
+                .get_attrs_ptr(attrs_ptr)
+                .expect("installed attrs route by pointer")
+        ));
+        assert_eq!(
+            source
+                .get_attrs_metadata(moved_attrs)
+                .expect("installed attrs metadata routes by value"),
+            source
+                .get_attrs_metadata_ptr(attrs_ptr)
+                .expect("installed attrs metadata routes by pointer")
+        );
+    }
+
+    #[test]
+    fn aggregate_and_extracted_owner_keep_one_registration_until_final_drop() {
+        let Some(destination) = EvacuatedGeneration::new() else {
+            return;
+        };
+        let domain = destination
+            .domain()
+            .expect("aggregate has a Candidate-C domain");
+        assert!(
+            crate::heap::reservation_base(domain).is_some(),
+            "aggregate construction registers its sole reservation"
+        );
+
+        let closures = destination.into_closure_generation();
+        assert!(
+            crate::heap::reservation_base(domain).is_some(),
+            "the extracted phase-one owner retains the shared reservation"
+        );
+        drop(closures);
+        assert!(
+            crate::heap::reservation_base(domain).is_none(),
+            "the final owner withdraws the domain before releasing the mapping"
+        );
+    }
+}
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
 /// allocation (doc 30 FV-1b).
@@ -103,6 +530,7 @@ pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
         FlatObjectKind::Primop => ValueTag::Primop,
         FlatObjectKind::BoxedInt => ValueTag::Int,
         FlatObjectKind::BoxedFloat => ValueTag::Float,
+        FlatObjectKind::ThunkHead => ValueTag::Thunk,
     }
 }
 
@@ -239,6 +667,8 @@ impl EvalHeap {
         };
         self.push_string_cons_value(cons_slot, value);
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::String);
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -271,7 +701,8 @@ impl EvalHeap {
                 |flat_bytes| NixString::from_flat_bytes(flat_bytes, context),
             )
         } else {
-            self.flat.alloc(FlatObjectKind::Path, hash.raw(), epoch, path)
+            self.flat
+                .alloc(FlatObjectKind::Path, hash.raw(), epoch, path)
         };
         let allocation = match allocation {
             Ok(allocation) => allocation,
@@ -291,6 +722,8 @@ impl EvalHeap {
         };
         self.push_path_cons_value(cons_slot, value);
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Path);
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -310,6 +743,8 @@ impl EvalHeap {
         match self.flat.resolve(ptr, kind) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(tag);
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::StringOrPath);
                 if self.epoch_tracking_enabled {
                     object.touch(self.next_access_epoch());
                 }
@@ -327,6 +762,23 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<(), EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            let generation =
+                self.evacuated_generation
+                    .as_ref()
+                    .ok_or(EvalHeapError::ShedRejected {
+                        address: ptr.as_ptr() as usize,
+                        reason: "evacuated resolver has no aggregate generation owner",
+                    })?;
+            return match tag {
+                ValueTag::String => generation.get_string_ptr(ptr).map(|_| ()),
+                ValueTag::Path => generation.get_path_ptr(ptr).map(|_| ()),
+                ValueTag::List => generation.get_list_ptr(ptr).map(|_| ()),
+                ValueTag::Attrs => generation.get_attrs_payload_ptr(ptr).map(|_| ()),
+                _ => Err(EvalHeapError::unknown(tag, ptr)),
+            };
+        }
         let result = match tag {
             ValueTag::String => self.flat.resolve(ptr, FlatObjectKind::String).map(|_| ()),
             ValueTag::Path => self.flat.resolve(ptr, FlatObjectKind::Path).map(|_| ()),
@@ -375,11 +827,9 @@ impl EvalHeap {
         error: FlatObjectError,
     ) -> EvalHeapError {
         match error {
-            FlatObjectError::KindMismatch { actual, .. } => EvalHeapError::record_type_mismatch(
-                tag,
-                value_tag_for_flat_kind(actual),
-                ptr,
-            ),
+            FlatObjectError::KindMismatch { actual, .. } => {
+                EvalHeapError::record_type_mismatch(tag, value_tag_for_flat_kind(actual), ptr)
+            }
             FlatObjectError::UnknownAddress { .. } => match self.flat_kind_tag(ptr) {
                 Some(actual) if actual != tag => {
                     EvalHeapError::record_type_mismatch(tag, actual, ptr)
@@ -395,10 +845,15 @@ impl EvalHeap {
             | FlatObjectError::RegistryAllocationFailed { .. }
             | FlatObjectError::InvalidRegionMark { .. }
             | FlatObjectError::KindNotAllowed { .. }
+            | FlatObjectError::RelocationRequiresPlainObject { .. }
+            | FlatObjectError::RelocationRequiresDistinctBacking { .. }
             | FlatObjectError::SharedArenaRegionUnsupported) => {
                 // Unreachable from resolution (the heap resolves each kind
                 // through the store allowed to type it); keep a loud mapping.
-                debug_assert!(false, "flat resolution returned an allocation error: {error}");
+                debug_assert!(
+                    false,
+                    "flat resolution returned an allocation error: {error}"
+                );
                 EvalHeapError::unknown(tag, ptr)
             }
         }
@@ -410,6 +865,9 @@ impl EvalHeap {
     /// by [`EvalHeap::record_or_unknown`]'s error path so a flat pointer
     /// handed to a record-kind getter still reports a record-type mismatch.
     pub(super) fn flat_kind_tag(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+        if self.typed_thunk_heads.contains(ptr) {
+            return Some(ValueTag::Thunk);
+        }
         self.flat
             .kind_of(ptr)
             .or_else(|| self.flat_lists.kind_of(ptr))
@@ -486,6 +944,28 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<usize, EvalHeapError> {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(
+            ptr,
+            match tag {
+                ValueTag::String | ValueTag::Path => LifetimeQuarantineOrigin::StringOrPath,
+                ValueTag::List => LifetimeQuarantineOrigin::List,
+                ValueTag::Attrs => LifetimeQuarantineOrigin::Attrs,
+                _ => LifetimeQuarantineOrigin::Record,
+            },
+        );
+        self.flat_canonical_address_unobserved(tag, ptr)
+    }
+
+    /// Resolves one reusable flat address without recording a semantic origin.
+    ///
+    /// Hash-cons exact hits record their more precise origin before entering
+    /// this door.
+    pub(super) fn flat_canonical_address_unobserved(
+        &self,
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<usize, EvalHeapError> {
         match tag {
             ValueTag::String => self.flat_touch(FlatObjectKind::String, ptr).map(|_| ())?,
             ValueTag::Path => self.flat_touch(FlatObjectKind::Path, ptr).map(|_| ())?,
@@ -508,7 +988,8 @@ impl EvalHeap {
 
     /// Sets the cached canonical value hash for a flat object.
     pub(super) fn set_flat_cold_value_hash(&self, address: usize, hash: Option<ValueHash>) {
-        self.flat_cold_hashes.write(address, |slot| slot.value = hash);
+        self.flat_cold_hashes
+            .write(address, |slot| slot.value = hash);
     }
 
     /// Sets the cached force-capture value hash for a flat object.
@@ -533,10 +1014,15 @@ fn flat_alloc_error(error: FlatObjectError) -> EvalHeapError {
         | FlatObjectError::KindMismatch { .. }
         | FlatObjectError::InvalidRegionMark { .. }
         | FlatObjectError::KindNotAllowed { .. }
+        | FlatObjectError::RelocationRequiresPlainObject { .. }
+        | FlatObjectError::RelocationRequiresDistinctBacking { .. }
         | FlatObjectError::SharedArenaRegionUnsupported => {
             // Unreachable from allocation (each kind is allocated through the
             // store allowed to host it); surface a record failure loudly.
-            debug_assert!(false, "flat allocation returned a resolution error: {error}");
+            debug_assert!(
+                false,
+                "flat allocation returned a resolution error: {error}"
+            );
             EvalHeapError::RecordAllocationFailed { records: 1 }
         }
     }

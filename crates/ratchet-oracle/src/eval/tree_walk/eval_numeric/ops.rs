@@ -1,5 +1,6 @@
 //! Numeric, concatenation, update, and comparison operator helpers.
 
+use super::super::native_continuation_shadow::{NativeContinuationEdge, NativeContinuationKind};
 use super::*;
 
 struct AttrUpdateOperand {
@@ -36,10 +37,20 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let left = self.force_demanded_value(lhs, lhs_span, left)?;
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let left = self
             .expect_number(lhs, left, lhs_span)
@@ -88,15 +99,17 @@ impl TreeWalk {
         right: Value,
     ) -> Result<Value, TreeWalkError> {
         let concatenated = {
-            let left = self.heap.get_string(left).map_err(|source| {
+            let left = self.heap.get_string_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
-            let right = self.heap.get_string(right).map_err(|source| {
+            let right = self.heap.get_string_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
-            left.concat(right).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
-            })?
+            left.try_to_owned()
+                .and_then(|left| left.concat(&right.try_to_owned()?))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+                })?
         };
         self.alloc_tree_walk_string(id, node.span, concatenated)
     }
@@ -109,7 +122,13 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let left = self.force_demanded_value(lhs, lhs_span, left)?;
         if left.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
@@ -123,7 +142,11 @@ impl TreeWalk {
         }
 
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
         if right.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
@@ -147,7 +170,13 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let left = self.force_lazy_foldl_initial_value(lhs, lhs_span, left)?;
         // The left operand type-checks before the right operand evaluates, so
         // a non-attrset left reports its type error even when forcing the
@@ -163,7 +192,11 @@ impl TreeWalk {
             ));
         }
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_lazy_foldl_initial_value(rhs, rhs_span, right)?;
         if !self.attr_update_telemetry_enabled {
             return self
@@ -230,14 +263,20 @@ impl TreeWalk {
             }
         }
         let (merged, projected_shape) = {
-            let left_attrs = self.heap.get_attrs(left).map_err(|source| {
+            let left_attrs = self.heap.get_attrs_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
             })?;
-            let right_attrs = self.heap.get_attrs(right).map_err(|source| {
+            let right_attrs = self.heap.get_attrs_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, rhs_span)
             })?;
+            let left_attrs = left_attrs.try_to_owned(&self.symbols).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+            })?;
+            let right_attrs = right_attrs.try_to_owned(&self.symbols).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+            })?;
             let same_keys = left_attrs
-                .update_right_biased_same_keys(right_attrs)
+                .update_right_biased_same_keys(&right_attrs)
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
                 })?;
@@ -263,7 +302,7 @@ impl TreeWalk {
                 }
                 None => {
                     let merged = left_attrs
-                        .update_right_biased(right_attrs, &self.symbols)
+                        .update_right_biased(&right_attrs, &self.symbols)
                         .map_err(|source| {
                             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
                         })?;
@@ -337,7 +376,7 @@ impl TreeWalk {
         let metadata = self.heap.get_attrs_metadata(value).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, operand_span)
         })?;
-        let attrs = self.heap.get_attrs(value).map_err(|source| {
+        let attrs = self.heap.get_attrs_view(value).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, operand_span)
         })?;
         Ok(AttrUpdateOperand {
@@ -501,10 +540,10 @@ impl TreeWalk {
         right: Value,
     ) -> Result<Value, TreeWalkError> {
         let concatenated = {
-            let left = self.heap.get_list(left).map_err(|source| {
+            let left = self.heap.get_list_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
-            let right = self.heap.get_list(right).map_err(|source| {
+            let right = self.heap.get_list_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             left.concat(right).map_err(|source| {
@@ -541,9 +580,19 @@ impl TreeWalk {
         source_rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let source_lhs_span = self.node(source_lhs)?.span;
         let source_rhs_span = self.node(source_rhs)?.span;
         let value = self.eval_comparison_values(

@@ -1,7 +1,7 @@
 //! Cached expression payload wrapper and replay accessors.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
 // Precomputed BLAKE3 hashes of the canonical empty payload preimages keep the

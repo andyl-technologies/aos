@@ -227,17 +227,22 @@ impl EvalHeap {
     #[inline]
     pub(in crate::eval) fn flat_closure_capture_values_at(
         &self,
-        value: Value,
         handle: FlatValueTailHandle,
     ) -> Result<Option<&[Value]>, EvalHeapError> {
-        let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
-        let (object, values) = self
+        let error_ptr = || {
+            self.flat_closures
+                .value_tail_handle_owner(handle)
+                .unwrap_or_else(NonNull::dangling)
+        };
+        let (ptr, object, values) = self
             .flat_closures
-            .resolve_value_tail_handle(ptr, handle)
-            .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
+            .resolve_value_tail_handle_owner(handle)
+            .map_err(|error| self.closure_resolution_error(ValueTag::Thunk, error_ptr(), error))?;
         if object.payload().is_retired() {
-            return Err(EvalHeapError::unknown(value.tag(), ptr));
+            return Err(EvalHeapError::unknown(object.payload().tag(), ptr));
         }
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureCapture);
         Ok(Some(values))
     }
 
@@ -245,16 +250,56 @@ impl EvalHeap {
     #[inline]
     pub(in crate::eval) fn flat_closure_capture_value_at(
         &self,
-        value: Value,
         handle: FlatValueTailHandle,
         index: usize,
     ) -> Result<Option<Value>, EvalHeapError> {
-        let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self
+            .flat_closures
+            .value_tail_handle_owner(handle)
+            .unwrap_or_else(NonNull::dangling);
         let captured = self
             .flat_closures
-            .value_tail_get_handle(ptr, handle, index)
-            .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
+            .value_tail_get_handle_owner(handle, index)
+            .map_err(|error| self.closure_resolution_error(ValueTag::Thunk, ptr, error))?;
+        #[cfg(feature = "lifetime_cohort_probe")]
+        if captured.is_some() {
+            self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureCapture);
+        }
         Ok(captured)
+    }
+
+    /// Reconstructs the flat closure value that owns a capture-tail handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] when the handle is stale or
+    /// names a retired tail, and a value-construction error if the live owner
+    /// cannot be represented by the active carrier.
+    pub(in crate::eval) fn flat_closure_capture_owner(
+        &self,
+        handle: FlatValueTailHandle,
+    ) -> Result<Value, EvalHeapError> {
+        let error_ptr = || {
+            self.flat_closures
+                .value_tail_handle_owner(handle)
+                .unwrap_or_else(NonNull::dangling)
+        };
+        let (ptr, object, _) = self
+            .flat_closures
+            .resolve_value_tail_handle_owner(handle)
+            .map_err(|error| self.closure_resolution_error(ValueTag::Thunk, error_ptr(), error))?;
+        let tag = object.payload().tag();
+        if object.payload().is_retired() {
+            return Err(EvalHeapError::unknown(tag, ptr));
+        }
+        match tag {
+            ValueTag::Thunk | ValueTag::Lambda => self.value_for_flat_allocation(tag, ptr),
+            _ => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Thunk,
+                tag,
+                ptr,
+            )),
+        }
     }
 
     /// Installs a flat lexical environment in one unique serial closure.
@@ -282,6 +327,8 @@ impl EvalHeap {
                 ));
             }
         };
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureMutation);
         let payload = match self.flat_closures.resolve_mut(ptr, kind) {
             Ok(payload) => payload,
             Err(error) => {
@@ -335,12 +382,9 @@ impl EvalHeap {
         if handle.len() != buffer.values().len() {
             return Ok(FlatCapturePublication::Inapplicable);
         }
-        let env = EvalEnv::inline_flat(
-            buffer.allocation_site(),
-            buffer.frame_count(),
-            value,
-            handle,
-        )?;
+        let env = EvalEnv::inline_flat(buffer.allocation_site(), buffer.frame_count(), handle)?;
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureMutation);
         let (payload, tail) = match self
             .flat_closures
             .resolve_mut_with_value_tail_handle(ptr, handle, kind)
@@ -441,11 +485,13 @@ impl EvalHeap {
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
-            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle)?;
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, handle)?;
             let replaced = self.replace_unique_flat_closure_env(value, env)?;
             debug_assert!(replaced, "fresh flat thunk payload must be unique");
         }
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Thunk);
         self.poll_memory_budget_after_allocation();
         Ok((value, tail))
     }
@@ -502,11 +548,13 @@ impl EvalHeap {
         if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
             (capture_metadata, tail)
         {
-            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle)?;
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, handle)?;
             let replaced = self.replace_unique_flat_closure_env(value, env)?;
             debug_assert!(replaced, "fresh flat lambda payload must be unique");
         }
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Lambda);
         self.poll_memory_budget_after_allocation();
         Ok((value, tail))
     }
@@ -534,8 +582,134 @@ impl EvalHeap {
         );
         let value = self.value_for_flat_allocation(ValueTag::Primop, allocation.ptr)?;
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Primop);
         self.poll_memory_budget_after_allocation();
         Ok(value)
+    }
+
+    /// Replaces one unpublished evacuation primop payload in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is not a live flat primop in this
+    /// heap.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn replace_evacuation_primop(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        primop: EvalPrimOp,
+    ) -> Result<(), EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Primop) {
+            Ok(payload @ FlatClosurePayload::Primop(_)) => {
+                *payload = FlatClosurePayload::Primop(primop);
+                Ok(())
+            }
+            Ok(_) => Err(EvalHeapError::record_type_mismatch(
+                ValueTag::Primop,
+                ValueTag::Thunk,
+                ptr,
+            )),
+            Err(error) => Err(self.closure_resolution_error(ValueTag::Primop, ptr, error)),
+        }
+    }
+
+    /// Replaces one unpublished evacuation lambda payload in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is not a live flat lambda in this
+    /// heap.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn replace_evacuation_lambda(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        lambda: EvalLambda,
+    ) -> Result<(), EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Lambda) {
+            Ok(payload @ FlatClosurePayload::Lambda(_)) => {
+                *payload = FlatClosurePayload::Lambda(lambda);
+                Ok(())
+            }
+            Ok(_) => Err(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "evacuation lambda placeholder changed kind",
+            }),
+            Err(error) => Err(self.closure_resolution_error(ValueTag::Lambda, ptr, error)),
+        }
+    }
+
+    /// Replaces one unpublished evacuation thunk payload in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is not a live inline flat thunk in
+    /// this heap.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn replace_evacuation_thunk(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        thunk: EvalThunk,
+    ) -> Result<(), EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
+            Ok(payload @ FlatClosurePayload::Thunk(_)) => {
+                *payload = FlatClosurePayload::Thunk(thunk);
+                Ok(())
+            }
+            Ok(_) => Err(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "evacuation thunk placeholder changed shape",
+            }),
+            Err(error) => Err(self.closure_resolution_error(ValueTag::Thunk, ptr, error)),
+        }
+    }
+
+    /// Detaches one tail-free blackholed Node thunk's suspended work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] for shared, non-Node, non-serial, nonblackhole,
+    /// or owner-relative-tail shapes.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval) fn detach_active_flat_node_work(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<EvalThunk, EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
+            Ok(FlatClosurePayload::Thunk(thunk)) => thunk.detach_blackholed_node_work(),
+            Ok(_) => Err(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "active Node work detachment requires an unshared flat thunk",
+            }),
+            Err(error) => Err(self.closure_resolution_error(ValueTag::Thunk, ptr, error)),
+        }
+    }
+
+    /// Restores work previously detached from one blackholed Node thunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the source shell or detached work changed.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval) fn restore_active_flat_node_work(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        work: EvalThunk,
+    ) -> Result<(), (EvalHeapError, EvalThunk)> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
+            Ok(FlatClosurePayload::Thunk(thunk)) => thunk.restore_blackholed_node_work(work),
+            Ok(_) => Err((
+                EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "active Node work restore requires its unshared flat shell",
+                },
+                work,
+            )),
+            Err(error) => Err((
+                self.closure_resolution_error(ValueTag::Thunk, ptr, error),
+                work,
+            )),
+        }
     }
 
     /// Probes the flat closure store for an object of `kind`.
@@ -560,6 +734,9 @@ impl EvalHeap {
         kind: FlatObjectKind,
         ptr: NonNull<HeapObject>,
     ) -> Result<Option<&FlatClosurePayload>, EvalHeapError> {
+        if self.typed_thunk_heads.contains(ptr) {
+            return Ok(None);
+        }
         match self.flat_closures.resolve(ptr, kind) {
             Ok(object) => match object.payload() {
                 payload @ (FlatClosurePayload::Thunk(_)
@@ -575,6 +752,9 @@ impl EvalHeap {
                 FlatClosurePayload::Retired(_) => Err(EvalHeapError::unknown(tag, ptr)),
             },
             Err(FlatObjectError::KindMismatch { actual, .. }) => {
+                if actual == FlatObjectKind::ThunkHead {
+                    return Ok(None);
+                }
                 match self.flat_closures.resolve(ptr, actual) {
                     Ok(object) if object.payload().is_retired() => {
                         Err(EvalHeapError::unknown(tag, ptr))
@@ -596,9 +776,54 @@ impl EvalHeap {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Option<&FlatClosurePayload> {
+        if self.typed_thunk_heads.contains(ptr) {
+            return None;
+        }
         let kind = self.flat_closures.kind_of(ptr)?;
         let object = self.flat_closures.resolve(ptr, kind).ok()?;
         Some(object.payload())
+    }
+
+    /// Replaces one tail-free nursery lambda or primop payload in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when `ptr` is not a live flat closure of the
+    /// staged payload's kind.
+    pub(in crate::eval::heap) fn flat_closure_commit_writeback(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        payload: FlatClosurePayload,
+    ) -> Result<(), EvalHeapError> {
+        let (kind, tag) = match &payload {
+            FlatClosurePayload::Lambda(_) => (FlatObjectKind::Lambda, ValueTag::Lambda),
+            FlatClosurePayload::Primop(_) => (FlatObjectKind::Primop, ValueTag::Primop),
+            _ => {
+                return Err(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "flat closure writeback only accepts lambda or primop payloads",
+                });
+            }
+        };
+        match self.flat_closures.resolve_mut(ptr, kind) {
+            Ok(slot @ FlatClosurePayload::Lambda(_))
+                if matches!(payload, FlatClosurePayload::Lambda(_)) =>
+            {
+                *slot = payload;
+                Ok(())
+            }
+            Ok(slot @ FlatClosurePayload::Primop(_))
+                if matches!(payload, FlatClosurePayload::Primop(_)) =>
+            {
+                *slot = payload;
+                Ok(())
+            }
+            Ok(_) => Err(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "flat closure writeback payload changed kind",
+            }),
+            Err(error) => Err(self.closure_resolution_error(tag, ptr, error)),
+        }
     }
 
     /// Returns the value tag of the live flat closure at `ptr`, if any.
@@ -644,6 +869,8 @@ impl EvalHeap {
         ptr: NonNull<HeapObject>,
         thunk: EvalThunk,
     ) -> Result<(), EvalHeapError> {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureMutation);
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
             Ok(payload @ (FlatClosurePayload::Thunk(_) | FlatClosurePayload::SharedThunk(_))) => {
                 *payload = FlatClosurePayload::Thunk(thunk);
@@ -673,6 +900,8 @@ impl EvalHeap {
         &mut self,
         ptr: NonNull<HeapObject>,
     ) -> Result<Option<Arc<EvalThunk>>, EvalHeapError> {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::ClosureMutation);
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
             Ok(FlatClosurePayload::SharedThunk(shared)) => Ok(Some(Arc::clone(shared))),
             Ok(payload @ FlatClosurePayload::Thunk(_)) => {
@@ -697,11 +926,10 @@ impl EvalHeap {
 
     /// Retires the flat closure at `ptr` in place (the B1 sweep door).
     ///
-    /// Drops the direct payload (releasing its side-owned graph), swaps in the
-    /// [`FlatClosurePayload::Retired`] tombstone, clears the address's
-    /// cutoff-cache hashes, and counts the retirement for the region-pop
-    /// interlock. Returns the retired object's original tag, or `None` if
-    /// the object was already retired.
+    /// Drops the direct payload (releasing its side-owned graph), tombstones
+    /// the stable registry entry and header, clears the address's cutoff-cache
+    /// hashes, and counts the retirement for the region-pop interlock. Returns
+    /// the retired object's original tag.
     ///
     /// # Errors
     ///
@@ -714,19 +942,21 @@ impl EvalHeap {
         let Some(kind) = self.flat_closures.kind_of(ptr) else {
             return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
         };
-        let payload = match self.flat_closures.resolve_mut(ptr, kind) {
-            Ok(payload) => payload,
+        let object = match self.flat_closures.resolve(ptr, kind) {
+            Ok(object) => object,
             Err(error) => {
                 let tag = value_tag_for_flat_kind(kind);
                 return Err(self.closure_resolution_error(tag, ptr, error));
             }
         };
+        let payload = object.payload();
         if payload.is_retired() {
             return Ok(None);
         }
         let tag = payload.tag();
-        *payload = FlatClosurePayload::Retired(tag);
-        let _ = self.flat_closures.retire_value_tail(ptr);
+        self.flat_closures
+            .retire(ptr, kind)
+            .map_err(|error| self.closure_resolution_error(tag, ptr, error))?;
         self.flat_cold_hashes.clear(ptr.as_ptr() as usize);
         self.flat_closures_retired = self.flat_closures_retired.saturating_add(1);
         Ok(Some(tag))

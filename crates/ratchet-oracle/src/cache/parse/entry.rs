@@ -344,9 +344,7 @@ impl ParseCacheEntry {
     ///
     /// Returns [`ParseCacheError`] if the bundle cannot be read or any mandatory
     /// section cannot be decoded.
-    pub(super) fn read_resolved_and_ir(
-        &self,
-    ) -> Result<(ResolvedAst, Ir, bool), ParseCacheError> {
+    pub(super) fn read_resolved_and_ir(&self) -> Result<(ResolvedAst, Ir, bool), ParseCacheError> {
         let bundle = self.read_bundle()?;
         let resolved = self.decode_resolved(&bundle)?;
         let (ir, facts_current) = self.decode_ir_with_facts(&bundle)?;
@@ -354,10 +352,17 @@ impl ParseCacheEntry {
     }
 
     /// Decodes the resolved AST from an already-read bundle.
-    fn decode_resolved(&self, bundle: &ParseArtifactBundle) -> Result<ResolvedAst, ParseCacheError> {
+    fn decode_resolved(
+        &self,
+        bundle: &ParseArtifactBundle,
+    ) -> Result<ResolvedAst, ParseCacheError> {
         let path = self.bundle_path();
-        let symbols = decode_symbols(bundle.symbols_bytes())
-            .map_err(|message| ParseCacheError::DecodeArtifact { path: path.clone(), message })?;
+        let symbols = decode_symbols(bundle.symbols_bytes()).map_err(|message| {
+            ParseCacheError::DecodeArtifact {
+                path: path.clone(),
+                message,
+            }
+        })?;
         decode_resolved_ir(bundle.resolved_bytes(), symbols)
             .map_err(|message| ParseCacheError::DecodeArtifact { path, message })
     }
@@ -370,8 +375,12 @@ impl ParseCacheEntry {
         let path = self.bundle_path();
         let ir_fingerprint =
             lowered_ir_artifact_fingerprint(bundle.ir_bytes(), bundle.symbols_bytes());
-        let symbols = decode_symbols(bundle.symbols_bytes())
-            .map_err(|message| ParseCacheError::DecodeArtifact { path: path.clone(), message })?;
+        let symbols = decode_symbols(bundle.symbols_bytes()).map_err(|message| {
+            ParseCacheError::DecodeArtifact {
+                path: path.clone(),
+                message,
+            }
+        })?;
         let mut ir = decode_lowered_ir(bundle.ir_bytes(), symbols)
             .map_err(|message| ParseCacheError::DecodeArtifact { path, message })?;
         let mut facts_current = false;

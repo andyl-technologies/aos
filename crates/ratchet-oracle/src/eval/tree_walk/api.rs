@@ -33,6 +33,8 @@ pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value
     evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    emit_direct_island_probe_report(&evaluator);
+    emit_direct_island_site_report(&evaluator);
     if value.tag().is_heap() {
         let span = ir
             .arena
@@ -177,11 +179,29 @@ fn eval_whnf_owned_with_evaluator(
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
-    let value = value?;
+    let mut value = value?;
+    #[cfg(feature = "ready_exclusive_probe")]
+    evaluator.emit_ready_exclusive_window_report();
+    emit_terminal_reservation_residency(&evaluator);
+    emit_weak_liveness_census(&evaluator, value);
+    emit_stg_apply_census(&evaluator);
+    #[cfg(feature = "active_packed_thunk_probe")]
+    emit_active_packed_thunk_accounting(&evaluator);
+    emit_promise_region_census(&evaluator);
+    #[cfg(feature = "lifetime_cohort_probe")]
+    evaluator.emit_lifetime_cohort_terminal(value);
     // Tier-B quiescent point: the root force has fully unwound, so worker
     // garbage is reclaimable with the produced value as an extra root. A
     // no-op unless AOS_NIX_GC=sweep is enabled and the growth threshold has
     // been reached.
+    #[cfg(feature = "candidate_c_value")]
+    if evaluator
+        .maybe_publish_terminal_permanent(&mut value)?
+        .is_none()
+    {
+        evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
     evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
@@ -203,6 +223,12 @@ fn eval_whnf_owned_with_evaluator(
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    emit_heap_refusal_census(&evaluator);
+    emit_heap_storage_census(&evaluator);
+    #[cfg(feature = "peak_ordinal_probe")]
+    evaluator.emit_peak_ordinal_report();
+    emit_direct_island_probe_report(&evaluator);
+    emit_direct_island_site_report(&evaluator);
     let id = evaluator.current_ir().root;
     let span = evaluator
         .current_ir()
@@ -353,24 +379,187 @@ fn eval_instantiation_attr_path_with_evaluator(
     if let Some(realizer) = ifd_realizer {
         evaluator.set_ifd_realizer(realizer);
     }
+    let demand_epoch_start = (
+        evaluator.stats.thunks_forced(),
+        evaluator.stats.function_calls(),
+    );
+    #[cfg(feature = "collection_poll_probe")]
+    let windowed_speed_epoch =
+        std::env::var("AOS_NIX_WHOLE_DEMAND_DISPATCHER_PROBE").is_ok_and(|value| value == "1");
+    #[cfg(not(feature = "collection_poll_probe"))]
+    let windowed_speed_epoch = false;
+    let demand_epoch = if windowed_speed_epoch {
+        None
+    } else {
+        demand_epoch_probe::DemandEpoch::begin()
+    };
+    let demand_epoch_enabled = demand_epoch.is_some();
+    #[cfg(feature = "demand_region_shadow_probe")]
+    evaluator.begin_demand_region_shadow_epoch();
+    #[cfg(feature = "root_continuation_probe")]
+    evaluator.begin_root_continuation_probe();
     let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
-    let value = evaluator.eval_root().and_then(|root| {
-        let span = evaluator.node(ir.root)?.span;
-        evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
-    });
+    #[cfg(feature = "collection_poll_probe")]
+    let dispatcher_probe =
+        evaluator.begin_whole_demand_dispatcher_probe(ir.root, attr_path.len())?;
+    #[cfg(feature = "collection_poll_probe")]
+    let mut value = if dispatcher_probe {
+        evaluator.eval_instantiation_attr_path_dispatcher(ir.root, attr_path)
+    } else {
+        (|| match evaluator.try_eval_demand_machine_instantiation(ir.root, attr_path) {
+            Some(result) => result,
+            None => {
+                let root = evaluator.eval_root()?;
+                let span = evaluator.node(ir.root)?.span;
+                #[cfg(feature = "lifetime_cohort_probe")]
+                {
+                    let mut roots = [root];
+                    evaluator.with_lifetime_cohort_shadow_roots(
+                        ir.root,
+                        span,
+                        &mut roots,
+                        |eval, slots| {
+                            let root = eval
+                                .current_transient_value_stack_root(slots.start)
+                                .ok_or_else(|| {
+                                    TreeWalkError::new(
+                                        TreeWalkErrorKind::SafepointRootStackLengthOverflow {
+                                            id: ir.root,
+                                        },
+                                        span,
+                                    )
+                                })?;
+                            eval.eval_instantiation_attr_path(ir.root, span, root, attr_path)
+                        },
+                    )
+                }
+                #[cfg(not(feature = "lifetime_cohort_probe"))]
+                {
+                    evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
+                }
+            }
+        })()
+    };
+    #[cfg(not(feature = "collection_poll_probe"))]
+    let mut value = (|| match evaluator.try_eval_demand_machine_instantiation(ir.root, attr_path) {
+        Some(result) => result,
+        None => {
+            let root = evaluator.eval_root()?;
+            let span = evaluator.node(ir.root)?.span;
+            #[cfg(feature = "lifetime_cohort_probe")]
+            {
+                let mut roots = [root];
+                evaluator.with_lifetime_cohort_shadow_roots(
+                    ir.root,
+                    span,
+                    &mut roots,
+                    |eval, slots| {
+                        let root = eval
+                            .current_transient_value_stack_root(slots.start)
+                            .ok_or_else(|| {
+                                TreeWalkError::new(
+                                    TreeWalkErrorKind::SafepointRootStackLengthOverflow {
+                                        id: ir.root,
+                                    },
+                                    span,
+                                )
+                            })?;
+                        eval.eval_instantiation_attr_path(ir.root, span, root, attr_path)
+                    },
+                )
+            }
+            #[cfg(not(feature = "lifetime_cohort_probe"))]
+            {
+                evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
+            }
+        }
+    })();
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
-    let value = value?;
+    #[cfg(feature = "root_continuation_probe")]
+    evaluator.finish_root_continuation_probe(value.is_ok());
+    let mut value = value?;
+    #[cfg(feature = "demand_region_shadow_probe")]
+    evaluator.emit_demand_region_shadow_report();
+    #[cfg(feature = "dedup_string_list_canary")]
+    evaluator.emit_dedup_string_list_canary_report();
+    #[cfg(feature = "final_config_trie_canary")]
+    evaluator.emit_final_config_trie_canary_report();
+    #[cfg(feature = "option_map_fold_probe")]
+    evaluator.emit_option_map_fold_probe_report();
+    #[cfg(feature = "root_continuation_probe")]
+    evaluator.emit_root_continuation_probe_report();
+    #[cfg(feature = "collection_poll_probe")]
+    evaluator.emit_whole_demand_dispatcher_probe_report();
+    #[cfg(feature = "collection_poll_probe")]
+    evaluator.emit_restart_to_root_probe_report();
+    #[cfg(feature = "collection_poll_probe")]
+    evaluator.emit_nested_nonmoving_safepoint_probe_report();
+    #[cfg(feature = "nested_nonmoving_retirement_probe")]
+    evaluator.emit_rotating_rollover_probe_report();
+    #[cfg(feature = "nested_nonmoving_retirement_probe")]
+    evaluator.emit_nested_nonmoving_retirement_report();
+    #[cfg(feature = "young_increment_projection_probe")]
+    evaluator.emit_young_increment_projection_report();
+    evaluator.emit_resident_phase("demand-complete");
+    #[cfg(feature = "ready_exclusive_probe")]
+    evaluator.emit_ready_exclusive_window_report();
+    emit_terminal_reservation_residency(&evaluator);
+    emit_weak_liveness_census(&evaluator, value);
+    emit_stg_apply_census(&evaluator);
+    #[cfg(feature = "active_packed_thunk_probe")]
+    emit_active_packed_thunk_accounting(&evaluator);
+    emit_promise_region_census(&evaluator);
+    #[cfg(feature = "lifetime_cohort_probe")]
+    evaluator.emit_lifetime_cohort_terminal(value);
     // Tier-B quiescent point: the instantiation force has fully unwound (see
     // `eval_whnf_owned_with_evaluator`).
+    #[cfg(feature = "candidate_c_value")]
+    if evaluator
+        .maybe_publish_terminal_permanent(&mut value)?
+        .is_none()
+    {
+        evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
     evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
+    #[cfg(feature = "hole_reuse_shadow_probe")]
+    if std::env::var("AOS_NIX_HOLE_REUSE_SHADOW").is_ok_and(|setting| setting == "1") {
+        eprintln!(
+            "aos_nix_hole_reuse_shadow {}",
+            ratchet_value::heap::flat::hole_reuse_shadow::hole_reuse_shadow_report()
+        );
+    }
+    evaluator.emit_resident_phase("post-quiescent-sweep");
     let span = evaluator.node(ir.root)?.span;
     evaluator.record_attr_select_cache_site_telemetry();
+    evaluator.emit_resident_phase("pre-derivation-snapshot");
     let derivations = evaluator.derivation_snapshot()?;
+    evaluator.emit_resident_phase("post-derivation-snapshot");
+    let demand_epoch_end = (
+        evaluator.stats.thunks_forced(),
+        evaluator.stats.function_calls(),
+    );
+    if let Some(epoch) = demand_epoch {
+        epoch.end();
+    }
+    if demand_epoch_enabled {
+        eprintln!(
+            "aos_nix_demand_epoch_counts {{\"thunks_forced\":[{},{}],\
+             \"function_calls\":[{},{}]}}",
+            demand_epoch_start.0, demand_epoch_end.0, demand_epoch_start.1, demand_epoch_end.1
+        );
+    }
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    emit_heap_refusal_census(&evaluator);
+    emit_heap_storage_census(&evaluator);
+    #[cfg(feature = "peak_ordinal_probe")]
+    evaluator.emit_peak_ordinal_report();
+    emit_direct_island_probe_report(&evaluator);
+    emit_direct_island_site_report(&evaluator);
     finish_owned_eval_outcome(
         evaluator,
         value,
@@ -380,6 +569,700 @@ fn eval_instantiation_attr_path_with_evaluator(
         ir.root,
         span,
     )
+}
+
+/// Emits the default-off live heap and captured-frame census.
+fn emit_heap_refusal_census(evaluator: &TreeWalk) {
+    if std::env::var_os("AOS_NIX_HEAP_CENSUS").is_none() {
+        return;
+    }
+    eprint!("{}", evaluator.heap.refusal_census());
+}
+
+/// Emits reachability without treating hash-cons indexes as strong roots.
+fn emit_weak_liveness_census(evaluator: &TreeWalk, value: Value) {
+    if std::env::var_os("AOS_NIX_WEAK_LIVENESS_CENSUS").is_none() {
+        return;
+    }
+    if !evaluator.has_complete_terminal_root_set() {
+        eprintln!(
+            "aos_nix_weak_liveness_census_error \
+             \"terminal evaluator continuations are not fully quiescent\""
+        );
+        return;
+    }
+    let result = evaluator
+        .mutator_root_set()
+        .and_then(|mut roots| {
+            roots
+                .try_push_value_stack(0, value)
+                .map_err(TreeWalkSafepointRootError::RootSet)?;
+            Ok(roots)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|roots| {
+            evaluator
+                .heap
+                .weak_liveness_census(&roots)
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(census) => eprintln!("{census}"),
+        Err(error) => eprintln!("aos_nix_weak_liveness_census_error {error:?}"),
+    }
+}
+
+/// Emits a default-off high-water reservation-residency sample.
+///
+/// Both owned entry paths call this after the root and parallel pool have
+/// returned but before the optional quiescent sweep. Process RSS is sampled
+/// first because `mincore` needs a temporary byte for every used arena page.
+fn emit_terminal_reservation_residency(evaluator: &TreeWalk) {
+    if !std::env::var("AOS_NIX_RESERVATION_RESIDENCY").is_ok_and(|value| value == "1") {
+        return;
+    }
+    let rss_bytes = ProcessResidentMemorySample::current()
+        .ok()
+        .flatten()
+        .map(ProcessResidentMemorySample::resident_bytes);
+    let root_complete = evaluator.has_complete_terminal_root_set();
+    match evaluator.heap.flat_reservation_residency() {
+        Some(Ok(residency)) => {
+            let resident_bytes = residency
+                .total_resident_pages
+                .saturating_mul(residency.page_size);
+            let rss = match rss_bytes {
+                Some(bytes) => bytes.to_string(),
+                None => "null".to_owned(),
+            };
+            eprintln!(
+                "aos_nix_terminal_reservation_residency \
+                 {{\"rss_bytes\":{rss},\"root_complete\":{root_complete},\
+                 \"page_size\":{},\"used_pages\":{},\
+                 \"resident_pages\":{},\"resident_bytes\":{},\"low_used_bytes\":{},\
+                 \"low_pages\":{},\"low_resident_pages\":{},\"high_used_bytes\":{},\
+                 \"high_pages\":{},\"high_resident_pages\":{}}}",
+                residency.page_size,
+                residency.total_pages,
+                residency.total_resident_pages,
+                resident_bytes,
+                residency.low.used_bytes,
+                residency.low.pages,
+                residency.low.resident_pages,
+                residency.high.used_bytes,
+                residency.high.pages,
+                residency.high.resident_pages,
+            );
+        }
+        Some(Err(error)) => {
+            eprintln!("aos_nix_terminal_reservation_residency_error {error:?}")
+        }
+        None => eprintln!("aos_nix_terminal_reservation_residency unavailable"),
+    }
+}
+
+/// Emits default-off packed-STG admission and execution counters.
+fn emit_stg_apply_census(evaluator: &TreeWalk) {
+    if !std::env::var("AOS_NIX_STG_APPLY_CENSUS").is_ok_and(|value| value == "1") {
+        return;
+    }
+    let counters = evaluator.stg_apply_runtime.counters;
+    let lower = counters.lower_declines;
+    let kind = counters.lower_decline_kinds;
+    eprintln!(
+        "aos_nix_stg_apply_census \
+         {{\"attempts\":{},\"declines\":{},\"cache_hits\":{},\
+         \"blocks_lowered\":{},\"claims\":{},\"completions\":{},\
+         \"force_continuations\":{},\"oracle_leaves\":{},\
+         \"errors\":{},\"panics\":{},\
+         \"lower_unsupported_kind\":{},\"lower_unsupported_shape\":{},\
+         \"lower_select_default\":{},\"lower_dynamic_select\":{},\
+         \"lower_non_unary_lambda\":{},\"lower_missing_frame\":{},\
+         \"lower_invalid_slot\":{},\"lower_invalid_capture\":{},\
+         \"lower_ambiguous_frame\":{},\"lower_non_numeric_binary\":{},\
+         \"lower_operand_too_wide\":{},\"blocks_with_lambda\":{},\
+         \"blocks_with_thunk\":{},\"blocks_with_apply\":{},\
+         \"blocks_with_select\":{},\"blocks_with_other_primop\":{},\
+         \"negative_cache_hits\":{},\"thunk_continuations\":{},\
+         \"apply_continuations\":{},\"disqualifier_bitmap_histogram\":{:?}}}",
+        counters.attempts,
+        counters.declines,
+        counters.cache_hits,
+        counters.blocks_lowered,
+        counters.claims,
+        counters.completions,
+        counters.force_continuations,
+        counters.oracle_leaves,
+        counters.errors,
+        counters.panics,
+        lower[0],
+        lower[1],
+        lower[2],
+        lower[3],
+        lower[4],
+        lower[5],
+        lower[6],
+        lower[7],
+        lower[8],
+        lower[9],
+        lower[10],
+        counters.blocks_with_lambda,
+        counters.blocks_with_thunk,
+        counters.blocks_with_apply,
+        counters.blocks_with_select,
+        counters.blocks_with_other_primop,
+        counters.negative_cache_hits,
+        counters.thunk_continuations,
+        counters.apply_continuations,
+        counters.disqualifier_bitmap_histogram,
+    );
+    eprintln!(
+        "aos_nix_stg_decline_kinds \
+         {{\"int\":{},\"float\":{},\"bool\":{},\"null\":{},\"str\":{},\
+         \"path\":{},\"search_path\":{},\"uri\":{},\"local_var\":{},\
+         \"upval_var\":{},\"global_var\":{},\"builtin_attr\":{},\"list\":{},\
+         \"attr_set\":{},\"lambda\":{},\"formal_set\":{},\"formal\":{},\
+         \"apply\":{},\"select\":{},\"has_attr\":{},\"let\":{},\"with\":{},\
+         \"assert\":{},\"if\":{},\"bin_op\":{},\"unary_op\":{},\"interp\":{},\
+         \"thunk_alloc\":{},\"primop\":{}}}",
+        kind[IrKind::Int as usize],
+        kind[IrKind::Float as usize],
+        kind[IrKind::Bool as usize],
+        kind[IrKind::Null as usize],
+        kind[IrKind::Str as usize],
+        kind[IrKind::Path as usize],
+        kind[IrKind::SearchPath as usize],
+        kind[IrKind::Uri as usize],
+        kind[IrKind::LocalVar as usize],
+        kind[IrKind::UpvalVar as usize],
+        kind[IrKind::GlobalVar as usize],
+        kind[IrKind::BuiltinAttr as usize],
+        kind[IrKind::List as usize],
+        kind[IrKind::AttrSet as usize],
+        kind[IrKind::Lambda as usize],
+        kind[IrKind::FormalSet as usize],
+        kind[IrKind::Formal as usize],
+        kind[IrKind::Apply as usize],
+        kind[IrKind::Select as usize],
+        kind[IrKind::HasAttr as usize],
+        kind[IrKind::Let as usize],
+        kind[IrKind::With as usize],
+        kind[IrKind::Assert as usize],
+        kind[IrKind::If as usize],
+        kind[IrKind::BinOp as usize],
+        kind[IrKind::UnaryOp as usize],
+        kind[IrKind::Interp as usize],
+        kind[IrKind::ThunkAlloc as usize],
+        kind[IrKind::PrimOp as usize],
+    );
+}
+
+#[cfg(feature = "active_packed_thunk_probe")]
+fn emit_active_packed_thunk_accounting(evaluator: &TreeWalk) {
+    let accounting = evaluator.heap.active_packed_thunk_accounting();
+    if accounting.apply_allocated == 0 && accounting.gen_list_elem_at_add_one_allocated == 0 {
+        return;
+    }
+    eprintln!(
+        "aos_nix_active_packed_thunks \
+         {{\"apply_allocated\":{},\"genlist_allocated\":{},\
+         \"initialized_bytes\":{},\"capacity_bytes\":{},\
+         \"virtual_reserved_bytes\":{},\"fallbacks\":0}}",
+        accounting.apply_allocated,
+        accounting.gen_list_elem_at_add_one_allocated,
+        accounting.initialized_bytes,
+        accounting.capacity_bytes,
+        accounting.virtual_reserved_bytes,
+    );
+}
+
+/// Emits default-off runtime and optional module-root Promise/PIR censuses.
+fn emit_promise_region_census(evaluator: &TreeWalk) {
+    evaluator.emit_runtime_promise_region_census();
+    if !std::env::var("AOS_NIX_PROMISE_REGION_ROOT_CENSUS").is_ok_and(|value| value == "1") {
+        return;
+    }
+    let mut planned_modules = 0_u64;
+    let mut failed_modules = 0_u64;
+    let mut entry_only_statepoints = 0_u64;
+    let mut arena_nodes = 0_u64;
+    let mut unique_region_nodes = 0_u64;
+    let mut specializations = 0_u64;
+    let mut max_specializations = 0_usize;
+    let mut virtual_promises = 0_u64;
+    let mut virtual_frames = 0_u64;
+    let mut virtual_closures = 0_u64;
+    let mut virtual_lists = 0_u64;
+    let mut virtual_attrs = 0_u64;
+    let mut statepoints = [0_u64; 11];
+
+    for (module_index, module) in evaluator.modules.iter().enumerate() {
+        arena_nodes = arena_nodes.saturating_add(module.ir.arena.nodes().len() as u64);
+        let plan = match plan_promise_region(
+            &module.ir,
+            module.ir.root,
+            None,
+            PromiseRegionOptions {
+                symbol_validation: PromiseRegionSymbolValidation::ExternallyRemapped,
+                ..PromiseRegionOptions::default()
+            },
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                failed_modules = failed_modules.saturating_add(1);
+                let error = error.to_string();
+                eprintln!(
+                    "aos_nix_promise_region_error \
+                     {{\"module\":{module_index},\"error\":{error:?}}}"
+                );
+                continue;
+            }
+        };
+        planned_modules = planned_modules.saturating_add(1);
+        entry_only_statepoints =
+            entry_only_statepoints.saturating_add(u64::from(plan.entry_is_only_statepoint));
+        unique_region_nodes = unique_region_nodes.saturating_add(plan.unique_ir_nodes as u64);
+        specializations = specializations.saturating_add(plan.specialization_count as u64);
+        max_specializations = max_specializations.max(plan.max_specializations_per_node);
+        virtual_promises =
+            virtual_promises.saturating_add(plan.virtual_allocations.promises as u64);
+        virtual_frames = virtual_frames.saturating_add(plan.virtual_allocations.frames as u64);
+        virtual_closures =
+            virtual_closures.saturating_add(plan.virtual_allocations.closures as u64);
+        virtual_lists = virtual_lists.saturating_add(plan.virtual_allocations.lists as u64);
+        virtual_attrs = virtual_attrs.saturating_add(plan.virtual_allocations.attrs as u64);
+        for statepoint in plan.statepoints {
+            let index = match statepoint.kind {
+                PromiseStatepointKind::Effect => 0,
+                PromiseStatepointKind::Global => 1,
+                PromiseStatepointKind::DynamicScope => 2,
+                PromiseStatepointKind::Dialect => 3,
+                PromiseStatepointKind::RecursiveAttrSet => 4,
+                PromiseStatepointKind::DynamicAttrSet => 5,
+                PromiseStatepointKind::FormalSetLambda => 6,
+                PromiseStatepointKind::DynamicSelect => 7,
+                PromiseStatepointKind::DefaultSelect => 8,
+                PromiseStatepointKind::UnknownCall => 9,
+                PromiseStatepointKind::Unsupported => 10,
+            };
+            statepoints[index] = statepoints[index].saturating_add(1);
+        }
+    }
+
+    let statepoint_total = statepoints.iter().copied().sum::<u64>();
+    let virtual_total = virtual_promises
+        .saturating_add(virtual_frames)
+        .saturating_add(virtual_closures)
+        .saturating_add(virtual_lists)
+        .saturating_add(virtual_attrs);
+    eprintln!(
+        "aos_nix_promise_region_census \
+         {{\"modules\":{},\"planned_modules\":{planned_modules},\
+         \"failed_modules\":{failed_modules},\
+         \"entry_only_statepoints\":{entry_only_statepoints},\
+         \"arena_nodes\":{arena_nodes},\"unique_region_nodes\":{unique_region_nodes},\
+         \"specializations\":{specializations},\
+         \"max_specializations_per_node\":{max_specializations},\
+         \"virtual_allocations\":{{\"total\":{virtual_total},\
+         \"promises\":{virtual_promises},\"frames\":{virtual_frames},\
+         \"closures\":{virtual_closures},\"lists\":{virtual_lists},\
+         \"attrs\":{virtual_attrs}}},\
+         \"statepoints\":{{\"total\":{statepoint_total},\"effect\":{},\
+         \"global\":{},\"dynamic_scope\":{},\"dialect\":{},\
+         \"recursive_attrset\":{},\"dynamic_attrset\":{},\
+         \"formal_set_lambda\":{},\"dynamic_select\":{},\
+         \"default_select\":{},\"unknown_call\":{},\"unsupported\":{}}}}}",
+        evaluator.modules.len(),
+        statepoints[0],
+        statepoints[1],
+        statepoints[2],
+        statepoints[3],
+        statepoints[4],
+        statepoints[5],
+        statepoints[6],
+        statepoints[7],
+        statepoints[8],
+        statepoints[9],
+        statepoints[10],
+    );
+}
+
+impl TreeWalk {
+    /// Emits a default-off current-RSS and arena phase sample.
+    pub(super) fn emit_resident_phase(&self, phase: &str) {
+        if !std::env::var("AOS_NIX_RSS_PHASES").is_ok_and(|value| value == "1") {
+            return;
+        }
+        let rss = ProcessResidentMemorySample::current()
+            .ok()
+            .flatten()
+            .map(ProcessResidentMemorySample::resident_bytes);
+        let worker = self.heap.arena_stats();
+        let permanent = self.heap.permanent_arena_stats();
+        match rss {
+            Some(rss_bytes) => eprintln!(
+                "aos_nix_rss_phase phase={phase} modules={} rss_bytes={rss_bytes} \
+                 worker_mapped_bytes={} worker_used_bytes={} permanent_mapped_bytes={} \
+                 permanent_used_bytes={}",
+                self.modules.len(),
+                worker.mapped_bytes,
+                worker.used_bytes,
+                permanent.mapped_bytes,
+                permanent.used_bytes,
+            ),
+            None => eprintln!(
+                "aos_nix_rss_phase phase={phase} modules={} rss_bytes=unavailable \
+                 worker_mapped_bytes={} worker_used_bytes={} permanent_mapped_bytes={} \
+                 permanent_used_bytes={}",
+                self.modules.len(),
+                worker.mapped_bytes,
+                worker.used_bytes,
+                permanent.mapped_bytes,
+                permanent.used_bytes,
+            ),
+        }
+    }
+
+    /// Emits a weak-root liveness sample at selected import milestones.
+    pub(super) fn emit_weak_liveness_import_milestone(&mut self) {
+        let modules = self.modules.len();
+        #[cfg(feature = "evacuation_plan_probe")]
+        self.emit_evacuation_plan_projection(modules);
+        #[cfg(feature = "compact_destination_probe")]
+        self.emit_compact_destination_projection(modules);
+        #[cfg(feature = "nonmoving_reclaim_probe")]
+        self.emit_nonmoving_reclaim_projection(modules);
+        #[cfg(feature = "ready_exclusive_probe")]
+        self.capture_ready_exclusive_window(modules);
+        if !matches!(
+            modules,
+            64 | 128 | 256 | 512 | 1024 | 1152 | 1200 | 1216 | 1220
+        ) {
+            return;
+        }
+        self.emit_resident_phase("import-milestone");
+        if std::env::var_os("AOS_NIX_WEAK_LIVENESS_CENSUS").is_none() {
+            return;
+        }
+        let result = self
+            .mutator_root_set()
+            .map_err(|error| error.to_string())
+            .and_then(|roots| {
+                self.heap
+                    .weak_liveness_census(&roots)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(census) => {
+                eprintln!("aos_nix_weak_liveness_milestone modules={modules} {census}")
+            }
+            Err(error) => {
+                eprintln!("aos_nix_weak_liveness_milestone_error modules={modules} {error:?}")
+            }
+        }
+    }
+
+    /// Emits the read-only same-layout evacuation plan at selected milestones.
+    #[cfg(feature = "evacuation_plan_probe")]
+    fn emit_evacuation_plan_projection(&self, modules: usize) {
+        const CAPTURE_MODULES: [usize; 8] = [512, 768, 896, 1024, 1088, 1152, 1188, 1220];
+        if !CAPTURE_MODULES.contains(&modules)
+            || !std::env::var("AOS_NIX_EVACUATION_PLAN_PROBE").is_ok_and(|value| value == "1")
+        {
+            return;
+        }
+        let result = self
+            .mutator_root_set()
+            .map_err(|error| error.to_string())
+            .and_then(|roots| {
+                self.heap
+                    .evacuation_plan(&roots)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(plan) => eprintln!("aos_nix_evacuation_plan modules={modules} {plan}"),
+            Err(error) => eprintln!(
+                "aos_nix_evacuation_plan_error \
+                 {{\"modules\":{modules},\"error\":{error:?}}}"
+            ),
+        }
+    }
+
+    /// Emits the read-only compact-destination projection at the peak-band entry.
+    #[cfg(feature = "compact_destination_probe")]
+    fn emit_compact_destination_projection(&self, modules: usize) {
+        const CAPTURE_MODULES: [usize; 9] = [512, 768, 896, 1024, 1088, 1152, 1188, 1200, 1220];
+        if !CAPTURE_MODULES.contains(&modules)
+            || !std::env::var("AOS_NIX_COMPACT_DESTINATION_PROBE").is_ok_and(|value| value == "1")
+        {
+            return;
+        }
+        let result = self
+            .mutator_root_set()
+            .map_err(|error| error.to_string())
+            .and_then(|roots| {
+                self.heap
+                    .compact_destination_projection(&roots)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(projection) => {
+                eprintln!("aos_nix_compact_destination modules={modules} {projection}")
+            }
+            Err(error) => eprintln!(
+                "aos_nix_compact_destination_error \
+                 {{\"modules\":{modules},\"error\":{error:?}}}"
+            ),
+        }
+    }
+
+    /// Emits the read-only nonmoving reclamation projection.
+    #[cfg(feature = "nonmoving_reclaim_probe")]
+    fn emit_nonmoving_reclaim_projection(&self, modules: usize) {
+        const CAPTURE_MODULES: [usize; 9] = [512, 768, 896, 1024, 1088, 1152, 1188, 1200, 1220];
+        let selected_module = std::env::var("AOS_NIX_NONMOVING_RECLAIM_MODULE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok());
+        let selected = selected_module.map_or_else(
+            || CAPTURE_MODULES.contains(&modules),
+            |value| value == modules,
+        );
+        if !selected
+            || !std::env::var("AOS_NIX_NONMOVING_RECLAIM_PROBE").is_ok_and(|value| value == "1")
+        {
+            return;
+        }
+        let rss = ProcessResidentMemorySample::current()
+            .ok()
+            .flatten()
+            .map_or(0, ProcessResidentMemorySample::resident_bytes);
+        let result = self
+            .mutator_root_set()
+            .map_err(|error| error.to_string())
+            .and_then(|roots| {
+                self.heap
+                    .nonmoving_reclaim_projection(
+                        &roots,
+                        rss as u64,
+                        modules,
+                        selected_module.is_some(),
+                    )
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(projection) => {
+                eprintln!("aos_nix_nonmoving_reclaim modules={modules} {projection}")
+            }
+            Err(error) => eprintln!(
+                "aos_nix_nonmoving_reclaim_error \
+                 {{\"modules\":{modules},\"error\":{error:?}}}"
+            ),
+        }
+    }
+
+    /// Captures Ready-import-exclusive ownership before the final demand window.
+    #[cfg(feature = "ready_exclusive_probe")]
+    fn capture_ready_exclusive_window(&mut self, modules: usize) {
+        const CAPTURE_MODULES: usize = 1188;
+        if modules != CAPTURE_MODULES
+            || self.ready_exclusive_window.is_some()
+            || !std::env::var("AOS_NIX_READY_EXCLUSIVE_PROBE").is_ok_and(|value| value == "1")
+        {
+            return;
+        }
+        let census = self
+            .mutator_root_set()
+            .map_err(|error| error.to_string())
+            .and_then(|roots| {
+                self.heap
+                    .ready_exclusive_census(&roots)
+                    .map_err(|error| error.to_string())
+            });
+        match census {
+            Ok(census) => {
+                eprintln!(
+                    "aos_nix_ready_exclusive_capture \
+                     {{\"modules\":{modules},\"ready_roots\":{},\"other_roots\":{},\
+                     \"all_objects\":{},\"ready_objects\":{},\"other_objects\":{},\
+                     \"shared_objects\":{},\"union_reconciled\":{},\
+                     \"unclassified_objects\":{},\"candidates\":{},\
+                     \"inline_bytes\":{},\"list_spine_bytes\":{},\"bytes\":{}}}",
+                    census.ready_roots(),
+                    census.other_roots(),
+                    census.all_reachable_objects(),
+                    census.ready_reachable_objects(),
+                    census.other_reachable_objects(),
+                    census.shared_reachable_objects(),
+                    census.union_reconciled(),
+                    census.unclassified_exclusive_objects(),
+                    census.candidates().len(),
+                    census.inline_bytes(),
+                    census.list_spine_bytes(),
+                    census.attributable_bytes(),
+                );
+                self.ready_exclusive_window = Some(census);
+            }
+            Err(error) => {
+                eprintln!(
+                    "aos_nix_ready_exclusive_capture_error \
+                     {{\"modules\":{modules},\"error\":{error:?}}}"
+                );
+            }
+        }
+    }
+
+    /// Classifies captured Ready-exclusive bytes by access in the final window.
+    #[cfg(feature = "ready_exclusive_probe")]
+    fn emit_ready_exclusive_window_report(&self) {
+        if !std::env::var("AOS_NIX_READY_EXCLUSIVE_PROBE").is_ok_and(|value| value == "1") {
+            return;
+        }
+        let Some(census) = self.ready_exclusive_window.as_ref() else {
+            eprintln!("aos_nix_ready_exclusive_window_error \"capture milestone not reached\"");
+            return;
+        };
+        let mut touched_count = 0_u64;
+        let mut touched_bytes = 0_u64;
+        let mut cold_count = 0_u64;
+        let mut cold_bytes = 0_u64;
+        let mut unattributed_count = 0_u64;
+        let mut unattributed_bytes = 0_u64;
+        for candidate in census.candidates() {
+            let bytes = candidate.attributable_bytes();
+            match (
+                candidate.initial_touch_epoch(),
+                self.heap.ready_exclusive_candidate_touch_epoch(*candidate),
+            ) {
+                (Some(initial), Some(current)) if current > initial => {
+                    touched_count = touched_count.saturating_add(1);
+                    touched_bytes = touched_bytes.saturating_add(bytes);
+                }
+                (Some(initial), Some(current)) if current == initial => {
+                    cold_count = cold_count.saturating_add(1);
+                    cold_bytes = cold_bytes.saturating_add(bytes);
+                }
+                _ => {
+                    unattributed_count = unattributed_count.saturating_add(1);
+                    unattributed_bytes = unattributed_bytes.saturating_add(bytes);
+                }
+            }
+        }
+        eprintln!(
+            "aos_nix_ready_exclusive_window \
+             {{\"capture_candidates\":{},\"capture_bytes\":{},\
+             \"touched\":[{touched_count},{touched_bytes}],\
+             \"cold\":[{cold_count},{cold_bytes}],\
+             \"unattributed\":[{unattributed_count},{unattributed_bytes}],\
+             \"bytes_reconciled\":{}}}",
+            census.candidates().len(),
+            census.attributable_bytes(),
+            touched_bytes
+                .saturating_add(cold_bytes)
+                .saturating_add(unattributed_bytes)
+                == census.attributable_bytes(),
+        );
+    }
+}
+
+/// Emits the default-off flat-store and hash-cons capacity census.
+fn emit_heap_storage_census(evaluator: &TreeWalk) {
+    if std::env::var_os("AOS_NIX_STORAGE_CENSUS").is_none() {
+        return;
+    }
+    evaluator.heap.emit_storage_census();
+    let ir_bytes = evaluator
+        .modules
+        .iter()
+        .map(|module| module.ir.resident_bytes())
+        .sum::<usize>();
+    let source_bytes = evaluator
+        .modules
+        .iter()
+        .filter_map(|module| module.source.as_ref())
+        .map(|source| {
+            source
+                .name
+                .capacity()
+                .saturating_add(source.bytes.capacity())
+        })
+        .sum::<usize>();
+    let path_base_bytes = evaluator
+        .modules
+        .iter()
+        .filter_map(|module| module.path_literal_base.as_ref())
+        .map(Vec::capacity)
+        .sum::<usize>();
+    eprintln!(
+        "aos_nix_module_storage_census {{\"modules\":[{},{}],\
+         \"module_table_bytes\":{},\"ir_bytes\":{ir_bytes},\
+         \"source_bytes\":{source_bytes},\"path_base_bytes\":{path_base_bytes}}}",
+        evaluator.modules.len(),
+        evaluator.modules.capacity(),
+        evaluator
+            .modules
+            .capacity()
+            .saturating_mul(std::mem::size_of::<TreeWalkModule>()),
+    );
+}
+
+/// Emits candidate lowered nodes for the `lib/modules.nix` direct-island wall.
+fn emit_direct_island_site_report(evaluator: &TreeWalk) {
+    if std::env::var_os("AOS_NIX_DIRECT_ISLAND_SITES").is_none() {
+        return;
+    }
+    const START: &[u8] = b"if freeformType == null && !isStrict";
+    const END: &[u8] = b"in {\n      config = configWithFreeform;";
+    for (module_index, module) in evaluator.modules.iter().enumerate() {
+        let Some(source) = module.source.as_ref() else {
+            continue;
+        };
+        if !source.name.ends_with(b"/lib/modules.nix") {
+            continue;
+        }
+        let Some(start) = source
+            .bytes
+            .windows(START.len())
+            .position(|window| window == START)
+        else {
+            continue;
+        };
+        let Some(end_start) = source
+            .bytes
+            .windows(END.len())
+            .position(|window| window == END)
+        else {
+            continue;
+        };
+        let end = end_start.saturating_add(2);
+        for (node_index, node) in module.ir.arena.nodes().iter().enumerate() {
+            let node_start = node.span.start as usize;
+            let node_end = node.span.end as usize;
+            if node_start <= start && node_end >= start || node_start >= start && node_start < end {
+                eprintln!(
+                    "aos_nix_direct_island_site {{\"module\":{module_index},\
+                     \"node\":{node_index},\"kind\":\"{:?}\",\"span\":[{},{}],\
+                     \"target\":[{start},{end}]}}",
+                    node.kind, node.span.start, node.span.end
+                );
+            }
+        }
+    }
+}
+
+/// Emits the default-off inclusive wall and dynamic-force coverage probe.
+fn emit_direct_island_probe_report(evaluator: &TreeWalk) {
+    let Some(report) = evaluator.direct_island_probe_report() else {
+        return;
+    };
+    eprintln!(
+        "aos_nix_direct_island_probe {{\"entries\":{},\"total_ns\":{},\
+         \"island_ns\":{},\"total_forces\":{},\"island_forces\":{}}}",
+        report.entries,
+        report.total_ns,
+        report.island_ns,
+        report.total_forces,
+        report.island_forces
+    );
 }
 
 fn finish_owned_eval_outcome(

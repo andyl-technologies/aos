@@ -1,8 +1,8 @@
 //! File-artifact index key, value, entry, and storage format adapters.
 
-use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 use super::*;
 use crate::cache::CompiledBodyRecordHash;
+use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 use ratchet_cache::artifact_index::{
     ArtifactIndex as EngineArtifactIndex, ArtifactIndexEntry as EngineArtifactIndexEntry,
     ArtifactIndexError as EngineArtifactIndexError,

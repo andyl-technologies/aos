@@ -41,12 +41,12 @@ use ratchet_core::{
 };
 use ratchet_value::value::compressed::CompressedValueWord;
 
+use super::super::super::lambda_rec::import_tier2_local_function;
 use super::super::super::{
     AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
     clif_external_name_for_aos_upval_get, import_runtime_helper_function, stack_maps,
 };
-use super::super::super::lambda_rec::import_tier2_local_function;
 use super::super::scan::{flatten_apply_chain, require_static_bool_condition, unwrap_thunk_alloc};
 use super::super::{JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee};
 use super::{ExprClass, TIER2_DEOPT_SENTINEL_WORD, infer_class};
@@ -298,7 +298,13 @@ pub(in crate::lower::lambda_chain) fn build_inner_function(
             inline_params: Some(vec![TypedVal::IntDecoded(index)]),
             let_scopes: Vec::new(),
         };
-        let element = emit_expr(&mut cursor, arena, &mut ctx, generator_body, &mut generator_state)?;
+        let element = emit_expr(
+            &mut cursor,
+            arena,
+            &mut ctx,
+            generator_body,
+            &mut generator_state,
+        )?;
         // The generated element replaces the raw element parameter: it is by
         // construction already in weak head normal form, so the operator body
         // sees it forced and never round-trips through `aos_force`.
@@ -343,7 +349,9 @@ fn to_int(cursor: &mut FuncCursor, ctx: &ChainCtx<'_>, value: TypedVal) -> ClifV
             let high = cursor.ins().ushr_imm(word, 32);
             let is_inline_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
             let decode = cursor.func.dfg.make_block();
-            cursor.ins().brif(is_inline_int, decode, &[], ctx.deopt, &[]);
+            cursor
+                .ins()
+                .brif(is_inline_int, decode, &[], ctx.deopt, &[]);
             cursor.insert_block(decode);
             let low = cursor.ins().ireduce(types::I32, word);
             cursor.ins().sextend(types::I64, low)
@@ -805,7 +813,12 @@ fn emit_binop(
             lhs_int,
             rhs_int,
         ))),
-        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int))),
+        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::Equal,
+            lhs_int,
+            rhs_int,
+        ))),
         BinOpKind::Ne => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::NotEqual,

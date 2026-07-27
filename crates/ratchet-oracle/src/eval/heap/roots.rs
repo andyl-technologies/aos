@@ -18,10 +18,12 @@ use std::sync::Arc;
 
 use super::environment_writeback::{
     EnvironmentWritebackStage, validate_captured_environment_source,
+    validate_flat_closure_captured_environment_source,
 };
+use super::flat_values::value_tag_for_flat_kind;
 use super::root_scan::{
-    heap_ptr, is_scannable_eval_heap_value, push_heap_edge, push_object_scan, push_visited,
-    push_worklist,
+    PreciseScanIdentity, heap_ptr, is_scannable_eval_heap_value, push_heap_edge, push_object_scan,
+    push_visited, push_worklist,
 };
 use super::structural_writeback::StructuralWritebackStage;
 use super::*;

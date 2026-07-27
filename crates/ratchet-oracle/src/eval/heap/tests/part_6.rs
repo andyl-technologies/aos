@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -605,7 +604,6 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert_eq!(stale_remembered_set, remembered_set);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -662,7 +660,6 @@ fn collector_poll_minor_gc_forwarding_install_writes_valid_slots() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -710,7 +707,6 @@ fn collector_poll_minor_gc_forwarding_install_rejects_empty_slot_without_partial
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -753,7 +749,6 @@ fn collector_poll_minor_gc_forwarding_install_rejects_duplicate_source_without_p
         None
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

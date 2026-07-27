@@ -1,6 +1,362 @@
 //! Split-out flat-store tests (part_1). See parent module.
 use super::*;
 
+#[derive(Debug)]
+struct LargeMovePayload {
+    edge: usize,
+    bytes: [u8; 8192],
+    drops: Rc<Cell<usize>>,
+}
+
+impl Drop for LargeMovePayload {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+#[test]
+fn plain_relocation_moves_ownership_and_tombstones_the_source() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let source = store
+        .alloc(
+            FlatObjectKind::Primop,
+            0xfeed_beef,
+            17,
+            payload("moved", &drops),
+        )
+        .expect("plain object allocates");
+
+    let moved = store
+        .relocate_plain_with(source.ptr, FlatObjectKind::Primop, |payload| {
+            payload.text.make_ascii_uppercase();
+        })
+        .expect("plain object rewrites and relocates");
+
+    assert_eq!(moved.source, source.ptr);
+    assert_ne!(moved.destination.ptr, source.ptr);
+    assert_eq!(moved.destination.store_index, 1);
+    assert_eq!(store.len(), 2, "the source registry coordinate remains");
+    assert_eq!(store.live_len(), 1, "only the destination stays live");
+    assert_eq!(
+        store
+            .resolve(source.ptr, FlatObjectKind::Primop)
+            .expect_err("the source header was wiped"),
+        FlatObjectError::UnknownAddress {
+            address: source.ptr.as_ptr() as usize,
+        }
+    );
+
+    let destination = store
+        .resolve(moved.destination.ptr, FlatObjectKind::Primop)
+        .expect("the destination resolves");
+    assert_eq!(destination.payload().text, "MOVED");
+    assert_eq!(destination.structural_hash(), 0xfeed_beef);
+    assert_eq!(destination.last_touch_epoch(), 17);
+    assert_eq!(drops.get(), 0, "relocation transfers rather than drops");
+
+    drop(store);
+    assert_eq!(drops.get(), 1, "the moved payload is dropped exactly once");
+}
+
+#[test]
+fn relocation_rejects_inline_tail_without_changing_the_source() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let source = store
+        .alloc_with_trailing_bytes(FlatObjectKind::String, 41, 3, b"inline", |_| {
+            payload("retained", &drops)
+        })
+        .expect("tailed object allocates");
+
+    let error = store
+        .relocate_plain(source.ptr, FlatObjectKind::String)
+        .expect_err("a self-relative inline tail requires a kind-specific mover");
+    assert!(matches!(
+        error,
+        FlatObjectError::RelocationRequiresPlainObject { address, .. }
+            if address == source.ptr.as_ptr() as usize
+    ));
+    assert_eq!(store.len(), 1, "rejection does not reserve a registry slot");
+    assert_eq!(store.live_len(), 1);
+    let retained = store
+        .resolve(source.ptr, FlatObjectKind::String)
+        .expect("the rejected source remains intact");
+    assert_eq!(retained.payload().text, "retained");
+    assert_eq!(retained.structural_hash(), 41);
+    assert_eq!(retained.last_touch_epoch(), 3);
+
+    drop(store);
+    assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn shared_plain_relocation_releases_only_source_owned_pages() {
+    let arena = SharedFlatStoreArena::new();
+    if !arena.uses_reservation() {
+        return;
+    }
+    let mut store = FlatObjectStore::<[u8; 8192]>::with_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    let source = store
+        .alloc(FlatObjectKind::String, 7, 0, [0x5a; 8192])
+        .expect("large plain source allocates");
+    let moved = store
+        .relocate_plain(source.ptr, FlatObjectKind::String)
+        .expect("large plain source relocates");
+
+    let report = arena
+        .advise_zero_liveness_pages()
+        .expect("reservation page accounting is available")
+        .expect("retired source-page scan succeeds");
+    assert!(
+        report.candidate_pages() >= 2,
+        "full pages owned only by the moved source become reclaimable"
+    );
+    let destination = store
+        .resolve(moved.destination.ptr, FlatObjectKind::String)
+        .expect("destination remains live after source-page advice");
+    assert_eq!(
+        destination.payload()[0],
+        0x5a,
+        "advice excludes destination-intersecting pages"
+    );
+    assert_eq!(destination.payload()[8191], 0x5a);
+}
+
+#[test]
+fn cross_domain_relocation_rewrites_and_transfers_ownership() {
+    let source_arena = SharedFlatStoreArena::new();
+    let destination_arena = SharedFlatStoreArena::new();
+    if !source_arena.uses_reservation() || !destination_arena.uses_reservation() {
+        return;
+    }
+    assert_ne!(
+        source_arena.arena_domain_id(),
+        destination_arena.arena_domain_id(),
+        "independent Candidate-C reservations have distinct domains"
+    );
+
+    let kinds = FlatKindSet::of(&[FlatObjectKind::Primop]);
+    let drops = Rc::new(Cell::new(0));
+    let mut source_store = FlatObjectStore::with_shared_arena(source_arena.clone(), kinds.clone());
+    let mut destination_store =
+        FlatObjectStore::with_shared_arena(destination_arena.clone(), kinds);
+    let source = source_store
+        .alloc(
+            FlatObjectKind::Primop,
+            0xdecaf,
+            23,
+            LargeMovePayload {
+                edge: 41,
+                bytes: [0xa5; 8192],
+                drops: Rc::clone(&drops),
+            },
+        )
+        .expect("large plain source allocates");
+
+    let moved = source_store
+        .relocate_plain_to_with(
+            &mut destination_store,
+            source.ptr,
+            FlatObjectKind::Primop,
+            |payload| payload.edge = 99,
+        )
+        .expect("cross-domain relocation commits");
+    assert_eq!(source_store.len(), 1);
+    assert_eq!(source_store.live_len(), 0);
+    assert_eq!(destination_store.len(), 1);
+    assert_eq!(destination_store.live_len(), 1);
+    assert_eq!(drops.get(), 0, "movement does not drop the payload");
+
+    let source_advice = source_arena
+        .advise_zero_liveness_pages()
+        .expect("source reservation tracks page liveness")
+        .expect("source dead-page scan succeeds");
+    assert!(
+        source_advice.candidate_pages() >= 2,
+        "the retired large source contributes reclaimable pages"
+    );
+    let destination = destination_store
+        .resolve(moved.destination.ptr, FlatObjectKind::Primop)
+        .expect("destination resolves in its independent arena");
+    assert_eq!(destination.payload().edge, 99);
+    assert_eq!(destination.payload().bytes[0], 0xa5);
+    assert_eq!(destination.payload().bytes[8191], 0xa5);
+    assert_eq!(destination.structural_hash(), 0xdecaf);
+    assert_eq!(destination.last_touch_epoch(), 23);
+
+    drop(source_store);
+    assert_eq!(drops.get(), 0, "the tombstoned source owns no payload");
+    drop(destination_store);
+    assert_eq!(
+        drops.get(),
+        1,
+        "the destination drops ownership exactly once"
+    );
+}
+
+#[test]
+fn cross_store_relocation_failure_precedes_source_mutation() {
+    let drops = Rc::new(Cell::new(0));
+    let rewritten = Cell::new(false);
+    let mut source_store = FlatObjectStore::new();
+    let destination_arena = SharedFlatStoreArena::new();
+    let mut destination_store = FlatObjectStore::with_shared_arena(
+        destination_arena,
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    let source = source_store
+        .alloc(FlatObjectKind::Primop, 73, 5, payload("unchanged", &drops))
+        .expect("source allocates");
+
+    let error = source_store
+        .relocate_plain_to_with(
+            &mut destination_store,
+            source.ptr,
+            FlatObjectKind::Primop,
+            |_| rewritten.set(true),
+        )
+        .expect_err("destination rejects the source kind");
+    assert_eq!(
+        error,
+        FlatObjectError::KindNotAllowed {
+            kind: FlatObjectKind::Primop,
+        }
+    );
+    assert!(!rewritten.get(), "preflight failure skips the callback");
+    assert_eq!(destination_store.len(), 0);
+    let retained = source_store
+        .resolve(source.ptr, FlatObjectKind::Primop)
+        .expect("source remains live");
+    assert_eq!(retained.payload().text, "unchanged");
+    assert_eq!(retained.structural_hash(), 73);
+    assert_eq!(retained.last_touch_epoch(), 5);
+    drop(source_store);
+    assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn cross_store_relocation_rejects_shared_physical_backing() {
+    let arena = SharedFlatStoreArena::new();
+    let kinds = FlatKindSet::of(&[FlatObjectKind::Primop]);
+    let drops = Rc::new(Cell::new(0));
+    let mut source_store = FlatObjectStore::with_shared_arena(arena.clone(), kinds.clone());
+    let mut destination_store = FlatObjectStore::with_shared_arena(arena, kinds);
+    let source = source_store
+        .alloc(FlatObjectKind::Primop, 11, 0, payload("live", &drops))
+        .expect("source allocates");
+
+    let error = source_store
+        .relocate_plain_to(&mut destination_store, source.ptr, FlatObjectKind::Primop)
+        .expect_err("aliased physical backing is rejected");
+    assert_eq!(
+        error,
+        FlatObjectError::RelocationRequiresDistinctBacking {
+            address: source.ptr.as_ptr() as usize,
+        }
+    );
+    assert_eq!(source_store.live_len(), 1);
+    assert_eq!(destination_store.len(), 0);
+    drop(source_store);
+    assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn shared_page_advice_waits_until_every_intersecting_object_retires() {
+    let arena = SharedFlatStoreArena::new();
+    if !arena.uses_reservation() {
+        return;
+    }
+    let mut store = FlatObjectStore::<()>::with_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    let bytes = vec![0x5a; 8192];
+    let allocation = store
+        .alloc_with_trailing_bytes(FlatObjectKind::String, 0, 0, &bytes, |_| ())
+        .expect("multi-page object allocates");
+
+    let live = arena
+        .advise_zero_liveness_pages()
+        .expect("reservation page accounting is available")
+        .expect("live-page scan succeeds");
+    assert_eq!(
+        live.candidate_pages(),
+        0,
+        "an intersecting live object pins every full used page"
+    );
+
+    store
+        .retire(allocation.ptr, FlatObjectKind::String)
+        .expect("multi-page object retires");
+    let retired = arena
+        .advise_zero_liveness_pages()
+        .expect("reservation page accounting remains available")
+        .expect("retired-page scan succeeds");
+    assert!(
+        retired.candidate_pages() >= 2,
+        "whole pages become safely reclaimable only after payload drop"
+    );
+}
+
+#[test]
+fn headerless_block_keeps_its_pages_live() {
+    let arena = SharedFlatStoreArena::new();
+    if !arena.uses_reservation() {
+        return;
+    }
+    let mut lane =
+        HeaderlessFlatLane::<[u8; 4096]>::with_block_slots(arena.clone(), FlatObjectKind::Thunk, 2)
+            .expect("headerless lane geometry is valid");
+    lane.alloc([7; 4096])
+        .expect("headerless allocation succeeds");
+
+    let report = arena
+        .advise_zero_liveness_pages()
+        .expect("reservation page accounting is available")
+        .expect("live-page scan succeeds");
+    assert_eq!(
+        report.candidate_pages(),
+        0,
+        "the whole raw fixed-lane block stays pinned"
+    );
+}
+
+#[test]
+fn high_lane_rewind_never_exposes_reused_live_pages_as_zero() {
+    let arena = SharedFlatStoreArena::new();
+    if !arena.uses_reservation() {
+        return;
+    }
+    let mut store = FlatObjectStore::<()>::with_rewindable_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::Thunk]),
+    )
+    .expect("reservation supports a rewindable store");
+    let mark = store.region_mark().expect("high-lane mark is valid");
+    let bytes = vec![0xa5; 8192];
+    store
+        .alloc_with_trailing_bytes(FlatObjectKind::Thunk, 0, 0, &bytes, |_| ())
+        .expect("first high-lane object allocates");
+    store.pop_region(mark).expect("high lane rewinds");
+    store
+        .alloc_with_trailing_bytes(FlatObjectKind::Thunk, 0, 0, &bytes, |_| ())
+        .expect("replacement object reuses the high lane");
+
+    let report = arena
+        .advise_zero_liveness_pages()
+        .expect("reservation page accounting is available")
+        .expect("live-page scan succeeds");
+    assert_eq!(
+        report.candidate_pages(),
+        0,
+        "reused pages are counted before the replacement object escapes"
+    );
+}
+
 #[test]
 fn attrs_kind_allocates_and_resolves_mutably_with_stable_metadata() {
     let drops = Rc::new(Cell::new(0));
@@ -106,6 +462,242 @@ fn pop_region_drops_popped_payloads_and_keeps_the_retained_prefix() {
 }
 
 #[test]
+fn retire_drops_exactly_once_and_hides_the_tombstone_from_iteration() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let retained = store
+        .alloc(FlatObjectKind::String, 0, 0, payload("retained", &drops))
+        .expect("retained allocation succeeds");
+    let retired = store
+        .alloc(FlatObjectKind::Path, 0, 0, payload("retired", &drops))
+        .expect("retired allocation succeeds");
+
+    store
+        .retire(retired.ptr, FlatObjectKind::Path)
+        .expect("exact allocation retires");
+    assert_eq!(drops.get(), 1, "retirement drops the payload once");
+    assert_eq!(store.len(), 2, "the stable registry slot remains present");
+    assert_eq!(store.live_len(), 1);
+    assert_eq!(
+        store.iter().map(FlatStoredObject::ptr).collect::<Vec<_>>(),
+        [retained.ptr],
+        "iteration omits tombstones"
+    );
+    assert_eq!(
+        store
+            .resolve(retired.ptr, FlatObjectKind::Path)
+            .expect_err("the wiped header rejects stale resolution"),
+        FlatObjectError::UnknownAddress {
+            address: retired.ptr.as_ptr() as usize,
+        }
+    );
+    assert_eq!(
+        store
+            .retire(retired.ptr, FlatObjectKind::Path)
+            .expect_err("a tombstone cannot be retired twice"),
+        FlatObjectError::UnknownAddress {
+            address: retired.ptr.as_ptr() as usize,
+        }
+    );
+
+    drop(store);
+    assert_eq!(
+        drops.get(),
+        2,
+        "store teardown drops only the retained payload"
+    );
+}
+
+#[test]
+fn selected_retirement_validates_all_entries_before_infallible_commit() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let first = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("first", &drops))
+        .expect("first allocation succeeds");
+    let retained = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("retained", &drops))
+        .expect("retained allocation succeeds");
+    let second = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("second", &drops))
+        .expect("second allocation succeeds");
+
+    let retirement = store
+        .prepare_retire_live_subset([first.ptr, second.ptr])
+        .expect("selected entries validate");
+    assert_eq!(retirement.commit(), 2);
+
+    assert_eq!(drops.get(), 2);
+    assert_eq!(store.len(), 3);
+    assert_eq!(store.live_len(), 1);
+    assert_eq!(
+        store
+            .resolve(retained.ptr, FlatObjectKind::Thunk)
+            .expect("unselected entry remains live")
+            .payload()
+            .text,
+        "retained"
+    );
+    assert!(store.resolve(first.ptr, FlatObjectKind::Thunk).is_err());
+    assert!(store.resolve(second.ptr, FlatObjectKind::Thunk).is_err());
+}
+
+#[test]
+fn selected_retirement_rejects_duplicates_without_mutation() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let allocation = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("live", &drops))
+        .expect("allocation succeeds");
+
+    assert!(
+        store
+            .prepare_retire_live_subset([allocation.ptr, allocation.ptr])
+            .is_err()
+    );
+    assert_eq!(drops.get(), 0);
+    assert_eq!(store.len(), 1);
+    assert!(store.resolve(allocation.ptr, FlatObjectKind::Thunk).is_ok());
+}
+
+#[test]
+fn retire_invalidates_tail_handle_without_reusing_its_registry_index() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let retired = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(1)],
+            payload("retired", &drops),
+        )
+        .expect("tail allocation succeeds");
+    let stale = retired.handle.expect("compact handle is available");
+
+    store
+        .retire(retired.allocation.ptr, FlatObjectKind::Thunk)
+        .expect("tail owner retires");
+    assert_eq!(drops.get(), 1);
+    assert_eq!(store.value_tail_handle_owner(stale), None);
+    assert!(
+        store.resolve_value_tail_handle_owner(stale).is_err(),
+        "the tombstone rejects stale tail resolution"
+    );
+
+    let later = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(2)],
+            payload("later", &drops),
+        )
+        .expect("later tail allocation succeeds");
+    assert_eq!(
+        later.allocation.store_index,
+        retired.allocation.store_index + 1,
+        "new allocations append after tombstoned registry slots"
+    );
+    assert!(
+        store.resolve_value_tail_handle_owner(stale).is_err(),
+        "a later allocation cannot revive the stale coordinate"
+    );
+    let current = later.handle.expect("later compact handle is available");
+    let (_, _, values) = store
+        .resolve_value_tail_handle_owner(current)
+        .expect("the later coordinate resolves");
+    assert!(values[0].raw_eq(Value::int(2)));
+
+    drop(store);
+    assert_eq!(drops.get(), 2, "each payload drops exactly once");
+}
+
+#[test]
+fn complete_retirement_reset_reuses_index_without_reviving_tail_handle() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let old = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(1)],
+            payload("old", &drops),
+        )
+        .expect("old tail allocation succeeds");
+    let stale = old.handle.expect("old compact handle is available");
+
+    let retirement = store
+        .prepare_retire_all_live()
+        .expect("complete store validates");
+    assert_eq!(retirement.commit_and_reset(), 1);
+    assert_eq!(store.len(), 0);
+    assert_eq!(store.live_len(), 0);
+    assert_eq!(drops.get(), 1);
+
+    let replacement = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(2)],
+            payload("replacement", &drops),
+        )
+        .expect("replacement tail allocation succeeds");
+    assert_eq!(replacement.allocation.store_index, 0);
+    assert!(
+        store.resolve_value_tail_handle_owner(stale).is_err(),
+        "monotonic generation rejects the stale reused registry index"
+    );
+    let current = replacement
+        .handle
+        .expect("replacement compact handle is available");
+    assert_ne!(current, stale);
+    let (_, _, values) = store
+        .resolve_value_tail_handle_owner(current)
+        .expect("replacement handle resolves");
+    assert!(values[0].raw_eq(Value::int(2)));
+}
+
+#[test]
+fn pop_region_skips_retired_tombstones_in_its_suffix() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let retained = store
+        .alloc(FlatObjectKind::Primop, 0, 0, payload("retained", &drops))
+        .expect("retained allocation succeeds");
+    let mark = store.region_mark().expect("owned-arena mark");
+    let retired = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("retired", &drops))
+        .expect("suffix allocation succeeds");
+    store
+        .retire(retired.ptr, FlatObjectKind::Thunk)
+        .expect("suffix allocation retires");
+
+    let report = store.pop_region(mark).expect("region pop succeeds");
+    assert_eq!(
+        report.popped_entries(),
+        0,
+        "the tombstone has no payload left to drop"
+    );
+    assert_eq!(drops.get(), 1, "region pop does not drop it again");
+    assert_eq!(store.len(), 1);
+    assert_eq!(store.live_len(), 1);
+    assert_eq!(
+        store
+            .resolve(retained.ptr, FlatObjectKind::Primop)
+            .expect("retained prefix remains live")
+            .payload()
+            .text,
+        "retained"
+    );
+
+    drop(store);
+    assert_eq!(drops.get(), 2, "the retained payload drops at teardown");
+}
+
+#[test]
 fn pop_region_allows_address_reuse_by_later_allocations() {
     let drops = Rc::new(Cell::new(0));
     let mut store = FlatObjectStore::new();
@@ -133,6 +725,54 @@ fn pop_region_allows_address_reuse_by_later_allocations() {
         .resolve(second.ptr, FlatObjectKind::Primop)
         .expect("new object resolves");
     assert_eq!(object.payload().text, "second");
+}
+
+#[test]
+fn value_tail_handle_generation_rejects_reused_registry_slot() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    store
+        .alloc(FlatObjectKind::Primop, 0, 0, payload("anchor", &drops))
+        .expect("anchor allocation succeeds");
+    let mark = store.region_mark().expect("owned-arena mark");
+    let first = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(1)],
+            payload("first", &drops),
+        )
+        .expect("first tail allocation succeeds");
+    let stale = first.handle.expect("first allocation signs a handle");
+    store.pop_region(mark).expect("pop succeeds");
+
+    let second = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(2)],
+            payload("second", &drops),
+        )
+        .expect("second tail allocation succeeds");
+    let current = second.handle.expect("second allocation signs a handle");
+    assert_eq!(
+        first.allocation.store_index, second.allocation.store_index,
+        "the registry slot is reused"
+    );
+    assert_eq!(
+        first.allocation.ptr, second.allocation.ptr,
+        "the arena address is reused"
+    );
+    assert!(
+        store.resolve_value_tail_handle_owner(stale).is_err(),
+        "the old generation cannot alias the replacement tail"
+    );
+    let (_, _, values) = store
+        .resolve_value_tail_handle_owner(current)
+        .expect("the replacement generation resolves");
+    assert!(values[0].raw_eq(Value::int(2)));
 }
 
 #[test]
@@ -167,6 +807,7 @@ fn worker_kinds_round_trip_through_kind_words() {
         FlatObjectKind::Thunk,
         FlatObjectKind::Lambda,
         FlatObjectKind::Primop,
+        FlatObjectKind::ThunkHead,
     ] {
         let allocation = store
             .alloc(kind, 0, 0, payload("closure", &drops))
@@ -356,6 +997,16 @@ fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
         .value_tail_get_handle(allocation.ptr, handle, 1)
         .expect("prevalidated handle resolves");
     assert!(handle_value.is_some_and(|value| value.raw_eq(Value::int(2))));
+    let (handle_owner, handle_object, handle_values) = store
+        .resolve_value_tail_handle_owner(handle)
+        .expect("the handle identifies its owner");
+    assert_eq!(handle_owner, allocation.ptr);
+    assert_eq!(handle_object.payload().text, "closure");
+    assert!(handle_values[0].raw_eq(Value::int(1)));
+    let ownerless_value = store
+        .value_tail_get_handle_owner(handle, 1)
+        .expect("ownerless prevalidated handle resolves");
+    assert!(ownerless_value.is_some_and(|value| value.raw_eq(Value::int(2))));
     let other = store
         .alloc_with_value_tail(
             FlatObjectKind::Thunk,
@@ -396,6 +1047,16 @@ fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
             .value_tail_get_handle(allocation.ptr, handle, 0)
             .is_err(),
         "retirement invalidates the prevalidated read handle"
+    );
+    assert!(
+        store.resolve_value_tail_handle_owner(handle).is_err(),
+        "retirement invalidates owner recovery"
+    );
+    assert!(
+        store
+            .value_tail_get_handle_owner(handle, handle.len())
+            .is_err(),
+        "a stale handle fails before an out-of-range read can return None"
     );
     assert!(
         store

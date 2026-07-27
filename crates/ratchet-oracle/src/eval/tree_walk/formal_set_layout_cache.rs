@@ -117,6 +117,33 @@ pub(in crate::eval::tree_walk) struct FormalSetLayoutCache {
 }
 
 impl FormalSetLayoutCache {
+    /// Returns structural allocation counts for memory attribution.
+    pub(in crate::eval::tree_walk) fn storage_counts(
+        &self,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        let slots = self.modules.iter().map(Vec::len).sum();
+        let slot_capacity = self.modules.iter().map(Vec::capacity).sum();
+        let mut layouts = 0usize;
+        let mut formal_entries = 0usize;
+        for layout in self
+            .modules
+            .iter()
+            .flat_map(|module| module.iter())
+            .filter_map(Option::as_ref)
+        {
+            layouts = layouts.saturating_add(1);
+            formal_entries = formal_entries.saturating_add(layout.entries().len());
+        }
+        (
+            self.modules.len(),
+            self.modules.capacity(),
+            slots,
+            slot_capacity,
+            layouts,
+            formal_entries,
+        )
+    }
+
     /// Returns the cached layout for a pattern node, if one was recorded.
     pub(in crate::eval::tree_walk) fn get(
         &self,

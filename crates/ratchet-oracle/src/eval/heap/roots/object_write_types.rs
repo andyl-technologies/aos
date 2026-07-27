@@ -309,6 +309,47 @@ pub(super) enum HeapFieldWriteTarget {
     FlatList(NonNull<HeapObject>),
     /// A flat attrset object, staged by its stable heap address.
     FlatAttrs(NonNull<HeapObject>),
+    /// A nursery flat closure, staged by its stable heap address.
+    FlatClosure(NonNull<HeapObject>, FlatObjectKind),
+}
+
+/// One cloned nursery flat-closure payload awaiting transactional publication.
+#[derive(Clone, Debug)]
+pub(in crate::eval::heap) enum StagedFlatClosurePayload {
+    /// An inline thunk payload whose owned fields may be rewritten.
+    Thunk(EvalThunk),
+    /// A shared thunk payload retained without changing its `Arc` identity.
+    SharedThunk(Arc<EvalThunk>),
+    /// A lambda payload whose directly owned dynamic captures may be rewritten.
+    Lambda(EvalLambda),
+    /// A primop payload whose captured argument values may be rewritten.
+    Primop(EvalPrimOp),
+}
+
+impl StagedFlatClosurePayload {
+    /// Converts the staged typed payload into its flat-store representation.
+    pub(super) fn into_flat_payload(self) -> FlatClosurePayload {
+        match self {
+            Self::Thunk(thunk) => FlatClosurePayload::Thunk(thunk),
+            Self::SharedThunk(thunk) => FlatClosurePayload::SharedThunk(thunk),
+            Self::Lambda(lambda) => FlatClosurePayload::Lambda(lambda),
+            Self::Primop(primop) => FlatClosurePayload::Primop(primop),
+        }
+    }
+}
+
+/// One complete staged nursery flat-closure write.
+///
+/// Payload and inline capture-tail values are cloned before any live mutation.
+/// The optional tail preserves the source allocation's exact length, allowing
+/// commit to use only fixed-size copies after the source kind and shape have
+/// been validated.
+#[derive(Clone, Debug)]
+pub(in crate::eval::heap) struct StagedFlatClosureWrite {
+    pub(super) ptr: NonNull<HeapObject>,
+    pub(super) kind: FlatObjectKind,
+    pub(super) payload: StagedFlatClosurePayload,
+    pub(super) tail: Option<Vec<Value>>,
 }
 
 /// Staged live heap writes for a tree-walk minor-GC publication.
@@ -318,6 +359,7 @@ pub(crate) struct AllocationCollectorPollLiveHeapFieldWriteStage {
     pub(super) staged_heap_field_writes: Vec<(usize, HeapObjectValue)>,
     pub(super) staged_flat_list_writes: Vec<(NonNull<HeapObject>, NixList)>,
     pub(super) staged_flat_attrs_writes: Vec<(NonNull<HeapObject>, FlatAttrs)>,
+    pub(super) staged_flat_closure_writes: Vec<StagedFlatClosureWrite>,
     pub(super) staged_environment_writes: EnvironmentWritebackStage,
     pub(super) staged_structural_writebacks: StructuralWritebackStage,
     pub(super) staged_barriers: Option<(RememberedSet, GcCardTable)>,

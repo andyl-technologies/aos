@@ -185,13 +185,17 @@ impl PersistCache {
             batch.buffered_miss_recompute = batch.buffered_miss_recompute.saturating_add(1);
             return Ok(false);
         }
-        batch.records.push(PendingArtifactRecord { blob_hash, mapping });
-        if let std::collections::btree_map::Entry::Vacant(slot) = batch.blobs_by_hash.entry(blob_hash)
+        batch
+            .records
+            .push(PendingArtifactRecord { blob_hash, mapping });
+        if let std::collections::btree_map::Entry::Vacant(slot) =
+            batch.blobs_by_hash.entry(blob_hash)
         {
             slot.insert(payload.to_vec());
             batch.bytes = batch.bytes.saturating_add(payload.len());
-            batch.buffered_bytes_total =
-                batch.buffered_bytes_total.saturating_add(payload.len() as u64);
+            batch.buffered_bytes_total = batch
+                .buffered_bytes_total
+                .saturating_add(payload.len() as u64);
         }
         Ok(batch.bytes >= WRITE_BEHIND_FLUSH_BYTES)
     }

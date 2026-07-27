@@ -40,7 +40,9 @@ use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{Function, InstBuilder, condcodes::IntCC, types},
 };
-use ratchet_core::{IrArena, IrData, IrId, IrKind, runtime_thunk_call_signature, syntax::BinOpKind};
+use ratchet_core::{
+    IrArena, IrData, IrId, IrKind, runtime_thunk_call_signature, syntax::BinOpKind,
+};
 use ratchet_value::value::compressed::CompressedValueWord;
 
 use super::arith_tree::{ArithKind, arith_tree_reads_upval, binop_operands, classify};
@@ -322,7 +324,9 @@ fn emit_inline_int_decode(
     let high = cursor.ins().ushr_imm(word, 32);
     let is_inline_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
     let decode = cursor.func.dfg.make_block();
-    cursor.ins().brif(is_inline_int, decode, &[], ctx.deopt, &[]);
+    cursor
+        .ins()
+        .brif(is_inline_int, decode, &[], ctx.deopt, &[]);
     cursor.insert_block(decode);
     let low = cursor.ins().ireduce(types::I32, word);
     cursor.ins().sextend(types::I64, low)
@@ -393,7 +397,10 @@ fn call1(
 }
 
 /// Checks a one-word result arity and returns the single value.
-fn expect_one(results: &[ClifValue], symbol_name: &'static str) -> Result<ClifValue, JitLowerError> {
+fn expect_one(
+    results: &[ClifValue],
+    symbol_name: &'static str,
+) -> Result<ClifValue, JitLowerError> {
     match results {
         [value] => Ok(*value),
         _ => Err(JitLowerError::InvalidRuntimeCallResultArity {

@@ -168,12 +168,7 @@ mod tests {
     fn mixed_plan() -> AllocationCollectorPollRootWritebackPlan {
         AllocationCollectorPollRootWritebackPlan::new(vec![
             writeback(0, stack_source(-16), 0x1000, 0x2000),
-            writeback(
-                1,
-                EvalRootSource::ValueStack { slot: 3 },
-                0x1100,
-                0x2100,
-            ),
+            writeback(1, EvalRootSource::ValueStack { slot: 3 }, 0x1100, 0x2100),
             writeback(2, stack_source(-32), 0x1200, 0x2200),
         ])
     }
@@ -228,8 +223,7 @@ mod tests {
         );
         assert_eq!(slots, unchanged);
 
-        slots[1] =
-            AllocationCollectorPollRootValueWritebackSlot::new(stack_source(-32), second);
+        slots[1] = AllocationCollectorPollRootValueWritebackSlot::new(stack_source(-32), second);
         let report = plan
             .apply_to_stack_map_value_slots(&mut slots)
             .expect("typed stack-map slots rewrite");

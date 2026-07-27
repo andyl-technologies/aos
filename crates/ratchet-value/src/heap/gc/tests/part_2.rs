@@ -67,9 +67,8 @@ fn minor_gc_relocation_destination_plan_materializes_offsets_from_bases() {
         ],
     )
     .expect("allocation plan builds");
-    let placement_plan =
-        MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
-            .expect("placement plan builds");
+    let placement_plan = MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
+        .expect("placement plan builds");
     let bases = MinorGcDestinationBases::new(nursery_base, old_base);
 
     let destination_plan =

@@ -13,7 +13,7 @@ impl TreeWalk {
         let all_outputs_key = self.intern_builtin_attr_symbol(id, b"allOutputs", span)?;
         let outputs_key = self.intern_builtin_attr_symbol(id, b"outputs", span)?;
         let reflected_entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
             let mut entries = Vec::new();
@@ -67,7 +67,7 @@ impl TreeWalk {
                 ));
             }
             let (path_marker, all_outputs_marker, outputs_marker) = {
-                let attrs = self.heap.get_attrs(entry_value).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(entry_value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                 })?;
                 (
@@ -115,7 +115,7 @@ impl TreeWalk {
                     ));
                 }
                 let outputs = {
-                    let list = self.heap.get_list(marker).map_err(|source| {
+                    let list = self.heap.get_list_view(marker).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
                     let mut outputs = Vec::new();
@@ -128,7 +128,7 @@ impl TreeWalk {
                             span,
                         )
                     })?;
-                    outputs.extend_from_slice(list.as_slice());
+                    outputs.extend(list.iter());
                     outputs
                 };
                 if !outputs.is_empty() && !path.ends_with(b".drv") {
@@ -233,7 +233,7 @@ impl TreeWalk {
         if value.tag() != ValueTag::String {
             return Ok(false);
         }
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: argument,
@@ -829,7 +829,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         for entry in attrs.iter_lexicographic() {
             let key = self.symbols.resolve(entry.key).ok_or_else(|| {

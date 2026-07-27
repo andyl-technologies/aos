@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// Immutable lambda metadata retained across a repeated higher-order loop.
+pub(in crate::eval::tree_walk) struct ReusedLambdaCall {
+    lambda: EvalLambda,
+    argument_span: Span,
+    first_call_counted: bool,
+}
+
 impl TreeWalk {
     pub(super) fn alloc_static_string(
         &mut self,
@@ -78,7 +85,13 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let value = self.force_value(id, span, value)?;
+        let value = self.with_nonmoving_native_continuation(
+            super::native_continuation_shadow::NativeContinuationKind::CallableForce,
+            id,
+            &[],
+            Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+            |eval| eval.force_value(id, span, value),
+        )?;
         self.ensure_callable_value(id, span, value)
     }
 
@@ -87,7 +100,7 @@ impl TreeWalk {
         argument: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
         self.with_current_module(argument.module(), |eval| {
-            eval.force_value(argument.id(), argument.span(), argument.value())
+            eval.force_uncovered_primop_leaf(argument.id(), argument.span(), argument.value())
         })
     }
 
@@ -139,7 +152,7 @@ impl TreeWalk {
         let key = self.intern_builtin_attr_symbol(id, b"__functor", span)?;
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         Ok(attrs.get(key))
     }
@@ -261,8 +274,87 @@ impl TreeWalk {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "collection_poll_probe")]
+        {
+            let mut roots = [function, argument];
+            return self.with_writeback_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::ApplyLambdaPortal,
+                id,
+                span,
+                &mut roots,
+                super::native_continuation_shadow::NativeContinuationEdge::ApplyLambda,
+                |eval, slots| {
+                    let function = eval
+                        .current_transient_value_stack_root(slots.start)
+                        .ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                                span,
+                            )
+                        })?;
+                    let argument_slot = slots.start.checked_add(1).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                    let argument = eval
+                        .current_transient_value_stack_root(argument_slot)
+                        .ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                                span,
+                            )
+                        })?;
+                    eval.with_native_continuation_edge(
+                        super::native_continuation_shadow::NativeContinuationEdge::ApplyLambda,
+                        id,
+                        |eval| {
+                            eval.apply_lambda_value_with_native_census(
+                                id,
+                                span,
+                                function_id,
+                                function,
+                                function_span,
+                                argument_id,
+                                argument,
+                            )
+                        },
+                    )
+                },
+            );
+        }
+        #[cfg(not(feature = "collection_poll_probe"))]
+        {
+            self.apply_lambda_value_with_native_census(
+                id,
+                span,
+                function_id,
+                function,
+                function_span,
+                argument_id,
+                argument,
+            )
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_with_native_census(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
         let argument_span = self.node(argument_id)?.span;
-        self.apply_lambda_value_with_argument_span(
+        #[cfg(feature = "collection_poll_probe")]
+        let token = self.begin_speed_opportunity_phase(
+            super::whole_demand_corridor_census::SpeedOpportunityPhase::Apply,
+        );
+        let result = self.apply_lambda_value_with_argument_span(
             id,
             span,
             function_id,
@@ -271,11 +363,79 @@ impl TreeWalk {
             argument_id,
             argument_span,
             argument,
-        )
+        );
+        #[cfg(feature = "collection_poll_probe")]
+        self.finish_speed_opportunity_phase(token, &result);
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
     fn apply_lambda_value_with_argument_span(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        {
+            let mut roots = [function, argument];
+            return self.with_lifetime_cohort_shadow_roots(id, span, &mut roots, |eval, slots| {
+                let function = eval
+                    .current_transient_value_stack_root(slots.start)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                let argument_slot = slots.start.checked_add(1).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    )
+                })?;
+                let argument = eval
+                    .current_transient_value_stack_root(argument_slot)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                eval.apply_lambda_value_with_argument_span_shadowed(
+                    id,
+                    span,
+                    function_id,
+                    function,
+                    function_span,
+                    argument_id,
+                    argument_span,
+                    argument,
+                )
+            });
+        }
+        #[cfg(not(feature = "lifetime_cohort_probe"))]
+        {
+            self.apply_lambda_value_with_argument_span_shadowed(
+                id,
+                span,
+                function_id,
+                function,
+                function_span,
+                argument_id,
+                argument_span,
+                argument,
+            )
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_with_argument_span_shadowed(
         &mut self,
         id: IrId,
         span: Span,
@@ -336,6 +496,39 @@ impl TreeWalk {
                 function_span,
             )
         })?;
+        self.apply_reused_lambda_value_with_argument_span(
+            id,
+            span,
+            function,
+            &lambda,
+            argument_id,
+            argument_span,
+            argument,
+        )
+    }
+
+    /// Applies an already-cloned lambda while retaining ordinary call semantics.
+    ///
+    /// Repeated higher-order builtin loops may reuse immutable closure metadata
+    /// across elements. The caller must increment the function-call counter for
+    /// each application before entering this helper, matching
+    /// [`Self::apply_lambda_value_with_argument_span`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary tier-dispatch, frame, environment, binding, body,
+    /// memo-probe, or call-depth error for this application.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::eval::tree_walk) fn apply_reused_lambda_value_with_argument_span(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: Value,
+        lambda: &EvalLambda,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
         // Tier-2 apply seam: with an engine installed, an undecided lambda
         // def-site is consulted once here; a published compiled body replaces
         // the interpreted call entirely. `None` (no engine, skipped def-site,
@@ -345,6 +538,56 @@ impl TreeWalk {
         {
             return Ok(value);
         }
+        if self.gc_mode.is_enabled() || self.native_continuation_shadow_enabled() {
+            let mut roots = [argument];
+            return self.with_indexed_transient_value_stack_roots(
+                id,
+                span,
+                &mut roots,
+                |eval, slots| {
+                    let argument = eval
+                        .current_transient_value_stack_root(slots.start)
+                        .ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                                span,
+                            )
+                        })?;
+                    eval.apply_reused_lambda_value_with_rooted_argument(
+                        id,
+                        span,
+                        lambda,
+                        argument_id,
+                        argument_span,
+                        argument,
+                        Some(slots.start),
+                    )
+                },
+            );
+        }
+        self.apply_reused_lambda_value_with_rooted_argument(
+            id,
+            span,
+            lambda,
+            argument_id,
+            argument_span,
+            argument,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_reused_lambda_value_with_rooted_argument(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lambda: &EvalLambda,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+        argument_slot: Option<usize>,
+    ) -> Result<Value, TreeWalkError> {
+        let caller_module = self.current_module;
         self.with_current_module(lambda.module(), |eval| {
             let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
             let mut call_env = eval.clone_env_frames(id, lambda.env(), span)?;
@@ -352,6 +595,8 @@ impl TreeWalk {
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
                 })?;
+            #[cfg(feature = "demand_region_shadow_probe")]
+            eval.note_demand_region_frame_allocation(id, slot_count);
             call_env.frames.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Env {
@@ -409,13 +654,38 @@ impl TreeWalk {
                 );
                 eval.end_order_sensitive_binding_assembly(bind_result.is_ok());
                 bind_result?;
-                eval.eval_node(lambda.body())
+                #[cfg(feature = "dedup_string_list_canary")]
+                if let Some(result) = eval.try_dedup_string_list_canary(lambda, argument) {
+                    return result;
+                }
+                eval.note_promise_region_unknown_call(caller_module, id, lambda);
+                eval.enter_promise_region_lambda_entry(lambda);
+                let result = eval.with_nonmoving_native_continuation(
+                    super::native_continuation_shadow::NativeContinuationKind::LambdaBody,
+                    lambda.body(),
+                    &[],
+                    Some(super::native_continuation_shadow::NativeContinuationEdge::EvalNode),
+                    |eval| eval.eval_node(lambda.body()),
+                );
+                eval.leave_promise_region_entry();
+                result
             })();
             // Close the wall window on the body before the (untimed) env
             // restore and decline classification.
             drop(boundary_wall);
             eval.pop_env_scope();
             eval.leave_call();
+            let argument = match argument_slot {
+                Some(slot) => eval
+                    .current_transient_value_stack_root(slot)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?,
+                None => argument,
+            };
             if probe_boundary {
                 eval.record_pkg_boundary_probe(&lambda, argument);
             }
@@ -423,8 +693,227 @@ impl TreeWalk {
         })
     }
 
+    /// Prepares immutable lambda metadata for a loop that will apply it.
+    ///
+    /// Preparation follows the first generic call's observable order: it
+    /// resolves the argument span, increments the function-call counter, and
+    /// then clones the lambda. Non-lambda callables and tiered execution return
+    /// `None` so the caller can retain generic application.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary argument-node or lambda-heap error that the first
+    /// generic application would have returned.
+    pub(in crate::eval::tree_walk) fn prepare_reused_lambda_call(
+        &mut self,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        argument_id: IrId,
+        will_call: bool,
+    ) -> Result<Option<ReusedLambdaCall>, TreeWalkError> {
+        if !will_call || function.tag() != ValueTag::Lambda || self.tier1_engine.is_some() {
+            return Ok(None);
+        }
+        let argument_span = self.node(argument_id)?.span;
+        self.increment_function_calls();
+        let lambda = self.heap.clone_lambda(function).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: function_id,
+                    source,
+                },
+                function_span,
+            )
+        })?;
+        Ok(Some(ReusedLambdaCall {
+            lambda,
+            argument_span,
+            first_call_counted: true,
+        }))
+    }
+
+    /// Applies one element through metadata returned by
+    /// [`Self::prepare_reused_lambda_call`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary interpreted-lambda application error.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::eval::tree_walk) fn apply_prepared_reused_lambda_call(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: Value,
+        call: &mut ReusedLambdaCall,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if call.first_call_counted {
+            call.first_call_counted = false;
+        } else {
+            self.increment_function_calls();
+        }
+        self.apply_reused_lambda_value_with_argument_span(
+            id,
+            span,
+            function,
+            &call.lambda,
+            argument_id,
+            call.argument_span,
+            argument,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_lambda_value_2(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        first_argument_id: IrId,
+        first_argument_span: Span,
+        first_argument: Value,
+        second_argument_id: IrId,
+        second_argument_span: Span,
+        second_argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        {
+            let mut roots = [function, first_argument, second_argument, Value::null()];
+            return self.with_lifetime_cohort_shadow_roots(id, span, &mut roots, |eval, slots| {
+                eval.apply_lambda_value_2_with_lifetime_shadow(
+                    id,
+                    span,
+                    function_id,
+                    function_span,
+                    first_argument_id,
+                    first_argument_span,
+                    second_argument_id,
+                    second_argument_span,
+                    slots,
+                )
+            });
+        }
+        #[cfg(not(feature = "lifetime_cohort_probe"))]
+        {
+            self.apply_lambda_value_2_unshadowed(
+                id,
+                span,
+                function_id,
+                function,
+                function_span,
+                first_argument_id,
+                first_argument_span,
+                first_argument,
+                second_argument_id,
+                second_argument_span,
+                second_argument,
+            )
+        }
+    }
+
+    #[cfg(feature = "lifetime_cohort_probe")]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_2_with_lifetime_shadow(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        first_argument_id: IrId,
+        first_argument_span: Span,
+        second_argument_id: IrId,
+        second_argument_span: Span,
+        slots: std::ops::Range<usize>,
+    ) -> Result<Value, TreeWalkError> {
+        let slot = |offset: usize| {
+            slots.start.checked_add(offset).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })
+        };
+        let function_slot = slot(0)?;
+        let first_slot = slot(1)?;
+        let second_slot = slot(2)?;
+        let partial_slot = slot(3)?;
+        let mut function = self
+            .current_transient_value_stack_root(function_slot)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+        let first_argument = self
+            .current_transient_value_stack_root(first_slot)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+        let second_argument = self
+            .current_transient_value_stack_root(second_slot)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            function = self.force_demanded_value(function_id, function_span, function)?;
+            if !self.set_current_transient_value_stack_root(function_slot, function) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                ));
+            }
+        }
+        let mut partial = self.apply_lambda_value_with_argument_span(
+            id,
+            span,
+            function_id,
+            function,
+            function_span,
+            first_argument_id,
+            first_argument_span,
+            first_argument,
+        )?;
+        if !self.set_current_transient_value_stack_root(partial_slot, partial) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                span,
+            ));
+        }
+        if !matches!(partial.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            partial = self.force_demanded_value(function_id, function_span, partial)?;
+            if !self.set_current_transient_value_stack_root(partial_slot, partial) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                ));
+            }
+        }
+        self.apply_lambda_value_with_argument_span(
+            id,
+            span,
+            function_id,
+            partial,
+            first_argument_span,
+            second_argument_id,
+            second_argument_span,
+            second_argument,
+        )
+    }
+
+    #[cfg(not(feature = "lifetime_cohort_probe"))]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_2_unshadowed(
         &mut self,
         id: IrId,
         span: Span,
@@ -775,7 +1264,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
         let selected = {
-            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs_set = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs.id(),
@@ -819,7 +1308,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
         let has_attr = {
-            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs_set = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs.id(),
@@ -843,7 +1332,7 @@ impl TreeWalk {
         let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
         let names_value = self.force_primop_value(names, "list", ValueTag::List)?;
         let name_values = {
-            let names_list = self.heap.get_list(names_value).map_err(|source| {
+            let names_list = self.heap.get_list_view(names_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: names.id(),
@@ -866,7 +1355,7 @@ impl TreeWalk {
             )
         })?;
         for value in name_values {
-            let value = self.force_value(names.id(), names.span(), value)?;
+            let value = self.force_uncovered_primop_leaf(names.id(), names.span(), value)?;
             if value.tag() != ValueTag::String {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -884,7 +1373,7 @@ impl TreeWalk {
         }
 
         let entries = {
-            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs_set = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs.id(),
@@ -903,9 +1392,9 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            for entry in attrs_set.entries_by_symbol() {
+            for entry in attrs_set.iter_by_symbol() {
                 if !remove.contains(&entry.key) {
-                    entries.push(*entry);
+                    entries.push(entry);
                 }
             }
             entries

@@ -13,9 +13,8 @@ fn literal_native_differential_matches_direct_scalar_values() {
     ];
 
     for (arena, expected) in cases {
-        let differential =
-            nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0))
-                .expect("literal native differential succeeds");
+        let differential = nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0))
+            .expect("literal native differential succeeds");
 
         assert_eq!(differential.root(), IrId::new(0));
         assert!(differential.values_match());
@@ -65,8 +64,7 @@ fn literal_native_differential_matches_direct_thunk_bool_value() {
 fn literal_native_differential_rejects_unsupported_root_before_native_call() {
     let arena = local_var_arena(2);
 
-    let Err(error) = nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0))
-    else {
+    let Err(error) = nix_jit_literal_native_differential_for_ir_root(&arena, IrId::new(0)) else {
         panic!("local variables are not no-import literal differential inputs");
     };
 
@@ -418,7 +416,13 @@ fn force_aware_tier1_conformance_readiness_reports_update_publish_gaps() {
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted

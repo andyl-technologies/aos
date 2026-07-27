@@ -557,7 +557,7 @@ impl TreeWalk {
         let value = self.eval_node(string_id)?;
         let string = self.coerce_to_string(string_id, value, string_span)?;
         let result = {
-            let string = self.heap.get_string(string).map_err(|source| {
+            let string = self.heap.get_string_view(string).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: string_id,
@@ -567,7 +567,8 @@ impl TreeWalk {
                 )
             })?;
             string
-                .substring_preserve_context(start_offset as usize, len)
+                .try_to_owned()
+                .and_then(|string| string.substring_preserve_context(start_offset as usize, len))
                 .map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::String {
@@ -602,7 +603,7 @@ impl TreeWalk {
             ));
         }
         let from_values = {
-            let from = self.heap.get_list(from_value).map_err(|source| {
+            let from = self.heap.get_list_view(from_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: from_id,
@@ -621,7 +622,7 @@ impl TreeWalk {
                     from_span,
                 )
             })?;
-            values.extend_from_slice(from.as_slice());
+            values.extend(from.iter());
             values
         };
 
@@ -638,7 +639,7 @@ impl TreeWalk {
             ));
         }
         let to_values = {
-            let to = self.heap.get_list(to_value).map_err(|source| {
+            let to = self.heap.get_list_view(to_value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id: to_id, source }, to_span)
             })?;
             let mut values = Vec::new();
@@ -651,7 +652,7 @@ impl TreeWalk {
                     to_span,
                 )
             })?;
-            values.extend_from_slice(to.as_slice());
+            values.extend(to.iter());
             values
         };
 
@@ -689,7 +690,7 @@ impl TreeWalk {
                 ));
             }
             let from = {
-                let string = self.heap.get_string(from).map_err(|source| {
+                let string = self.heap.get_string_view(from).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: from_id,
@@ -716,7 +717,7 @@ impl TreeWalk {
             ));
         }
         let (source, context) = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: string_id,
@@ -726,18 +727,15 @@ impl TreeWalk {
                 )
             })?;
             let source = Self::copy_bytes_for_node(string_id, string_span, string.bytes())?;
-            let context = string
-                .context()
-                .union(&StringContext::empty())
-                .map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::String {
-                            id: string_id,
-                            source,
-                        },
-                        string_span,
-                    )
-                })?;
+            let context = string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: string_id,
+                        source,
+                    },
+                    string_span,
+                )
+            })?;
             (source, context)
         };
 

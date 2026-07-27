@@ -312,7 +312,11 @@ mod tests {
             calls: Cell::new(0),
         };
         simplify_with_passes(&mut ir, &[&pass]).expect("simplify succeeds");
-        assert_eq!(pass.calls.get(), 1, "an unchanged pass runs exactly one sweep");
+        assert_eq!(
+            pass.calls.get(),
+            1,
+            "an unchanged pass runs exactly one sweep"
+        );
     }
 
     #[test]

@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn dirty_pure_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
     let mut cache = EvalCache::new();

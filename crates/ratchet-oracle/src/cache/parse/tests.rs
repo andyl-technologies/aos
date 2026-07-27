@@ -12,11 +12,12 @@ use aos_nix_dialect::nix_lower;
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
-mod artifact_bundle; mod chunk_e;
+mod artifact_bundle;
 mod artifact_validation;
-mod simplify_identity;
+mod chunk_e;
 mod part_1;
 mod part_2;
+mod simplify_identity;
 
 fn temp_root() -> PathBuf {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);

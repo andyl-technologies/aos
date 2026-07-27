@@ -544,7 +544,12 @@ impl PersistBlobPack {
         let appender = open_engine_blob_pack_appender(&self.path)?;
         appender
             .append_payloads_batch_trusted(&engine_records)
-            .map(|locations| locations.into_iter().map(engine_location_to_persist).collect())
+            .map(|locations| {
+                locations
+                    .into_iter()
+                    .map(engine_location_to_persist)
+                    .collect()
+            })
             .map_err(engine_append_error_to_persist)
     }
 
@@ -837,7 +842,6 @@ impl PersistBlobPack {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(records)
     }
-
 }
 
 fn verified_payload_window(

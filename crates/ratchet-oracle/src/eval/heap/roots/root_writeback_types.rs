@@ -61,7 +61,7 @@ pub struct AllocationCollectorPollRootWriteback {
 }
 
 impl AllocationCollectorPollRootWriteback {
-    pub(super) fn new(
+    pub(in crate::eval::heap) fn new(
         slot: usize,
         source: EvalRootSource,
         expected: ResolvedValueGeneration,
@@ -150,7 +150,9 @@ pub struct AllocationCollectorPollRootWritebackPlan {
 }
 
 impl AllocationCollectorPollRootWritebackPlan {
-    pub(super) fn new(writebacks: Vec<AllocationCollectorPollRootWriteback>) -> Self {
+    pub(in crate::eval::heap) fn new(
+        writebacks: Vec<AllocationCollectorPollRootWriteback>,
+    ) -> Self {
         Self { writebacks }
     }
 

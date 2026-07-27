@@ -100,18 +100,12 @@ impl DemandSignature {
 const NO_ARGS: DemandSignature = DemandSignature::new(&[]);
 const FORCED_1: DemandSignature = DemandSignature::new(&[ArgDemand::Forced]);
 const FORCED_2: DemandSignature = DemandSignature::new(&[ArgDemand::Forced, ArgDemand::Forced]);
-const FORCED_3: DemandSignature = DemandSignature::new(&[
-    ArgDemand::Forced,
-    ArgDemand::Forced,
-    ArgDemand::Forced,
-]);
+const FORCED_3: DemandSignature =
+    DemandSignature::new(&[ArgDemand::Forced, ArgDemand::Forced, ArgDemand::Forced]);
 const CALLBACK_THEN_FORCED: DemandSignature =
     DemandSignature::new(&[ArgDemand::Lazy, ArgDemand::Forced]);
-const FOLDL_STRICT: DemandSignature = DemandSignature::new(&[
-    ArgDemand::Forced,
-    ArgDemand::Lazy,
-    ArgDemand::Forced,
-]);
+const FOLDL_STRICT: DemandSignature =
+    DemandSignature::new(&[ArgDemand::Forced, ArgDemand::Lazy, ArgDemand::Forced]);
 const TRY_EVAL: DemandSignature = DemandSignature::new(&[ArgDemand::ForcedUnderCatch]);
 const SEQ: DemandSignature = DemandSignature::new(&[
     ArgDemand::Forced,
@@ -119,18 +113,12 @@ const SEQ: DemandSignature = DemandSignature::new(&[
         after_effect: false,
     },
 ]);
-const DEEP_SEQ: DemandSignature = DemandSignature::new(&[
-    ArgDemand::Forced,
-    ArgDemand::Result { after_effect: true },
-]);
-const TRACE_ALWAYS: DemandSignature = DemandSignature::new(&[
-    ArgDemand::Forced,
-    ArgDemand::Result { after_effect: true },
-]);
-const TRACE_VERBOSE: DemandSignature = DemandSignature::new(&[
-    ArgDemand::Lazy,
-    ArgDemand::Result { after_effect: true },
-]);
+const DEEP_SEQ: DemandSignature =
+    DemandSignature::new(&[ArgDemand::Forced, ArgDemand::Result { after_effect: true }]);
+const TRACE_ALWAYS: DemandSignature =
+    DemandSignature::new(&[ArgDemand::Forced, ArgDemand::Result { after_effect: true }]);
+const TRACE_VERBOSE: DemandSignature =
+    DemandSignature::new(&[ArgDemand::Lazy, ArgDemand::Result { after_effect: true }]);
 const ADD_ERROR_CONTEXT: DemandSignature =
     DemandSignature::new(&[ArgDemand::Lazy, ArgDemand::Barred]);
 const LAZY_RESULT: DemandSignature = DemandSignature::new(&[ArgDemand::Result {
@@ -289,17 +277,11 @@ mod tests {
                 } => {
                     // The message is only forced when verbose tracing is on.
                     assert_eq!(signature.arg(0), ArgDemand::Lazy);
-                    assert_eq!(
-                        signature.arg(1),
-                        ArgDemand::Result { after_effect: true }
-                    );
+                    assert_eq!(signature.arg(1), ArgDemand::Result { after_effect: true });
                 }
                 BuiltinExecution::Trace { .. } | BuiltinExecution::Warn => {
                     assert_eq!(signature.arg(0), ArgDemand::Forced);
-                    assert_eq!(
-                        signature.arg(1),
-                        ArgDemand::Result { after_effect: true }
-                    );
+                    assert_eq!(signature.arg(1), ArgDemand::Result { after_effect: true });
                 }
                 BuiltinExecution::Sort => {
                     // The comparator can be skipped by empty inputs.
@@ -321,8 +303,18 @@ mod tests {
     #[test]
     fn demand_signature_keeps_skippable_callbacks_lazy() {
         for name in [
-            "map", "filter", "all", "any", "concatMap", "genList", "groupBy", "partition",
-            "mapAttrs", "zipAttrsWith", "elem", "sort",
+            "map",
+            "filter",
+            "all",
+            "any",
+            "concatMap",
+            "genList",
+            "groupBy",
+            "partition",
+            "mapAttrs",
+            "zipAttrsWith",
+            "elem",
+            "sort",
         ] {
             let builtin = BUILTINS
                 .lookup(name.as_bytes())

@@ -55,6 +55,7 @@ pub use gc_measurement::{
     run_heap_gc_measurement_m14_region_vs_generational_smoke,
     run_heap_gc_measurement_qg_per_invocation_budget_smoke, validate_heap_gc_measurement_manifest,
 };
+pub use heap::{EvalGcMode, EvalHeapSweepReport};
 pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use internal_diff::{
     InternalDiffError, InternalDiffReport, InternalDiffTier, compare_raw_with_oracle,
@@ -161,7 +162,6 @@ pub use thunk_payload::{
     TreeWalkParallelThunkForceWorkOutcome, TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait,
     TreeWalkParallelThunkWorkWait,
 };
-pub use heap::{EvalGcMode, EvalHeapSweepReport};
 pub use thunk_registry::{ParallelForceCycleRegistry, ParallelForceWaitRegistration};
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,
@@ -170,17 +170,11 @@ pub use thunk_wait::{
 };
 pub use tree_walk::{
     AttrShapeMode, CampaignCounters, EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode,
-    EvalOutcome,
-    EvalStats,
-    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, MemoNetMode,
-    MemoNetOptions, MemoOptions, MemoTierEvents,
-    OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2AllAnyHook, Tier2ApplyHook, Tier2FilterHook,
-    Tier2FoldHook,
-    TreeWalk,
-    TreeWalkError,
-    TreeWalkErrorKind,
-    TreeWalkOptions,
-    TreeWalkOptionsError, canonicalize_cacheable_input_trace,
+    EvalOutcome, EvalStats, IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
+    MemoNetMode, MemoNetOptions, MemoOptions, MemoTierEvents, OpaqueTier1Slot, Tier1Engine,
+    Tier1ForceHook, Tier2AllAnyHook, Tier2ApplyHook, Tier2FilterHook, Tier2FoldHook, TreeWalk,
+    TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
+    canonicalize_cacheable_input_trace,
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,

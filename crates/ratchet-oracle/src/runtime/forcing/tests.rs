@@ -129,8 +129,8 @@ fn forcing_abi_signature_pins_runtime_return_boundaries() {
 fn forcing_abi_signature_matches_core_runtime_call_metadata() {
     for entrypoint in runtime_forcing_entrypoints() {
         let local_signature = entrypoint.abi_signature();
-        let core_signature = runtime_helper_call_signature(local_signature.symbol_name())
-            .expect("core force ABI");
+        let core_signature =
+            runtime_helper_call_signature(local_signature.symbol_name()).expect("core force ABI");
         let core_parameters = core_signature
             .parameters()
             .iter()
@@ -313,13 +313,15 @@ fn forcing_native_export_preflight_preserves_frozen_abi_and_callable() {
                 .contains(&RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper)
         );
         assert!(
+            record
+                .blockers()
+                .contains(&RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented)
+        );
+        assert!(
             record.blockers().contains(
-                &RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented
+                &RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented
             )
         );
-        assert!(record.blockers().contains(
-            &RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented
-        ));
         assert!(
             record
                 .blockers()
@@ -333,9 +335,11 @@ fn forcing_native_export_preflight_preserves_frozen_abi_and_callable() {
                 assert!(!record.blockers().contains(
                     &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
                 ));
-                assert!(!record.blockers().contains(
-                    &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
-                ));
+                assert!(
+                    !record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
+                    )
+                );
             }
             RuntimeForcingEntryPoint::AosForce | RuntimeForcingEntryPoint::AosForceDeep => {
                 assert!(record.blockers().contains(
@@ -344,9 +348,11 @@ fn forcing_native_export_preflight_preserves_frozen_abi_and_callable() {
                 assert!(record.blockers().contains(
                     &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
                 ));
-                assert!(!record.blockers().contains(
-                    &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
-                ));
+                assert!(
+                    !record.blockers().contains(
+                        &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
+                    )
+                );
             }
         }
     }
@@ -473,13 +479,9 @@ fn deep_force_rust_callable_forces_nested_container_thunks() {
             .is_none()
     );
 
-    let deeply_forced = rust_callable_aos_force_deep(
-        &mut eval,
-        ir.root,
-        Span::new(0, source.len() as u32),
-        root,
-    )
-    .expect("nested list deep force succeeds");
+    let deeply_forced =
+        rust_callable_aos_force_deep(&mut eval, ir.root, Span::new(0, source.len() as u32), root)
+            .expect("nested list deep force succeeds");
     let inner_list_value = eval
         .heap()
         .get_thunk(outer_element)

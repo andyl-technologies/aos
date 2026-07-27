@@ -20,7 +20,7 @@ impl TreeWalk {
             ));
         }
 
-        let string = self.heap.get_string(string_value).map_err(|source| {
+        let string = self.heap.get_string_view(string_value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: string_id,
@@ -30,18 +30,15 @@ impl TreeWalk {
             )
         })?;
         let bytes = Self::copy_bytes_for_node(string_id, string_span, string.bytes())?;
-        let base_context = string
-            .context()
-            .union(&StringContext::empty())
-            .map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::String {
-                        id: string_id,
-                        source,
-                    },
-                    string_span,
-                )
-            })?;
+        let base_context = string.context().try_to_owned().map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::String {
+                    id: string_id,
+                    source,
+                },
+                string_span,
+            )
+        })?;
         Ok((bytes, base_context))
     }
 

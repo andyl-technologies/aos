@@ -39,7 +39,10 @@ fn strictness_rejects_fact_table_length_mismatches() {
             actual: 2,
         }
     );
-    assert_eq!(strictness(&overlong, IrId::new(1)), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&overlong, IrId::new(1)),
+        Strictness::DemandedBeforeEffect
+    );
 
     let mut short = Ir {
         root: IrId::new(0),
@@ -157,19 +160,28 @@ fn strictness_skips_higher_order_callbacks_that_empty_inputs_can_avoid() {
     let map_ir = annotate("builtins.map (builtins.throw \"function\") []");
     let map_args = primop_args(&map_ir, map_ir.root);
     assert_eq!(strictness(&map_ir, map_args[0]), Strictness::Unknown);
-    assert_eq!(strictness(&map_ir, map_args[1]), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&map_ir, map_args[1]),
+        Strictness::DemandedBeforeEffect
+    );
 
     let sort_ir = annotate("builtins.sort (builtins.throw \"comparator\") []");
     let sort_args = primop_args(&sort_ir, sort_ir.root);
     assert_eq!(strictness(&sort_ir, sort_args[0]), Strictness::Unknown);
-    assert_eq!(strictness(&sort_ir, sort_args[1]), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&sort_ir, sort_args[1]),
+        Strictness::DemandedBeforeEffect
+    );
 }
 
 #[test]
 fn strictness_keeps_option_dependent_trace_verbose_message_unknown() {
     let trace_ir = annotate("builtins.trace (builtins.throw \"message\") 1");
     let trace_args = primop_args(&trace_ir, trace_ir.root);
-    assert_eq!(strictness(&trace_ir, trace_args[0]), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&trace_ir, trace_args[0]),
+        Strictness::DemandedBeforeEffect
+    );
     // The value position is trace's own result: at this root call the
     // consumer forces it right after trace returns, so the position
     // inherits the call's forced position. The trace output stays ordered
@@ -252,7 +264,10 @@ fn strictness_marks_only_leading_dynamic_select_segments() {
     let IrAttrPathSegment::Dynamic(leading_key) = leading_segments[0] else {
         panic!("leading dynamic select segment expected");
     };
-    assert_eq!(strictness(&leading_ir, leading_key), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&leading_ir, leading_key),
+        Strictness::DemandedBeforeEffect
+    );
 
     let nested_ir = annotate(r#"({ a = {}; }).missing.${builtins.throw "key"}"#);
     let IrData::Select {
@@ -286,7 +301,10 @@ fn strictness_marks_only_leading_dynamic_has_attr_segments() {
     let IrAttrPathSegment::Dynamic(leading_key) = leading_segments[0] else {
         panic!("leading dynamic hasAttr segment expected");
     };
-    assert_eq!(strictness(&leading_ir, leading_key), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&leading_ir, leading_key),
+        Strictness::DemandedBeforeEffect
+    );
 
     let nested_ir = annotate(r#"({} ? missing.${builtins.throw "key"})"#);
     let IrData::HasAttr {
@@ -615,6 +633,102 @@ fn strictness_marks_argument_through_select_resolved_lambda_chase() {
 }
 
 #[test]
+fn known_call_targets_follow_lexical_aliases_and_static_selection() {
+    for source in [
+        "let f = x: x; in f 1",
+        "let functions = { f = x: x; }; in functions.f 1",
+    ] {
+        let ir = lowered(source);
+        let targets = analyze_known_call_targets(&ir).expect("known-call analysis succeeds");
+
+        assert_eq!(targets.len(), 1, "{source}");
+        assert_eq!(node(&ir, targets[0].apply).kind, IrKind::Apply);
+        assert_eq!(node(&ir, targets[0].lambda).kind, IrKind::Lambda);
+        let IrData::Pair { first, .. } = node(&ir, targets[0].apply).data else {
+            panic!("apply payload expected");
+        };
+        assert_ne!(
+            node(&ir, first).kind,
+            IrKind::Lambda,
+            "the sparse fact should prove a non-literal callee"
+        );
+    }
+}
+
+#[test]
+fn known_call_targets_omit_control_flow_callees() {
+    let ir = lowered("(if true then (x: x) else (x: x)) 1");
+
+    let targets = analyze_known_call_targets(&ir).expect("known-call analysis succeeds");
+
+    assert!(targets.is_empty());
+}
+
+#[test]
+fn closure_flow_propagates_formal_arguments_into_calls() {
+    let ir = lowered("(f: f 1) (x: x)");
+    let lambdas = ir
+        .arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| (node.kind == IrKind::Lambda).then(|| IrId::new(index as u32)))
+        .collect::<Vec<_>>();
+
+    let report = analyze_call_target_candidates(&ir).expect("closure-flow analysis succeeds");
+
+    assert_eq!(lambdas.len(), 2);
+    assert_eq!(report.calls.len(), 2);
+    assert!(
+        report
+            .calls
+            .iter()
+            .any(|call| { call.lambdas.as_ref() == [lambdas[0]] && !call.overflow })
+    );
+    assert!(
+        report
+            .calls
+            .iter()
+            .any(|call| { call.lambdas.as_ref() == [lambdas[1]] && !call.overflow })
+    );
+    assert!(report.activated_call_edges >= 4);
+}
+
+#[test]
+fn closure_flow_propagates_apply_results_into_outer_calls() {
+    let ir = lowered("let id = f: f; in (id (x: x)) 1");
+    let argument_lambda = ir
+        .arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| (node.kind == IrKind::Lambda).then(|| IrId::new(index as u32)))
+        .last()
+        .expect("argument lambda exists");
+
+    let report = analyze_call_target_candidates(&ir).expect("closure-flow analysis succeeds");
+
+    assert_eq!(report.calls.len(), 2);
+    assert!(
+        report
+            .calls
+            .iter()
+            .any(|call| { call.lambdas.as_ref() == [argument_lambda] && !call.overflow })
+    );
+}
+
+#[test]
+fn closure_flow_retains_finite_conditional_target_sets() {
+    let ir = lowered("(if true then (x: x) else (y: y)) 1");
+
+    let report = analyze_call_target_candidates(&ir).expect("closure-flow analysis succeeds");
+
+    assert_eq!(report.calls.len(), 1);
+    assert_eq!(report.calls[0].lambdas.len(), 2);
+    assert!(!report.calls[0].overflow);
+}
+
+#[test]
 fn strictness_keeps_argument_lazy_through_ignoring_let_bound_lambda() {
     let ir = annotate("let f = x: 7; in f (1 / 0)");
     let IrData::Let { body, .. } = node(&ir, ir.root).data else {
@@ -831,7 +945,6 @@ fn attrset_binding_values(ir: &Ir, id: IrId) -> Vec<(IrId, Vec<u8>)> {
         })
         .collect()
 }
-
 
 fn dialect_node_argument(ir: &Ir, id: IrId) -> IrId {
     let IrData::DialectNode { argument, .. } = node(ir, id).data else {

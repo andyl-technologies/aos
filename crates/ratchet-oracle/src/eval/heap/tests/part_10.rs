@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -187,7 +186,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_lambda_capture_field
     assert!(lambda.scoped_global_env().scopes()[0].raw_eq(global_destination));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -266,7 +264,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_li
     let list = heap.get_list(parent).expect("parent list remains typed");
     assert!(list.get(0).expect("original element exists").raw_eq(child));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -407,7 +404,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_attrs_fields
     assert_eq!(heap_generation(&heap, parent), HeapGeneration::Permanent);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -492,9 +488,13 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_at
         }
     );
     let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
-    assert!(attrs.get(key).expect("original binding exists").raw_eq(child));
+    assert!(
+        attrs
+            .get(key)
+            .expect("original binding exists")
+            .raw_eq(child)
+    );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -580,7 +580,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
     assert!(primop.args()[0].value().raw_eq(child_destination));
     assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -742,7 +741,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_lambda_capture_f
     assert!(lambda.scoped_global_env().scopes()[0].raw_eq(global_destination));
     assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

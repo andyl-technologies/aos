@@ -22,9 +22,11 @@
 //!       "context": { ... },
 //!       "parity": { "mode": "byte", "candidate": "aos-nix", "matched": true, ... },
 //!       "samples":        [ { "elapsed_seconds": .., "drv_path": "..", "stats": {..},
-//!                             "child_peak_rss_bytes": .. } ],
+//!                             "child_peak_rss_bytes": ..,
+//!                             "exact_child_peak_rss": { "status": .. } } ],
 //!       "summary":        { "mean_seconds": .., "stats_mean": {..},
-//!                           "child_peak_rss_bytes_max": .. },
+//!                           "child_peak_rss_bytes_max": ..,
+//!                           "exact_child_peak_rss": { "status": .. } },
 //!       "native_samples": [ { "elapsed_seconds": .., "drv_path": "..",
 //!                             "memory": { "rss_before_bytes": .., "rss_after_bytes": ..,
 //!                                         "peak_rss_delta_bytes": .., "arena": {..} } } ],
@@ -48,6 +50,11 @@
 //! `summary` aggregates. All are `Option`s serialized only when captured, so
 //! version-2 records and no-probe builds deserialize unchanged and are treated
 //! as lacking a memory baseline.
+//!
+//! Version `5` separates an authoritative paired per-child C++ peak from the
+//! historical `RUSAGE_CHILDREN` watermark. The exact field is a state enum, so
+//! consumers cannot mistake an absent value for zero or silently substitute
+//! the cumulative watermark when the safe per-child wait API is unavailable.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -66,9 +73,10 @@ use aos_nix_harness::diff::DrvDiffReport;
 /// Version `2` added the native evaluator timings (`native_samples` and
 /// `native_summary`); version `3` added the optional memory instrumentation
 /// fields; version `4` added the per-record `temperature_semantics` marker and
-/// the native `median_seconds` field. Records from older versions omit the
-/// newer fields and deserialize with serde defaults.
-pub(crate) const BENCH_HISTORY_VERSION: u32 = 4;
+/// the native `median_seconds` field; version `5` added the exact paired
+/// oracle-child peak-RSS state. Records from older versions omit the newer
+/// fields and deserialize with serde defaults.
+pub(crate) const BENCH_HISTORY_VERSION: u32 = 5;
 
 /// `temperature_semantics` value for a schema-v4 true-cold sample.
 ///
@@ -156,6 +164,30 @@ pub(crate) struct BenchmarkSample {
     /// carries no memory probes. (Schema v3.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) child_peak_rss_bytes: Option<u64>,
+    /// Authoritative peak RSS for this exact oracle child. (Schema v5.)
+    ///
+    /// This is an explicit state rather than an `Option`: current safe Rust
+    /// process APIs cannot retrieve the `wait4` rusage after
+    /// [`std::process::Child`] reaps the child, so current samples say why the
+    /// value is unavailable. The legacy watermark above is never substituted.
+    #[serde(default)]
+    pub(crate) exact_child_peak_rss: ExactOracleChildPeakRss,
+}
+
+/// Availability and value of an exact, paired C++ oracle-child peak RSS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ExactOracleChildPeakRss {
+    /// The record predates exact child-peak accounting.
+    #[default]
+    NotRecorded,
+    /// No safe per-child wait/rusage API exists in the dependency graph.
+    UnavailableSafePerChildWaitApi,
+    /// The operating system attributed an exact peak to this child.
+    Measured {
+        /// Exact peak resident set size in bytes.
+        bytes: u64,
+    },
 }
 
 /// A single native evaluator instantiation timing.
@@ -234,6 +266,9 @@ pub(crate) struct BenchmarkSummary {
     /// Maximum attributed oracle-child peak RSS over the samples. (Schema v3.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) child_peak_rss_bytes_max: Option<u64>,
+    /// Maximum exact paired oracle-child peak, or its availability state.
+    #[serde(default)]
+    pub(crate) exact_child_peak_rss: ExactOracleChildPeakRss,
 }
 
 /// Aggregate wall-clock statistics over a benchmark's native evaluator samples.
@@ -458,7 +493,34 @@ pub(crate) fn summarize_samples(samples: &[BenchmarkSample]) -> BenchmarkSummary
             .iter()
             .filter_map(|sample| sample.child_peak_rss_bytes)
             .max(),
+        exact_child_peak_rss: summarize_exact_oracle_child_peak(samples),
     }
+}
+
+/// Summarizes exact paired child peaks without falling back to watermark data.
+fn summarize_exact_oracle_child_peak(samples: &[BenchmarkSample]) -> ExactOracleChildPeakRss {
+    if samples.iter().any(|sample| {
+        sample.exact_child_peak_rss == ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi
+    }) {
+        return ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi;
+    }
+    if samples
+        .iter()
+        .any(|sample| sample.exact_child_peak_rss == ExactOracleChildPeakRss::NotRecorded)
+    {
+        return ExactOracleChildPeakRss::NotRecorded;
+    }
+    samples
+        .iter()
+        .filter_map(|sample| match sample.exact_child_peak_rss {
+            ExactOracleChildPeakRss::Measured { bytes } => Some(bytes),
+            ExactOracleChildPeakRss::NotRecorded
+            | ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi => None,
+        })
+        .max()
+        .map_or(ExactOracleChildPeakRss::NotRecorded, |bytes| {
+            ExactOracleChildPeakRss::Measured { bytes }
+        })
 }
 
 /// Summarizes the native evaluator samples of one benchmark.

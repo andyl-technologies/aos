@@ -79,17 +79,16 @@ use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueTag};
 
 use super::arena::{any_value_heap_ptr, attrs_structural_hash, list_structural_hash};
-use crate::heap::flat::FlatObjectKind;
-use crate::heap::flat::shared::SharedFlatObject;
 use super::record_table::AddressHasher;
 use super::{
-    FlatClosurePayload,
     EvalHeap, EvalHeapAttrsMetadata, EvalHeapError, EvalLambda, EvalPrimOp, EvalThunk,
-    FlatAttrsPayload, HeapAllocationDomain, HeapObjectValue, HeapValueHashCacheUpdate,
-    SharedHeapArena, SharedHeapShard, initial_generation_for_allocation_domain,
+    FlatAttrsPayload, FlatClosurePayload, HeapAllocationDomain, HeapObjectValue,
+    HeapValueHashCacheUpdate, SharedHeapArena, SharedHeapShard,
+    initial_generation_for_allocation_domain,
 };
 use crate::heap::HeapGeneration;
-
+use crate::heap::flat::FlatObjectKind;
+use crate::heap::flat::shared::SharedFlatObject;
 
 /// A worker-private cutoff-hash side map (record address -> cached hash).
 type ColdHashIndex = HashMap<usize, ValueHash, BuildHasherDefault<AddressHasher>>;
@@ -170,12 +169,11 @@ impl SharedHeapBackend {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<&HeapObjectValue, EvalHeapError> {
-        self.resolve_ptr(ptr).ok_or_else(|| {
-            match self.flat_tag_at(ptr) {
+        self.resolve_ptr(ptr)
+            .ok_or_else(|| match self.flat_tag_at(ptr) {
                 Some(actual) => EvalHeapError::record_type_mismatch(tag, actual, ptr),
                 None => EvalHeapError::unknown(tag, ptr),
-            }
-        })
+            })
     }
 
     /// Resolves `ptr` as a flat string/path of `kind`, own shard first.
@@ -709,7 +707,10 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if cons-table storage cannot be reserved or
     /// the shard rejects the allocation.
-    pub(super) fn shared_alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
+    pub(super) fn shared_alloc_string(
+        &mut self,
+        string: NixString,
+    ) -> Result<Value, EvalHeapError> {
         let hash = string.structural_hash_xxh3();
         let existing = {
             let shared = self.shared_backend()?;
@@ -942,11 +943,11 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
-    pub(super) fn shared_alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
-        self.shared_alloc_flat_closure(
-            FlatObjectKind::Lambda,
-            FlatClosurePayload::Lambda(lambda),
-        )
+    pub(super) fn shared_alloc_lambda(
+        &mut self,
+        lambda: EvalLambda,
+    ) -> Result<Value, EvalHeapError> {
+        self.shared_alloc_flat_closure(FlatObjectKind::Lambda, FlatClosurePayload::Lambda(lambda))
     }
 
     /// Shared-mode [`EvalHeap::alloc_primop`].
@@ -954,11 +955,11 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
-    pub(super) fn shared_alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
-        self.shared_alloc_flat_closure(
-            FlatObjectKind::Primop,
-            FlatClosurePayload::Primop(primop),
-        )
+    pub(super) fn shared_alloc_primop(
+        &mut self,
+        primop: EvalPrimOp,
+    ) -> Result<Value, EvalHeapError> {
+        self.shared_alloc_flat_closure(FlatObjectKind::Primop, FlatClosurePayload::Primop(primop))
     }
 
     /// Shared-mode [`EvalHeap::alloc_thunk`].
@@ -966,12 +967,12 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
-    pub(super) fn shared_alloc_thunk(&mut self, mut thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+    pub(super) fn shared_alloc_thunk(
+        &mut self,
+        mut thunk: EvalThunk,
+    ) -> Result<Value, EvalHeapError> {
         thunk.share_cell(); // each worker's deep clone must share the serial cell
-        self.shared_alloc_flat_closure(
-            FlatObjectKind::Thunk,
-            FlatClosurePayload::Thunk(thunk),
-        )
+        self.shared_alloc_flat_closure(FlatObjectKind::Thunk, FlatClosurePayload::Thunk(thunk))
     }
 
     /// Publishes a worker-domain flat closure into the shard (doc 30 FV-3).

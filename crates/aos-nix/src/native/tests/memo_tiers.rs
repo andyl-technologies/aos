@@ -279,13 +279,14 @@ fn network_round_trip_publishes_fetches_and_installs() -> Result<()> {
 
     // A writable cold run publishes its record to the endpoint.
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
-    assert_eq!(server.record_count(), 1, "the cold run publishes one record");
+    assert_eq!(
+        server.record_count(),
+        1,
+        "the cold run publishes one record"
+    );
 
     // A read-only run with a fresh primary fetches, validates, and installs.
     let location_b = fx.root.join("persist-b");
@@ -315,10 +316,7 @@ fn poisoned_network_record_is_rejected() -> Result<()> {
     let server = MemoTestServer::spawn()?;
 
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
 
@@ -371,10 +369,7 @@ fn network_record_revalidates_impure_inputs() -> Result<()> {
     let server = MemoTestServer::spawn()?;
 
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
 
@@ -414,10 +409,7 @@ pkg2 = derivationStrict {
     // internally valid (hashes pass, slices revalidate) but answers the wrong
     // computation — the exact wrong-key poisoning CHECK exists to catch.
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
     publisher.instantiate_closure_with_stats(&fx.file, "pkg2")?;
@@ -462,7 +454,11 @@ fn reachable_endpoint_missing_record_is_a_clean_miss() -> Result<()> {
     options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadOnly)));
     let native = NixNative::with_options(0, options)?;
     let (_, stats) = native.instantiate_closure_with_stats(&fx.file, "pkg")?;
-    assert_eq!(stats.root_cutoffs(), 0, "a missing record evaluates normally");
+    assert_eq!(
+        stats.root_cutoffs(),
+        0,
+        "a missing record evaluates normally"
+    );
     assert_eq!(stats.memo_net_misses(), 1, "404 is a miss");
     assert_eq!(stats.memo_net_errors(), 0, "404 is not an error");
     Ok(())
@@ -476,10 +472,7 @@ fn server_error_status_is_an_advisory_miss() -> Result<()> {
     let server = MemoTestServer::spawn()?;
 
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
 
@@ -505,10 +498,7 @@ fn truncated_network_bundle_is_rejected() -> Result<()> {
     let server = MemoTestServer::spawn()?;
 
     let mut publisher_options = tier_options(&fx, &fx.root.join("persist-a"))?;
-    publisher_options.set_memo_net(Some(net_options(
-        server.endpoint(),
-        MemoNetMode::ReadWrite,
-    )));
+    publisher_options.set_memo_net(Some(net_options(server.endpoint(), MemoNetMode::ReadWrite)));
     let publisher = NixNative::with_options(0, publisher_options)?;
     let (cold_closure, _) = publisher.instantiate_closure_with_stats(&fx.file, "pkg")?;
 

@@ -307,7 +307,9 @@ impl TreeWalk {
             capture_slots[..capture_len].copy_from_slice(slots);
             let allocation_site = EvalNodeRef::new(self.current_module, id);
             let frame_count = self.active_env_frame_count();
-            if !EvalFlatCapture::supports_frame_count(frame_count) {
+            if !EvalFlatCapture::supports_frame_count(frame_count)
+                || !EvalFlatCapture::supports_allocation_site(allocation_site)
+            {
                 let env = self.capture_active_env_snapshot(id, span)?;
                 return Ok((env, None));
             }
@@ -478,7 +480,7 @@ impl TreeWalk {
         index: usize,
     ) -> Option<Value> {
         self.heap
-            .flat_closure_capture_value_at(capture.inline_owner(), capture.tail_handle(), index)
+            .flat_closure_capture_value_at(capture.tail_handle(), index)
             .ok()
             .flatten()
     }
@@ -488,10 +490,9 @@ impl TreeWalk {
         &'a self,
         capture: &'a EvalFlatCapture,
     ) -> Option<&'a [Value]> {
-        let owner = capture.inline_owner();
         let values = self
             .heap
-            .flat_closure_capture_values_at(owner, capture.tail_handle())
+            .flat_closure_capture_values_at(capture.tail_handle())
             .ok()
             .flatten()?;
         Some(values)

@@ -102,6 +102,12 @@ pub struct EvalHeapSweepReport {
     pub retired_total: u64,
     /// Record-table slots currently parked on the free list.
     pub free_slots: usize,
+    /// Zero-liveness reservation pages considered after retirement.
+    pub candidate_pages: usize,
+    /// Zero-liveness reservation pages the operating system accepted.
+    pub advised_pages: usize,
+    /// Whether reservation page advice failed after semantic retirement.
+    pub advice_failed: bool,
 }
 
 impl EvalHeapSweepReport {
@@ -396,17 +402,92 @@ impl EvalHeap {
             }
         }
 
+        self.retire_unvisited_worker_records(|address| visited.contains(&address), report)
+    }
+
+    /// Retires worker objects absent from an authoritative precise heap scan.
+    ///
+    /// Unlike [`Self::sweep_unreachable_worker_records`], this entry point
+    /// does not conservatively seed every permanent object. It is therefore
+    /// valid only after a publication transaction has removed all unscanned
+    /// permanent objects and rebuilt weak indexes from the scanned graph. The
+    /// precise scan may include packed immutable objects; only worker-domain
+    /// native addresses are extracted for retirement.
+    ///
+    /// Every reachable worker address is collected and every unreachable
+    /// blackhole and selected flat allocation is validated before mutation.
+    /// The commit then performs no allocation or fallible lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] for a shared heap, a malformed worker value,
+    /// an unreachable blackhole, or allocation/flat-store validation failure.
+    /// Every error is detected before retirement begins.
+    pub(in crate::eval) fn sweep_unreachable_worker_records_from_precise_scan(
+        &mut self,
+        scan: &PreciseHeapScan,
+    ) -> Result<EvalHeapSweepReport, EvalHeapError> {
+        if self.shared.is_some() {
+            return Err(EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "scan-driven sweep requires the serial heap",
+            });
+        }
+        let worker_objects = scan
+            .objects()
+            .iter()
+            .filter(|object| is_worker_domain_tag(object.tag()))
+            .count();
+        let mut visited = Vec::new();
+        visited.try_reserve_exact(worker_objects).map_err(|_| {
+            EvalHeapError::RecordAllocationFailed {
+                records: worker_objects,
+            }
+        })?;
+        for object in scan
+            .objects()
+            .iter()
+            .filter(|object| is_worker_domain_tag(object.tag()))
+        {
+            let ptr = object.value().as_heap_ptr().map_err(EvalHeapError::Value)?;
+            visited.push(ptr.as_ptr() as usize);
+        }
+        visited.sort_unstable();
+        visited.dedup();
+        let report = EvalHeapSweepReport {
+            roots: scan.roots().len(),
+            marked: visited.len(),
+            ..EvalHeapSweepReport::default()
+        };
+        self.retire_unvisited_worker_records(
+            |address| visited.binary_search(&address).is_ok(),
+            report,
+        )
+    }
+
+    /// Validates and retires every worker object absent from `visited`.
+    fn retire_unvisited_worker_records<F>(
+        &mut self,
+        is_visited: F,
+        mut report: EvalHeapSweepReport,
+    ) -> Result<EvalHeapSweepReport, EvalHeapError>
+    where
+        F: Fn(usize) -> bool,
+    {
         // Validate-then-retire: collect unreachable worker positions first so
         // a quiescence violation (an in-flight blackholed thunk) aborts the
         // cycle before anything is reclaimed.
-        let mut unreachable: Vec<(usize, ValueTag)> = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut record_swept_thunks = 0usize;
+        let mut record_swept_lambdas = 0usize;
+        let mut record_swept_primops = 0usize;
         let mut live_worker_records = 0usize;
         for (position, record) in self.records.iter().enumerate() {
             if record.is_retired() || record.allocation_domain != HeapAllocationDomain::Worker {
                 continue;
             }
             let address = record.ptr.as_ptr() as usize;
-            if visited.contains(&address) {
+            if is_visited(address) {
                 live_worker_records += 1;
                 continue;
             }
@@ -418,23 +499,32 @@ impl EvalHeap {
                     reason: "sweep found an unreachable blackholed thunk; caller not quiescent",
                 });
             }
+            match record.object.tag() {
+                ValueTag::Thunk => record_swept_thunks = record_swept_thunks.saturating_add(1),
+                ValueTag::Lambda => record_swept_lambdas = record_swept_lambdas.saturating_add(1),
+                ValueTag::Primop => record_swept_primops = record_swept_primops.saturating_add(1),
+                _ => {}
+            }
             unreachable
                 .try_reserve(1)
                 .map_err(|_| EvalHeapError::RecordAllocationFailed { records: 1 })?;
-            unreachable.push((position, record.object.tag()));
+            unreachable.push(position);
         }
 
         // The same validate-then-retire pass over the flat closure store
         // (doc 30 FV-3): unreachable live closures are collected first so a
         // quiescence violation aborts before anything is reclaimed.
-        let mut flat_unreachable: Vec<(NonNull<HeapObject>, ValueTag)> = Vec::new();
+        let mut flat_unreachable = Vec::new();
+        let mut flat_swept_thunks = 0usize;
+        let mut flat_swept_lambdas = 0usize;
+        let mut flat_swept_primops = 0usize;
         for entry in self.flat_closures.iter() {
             let payload = entry.object().payload();
             if payload.is_retired() {
                 continue;
             }
             let address = entry.ptr().as_ptr() as usize;
-            if visited.contains(&address) {
+            if is_visited(address) {
                 live_worker_records += 1;
                 continue;
             }
@@ -447,34 +537,45 @@ impl EvalHeap {
                     reason: "sweep found an unreachable blackholed thunk; caller not quiescent",
                 });
             }
+            match payload.tag() {
+                ValueTag::Thunk => flat_swept_thunks = flat_swept_thunks.saturating_add(1),
+                ValueTag::Lambda => flat_swept_lambdas = flat_swept_lambdas.saturating_add(1),
+                ValueTag::Primop => flat_swept_primops = flat_swept_primops.saturating_add(1),
+                _ => {}
+            }
             flat_unreachable
                 .try_reserve(1)
                 .map_err(|_| EvalHeapError::RecordAllocationFailed { records: 1 })?;
-            flat_unreachable.push((entry.ptr(), payload.tag()));
+            flat_unreachable.push(entry.ptr());
         }
 
-        for (position, tag) in unreachable {
-            if self.records.retire_at_position(position).is_none() {
-                continue;
-            }
-            match tag {
-                ValueTag::Thunk => report.swept_thunks += 1,
-                ValueTag::Lambda => report.swept_lambdas += 1,
-                ValueTag::Primop => report.swept_primops += 1,
-                _ => {}
-            }
+        // This exclusive token validates every exact flat registry coordinate
+        // before either store is mutated. Its commit has no allocation or
+        // fallible lookup, so a validation error cannot leave a partial sweep.
+        let flat_retirement = self
+            .flat_closures
+            .prepare_retire_live_subset(flat_unreachable.iter().copied())
+            .map_err(|_| EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "scan-driven flat retirement selection failed validation",
+            })?;
+
+        for position in unreachable {
+            let retired = self.records.retire_at_position(position);
+            debug_assert!(retired.is_some());
         }
-        for (ptr, tag) in flat_unreachable {
-            if self.flat_retire_closure(ptr)?.is_none() {
-                continue;
-            }
-            match tag {
-                ValueTag::Thunk => report.swept_thunks += 1,
-                ValueTag::Lambda => report.swept_lambdas += 1,
-                ValueTag::Primop => report.swept_primops += 1,
-                _ => {}
-            }
+        report.swept_thunks = report.swept_thunks.saturating_add(record_swept_thunks);
+        report.swept_lambdas = report.swept_lambdas.saturating_add(record_swept_lambdas);
+        report.swept_primops = report.swept_primops.saturating_add(record_swept_primops);
+        let flat_retired = flat_retirement.commit();
+        debug_assert_eq!(flat_retired, flat_unreachable.len());
+        for ptr in flat_unreachable {
+            self.flat_cold_hashes.clear(ptr.as_ptr() as usize);
+            self.flat_closures_retired = self.flat_closures_retired.saturating_add(1);
         }
+        report.swept_thunks = report.swept_thunks.saturating_add(flat_swept_thunks);
+        report.swept_lambdas = report.swept_lambdas.saturating_add(flat_swept_lambdas);
+        report.swept_primops = report.swept_primops.saturating_add(flat_swept_primops);
 
         report.live_worker_records = live_worker_records;
         report.retired_total = self
@@ -482,6 +583,14 @@ impl EvalHeap {
             .retired_total()
             .saturating_add(self.flat_closures_retired);
         report.free_slots = self.records.free_slot_count();
+        match self.flat_arena.advise_zero_liveness_pages() {
+            Some(Ok(advice)) => {
+                report.candidate_pages = advice.candidate_pages();
+                report.advised_pages = advice.applied_pages();
+            }
+            Some(Err(_)) => report.advice_failed = true,
+            None => {}
+        }
         self.alloc_counters.note_sweep(report.swept() as u64);
         Ok(report)
     }
@@ -497,9 +606,10 @@ impl EvalHeap {
 fn thunk_has_reclaimable_captures(thunk: &EvalThunk) -> bool {
     match thunk.kind() {
         EvalThunkKind::Node { env, .. } => !env.is_empty() || thunk.dynamic_env().is_some(),
-        EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2(_) | EvalThunkKind::Select { .. } => {
-            true
-        }
+        EvalThunkKind::Apply { .. }
+        | EvalThunkKind::GenListElemAtAddOne { .. }
+        | EvalThunkKind::Apply2(_)
+        | EvalThunkKind::Select { .. } => true,
         EvalThunkKind::BuiltinAttr { .. } | EvalThunkKind::Released => false,
     }
 }

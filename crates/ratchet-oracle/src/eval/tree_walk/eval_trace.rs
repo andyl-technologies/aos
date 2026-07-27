@@ -33,7 +33,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let tag = value.tag();
         let entered = if Self::trace_recursive_value_tag(tag) {
-            if Self::deep_force_visited_contains(visited, value) {
+            if self.deep_force_visited_contains(visited, value) {
                 return Self::extend_bytes_for_node(id, span, out, "«repeated»".as_bytes());
             }
             let len = visited.len() + 1;
@@ -235,7 +235,7 @@ impl TreeWalk {
         out: &mut Vec<u8>,
         top_level: bool,
     ) -> Result<(), TreeWalkError> {
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: value_id,
@@ -260,7 +260,7 @@ impl TreeWalk {
         value: Value,
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
-        let path = self.heap.get_path(value).map_err(|source| {
+        let path = self.heap.get_path_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: value_id,
@@ -283,7 +283,7 @@ impl TreeWalk {
         visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -302,7 +302,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            elements.extend_from_slice(list.as_slice());
+            elements.extend(list.iter());
             elements
         };
 
@@ -331,7 +331,7 @@ impl TreeWalk {
         visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -623,7 +623,7 @@ impl TreeWalk {
         visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let tag = value.tag();
-        if Self::deep_force_visited_contains(visited, value) {
+        if self.deep_force_visited_contains(visited, value) {
             return Ok(());
         }
         let len = visited.len() + 1;
@@ -635,7 +635,7 @@ impl TreeWalk {
         match tag {
             ValueTag::List => {
                 let mut elements = {
-                    let list = self.heap.get_list(value).map_err(|source| {
+                    let list = self.heap.get_list_view(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
                     Self::clone_list_elements(id, span, list)?
@@ -644,7 +644,7 @@ impl TreeWalk {
             }
             ValueTag::Attrs => {
                 let mut values = {
-                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                    let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
                     let mut values = Vec::new();
@@ -729,8 +729,12 @@ impl TreeWalk {
         result
     }
 
-    fn deep_force_visited_contains(visited: &[Value], value: Value) -> bool {
-        visited.iter().any(|entry| entry.raw_eq(value))
+    fn deep_force_visited_contains(&self, visited: &[Value], value: Value) -> bool {
+        self.heap.observe_value_identity(value);
+        visited.iter().any(|entry| {
+            self.heap.observe_value_identity(*entry);
+            entry.raw_eq(value)
+        })
     }
 
     pub(super) fn eval_has_context_primop(
@@ -749,7 +753,7 @@ impl TreeWalk {
                 argument_span,
             ));
         }
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: argument,
@@ -780,7 +784,7 @@ impl TreeWalk {
             ));
         }
         let groups = {
-            let string = self.heap.get_string(value).map_err(|source| {
+            let string = self.heap.get_string_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -789,21 +793,20 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
+            let context = string.context();
             let mut groups: Vec<ReflectedContextGroup> = Vec::new();
-            groups
-                .try_reserve_exact(string.context().len())
-                .map_err(|_| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::Attr {
-                            id,
-                            source: AttrError::AllocationFailed {
-                                entries: string.context().len(),
-                            },
+            groups.try_reserve_exact(context.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: context.len(),
                         },
-                        span,
-                    )
-                })?;
-            for element in string.context() {
+                    },
+                    span,
+                )
+            })?;
+            for element in context.iter() {
                 let path = Self::copy_bytes_for_node(id, span, element.path())?;
                 let group_index = if groups
                     .last()

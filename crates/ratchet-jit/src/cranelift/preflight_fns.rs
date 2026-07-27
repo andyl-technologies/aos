@@ -552,4 +552,3 @@ pub unsafe fn jit_cranelift_call_finalized_thunk_entry(
 
     Ok(dispatched)
 }
-

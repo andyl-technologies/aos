@@ -215,9 +215,7 @@ impl IntoResponse for MemoPublish {
     fn into_response(self) -> Response {
         match self {
             Self::Stored => StatusCode::OK.into_response(),
-            Self::ReadOnly => {
-                (StatusCode::FORBIDDEN, "memo endpoint is read-only").into_response()
-            }
+            Self::ReadOnly => (StatusCode::FORBIDDEN, "memo endpoint is read-only").into_response(),
             Self::BadKey => (StatusCode::BAD_REQUEST, "invalid record key").into_response(),
             Self::BadBody => (StatusCode::BAD_REQUEST, "invalid record body").into_response(),
             Self::IoError => {
@@ -228,7 +226,10 @@ impl IntoResponse for MemoPublish {
 }
 
 /// `GET /v1/root/{key}` — serve a root-record bundle.
-pub async fn root_record_get(State(state): State<Arc<AppState>>, Path(key): Path<String>) -> Response {
+pub async fn root_record_get(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Response {
     state.memo.fetch(MemoKind::RootRecord, &key).into_response()
 }
 
@@ -283,7 +284,10 @@ mod tests {
         assert!(!is_valid_key_hex(&key("g")), "non-hex is rejected");
         assert!(!is_valid_key_hex("abcd"), "short is rejected");
         assert!(!is_valid_key_hex(&"a".repeat(65)), "long is rejected");
-        assert!(!is_valid_key_hex("../../etc/passwd"), "traversal is rejected");
+        assert!(
+            !is_valid_key_hex("../../etc/passwd"),
+            "traversal is rejected"
+        );
     }
 
     #[test]
@@ -341,7 +345,10 @@ mod tests {
     fn bad_keys_and_bodies_are_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = MemoStore::new(dir.path(), true);
-        assert_eq!(store.fetch(MemoKind::RootRecord, "short"), MemoFetch::BadKey);
+        assert_eq!(
+            store.fetch(MemoKind::RootRecord, "short"),
+            MemoFetch::BadKey
+        );
         assert_eq!(
             store.publish(MemoKind::RootRecord, "short", b"x"),
             MemoPublish::BadKey
@@ -351,7 +358,11 @@ mod tests {
             MemoPublish::BadBody
         );
         assert_eq!(
-            store.publish(MemoKind::RootRecord, &key("a"), &vec![0u8; MAX_MEMO_BUNDLE_BYTES + 1]),
+            store.publish(
+                MemoKind::RootRecord,
+                &key("a"),
+                &vec![0u8; MAX_MEMO_BUNDLE_BYTES + 1]
+            ),
             MemoPublish::BadBody
         );
     }

@@ -131,9 +131,7 @@ pub enum CaptureAnalysisError {
 ///
 /// Returns [`CaptureAnalysisError`] if the IR arena, child pool, binding
 /// table, attribute-path table, or fact table are internally inconsistent.
-pub fn annotate_capture_plans(
-    ir: &mut Ir,
-) -> Result<CaptureAnalysisReport, CaptureAnalysisError> {
+pub fn annotate_capture_plans(ir: &mut Ir) -> Result<CaptureAnalysisReport, CaptureAnalysisError> {
     let node_count = ir.arena.nodes().len();
     if ir.facts.len() != node_count {
         return Err(CaptureAnalysisError::InvalidFactTableLength {
@@ -349,13 +347,7 @@ impl<'a> CaptureAccessWalk<'a> {
         Ok(())
     }
 
-    fn record_access(
-        &mut self,
-        id: IrId,
-        context: CaptureAccessContext,
-        depth: u32,
-        slot: u32,
-    ) {
+    fn record_access(&mut self, id: IrId, context: CaptureAccessContext, depth: u32, slot: u32) {
         let Some(owner) = context.owner else {
             return;
         };
@@ -516,14 +508,12 @@ impl<'a> FreeVarFold<'a> {
                     accumulator.decline = Some(SharedChainReason::CoordinateOverflow);
                 }
             },
-            IrData::Upval { depth, slot } => {
-                match (u16::try_from(depth), u16::try_from(slot)) {
-                    (Ok(depth), Ok(slot)) => accumulator.push(Upvalue { depth, slot }),
-                    _ => {
-                        accumulator.decline = Some(SharedChainReason::CoordinateOverflow);
-                    }
+            IrData::Upval { depth, slot } => match (u16::try_from(depth), u16::try_from(slot)) {
+                (Ok(depth), Ok(slot)) => accumulator.push(Upvalue { depth, slot }),
+                _ => {
+                    accumulator.decline = Some(SharedChainReason::CoordinateOverflow);
                 }
-            }
+            },
             IrData::SearchPath { search_path, .. } => {
                 if let Some(search_path) = search_path {
                     self.merge_child(&mut accumulator, search_path, 0)?;

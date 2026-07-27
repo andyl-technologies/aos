@@ -252,7 +252,9 @@ impl CompiledBodyCache {
                 stats.observe_written_bytes(record.len());
             });
         } else {
-            self.update_stats(|stats| stats.write_failures = stats.write_failures.saturating_add(1));
+            self.update_stats(|stats| {
+                stats.write_failures = stats.write_failures.saturating_add(1)
+            });
             tracing::debug!(target: "aos_nix::cache", message = failure);
         }
         self.publish_network_record(key, record);
@@ -418,8 +420,7 @@ fn read_chain_record(
     if u64::try_from(payload.len()).ok() != Some(payload_len) {
         return Err(ReadRecordError);
     }
-    decode_tier2_chain_lowering(payload, source, arity, self_upval)
-        .map_err(|_| ReadRecordError)
+    decode_tier2_chain_lowering(payload, source, arity, self_upval).map_err(|_| ReadRecordError)
 }
 
 fn record_key(
@@ -926,7 +927,8 @@ mod tests {
                     if matches!(
                         ir.arena.node(body).map(|body_node| body_node.data),
                         Some(IrData::Lambda { .. })
-                    ) => {
+                    ) =>
+                {
                     Some((pattern, body))
                 }
                 _ => None,

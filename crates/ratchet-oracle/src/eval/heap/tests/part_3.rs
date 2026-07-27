@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -46,7 +45,6 @@ fn tier_b_admission_application_rejects_stale_worker_stats_before_mutation() {
     );
     assert_eq!(heap_generation(&heap, worker), HeapGeneration::Young);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -88,7 +86,6 @@ fn tier_b_admission_application_rejects_stale_record_generation_before_mutation(
     assert_eq!(heap_generation(&heap, second), HeapGeneration::Old);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -126,7 +123,6 @@ fn cold_hash_consed_estimate_flows_into_opt_in_budget_classification() {
     assert_eq!(decision.worker_stats(), worker_stats);
     assert_eq!(decision.permanent_stats(), permanent_stats);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -169,7 +165,6 @@ fn whole_heap_unused_tail_advice_reports_both_allocation_domains() {
     assert_eq!(heap.permanent_arena_stats(), permanent_stats);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -207,7 +202,6 @@ fn memory_budget_action_continues_without_advice_below_soft_limit() {
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -255,7 +249,6 @@ fn memory_budget_action_does_not_credit_subpage_or_unsupported_tail_advice() {
         2
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -322,7 +315,6 @@ fn cheap_memory_budget_plan_credits_cold_hash_consed_estimate_as_planning_metada
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -379,7 +371,6 @@ fn cheap_memory_budget_plan_uses_pageout_advice_before_tier_b_request() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -410,7 +401,6 @@ fn cheap_memory_budget_plan_continues_without_advice_below_soft_limit() {
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -470,7 +460,6 @@ fn memory_budget_action_advises_unused_tails_for_spill_response() {
     assert_eq!(heap.permanent_arena_stats(), permanent_stats);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -524,7 +513,6 @@ fn memory_budget_action_advises_unused_tails_before_tier_b_request() {
     assert_eq!(report.requested_bytes(), unused_tail_bytes);
     assert!(supported_tail_advice_bytes <= report.requested_bytes());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -607,7 +595,6 @@ fn configured_heap_memory_budget_polls_successful_allocations() {
     assert_eq!(heap.memory_budget_poll_count(), 2);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -644,7 +631,6 @@ fn process_resident_memory_mode_reports_live_or_mapped_source() {
     assert!(action.requests_tier_b());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -672,7 +658,6 @@ fn multiple_string_values_keep_distinct_heap_records() {
         b"second"
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -709,7 +694,6 @@ fn identical_string_values_reuse_heap_record() {
         HeapAllocationDomain::PermanentShared
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -748,7 +732,6 @@ fn hash_consed_heap_records_share_cached_captured_value_hashes() {
     assert_eq!(heap.cached_captured_value_hash(second), Ok(Some(hash)));
     assert_eq!(heap.cached_captured_value_hash(list), Ok(None));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -806,7 +789,6 @@ fn hash_consed_heap_records_share_cached_value_hashes() {
     assert_eq!(heap.cached_value_hash(first), Ok(Some(hash)));
     assert_eq!(heap.cached_value_hash(second), Ok(Some(hash)));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

@@ -148,7 +148,9 @@ fn chunk_e_parse_entry_ignores_structurally_invalid_fact_sidecar() {
     );
     fs::write(
         entry.bundle_path(),
-        invalid_bundle.encode().expect("invalid-fact bundle encodes"),
+        invalid_bundle
+            .encode()
+            .expect("invalid-fact bundle encodes"),
     )
     .expect("invalid-fact bundle writes");
     assert_eq!(

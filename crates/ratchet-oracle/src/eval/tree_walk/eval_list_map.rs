@@ -22,7 +22,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -41,7 +41,7 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
-            elements.extend_from_slice(list.as_slice());
+            elements.extend(list.iter());
             elements
         };
 
@@ -61,7 +61,7 @@ impl TreeWalk {
         })?;
 
         for element in elements {
-            let element = self.force_value(argument, argument_span, element)?;
+            let element = self.force_uncovered_primop_leaf(argument, argument_span, element)?;
             let element = self.force_lazy_foldl_initial_value(argument, argument_span, element)?;
             if element.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
@@ -74,7 +74,7 @@ impl TreeWalk {
                 ));
             }
             let (name_value, name_position) = {
-                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(element).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -94,7 +94,8 @@ impl TreeWalk {
                 })?;
                 (name_entry.value, name_entry.position)
             };
-            let name_value = self.force_value(argument, argument_span, name_value)?;
+            let name_value =
+                self.force_uncovered_primop_leaf(argument, argument_span, name_value)?;
             if name_value.tag() != ValueTag::String {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -111,7 +112,7 @@ impl TreeWalk {
             }
 
             let attr_value = {
-                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(element).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -161,7 +162,7 @@ impl TreeWalk {
             ));
         }
         let lists = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -175,7 +176,8 @@ impl TreeWalk {
 
         let mut elements = Vec::new();
         for list_value in lists {
-            let list_value = self.force_value(argument, argument_span, list_value)?;
+            let list_value =
+                self.force_uncovered_primop_leaf(argument, argument_span, list_value)?;
             if list_value.tag() != ValueTag::List {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -187,7 +189,7 @@ impl TreeWalk {
                 ));
             }
             let inner = {
-                let list = self.heap.get_list(list_value).map_err(|source| {
+                let list = self.heap.get_list_view(list_value).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -247,8 +249,8 @@ impl TreeWalk {
         index_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let index_span = self.node(index_id)?.span;
-        let index_value = self.eval_node(index_id)?;
-        let index_value = self.force_value(index_id, index_span, index_value)?;
+        let index_value = self.eval_uncovered_primop_child(index_id)?;
+        let index_value = self.force_uncovered_primop_leaf(index_id, index_span, index_value)?;
         if index_value.tag() != ValueTag::Int {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -269,8 +271,8 @@ impl TreeWalk {
             )
         })?;
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
+        let list_value = self.force_uncovered_primop_leaf(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -281,7 +283,7 @@ impl TreeWalk {
                 list_span,
             ));
         }
-        let list = self.heap.get_list(list_value).map_err(|source| {
+        let list = self.heap.get_list_view(list_value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: list_id,
@@ -311,7 +313,8 @@ impl TreeWalk {
         list: EvalPrimOpArg,
         index: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let index_value = self.force_value(index.id(), index.span(), index.value())?;
+        let index_value =
+            self.force_uncovered_primop_leaf(index.id(), index.span(), index.value())?;
         if index_value.tag() != ValueTag::Int {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -331,7 +334,7 @@ impl TreeWalk {
                 index.span(),
             )
         })?;
-        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        let list_value = self.force_uncovered_primop_leaf(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -342,7 +345,7 @@ impl TreeWalk {
                 list.span(),
             ));
         }
-        let list_value = self.heap.get_list(list_value).map_err(|source| {
+        let list_value = self.heap.get_list_view(list_value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: list.id(),
@@ -375,7 +378,7 @@ impl TreeWalk {
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -387,7 +390,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -430,7 +433,13 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let key = self.eval_attr_name_primop_argument(name_id)?;
         let attrs_span = self.node(attrs_id)?.span;
-        let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.with_nonmoving_native_continuation(
+            super::native_continuation_shadow::NativeContinuationKind::GetAttrArgumentEval,
+            attrs_id,
+            &[],
+            Some(super::native_continuation_shadow::NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(attrs_id),
+        )?;
         let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -443,7 +452,7 @@ impl TreeWalk {
             ));
         }
         let selected = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -469,7 +478,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let key = self.eval_attr_name_primop_argument(name_id)?;
         let attrs_span = self.node(attrs_id)?.span;
-        let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.eval_uncovered_primop_child(attrs_id)?;
         let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -482,7 +491,7 @@ impl TreeWalk {
             ));
         }
         let has_attr = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -505,7 +514,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let key = self.eval_attr_name_primop_argument(name_id)?;
         let attrs_span = self.node(attrs_id)?.span;
-        let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.eval_uncovered_primop_child(attrs_id)?;
         self.eval_unsafe_get_attr_pos_attrs_value(id, span, key, attrs_id, attrs_span, attrs_value)
     }
 
@@ -531,7 +540,7 @@ impl TreeWalk {
         }
 
         let position = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -621,7 +630,7 @@ impl TreeWalk {
         id: IrId,
     ) -> Result<Symbol, TreeWalkError> {
         let span = self.node(id)?.span;
-        let value = self.eval_node(id)?;
+        let value = self.eval_uncovered_primop_child(id)?;
         if value.tag() != ValueTag::String {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -643,7 +652,7 @@ impl TreeWalk {
         names_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let attrs_span = self.node(attrs_id)?.span;
-        let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.eval_uncovered_primop_child(attrs_id)?;
         let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -657,7 +666,7 @@ impl TreeWalk {
         }
 
         let names_span = self.node(names_id)?.span;
-        let names_value = self.eval_node(names_id)?;
+        let names_value = self.eval_uncovered_primop_child(names_id)?;
         if names_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -669,7 +678,7 @@ impl TreeWalk {
             ));
         }
         let name_values = {
-            let names = self.heap.get_list(names_value).map_err(|source| {
+            let names = self.heap.get_list_view(names_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: names_id,
@@ -688,7 +697,7 @@ impl TreeWalk {
                     names_span,
                 )
             })?;
-            values.extend_from_slice(names.as_slice());
+            values.extend(names.iter());
             values
         };
         let mut remove = Vec::new();
@@ -702,7 +711,7 @@ impl TreeWalk {
             )
         })?;
         for value in name_values {
-            let value = self.force_value(names_id, names_span, value)?;
+            let value = self.force_uncovered_primop_leaf(names_id, names_span, value)?;
             if value.tag() != ValueTag::String {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -720,7 +729,7 @@ impl TreeWalk {
         }
 
         let entries = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -739,9 +748,9 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            for entry in attrs.entries_by_symbol() {
+            for entry in attrs.iter_by_symbol() {
                 if !remove.contains(&entry.key) {
-                    entries.push(*entry);
+                    entries.push(entry);
                 }
             }
             entries
@@ -759,7 +768,7 @@ impl TreeWalk {
         right_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let left_span = self.node(left_id)?.span;
-        let left_value = self.eval_node(left_id)?;
+        let left_value = self.eval_uncovered_primop_child(left_id)?;
         let left_value = self.force_lazy_foldl_initial_value(left_id, left_span, left_value)?;
         if left_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -773,7 +782,7 @@ impl TreeWalk {
         }
 
         let right_span = self.node(right_id)?.span;
-        let right_value = self.eval_node(right_id)?;
+        let right_value = self.eval_uncovered_primop_child(right_id)?;
         let right_value = self.force_lazy_foldl_initial_value(right_id, right_span, right_value)?;
         if right_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -787,7 +796,7 @@ impl TreeWalk {
         }
 
         let left_keys = {
-            let left = self.heap.get_attrs(left_value).map_err(|source| {
+            let left = self.heap.get_attrs_view(left_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: left_id,
@@ -806,11 +815,11 @@ impl TreeWalk {
                     left_span,
                 )
             })?;
-            keys.extend(left.entries_by_symbol().iter().map(|entry| entry.key));
+            keys.extend(left.iter_by_symbol().map(|entry| entry.key));
             keys
         };
         let entries = {
-            let right = self.heap.get_attrs(right_value).map_err(|source| {
+            let right = self.heap.get_attrs_view(right_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: right_id,
@@ -829,9 +838,9 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            for entry in right.entries_by_symbol() {
+            for entry in right.iter_by_symbol() {
                 if left_keys.contains(&entry.key) {
-                    entries.push(*entry);
+                    entries.push(entry);
                 }
             }
             entries
@@ -849,7 +858,7 @@ impl TreeWalk {
         attrs_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let attrs_span = self.node(attrs_id)?.span;
-        let attrs_value = self.eval_node(attrs_id)?;
+        let attrs_value = self.eval_uncovered_primop_child(attrs_id)?;
         let attrs_value = self.force_lazy_foldl_initial_value(attrs_id, attrs_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -863,7 +872,7 @@ impl TreeWalk {
         }
 
         let entries = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,
@@ -904,7 +913,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
         let entries = {
-            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs_set = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs.id(),

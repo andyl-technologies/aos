@@ -108,6 +108,17 @@ impl TreeWalkOptions {
         self.heap_thread_local_tier_a_enabled
     }
 
+    /// Returns whether serial Apply-shaped thunks use stable typed heads.
+    pub const fn typed_apply_thunk_heads_enabled(&self) -> bool {
+        self.typed_apply_thunk_heads_enabled
+    }
+
+    /// Returns fixed capacities for the active packed-thunk experiment.
+    #[cfg(feature = "active_packed_thunk_probe")]
+    pub const fn active_packed_thunk_capacities(&self) -> Option<ActivePackedThunkCapacities> {
+        self.active_packed_thunk_capacities
+    }
+
     /// Returns the configured GC-stress polling policy.
     pub const fn gc_stress_policy(&self) -> GcStressPolicy {
         self.gc_stress_policy

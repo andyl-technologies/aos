@@ -44,9 +44,8 @@ fn registered_artifact_finalization_requires_candidates_for_artifact_imports() {
         panic!("env-get artifact finalization requires registered env helper candidate");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -108,7 +107,12 @@ fn registered_artifact_finalization_finalizes_forced_env_get_artifact_with_candi
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_import_names,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit"
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -183,7 +187,13 @@ fn registered_artifact_finalization_finalizes_update_artifact_with_candidates() 
     );
     assert_eq!(
         artifact_runtime_import_names(preflight.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -236,9 +246,8 @@ fn registered_artifact_finalization_rejects_wrong_kind_candidates_for_artifact_i
         panic!("wrong-kind env helper candidate must not satisfy artifact imports");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -373,15 +382,13 @@ fn artifact_definition_preflight_uses_deterministic_ir_root_symbol() {
 
 #[test]
 fn artifact_definition_preflight_refuses_artifact_runtime_imports() {
-    let Err(error) =
-        jit_cranelift_artifact_definition_preflight_for_artifact(env_get_artifact(4))
+    let Err(error) = jit_cranelift_artifact_definition_preflight_for_artifact(env_get_artifact(4))
     else {
         panic!("call-bearing artifact must wait for registered runtime symbols");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -503,9 +510,8 @@ fn artifact_finalization_preflight_refuses_artifact_runtime_imports() {
         panic!("call-bearing artifact must wait for registered runtime symbols");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -516,8 +522,7 @@ fn artifact_finalization_preflight_refuses_artifact_runtime_imports() {
 #[test]
 fn native_thunk_call_executes_constant_smoke_artifact() {
     let expected = Value::int(23);
-    let artifact =
-        lower_constant_thunk_body_artifact(expected).expect("constant artifact lowers");
+    let artifact = lower_constant_thunk_body_artifact(expected).expect("constant artifact lowers");
     let invocation = jit_cranelift_native_thunk_call_for_artifact(artifact)
         .expect("constant artifact can be called through native thunk ABI");
 
@@ -629,14 +634,12 @@ fn native_thunk_call_rejects_artifact_runtime_imports() {
 
 #[test]
 fn tier1_slot_preflight_refuses_artifact_runtime_imports() {
-    let Err(error) = jit_cranelift_tier1_slot_preflight_for_artifact(env_get_artifact(12))
-    else {
+    let Err(error) = jit_cranelift_tier1_slot_preflight_for_artifact(env_get_artifact(12)) else {
         panic!("call-bearing artifact must wait for registered runtime symbols");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };

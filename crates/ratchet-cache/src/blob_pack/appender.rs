@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use super::locking::{BlobPackFileLockMode, lock_blob_pack_file};
 use super::{
-    BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackAppendError, BlobPackHash, BlobPackHeader,
-    BlobPackLocation, BlobPackTrimError, BlobRecordHeader,
+    BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackAppendError, BlobPackHash,
+    BlobPackHeader, BlobPackLocation, BlobPackTrimError, BlobRecordHeader,
 };
 
 /// A writer for one blob packfile.
@@ -291,7 +291,9 @@ impl BlobPackAppender {
             })?
             .len();
         if base < BLOB_PACK_HEADER_LEN as u64 {
-            return Err(BlobPackAppendError::InvalidRecordOffset { record_offset: base });
+            return Err(BlobPackAppendError::InvalidRecordOffset {
+                record_offset: base,
+            });
         }
 
         let mut buffer = Vec::with_capacity(total);

@@ -80,15 +80,11 @@ impl TreeWalk {
         // so resolving the (now-forced) thunk to its attrs is a non-forcing read
         // that cannot perturb demand order. A still-unforced or non-attrs
         // argument records a zero-member boundary.
-        let members: Vec<Value> = match self
+        let attrs = self
             .peek_forced_value(argument)
-            .and_then(|value| self.heap.get_attrs(value).ok())
-        {
-            Some(attrs) => attrs
-                .entries_by_symbol()
-                .iter()
-                .map(|entry| entry.value)
-                .collect(),
+            .and_then(|value| self.heap.get_attrs_view(value).ok());
+        let members: Vec<Value> = match attrs {
+            Some(attrs) => attrs.iter_by_symbol().map(|entry| entry.value).collect(),
             None => Vec::new(),
         };
         let total = u32::try_from(members.len()).unwrap_or(u32::MAX);

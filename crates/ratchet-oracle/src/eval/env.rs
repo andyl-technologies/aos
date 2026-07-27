@@ -223,6 +223,16 @@ impl<T> Default for PersistentEnvStack<T> {
 }
 
 impl<T> PersistentEnvStack<T> {
+    /// Returns the number of values in the stack without materializing a slice.
+    fn len(&self) -> usize {
+        self.head.as_ref().map_or(0, |head| head.len)
+    }
+
+    /// Returns whether the stack is empty without materializing a slice.
+    fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+
     /// Returns whether two snapshots share the same persistent head.
     fn raw_eq(&self, other: &Self) -> bool {
         match (&self.head, &other.head) {
@@ -294,6 +304,16 @@ pub struct EvalWithEnv {
 }
 
 impl EvalWithEnv {
+    /// Returns the number of captured `with` scopes.
+    pub fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Returns whether no `with` scopes are captured.
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
+
     /// Returns the shared empty dynamic-scope capture.
     pub(crate) const fn empty_ref() -> &'static Self {
         &EMPTY_WITH_ENV
@@ -375,6 +395,16 @@ pub struct EvalScopedGlobalEnv {
 }
 
 impl EvalScopedGlobalEnv {
+    /// Returns the number of captured scoped-import globals.
+    pub fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Returns whether no scoped-import globals are captured.
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
+
     /// Returns the shared empty scoped-global capture.
     pub(crate) const fn empty_ref() -> &'static Self {
         &EMPTY_SCOPED_GLOBAL_ENV
@@ -740,6 +770,11 @@ pub struct EvalFrame {
 }
 
 impl EvalFrame {
+    /// Returns the largest slot count stored inside the frame allocation.
+    pub(crate) const fn inline_slot_capacity() -> usize {
+        INLINE_SLOT_CAPACITY
+    }
+
     /// Creates a frame with `slot_count` null-initialized slots.
     ///
     /// # Errors
@@ -809,6 +844,11 @@ impl EvalFrame {
     /// Returns the next outer frame in the persistent capture chain.
     pub(crate) const fn parent(&self) -> Option<&Arc<EvalFrame>> {
         self.parent.as_ref()
+    }
+
+    /// Returns the number of live value slots in this frame without copying them.
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.as_slice().len()
     }
 
     /// Reads a slot value.
@@ -976,6 +1016,14 @@ pub enum EvalEnvError {
     CaptureAllocationFailed {
         /// The requested number of captured frames.
         frames: usize,
+    },
+    /// A module-qualified flat-capture site exceeded the compact coordinate.
+    #[error("flat-capture site module {module} node {node} exceeds the compact coordinate")]
+    CompactCaptureSiteUnsupported {
+        /// The module index that did not fit.
+        module: u32,
+        /// The node index that did not fit.
+        node: u32,
     },
     /// A captured `with` scope list could not be allocated.
     #[error("failed to reserve {scopes} captured with scopes")]

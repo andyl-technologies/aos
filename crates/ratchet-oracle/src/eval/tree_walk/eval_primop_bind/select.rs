@@ -1,7 +1,9 @@
 //! Attribute binding inheritance and select evaluation helpers.
 
 use crate::compile::IrInlineCacheSiteId;
+use crate::eval::heap::EvalAttrsView;
 
+use super::super::native_continuation_shadow::{NativeContinuationEdge, NativeContinuationKind};
 use super::*;
 
 impl TreeWalk {
@@ -115,7 +117,13 @@ impl TreeWalk {
         {
             return Ok(value);
         }
-        let current = self.eval_node(receiver)?;
+        let current = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::SelectReceiver,
+            receiver,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(receiver),
+        )?;
         self.eval_select_from_value(id, node.span, current, path_id, Some(site), default, false)
     }
 
@@ -138,21 +146,41 @@ impl TreeWalk {
         current = self.force_lazy_foldl_initial_value(id, span, current)?;
         for index in 0..segments {
             let segment = self.attr_path_segment(id, path_id, index, span)?;
-            let key = self
-                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, span)?
-                .ok_or_else(|| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::Type {
-                            id,
-                            expected: "string",
-                            actual: ValueTag::Null,
+            let key = match segment {
+                IrAttrPathSegment::Dynamic(dynamic) => self
+                    .with_uncovered_native_continuation_marker(
+                        NativeContinuationKind::SelectDynamicAttr,
+                        dynamic,
+                        |eval| {
+                            eval.eval_attr_name(
+                                id,
+                                segment,
+                                DynamicAttrNullPolicy::RejectNull,
+                                span,
+                            )
                         },
-                        span,
-                    )
-                })?;
+                    )?,
+                IrAttrPathSegment::Static(_) => {
+                    self.eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, span)?
+                }
+            }
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "string",
+                        actual: ValueTag::Null,
+                    },
+                    span,
+                )
+            })?;
             if current.tag() != ValueTag::Attrs {
                 return match default {
-                    Some(default) => self.eval_node(default),
+                    Some(default) => self.with_uncovered_native_continuation_marker(
+                        NativeContinuationKind::SelectDefault,
+                        default,
+                        |eval| eval.eval_node(default),
+                    ),
                     None => Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
                             id,
@@ -174,7 +202,11 @@ impl TreeWalk {
             };
             let AttrSelectOutcome::Hit { value, .. } = outcome else {
                 return match default {
-                    Some(default) => self.eval_node(default),
+                    Some(default) => self.with_uncovered_native_continuation_marker(
+                        NativeContinuationKind::SelectDefault,
+                        default,
+                        |eval| eval.eval_node(default),
+                    ),
                     None => Err(TreeWalkError::new(
                         TreeWalkErrorKind::MissingAttribute { id, symbol: key },
                         span,
@@ -256,12 +288,29 @@ impl TreeWalk {
         symbol: Symbol,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
         let outcome = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
-            select_slow(AttrSelectTarget::Flat(attrs), symbol).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
-            })?
+            let outcome = match attrs {
+                EvalAttrsView::Flat(attrs) => select_slow(AttrSelectTarget::Flat(attrs), symbol)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+                    })?,
+                #[cfg(any(
+                    feature = "compact_destination_probe",
+                    feature = "evacuation_plan_probe"
+                ))]
+                EvalAttrsView::Packed(_) => attrs
+                    .get(symbol)
+                    .map(|value| AttrSelectOutcome::Hit {
+                        value,
+                        source: AttrSelectSource::Flat,
+                    })
+                    .unwrap_or(AttrSelectOutcome::Missing {
+                        repr: AttrSelectRepr::Flat,
+                    }),
+            };
+            outcome
         };
         self.record_slow_select_telemetry(id, span, &outcome);
         Ok(outcome)
@@ -277,23 +326,45 @@ impl TreeWalk {
         site: IrInlineCacheSiteId,
         path_index: usize,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
-        let outcome = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-            })?;
-            let key = (self.current_module.as_u32(), site.as_u32(), path_index);
-            self.flat_select_caches
-                .entry(key)
-                .or_default()
-                .select(attrs, symbol)
-                .map_err(|source| match source {
-                    FlatSelectError::Select(source) => {
-                        TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
-                    }
-                    source => {
-                        TreeWalkError::new(TreeWalkErrorKind::FlatSelectCache { id, source }, span)
-                    }
-                })?
+        let attrs = self
+            .heap
+            .get_attrs_view(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let outcome = match attrs {
+            EvalAttrsView::Flat(attrs) => {
+                let key = (self.current_module.as_u32(), site.as_u32(), path_index);
+                self.flat_select_caches
+                    .entry(key)
+                    .or_default()
+                    .select(attrs, symbol)
+                    .map_err(|source| match source {
+                        FlatSelectError::Select(source) => {
+                            TreeWalkError::new(TreeWalkErrorKind::AttrSelect { id, source }, span)
+                        }
+                        source => TreeWalkError::new(
+                            TreeWalkErrorKind::FlatSelectCache { id, source },
+                            span,
+                        ),
+                    })?
+            }
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            EvalAttrsView::Packed(_) => {
+                let select_outcome = attrs
+                    .get(symbol)
+                    .map(|value| AttrSelectOutcome::Hit {
+                        value,
+                        source: AttrSelectSource::Flat,
+                    })
+                    .unwrap_or(AttrSelectOutcome::Missing {
+                        repr: AttrSelectRepr::Flat,
+                    });
+                self.increment_inline_cache_misses();
+                self.record_slow_select_telemetry(id, span, &select_outcome);
+                return Ok(select_outcome);
+            }
         };
         let select_outcome = match outcome {
             FlatSelectOutcome::Hit { value, source, .. } => {
@@ -345,17 +416,41 @@ impl TreeWalk {
         path_index: usize,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
         let key = (self.current_module.as_u32(), site.as_u32(), path_index);
-        let outcome = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-            })?;
-            self.record_select_caches
+        let attrs = self
+            .heap
+            .get_attrs_view(attrs_value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let outcome = match attrs {
+            EvalAttrsView::Flat(attrs) => self
+                .record_select_caches
                 .entry(key)
                 .or_default()
                 .select(projected_shape, attrs, symbol)
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::RecordSelectCache { id, source }, span)
-                })?
+                })?,
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            EvalAttrsView::Packed(_) => {
+                let select_outcome = match attrs.symbol_slot(symbol).and_then(|slot| {
+                    attrs
+                        .entry_by_symbol(slot as usize)
+                        .map(|entry| (slot, entry))
+                }) {
+                    Some((slot, entry)) => AttrSelectOutcome::Hit {
+                        value: entry.value,
+                        source: AttrSelectSource::Shaped { slot },
+                    },
+                    None => AttrSelectOutcome::Missing {
+                        repr: AttrSelectRepr::Shaped,
+                    },
+                };
+                self.increment_inline_cache_misses();
+                self.record_slow_select_telemetry(id, span, &select_outcome);
+                return Ok(select_outcome);
+            }
         };
         let select_outcome = match outcome {
             RecordSelectOutcome::Hit {
@@ -473,7 +568,7 @@ impl TreeWalk {
     ) -> Result<ShapedAttrs, TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(attrs_value)
+            .get_attrs_view(attrs_value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         let mut values = Vec::new();
         values.try_reserve_exact(attrs.len()).map_err(|_| {
@@ -487,7 +582,7 @@ impl TreeWalk {
                 span,
             )
         })?;
-        values.extend(attrs.entries_by_symbol().iter().map(|entry| entry.value));
+        values.extend(attrs.iter_by_symbol().map(|entry| entry.value));
         ShapedAttrs::from_symbol_order(shape, &values).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::ShapedAttr { id, source }, span)
         })
@@ -504,10 +599,29 @@ impl TreeWalk {
         path_index: usize,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
         let hamt = {
-            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
-            HamtAttrs::from_flat(attrs, &self.symbols).map_err(|source| {
+            let hamt = match attrs {
+                EvalAttrsView::Flat(attrs) => HamtAttrs::from_flat(attrs, &self.symbols),
+                #[cfg(any(
+                    feature = "compact_destination_probe",
+                    feature = "evacuation_plan_probe"
+                ))]
+                EvalAttrsView::Packed(_) => {
+                    let mut entries = Vec::new();
+                    let reservation = entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                        HamtError::AllocationFailed {
+                            entries: attrs.len(),
+                        }
+                    });
+                    reservation.and_then(|()| {
+                        entries.extend(attrs.iter_by_symbol());
+                        HamtAttrs::new(entries, &self.symbols)
+                    })
+                }
+            };
+            hamt.map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::HamtAttr { id, source }, span)
             })?
         };

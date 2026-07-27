@@ -34,9 +34,23 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_default_pointe
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+            "aos_select_ic"
+        ]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"] {
+    for symbol_name in [
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_has_attr",
+        "aos_select_ic",
+    ] {
         assert!(
             promoted
                 .finalization()
@@ -84,7 +98,13 @@ fn nix_jit_force_aware_install_plan_carries_update_pointer_and_module_owner() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted

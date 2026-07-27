@@ -1,5 +1,13 @@
 use super::*;
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn production_active_environment_handles_remain_compact() {
+    assert_eq!(std::mem::size_of::<ActiveEvalFrames>(), 24);
+    assert_eq!(std::mem::size_of::<ActiveEvalEnv>(), 48);
+    assert_eq!(std::mem::size_of::<SuspendedTreeWalkEnv>(), 64);
+}
+
 #[test]
 fn persistent_active_frames_follow_parent_links_without_an_array() {
     let outer = EvalFrame::new(1).expect("outer frame");

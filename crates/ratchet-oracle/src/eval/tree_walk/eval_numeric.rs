@@ -1,5 +1,6 @@
 //! Numeric builtins, instantiation evaluation, and value reflection.
 
+use super::native_continuation_shadow::{NativeContinuationEdge, NativeContinuationKind};
 use super::*;
 
 mod ops;
@@ -26,36 +27,56 @@ impl TreeWalk {
         for segment in attr_path {
             current = self.auto_call_formal_set_lambda(id, span, current)?;
             current = self.force_value(id, span, current)?;
-            if attr_path_segment_is_list_index(segment) {
-                current = self.eval_instantiation_list_index(id, span, current, segment)?;
-                continue;
-            }
-            if current.tag() != ValueTag::Attrs {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::Type {
-                        id,
-                        expected: "attrs",
-                        actual: current.tag(),
-                    },
-                    span,
-                ));
-            }
-            let key = self.intern_attr_name_bytes(id, segment)?;
-            let selected = {
-                let attrs = self.heap.get_attrs(current).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
-                attrs.get(key)
-            };
-            current = selected.ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::MissingAttribute { id, symbol: key },
-                    span,
-                )
-            })?;
+            current = self.eval_instantiation_attr_segment_selection(id, span, current, segment)?;
         }
 
         self.force_node_result(id, span, current)
+    }
+
+    pub(super) fn eval_instantiation_attr_segment_selection(
+        &mut self,
+        id: IrId,
+        span: Span,
+        current: Value,
+        segment: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        if attr_path_segment_is_list_index(segment) {
+            return self.eval_instantiation_list_index(id, span, current, segment);
+        }
+        if current.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "attrs",
+                    actual: current.tag(),
+                },
+                span,
+            ));
+        }
+        let key = self.intern_attr_name_bytes(id, segment)?;
+        let selected = {
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            let attrs = self.heap.get_attrs_view(current).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            #[cfg(not(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            )))]
+            let attrs = self.heap.get_attrs_view(current).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            attrs.get(key)
+        };
+        selected.ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::MissingAttribute { id, symbol: key },
+                span,
+            )
+        })
     }
 
     pub(super) fn eval_instantiation_list_index(
@@ -75,9 +96,21 @@ impl TreeWalk {
                 span,
             ));
         }
+        #[cfg(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))]
         let list = self
             .heap
-            .get_list(value)
+            .get_list_view(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        #[cfg(not(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        )))]
+        let list = self
+            .heap
+            .get_list_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         let index = parse_attr_path_list_index(segment);
         let diagnostic_index = parse_attr_path_list_index_diagnostic(segment);
@@ -179,7 +212,13 @@ impl TreeWalk {
         })?;
         let Some(builtin) = lookup_builtin(name) else {
             return match default {
-                Some(default) => self.eval_node(default).map(Some),
+                Some(default) => self
+                    .with_uncovered_native_continuation_marker(
+                        NativeContinuationKind::SelectStaticDefault,
+                        default,
+                        |eval| eval.eval_node(default),
+                    )
+                    .map(Some),
                 None => Err(TreeWalkError::new(
                     TreeWalkErrorKind::MissingAttribute {
                         id,
@@ -194,7 +233,13 @@ impl TreeWalk {
                 return Err(self.unsupported_ambient_builtin_constant(id, node.span));
             }
             return match default {
-                Some(default) => self.eval_node(default).map(Some),
+                Some(default) => self
+                    .with_uncovered_native_continuation_marker(
+                        NativeContinuationKind::SelectStaticDefault,
+                        default,
+                        |eval| eval.eval_node(default),
+                    )
+                    .map(Some),
                 None => Err(TreeWalkError::new(
                     TreeWalkErrorKind::MissingAttribute {
                         id,
@@ -209,7 +254,13 @@ impl TreeWalk {
         }
 
         match default {
-            Some(default) => self.eval_node(default).map(Some),
+            Some(default) => self
+                .with_uncovered_native_continuation_marker(
+                    NativeContinuationKind::SelectStaticDefault,
+                    default,
+                    |eval| eval.eval_node(default),
+                )
+                .map(Some),
             None => {
                 let value = builtin.select(self, id, node.span, *symbol)?;
                 Err(TreeWalkError::new(
@@ -361,7 +412,13 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let forced_break_left = self.consume_suspended_lazy_identity_thunk(lhs, lhs_span, left)?;
         let left = if forced_break_left {
             self.force_value(lhs, lhs_span, left)?
@@ -371,7 +428,11 @@ impl TreeWalk {
         match left.tag() {
             ValueTag::Int | ValueTag::Float if !forced_break_left => {
                 let rhs_span = self.node(rhs)?.span;
-                let right = self.eval_node(rhs)?;
+                let right = self.with_uncovered_native_continuation_marker(
+                    NativeContinuationKind::BinaryRhs,
+                    rhs,
+                    |eval| eval.eval_node(rhs),
+                )?;
                 let left = self
                     .expect_number(lhs, left, lhs_span)
                     .map_err(|error| self.label_binary_operand_error(error, lhs_span, rhs_span))?;
@@ -382,7 +443,11 @@ impl TreeWalk {
             }
             ValueTag::String => {
                 let rhs_span = self.node(rhs)?.span;
-                let right = self.eval_node(rhs)?;
+                let right = self.with_uncovered_native_continuation_marker(
+                    NativeContinuationKind::BinaryRhs,
+                    rhs,
+                    |eval| eval.eval_node(rhs),
+                )?;
                 let right = self.force_demanded_value(rhs, rhs_span, right)?;
                 let right = self.coerce_to_interpolation_string(rhs, right, rhs_span)?;
                 self.concat_strings(id, node, left, right)
@@ -415,13 +480,17 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let right = self.coerce_to_string(rhs, right, rhs_span)?;
-        let left = self.heap.get_path(left).map_err(|source| {
+        let left = self.heap.get_path_view(left).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id: lhs, source }, lhs_span)
         })?;
-        let right = self.heap.get_string(right).map_err(|source| {
+        let right = self.heap.get_string_view(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id: rhs, source }, rhs_span)
         })?;
         if right.has_context() {
@@ -467,7 +536,11 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let left = self.coerce_to_string(lhs, left, lhs_span)?;
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let right = self.coerce_to_string(rhs, right, rhs_span)?;
         self.concat_strings(id, node, left, right)
@@ -482,10 +555,20 @@ impl TreeWalk {
         invert: bool,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
-        let left = self.eval_node(lhs)?;
+        let left = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::BinaryLhs,
+            lhs,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(lhs),
+        )?;
         let left = self.force_demanded_value(lhs, lhs_span, left)?;
         let rhs_span = self.node(rhs)?.span;
-        let right = self.eval_node(rhs)?;
+        let right = self.with_uncovered_native_continuation_marker(
+            NativeContinuationKind::BinaryRhs,
+            rhs,
+            |eval| eval.eval_node(rhs),
+        )?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let equal = self.values_equal(id, node, left, right, EqualityContext::Direct)?;
         Ok(Value::bool(if invert { !equal } else { equal }))
@@ -586,6 +669,8 @@ impl TreeWalk {
     ) -> Result<bool, TreeWalkError> {
         let left_identity = self.nested_identity_value(id, node.span, left)?;
         let right_identity = self.nested_identity_value(id, node.span, right)?;
+        self.heap.observe_value_identity(left_identity);
+        self.heap.observe_value_identity(right_identity);
         let shared_heap_identity =
             left_identity.raw_eq(right_identity) && left_identity.tag().is_heap();
         if shared_heap_identity && left_identity.tag() != ValueTag::Thunk {
@@ -594,6 +679,8 @@ impl TreeWalk {
 
         let left = self.force_value(left_id, left_span, left_identity)?;
         let right = self.force_value(right_id, right_span, right_identity)?;
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if shared_heap_identity
             && left.raw_eq(right)
             && left.tag().is_heap()
@@ -626,6 +713,18 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         if value.tag() != ValueTag::Thunk {
+            return Ok(value);
+        }
+        #[cfg(feature = "active_packed_thunk_probe")]
+        if self.heap.active_packed_thunk_state(value).is_some() {
+            return Ok(value);
+        }
+        // Typed heads currently admit only ordinary `Apply` work, whose
+        // `body_ref()` is always `None`. Preserve the established early return
+        // without asking for work that a successful force may have released.
+        if let Ok(ptr) = value.as_thunk_ptr()
+            && self.heap.is_typed_thunk_head(ptr)
+        {
             return Ok(value);
         }
         let thunk = self
@@ -674,10 +773,10 @@ impl TreeWalk {
         left: Value,
         right: Value,
     ) -> Result<bool, TreeWalkError> {
-        let left = self.heap.get_string(left).map_err(|source| {
+        let left = self.heap.get_string_view(left).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
-        let right = self.heap.get_string(right).map_err(|source| {
+        let right = self.heap.get_string_view(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(left.bytes() == right.bytes())
@@ -690,10 +789,10 @@ impl TreeWalk {
         left: Value,
         right: Value,
     ) -> Result<bool, TreeWalkError> {
-        let left = self.heap.get_path(left).map_err(|source| {
+        let left = self.heap.get_path_view(left).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
-        let right = self.heap.get_path(right).map_err(|source| {
+        let right = self.heap.get_path_view(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(left.bytes() == right.bytes())
@@ -707,6 +806,8 @@ impl TreeWalk {
         right: Value,
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if !equality_guard.enter(left, right) {
             return Ok(true);
         }
@@ -724,13 +825,13 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         let left_elements = {
-            let list = self.heap.get_list(left).map_err(|source| {
+            let list = self.heap.get_list_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
         };
         let right_elements = {
-            let list = self.heap.get_list(right).map_err(|source| {
+            let list = self.heap.get_list_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_list_elements(id, node.span, list)?
@@ -765,6 +866,8 @@ impl TreeWalk {
         right: Value,
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(left);
+        self.heap.observe_value_identity(right);
         if !equality_guard.enter(left, right) {
             return Ok(true);
         }
@@ -788,13 +891,13 @@ impl TreeWalk {
         }
 
         let left_entries = {
-            let attrs = self.heap.get_attrs(left).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_attr_entries(id, node.span, attrs)?
         };
         let right_entries = {
-            let attrs = self.heap.get_attrs(right).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
             })?;
             Self::clone_attr_entries(id, node.span, attrs)?
@@ -868,7 +971,7 @@ impl TreeWalk {
         if type_value.tag() != ValueTag::String {
             return Ok(None);
         }
-        let string = self.heap.get_string(type_value).map_err(|source| {
+        let string = self.heap.get_string_view(type_value).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         if string.bytes() != b"derivation" {

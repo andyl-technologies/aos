@@ -233,7 +233,10 @@ pub fn scan_tier2_pinned_callee(
                 arity += 1;
             }
             (kind, _) => {
-                return Err(JitLowerError::UnsupportedArithOperand { operand: body, kind });
+                return Err(JitLowerError::UnsupportedArithOperand {
+                    operand: body,
+                    kind,
+                });
             }
         }
     }
@@ -328,7 +331,16 @@ fn scan_chain_expr(
             // for early exits.
             let level = context.scopes.len() as u32;
             context.scopes.push(run.len);
-            let result = scan_let_frame(arena, bindings, run_bindings, body, arity, level, context, body_scan);
+            let result = scan_let_frame(
+                arena,
+                bindings,
+                run_bindings,
+                body,
+                arity,
+                level,
+                context,
+                body_scan,
+            );
             context.scopes.truncate(level as usize);
             result
         }
@@ -558,7 +570,10 @@ fn require_arith_binop(op: BinOpKind) -> Result<(), JitLowerError> {
 }
 
 /// Requires an `if` condition to be a statically boolean grammar shape.
-pub(super) fn require_static_bool_condition(arena: &IrArena, cond: IrId) -> Result<(), JitLowerError> {
+pub(super) fn require_static_bool_condition(
+    arena: &IrArena,
+    cond: IrId,
+) -> Result<(), JitLowerError> {
     let node = arena
         .node(cond)
         .copied()

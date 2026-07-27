@@ -1,5 +1,6 @@
 //! Value-to-string coercion, path resolution, and Nix search-path lookups.
 
+use super::native_continuation_shadow::{NativeContinuationEdge, NativeContinuationKind};
 use super::*;
 
 impl TreeWalk {
@@ -124,12 +125,21 @@ impl TreeWalk {
         else {
             return Err(self.invalid_payload(id, node, "if payload"));
         };
-        let selected = if self.eval_bool_node(first)? {
-            second
-        } else {
-            third
-        };
-        self.eval_node(selected)
+        let condition = self.with_nonmoving_native_continuation(
+            NativeContinuationKind::IfCondition,
+            first,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_bool_node(first),
+        )?;
+        let selected = if condition { second } else { third };
+        self.with_nonmoving_native_continuation(
+            NativeContinuationKind::IfBranch,
+            selected,
+            &[],
+            Some(NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(selected),
+        )
     }
 
     pub(super) fn eval_assert(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -162,22 +172,58 @@ impl TreeWalk {
         };
         match op {
             BinOpKind::And => {
-                if self.eval_bool_node(lhs)? {
-                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                if self.with_nonmoving_native_continuation(
+                    NativeContinuationKind::BinaryLhs,
+                    lhs,
+                    &[],
+                    Some(NativeContinuationEdge::EvalNode),
+                    |eval| eval.eval_bool_node(lhs),
+                )? {
+                    Ok(Value::bool(
+                        self.with_uncovered_native_continuation_marker(
+                            NativeContinuationKind::BinaryRhs,
+                            rhs,
+                            |eval| eval.eval_bool_node(rhs),
+                        )?,
+                    ))
                 } else {
                     Ok(Value::bool(false))
                 }
             }
             BinOpKind::Or => {
-                if self.eval_bool_node(lhs)? {
+                if self.with_nonmoving_native_continuation(
+                    NativeContinuationKind::BinaryLhs,
+                    lhs,
+                    &[],
+                    Some(NativeContinuationEdge::EvalNode),
+                    |eval| eval.eval_bool_node(lhs),
+                )? {
                     Ok(Value::bool(true))
                 } else {
-                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                    Ok(Value::bool(
+                        self.with_uncovered_native_continuation_marker(
+                            NativeContinuationKind::BinaryRhs,
+                            rhs,
+                            |eval| eval.eval_bool_node(rhs),
+                        )?,
+                    ))
                 }
             }
             BinOpKind::Impl => {
-                if self.eval_bool_node(lhs)? {
-                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                if self.with_nonmoving_native_continuation(
+                    NativeContinuationKind::BinaryLhs,
+                    lhs,
+                    &[],
+                    Some(NativeContinuationEdge::EvalNode),
+                    |eval| eval.eval_bool_node(lhs),
+                )? {
+                    Ok(Value::bool(
+                        self.with_uncovered_native_continuation_marker(
+                            NativeContinuationKind::BinaryRhs,
+                            rhs,
+                            |eval| eval.eval_bool_node(rhs),
+                        )?,
+                    ))
                 } else {
                     Ok(Value::bool(true))
                 }
@@ -194,8 +240,16 @@ impl TreeWalk {
             BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
             BinOpKind::Concat => self.eval_list_concat(id, node, lhs, rhs),
             BinOpKind::Update => self.eval_attr_update(id, node, lhs, rhs),
-            BinOpKind::PipeRight => self.eval_apply_expression(id, node.span, rhs, lhs),
-            BinOpKind::PipeLeft => self.eval_apply_expression(id, node.span, lhs, rhs),
+            BinOpKind::PipeRight => self.with_uncovered_native_continuation_marker(
+                NativeContinuationKind::BinaryPipeRight,
+                id,
+                |eval| eval.eval_apply_expression(id, node.span, rhs, lhs),
+            ),
+            BinOpKind::PipeLeft => self.with_uncovered_native_continuation_marker(
+                NativeContinuationKind::BinaryPipeLeft,
+                id,
+                |eval| eval.eval_apply_expression(id, node.span, lhs, rhs),
+            ),
         }
     }
 
@@ -397,9 +451,9 @@ impl TreeWalk {
         }
         let list = self
             .heap
-            .get_list(value)
+            .get_list_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let elements = Self::clone_list_elements(id, span, list)?;
+        let elements = Self::clone_list_view_elements(id, span, list)?;
         let mut entries = Vec::new();
         entries.try_reserve_exact(elements.len()).map_err(|_| {
             TreeWalkError::new(
@@ -673,7 +727,7 @@ impl TreeWalk {
         match node.data {
             IrData::Node(child) => {
                 let span = self.node(child)?.span;
-                let value = self.eval_node(child)?;
+                let value = self.eval_interpolation_child(child)?;
                 self.coerce_to_interpolation_string(child, value, span)
             }
             IrData::Children(children) => {
@@ -699,7 +753,7 @@ impl TreeWalk {
                 };
                 let first_span = self.node(*first)?.span;
                 let first_string = {
-                    let value = self.eval_node(*first)?;
+                    let value = self.eval_interpolation_child(*first)?;
                     self.coerce_to_interpolation_string(*first, value, first_span)?
                 };
                 // Accumulate into a Rust-owned string. The running result is then
@@ -710,21 +764,27 @@ impl TreeWalk {
                 // to the left-associated `concat` fold it replaces.
                 let mut accumulator = self
                     .heap
-                    .get_string(first_string)
+                    .get_string_view(first_string)
                     .map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })?
-                    .clone();
+                    .try_to_owned()
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+                    })?;
                 for child in rest {
                     let child_span = self.node(*child)?.span;
                     let next = {
-                        let value = self.eval_node(*child)?;
+                        let value = self.eval_interpolation_child(*child)?;
                         self.coerce_to_interpolation_string(*child, value, child_span)?
                     };
-                    let next = self.heap.get_string(next).map_err(|source| {
+                    let next = self.heap.get_string_view(next).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
                     })?;
-                    accumulator.append_in_place(next).map_err(|source| {
+                    let next = next.try_to_owned().map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+                    })?;
+                    accumulator.append_in_place(&next).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
                     })?;
                 }
@@ -750,6 +810,16 @@ impl TreeWalk {
             }
             _ => Err(self.invalid_payload(id, node, "interpolation payload")),
         }
+    }
+
+    fn eval_interpolation_child(&mut self, child: IrId) -> Result<Value, TreeWalkError> {
+        self.with_nonmoving_native_continuation(
+            super::native_continuation_shadow::NativeContinuationKind::InterpChild,
+            child,
+            &[],
+            Some(super::native_continuation_shadow::NativeContinuationEdge::EvalNode),
+            |eval| eval.eval_node(child),
+        )
     }
 
     pub(super) fn interp_children_have_path_fragments(
@@ -806,7 +876,7 @@ impl TreeWalk {
                 *child
             };
             let expression_span = self.node(expression)?.span;
-            let value = self.eval_node(expression)?;
+            let value = self.eval_interpolation_child(expression)?;
             let value = self.force_demanded_value(expression, expression_span, value)?;
             let fragment =
                 self.coerce_to_path_interpolation_fragment(expression, expression_span, value)?;
@@ -872,13 +942,25 @@ impl TreeWalk {
         span: Span,
     ) -> Result<Value, TreeWalkError> {
         if let Some(hook) = self.attr_value_by_name(id, attrs_value, TO_STRING_ATTR, span)? {
-            let hook = self.force_value(id, span, hook)?;
+            let hook = self.with_nonmoving_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::InterpolationHookForce,
+                id,
+                &[attrs_value],
+                Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                |eval| eval.force_value(id, span, hook),
+            )?;
             let value = self.apply_lambda_value(id, span, id, hook, span, id, attrs_value)?;
             return self.coerce_to_interpolation_string(id, value, span);
         }
 
         if let Some(out_path) = self.attr_value_by_name(id, attrs_value, OUT_PATH_ATTR, span)? {
-            let value = self.force_value(id, span, out_path)?;
+            let value = self.with_nonmoving_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::InterpolationOutPathForce,
+                id,
+                &[],
+                Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                |eval| eval.force_value(id, span, out_path),
+            )?;
             return self.coerce_to_interpolation_string(id, value, span);
         }
 

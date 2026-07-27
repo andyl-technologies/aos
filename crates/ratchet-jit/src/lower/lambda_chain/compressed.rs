@@ -31,10 +31,10 @@ use ratchet_core::{
 use ratchet_value::value::compressed::CompressedValueWord;
 
 use super::super::lambda_rec::import_tier2_local_function;
-use super::super::{JitLowerError, append_entry_block_params, clif_name_for_ir_root, verify_clif_function};
-use super::{
-    JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee,
+use super::super::{
+    JitLowerError, append_entry_block_params, clif_name_for_ir_root, verify_clif_function,
 };
+use super::{JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee};
 use crate::abi::clif_signature_for_runtime_call;
 
 mod emit;
@@ -371,9 +371,12 @@ fn build_entry_function(
     };
     let mut call_arguments = vec![rt, env];
     for j in 0..arity as i32 {
-        let word = cursor
-            .ins()
-            .load(types::I64, MemFlags::trusted(), argv, j * VALUE_STRIDE_BYTES);
+        let word = cursor.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            argv,
+            j * VALUE_STRIDE_BYTES,
+        );
         call_arguments.push(word);
     }
     let budget = cursor.ins().iconst(types::I64, depth_budget);

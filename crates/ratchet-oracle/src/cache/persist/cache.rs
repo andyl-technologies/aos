@@ -14,6 +14,7 @@ mod blob_index_rebuild;
 mod blob_liveness;
 mod blob_repack;
 mod demotion;
+mod file_write_behind;
 mod indexed_values;
 mod maintenance_types;
 mod node_demand;
@@ -24,7 +25,6 @@ mod repack_helpers;
 mod root_record_io;
 mod run_scope;
 mod store_io;
-mod file_write_behind;
 mod value_write_behind;
 
 pub use demotion::{
@@ -140,7 +140,6 @@ impl Drop for PersistCache {
         }
     }
 }
-
 
 /// Compaction fires when a node sidecar's physical record count exceeds this
 /// multiple of its live keys. A warm re-run appends about one record per live

@@ -1,10 +1,13 @@
 //! `InlineValuePayload` persistent-payload length + encode, split from the parent for the §2 line cap.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 impl InlineValuePayload {
-    pub(in crate::cache::runtime) fn update_persistent_payload_preimage(&self, hasher: &mut CacheDigestHasher) {
+    pub(in crate::cache::runtime) fn update_persistent_payload_preimage(
+        &self,
+        hasher: &mut CacheDigestHasher,
+    ) {
         match self {
             Self::Int(value) => {
                 hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);

@@ -202,8 +202,7 @@ fn storage_maintenance_preserves_root_records() {
         .store_root_instantiation(sample_key(7), b"/nix/store/root.drv", &closure, &[], 3)
         .expect("record stores");
 
-    let policy =
-        PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
+    let policy = PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
     let outcome = cache
         .maintain_storage(policy)
         .expect("automatic maintenance runs");

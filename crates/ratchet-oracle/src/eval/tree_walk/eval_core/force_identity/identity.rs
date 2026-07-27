@@ -4,8 +4,8 @@
 //! first-class primop calls, and derivation aterm/output subjects from the
 //! owning module's content hash and the node's span.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 impl TreeWalk {
     pub(in crate::eval::tree_walk::eval_core) fn cache_identity_for_node(

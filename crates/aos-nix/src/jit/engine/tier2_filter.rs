@@ -252,7 +252,8 @@ impl NixJitTier1Engine {
         let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
             return FilterPreparation::Structural;
         };
-        let Ok(scan) = scan_tier2_unary_predicate(&ir.arena, &ir.bindings, lambda.pattern(), lambda.body())
+        let Ok(scan) =
+            scan_tier2_unary_predicate(&ir.arena, &ir.bindings, lambda.pattern(), lambda.body())
         else {
             return FilterPreparation::Structural;
         };
@@ -546,8 +547,7 @@ mod tests {
     /// interpreted re-run reproduces the oracle's error exactly.
     #[test]
     fn predicate_division_by_zero_reproduces_the_oracle_error() {
-        let source =
-            "builtins.filter (x: 1 / (x - 40) < 1) (builtins.genList (i: i) 64)";
+        let source = "builtins.filter (x: 1 / (x - 40) < 1) (builtins.genList (i: i) 64)";
         let ir = lower(source);
         let oracle = TreeWalk::new(&ir).eval_root();
         let (native, _stats) = eval_with_tier2_result(source);

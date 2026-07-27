@@ -15,6 +15,8 @@
 //!  "attrsets_built":6042,"attrs_entries_total":38110,"values_allocated":24901,
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
 //!  "symbols_interned":4021,"imports_evaluated":37,
+//!  "demand_machine_import_bodies":0,"demand_machine_import_declines":0,
+//!  "demand_machine_import_oracle_calls":0,
 //!  "front_end_parse_nanos":0,"front_end_resolve_nanos":0,
 //!  "front_end_lower_nanos":0,"front_end_annotate_nanos":0,
 //!  "import_io_fingerprint_nanos":0,"import_module_setup_nanos":0,
@@ -95,6 +97,9 @@ impl NixNative {
 \"hashcons_hits\":{},\
 \"symbols_interned\":{},\
 \"imports_evaluated\":{},\
+\"demand_machine_import_bodies\":{},\
+\"demand_machine_import_declines\":{},\
+\"demand_machine_import_oracle_calls\":{},\
 \"front_end_parse_nanos\":{},\
 \"front_end_resolve_nanos\":{},\
 \"front_end_lower_nanos\":{},\
@@ -195,6 +200,9 @@ impl NixNative {
             stats.hashcons_hits(),
             stats.symbols_interned(),
             stats.imports_evaluated(),
+            stats.demand_machine_import_bodies(),
+            stats.demand_machine_import_declines(),
+            stats.demand_machine_import_oracle_calls(),
             stats.front_end_parse_nanos(),
             stats.front_end_resolve_nanos(),
             stats.front_end_lower_nanos(),

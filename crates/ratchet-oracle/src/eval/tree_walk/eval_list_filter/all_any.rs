@@ -29,7 +29,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -38,7 +38,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         self.eval_all_any_elements(
@@ -76,7 +76,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -85,7 +85,7 @@ impl TreeWalk {
                     list.span(),
                 )
             })?;
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
+            Self::clone_list_view_elements(list.id(), list.span(), list_value)?
         };
 
         self.eval_all_any_elements(
@@ -112,8 +112,22 @@ impl TreeWalk {
         list_id: IrId,
         elements: Vec<Value>,
     ) -> Result<Value, TreeWalkError> {
+        if let Some(island) = self.prepare_any_equality_island(op, predicate, !elements.is_empty())
+        {
+            // Generic lambda preparation resolves the argument span before
+            // counting or applying the first call.
+            self.node(list_id)?;
+            return self.eval_any_equality_island(id, span, island, elements);
+        }
         let mut index = 0usize;
         let mut tier2_consults = 0u32;
+        let mut reused_lambda = self.prepare_reused_lambda_call(
+            predicate_id,
+            predicate,
+            predicate_span,
+            list_id,
+            !elements.is_empty(),
+        )?;
         while index < elements.len() {
             if tier2_consults < 2 && self.tier1_engine.is_some() {
                 tier2_consults += 1;
@@ -132,15 +146,20 @@ impl TreeWalk {
                 }
             }
             let element = elements[index];
-            let result = self.apply_lambda_value(
-                id,
-                span,
-                predicate_id,
-                predicate,
-                predicate_span,
-                list_id,
-                element,
-            )?;
+            let result = match reused_lambda.as_mut() {
+                Some(call) => self.apply_prepared_reused_lambda_call(
+                    id, span, predicate, call, list_id, element,
+                )?,
+                None => self.apply_lambda_value(
+                    id,
+                    span,
+                    predicate_id,
+                    predicate,
+                    predicate_span,
+                    list_id,
+                    element,
+                )?,
+            };
             let result = self.force_value(predicate_id, predicate_span, result)?;
             let actual = result.tag();
             let ValueTag::Bool = actual else {

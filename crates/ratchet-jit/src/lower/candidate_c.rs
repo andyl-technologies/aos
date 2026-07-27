@@ -84,7 +84,9 @@ fn arena_independent_word(value: Value) -> Result<CompressedValueWord, JitCandid
         ValueTag::Bool => value
             .as_bool()
             .map(CompressedValueWord::boolean)
-            .map_err(|_| JitCandidateCConstantError::RequiresArena { tag: ValueTag::Bool }),
+            .map_err(|_| JitCandidateCConstantError::RequiresArena {
+                tag: ValueTag::Bool,
+            }),
         ValueTag::Null => Ok(CompressedValueWord::null()),
         tag => Err(JitCandidateCConstantError::RequiresArena { tag }),
     }

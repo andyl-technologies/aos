@@ -7,17 +7,15 @@
 //! helper wrappers and value-only builtin symbols still have no executable
 //! addresses to register.
 
-use std::{error::Error, fmt};
-use cranelift_codegen::ir::{ExternalName, Function, UserExternalName, UserFuncName};
 use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi},
     lower::{
         AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,
-        AOS_ENV_GET_FUNCTION_INDEX,
-        AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_PRIMOP_CALL_FUNCTION_INDEX,
+        AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX,
         AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
-        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX,
-        AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, AOS_UPVAL_GET_FUNCTION_INDEX,
+        AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
+        AOS_UPVAL_GET_FUNCTION_INDEX,
     },
     symbols::{
         JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError,
@@ -25,6 +23,8 @@ use crate::{
     },
     tier::JitTier,
 };
+use cranelift_codegen::ir::{ExternalName, Function, UserExternalName, UserFuncName};
+use std::{error::Error, fmt};
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_ALLOC_CONS_SYMBOL: &str = "aos_alloc_cons";
 const AOS_FORCE_SYMBOL: &str = "aos_force";

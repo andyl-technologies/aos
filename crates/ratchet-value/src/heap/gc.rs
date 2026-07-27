@@ -25,6 +25,7 @@ pub use owned_destination::{
 mod barrier;
 mod commit;
 mod errors;
+mod identity;
 mod minor_destination_types;
 mod minor_rewrite_types;
 mod plan_validation;
@@ -44,6 +45,7 @@ pub use commit::{
     MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport, MinorGcOwnedCommitBuffers,
 };
 pub use errors::GenerationalGcError;
+pub use identity::GcObjectIdentity;
 pub use minor_destination_types::{
     MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
     MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcObjectByteCopyBuffer,

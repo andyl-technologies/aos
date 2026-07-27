@@ -344,9 +344,15 @@ mod tests {
 
         // Lists: empty, flat scalars, and nested (a list holding a list plus a
         // heap string), so the spine's element `Value`s cross the bridge.
-        let empty_list = heap.alloc_list(NixList::new(Vec::new())).expect("empty list");
+        let empty_list = heap
+            .alloc_list(NixList::new(Vec::new()))
+            .expect("empty list");
         let flat_list = heap
-            .alloc_list(NixList::new(vec![Value::int(1), Value::int(-2), Value::bool(true)]))
+            .alloc_list(NixList::new(vec![
+                Value::int(1),
+                Value::int(-2),
+                Value::bool(true),
+            ]))
             .expect("flat list");
         let nested_list = heap
             .alloc_list(NixList::new(vec![flat_list, short, Value::int(9)]))

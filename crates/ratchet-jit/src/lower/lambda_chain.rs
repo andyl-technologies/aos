@@ -61,21 +61,21 @@
 //! interpreted, which is sound because in-grammar bodies are pure except for
 //! memoizing parameter and environment forces.
 
+use cranelift_codegen::ir::Function;
 #[cfg(not(feature = "candidate_c_value"))]
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
-use cranelift_codegen::ir::Function;
 #[cfg(not(feature = "candidate_c_value"))]
 use ratchet_core::runtime_lambda_argv_call_signature;
 use ratchet_core::{IrArena, IrBinding, IrId};
 
 use super::JitLowerError;
 #[cfg(not(feature = "candidate_c_value"))]
-use super::{append_entry_block_params, clif_name_for_ir_root, verify_clif_function};
-#[cfg(not(feature = "candidate_c_value"))]
 use super::lambda_rec::import_tier2_local_function;
+#[cfg(not(feature = "candidate_c_value"))]
+use super::{append_entry_block_params, clif_name_for_ir_root, verify_clif_function};
 #[cfg(not(feature = "candidate_c_value"))]
 use crate::abi::clif_signature_for_runtime_call;
 
@@ -453,9 +453,12 @@ fn build_entry_function(
     };
     let mut call_arguments = vec![rt, env];
     for j in 0..arity as i32 {
-        let tag = cursor
-            .ins()
-            .load(types::I64, MemFlags::trusted(), argv, j * VALUE_STRIDE_BYTES);
+        let tag = cursor.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            argv,
+            j * VALUE_STRIDE_BYTES,
+        );
         let payload = cursor.ins().load(
             types::I64,
             MemFlags::trusted(),

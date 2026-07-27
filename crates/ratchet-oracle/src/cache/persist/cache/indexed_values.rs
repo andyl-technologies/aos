@@ -299,7 +299,10 @@ impl PersistCache {
                 continue; // within-batch dedup: content-addressed, one append suffices
             }
             if let Ok(Some(location)) = self.lookup_blob_location(*key) {
-                if matches!(pack.payload_matches(location, key.hash(), payload), Ok(true)) {
+                if matches!(
+                    pack.payload_matches(location, key.hash(), payload),
+                    Ok(true)
+                ) {
                     resolved.insert(*key, location);
                     continue;
                 }

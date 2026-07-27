@@ -51,6 +51,19 @@ pub struct HashConsSlot<K> {
     key: K,
 }
 
+/// Storage removed by one committed-candidate retention pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HashConsRetainReport {
+    /// Committed candidate handles removed from bucket vectors.
+    pub candidates_removed: usize,
+    /// Empty buckets removed from the outer table.
+    pub buckets_removed: usize,
+    /// Candidate-vector capacity released across retained buckets.
+    pub candidate_capacity_released: usize,
+    /// Outer hash-table capacity released by shrinking after retention.
+    pub bucket_capacity_released: usize,
+}
+
 /// The result of probing a hash-cons table for a copyable runtime handle.
 #[derive(Debug)]
 pub enum HashConsReservation<K, V> {
@@ -141,6 +154,31 @@ impl<K, V> HashConsTable<K, V> {
     pub fn bucket_count(&self) -> usize {
         self.buckets.len()
     }
+
+    /// Returns hash-map and candidate-vector length/capacity counts.
+    ///
+    /// The tuple is `(buckets, bucket capacity, candidates, candidate
+    /// capacity)`. Multiplying the capacities by the corresponding key,
+    /// bucket, and value representation sizes gives a lower-bound structural
+    /// byte attribution; allocator and hash-table control bytes are separate.
+    pub fn storage_counts(&self) -> (usize, usize, usize, usize) {
+        let candidates = self
+            .buckets
+            .values()
+            .map(|bucket| bucket.values.len())
+            .sum();
+        let candidate_capacity = self
+            .buckets
+            .values()
+            .map(|bucket| bucket.values.capacity())
+            .sum();
+        (
+            self.buckets.len(),
+            self.buckets.capacity(),
+            candidates,
+            candidate_capacity,
+        )
+    }
 }
 
 impl<K, V> Clone for HashConsTable<K, V>
@@ -193,6 +231,42 @@ where
                     .map(move |entry| (key, entry))
             })
             .map(|(key, (index, value))| (key, index, value))
+    }
+
+    /// Retains committed candidates selected by `keep` and shrinks their indexes.
+    ///
+    /// Outstanding reservations are preserved. A bucket with no committed
+    /// candidates remains present while it owns a reservation, so an existing
+    /// [`HashConsSlot`] can still be committed or cancelled after this pass.
+    /// Callers that use this for weak interning must remove dead handles before
+    /// invalidating the objects they name.
+    pub fn retain_committed(&mut self, mut keep: impl FnMut(&V) -> bool) -> HashConsRetainReport {
+        let buckets_before = self.buckets.len();
+        let bucket_capacity_before = self.buckets.capacity();
+        let mut candidates_removed = 0usize;
+        let mut candidate_capacity_released = 0usize;
+        for bucket in self.buckets.values_mut() {
+            let len_before = bucket.values.len();
+            let capacity_before = bucket.values.capacity();
+            bucket.values.retain(|value| keep(value));
+            candidates_removed =
+                candidates_removed.saturating_add(len_before.saturating_sub(bucket.values.len()));
+            bucket
+                .values
+                .shrink_to(bucket.values.len().saturating_add(bucket.reserved));
+            candidate_capacity_released = candidate_capacity_released
+                .saturating_add(capacity_before.saturating_sub(bucket.values.capacity()));
+        }
+        self.buckets
+            .retain(|_key, bucket| !bucket.values.is_empty() || bucket.reserved != 0);
+        self.buckets.shrink_to_fit();
+        HashConsRetainReport {
+            candidates_removed,
+            buckets_removed: buckets_before.saturating_sub(self.buckets.len()),
+            candidate_capacity_released,
+            bucket_capacity_released: bucket_capacity_before
+                .saturating_sub(self.buckets.capacity()),
+        }
     }
 
     /// Rebuilds every committed value under a caller-computed key.
@@ -468,6 +542,37 @@ mod tests {
             table.try_find(&7, |_| Err::<bool, &str>("predicate failed")),
             Err("predicate failed")
         );
+    }
+
+    #[test]
+    fn retain_committed_removes_candidates_and_empty_buckets() {
+        let mut table = HashConsTable::<u8, u8>::new();
+        for (key, value) in [(1, 10), (1, 11), (2, 20)] {
+            let slot = table.reserve_slot(key).expect("slot reserves");
+            assert!(table.push_reserved(slot, value));
+        }
+
+        let report = table.retain_committed(|value| *value == 11);
+
+        assert_eq!(report.candidates_removed, 2);
+        assert_eq!(report.buckets_removed, 1);
+        assert_eq!(table.bucket(&1), Some([11].as_slice()));
+        assert_eq!(table.bucket(&2), None);
+    }
+
+    #[test]
+    fn retain_committed_preserves_outstanding_reservations() {
+        let mut table = HashConsTable::<u8, u8>::new();
+        let committed = table.reserve_slot(7).expect("committed slot reserves");
+        assert!(table.push_reserved(committed, 1));
+        let outstanding = table.reserve_slot(7).expect("outstanding slot reserves");
+
+        let report = table.retain_committed(|_| false);
+
+        assert_eq!(report.candidates_removed, 1);
+        assert_eq!(report.buckets_removed, 0);
+        assert!(table.push_reserved(outstanding, 2));
+        assert_eq!(table.bucket(&7), Some([2].as_slice()));
     }
 
     #[test]

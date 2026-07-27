@@ -184,7 +184,10 @@ mod tests {
         assert_eq!(root_data(&fold_source("1 < 2")), IrData::Bool(true));
         assert_eq!(root_data(&fold_source("2 <= 2")), IrData::Bool(true));
         assert_eq!(root_data(&fold_source("3 == 4")), IrData::Bool(false));
-        assert_eq!(root_data(&fold_source("true && false")), IrData::Bool(false));
+        assert_eq!(
+            root_data(&fold_source("true && false")),
+            IrData::Bool(false)
+        );
         assert_eq!(root_data(&fold_source("false || true")), IrData::Bool(true));
         assert_eq!(root_data(&fold_source("!false")), IrData::Bool(true));
     }
@@ -229,7 +232,10 @@ mod tests {
         assert_ne!(before, after, "the render changes when a fold fires");
         // The root (last-lowered node) becomes the folded literal 7.
         assert!(
-            after.lines().last().is_some_and(|line| line.contains("Int(7)")),
+            after
+                .lines()
+                .last()
+                .is_some_and(|line| line.contains("Int(7)")),
             "the root folds to Int(7):\n{after}"
         );
     }

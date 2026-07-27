@@ -889,9 +889,9 @@ mod tests {
 
     #[test]
     fn compiled_body_record_hash_covers_lowering_and_target_identity() {
-        let fingerprint = LoweredIrFingerprint::from_durable_hash(
-            DurableBlake3Hash::for_bytes(b"lowered module"),
-        );
+        let fingerprint = LoweredIrFingerprint::from_durable_hash(DurableBlake3Hash::for_bytes(
+            b"lowered module",
+        ));
         let key = CompiledBodyRecordHash::for_unary_tier2(
             fingerprint,
             3,
@@ -926,9 +926,9 @@ mod tests {
 
     #[test]
     fn fused_chain_record_hash_covers_semantic_identity_and_budget() {
-        let fingerprint = LoweredIrFingerprint::from_durable_hash(
-            DurableBlake3Hash::for_bytes(b"lowered chain module"),
-        );
+        let fingerprint = LoweredIrFingerprint::from_durable_hash(DurableBlake3Hash::for_bytes(
+            b"lowered chain module",
+        ));
         let key = CompiledBodyRecordHash::for_fused_chain_tier2(
             fingerprint,
             b"root/self/pins",

@@ -297,7 +297,10 @@ fn is_allocation_free_scalar(node: crate::ir::IrNode) -> bool {
     )
 }
 
-pub(super) fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), EscapeAnalysisError> {
+pub(super) fn validate_payload(
+    id: IrId,
+    node: crate::ir::IrNode,
+) -> Result<(), EscapeAnalysisError> {
     let valid = match node.kind {
         IrKind::Int => matches!(node.data, IrData::Int(_)),
         IrKind::Float => matches!(node.data, IrData::Float(_)),
@@ -569,7 +572,11 @@ fn count_attr_path_references(
     Ok(count)
 }
 
-pub(super) fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], EscapeAnalysisError> {
+pub(super) fn child_ids(
+    ir: &Ir,
+    id: IrId,
+    slice: IrChildSlice,
+) -> Result<&[IrId], EscapeAnalysisError> {
     ir.arena
         .child_slice(slice)
         .ok_or(EscapeAnalysisError::InvalidChildSlice { id, slice })

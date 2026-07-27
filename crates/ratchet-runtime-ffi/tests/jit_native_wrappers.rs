@@ -19,10 +19,8 @@ use ratchet_oracle::{
     value::Value,
 };
 use ratchet_runtime_ffi::{
-    aos_jit_stack_map_enter_native_wrapper_address,
-    aos_jit_stack_map_exit_native_wrapper_address,
-    context::RuntimeJitContext,
-    wrappers::runtime_native_wrapper_bindings,
+    aos_jit_stack_map_enter_native_wrapper_address, aos_jit_stack_map_exit_native_wrapper_address,
+    context::RuntimeJitContext, wrappers::runtime_native_wrapper_bindings,
 };
 
 #[test]
@@ -751,8 +749,8 @@ fn runtime_wrapper_candidates(symbols: &[&str]) -> Vec<JitRuntimeSymbolAddressCa
         ),
     ] {
         if requested.contains(symbol_name) {
-            let raw = NonZeroUsize::new(address as usize)
-                .expect("stack-map wrapper address is non-null");
+            let raw =
+                NonZeroUsize::new(address as usize).expect("stack-map wrapper address is non-null");
             candidates.push(JitRuntimeSymbolAddressCandidate::new(
                 symbol_name.to_owned(),
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::SafepointControl),

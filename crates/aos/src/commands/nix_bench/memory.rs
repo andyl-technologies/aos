@@ -4,9 +4,11 @@
 //! is observed by bracketing each native sample with in-process probes from
 //! [`aos_core::nix::native_memory`]: current RSS, the monotonic `getrusage`
 //! peak-RSS watermark, and the evaluator's process-wide Tier-A arena mapping
-//! gauges. The C++ Nix oracle runs as a child process, so its peak RSS is
-//! attributed through the `RUSAGE_CHILDREN` watermark, which only identifies a
-//! child's peak when that child raised the watermark.
+//! gauges. The C++ Nix oracle runs as a child process. Rust's safe child-wait
+//! API does not return the per-child `wait4` resource usage record, so exact
+//! paired peak RSS is explicitly reported as unavailable. The historical
+//! `RUSAGE_CHILDREN` watermark observation is retained as weaker evidence and
+//! is never presented as an exact per-child measurement.
 //!
 //! Every probe is optional: builds without `native-eval`, or targets without a
 //! resident-memory sampler, capture no memory data and the benchmark records
@@ -24,7 +26,7 @@ use aos_core::nix::{
     peak_rss_bytes, release_free_memory, reset_native_arena_peak,
 };
 
-use super::record::{NativeSampleArena, NativeSampleMemory};
+use super::record::{ExactOracleChildPeakRss, NativeSampleArena, NativeSampleMemory};
 
 /// Probes captured immediately before a native evaluator sample runs.
 #[derive(Debug, Clone, Copy)]
@@ -80,7 +82,9 @@ impl NativeMemoryBefore {
                 live_mapped_bytes_after: after.live_mapped_bytes,
                 peak_live_mapped_bytes: after.peak_live_mapped_bytes,
                 live_chunks_after: after.live_chunks,
-                chunks_mapped: after.cumulative_chunks.saturating_sub(before.cumulative_chunks),
+                chunks_mapped: after
+                    .cumulative_chunks
+                    .saturating_sub(before.cumulative_chunks),
                 bytes_mapped: after
                     .cumulative_mapped_bytes
                     .saturating_sub(before.cumulative_mapped_bytes),
@@ -99,15 +103,25 @@ impl NativeMemoryBefore {
     }
 }
 
-/// The waited-children peak-RSS watermark bracketing one oracle child.
+/// Memory evidence captured while running one oracle child.
 ///
 /// `RUSAGE_CHILDREN`'s `ru_maxrss` is the maximum over all waited-for
 /// children, so a sample's child peak is only known when the watermark rose
 /// while that child ran; otherwise the child peaked below an earlier child and
-/// its exact peak is unknowable from here.
+/// its exact peak is unknowable from here. This probe records that watermark
+/// evidence separately from the authoritative exact-measurement state.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OracleChildPeakBefore {
     watermark_before: Option<u64>,
+}
+
+/// Per-child memory evidence returned after an oracle subprocess exits.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OracleChildPeak {
+    /// Exact peak RSS, or the reason no exact value was captured.
+    pub(crate) exact: ExactOracleChildPeakRss,
+    /// Historical `RUSAGE_CHILDREN` watermark attribution.
+    pub(crate) watermark_bytes: Option<u64>,
 }
 
 impl OracleChildPeakBefore {
@@ -118,11 +132,21 @@ impl OracleChildPeakBefore {
         }
     }
 
-    /// Attributes the watermark to the child that just exited, if it rose.
-    pub(crate) fn finish(self) -> Option<u64> {
-        let after = children_peak_rss_bytes()?;
-        let before = self.watermark_before?;
-        (after > before).then_some(after)
+    /// Finishes the child-memory capture without overstating its precision.
+    ///
+    /// The standard library has already reaped the child by the time this
+    /// method runs. Neither it nor the safe process APIs already present in the
+    /// workspace expose the child's `wait4` rusage, so the exact field remains
+    /// explicitly unavailable.
+    pub(crate) fn finish(self) -> OracleChildPeak {
+        let watermark_bytes = children_peak_rss_bytes().and_then(|after| {
+            self.watermark_before
+                .and_then(|before| (after > before).then_some(after))
+        });
+        OracleChildPeak {
+            exact: ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi,
+            watermark_bytes,
+        }
     }
 }
 

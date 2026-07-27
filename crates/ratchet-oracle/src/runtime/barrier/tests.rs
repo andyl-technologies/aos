@@ -236,12 +236,16 @@ fn write_barrier_native_export_preflight_preserves_frozen_abi_and_callable() {
             .blockers()
             .contains(&RuntimeWriteBarrierNativeExportBlocker::RuntimeContextAbiUnimplemented)
     );
-    assert!(record.blockers().contains(
-        &RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented
-    ));
-    assert!(record.blockers().contains(
-        &RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented
-    ));
+    assert!(
+        record.blockers().contains(
+            &RuntimeWriteBarrierNativeExportBlocker::RuntimeGcStateExtractionUnimplemented
+        )
+    );
+    assert!(
+        record.blockers().contains(
+            &RuntimeWriteBarrierNativeExportBlocker::NativeThunkPointerDecodeUnimplemented
+        )
+    );
     assert!(
         record
             .blockers()

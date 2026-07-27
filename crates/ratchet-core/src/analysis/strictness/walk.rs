@@ -415,9 +415,9 @@ fn mark_selected_literal_bindings(
             return Ok(());
         }
         let entries = analysis.bindings(attrset, bindings)?;
-        let Some(selected) = entries.iter().find(|binding| {
-            matches!(binding.key, IrAttrPathSegment::Static(key) if key == *symbol)
-        }) else {
+        let Some(selected) = entries.iter().find(
+            |binding| matches!(binding.key, IrAttrPathSegment::Static(key) if key == *symbol),
+        ) else {
             return Ok(());
         };
         let value = selected.value;

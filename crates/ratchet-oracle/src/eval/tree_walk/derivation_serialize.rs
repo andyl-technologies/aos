@@ -1,8 +1,29 @@
 //! Serialization of derivations to the store-path ATerm format.
 
 use super::*;
+use crate::eval::heap::EvalListView;
 
 impl TreeWalk {
+    /// Copies a list view while preserving evaluator allocation diagnostics.
+    pub(super) fn clone_list_view_elements(
+        id: IrId,
+        span: Span,
+        list: EvalListView<'_>,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(list.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: list.len(),
+                },
+                span,
+            )
+        })?;
+        cloned.extend(list.iter());
+        Ok(cloned)
+    }
+
     /// Forces root-visible derivation attrsets enough for snapshot collection.
     pub(crate) fn force_root_derivation_surfaces(
         &mut self,
@@ -36,10 +57,10 @@ impl TreeWalk {
         value: Value,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
-            Self::clone_list_elements(id, span, list)?
+            Self::clone_list_view_elements(id, span, list)?
         };
 
         for element in elements {
@@ -66,7 +87,7 @@ impl TreeWalk {
             return Ok(());
         }
         let is_derivation = {
-            let string = self.heap.get_string(type_value).map_err(|source| {
+            let string = self.heap.get_string_view(type_value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
             string.bytes() == b"derivation"

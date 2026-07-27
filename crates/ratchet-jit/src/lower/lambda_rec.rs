@@ -57,14 +57,14 @@
 
 #[cfg(not(feature = "candidate_c_value"))]
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
-#[cfg(not(feature = "candidate_c_value"))]
-use cranelift_codegen::ir::{InstBuilder, UserFuncName, condcodes::IntCC};
 use cranelift_codegen::ir::{
     AbiParam, ExtFuncData, ExternalName, Function, Signature, UserExternalName, types,
 };
 #[cfg(not(feature = "candidate_c_value"))]
-use ratchet_core::{runtime_lambda_call_signature, syntax::BinOpKind};
+use cranelift_codegen::ir::{InstBuilder, UserFuncName, condcodes::IntCC};
 use ratchet_core::{IrArena, IrData, IrId, IrKind};
+#[cfg(not(feature = "candidate_c_value"))]
+use ratchet_core::{runtime_lambda_call_signature, syntax::BinOpKind};
 
 use super::JitLowerError;
 #[cfg(not(feature = "candidate_c_value"))]
@@ -558,8 +558,7 @@ fn build_entry_function(
     inner_signature: &Signature,
     depth_budget: i64,
 ) -> Result<Function, JitLowerError> {
-    let mut function =
-        Function::with_name_signature(clif_name_for_ir_root(body), entry_signature);
+    let mut function = Function::with_name_signature(clif_name_for_ir_root(body), entry_signature);
     let inner_ref = import_tier2_local_function(&mut function, inner_signature);
 
     let entry_block = append_entry_block_params(&mut function);
@@ -673,9 +672,13 @@ fn emit_forced_param(
     let join = cursor.func.dfg.make_block();
     cursor.func.dfg.append_block_param(join, types::I64);
     cursor.func.dfg.append_block_param(join, types::I64);
-    cursor
-        .ins()
-        .brif(is_int, join, &[ctx.arg_tag.into(), ctx.arg_payload.into()], slow, &[]);
+    cursor.ins().brif(
+        is_int,
+        join,
+        &[ctx.arg_tag.into(), ctx.arg_payload.into()],
+        slow,
+        &[],
+    );
     cursor.insert_block(slow);
     let force_results = ctx.safepoints.force(
         cursor,
@@ -761,7 +764,12 @@ fn emit_binop(
             let result = cursor.ins().sdiv(lhs_payload, rhs_payload);
             Ok(int_pair(cursor, result))
         }
-        BinOpKind::Lt => Ok(bool_pair(cursor, IntCC::SignedLessThan, lhs_payload, rhs_payload)),
+        BinOpKind::Lt => Ok(bool_pair(
+            cursor,
+            IntCC::SignedLessThan,
+            lhs_payload,
+            rhs_payload,
+        )),
         BinOpKind::Gt => Ok(bool_pair(
             cursor,
             IntCC::SignedGreaterThan,
@@ -809,10 +817,7 @@ fn emit_if(
         .ok_or(JitLowerError::MissingIrBody { body: cond })?;
     let statically_boolean = match (cond_node.kind, cond_node.data) {
         (IrKind::Bool, _) => true,
-        (
-            IrKind::BinOp,
-            IrData::Binary { op, .. },
-        ) => matches!(
+        (IrKind::BinOp, IrData::Binary { op, .. }) => matches!(
             op,
             BinOpKind::Lt
                 | BinOpKind::Gt

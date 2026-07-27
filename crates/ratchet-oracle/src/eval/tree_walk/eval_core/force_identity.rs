@@ -6,6 +6,7 @@ use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::hashing::{
     ForceCapturePositionSourceHash, ForceCapturedValueHash, StaticSelectPositionHash,
 };
+use crate::eval::heap::EvalStringContextView;
 
 mod deps;
 mod identity;
@@ -228,8 +229,11 @@ impl TreeWalk {
                 return Some(StaticSelectProjection::Missing);
             }
             let selected = {
-                let attrs = self.heap.get_attrs(current_value).ok()?;
-                let Some(entry) = attrs.get_entry(symbol) else {
+                let attrs = self.heap.get_attrs_view(current_value).ok()?;
+                let Some(entry) = attrs
+                    .symbol_slot(symbol)
+                    .and_then(|slot| attrs.entry_by_symbol(slot as usize))
+                else {
                     return Some(StaticSelectProjection::Missing);
                 };
                 if let Some(position) = entry.position {
@@ -425,7 +429,7 @@ impl TreeWalk {
                 return Self::force_cache_static_has_attr_result_hash(false);
             }
             let selected = {
-                let attrs = self.heap.get_attrs(current_value).ok()?;
+                let attrs = self.heap.get_attrs_view(current_value).ok()?;
                 attrs.get(symbol)
             };
             let Some(value) = selected else {
@@ -536,24 +540,24 @@ impl TreeWalk {
         }
         match value.tag() {
             ValueTag::String => {
-                let string = self.heap.get_string(value).ok()?;
+                let string = self.heap.get_string_view(value).ok()?;
                 let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"string");
                 Self::update_cache_identity_chunk(&mut hasher, string.bytes())?;
                 if string.has_context() {
-                    Self::update_force_capture_string_context(&mut hasher, string.context())?;
+                    Self::update_force_capture_string_context_view(&mut hasher, string.context())?;
                 }
                 self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
             ValueTag::Path => {
-                let path = self.heap.get_path(value).ok()?;
+                let path = self.heap.get_path_view(value).ok()?;
                 let mut hasher = CacheDigestHasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 hasher.update(b"path");
                 Self::update_cache_identity_chunk(&mut hasher, path.bytes())?;
                 if path.has_context() {
-                    Self::update_force_capture_string_context(&mut hasher, path.context())?;
+                    Self::update_force_capture_string_context_view(&mut hasher, path.context())?;
                 }
                 self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
@@ -659,13 +663,13 @@ impl TreeWalk {
     ) -> Option<ValueHash> {
         match value.tag() {
             ValueTag::String => {
-                let string = self.heap.get_string(value).ok()?;
+                let string = self.heap.get_string_view(value).ok()?;
                 if string.has_context() {
                     return None;
                 }
             }
             ValueTag::Path => {
-                let path = self.heap.get_path(value).ok()?;
+                let path = self.heap.get_path_view(value).ok()?;
                 if path.has_context() {
                     return None;
                 }
@@ -799,6 +803,33 @@ impl TreeWalk {
         let len = u64::try_from(context.len()).ok()?;
         hasher.update(&len.to_le_bytes());
         for element in context.elements() {
+            match element.kind() {
+                ContextKind::OpaquePath => {
+                    hasher.update(b"opaque-path");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                }
+                ContextKind::SingleOutput => {
+                    hasher.update(b"single-output");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                    Self::update_cache_identity_chunk(hasher, element.output()?)?;
+                }
+                ContextKind::DeepDerivation => {
+                    hasher.update(b"deep-derivation");
+                    Self::update_cache_identity_chunk(hasher, element.path())?;
+                }
+            }
+        }
+        Some(())
+    }
+
+    fn update_force_capture_string_context_view(
+        hasher: &mut CacheDigestHasher,
+        context: EvalStringContextView<'_>,
+    ) -> Option<()> {
+        hasher.update(b"context");
+        let len = u64::try_from(context.len()).ok()?;
+        hasher.update(&len.to_le_bytes());
+        for element in context.iter() {
             match element.kind() {
                 ContextKind::OpaquePath => {
                     hasher.update(b"opaque-path");

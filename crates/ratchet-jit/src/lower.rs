@@ -13,41 +13,37 @@
 //! bounded paths before Cranelift module setup. These bodies use the same
 //! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
 //! `JITModule`, finalized, or called.
+use crate::artifact::JitClifArtifact;
 use cranelift_codegen::{
     ir::{Function, UserExternalName, UserFuncName},
     settings,
     verifier::verify_function,
 };
 use ratchet_core::{
-    BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrData,
-    IrId, IrKind, Strictness, ThunkSharing,
+    BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrData, IrId, IrKind, Strictness,
+    ThunkSharing,
 };
-use crate::artifact::JitClifArtifact;
+mod alloc_cons;
 mod arith_tree;
 #[cfg(feature = "candidate_c_value")]
 mod arith_tree_compressed;
-mod alloc_cons;
 mod candidate_b;
 mod candidate_c;
 mod error;
 pub mod interp;
 mod lambda_chain;
 mod lambda_rec;
-mod stack_maps;
-mod value_words;
 #[cfg(all(test, feature = "candidate_c_value"))]
 mod one_word_shape_tests;
-pub use stack_maps::{
-    AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
-    clif_external_name_for_aos_jit_stack_map_enter,
-    clif_external_name_for_aos_jit_stack_map_exit,
-};
+mod stack_maps;
+mod value_words;
 pub use alloc_cons::{
     AOS_ALLOC_CONS_FUNCTION_INDEX, clif_external_name_for_aos_alloc_cons,
     lower_singleton_list_ir_thunk_body_artifact,
 };
 pub use candidate_b::{
-    JitCandidateBConstantError, lower_candidate_b_constant_ir_thunk_body_artifact, lower_candidate_b_env_get_ir_thunk_body_artifact,
+    JitCandidateBConstantError, lower_candidate_b_constant_ir_thunk_body_artifact,
+    lower_candidate_b_env_get_ir_thunk_body_artifact,
 };
 pub use candidate_c::{
     JitCandidateCConstantError, lower_candidate_c_constant_ir_thunk_body_artifact,
@@ -62,6 +58,10 @@ pub use lambda_chain::{
 pub use lambda_rec::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
     lower_tier2_self_recursive_lambda, tier2_self_recursive_lambda_cache_eligible,
+};
+pub use stack_maps::{
+    AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
+    clif_external_name_for_aos_jit_stack_map_enter, clif_external_name_for_aos_jit_stack_map_exit,
 };
 /// Cranelift user-function namespace reserved for Core IR root thunks.
 ///
@@ -366,12 +366,12 @@ pub fn jit_tier1_thunk_fact_plan(
     Ok(JitTier1ThunkFactPlan::new(thunk, body, facts))
 }
 
-mod shapes;
-mod extract;
 mod emit;
-pub use shapes::*;
-pub(crate) use extract::*;
+mod extract;
+mod shapes;
 pub(crate) use emit::*;
+pub(crate) use extract::*;
+pub use shapes::*;
 
 /// Lowers a currently supported tier-1 IR thunk body.
 ///

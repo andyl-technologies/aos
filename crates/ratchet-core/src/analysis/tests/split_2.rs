@@ -279,7 +279,10 @@ fn escape_marks_strict_unique_aggregate_scalar_primop_arguments_no_escape() {
     annotate_ir(&mut length_ir).expect("analysis succeeds");
 
     assert_eq!(node(&length_ir, list).kind, IrKind::List);
-    assert_eq!(strictness(&length_ir, list), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&length_ir, list),
+        Strictness::DemandedBeforeEffect
+    );
     assert_eq!(escape(&length_ir, list), Escape::NoEscape);
 
     let mut has_attr_ir = lowered(r#"builtins.hasAttr "a" { a = 1; }"#);
@@ -289,7 +292,10 @@ fn escape_marks_strict_unique_aggregate_scalar_primop_arguments_no_escape() {
     annotate_ir(&mut has_attr_ir).expect("analysis succeeds");
 
     assert_eq!(node(&has_attr_ir, attrset).kind, IrKind::AttrSet);
-    assert_eq!(strictness(&has_attr_ir, attrset), Strictness::DemandedBeforeEffect);
+    assert_eq!(
+        strictness(&has_attr_ir, attrset),
+        Strictness::DemandedBeforeEffect
+    );
     assert_eq!(escape(&has_attr_ir, attrset), Escape::NoEscape);
 }
 
@@ -936,4 +942,3 @@ fn escape_rejects_fact_table_length_mismatches() {
         }
     );
 }
-

@@ -1,8 +1,227 @@
 //! Constructors and accessors for [`EvalThunk`] suspended-work records.
 
 use super::*;
+#[cfg(any(feature = "collection_poll_probe", feature = "evacuation_plan_probe"))]
+use crate::eval::ThunkState;
 
 impl EvalThunk {
+    /// Detaches serial work from a blackholed inline cell.
+    ///
+    /// The source retains its exact [`ThunkCell`] and becomes an edge-free
+    /// transient [`EvalThunkKind::Released`] shell. The returned record owns
+    /// the original kind and dynamic captures under a fresh suspended dummy
+    /// cell suitable for explicit root scanning. Inline captures remain
+    /// physically beside the source while their logical ownership belongs to
+    /// the evaluator lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] unless this is an unreleased blackholed thunk
+    /// with inline serial storage and no shared force-state sidecar.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval::heap) fn detach_blackholed_node_work(
+        &mut self,
+    ) -> Result<Self, EvalHeapError> {
+        if self.cell.state().map_err(EvalHeapError::Thunk)? != ThunkState::Blackhole
+            || matches!(self.kind, EvalThunkKind::Released)
+            || !self.has_serial_only_force_storage()
+            || self
+                .storage_extension
+                .as_deref()
+                .is_some_and(|extension| extension.shared_cell.is_some())
+        {
+            return Err(EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "active work detachment requires an unreleased serial inline blackhole",
+            });
+        }
+        let kind = std::mem::replace(&mut self.kind, EvalThunkKind::Released);
+        let storage_extension = self.storage_extension.take();
+        Ok(Self {
+            kind,
+            cell: ThunkCell::new(),
+            storage_extension,
+        })
+    }
+
+    /// Restores work detached by [`Self::detach_blackholed_node_work`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] unless the source is still the matching
+    /// edge-free blackhole shell and `work` is suspended serial work.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval::heap) fn restore_blackholed_node_work(
+        &mut self,
+        mut work: Self,
+    ) -> Result<(), (EvalHeapError, Self)> {
+        let source_state = match self.cell.state() {
+            Ok(state) => state,
+            Err(source) => return Err((EvalHeapError::Thunk(source), work)),
+        };
+        let work_state = match work.cell.state() {
+            Ok(state) => state,
+            Err(source) => return Err((EvalHeapError::Thunk(source), work)),
+        };
+        if source_state != ThunkState::Blackhole
+            || !matches!(self.kind, EvalThunkKind::Released)
+            || self.storage_extension.is_some()
+            || work_state != ThunkState::Suspended
+            || matches!(work.kind, EvalThunkKind::Released)
+            || !work.has_serial_only_force_storage()
+        {
+            return Err((
+                EvalHeapError::ShedRejected {
+                    address: 0,
+                    reason: "active work restore no longer matches its blackhole shell",
+                },
+                work,
+            ));
+        }
+        self.kind = std::mem::replace(&mut work.kind, EvalThunkKind::Released);
+        self.storage_extension = work.storage_extension.take();
+        Ok(())
+    }
+
+    /// Converts an ordinary serial Node thunk into its shape-sized work record.
+    ///
+    /// Returns the original thunk unchanged when it carries any force/dynamic
+    /// storage extension or a non-Node work variant.
+    pub(in crate::eval::heap) fn into_typed_node_work(self) -> Result<TypedNodeThunkWork, Self> {
+        if self.storage_extension.is_some()
+            || self.cell().state() != Ok(crate::eval::ThunkState::Suspended)
+            || !matches!(self.kind, EvalThunkKind::Node { .. })
+        {
+            return Err(self);
+        }
+        let Self {
+            kind,
+            cell: _,
+            storage_extension,
+        } = self;
+        let EvalThunkKind::Node { body, env } = kind else {
+            return Err(Self {
+                kind,
+                cell: ThunkCell::new(),
+                storage_extension,
+            });
+        };
+        Ok(TypedNodeThunkWork {
+            body,
+            env,
+            expanded: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Rewrites the heap values of a synthetic serial thunk for evacuation.
+    ///
+    /// Node thunks are deliberately excluded from the bounded typed-head
+    /// evacuation slice because relocating their frame and inline-tail
+    /// ownership requires the closure capture reconstruction protocol.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn rewrite_synthetic_evacuation_values(
+        &mut self,
+        rewrite: &impl Fn(Value) -> Result<Value, EvalHeapError>,
+    ) -> Result<(), EvalHeapError> {
+        if self.cell().state().map_err(EvalHeapError::Thunk)? != ThunkState::Suspended
+            || !self.has_serial_only_force_storage()
+        {
+            return Err(EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "evacuation typed work changed state or storage mode",
+            });
+        }
+        self.rewrite_synthetic_evacuation_kind_values(rewrite)
+    }
+
+    /// Rewrites and reconstructs an inline flat synthetic thunk for evacuation.
+    ///
+    /// Unlike [`Self::rewrite_synthetic_evacuation_values`], this path accepts
+    /// both suspended and forced ordinary flat thunks. It rejects every force
+    /// or identity sidecar before rebuilding the serial cell, so typed-head
+    /// work keeps its stricter suspended-only protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when the thunk is a Node or released thunk,
+    /// is blackholed, has single-entry, shared, or parallel storage, has an
+    /// inconsistent cached result, or `rewrite` rejects an embedded value.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn rewrite_flat_synthetic_evacuation_values(
+        &mut self,
+        rewrite: &impl Fn(Value) -> Result<Value, EvalHeapError>,
+    ) -> Result<(), EvalHeapError> {
+        if self.storage_extension.is_some() || !self.has_serial_only_force_storage() {
+            return Err(EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "flat synthetic evacuation requires inline serial force storage",
+            });
+        }
+        let state = self.cell.state().map_err(EvalHeapError::Thunk)?;
+        if state == ThunkState::Blackhole {
+            return Err(EvalHeapError::ShedRejected {
+                address: 0,
+                reason: "flat synthetic evacuation rejects blackholed thunks",
+            });
+        }
+        let cached_value = self.cell.cached_value().map_err(EvalHeapError::Thunk)?;
+        self.rewrite_synthetic_evacuation_kind_values(rewrite)?;
+        self.cell = match (state, cached_value) {
+            (ThunkState::Suspended, None) => ThunkCell::new(),
+            (ThunkState::Forced, Some(value)) => ThunkCell::forced(rewrite(value)?),
+            _ => {
+                return Err(EvalHeapError::ShedRejected {
+                    address: 0,
+                    reason: "flat synthetic evacuation state disagrees with its cached result",
+                });
+            }
+        };
+        Ok(())
+    }
+
+    #[cfg(feature = "evacuation_plan_probe")]
+    fn rewrite_synthetic_evacuation_kind_values(
+        &mut self,
+        rewrite: &impl Fn(Value) -> Result<Value, EvalHeapError>,
+    ) -> Result<(), EvalHeapError> {
+        match &mut self.kind {
+            EvalThunkKind::Apply {
+                function_value,
+                argument_value,
+                ..
+            }
+            | EvalThunkKind::GenListElemAtAddOne {
+                function_value,
+                argument_value,
+                ..
+            } => {
+                *function_value = rewrite(*function_value)?;
+                *argument_value = rewrite(*argument_value)?;
+            }
+            EvalThunkKind::Apply2(apply) => {
+                apply.function_value = rewrite(apply.function_value)?;
+                apply.first_argument_value = rewrite(apply.first_argument_value)?;
+                apply.second_argument_value = rewrite(apply.second_argument_value)?;
+            }
+            EvalThunkKind::Select { receiver, .. } => {
+                *receiver = rewrite(*receiver)?;
+            }
+            EvalThunkKind::BuiltinAttr { .. } => {}
+            EvalThunkKind::Node { .. } | EvalThunkKind::Released => {
+                return Err(EvalHeapError::ShedRejected {
+                    address: 0,
+                    reason: "evacuation typed work requires a synthetic serial thunk",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether this thunk has ordinary serial publication semantics.
+    pub(in crate::eval::heap) fn is_plain_serial_typed_shape(&self) -> bool {
+        self.has_serial_only_force_storage() && !matches!(self.kind, EvalThunkKind::Released)
+    }
+
     /// Rebuilds a thunk from collector-relocated storage components.
     pub(in crate::eval::heap) fn from_relocated_parts(
         kind: EvalThunkKind,
@@ -103,6 +322,11 @@ impl EvalThunk {
     /// the serial cell present for heap metadata compatibility, but the force
     /// path evaluates the body directly without publishing a cached result.
     pub(crate) fn into_single_entry(mut self) -> Self {
+        #[cfg(feature = "candidate_c_value")]
+        if self.storage_extension.is_none() {
+            self.cell = ThunkCell::single_entry();
+            return self;
+        }
         match self.storage_extension.as_deref_mut() {
             Some(extension) => extension.mode = EvalThunkStorageExtensionMode::SingleEntry,
             None => {
@@ -128,6 +352,29 @@ impl EvalThunk {
     ) -> Self {
         Self {
             kind: EvalThunkKind::Apply {
+                function: EvalNodeRef::new(function_module, function_id),
+                function_span,
+                function_value,
+                argument: EvalNodeRef::new(argument_module, argument_id),
+                argument_value,
+            },
+            cell: ThunkCell::new(),
+            storage_extension: None,
+        }
+    }
+
+    /// Creates a marked `genList` application for the guarded elemAt fast path.
+    pub(crate) fn genlist_elem_at_add_one(
+        function_module: EvalModuleId,
+        function_id: IrId,
+        function_span: Span,
+        function_value: Value,
+        argument_module: EvalModuleId,
+        argument_id: IrId,
+        argument_value: Value,
+    ) -> Self {
+        Self {
+            kind: EvalThunkKind::GenListElemAtAddOne {
                 function: EvalNodeRef::new(function_module, function_id),
                 function_span,
                 function_value,
@@ -234,6 +481,9 @@ impl EvalThunk {
         dropped_claim_error: TreeWalkError,
         cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
     ) -> Self {
+        if self.is_single_entry_force_storage() {
+            return self;
+        }
         let cell = || {
             EvalThunkStorageExtensionMode::Parallel(Arc::new(
                 TreeWalkParallelThunkCell::with_cycle_registry(dropped_claim_error, cycle_registry),
@@ -265,6 +515,7 @@ impl EvalThunk {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(body.id()),
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
@@ -277,6 +528,7 @@ impl EvalThunk {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(*body),
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
@@ -295,7 +547,8 @@ impl EvalThunk {
     pub const fn code_module(&self) -> Option<EvalModuleId> {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(body.module()),
-            EvalThunkKind::Apply { function, .. } => Some(function.module()),
+            EvalThunkKind::Apply { function, .. }
+            | EvalThunkKind::GenListElemAtAddOne { function, .. } => Some(function.module()),
             EvalThunkKind::Apply2(apply) => Some(apply.function.module()),
             EvalThunkKind::Select { select, .. } => Some(select.module()),
             EvalThunkKind::BuiltinAttr { .. } | EvalThunkKind::Released => None,
@@ -307,6 +560,7 @@ impl EvalThunk {
         match &self.kind {
             EvalThunkKind::Node { env, .. } => Some(env),
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
@@ -333,6 +587,7 @@ impl EvalThunk {
                 None => EvalWithEnv::empty_ref(),
             }),
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
@@ -348,6 +603,7 @@ impl EvalThunk {
                 None => EvalScopedGlobalEnv::empty_ref(),
             }),
             EvalThunkKind::Apply { .. }
+            | EvalThunkKind::GenListElemAtAddOne { .. }
             | EvalThunkKind::Apply2(_)
             | EvalThunkKind::Select { .. }
             | EvalThunkKind::BuiltinAttr { .. }
@@ -468,6 +724,10 @@ impl EvalThunk {
     /// Returns the currently attached force-storage mode.
     #[allow(dead_code)]
     pub(crate) fn force_storage_mode(&self) -> EvalThunkForceStorageMode {
+        #[cfg(feature = "candidate_c_value")]
+        if self.cell().is_single_entry() {
+            return EvalThunkForceStorageMode::SingleEntry;
+        }
         match self.storage_extension.as_deref() {
             None => EvalThunkForceStorageMode::Serial,
             Some(EvalThunkStorageExtension {
@@ -493,6 +753,10 @@ impl EvalThunk {
     /// payload cell are shared across workers, so only plain serial-storage
     /// thunks qualify.
     pub(crate) fn has_serial_only_force_storage(&self) -> bool {
+        #[cfg(feature = "candidate_c_value")]
+        if self.cell().is_single_entry() {
+            return false;
+        }
         match self.storage_extension.as_deref() {
             None => true,
             Some(extension) => matches!(extension.mode, EvalThunkStorageExtensionMode::Serial),
@@ -501,6 +765,10 @@ impl EvalThunk {
 
     /// Returns whether this thunk uses the single-entry direct force path.
     pub(crate) fn is_single_entry_force_storage(&self) -> bool {
+        #[cfg(feature = "candidate_c_value")]
+        if self.cell().is_single_entry() {
+            return true;
+        }
         matches!(
             self.storage_extension
                 .as_deref()
@@ -523,6 +791,35 @@ impl EvalThunk {
             None
             | Some(EvalThunkStorageExtensionMode::Serial)
             | Some(EvalThunkStorageExtensionMode::SingleEntry) => None,
+        }
+    }
+}
+
+impl TypedNodeThunkWork {
+    /// Returns a lazily reconstructed compatibility view for metadata readers.
+    pub(in crate::eval::heap) fn as_eval_thunk(&self) -> &EvalThunk {
+        self.expanded
+            .get_or_init(|| Box::new(self.reconstruct()))
+            .as_ref()
+    }
+
+    /// Reconstructs the ordinary suspended thunk consumed by the force path.
+    pub(in crate::eval::heap) fn into_eval_thunk(self) -> EvalThunk {
+        match self.expanded.into_inner() {
+            Some(expanded) => *expanded,
+            None => Self::reconstruct_parts(self.body, self.env),
+        }
+    }
+
+    fn reconstruct(&self) -> EvalThunk {
+        Self::reconstruct_parts(self.body, self.env.clone())
+    }
+
+    fn reconstruct_parts(body: EvalNodeRef, env: EvalEnv) -> EvalThunk {
+        EvalThunk {
+            kind: EvalThunkKind::Node { body, env },
+            cell: ThunkCell::new(),
+            storage_extension: None,
         }
     }
 }
@@ -665,10 +962,10 @@ mod tests {
     #[cfg(all(feature = "candidate_c_value", target_pointer_width = "64"))]
     #[test]
     fn candidate_c_common_closure_layout_stays_compact() {
-        assert_eq!(std::mem::size_of::<EvalEnv>(), 6 * 8);
-        assert_eq!(std::mem::size_of::<EvalThunk>(), 9 * 8);
-        assert_eq!(std::mem::size_of::<EvalLambda>(), 9 * 8);
-        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 10 * 8);
+        assert_eq!(std::mem::size_of::<EvalEnv>(), 4 * 8);
+        assert_eq!(std::mem::size_of::<EvalThunk>(), 8 * 8);
+        assert_eq!(std::mem::size_of::<EvalLambda>(), 7 * 8);
+        assert_eq!(std::mem::size_of::<FlatClosurePayload>(), 8 * 8);
     }
 
     #[test]
@@ -707,6 +1004,26 @@ mod tests {
         assert!(thunk.parallel_payload_cell().is_none());
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(thunk.body(), Some(IrId::new(7)));
+        #[cfg(feature = "candidate_c_value")]
+        assert!(
+            thunk.storage_extension.is_none(),
+            "the common Candidate-C single-entry marker needs no sidecar"
+        );
+    }
+
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn candidate_c_single_entry_marker_survives_cell_sharing() {
+        let mut thunk = EvalThunk::new(IrId::new(7)).into_single_entry();
+
+        let _shared = thunk.share_cell();
+
+        assert_eq!(
+            thunk.force_storage_mode(),
+            EvalThunkForceStorageMode::SingleEntry
+        );
+        assert!(thunk.is_single_entry_force_storage());
+        assert!(thunk.parallel_payload_cell().is_none());
     }
 
     /// The graph-shared heap payload types must be [`Send`] and [`Sync`] so a

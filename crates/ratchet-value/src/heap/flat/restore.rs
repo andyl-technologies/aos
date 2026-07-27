@@ -112,6 +112,9 @@ impl<T> FlatObjectStore<T> {
             .checked_mul(tail_len)
             .and_then(|tail_bytes| object_size.checked_add(tail_bytes))
             .ok_or(FlatObjectError::UnknownAddress { address })?;
+        if size_bytes > super::value_tail::VALUE_TAIL_PACKED_SIZE_MASK {
+            return Err(FlatObjectError::UnknownAddress { address });
+        }
         let end = address
             .checked_add(size_bytes)
             .ok_or(FlatObjectError::UnknownAddress { address })?;
@@ -119,8 +122,15 @@ impl<T> FlatObjectStore<T> {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         self.write_restored_payload(ptr, kind, payload)?;
+        let generation = self.issue_value_tail_generation().ok_or(
+            FlatObjectError::RegistryAllocationFailed {
+                entries: self.entries.len(),
+            },
+        )?;
         let mut entry = FlatStoreEntry::plain(ptr, size_bytes);
-        entry.mark_value_tail();
+        if !entry.mark_value_tail(generation) {
+            return Err(FlatObjectError::UnknownAddress { address });
+        }
         self.entries.push(entry);
         Ok(())
     }

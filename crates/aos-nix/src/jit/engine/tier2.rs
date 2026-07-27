@@ -68,7 +68,9 @@ use ratchet_jit::{
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
 use ratchet_oracle::eval::{OpaqueTier1Slot, Tier2ApplyHook};
-use ratchet_runtime_ffi::{run_context_finalized_native_chain_call, run_context_finalized_native_lambda_call};
+use ratchet_runtime_ffi::{
+    run_context_finalized_native_chain_call, run_context_finalized_native_lambda_call,
+};
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
@@ -230,8 +232,9 @@ impl NixJitTier1Engine {
         let env = lambda.env().clone();
         match prepared {
             PreparedDispatch::Unary(body) => {
-                match run_context_finalized_native_lambda_call(eval, id, span, &env, argument, &body)
-                {
+                match run_context_finalized_native_lambda_call(
+                    eval, id, span, &env, argument, &body,
+                ) {
                     Ok(outcome) if !outcome.is_trap() => {
                         Some(Tier2ApplyHook::Dispatched(outcome.value()))
                     }
@@ -280,11 +283,7 @@ impl NixJitTier1Engine {
         let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
             return self.promote_tier2_chain(eval, key, lambda);
         };
-        if !tier2_self_recursive_lambda_cache_eligible(
-            &ir.arena,
-            lambda.pattern(),
-            lambda.body(),
-        ) {
+        if !tier2_self_recursive_lambda_cache_eligible(&ir.arena, lambda.pattern(), lambda.body()) {
             return self.promote_tier2_chain(eval, key, lambda);
         }
         let cached = self
@@ -320,9 +319,7 @@ impl NixJitTier1Engine {
             self.tier2.borrow_mut().counts.insert(key, 0);
             return continued_hook(false, false, false);
         }
-        if !cache_hit
-            && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref()
-        {
+        if !cache_hit && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref() {
             cache.store(ir, lambda.pattern(), lambda.body(), budget, &lowering);
         }
 
@@ -452,7 +449,11 @@ fn tier2_body_kind_signature(eval: &TreeWalk, lambda: &EvalLambda) -> String {
 }
 
 /// A `Continued` hook with the given promotion/blacklist/gate flags.
-pub(super) const fn continued_hook(promoted: bool, blacklisted: bool, gated: bool) -> Tier2ApplyHook {
+pub(super) const fn continued_hook(
+    promoted: bool,
+    blacklisted: bool,
+    gated: bool,
+) -> Tier2ApplyHook {
     Tier2ApplyHook::Continued {
         promoted,
         blacklisted,
@@ -515,9 +516,7 @@ mod tests {
         let ir = lower(source);
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
-        eval.set_tier1_engine(Rc::new(
-            NixJitTier1Engine::new().expect("engine builds"),
-        ));
+        eval.set_tier1_engine(Rc::new(NixJitTier1Engine::new().expect("engine builds")));
         let result = eval.eval_root();
         let stats = eval.stats();
         (result, stats)
@@ -527,8 +526,7 @@ mod tests {
     /// matches the oracle exactly with zero deopts.
     #[test]
     fn fib_promotes_dispatches_and_matches_the_oracle() {
-        let source =
-            "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 20";
+        let source = "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 20";
         let oracle = eval_oracle(source);
         let (native, stats) = eval_with_tier2(source);
 
@@ -559,8 +557,7 @@ mod tests {
     /// can decode and re-verify it from the same cache root.
     #[test]
     fn fib_persists_and_reloads_verified_compiled_body() {
-        let source =
-            "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 20";
+        let source = "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 20";
         let ir = lower(source);
         let (pattern, body) = ir
             .arena
@@ -670,9 +667,7 @@ mod tests {
         let mut options = TreeWalkOptions::default();
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
-        eval.set_tier1_engine(Rc::new(
-            NixJitTier1Engine::new().expect("engine builds"),
-        ));
+        eval.set_tier1_engine(Rc::new(NixJitTier1Engine::new().expect("engine builds")));
         let native = eval.eval_root().expect("tier-2 evaluation succeeds");
         let stats = eval.stats();
 
@@ -787,8 +782,7 @@ mod tests {
     /// re-run reproduces the oracle's division-by-zero error exactly.
     #[test]
     fn compiled_division_by_zero_reproduces_the_oracle_error() {
-        let source =
-            "let f = n: if n < 1 then 1 / n else f (n - 1); in f 16";
+        let source = "let f = n: if n < 1 then 1 / n else f (n - 1); in f 16";
         let ir = lower(source);
         let oracle = TreeWalk::new(&ir).eval_root();
         let (native, _stats) = eval_with_tier2_result(source);
@@ -836,8 +830,7 @@ mod tests {
     /// entirely: nothing promotes and results are unchanged.
     #[test]
     fn disabled_tier2_promotes_nothing() {
-        let source =
-            "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 16";
+        let source = "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 16";
         let oracle = eval_oracle(source);
         let ir = lower(source);
         let mut options = TreeWalkOptions::default();

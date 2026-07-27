@@ -12,10 +12,9 @@
 //! `aos_nix_env`, so they target the AOS store layout when
 //! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -23,7 +22,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::env::aos_nix_command;
+use super::env::{aos_nix_command, aos_nix_env};
 use super::eval::{DrvClosure, NixEval, NixEvalConfig};
 use aos_nix_compat::drv::parse_drv_input_drvs_from_bytes;
 

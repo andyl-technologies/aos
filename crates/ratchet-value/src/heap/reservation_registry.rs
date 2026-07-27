@@ -346,10 +346,22 @@ mod tests {
         registry.register(b, 0x2_0000, 0x1000).expect("registers b");
 
         // Base, interior, and last-byte addresses resolve to their reservation.
-        assert_eq!(registry.reservation_containing(0x1_0000), Some((a, 0x1_0000)));
-        assert_eq!(registry.reservation_containing(0x1_0800), Some((a, 0x1_0000)));
-        assert_eq!(registry.reservation_containing(0x1_0fff), Some((a, 0x1_0000)));
-        assert_eq!(registry.reservation_containing(0x2_0001), Some((b, 0x2_0000)));
+        assert_eq!(
+            registry.reservation_containing(0x1_0000),
+            Some((a, 0x1_0000))
+        );
+        assert_eq!(
+            registry.reservation_containing(0x1_0800),
+            Some((a, 0x1_0000))
+        );
+        assert_eq!(
+            registry.reservation_containing(0x1_0fff),
+            Some((a, 0x1_0000))
+        );
+        assert_eq!(
+            registry.reservation_containing(0x2_0001),
+            Some((b, 0x2_0000))
+        );
 
         // One past the end of a's range and an address in no reservation miss.
         assert_eq!(registry.reservation_containing(0x1_1000), None);
@@ -357,7 +369,10 @@ mod tests {
 
         registry.unregister(a);
         assert_eq!(registry.reservation_containing(0x1_0800), None);
-        assert_eq!(registry.reservation_containing(0x2_0001), Some((b, 0x2_0000)));
+        assert_eq!(
+            registry.reservation_containing(0x2_0001),
+            Some((b, 0x2_0000))
+        );
     }
 
     #[test]
@@ -367,10 +382,7 @@ mod tests {
         let d = domain(super::super::CANDIDATE_C_ARENA_DOMAIN_MAX);
         register_reservation_base(d, 0x5000, 0x1000).expect("registers on the global table");
         assert_eq!(reservation_base(d), Some(0x5000));
-        assert_eq!(
-            reservation_containing_address(0x5500),
-            Some((d, 0x5000))
-        );
+        assert_eq!(reservation_containing_address(0x5500), Some((d, 0x5000)));
         unregister_reservation_base(d);
         assert_eq!(reservation_base(d), None);
         assert_eq!(reservation_containing_address(0x5500), None);

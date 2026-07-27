@@ -931,4 +931,3 @@ fn cache_record_parse_artifact_acquires_advisory_mapping_lock_before_same_proces
 
     let _ = fs::remove_dir_all(root);
 }
-

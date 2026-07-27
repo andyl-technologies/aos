@@ -13,24 +13,6 @@
 //! thunk-call scaffold casts and calls finalized no-import thunk artifacts, and
 //! can also call registered runtime-importing artifacts behind an explicit
 //! unsafe boundary when the caller supplies host-ABI-matched native candidates.
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    error::Error,
-    fmt, mem,
-    ptr::{self, NonNull},
-    rc::Rc,
-};
-use cranelift_codegen::{
-    CodegenError, Context,
-    ir::{ExternalName, Function, UserExternalName},
-    isa::OwnedTargetIsa,
-    settings::{self, Configurable, SetError},
-};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, ModuleError};
-use ratchet_core::{Ir, IrArena, IrId};
-use ratchet_value::value::Value;
 use crate::{
     abi::{JitEnvFramePtr, JitRuntimeContextPtr, JitThunkFn},
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi},
@@ -55,14 +37,39 @@ use crate::{
         JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision, TierUpDemandHint, TierUpPolicy,
     },
 };
+use cranelift_codegen::{
+    CodegenError, Context,
+    ir::{ExternalName, Function, UserExternalName},
+    isa::OwnedTargetIsa,
+    settings::{self, Configurable, SetError},
+};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{FuncId, Linkage, Module, ModuleError};
+use ratchet_core::{Ir, IrArena, IrId};
+use ratchet_value::value::Value;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt, mem,
+    ptr::{self, NonNull},
+    rc::Rc,
+};
 mod candidate_b;
 mod candidate_c;
 mod finalized;
+mod mixed_superblock;
 mod native_error;
 mod tier2;
 pub use candidate_b::jit_cranelift_call_context_finalized_candidate_b_thunk_entry;
 pub use candidate_c::jit_cranelift_call_context_finalized_candidate_c_thunk_entry;
 pub use finalized::JitCraneliftFinalizedFunction;
+pub use mixed_superblock::{
+    JitMixedSuperblockActivation, JitMixedSuperblockActivationError, JitMixedSuperblockArtifact,
+    JitMixedSuperblockCacheKey, JitMixedSuperblockCallDecision, JitMixedSuperblockCompileError,
+    JitMixedSuperblockExecutable, JitMixedSuperblockForceAction, JitMixedSuperblockForceDecision,
+    JitMixedSuperblockOutcome, JitMixedSuperblockPublishedUpdate, compile_mixed_superblock,
+};
 pub use native_error::JitCraneliftNativeCallError;
 use native_error::require_artifact_value_abi;
 pub use tier2::jit_cranelift_call_context_finalized_fold_step_i64acc_entry;
@@ -157,20 +164,19 @@ pub const fn jit_cranelift_dependency_pin() -> JitCraneliftDependencyPin {
     )
 }
 
-
+mod context;
+mod module_setup;
 mod preflight_a;
 mod preflight_b;
 mod preflight_fns;
-mod context;
 mod tier1;
-mod module_setup;
 
+pub use context::*;
+pub use module_setup::*;
 pub use preflight_a::*;
 pub use preflight_b::*;
 pub use preflight_fns::*;
-pub use context::*;
 pub use tier1::*;
-pub use module_setup::*;
 
 #[cfg(test)]
 mod tests;

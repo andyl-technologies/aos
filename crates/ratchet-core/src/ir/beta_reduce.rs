@@ -420,11 +420,9 @@ mod tests {
 
     /// Finds the first node of `kind`, if any.
     fn find_kind(ir: &Ir, kind: IrKind) -> Option<IrId> {
-        (0..ir.arena.nodes().len()).map(|i| IrId::new(i as u32)).find(|id| {
-            ir.arena
-                .node(*id)
-                .is_some_and(|node| node.kind == kind)
-        })
+        (0..ir.arena.nodes().len())
+            .map(|i| IrId::new(i as u32))
+            .find(|id| ir.arena.node(*id).is_some_and(|node| node.kind == kind))
     }
 
     fn frame_slot_counts(ir: &Ir) -> Vec<u32> {
@@ -435,7 +433,10 @@ mod tests {
     fn reduces_literal_apply_to_let_preserving_frames() {
         let mut ir = lower_source("(x: x) 2");
         let slots_before = frame_slot_counts(&ir);
-        assert!(find_kind(&ir, IrKind::Apply).is_some(), "starts as an apply");
+        assert!(
+            find_kind(&ir, IrKind::Apply).is_some(),
+            "starts as an apply"
+        );
         simplify_with_passes(&mut ir, &[&BetaReduceApply]).expect("beta succeeds");
         assert!(find_kind(&ir, IrKind::Apply).is_none(), "the apply is gone");
         let root = ir.arena.node(ir.root).expect("root");

@@ -405,13 +405,14 @@ fn transient_value_stack_roots_restore_after_body_panic() {
             evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
                 assert_eq!(eval.transient_value_stack_roots().len(), 1);
                 assert!(eval.transient_value_stack_roots()[0].raw_eq(original));
+                assert!(eval.set_current_transient_value_stack_root(0, Value::int(10)));
                 panic!("transient root cleanup test panic");
             });
     }));
 
     assert!(panic.is_err());
     assert!(evaluator.transient_value_stack_roots().is_empty());
-    assert!(roots[0].raw_eq(original));
+    assert!(roots[0].raw_eq(Value::int(10)));
 }
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-

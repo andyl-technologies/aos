@@ -250,8 +250,7 @@ fn allocation_helper_call_signatures_pin_scalars_and_pointer_results() {
 
 #[test]
 fn call_control_helper_call_signature_pins_apply_value_boundary() {
-    let apply =
-        runtime_helper_call_signature("aos_apply").expect("apply signature is core-owned");
+    let apply = runtime_helper_call_signature("aos_apply").expect("apply signature is core-owned");
 
     assert_eq!(
         apply.callable(),
@@ -272,8 +271,7 @@ fn call_control_helper_call_signature_pins_apply_value_boundary() {
 
 #[test]
 fn deoptimization_helper_call_signature_pins_record_pointer_boundary() {
-    let deopt =
-        runtime_helper_call_signature("aos_deopt").expect("deopt signature is core-owned");
+    let deopt = runtime_helper_call_signature("aos_deopt").expect("deopt signature is core-owned");
 
     assert_eq!(
         deopt.callable(),
@@ -285,10 +283,7 @@ fn deoptimization_helper_call_signature_pins_record_pointer_boundary() {
         deopt.parameters(),
         &[
             RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
-            RuntimeAbiParameter::new(
-                "deopt_record",
-                RuntimeAbiParameterKind::DeoptRecordPointer,
-            ),
+            RuntimeAbiParameter::new("deopt_record", RuntimeAbiParameterKind::DeoptRecordPointer,),
         ]
     );
     assert_eq!(deopt.return_kind(), RuntimeAbiReturnKind::Value);
@@ -296,8 +291,7 @@ fn deoptimization_helper_call_signature_pins_record_pointer_boundary() {
 
 #[test]
 fn error_helper_call_signature_pins_throw_divergence() {
-    let throw =
-        runtime_helper_call_signature("aos_throw").expect("throw signature is core-owned");
+    let throw = runtime_helper_call_signature("aos_throw").expect("throw signature is core-owned");
 
     assert_eq!(
         throw.callable(),
@@ -317,8 +311,7 @@ fn error_helper_call_signature_pins_throw_divergence() {
 
 #[test]
 fn forcing_helper_call_signatures_pin_whnf_value_boundary() {
-    let force =
-        runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
+    let force = runtime_helper_call_signature("aos_force").expect("force signature is core-owned");
     let force_deep = runtime_helper_call_signature("aos_force_deep")
         .expect("deep-force signature is core-owned");
     let blackhole_check = runtime_helper_call_signature("aos_blackhole_check")
@@ -328,10 +321,7 @@ fn forcing_helper_call_signatures_pin_whnf_value_boundary() {
         assert_eq!(
             signature.callable(),
             RuntimeCallableKind::Helper {
-                symbol: RuntimeHelperSymbol::new(
-                    symbol_name,
-                    RuntimeHelperRole::ForcingControl,
-                ),
+                symbol: RuntimeHelperSymbol::new(symbol_name, RuntimeHelperRole::ForcingControl,),
             }
         );
         assert_eq!(
@@ -365,10 +355,10 @@ fn forcing_helper_call_signatures_pin_whnf_value_boundary() {
 
 #[test]
 fn attrset_helper_call_signatures_pin_static_key_value_boundaries() {
-    let has_attr = runtime_helper_call_signature("aos_has_attr")
-        .expect("has-attr signature is core-owned");
-    let select_ic = runtime_helper_call_signature("aos_select_ic")
-        .expect("select-IC signature is core-owned");
+    let has_attr =
+        runtime_helper_call_signature("aos_has_attr").expect("has-attr signature is core-owned");
+    let select_ic =
+        runtime_helper_call_signature("aos_select_ic").expect("select-IC signature is core-owned");
 
     for (symbol_name, signature) in [("aos_has_attr", has_attr), ("aos_select_ic", select_ic)] {
         assert_eq!(
@@ -441,10 +431,7 @@ fn env_get_helper_call_signature_pins_slot_lookup_value_return() {
     assert_eq!(
         signature.callable(),
         RuntimeCallableKind::Helper {
-            symbol: RuntimeHelperSymbol::new(
-                "aos_env_get",
-                RuntimeHelperRole::EnvironmentAccess,
-            ),
+            symbol: RuntimeHelperSymbol::new("aos_env_get", RuntimeHelperRole::EnvironmentAccess,),
         }
     );
     assert_eq!(
@@ -459,16 +446,13 @@ fn env_get_helper_call_signature_pins_slot_lookup_value_return() {
 
 #[test]
 fn upval_get_helper_call_signature_pins_depth_slot_lookup_value_return() {
-    let signature = runtime_helper_call_signature("aos_upval_get")
-        .expect("upval-get signature is core-owned");
+    let signature =
+        runtime_helper_call_signature("aos_upval_get").expect("upval-get signature is core-owned");
 
     assert_eq!(
         signature.callable(),
         RuntimeCallableKind::Helper {
-            symbol: RuntimeHelperSymbol::new(
-                "aos_upval_get",
-                RuntimeHelperRole::EnvironmentAccess,
-            ),
+            symbol: RuntimeHelperSymbol::new("aos_upval_get", RuntimeHelperRole::EnvironmentAccess,),
         }
     );
     assert_eq!(
@@ -490,10 +474,7 @@ fn primop_call_helper_call_signature_pins_rt_env_module_node_value_return() {
     assert_eq!(
         signature.callable(),
         RuntimeCallableKind::Helper {
-            symbol: RuntimeHelperSymbol::new(
-                "aos_primop_call",
-                RuntimeHelperRole::PrimopDispatch,
-            ),
+            symbol: RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch,),
         }
     );
     assert_eq!(
@@ -613,9 +594,7 @@ fn builtin_call_preflight_reports_current_value_only_gaps() {
 #[test]
 fn builtin_call_status_reports_future_unsupported_arities() {
     assert_eq!(
-        RuntimeBuiltinCallStatus::from_first_class_arity(Some(
-            MAX_RUNTIME_PRIMOP_ABI_ARITY + 1
-        )),
+        RuntimeBuiltinCallStatus::from_first_class_arity(Some(MAX_RUNTIME_PRIMOP_ABI_ARITY + 1)),
         RuntimeBuiltinCallStatus::UnsupportedArity {
             arity: MAX_RUNTIME_PRIMOP_ABI_ARITY + 1,
             max: MAX_RUNTIME_PRIMOP_ABI_ARITY,
@@ -713,8 +692,7 @@ fn runtime_symbol_manifest_rejects_duplicates_before_registration() {
         RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
     );
 
-    push_manifest_entry(&mut entries, &mut seen, duplicate.clone())
-        .expect("first symbol records");
+    push_manifest_entry(&mut entries, &mut seen, duplicate.clone()).expect("first symbol records");
     let error = push_manifest_entry(&mut entries, &mut seen, duplicate)
         .expect_err("duplicate symbol rejects");
 

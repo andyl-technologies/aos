@@ -43,8 +43,7 @@ fn return_arity(function: &Function) -> usize {
 
 #[test]
 fn constant_thunk_body_returns_one_compressed_word() {
-    let function =
-        lower_constant_thunk_body(Value::int(42)).expect("inline-int constant lowers");
+    let function = lower_constant_thunk_body(Value::int(42)).expect("inline-int constant lowers");
     let expected = clif_signature_for_runtime_call(runtime_thunk_call_signature())
         .expect("thunk signature lowers");
 
@@ -62,8 +61,7 @@ fn constant_thunk_body_returns_one_compressed_word() {
 /// embed would mis-reject (or mis-encode) every negative constant.
 #[test]
 fn negative_int_constant_embeds_its_sign_extended_word() {
-    let function =
-        lower_constant_thunk_body(Value::int(-17)).expect("negative inline int lowers");
+    let function = lower_constant_thunk_body(Value::int(-17)).expect("negative inline int lowers");
     assert_eq!(
         iconst_words(&function),
         vec![CompressedValueWord::inline_int(-17).expect("inline").raw()]
@@ -169,9 +167,7 @@ fn apply_local_slots_passes_one_word_per_operand() {
         .blocks()
         .flat_map(|block| function.layout.block_insts(block))
         .filter_map(|inst| match &function.dfg.insts[inst] {
-            InstructionData::Call { args, .. } => {
-                Some(args.len(&function.dfg.value_lists))
-            }
+            InstructionData::Call { args, .. } => Some(args.len(&function.dfg.value_lists)),
             _ => None,
         })
         .max()

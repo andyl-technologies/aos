@@ -49,9 +49,8 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
         nix_jit_stack_map_enter_address_candidate()?,
         nix_jit_stack_map_exit_address_candidate()?,
     ] {
-        address_provenance.push(
-            NixJitRuntimeSymbolAddressProvenance::standalone_runtime_ffi_wrapper(&candidate),
-        );
+        address_provenance
+            .push(NixJitRuntimeSymbolAddressProvenance::standalone_runtime_ffi_wrapper(&candidate));
         address_candidates.push(candidate);
     }
 

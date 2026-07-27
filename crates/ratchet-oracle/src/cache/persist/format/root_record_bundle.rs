@@ -265,9 +265,8 @@ mod tests {
     #[test]
     fn bundle_round_trips() {
         let closure = sample_closure();
-        let bundle =
-            RootRecordBundle::from_closure(b"/nix/store/root.drv", &closure, &[], 7)
-                .expect("bundle builds");
+        let bundle = RootRecordBundle::from_closure(b"/nix/store/root.drv", &closure, &[], 7)
+            .expect("bundle builds");
         let bytes = bundle.encode().expect("bundle encodes");
         let decoded = RootRecordBundle::decode(&bytes).expect("bundle decodes");
         assert_eq!(decoded, bundle);
@@ -278,9 +277,8 @@ mod tests {
     #[test]
     fn corrupted_blob_fails_content_validation() {
         let closure = sample_closure();
-        let bundle =
-            RootRecordBundle::from_closure(b"/nix/store/root.drv", &closure, &[], 0)
-                .expect("bundle builds");
+        let bundle = RootRecordBundle::from_closure(b"/nix/store/root.drv", &closure, &[], 0)
+            .expect("bundle builds");
         let mut bytes = bundle.encode().expect("bundle encodes");
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;

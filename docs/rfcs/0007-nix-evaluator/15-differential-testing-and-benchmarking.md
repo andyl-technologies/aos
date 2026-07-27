@@ -599,9 +599,9 @@ The program-level goals are **10x C++ performance** and **half of C++'s RSS**.
 To keep progress comparable across every RFC-0007 campaign — memory ladder, JIT
 tiers, parallel eval, persist-write batching — each campaign landing reports the
 **same two numbers**, defined once here. Both come from `aos nix-bench --json`
-(fields already emitted; no schema change), in the standard config (default
-cache-less, `AOS_NIX_JIT=1`, quiet machine, interleaved A/B, median over ≥3
-samples), using the **paired-cycle** cold/warm semantics (§5.2, schema v4). Use
+in the standard config (default cache-less, `AOS_NIX_JIT=1`, quiet machine,
+interleaved A/B, median over ≥3 samples), using the **paired-cycle** cold/warm
+semantics (§5.2) and the exact child-memory state introduced in schema v5. Use
 `native_summary.median_seconds` (not the mean) for the native leg — it is robust
 to the host-load spikes that skew the mean on a contended machine.
 
@@ -618,10 +618,11 @@ to the host-load spikes that skew the mean on a contended machine.
    (2026-07-12): **0.515** (~1.9x). Report the warm geomean alongside for
    context; the cold geomean is the headline.
 2. **Wide-eval memory ratio — the 0.5x number.** On `-A bench.wide`, native
-   post-run RSS over the C++ oracle child peak, **cold and warm** separately:
+   peak RSS over the exact, paired C++ oracle child peak, **cold and warm**
+   separately:
    ```text
-   mem_ratio(temp) = median(native_summary.memory.rss_after_bytes_max)[temp]
-                     / median(summary.child_peak_rss_bytes_max)[temp]
+   mem_ratio(temp) = median(exact native child peak)[temp]
+                     / median(summary.exact_child_peak_rss.bytes)[temp]
    ```
    **Goal: mem_ratio ≤ 0.50** cold and warm. Also report the raw MiB and
    the native arena peak (`arena_peak_live_mapped_bytes_max`) so a regression is
@@ -641,6 +642,18 @@ to the host-load spikes that skew the mean on a contended machine.
      empty dynamic-scope captures out of the common thunk subsequently reduced
      the isolated native peak to about 828MiB, but the current 2.46x peak/peak
      ratio remains well outside the goal.
+
+     Schema v5 now records `summary.exact_child_peak_rss` as an explicit state
+     and reports the old `RUSAGE_CHILDREN` observation only as
+     `oracle_child_peak_rss_watermark`. The current exact state is
+     `unavailable_safe_per_child_wait_api`: `std::process::Child` reaps through
+     `waitpid`, while the already-vendored safe `rustix` and `nix` APIs expose
+     status-only `waitpid`/`waitid`, not the per-child rusage returned by
+     `wait4`. Therefore the watermark is never substituted into the canonical
+     ratio. Completing this item requires either a hermetic safe `wait4`
+     wrapper/dependency or a separately supervised child whose exact result is
+     paired back into this field, plus the corresponding isolated native-child
+     measurement.
 
    **Achieved (2026-07-12, builder-hil1-87eb5b00, HEAD 223fd30f, byte-parity
    green).** With mimalloc's default deferred purge the native process retains

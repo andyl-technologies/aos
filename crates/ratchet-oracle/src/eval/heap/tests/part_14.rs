@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -57,7 +56,6 @@ fn collector_poll_minor_gc_card_table_plan_rejects_clean_unremembered_source_car
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -168,7 +166,6 @@ fn collector_poll_minor_gc_card_table_rescan_publishes_dirty_survivor_edge() {
         )]
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -407,7 +404,6 @@ fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites()
         ]
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -703,7 +699,6 @@ fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
         );
     }
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

@@ -9,6 +9,10 @@ edition = "2024"
 # carrier flip lands. Empty today (S4 sub-increment 1 establishes the variant
 # and its JIT-off-by-construction constraint before any representation change).
 candidate_c_value = []
+# Default-off shadow model for a Nofl-style reusable-hole allocator. The
+# production allocator remains address-preserving and unchanged; this feature
+# only records successful Candidate-C reservations and retirements.
+hole_reuse_shadow_probe = ["candidate_c_value"]
 
 [dependencies]
 aos-nix-syntax = { workspace = true }

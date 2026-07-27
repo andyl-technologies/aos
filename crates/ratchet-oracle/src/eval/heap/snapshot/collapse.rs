@@ -386,6 +386,11 @@ fn collapse_thunk_fields(thunk: &mut EvalThunk, apply: &mut dyn FnMut(&mut Value
             function_value,
             argument_value,
             ..
+        }
+        | EvalThunkKind::GenListElemAtAddOne {
+            function_value,
+            argument_value,
+            ..
         } => {
             apply(function_value);
             apply(argument_value);

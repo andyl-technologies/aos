@@ -117,8 +117,9 @@ impl JitModuleContext {
         artifact: JitClifArtifact,
     ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
         let inner = &mut *self.inner.borrow_mut();
-        let readiness =
-            require_resolved_artifact_imports(jit_module_readiness_preflight_for_artifact(&artifact)?)?;
+        let readiness = require_resolved_artifact_imports(
+            jit_module_readiness_preflight_for_artifact(&artifact)?,
+        )?;
         require_registered_artifact_imports(&readiness, &inner.registration)?;
 
         let base_symbol_name = module_symbol_name_for_artifact(readiness.artifact());
@@ -234,4 +235,3 @@ pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(
 
     Ok(context_dispatched)
 }
-

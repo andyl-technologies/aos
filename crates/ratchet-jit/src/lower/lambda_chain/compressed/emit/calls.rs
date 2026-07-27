@@ -38,7 +38,12 @@ pub(super) fn emit_call_chain(
         return emit_self_call(cursor, ctx, &argument_words);
     }
 
-    let Some(pinned) = ctx.pinned.iter().find(|callee| callee.upval == upval).copied() else {
+    let Some(pinned) = ctx
+        .pinned
+        .iter()
+        .find(|callee| callee.upval == upval)
+        .copied()
+    else {
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: id,
             kind: IrKind::Apply,

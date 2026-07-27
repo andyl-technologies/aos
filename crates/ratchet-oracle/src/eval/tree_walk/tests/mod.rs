@@ -219,6 +219,8 @@ use support::*;
 // the helper was a local item that shadowed the glob.
 use support::lower;
 
+#[cfg(feature = "active_packed_thunk_probe")]
+mod active_packed_thunks;
 mod analysis_soundness;
 mod attr_shape_modes;
 mod attrs_1;
@@ -262,6 +264,7 @@ mod fetchurl;
 mod filesystem_1;
 mod filesystem_2;
 mod flake;
+mod force_leases;
 mod formal_set_binding;
 mod gc;
 mod hash;
@@ -270,6 +273,9 @@ mod hash_file_surface;
 mod heap_census;
 #[cfg(feature = "candidate_c_value")]
 mod heap_snapshot;
+mod import_cache_leases;
+mod import_module_leases;
+mod lambda_call_leases;
 mod memo_l0;
 mod numeric;
 mod options;
@@ -286,6 +292,7 @@ mod safepoint_roots;
 mod search_path;
 mod source_path_surfaces;
 mod stats;
+mod stg_apply_machine;
 mod strings_1;
 mod strings_2;
 mod strings_3;

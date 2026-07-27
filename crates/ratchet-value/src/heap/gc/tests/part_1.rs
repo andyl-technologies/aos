@@ -229,12 +229,9 @@ fn record_thunk_resolve_write_barrier_records_only_required_edges() {
     );
     let mut set = RememberedSet::new();
 
-    let action = record_thunk_resolve_write_barrier(
-        GenerationalGcTier::DaemonGenerational,
-        write,
-        &mut set,
-    )
-    .expect("barrier records");
+    let action =
+        record_thunk_resolve_write_barrier(GenerationalGcTier::DaemonGenerational, write, &mut set)
+            .expect("barrier records");
 
     assert_eq!(action, ThunkResolveWriteBarrier::Remember { edge });
     assert_eq!(set.edges(), &[edge]);
@@ -772,9 +769,8 @@ fn minor_gc_destination_placement_plan_aligns_offsets_by_generation() {
     )
     .expect("allocation plan builds");
 
-    let placement_plan =
-        MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
-            .expect("placement plan builds");
+    let placement_plan = MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
+        .expect("placement plan builds");
 
     assert_eq!(placement_plan.len(), 3);
     assert!(!placement_plan.is_empty());

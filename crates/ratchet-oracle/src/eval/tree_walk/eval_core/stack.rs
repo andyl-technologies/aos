@@ -9,6 +9,8 @@
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use std::cell::Cell;
+#[cfg(feature = "collection_poll_probe")]
+use std::panic::Location;
 
 use super::*;
 
@@ -47,6 +49,45 @@ impl Drop for StackFloorRestore {
 }
 
 impl TreeWalk {
+    /// Runs evaluator work with the same native-stack headroom as node entry.
+    ///
+    /// Specialized force paths that intentionally bypass [`Self::eval_node`]
+    /// use this boundary so the optimization cannot bypass segmented-stack
+    /// protection.
+    pub(in crate::eval::tree_walk) fn with_eval_stack_headroom<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            let stack_pointer = current_stack_pointer();
+            let enough_space = EVAL_STACK_FLOOR.with(|floor| {
+                let mut floor_value = floor.get();
+                if floor_value == 0 {
+                    floor_value = stacker::remaining_stack()
+                        .and_then(|remaining| stack_pointer.checked_sub(remaining))
+                        .unwrap_or(0);
+                    floor.set(floor_value);
+                }
+                floor_value != 0
+                    && stack_pointer.saturating_sub(floor_value) >= EVAL_STACK_RED_ZONE_BYTES
+            });
+            if enough_space {
+                return body(self);
+            }
+            let previous_floor = EVAL_STACK_FLOOR.with(|floor| floor.replace(0));
+            let _restore = StackFloorRestore(previous_floor);
+            return stacker::grow(EVAL_STACK_SEGMENT_BYTES, || body(self));
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            stacker::maybe_grow(EVAL_STACK_RED_ZONE_BYTES, EVAL_STACK_SEGMENT_BYTES, || {
+                body(self)
+            })
+        }
+    }
+
     /// Evaluates one node with enough native-stack headroom for recursive work.
     ///
     /// The callback stays on the current thread and switches stacks only when
@@ -59,7 +100,46 @@ impl TreeWalk {
     /// Returns [`TreeWalkError`] under the same conditions as the underlying
     /// node evaluator, including `MaxCallDepthExceeded` when a Nix call crosses
     /// the configured limit.
+    #[cfg_attr(feature = "collection_poll_probe", track_caller)]
     pub fn eval_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "collection_poll_probe")]
+        {
+            return self.eval_node_from_caller(id, Location::caller());
+        }
+        #[cfg(not(feature = "collection_poll_probe"))]
+        {
+            self.eval_node_with_stack_headroom(id)
+        }
+    }
+
+    /// Evaluates one node while retaining an outward caller captured by a portal.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval::tree_walk) fn eval_node_from_caller(
+        &mut self,
+        id: IrId,
+        caller_location: &'static Location<'static>,
+    ) -> Result<Value, TreeWalkError> {
+        self.with_attributed_native_continuation_edge(
+            super::super::native_continuation_shadow::NativeContinuationEdge::EvalNode,
+            super::super::native_continuation_shadow::NativeContinuationKind::PrimOpEvalChild,
+            id,
+            caller_location,
+            |eval| eval.eval_node_with_stack_headroom(id),
+        )
+    }
+
+    fn eval_node_with_stack_headroom(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "collection_poll_probe")]
+        let token = self.begin_speed_opportunity_phase(
+            super::super::whole_demand_corridor_census::SpeedOpportunityPhase::Eval,
+        );
+        let result = self.eval_node_with_stack_headroom_inner(id);
+        #[cfg(feature = "collection_poll_probe")]
+        self.finish_speed_opportunity_phase(token, &result);
+        result
+    }
+
+    fn eval_node_with_stack_headroom_inner(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         {
             let stack_pointer = current_stack_pointer();

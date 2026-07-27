@@ -37,16 +37,16 @@ pub(crate) use beta_reduce::all_child_ids;
 pub use case_of_known::CaseOfKnown;
 pub use const_fold::ConstFold;
 pub use dead_binding_elim::DeadBindingElim;
+pub use facts::{
+    BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,
+    LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand, LambdaFormalSummary,
+    SharedChainReason, Strictness, ThunkSharing,
+};
 pub use inline::InlineSingleUse;
 pub use render::render_ir;
 pub use simplify::{
     PASS_SET_VERSION, PassOutcome, SIMPLIFY_MAX_ITERS, SimplifyError, SimplifyPass, SimplifyPhase,
     simplify_ir, simplify_with_passes,
-};
-pub use facts::{
-    BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,
-    LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand, LambdaFormalSummary,
-    SharedChainReason, Strictness, ThunkSharing,
 };
 
 /// Lowers a scope-resolved AST into evaluator IR.
@@ -308,6 +308,47 @@ impl Ir {
     /// Returns the analysis facts attached to one node.
     pub fn node_facts(&self, id: IrId) -> Option<ExprFacts> {
         self.facts.get(id)
+    }
+
+    /// Estimates resident bytes owned directly by this lowered IR artifact.
+    ///
+    /// Includes vector/boxed-slice capacities, nested capture and side-table
+    /// arrays, and the file-local symbol table. Allocator metadata and storage
+    /// owned by external caches are not included.
+    pub fn resident_bytes(&self) -> usize {
+        let frames = std::mem::size_of_val(&*self.frames).saturating_add(
+            self.frames
+                .iter()
+                .map(|frame| std::mem::size_of_val(&*frame.captures))
+                .sum::<usize>(),
+        );
+        let with_chains = std::mem::size_of_val(&*self.with_chains).saturating_add(
+            self.with_chains
+                .iter()
+                .map(|chain| std::mem::size_of_val(&*chain.scopes))
+                .sum::<usize>(),
+        );
+        let attr_paths = std::mem::size_of_val(&*self.attr_paths).saturating_add(
+            self.attr_paths
+                .iter()
+                .map(|path| std::mem::size_of_val(&**path))
+                .sum::<usize>(),
+        );
+        let shapes = std::mem::size_of_val(&*self.shapes).saturating_add(
+            self.shapes
+                .iter()
+                .map(|shape| std::mem::size_of_val(&*shape.keys))
+                .sum::<usize>(),
+        );
+        self.arena
+            .storage_bytes()
+            .saturating_add(self.facts.storage_bytes())
+            .saturating_add(self.symbols.resident_bytes())
+            .saturating_add(frames)
+            .saturating_add(with_chains)
+            .saturating_add(attr_paths)
+            .saturating_add(std::mem::size_of_val(&*self.bindings))
+            .saturating_add(shapes)
     }
 }
 

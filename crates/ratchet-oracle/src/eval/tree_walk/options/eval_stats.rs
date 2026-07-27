@@ -23,4 +23,19 @@ impl TreeWalkOptions {
     pub const fn eval_stats_dump(&self) -> bool {
         self.eval_stats_dump
     }
+
+    /// Enables or disables the exact `genList` selected-child shape census.
+    ///
+    /// This diagnostic is effective only when [`Self::eval_stats_dump`] is
+    /// also enabled. It admits the guarded `GenListElemAtAddOne` force path
+    /// during that stats run so the child selected by `elemAt` can be
+    /// classified immediately before forcing.
+    pub fn set_genlist_selected_child_census_enabled(&mut self, enabled: bool) {
+        self.genlist_selected_child_census_enabled = enabled;
+    }
+
+    /// Returns whether the exact `genList` selected-child census is active.
+    pub const fn genlist_selected_child_census_enabled(&self) -> bool {
+        self.eval_stats_dump && self.genlist_selected_child_census_enabled
+    }
 }

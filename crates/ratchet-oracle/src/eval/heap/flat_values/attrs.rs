@@ -62,6 +62,67 @@ pub(crate) struct FlatAttrsPayload {
 }
 
 impl EvalHeap {
+    /// Allocates one unpublished evacuation attrset without hash-cons admission.
+    ///
+    /// The caller must keep the containing heap unobservable and rebuild its
+    /// attrset hash-cons table before exposing the heap.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn flat_alloc_evacuation_attrs(
+        &mut self,
+        metadata: EvalHeapAttrsMetadata,
+        attrs: FlatAttrs,
+    ) -> Result<Value, EvalHeapError> {
+        let slots = u32::try_from(attrs.len())
+            .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
+        let epoch = self.next_access_epoch();
+        let shape = metadata.shape();
+        let entry_count = attrs.len();
+        let per_entry = std::mem::size_of::<AttrEntry>() + 2 * std::mem::size_of::<u32>();
+        let allocation = if entry_count <= FLAT_INLINE_ELEMENT_BYTES_MAX / per_entry {
+            let mut tail = FlatTailLayout::new();
+            tail.add_slice::<AttrEntry>(entry_count)
+                .and_then(|()| tail.add_slice::<u32>(entry_count))
+                .and_then(|()| tail.add_slice::<u32>(entry_count))
+                .and_then(|()| {
+                    self.flat_attrs.alloc_with_trailing(
+                        FlatObjectKind::Attrs,
+                        flat_aux_for_len(entry_count),
+                        0,
+                        epoch,
+                        tail,
+                        |writer| {
+                            let entries = writer.write_slice(attrs.entries_by_symbol())?;
+                            let source_order = writer.write_slice(attrs.source_order())?;
+                            let iteration_order = writer.write_slice(attrs.iteration_order())?;
+                            Ok(FlatAttrsPayload {
+                                metadata,
+                                attrs: FlatAttrs::from_flat_parts(
+                                    entries,
+                                    source_order,
+                                    iteration_order,
+                                ),
+                            })
+                        },
+                    )
+                })
+        } else {
+            self.flat_attrs.alloc_with_aux(
+                FlatObjectKind::Attrs,
+                flat_aux_for_len(entry_count),
+                0,
+                epoch,
+                FlatAttrsPayload { metadata, attrs },
+            )
+        }
+        .map_err(flat_alloc_error)?;
+        self.permanent_allocator
+            .record_flat_attrs_allocation_safepoint(shape, slots, allocation.allocation);
+        let value = self.value_for_flat_allocation(ValueTag::Attrs, allocation.ptr)?;
+        self.alloc_counters.note_attrs_built(entry_count);
+        self.alloc_counters.note_value_allocated();
+        Ok(value)
+    }
+
     /// Returns whether new attrset allocations use structural hash-consing.
     pub(crate) const fn attrs_hash_cons_enabled(&self) -> bool {
         self.attrs_hash_cons_enabled
@@ -115,6 +176,9 @@ impl EvalHeap {
         // observes it. Skip the full xxh3 over every entry there and seed the
         // header with a zero placeholder.
         let (cons_slot, header_hash) = if self.attrs_hash_cons_enabled {
+            for entry in attrs.entries_by_symbol() {
+                self.observe_value_identity(entry.value);
+            }
             let hash = crate::eval::heap::arena::attrs_structural_hash(metadata, &attrs);
             match self.admit_flat_attrs_cons(hash, metadata, &attrs)? {
                 HashConsReservation::Existing(value) => {
@@ -144,8 +208,7 @@ impl EvalHeap {
         // every unique payload.
         let allocation = {
             let entry_count = attrs.len();
-            let per_entry =
-                std::mem::size_of::<AttrEntry>() + 2 * std::mem::size_of::<u32>();
+            let per_entry = std::mem::size_of::<AttrEntry>() + 2 * std::mem::size_of::<u32>();
             let result = if entry_count <= FLAT_INLINE_ELEMENT_BYTES_MAX / per_entry {
                 let mut tail = FlatTailLayout::new();
                 tail.add_slice::<AttrEntry>(entry_count)
@@ -208,6 +271,8 @@ impl EvalHeap {
             self.push_attrs_cons_value(cons_slot, value);
         }
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Attrs);
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -225,6 +290,8 @@ impl EvalHeap {
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::Attrs);
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::Attrs);
                 if self.epoch_tracking_enabled {
                     object.touch(self.next_access_epoch());
                 }
@@ -247,6 +314,8 @@ impl EvalHeap {
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::Attrs);
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::Attrs);
                 if self.epoch_tracking_enabled {
                     object.touch(self.next_access_epoch());
                 }
@@ -277,6 +346,17 @@ impl EvalHeap {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&FlatAttrsPayload, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_attrs_payload_ptr(ptr);
+        }
         match self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs) {
             Ok(object) => Ok(object.payload()),
             Err(error) => Err(self.flat_resolution_error(ValueTag::Attrs, ptr, error)),
@@ -340,9 +420,7 @@ impl EvalHeap {
                     let same_hash = object.structural_hash() == hash.raw();
                     let payload = object.payload();
                     Ok::<bool, EvalHeapError>(
-                        same_hash
-                            && payload.metadata == metadata
-                            && payload.attrs.raw_eq(attrs),
+                        same_hash && payload.metadata == metadata && payload.attrs.raw_eq(attrs),
                     )
                 })?
                 .copied()

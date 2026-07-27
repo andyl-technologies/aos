@@ -12414,6 +12414,32 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       O(1)-class exact allocation-start proof (with memory measured against the
       `<0.5x` gate). Add adversarial interior-pointer tests and run Miri/ASan;
       the existing region-plus-header check alone is not a Rust safety proof.
+      A sparse one-bit-per-eight-byte reservation-sidecar prototype closed the fresh
+      serial allocation and region-reuse cases, and trusted snapshot manifests
+      were prepublished before restore resolution. The complete Candidate-C
+      suite and 53 snapshot tests were green, but the isolated lookup raised
+      full-toplevel instructions from approximately 21.900B to
+      22.142-22.144B (about 1.11%) at flat RSS. Retain it only if the combined
+      compact-registry stage produces a net measured win; fully untrusted raw
+      heap-image loading still requires validated reconstruction rather than
+      treating serialized indices as provenance
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+      The combined 8-byte reservation registry remained fully test-green and
+      added roughly 26-29MiB of memory saving, but retired
+      22.3946-22.3949B instructions: 1.14% above bitmap-only and 2.26% above
+      the retained alias candidate. Both prototype stages were consequently
+      rejected; close this gap only inside a broader closure layout that pays
+      for the witness without regressing prior retained work.
+- [ ] **Discovered Candidate-C record-placement incompatibility:** the
+      Candidate-C serial heap's GC-scaffolding door switches worker closures to
+      the record table, whose runtime allocator returns an address outside the
+      flat reservation. `Value::thunk` then fails with
+      `UnregisteredReservation` before the checked record-resolution fallback
+      can be exercised. Close by giving record placement a registered
+      Candidate-C domain/index encoding (or by removing that placement from
+      Candidate-C configurations with an explicit, tested unsupported result);
+      then test record-backed thunk/lambda/primop resolution without weakening
+      malformed, foreign-domain, or shared-backend error fidelity.
 - [x] **Candidate-C trusted atomic-cell decode:** private frame/thunk cells
       validate values at construction/store and reconstruct the intact word
       directly after an acquire load. The local `unsafe` boundary documents the
@@ -12522,6 +12548,46 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       10.2-11.0%). Byte parity
       remained green
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Remove the compatibility-array tax from every production closure:**
+      `EvalEnvStorage`'s independently-constructed-frame fallback used a fat
+      `Arc<[Arc<EvalFrame>]>`, so that test/compatibility-only variant widened
+      the enum carried by all production thunks and lambdas even though the
+      primary workload constructs none of them (`env_captures=0`). Store the
+      fallback vector behind a thin `Arc<Vec<_>>` instead. Candidate C
+      `EvalEnv` fell from 48 to 40 bytes, `EvalThunk` and `EvalLambda` from 72
+      to 64, `FlatClosurePayload` from 80 to 72, and complete flat closures
+      from 104 to 96 bytes. Two exact primary runs retired 21.8781B and
+      21.8759B instructions with 608,676-610,524KiB peak RSS; the retained
+      alias-only candidate was approximately 21.9068B and 638,964KiB, so the
+      general layout shrink recovered about 28-30MiB without an instruction
+      regression. Adjacent preserved baselines retired 22.9391-22.9412B and
+      used 706,140-708,688KiB
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Remove the duplicate flat-capture owner without weakening stale-handle
+      safety:** the tail handle's registry index already identifies its flat
+      closure owner, so retaining a second heap `Value` widened every
+      environment. Ownerless resolution now validates a non-rewinding 32-bit
+      generation packed into the tail entry's existing size word; a
+      deterministic region-pop test proves that an old handle rejects a new
+      same-length object at the reused registry index and arena address. A
+      checked 12-bit-module/20-bit-node capture-site coordinate preserves exact
+      source identity in one word, with linked capture as the fail-closed
+      fallback outside that optimization envelope. `EvalEnv` fell from 40 to
+      32 bytes, `EvalLambda` from 64 to 56, `FlatClosurePayload` from 72 to 64,
+      and complete flat closures from 96 to 88 bytes; `EvalThunk` remains 64
+      bytes because `Apply` still pins its internal union. A later provenance
+      audit found that the first 21.7149B/21.7151B measurements included a
+      rejected 128-line plain-call prototype left only in the remote checkout.
+      After syncing every tracked file and rebuilding with the exact
+      Candidate-C/rpath recipe, two authoritative runs retired 21.6024B and
+      21.6022B instructions with 597,796-602,456KiB peak RSS. Candidate and
+      pinned C++ produced the same
+      `/nix/store/hwvzgyhp8a944ggz40mi5ym8pw3jhryd-aos-system-toplevel.drv`;
+      C++ retired 6.2200B instructions and peaked at 342,548KiB. Candidate C
+      passed 2,679 active oracle tests (37 ignored), the
+      default carrier passed 3,156 (34 ignored), both doctest sets passed, and
+      the value crate passed 380 Candidate-C plus 391 default tests
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] **Discovered active-frame compatibility transition bug:** pushing two
       independently constructed frames into an initially empty persistent
       active-frame stack incorrectly retained linked storage even though the
@@ -12531,6 +12597,38 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `ActiveEvalFrames::push`, preserve the existing chain in compatibility
       order, and pin both the transition and the 22-root reverse-depth
       writeback case with tests.
+- [x] **Remove cold active-frame and persistent-stack query taxes:** keep the
+      unlinked active-frame compatibility vector behind a box rather than
+      embedding its two-handle `SmallVec` storage in every production active
+      handle; `ActiveEvalFrames`, `ActiveEvalEnv`, and
+      `SuspendedTreeWalkEnv` now occupy 24, 48, and 64 bytes. Add inherent
+      `len`/`is_empty` methods to `EvalWithEnv` and `EvalScopedGlobalEnv` so
+      head-only predicates no longer fall through `Deref<[T]>` to the
+      `OnceLock` slice materializer. Two exact runs with both fixes retired
+      21.5421B and 21.5417B instructions, about 60.4M (0.28%) below the
+      source-identical clean 21.6024B/21.6022B baseline. A 72-byte
+      lexical-only restore marker was flat and reverted; consuming a cloned
+      lambda environment saved only about 0.04% and was also reverted. Final
+      checksum-matched acceptance runs reproduced 21.5422B/21.5421B at
+      584,388-585,756KiB and matched pinned C++ byte-for-byte on
+      `/nix/store/1q5pmgxm4saj0vvdq8f2rlyj5hpqxyzf-aos-system-toplevel.drv`.
+      C++ retired 6.2199B instructions at 343,572KiB, leaving 3.46x
+      instructions and 1.70-1.71x peak RSS. Candidate C passed 2,680 active
+      tests (37 ignored), the default carrier passed 3,157 (34 ignored), and
+      both doctest sets passed
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Reject polymorphic active environments and coincidence-only install
+      bypass:** a complete `EvalEnv`-as-active prototype removed the
+      active/captured conversion and reduced suspended records from 64 to 48
+      bytes, but full-toplevel runs regressed from 21.5421-21.5422B to
+      21.7318-21.7341B instructions (0.89%) with unchanged
+      583,784-587,496KiB peak RSS. The captured storage enum's six-way dispatch
+      moved onto every lexical read, proving that the future arena needs a
+      monomorphic active handle. A follow-up census found only 65,063 of
+      4,285,421 installs (1.52%) already matched the active lexical
+      environment, too small to justify taxing the other 98.48% with a
+      no-swap branch. Both experiments and the one-off census were reverted
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [x] **Compact serial thunk state and rare shared identity:** Candidate C now
       reserves two invalid tagged-value words for `Suspended` and `Blackhole`
       and stores every forced result directly in the same `AtomicU64`.
@@ -12551,12 +12649,495 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       header still adds 24 bytes even though closure hash and access-epoch
       words are cold/constant in the default evaluator, and the 88-byte lambda
       now pins the shared closure-union size eight bytes above the compact
-      thunk. Design closure-specific header and lambda representations
-      containing only metadata resolution actually requires, preserve
-      GC/snapshot semantics, and accept them only with byte parity, the full
-      Candidate-C suite, and measured full-toplevel instruction and peak-RSS
-      wins. The current approximately 715MiB peak remains far above the
-      `<0.5x` C++ target
+      thunk. Removing only the epoch word reduced paired peak RSS by
+      34-40MiB but regressed retired instructions by 0.62%, so it was rejected.
+      Design the next representation as one combined change: a
+      reservation-level allocation-start/mark bitmap, self-describing extents,
+      compact or eliminated 16-byte `FlatStoreEntry` records, and a
+      closure-specific header without the unused hash. Preserve GC/snapshot
+      semantics and accept it only with byte parity, the full Candidate-C
+      suite, and measured full-toplevel instruction and peak-RSS wins. The
+      retained alias elimination subsequently reduced the peak to
+      approximately 647MiB, and the compatibility-array layout fix reduced it
+      again to approximately 609MiB. Exact ownerless capture metadata and the
+      active-handle follow-up reduced current samples to roughly 585-608MiB,
+      which remains far above the `<0.5x`
+      C++ target
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Distinguish monotonic allocation from semantic liveness:** the
+      default-off weak-root census traverses strings, lists, attrsets, generic
+      closures, record-backed values, and headerless typed thunk heads from
+      the evaluator's explicit roots while deliberately excluding hash-cons
+      indexes as roots. At the completed primary instantiation boundary only
+      933 objects remained reachable: 127 strings/paths, 31 attrsets, three
+      lists, 190 typed thunks, 70 generic thunks, 496 lambdas, and 16 primops.
+      This is 17,096 of 5,739,544 string/path bytes, 13,680 of 49,655,952
+      attrset bytes, 144 of 14,689,728 list bytes, 7,360 of 114,629,536
+      generic-thunk bytes, 43,856 of 54,193,448 lambda bytes, and 504 of
+      20,424,776 list-spine bytes. The previous heap census therefore measured
+      retained monotonic allocation, not a live-set lower bound. Final
+      liveness proves strong collection economics but not peak economics.
+      Import-watermark samples with typed heads disabled make the peak
+      economics concrete: at 1,024 modules, 65.45MiB of 121.86MiB measured
+      inline/spine storage was unreachable; at 1,152, 162.94MiB of 275.79MiB;
+      at 1,200, 207.16MiB of 365.42MiB; and at 1,220, 215.05MiB of 373.30MiB.
+      The last sample retained a 158.25MiB live set while 57.6% of measured
+      storage was already dead. This clears the 80MiB weak-cons plus segmented
+      collection architecture gate. It is not an RSS result: hash-cons
+      indexes must become weak, storage must be returned or reused before the
+      peak, and unmeasured allocator/index overhead remains outside the byte
+      totals. Typed-head milestone scans currently reject a reachable
+      blackholed head because its moved-out work lives in evaluator control
+      state; collection in that mode requires an explicit force-work root
+      lease rather than treating blackholes as edge-free. A follow-up
+      allocation-extent projection pins boxed scalar cells and counts only
+      whole 4KiB pages with no reachable flat object. It found 70.92MiB
+      reclaimable at 1,152 modules, 88.19MiB at 1,200, and 92.82MiB at 1,220.
+      Temporal interleaving therefore does not falsify page advice, but its
+      narrow margin over the 80MiB gate means weak-index shrinking, payload
+      drops, and allocation cohorting remain part of the prototype. The shared
+      hash-cons substrate now has a tested `retain_committed` operation that
+      removes dead candidates and empty buckets, shrinks both capacity layers,
+      and preserves outstanding reservation capacity. It is not wired into
+      collection because the import watermark is not a complete-root
+      safepoint. For example, `eval_intersect_attrs_primop` holds `left_value`
+      in an ordinary Rust local while recursively evaluating a right operand
+      that can import and hit the watermark; `mutator_root_set` deliberately
+      does not include arbitrary Rust locals. `all`/`any` predicates and direct
+      builtin arguments have analogous gaps. Destructive collection therefore
+      requires explicit nonmoving shadow-root leases at every reentrant seam,
+      or preferably the explicit value stack and stack maps of the
+      whole-demand executor. Typed mode additionally needs the active
+      head/work lease because blackholed work is detached into a Rust local.
+      The root-complete terminal `mincore` probe now establishes that all
+      91,336 used reservation pages are physically resident (374,112,256
+      bytes), while only 524 pages are weak-root live and 90,812 pages
+      (371,965,952 bytes) are wholly dead. This is real RSS, not virtual
+      reservation accounting. The existing tombstone sweep is not the
+      solution: at zero threshold it preserved the derivation but increased
+      the run to 26.428B instructions and 726,788KiB peak RSS because it
+      retains cage pages/registries and allocates a large mark set. Implement
+      evacuation/root pruning that rebuilds weak indexes and drops the old
+      cage, and make it available before the peak through explicit
+      reducer/compiled roots. Terminal-only collection cannot lower
+      `ru_maxrss`. Collector-only memory is independently falsified for the
+      current representation: the 1,220-module reachable heap and list spines
+      are 158.250MiB, retained frontend/module state is 20.807MiB, and packed
+      captured frames are 6.198MiB. The resulting 185.256MiB zero-overhead
+      lower bound already exceeds the 167.404MiB target. The observed
+      451.2MiB RSS minus 215.05MiB logically dead leaves 236.15MiB. Couple
+      evacuation to promise/frame scalar replacement, packed releasable module
+      code, synthetic-list fusion, and registry/index elimination
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Project retained-byte-weighted PIR and frozen-Ready memory economics:**
+      the 1,220-module storage reconciliation leaves an approximately
+      74.795MiB residual process floor, hence only 92.609MiB for all compact
+      heap, frames, frontend, and indexes under the strict 167.404MiB target.
+      The current 158.250MiB reachable heap must shrink or become nonresident
+      by at least 80.6MiB (50.9%); virtualized allocation-event percentage is
+      not a substitute. Extend the weak-liveness walk with current/headerless/
+      compact-32 live-byte projections and Ready-import exclusive-root plus
+      reuse-window attribution. The highest-information pass starts at the
+      1,188-module beginning of the final peak band, partitions precise roots
+      into `ImportCache` and all other sources, records their exclusive
+      difference, and classifies last-touch reuse through demand completion.
+      It must reconcile the root union, report current/headerless-64/
+      compact-32 byte mass, simulate touched packed pages, and keep mutable
+      promise overlay and captured-frame bytes explicit. Proceed with
+      in-memory headerless layouts only
+      if complete projected named state is at most 85MiB. Otherwise require at
+      least 64MiB of Ready-exclusive cold mass with a no-more-than-48MiB
+      working set and prototype direct-to-packed file-backed frozen segments
+      plus a small mutable typed overlay. Kill compact-edge/headerless-only
+      work above the absolute 92.609MiB ceiling. Invalidate rather than score
+      any run with a root-union mismatch, untracked blackholed work, an
+      unstamped runtime access path, or more than 8MiB unattributed mass
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Split stable thunk identity from suspended metadata:** after lexical
+      alias elimination, 2,466,465 of 2,693,372 allocated thunks are forced in
+      the primary workload, yet each
+      stable value address retains the maximum closure-union payload for the
+      entire evaluation. Keep only the compact force/result cell stable and
+      move `Node`/`Apply`/`Select` suspended data into variable-size reusable
+      metadata storage reclaimed after publication. Preserve blackholing,
+      failure replay, recursive binding visibility, snapshots, and parallel
+      publication. A retained stats-only acquisition/publication census
+      measured 2,466,465 releasable records but only a 230,470-record
+      conservative peak upper bound (about 14.1MiB even at 64 bytes each).
+      The per-kind follow-up makes that bound concrete: at the global peak,
+      221,654 records need the 40-byte node payload, 7,371 need the 40-byte
+      apply payload, 196 need apply2 payload, 1,240 need the 24-byte select
+      payload, and nine need builtin-attr payload, for an aligned peak pool of
+      approximately 8.78MiB. Against the current 88-byte closure plus 16-byte
+      registry entry for 2,693,355 identities, a 24-byte stable head plus that
+      pool projects approximately 196.7MiB saved; a 16-byte head projects
+      217.3MiB. This passes the 150MiB prototype gate. The retained default-off
+      stage-1 lane now proves the identity/work split for the exact
+      one-argument Apply-shaped class (`Apply` plus the layout-identical
+      `GenListElemAtAddOne` marker): 1,344,477 stable heads needed only 7,374
+      peak work slots and reduced same-binary peak RSS from 615,872KiB to
+      566,616KiB (48.1MiB) for 0.71% more retired instructions, with
+      byte-identical output. It uses permanent 16-byte payload heads inside
+      the existing generic header/registry, generational ABA-safe work
+      handles, successful-publication release, error retention, and explicit
+      fallback/refusal for unsupported GC, parallel, cache, stats, region, and
+      snapshot modes. The retained headerless lane removes the generic
+      header/registry population: after adding a constant-time address-envelope
+      rejection, it saves roughly 116-127MiB at about a 1.6% instruction cost
+      over the current disabled control. Its Candidate-C head is now one
+      `AtomicU64`; after repairing a value/handle namespace collision and
+      double-release free-list corruption found by adversarial review, the
+      compact head saved another 12,404KiB and slightly improved instructions
+      (20.3794B versus 20.3964B) with exact same-source output. This passes its
+      local 8MiB/0.5% gate. Continue by admitting the dominant shape-sized
+      `Node` work class, packing lambdas/environments, and compacting containers
+      before judging the 150MiB all-kind gate or any default-on path. A first
+      broad predicate admitting every thunk without a storage extension added
+      only 185,905 heads and saved 8,508KiB because most node work retains
+      flat lexical-capture side storage; this missed its 100MiB gate. A
+      follow-up gave ready flat captures a sound shared owned backing so
+      escaped child closures could outlive parent publication. It increased
+      the stable-head population from 1,530,695 to 1,832,271, but moved peak
+      RSS only from 461,364KiB to 456,916KiB while retired instructions rose
+      from 20.3612B to 20.5493B. The global backing-enum layout therefore
+      missed the same 100MiB stage gate and was reverted. If captured nodes
+      are revisited, keep the existing one-word capture descriptor and use a
+      compact side-pool handle; do not widen every environment for a minority
+      typed lane. Couple
+      head, handle, and moved-out work in one unwind-safe lease; make
+      post-publication reclamation semantically infallible; preserve complete
+      GC/snapshot semantics
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Corrected frame/allocator ownership before the next memory rewrite:**
+      the 3,451,992 frame allocations are churn, not simultaneous residence.
+      An opt-in allocation-minus-drop gauge measured 338,804 peak and 338,557
+      end frames; the independent end-heap walk found 338,536 distinct frames,
+      473,887 slots, and a 6.50MB packed estimate. Raising the exact-capture
+      width from two to eight nearly eliminated retained frame chains
+      (3,573-frame peak), but copied 1.41M additional values, grew the worker
+      arena by 10.8MiB, saved only 12.2MiB RSS, and regressed instructions by
+      approximately 2.3%, so it was reverted. `MIMALLOC_PURGE_DELAY=0` saved
+      only about 4.3MiB with unchanged instructions, falsifying allocator
+      retention as a factor-level owner. Treat flat registry capacity,
+      hash-cons buckets, list spines, and retained module IR/facts/caches as
+      the remaining non-arena live owners; continue with headerless typed
+      lanes rather than a wider capture cap or allocator tuning
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Discovered matched-work execution-model gap:** the remaining
+      allocation census is dominated by 1,344,477 lowercase synthetic `apply`
+      thunks produced by lazy builtin result construction, not source
+      `IrKind::Apply`, while the 486,451 `PrimOp` bucket is ordinary node
+      thunks whose body is a direct builtin call. Native and C++ function-call
+      counts differ by only about 0.4%, but native spends roughly 6,894
+      instructions per call versus about 1,966. The retained producer census
+      accounts for every synthetic allocation: `genList` creates 1,133,765
+      (84.3%), `map` 210,712 (15.7%), and `mapAttrs` all 793 two-argument
+      applies. The follow-up modal census classified 1,050,218 forced
+      `genList` elements as the exact
+      `elemAt(captured-receiver, local-index + 1)` spine. A layout-neutral
+      marker now fuses that shape at force time while retaining the ordinary
+      `Apply` fields and cell; it deopts before observable work under GC,
+      tiering, force caching, parallel/shared forcing, and stats, and snapshots
+      deliberately restore it as ordinary `Apply`. After retaining the
+      per-kind work census, three final full-toplevel runs retired
+      19.7848-19.7869B instructions, 8.15% below the restored
+      21.5421-21.5422B baseline, with the same `.drv` as pinned C++ Nix. The
+      C++ run retired 6.2192B, so the residual remains 3.18x. Final RSS was
+      612,328-613,700KiB; the preceding enabled distribution overlapped the
+      same-source disabled-path control
+      (616,016-634,164KiB); the fusion itself has no demonstrated memory
+      regression, but the `<0.5x` C++ RSS target remains unmet. Continue with
+      the post-fusion residual profile and the fixed-stride typed thunk-head
+      lane; do not broaden this exact lazy fusion into an IR rewrite that
+      forces the captured receiver early. Preserve lazy mapped results,
+      forcing/error order, blackholes, stack limits, roots, module switching,
+      and exact diagnostic context; deopt before observable work
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [ ] **Replace the falsified narrow direct-execution island with a whole-demand
+      boundary:** an inclusive probe around the selected
+      `configWithFreeform`/`evalModules` node covered only 74.28% of measured
+      evaluation time and 80.89% of forces. From the current approximately
+      20.4B instructions, the terminal approximately 3.1B bound requires at
+      least 85.37% coverage even at zero local cost, and at least 95% coverage
+      for a plausible approximately 10x local executor. Do not implement a
+      benchmark-specific `evalModules` shortcut. Instrument the entire demand
+      graph rooted at the requested attribute path, require at least 95%
+      inclusive coverage before building a direct source-specialized executor,
+      fingerprint source/IR structure rather than transient node IDs, and
+      preserve laziness by declining before observable work
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)). The
+      retained default-off hardware-counter boundary now uses an acknowledged
+      inherited-pipe protocol before demand-pool creation and immediately after
+      derivation snapshot, with no unsafe code in the evaluator. Three paired
+      same-source runs measured 20.2842-20.2848B epoch instructions inside
+      20.5448-20.5499B complete-process instructions: mean coverage 98.7248%,
+      mean outside cost 262.0M. A hypothetical 10x epoch executor projects to
+      2.290B total instructions, so the whole-demand architecture passes its
+      coverage ceiling gate. No existing executor supplies that 10x reduction;
+      direct-linked regions and synthetic list/apply deforestation remain
+      required. A separate stats-enabled structural run began at zero forced
+      thunks/function calls, ended at 2,466,452/3,176,700, and matched the
+      final evaluator stats exactly; its timer-heavy instruction count is not
+      used as a performance sample. Prefer an explicit-stack executor over
+      patching the recursive tree walk one local at a time: its value stack
+      simultaneously supplies complete nonmoving GC roots and removes the
+      recursive dispatch/helper boundary responsible for the speed gap.
+      The first default-off executable foundation now admits only complete,
+      closed, speculable scalar roots containing `Int`, `Bool`, `Null`, `If`,
+      and integer arithmetic. Admission visits the whole IR DAG in O(nodes)
+      before semantic work, including untaken branches; admitted execution uses
+      explicit control plus evaluator-owned transient-root stacks, never
+      recursively deopts, and restores its root prefix on error or unwind.
+      Reachable nodes are predecoded into a compact boxed op tape, so admitted
+      execution performs neither `self.node` lookup nor repeated `IrNode`
+      decoding. The machine attempt has moved from `eval_root` to the complete
+      instantiation/attribute-path boundary. The initial grammar admits only
+      an empty attribute path; a nonempty path declines before root preflight
+      or execution and the established oracle root-plus-path session runs
+      exactly once. Twelve focused Candidate-C tests cover that ownership seam,
+      a 20,000-node conditional
+      chain, shared-DAG admission, lazy branching, arithmetic, Add's
+      left-operand error order, environment-flag defaulting, root cleanup, and
+      reachable/unreachable malformed arena slots. The full
+      Candidate-C library run now passes 2,713 tests with 37 ignored. On the
+      preceding same-source toplevel,
+      default-off and explicitly enabled runs both declined this deliberately
+      tiny grammar and matched pinned C++ Nix at
+      `/nix/store/xbw6lhmr5vkf9sp8b0qxr47ryqrjlkgg-aos-system-toplevel.drv`.
+      The disabled run retired 20.4283B instructions at 472,776KiB peak RSS;
+      the enabled declined-path run retired 20.4291B at 475,120KiB, so it is
+      not evidence of a primary-workload improvement.
+      This is an execution/rooting substrate, not a primary-benchmark speed
+      result. Expand only through whole-region preflight with no post-work
+      fallback. A separate alternative-source audit falsified frontend and
+      output work as explanations for the factor-level speed gap. Retained
+      modules, sources, IR plus dense facts, path bases, and symbols total only
+      about 20.8MiB. Parse, resolve, lower, annotate, and module setup total
+      56.21ms (61.35ms including import fingerprinting), at most 2.38% of the
+      measured non-overlapping force self-time. Profiled direct hash-cons
+      management is 0.55%, runtime IR lookup 1.92%, symbol work about 1.30%,
+      and direct derivation ATerm work about 0.85%. Even unrealistically
+      eliminating all of these avenues would save well under the approximately
+      85% instruction reduction required. Keep compact op-tape work coupled to
+      the executor, not as a standalone presumed fix. Memory remains
+      multi-owner: about 215.05MiB is logically collectible late, generic
+      flat-store registry capacity is about 76.5MiB, and hash-cons structure is
+      projected at 32-36MiB. A new default-off RSS phase trace locates the
+      current peak: RSS rises from 226.1MiB at 1,024 modules to 351.8MiB at
+      1,152, 440.2MiB at 1,200, 451.2MiB at 1,220, and 454.9MiB at demand
+      completion. Derivation snapshot adds only about 8.0MiB, reaching
+      463.0MiB current RSS. The peak is therefore accumulated evaluation
+      state, not post-evaluation output materialization.
+
+      A fresh grammar audit also rejects broadening the scalar root in place.
+      The machine must own `eval_root`, attribute-path selection, and final
+      force as one session. Imports cannot be opaque oracle leaves because
+      2,442,897 of 2,466,453 forces (99.04%) are classified as prelude/import
+      work. Split import into begin/resume/finish so the machine evaluates a
+      newly published module root and an owned lease restores cache/module/env
+      state. The measured force mix prioritizes a 23.15% lexical/select/lazy
+      kernel followed by the exact `genList` synthetic spine (45.82%), reaching
+      about 69% cumulative force proxy before map, concat, and primops. Track
+      machine-executed forces, oracle boundary calls, nested oracle forces, and
+      module declines; require nested oracle forces below 0.5% eventually.
+      The first two import-continuation seams are now implemented. Ordinary
+      cache misses own evaluator-resident depth-plus-generation leases from
+      `Evaluating` publication through `Ready` publication or error/panic
+      removal. Imported module bodies likewise own evaluator-resident
+      module/env/`with`/scoped-global leases; normal error and panic restore the
+      current module first and the suspended environments second, preserving
+      the old nested-wrapper order. All lease storage and generation checks
+      precede visible state mutation, and stale same-depth tokens cannot pop a
+      later lease. Six focused cache-lease and six focused module-lease tests
+      pass under Candidate-C. The combined broad run passes 2,725 tests with
+      37 ignored. The preceding cache-only broad run exposed only the
+      already-recorded process-global capture-counter race, and that test
+      passed in isolation. Its same-source
+      toplevel remained byte-identical at
+      `/nix/store/f3rmflqsirl18gkzvl2iwynrqbn953dn-aos-system-toplevel.drv`
+      and retired 20.4255B instructions at 472,844KiB RSS, the existing
+      performance class. These are resumable ownership mechanics, not a speed
+      result; the next gate is executing an admitted imported module body
+      between begin/finish while an unsupported module invokes exactly one
+      predeclared oracle continuation. That bounded gate is now implemented
+      without widening the scalar grammar. Enabled supported imported roots run
+      one machine body; unsupported and non-text-store force-cache roots record
+      one decline and call the existing root-cache oracle exactly once; the
+      text-store bypass is preserved. The allocation-root marker restores
+      through injected panic even when it displaced an outer marker. Ten
+      focused import-module tests, thirteen focused demand-machine tests, and
+      the full Candidate-C run (2,730 passed, 37 ignored, all doctests green)
+      pass on the Linux builder. After daemon priming, pinned C++ Nix and both
+      candidate modes produced
+      `/nix/store/fgy6434wsw869hj3ssmqjcaj34iq8cph-aos-system-toplevel.drv`.
+      Disabled measured 20.430052B instructions and 473,664KiB RSS; enabled
+      measured 20.425230B and 472,964KiB. The approximately 0.024% instruction
+      delta is noise-class: the seam is correct, but the closed scalar grammar
+      owns essentially none of this workload. Continue with the measured
+      lexical/select/lazy kernel across imported modules, not additional scalar
+      syntax. Returned evaluator stats now make the ownership result exact:
+      the primary run recorded zero machine bodies, 1,220 module declines, and
+      exactly 1,220 oracle module calls. The post-stats broad run remains green
+      at 2,730 passed and 37 ignored.
+      A deeper architecture audit also tightens the required design. With about
+      262M instructions outside the demand epoch, the epoch must improve by at
+      least 7.12x to meet the approximately 3.110B process ceiling; a
+      conventional 2-4x bytecode-dispatch win is insufficient. Moreover,
+      54.36% of forces are runtime synthetic Apply and 45.82% are the exact
+      `genList`/simple-lambda/`elemAt` spine, while source Apply is only 2.31%.
+      Do not confuse source-IR grammar coverage with execution coverage.
+      Introduce evaluator-owned force and lambda-call begin/finish/abort leases
+      before suspending either protocol in the machine: the current borrowed
+      `ForceGuard` and recursive env/module restoration cannot be stored safely
+      in explicit control frames. Evolve the tape toward packed persistent
+      STG-like eval/apply code with cold diagnostics out of line, stable
+      detachable thunk heads, and predeclared one-shot oracle leaves. The first
+      terminal-economics experiment should own and fuse the complete dominant
+      `genList -> simple lambda -> elemAt(upvalue,index+1)` thunk/update
+      sequence without general force/apply callbacks or per-element synthetic
+      payloads, and must demonstrate at least 7x local instruction reduction.
+      The exact-shape code audit found that the retained marker already saved
+      about 8.23% process instructions, but 1,050,218 of 1,128,838 exact outer
+      cases contain one direct child Apply; only 78,620 have none. Preserve one
+      stable memoizing head per element while moving repeated work into a shared
+      block descriptor with a lazy receiver. Measure old/new in one binary over
+      at least one million cold heads with identical zero-force setup, and
+      require 7x on the inclusive outer-plus-child region. An outer-only win
+      that leaves roughly one million nested oracle Apply calls is explicitly
+      not a pass. The first force-continuation prerequisite is now a bounded,
+      default-unused proof. An ordinary reusable Node thunk can be claimed
+      without retaining a borrowed `ForceGuard`; a depth-plus-generation lease
+      owns scanned source/result root slots and re-resolves the cell at finish.
+      Publish/barrier/work-release/shedding order is preserved, while body
+      error and injected panic abort the blackhole. Single-entry, parallel,
+      non-Node, and typed Candidate-C heads decline before mutation; the typed
+      test proves detached-work counts remain unchanged. Nine focused tests
+      pass, and the full Linux Candidate-C run is green at 2,739 passed,
+      37 ignored, plus all doctests. Production forcing does not call this
+      substrate yet. The release default-off control remained byte-identical
+      to pinned C++ Nix at
+      `/nix/store/ykmkbnxa58m0x8w2x337qpj1lb035cdg-aos-system-toplevel.drv`,
+      retiring 20.433787B instructions at 478,060KiB RSS, the established noise
+      class. The subsequent cached packed-STG ordinary-Apply executor completed
+      the literal/lexical/numeric/`elemAt` bounded slice with explicit
+      value/argument/update/call/control stacks and exact error/panic unwind,
+      but the primary run decisively rejected its breadth: 205,002 attempts,
+      205,001 declines, thirteen lowered blocks, and one completed claim. It
+      remains default-off as a rooting/semantics substrate, not a performance
+      path. On the exact daemon-primed source, native default retired 19.707B
+      instructions at 610,092KiB while pinned C++ Nix retired 6.221B at
+      342,844KiB. The strict ceilings are therefore 3.1105B instructions and
+      171,422KiB; native needs approximately 6.34x fewer instructions and
+      3.56x less RSS. Promote whole-demand promise SSA/PIR plus AOT to the
+      active cold-run hypothesis. Existing evidence makes operation coverage
+      plausible (99.05% of forces are imported/prelude work, 54.36% are
+      synthetic Apply, and 99.72% of Apply allocations are forced/released),
+      but does not prove allocation elimination: Apply cells plus observed
+      simple-formal frames account for only 43.60% of thunk-plus-frame events.
+      The next default-off census must require at least 90% PIR-representable
+      dynamic operations, fewer than 5% oracle side exits, at least 75%
+      measured replaceable thunk/frame events, and at least 70%
+      native-control self-work excluding opaque builtin calls
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)). The exact
+      census now classifies 17,632,317 of 17,634,894 dynamic entries as native
+      control or pure native helpers (99.9854%), with 1,595 effectful oracle
+      statepoints (0.0090%), 982 unclassified direct-primop entries, and zero
+      unsupported nodes. Operation coverage passes. It also finds
+      3,113,478/3,452,049 frame handles dead at lexical pop (90.1922%), but
+      synthetic Apply promises plus those frames cover only
+      4,457,955/6,145,424 thunk-plus-frame events (72.5410%); the optimistic
+      allocation gate fails. Ordinary promises or complete producer/consumer
+      regions must also be virtualized. The diagnostic hooks were removed
+      after their compiled-in disabled controls sat approximately 236M
+      instructions above the preceding clean class. The census also found
+      that fresh imports skipped per-node cardinality and escape analysis
+      despite imported/prelude work owning approximately 99% of forces and
+      runtime thunk allocation consuming those facts immediately. The A/B
+      experiment preserved exact derivation parity and exposed 76,449
+      single-entry thunks (76,432 forced), but regressed to 19.816B
+      instructions and 622,456KiB RSS from the preceding
+      19.707B/610,092KiB class. Complete facts are therefore PIR admission
+      input, not a standalone default optimization, and fresh imports returned
+      to the narrow analysis contract. Candidate C now carries a proven
+      environment-free single-entry marker in its existing atomic word rather
+      than allocating a boxed mode-only sidecar; focused repeated-force,
+      parallel-admission, and shared-cell tests pass. A packed-STG selection
+      breadth spike raised complete ordinary-Apply regions from one to 416 out
+      of 205,002 attempts, preserved parity, but slightly increased
+      instructions relative to the original session sample and was removed.
+      A unique-block follow-up found 203,902 cache hits, only 13 lowered
+      blocks, and 840 unique lowerer rejections. Unsupported IR kinds caused
+      835; `AttrSet` caused 770 of those (92.2%), followed by `Interp` 42,
+      `If` 11, `Let` 6, `Str` 5, `BinOp` 3, `Select` 2, and `List` 1. Frame
+      ambiguity and invalid frame/capture facts were zero. Expand only a
+      complete `AttrSet`/lazy-binding/`Thunk`/`Apply1`/lambda region that
+      virtualizes allocations; use oracle leaves for shadow boundary
+      validation, not as the optimized execution path
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+      A later exact static-`Select` continuation confirms that boundary:
+      425 claims complete with exact byte parity and zero errors or panics,
+      but STG still adds 1.05% instructions and 1.44% cycles against a
+      same-binary final-config-canary control. Capability preflight classifies
+      all 15 lowered blocks: seven are executable, five require `Thunk` and
+      `Apply1` together, and three require another primop. Treat the combined
+      `Thunk`/`Apply1` addition only as a bounded breadth falsifier. More
+      importantly, do not use the final-config-canary result as a general
+      evaluator speed claim: it is a default-off replacement of the complete
+      `mergedOptions -> finalConfig` fold. The generic path in the same
+      instrumented build consumes about 39.68B instructions and 1.059GiB RSS,
+      versus about 15.26B and 437MiB with the canary. Generalize that result
+      through a structural/effect proof for order-preserving attr-fold
+      transducers, independent of final-config identity, and pin lazy-leaf,
+      duplicate-precedence, error-order, dynamic-attribute, and raw-identity
+      behavior before admitting it as production evidence
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+      The binder-aware semantic-slice prerequisite is now implemented in
+      `ratchet-core`: it resolves lexical reads, retains transitive selected
+      definitions and recursive SCCs, canonicalizes alpha names, slot
+      permutation, and unused binding frames, and preserves semantic lambda
+      depth, shadowing, attr keys, and recursion targets. Nine focused tests
+      and the core check pass. It is analysis-only; build and validate a
+      report-only complete-helper certificate before removing any source pin.
+      The bounded combined `Thunk`/`Apply1` continuation subsequently raises
+      exact completions to 18,376 with zero errors or panics, but still adds
+      0.93% instructions, 1.62% cycles, and approximately 1.4MiB RSS against
+      its same-binary control. Eleven of twelve lowered blocks are executable;
+      additional source-opcode breadth is no longer the limiting variable.
+      Stop expanding this callback-heavy executor and reuse its explicit
+      stacks only inside a whole-demand region that eliminates generic
+      Promise/frame/closure protocol.
+      An exact-source feature matrix also removes diagnostic contamination:
+      lean Candidate-C plus the final-config canary uses 14.0265B instructions
+      and 437,156KiB RSS, while compiling the unset lifetime/root probes raises
+      that to 15.2752B (+8.17%) and 437,528KiB. Both and pinned C++ produce the
+      exact `am0r...drv` root. Production acceptance binaries must omit these
+      compile-time probes. Against C++ at 21.0454B instructions and 466,864KiB,
+      the lean canary is instruction- and wall-faster but remains 203,724KiB
+      above the strict 233,432KiB half-RSS ceiling.
+- [x] **Reject the existing per-def-site JIT as the terminal speed
+      architecture:** enabling `AOS_NIX_JIT=1` on the primary same-source
+      workload preserved the derivation but regressed to 23.5092B instructions
+      and 827,912KiB peak RSS. Its modal two-to-five-operation bodies cannot
+      amortize compile and runtime-helper crossings. Reuse its lowering/runtime
+      pieces only inside a module/whole-demand graph compiler with direct-linked
+      regions; do not broaden the current per-thunk promotion grammar as the
+      factor-level plan
+      ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Explain and remove the excess native thunk population:** the
+      stats-only force-shape census now records allocations and the subset
+      created during order-sensitive assembly. It found 698,638 lexical alias
+      thunks (`LocalVar`/`UpvalVar`), including 524,896 outside assembly.
+      Demand-position aliases now read and reuse the referenced value directly,
+      preserving an existing thunk's identity and laziness. Recursive/source-
+      order assembly, active force-cache observation, and unsupported
+      oversized flat-capture depths keep ordinary storage. The primary
+      workload now allocates 2,693,372 thunks, 524,896 fewer than baseline and
+      slightly fewer than pinned C++ Nix's differently instrumented
+      2,795,794. Two exact runs reduced retired instructions from
+      22.9384-22.9386B to 21.8997-21.9016B (-4.52%) and peak RSS from
+      712,168-714,208KiB to 646,684-648,968KiB (-63-67MiB). The full evaluator
+      suite passed 3,155 active tests (34 ignored), and the daemon-primed
+      toplevel remained byte-identical
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
 - [ ] **Discovered process-global capture-counter race:** evaluator campaign
       snapshots subtract a baseline from process-global flat-capture atomics.
@@ -12620,6 +13201,333 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       required counting probe measured only 1,250,076 eligible payload bytes on
       `bench.wide-eval`, so even impossible 100% elimination cannot meet the
       specified multi-MiB admission gate; it is rejected by measurement.*
+- [ ] **Whole-permanent page-completing evacuation:** the sealed cross-domain
+      relocation primitive, compact eight-byte forwarding entries, two-domain
+      closure resolver, aggregate one-domain destination owner, nursery
+      flat-closure staged writer, and destination-first FlatWitness
+      string/path/attrs copies are focused-test green. The execution-160 census
+      shows the current no-tail mover costs 69 pages and the inline-tail
+      population alone costs 96 pages; only moving both co-located populations
+      releases the additional 2,455 mixed pages and yields the projected
+      2,291-page (9,383,936-byte) net reduction. The precise, closed,
+      source-untouched unpublished all-permanent batch and its focused failure
+      tests are complete. The immutable-source byte gate is also green: two
+      independently staged inputs reproduced the same source store path and
+      pinned C++ plus native byte mode produced the same complete toplevel root
+      with zero divergences. The default-off strict terminal proving ground now
+      completes allocation-free heap/root healing, rebuilt weak indexes,
+      address-memo invalidation, a fresh zero-residual-alias scan, complete
+      typed source retirement, page advice, and continued nursery allocation;
+      focused publication and TreeWalk result-rewrite tests are green. The
+      corpus-scale run is also byte-green against pinned C++ after retiring
+      279,004 source objects, copying 175 reachable permanent objects, healing
+      87 worker fields, and successfully advising 19,739 pages. It retired
+      16,379,544,379 instructions but raised peak RSS to 492,516KiB because
+      terminal scan/copy overlap creates a new watermark before the late page
+      release; terminal placement is therefore rejected as an acceptance
+      optimization. The immutable-input byte-closure gate is also green with
+      terminal publication enabled: the frozen parity snapshot matched pinned
+      C++ recursively after retiring 278,997 objects, copying 175, healing 87
+      fields, and advising 19,776 pages. The run also fixed a pre-existing
+      typed writeback resolver bug: shared-arena `kind_of` probes must match
+      exact `List`/`Attrs` kinds, not merely return `Some`. Move the same proven
+      transaction to the execution-160 root-complete boundary, demonstrate roll-forward on
+      corpus-scale unsupported shapes, and record a frozen-source counter/RSS
+      gate before closing this item. Worker objects may enter only in measured
+      page-completing groups. Pure lifetime regions are now arithmetically
+      rejected; the next alternative falsifier combines chronological
+      demand/import segments, stable eight-byte thunk heads, packed Ready
+      survivors, and at least 23,463,948 bytes of registry/weak-index
+      compression under the 5% escape budget. The first aggregate
+      lifetime-cohort falsifier is implemented and focused-test green. On the
+      byte-identical full toplevel, unreachable inline-plus-known-external mass
+      grows monotonically from 42,099,312 bytes at final-config execution 160
+      to 167,601,576 bytes at execution 357; terminal leaves only 107,096 of
+      239,226,952 bytes reachable. The nine-checkpoint diagnostic itself costs
+      43,671,872,745 instructions and peaks at 468,100KiB, so those figures are
+      topology evidence rather than an acceptance benchmark. Advance the
+      experiment by classifying later touches and resurrection of each
+      intermediate unreachable cohort; instantaneous reachability alone is not
+      a safe retirement rule. That Phase-B shadow is now implemented and ten
+      focused tests pass. On the same-source full trajectory, the 167,643,256
+      bytes tracked before terminal split into 166,859,112 cold bytes, 741,208
+      touched bytes, and 42,936 resurrected bytes: 99.53% cold and only 0.47%
+      disqualified, below the 5% escape budget. At execution 176 alone,
+      42,073,360 bytes from the execution-160 cohort are already cold after a
+      later check. The retained-candidate diagnostic peaks at 888,796KiB and is
+      not acceptance RSS. Audit every semantic read path for touch-epoch
+      coverage before treating this retrospective result as a retirement proof.
+      That audit rejects the current callback as a mutation boundary:
+      `mutator_root_set()` formerly omitted registered transient roots there;
+      those slots are now included with focused root-source coverage. Arbitrary
+      recursive Rust locals remain unsuspended, and the admitted
+      `genlist_elem_at_add_one_plans` cache retains an unscanned `Value`.
+      Weak-intern hits can also touch and resurrect weak-only candidates and
+      must be purged before retirement. The 741,208 touched bytes and 42,936
+      resurrected bytes are safety failures, not an acceptable 0.47% escape
+      allowance. Create an evaluator-owned root-complete continuation boundary,
+      attribute weak hits and first resurrection paths, clear advisory identity
+      tables, pin no-epoch storage, and require zero unexplained touches or
+      resurrections before mutation.
+      The default-off root-continuation coverage shadow is now implemented.
+      Its first full run falsified `eval_root` as the outer boundary: all 357
+      final-config completions happen later while the instantiation attr path is
+      forced. Moving the nested session around the complete attribute demand
+      yields exact C++/native parity at
+      `/nix/store/a67kldq3qp587lzvdxhcx4jbhxr9khf4-aos-system-toplevel.drv`
+      and reconciles 357/357 completions at one successful terminal poll, with
+      zero outside, pending, or abandoned. Completion sites still reach Nix
+      call depth 102, 109 active force roots, five primop frames, and 151
+      suspended environments, while arbitrary native Rust continuations remain
+      unscanned. Three focused tests pass. Treat this as coverage evidence, not
+      a mid-evaluation safepoint: lift the enclosing force/apply/strict-fold
+      transitions into evaluator-owned slots until completions reach the
+      whole-demand loop at oracle depth zero before enabling collection.
+      Before broad CPS conversion, run the narrower nonmoving shadow-frame
+      falsifier at execution 176: quarantine candidate-dead objects, detect
+      every later dereference, and require zero unexplained use/resurrection,
+      balanced error/panic frames, and under 10% instruction overhead. Only a
+      zero-use shadow may sweep/reuse, gated on at least 40MiB actual RSS
+      reduction. The first generic-object access shadow is implemented:
+      execution 176 installs only that checkpoint's current unreachable
+      inventory; an exact sparse page bitmap covers Candidate-C flat objects
+      and a sorted record-only fallback covers record addresses outside the
+      reservation. Semantic record, flat aggregate, closure, capture-tail,
+      mutation, and exact hash-cons-reuse doors aggregate accesses while
+      scan-only doors stay silent. Typed heads are explicitly excluded pending
+      semantic/scan separation. The 2026-07-26 full run rejected the first
+      shadow: versus the accepted native control it added 35.25% instructions,
+      35.45% cycles, 68.03% RSS, and 70.34% wall time. Its 425,208-object,
+      46,477,936-byte checkpoint produced 337,735 access calls, 1,068 touched
+      objects/133,416 bytes, and one 72-byte resurrection. Do not reclaim.
+      Raw identity/control doors are now included through a centralized checked
+      observer, and each origin separates calls from unique objects and bytes
+      before the next experiment. The identity-complete live-graph rerun keeps
+      exact derivation parity and reduces peak RSS to 501,648KiB, but still
+      uses 18,454,301,040 instructions, so it also fails the under-10% probe
+      gate. Terminal traversal reaches only 991 objects and finds one
+      quarantined string/72 bytes through import-cache root 423. Despite
+      381,817 access calls, hash-cons reuse covers only 1,068 unique
+      objects/133,400 bytes and raw identity only 470 objects/48,408 bytes
+      (overlap permitted). Run a no-retirement weak-index purge falsifier next.
+      That falsifier now passes exact parity: it removes 59,267 candidate weak
+      entries and 4,284 genList recipes without reclaiming objects; every
+      hash-cons, aggregate-payload, identity, and terminal-resurrection hit
+      falls to zero. One direct closure access remains (88 bytes). Native still
+      uses 18,348,403,751 instructions and 489,676KiB RSS versus paired C++
+      at 21,045,218,259 instructions and 468,232KiB, so neither the diagnostic
+      overhead nor the 234,116KiB half-memory ceiling passes.
+      Exact-door attribution identifies the remaining object as a flat thunk
+      resolved once through `serial_flat_thunk_payload_ptr`; the paired rerun
+      remains exact but uses 18,329,979,019 instructions and 489,468KiB RSS.
+      This is a concrete unscanned-continuation handle, so execution 176 stays
+      fail-closed for the entire cohort.
+      Despite that pass, collection remains deferred until a hybrid
+      defunctionalized demand-machine dispatcher owns the active continuation
+      and its native-oracle depth is zero.
+      The feature-gated, uncalled `CollectionPollGuard` now establishes the
+      preflight contract without collecting: 29 structured unsafe-state
+      reasons precede exact root enumeration, unique-source validation,
+      snapshot/readback equality, and mutable-target validation. Eight focused
+      tests and lean/feature checks pass. It currently admits only idle/Ready
+      roots and deliberately rejects active STG; add an explicit suspended
+      dispatcher poll with all native locals spilled before moving the proven
+      publication transaction earlier.
+      The post-master exact-source rerun repairs the stale dedup pin to
+      pattern 656/body 705/frame 55. Five focused tests pass, and 10,391/10,391
+      calls execute callback-free with zero declines. Versus the same lean
+      binary's generic control it removes 44.58% of instructions, 41.25% of
+      cycles, 38.81% of peak RSS, and 36.02% of internal wall while preserving
+      the exact C++ derivation path. It still peaks at 634,584KiB and is not an
+      acceptance configuration.
+      The exact lean final-config rerun preserves
+      `/nix/store/7l5kzxqdjrqzz7sv4rf2nd4xrflpx404-aos-system-toplevel.drv`
+      with 14,030,054,434 instructions, 5,826,183,736 cycles, and 441,080KiB
+      peak RSS versus C++ at 21,047,904,475 instructions, 7,716,330,254 cycles,
+      and 467,608KiB. That is 1.50x by instructions and 1.32x by cycles, while
+      peak remains 207,276KiB above the 233,804KiB half-C++ ceiling.
+      Final-config bypasses the dedup graph, so the two canaries do not compose.
+      The binder/SCC-aware Stage-A certificate now agrees with the complete
+      current fold plus captured deep-merge, recursive-dedup, and set-path
+      slices; alpha/slot/unrelated changes admit and merge-bias/recursion-target
+      mutations decline. A formal-set binder-role collision found by adversarial
+      review is fixed and covered by element/alias/reorder tests.
+      Strict default-off Stage B now constructs its trusted reference
+      independently, compares all four role slices and recursive SCC facts,
+      proves the named helpers are selected by the fold binder graph, and only
+      then runs a source-unpinned structural extractor retaining helper-name
+      uniqueness and slot 7. The exact matcher is unchanged. Candidate-only
+      boot, relocated/commented full source, helper mutation, and runtime
+      operator mismatch tests pass; core semantic tests pass 12/12. This is
+      one algorithmic idiom, not a general evaluator claim.
+      Remaining lean-profile attribution assigns 45.97% of instructions and
+      40.18% of cycles to generic lazy protocol, expanding to 59.65%/55.40%
+      with attrs and allocation/data motion. A default-off whole-demand trace
+      shadow now tests the guarded multi-body transition-cloning hypothesis.
+      Its five focused tests, a 140-test remote filter run, and propagated
+      oracle/aos feature checks pass. Execute the frozen report and retain the
+      avenue only at >=60% instruction-weighted coverage, >=98% guard hits,
+      <5% effect/oracle exits, and >=70% virtualized allocation bytes.
+      The authoritative 4/8/12/20-root sweep rejects it: top twenty reaches
+      62.4834% operation coverage, 98.7010% guards, and 0.5964% exits, with
+      optimistic ideal 8.801B instructions/3.809B cycles. At 70% elimination
+      it projects 10.370B/4.414B, missing the cycle target, and virtualizes only
+      25.2002% of attributed bytes. Do not build the current transition-cloning
+      executor.
+      A default-off immutable-cohort projection now models stable 32-bit
+      handles and chronological headerless packing without collecting or
+      rewriting roots. It classifies every serial object, fingerprints Ready
+      payloads across eight epochs, and charges handles, compact storage, weak
+      indexes, scratch, source/destination overlap, captured frames,
+      partial-primop arguments, and suspended typed work. Its report gate is
+      zero unclassified/mutated objects and a <=226,492,416-byte modeled
+      watermark. The frozen exact-source report preserves current C++ parity
+      and is semantically clean at all eight epochs, but rejects the design:
+      terminal watermark is 568,839,624 bytes, named state 170,613,056 bytes,
+      and projected saving zero. The first run was self-polluted by retained
+      million-entry fingerprint/maps, so it was replaced with a two-pass
+      allocation-free RSS cadence plus externally baselined projection. The
+      corrected first failure is execution 224; terminal watermark is
+      465,051,080 bytes. Even perfect page segregation bottoms out at a
+      388,527,676-byte cumulative watermark, 162,035,260 bytes above the gate.
+      Classification and mutation/vanish audits stay clean. Do not publish
+      this layout; liveness-filtered old-generation retirement is required and
+      must wait for complete evaluator-owned root suspension.
+      File backing is also rejected without implementation: even perfect
+      segregation, zero refault, and complete prior-generation eviction still
+      reach 250,102,328 bytes at execution 320 and 346,856,940 at 352, above
+      the current 233,236KiB half-C++ ceiling.
+      A coverage-only whole-demand dispatcher now owns value-free controls,
+      writable value-slot indices, and force/lambda/import tokens at the
+      complete instantiation boundary. Thirteen tests/checks pass and storage
+      is 96 bytes in the primary run, but all 357 final-config completions
+      remain hidden inside the generic oracle and zero are safe at a pre-return
+      loop head. Expand only the target-directed backward continuation slice,
+      requiring hidden completions to fall monotonically.
+      The repaired target-directed slice now substitutes only the outer
+      instantiation attr-path loop and leaves root evaluation, auto-call,
+      forcing, selection, and final force as synchronous oracle leaves. It
+      preserves
+      `/nix/store/dphfrvs78lx22p0csf63znc7p4ghjqxq-aos-system-toplevel.drv`;
+      14 dispatcher and eight collection-poll tests pass, including relocated
+      transient-root bijection. Five alternating same-binary runs measure
+      control at median 13,979,018,382 instructions
+      (13,978,983,408--13,979,277,747), 5,662,026,896 cycles
+      (5,640,066,372--5,673,680,043), and 438,044KiB RSS
+      (437,500--438,572). Dispatcher medians are 13,988,070,561 instructions
+      (13,987,880,898--13,988,144,688), 5,669,117,064 cycles
+      (5,657,304,785--5,703,720,541), and 438,084KiB RSS
+      (437,452--440,512): +0.0648% instructions, +0.125% cycles, and +40KiB
+      median RSS. Thus the slice's <2% instruction and <1MiB RSS gates pass.
+      All 357 hidden completions conserve exactly: 77 at `AutoCall` segment 4
+      and 280 at `FinalForce` segment 5; returned is 357 and pending/abandoned
+      are zero, while the safe-loop-head count remains zero. Proofs accept
+      18/18 with 16 structural and two rooted attempts, maximum control/value
+      depth one/one, modeled storage 504 bytes, and no collection. The global
+      goal remains open: fresh C++ is
+      21,012,154,512 instructions, 7,799,560,375 cycles, and 466,904KiB RSS,
+      so native is only 1.50x better by instructions and still 204,592KiB
+      above the 233,452KiB half-C++ ceiling.
+      A live-symbol semantic-analysis defect is fixed: imported modules adopt
+      their symbols into the evaluator, so runtime analyses must use the live
+      table rather than empty `ir.symbols`. Core adoption tests pass and
+      Stage-A production now records one exact agreement with no context error.
+      The certified `optionMap` fold is validly rejected: 357/357 projections
+      are Ready/context-free with zero declines, but the largest fold is only
+      219 entries and total traffic 8,348,440 bytes, far below the 4,000-entry
+      and 256MiB gates.
+      A bounded full mixed-shape force-corridor census now covers Node, Apply,
+      the `genList` marker, Apply2, Select, and BuiltinAttr work at exact
+      `AutoCall`-4 and `FinalForce`-5 coordinates. Diagnostic, default-off, and
+      pinned C++ runs agree on
+      `/nix/store/5fr3s10vh0w5w6a72y4cr5mzlkylq2mi-aos-system-toplevel.drv`.
+      All 357 completions conserve as 208 exact, zero incomplete, 149 bounded
+      overflow, and zero untargeted; root mismatch, unstable, LIFO, and counter
+      failures are zero. Maximum active depth is 338/512. Census and combined
+      dispatcher storage are 60,928 and 61,432 bytes under the 65,536-byte
+      cap; the 704-frame representative arena fills at 699 stored frames and
+      fails closed. Shape observations are 307,733 Node, 87,762 Apply, 8,954
+      marker, 285 Apply2, and 1,128 Select, with zero BuiltinAttr, Released,
+      unsupported, detached-lease, or typed observations.
+      Fifteen distinct chains are already stored before overflow: eight
+      `AutoCall` chains account for all 77 completions and seven `FinalForce`
+      chains account for 131 before the remaining 149 overflow. The
+      at-most-four generated-recipe gate therefore fails. The diagnostic
+      records 14,201,554,235 instructions, 5,828,084,477 cycles,
+      1.424654495 seconds, and 438,088KiB RSS; this is not an alternating
+      overhead or acceptance result, and no overhead run is claimed while
+      overflow is nonzero. Recommend a hand-defunctionalized mixed-force
+      grammar, but do not claim it is implemented and do not raise the census
+      capacity.
+      The proof-only nested nonmoving inventory has now run at final-config
+      ordinal 192 with `AOS_NIX_FINAL_CONFIG_TRIE_CANARY=1`,
+      `AOS_NIX_WHOLE_DEMAND_DISPATCHER_PROBE=1`, and
+      `AOS_NIX_NESTED_NONMOVING_PROOF_ORDINAL=192` in the pinned
+      `/nix/store/qfjmacfd4np2awbf8s7iyirfqbf21xkb-aos-dev-env.drv`
+      environment. The daemon-prime reference and native byte comparator agree
+      on
+      `/nix/store/nphdfbpq3kqiqpjx29q8qpdkklwpgbl9-aos-system-toplevel.drv`;
+      cold and warm both report `parity=byte:aos-nix` and final parity true.
+      Each of seven evaluator instances observes 357 completions and makes one
+      conserved attempt. The non-writeback root inventory is 1,143: one result
+      and one transient root, with zero pending flat capture/value/environment/
+      owner roots. The force census is active and exact: 36 stable generic
+      coordinates, 36 owners, roots 36/36, leases 0/0, typed work 0/0, and
+      zero failed-closed, unstable, or nonordinary state. All enumerated
+      blockers except `unshadowed_native_continuation=1` are zero, so the sole
+      attempt correctly refuses and performs no collection, relocation,
+      writeback, replay, or mutation. The next safety step is explicit
+      evaluator-owned native shadow-root slots, balanced across success, error,
+      and panic; reconciled force roots do not represent arbitrary live Rust
+      locals. This run's `nix-bench` native/oracle timing and RSS lines are
+      relative diagnostic output only, not a pinned C++/global speed or
+      half-memory acceptance proof.
+      The residual factor-speed partition is now bounded. The measured sampled
+      virtualizable families total 59.65% of instructions and 55.40% of
+      cycles, approximately 8.37B/3.26B on the 14.027B/5.890B lean run.
+      Hashing is a separate 1.27B/0.727B and ATerm/derivation serialization
+      0.428B/0.106B. These are measured partitions, not achieved savings.
+      Removing 70% of the virtualizable surface is only a projection:
+      approximately 5.86B/2.28B saved and 8.17B/3.61B remaining. No greater-
+      than-2x result has been achieved.
+      Exactly two execution families survive: (1) the hand-defunctionalized
+      mixed-force eval/apply grammar with static multi-entry
+      superinstructions, rooted at `whole_demand_dispatcher.rs`,
+      `alloc_intern/force_thunk.rs`, `eval_core/stack.rs`, and
+      `eval_primop_apply.rs`; and (2) interpreter partial evaluation of the
+      same small explicit machine using binder-aware semantic slices and
+      static IR rather than source bytes or complete observed traces. The
+      latter is informed by
+      [weval](https://arxiv.org/abs/2411.10559), while both use
+      [eval/apply](https://arxiv.org/abs/1606.06380),
+      [SpecConstr](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/07/spec-constr.pdf),
+      and bounded
+      [positive supercompilation](https://www.cambridge.org/core/services/aop-cambridge-core/content/view/4EEE2EBC972AA2FDC861EF7A713EE898/S0956796800002008a.pdf/positive_supercompiler.pdf).
+      Before either executor, require a report-only weighted plan covering all
+      357 completions with zero incomplete/overflow/unstable/root-token/LIFO
+      failures, <=64KiB metadata, >=60% baseline-instruction and >=55%
+      baseline-cycle coverage, <2% effect/oracle exits, and >=70% virtualized
+      allocation bytes. The first executable slice must preserve exact parity,
+      stay within +2% declined whole-process instructions and +1MiB RSS,
+      remove >=70% inclusive instructions, >=65% inclusive cycles, and >=70%
+      allocation bytes, and improve inclusive cycles by >=4x. Do not collect
+      until hidden/outside/pending are zero and all 357 completions are at an
+      owned safe loop head.
+      Do not revive the top-20 trace as a seed: 25.20% byte virtualization and
+      its 4.414B-cycle projection fail. Complete semantic producer-consumer
+      fusion remains report-only unless exclusive provenance directly measures
+      >=3.7B instructions, >=1.9B cycles, >=200MiB traffic, >=95% coverage,
+      and zero effect/context/order declines. Hash-consing is rejected as a
+      factor-speed family: maximal-laziness measured 77 ppm repeated-body time
+      and only 4.52MiB avoidable records. Appel-Goncalves
+      [survivor-only hash-consing](https://www.cs.princeton.edu/~appel/papers/hashgc.pdf)
+      may compose with a future collector but receives no current speed credit.
+      The exact dedup canary is likewise nonadditive because final-config
+      bypasses its helper graph.
+      Conservative native-stack scanning is census-only because it
+      misses register-only values, suspended `stacker` segments, and
+      heap-backed local `Vec<Value>` elements; it cannot establish a sound
+      moving or nonmoving root set by itself.
 - [x] Unsafe placement (recorded decision): the new `unsafe` stays in
       sealed audited `ratchet-value` modules under the token-count
       discipline; `#[forbid(unsafe_code)]` rollout to every crate outside

@@ -40,7 +40,6 @@ fn default_heap_uses_tier_a_runtime_allocator() {
     assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -82,7 +81,6 @@ fn gc_stress_policy_installs_across_heap_allocation_domains() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -122,7 +120,6 @@ fn heap_records_store_generation_separately_from_allocation_domain() {
     );
     assert_eq!(heap_generation(&heap, worker), HeapGeneration::Permanent);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -164,7 +161,6 @@ fn worker_allocator_reset_preserves_permanent_records_when_worker_domain_is_idle
     assert!(reused.raw_eq(value));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -189,7 +185,6 @@ fn worker_allocator_reset_rejects_live_worker_domain_records() {
     assert_eq!(heap.arena_stats(), worker_stats_before);
     assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -221,7 +216,6 @@ fn worker_allocator_reset_rejects_permanent_container_with_worker_child() {
         HeapAllocationDomain::Worker
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -276,7 +270,6 @@ fn worker_region_pop_reclaims_disconnected_worker_suffix() {
         Err(EvalHeapError::UnknownPointer { .. })
     ));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -358,7 +351,6 @@ fn worker_region_plan_pop_cancels_until_region_plan_permits() {
     ));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -423,7 +415,6 @@ fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
     ));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -462,7 +453,6 @@ fn worker_region_pop_rejects_permanent_records_above_marker() {
     assert!(heap.get_thunk(permanent).is_ok());
 }
 
-
 /// Flat strings (FV-1) live outside the record table and the worker arena, so
 /// allocating one above a worker-region marker no longer blocks the pop; the
 /// pop rewinds only worker storage and the string stays resolvable.
@@ -488,7 +478,6 @@ fn worker_region_pop_ignores_flat_strings_above_marker() {
         b"flat-permanent"
     );
 }
-
 
 /// Flat attrsets (FV-2) live outside the record table and the worker arena;
 /// an attrset with no worker edges above a worker-region marker no longer
@@ -521,7 +510,6 @@ fn worker_region_pop_ignores_flat_attrs_above_marker() {
         Ok(7)
     );
 }
-
 
 /// A flat attrset is a retained source (FV-2 GC coupling 2): an entry value
 /// pointing into the reclaimed suffix rejects the pop exactly as a retained
@@ -569,7 +557,6 @@ fn worker_region_pop_rejects_flat_attrs_edge_into_suffix() {
     assert_eq!(heap.arena_stats(), stats_before);
     assert!(heap.get_thunk(suffix_thunk).is_ok());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -624,7 +611,6 @@ fn worker_region_pop_rejects_retained_edge_into_suffix() {
     assert!(heap.get_lambda(forced).is_ok());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -664,7 +650,6 @@ fn worker_region_pop_rejects_marker_from_another_heap() {
     assert!(heap.get_lambda(value).is_ok());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -702,7 +687,6 @@ fn worker_region_pop_rejects_marker_after_worker_epoch_change() {
     assert_eq!(heap.arena_stats(), stats_before);
     assert!(heap.get_lambda(value).is_ok());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -757,7 +741,6 @@ fn worker_region_pop_preserves_outer_lifo_mark_after_inner_pop() {
     ));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -802,7 +785,6 @@ fn worker_region_pop_rejects_outer_mark_while_inner_mark_is_active() {
     assert!(heap.get_thunk(outer_value).is_ok());
     assert!(heap.get_lambda(inner_value).is_ok());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

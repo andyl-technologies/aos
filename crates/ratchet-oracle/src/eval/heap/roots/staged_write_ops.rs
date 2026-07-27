@@ -16,6 +16,7 @@ impl EvalHeap {
         staged: &mut Vec<(usize, HeapObjectValue)>,
         staged_flat_lists: &mut Vec<(NonNull<HeapObject>, NixList)>,
         staged_flat_attrs: &mut Vec<(NonNull<HeapObject>, FlatAttrs)>,
+        staged_flat_closures: &mut Vec<StagedFlatClosureWrite>,
         staged_environment: &mut EnvironmentWritebackStage,
         entries: usize,
     ) -> Result<(), EvalHeapError> {
@@ -63,10 +64,162 @@ impl EvalHeap {
                     )
                     .map_err(|error| direct_heap_field_write_object_error(write, error))?;
                 }
+                HeapFieldWriteTarget::FlatClosure(ptr, kind) => {
+                    let live = self.flat_closure_payload_any(ptr).ok_or(
+                        EvalHeapError::UnknownCollectorPollReferenceSlotAddress {
+                            address: write.writeback_object,
+                        },
+                    )?;
+                    if staged_environment
+                        .stage_flat_closure(live, &write.source, write.replacement)
+                        .map_err(EvalHeapError::Environment)?
+                    {
+                        continue;
+                    }
+                    let staged_write = self.staged_flat_closure_heap_field_write_object_mut(
+                        staged_flat_closures,
+                        ptr,
+                        kind,
+                        MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                        entries,
+                    )?;
+                    match &write.source {
+                        HeapEdgeSource::CapturedFlatEnv { owner, index } => {
+                            let expected_owner = match kind {
+                                FlatObjectKind::Lambda => CapturedRootOwner::Lambda,
+                                FlatObjectKind::Thunk => CapturedRootOwner::Thunk,
+                                _ => {
+                                    return Err(direct_heap_field_write_object_error(
+                                        write,
+                                        RecordOwnedHeapFieldWriteObjectError::UnsupportedSource,
+                                    ));
+                                }
+                            };
+                            if *owner != expected_owner {
+                                return Err(direct_heap_field_write_object_error(
+                                    write,
+                                    RecordOwnedHeapFieldWriteObjectError::UnsupportedSource,
+                                ));
+                            }
+                            let Some(tail) = staged_write.tail.as_mut() else {
+                                return Err(direct_heap_field_write_object_error(
+                                    write,
+                                    RecordOwnedHeapFieldWriteObjectError::UnsupportedSource,
+                                ));
+                            };
+                            let Some(slot) = tail.get_mut(*index) else {
+                                return Err(direct_heap_field_write_object_error(
+                                    write,
+                                    RecordOwnedHeapFieldWriteObjectError::UnsupportedSource,
+                                ));
+                            };
+                            *slot = write.replacement;
+                        }
+                        _ => {
+                            staged_write.payload = flat_closure_heap_field_write_object(
+                                &staged_write.payload,
+                                &write.source,
+                                write.replacement,
+                            )
+                            .map_err(|error| direct_heap_field_write_object_error(write, error))?;
+                        }
+                    }
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Returns a complete staged flat closure, cloning it on first touch.
+    ///
+    /// The payload and optional inline value tail are copied before any live
+    /// mutation. Retired closures are rejected. A shared thunk is retained as
+    /// the same `Arc`; payload-owned rewrites subsequently fail closed because
+    /// rebuilding the thunk would change the identity observed by force clones.
+    pub(super) fn staged_flat_closure_heap_field_write_object_mut<'a>(
+        &self,
+        staged: &'a mut Vec<StagedFlatClosureWrite>,
+        ptr: NonNull<HeapObject>,
+        kind: FlatObjectKind,
+        table: &'static str,
+        entries: usize,
+    ) -> Result<&'a mut StagedFlatClosureWrite, EvalHeapError> {
+        if let Some(index) = staged.iter().position(|existing| existing.ptr == ptr) {
+            if staged[index].kind != kind {
+                return Err(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "staged flat closure kind changed",
+                });
+            }
+            return Ok(&mut staged[index]);
+        }
+        let (object, tail) = self
+            .flat_closures
+            .resolve_with_value_tail(ptr, kind)
+            .map_err(|error| {
+                self.closure_resolution_error(value_tag_for_flat_kind(kind), ptr, error)
+            })?;
+        let payload = match object.payload() {
+            FlatClosurePayload::Thunk(thunk) => StagedFlatClosurePayload::Thunk(thunk.clone()),
+            FlatClosurePayload::SharedThunk(thunk) => {
+                StagedFlatClosurePayload::SharedThunk(Arc::clone(thunk))
+            }
+            FlatClosurePayload::Lambda(lambda) => StagedFlatClosurePayload::Lambda(lambda.clone()),
+            FlatClosurePayload::Primop(primop) => StagedFlatClosurePayload::Primop(primop.clone()),
+            FlatClosurePayload::Retired(_) => {
+                return Err(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "flat closure heap-field writeback rejects retired payloads",
+                });
+            }
+        };
+        let tail = tail.map(<[Value]>::to_vec);
+        staged.push(StagedFlatClosureWrite {
+            ptr,
+            kind,
+            payload,
+            tail,
+        });
+        let Some(write) = staged.last_mut() else {
+            return Err(EvalHeapError::RootScanAllocationFailed { table, entries });
+        };
+        Ok(write)
+    }
+
+    /// Commits staged nursery closure payloads and tails through the exclusive door.
+    ///
+    /// Every variable-size clone and validation happens during staging.
+    /// Publication performs only payload moves and same-length slice copies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a staged address no longer resolves as the validated closure
+    /// kind, which would violate the exclusive staging/commit invariant.
+    pub(in crate::eval::heap) fn commit_collector_poll_minor_gc_staged_flat_closure_writes(
+        &mut self,
+        staged: Vec<StagedFlatClosureWrite>,
+    ) {
+        for write in staged {
+            let (payload, tail) = match self
+                .flat_closures
+                .resolve_mut_with_value_tail(write.ptr, write.kind)
+            {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    unreachable!("staged flat-closure writeback failed to resolve: {error}")
+                }
+            };
+            let staged_tail_len = write.tail.as_ref().map(Vec::len);
+            let live_tail_len = tail.as_deref().map(<[Value]>::len);
+            if staged_tail_len != live_tail_len {
+                unreachable!("staged flat-closure tail shape changed before commit");
+            }
+            *payload = write.payload.into_flat_payload();
+            if let (Some(destination), Some(source)) = (tail, write.tail) {
+                destination.copy_from_slice(&source);
+            }
+        }
     }
 
     /// Returns the staged flat-list spine for `ptr`, cloning the live payload
@@ -194,7 +347,7 @@ impl EvalHeap {
         Ok(object)
     }
 
-    pub(super) fn commit_collector_poll_minor_gc_staged_heap_field_writes(
+    pub(in crate::eval::heap) fn commit_collector_poll_minor_gc_staged_heap_field_writes(
         &mut self,
         staged: Vec<(usize, HeapObjectValue)>,
     ) {
@@ -394,5 +547,288 @@ impl EvalHeap {
     ) -> Result<ValueTag, EvalHeapError> {
         let source = self.record_for_minor_gc_survivor(request.source())?;
         Ok(source.object.tag())
+    }
+}
+
+#[cfg(test)]
+mod flat_closure_writeback_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::eval::EvalFrame;
+
+    fn stage_flat_closure_writes(
+        heap: &EvalHeap,
+        writes: &[CollectorPollDirectHeapFieldWrite],
+    ) -> Result<(Vec<StagedFlatClosureWrite>, EnvironmentWritebackStage), EvalHeapError> {
+        let mut records = Vec::new();
+        let mut lists = Vec::new();
+        let mut attrs = Vec::new();
+        let mut closures = Vec::new();
+        let mut environments = EnvironmentWritebackStage::try_new(writes.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries: writes.len(),
+            }
+        })?;
+        heap.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+            writes,
+            &mut records,
+            &mut lists,
+            &mut attrs,
+            &mut closures,
+            &mut environments,
+            writes.len(),
+        )?;
+        Ok((closures, environments))
+    }
+
+    #[test]
+    fn staged_flat_primop_write_is_invisible_until_commit() {
+        let mut heap = EvalHeap::new();
+        let original = Value::int(1);
+        let replacement = Value::int(2);
+        let parent = heap
+            .alloc_primop(EvalPrimOp::with_args(
+                Symbol::new(1),
+                vec![EvalPrimOpArg::new(IrId::new(1), Span::new(0, 1), original)],
+            ))
+            .expect("flat primop allocates");
+        let (_, ptr) = heap_ptr(parent).expect("parent has a heap pointer");
+        let address = GcHeapAddress::new(ptr.as_ptr() as usize).expect("address is nonzero");
+        let writes = [CollectorPollDirectHeapFieldWrite {
+            target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Primop),
+            writeback_object: address,
+            field_index: 0,
+            source: HeapEdgeSource::PrimopArgument { index: 0 },
+            replacement,
+            remembered_edge: None,
+        }];
+        let mut records = Vec::new();
+        let mut lists = Vec::new();
+        let mut attrs = Vec::new();
+        let mut closures = Vec::new();
+        let mut environments = EnvironmentWritebackStage::try_new(1).expect("stage reserves");
+
+        heap.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+            &writes,
+            &mut records,
+            &mut lists,
+            &mut attrs,
+            &mut closures,
+            &mut environments,
+            1,
+        )
+        .expect("write stages");
+        assert!(
+            heap.get_primop(parent).expect("primop resolves").args()[0]
+                .value()
+                .raw_eq(original)
+        );
+
+        heap.commit_collector_poll_minor_gc_staged_flat_closure_writes(closures);
+        environments.commit();
+        assert!(
+            heap.get_primop(parent).expect("primop resolves").args()[0]
+                .value()
+                .raw_eq(replacement)
+        );
+    }
+
+    #[test]
+    fn failed_flat_lambda_preflight_leaves_payload_and_shared_frame_untouched() {
+        let mut heap = EvalHeap::new();
+        let original = Value::int(11);
+        let replacement = Value::int(12);
+        let frame = EvalFrame::new(1).expect("frame allocates");
+        frame.set(0, original).expect("frame initializes");
+        let parent = heap
+            .alloc_lambda(EvalLambda::new(
+                IrId::new(2),
+                IrId::new(3),
+                FrameId::new(4),
+                EvalEnv::capture(&[Arc::clone(&frame)]).expect("environment captures"),
+            ))
+            .expect("flat lambda allocates");
+        let (_, ptr) = heap_ptr(parent).expect("parent has a heap pointer");
+        let address = GcHeapAddress::new(ptr.as_ptr() as usize).expect("address is nonzero");
+        let writes = [
+            CollectorPollDirectHeapFieldWrite {
+                target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Lambda),
+                writeback_object: address,
+                field_index: 0,
+                source: HeapEdgeSource::CapturedEnv {
+                    owner: CapturedRootOwner::Lambda,
+                    frame: 0,
+                    slot: 0,
+                },
+                replacement,
+                remembered_edge: None,
+            },
+            CollectorPollDirectHeapFieldWrite {
+                target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Lambda),
+                writeback_object: address,
+                field_index: 1,
+                source: HeapEdgeSource::ListElement { index: 0 },
+                replacement,
+                remembered_edge: None,
+            },
+        ];
+        let mut records = Vec::new();
+        let mut lists = Vec::new();
+        let mut attrs = Vec::new();
+        let mut closures = Vec::new();
+        let mut environments = EnvironmentWritebackStage::try_new(2).expect("stage reserves");
+
+        heap.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+            &writes,
+            &mut records,
+            &mut lists,
+            &mut attrs,
+            &mut closures,
+            &mut environments,
+            2,
+        )
+        .expect_err("unsupported second source rejects the complete stage");
+
+        assert!(frame.get(0).expect("captured slot reads").raw_eq(original));
+        let lambda = heap.get_lambda(parent).expect("lambda remains live");
+        assert!(
+            lambda.env().frames()[0]
+                .get(0)
+                .expect("lambda capture reads")
+                .raw_eq(original)
+        );
+    }
+
+    #[test]
+    fn staged_flat_lambda_tail_write_is_invisible_until_commit() {
+        let mut heap = EvalHeap::new();
+        let original = Value::int(21);
+        let replacement = Value::int(22);
+        let site = EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(20));
+        let mut capture = EvalFlatCaptureBuffer::new(site, 1);
+        capture.push(original).expect("capture value fits");
+        let (parent, _) = heap
+            .alloc_lambda_with_flat_capture(
+                EvalLambda::new(
+                    IrId::new(23),
+                    IrId::new(24),
+                    FrameId::new(25),
+                    EvalEnv::default(),
+                ),
+                Some(capture.finish()),
+            )
+            .expect("flat lambda with tail allocates");
+        let (_, ptr) = heap_ptr(parent).expect("parent has a heap pointer");
+        let address = GcHeapAddress::new(ptr.as_ptr() as usize).expect("address is nonzero");
+        let writes = [CollectorPollDirectHeapFieldWrite {
+            target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Lambda),
+            writeback_object: address,
+            field_index: 1,
+            source: HeapEdgeSource::CapturedFlatEnv {
+                owner: CapturedRootOwner::Lambda,
+                index: 0,
+            },
+            replacement,
+            remembered_edge: None,
+        }];
+
+        let (closures, environments) =
+            stage_flat_closure_writes(&heap, &writes).expect("tail write stages");
+        let before = heap
+            .flat_closures
+            .value_tail(ptr, FlatObjectKind::Lambda)
+            .expect("tail resolves")
+            .expect("tail is present");
+        assert!(before[0].raw_eq(original));
+
+        heap.commit_collector_poll_minor_gc_staged_flat_closure_writes(closures);
+        environments.commit();
+        let after = heap
+            .flat_closures
+            .value_tail(ptr, FlatObjectKind::Lambda)
+            .expect("tail resolves")
+            .expect("tail is present");
+        assert!(after[0].raw_eq(replacement));
+    }
+
+    #[test]
+    fn staged_suspended_flat_thunk_field_is_invisible_until_commit() {
+        let mut heap = EvalHeap::new();
+        let original = Value::int(31);
+        let replacement = Value::int(32);
+        let parent = heap
+            .alloc_thunk(EvalThunk::apply(
+                EvalModuleId::ROOT,
+                IrId::new(30),
+                Span::new(0, 1),
+                original,
+                EvalModuleId::ROOT,
+                IrId::new(31),
+                Value::int(33),
+            ))
+            .expect("flat thunk allocates");
+        let (_, ptr) = heap_ptr(parent).expect("parent has a heap pointer");
+        let address = GcHeapAddress::new(ptr.as_ptr() as usize).expect("address is nonzero");
+        let writes = [CollectorPollDirectHeapFieldWrite {
+            target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Thunk),
+            writeback_object: address,
+            field_index: 0,
+            source: HeapEdgeSource::ThunkApplyFunction,
+            replacement,
+            remembered_edge: None,
+        }];
+
+        let (closures, environments) =
+            stage_flat_closure_writes(&heap, &writes).expect("thunk write stages");
+        let read_function = |heap: &EvalHeap| {
+            let thunk = heap.get_thunk(parent).expect("thunk resolves");
+            let EvalThunkKind::Apply { function_value, .. } = thunk.kind() else {
+                panic!("thunk remains an application");
+            };
+            *function_value
+        };
+        assert!(read_function(&heap).raw_eq(original));
+
+        heap.commit_collector_poll_minor_gc_staged_flat_closure_writes(closures);
+        environments.commit();
+        assert!(read_function(&heap).raw_eq(replacement));
+    }
+
+    #[test]
+    fn staged_forced_flat_thunk_result_is_invisible_until_commit() {
+        let mut heap = EvalHeap::new();
+        let original = Value::int(41);
+        let replacement = Value::int(42);
+        let parent = heap
+            .alloc_thunk(EvalThunk::released_forced(original))
+            .expect("forced flat thunk allocates");
+        let (_, ptr) = heap_ptr(parent).expect("parent has a heap pointer");
+        let address = GcHeapAddress::new(ptr.as_ptr() as usize).expect("address is nonzero");
+        let writes = [CollectorPollDirectHeapFieldWrite {
+            target: HeapFieldWriteTarget::FlatClosure(ptr, FlatObjectKind::Thunk),
+            writeback_object: address,
+            field_index: 0,
+            source: HeapEdgeSource::ThunkCachedResult,
+            replacement,
+            remembered_edge: None,
+        }];
+
+        let (closures, environments) =
+            stage_flat_closure_writes(&heap, &writes).expect("forced result stages");
+        let read_cached = |heap: &EvalHeap| {
+            heap.get_thunk(parent)
+                .expect("thunk resolves")
+                .cell()
+                .cached_value()
+                .expect("cached value reads")
+                .expect("forced value is present")
+        };
+        assert!(read_cached(&heap).raw_eq(original));
+
+        heap.commit_collector_poll_minor_gc_staged_flat_closure_writes(closures);
+        environments.commit();
+        assert!(read_cached(&heap).raw_eq(replacement));
     }
 }

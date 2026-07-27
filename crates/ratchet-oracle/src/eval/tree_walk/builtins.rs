@@ -244,7 +244,15 @@ impl BuiltinExecutor for TreeWalk {
             BuiltinExecution::StrictUnary { primop, .. } => {
                 let argument = args[0];
                 let argument_span = eval.node(argument)?.span;
-                let value = eval.eval_node(argument)?;
+                let value = eval.with_nonmoving_native_continuation(
+                    super::native_continuation_shadow::NativeContinuationKind::StrictUnaryArgumentEval,
+                    argument,
+                    &[],
+                    Some(
+                        super::native_continuation_shadow::NativeContinuationEdge::EvalNode,
+                    ),
+                    |eval| eval.eval_node(argument),
+                )?;
                 eval.eval_strict_unary_primop_value(
                     call.id,
                     call.span,

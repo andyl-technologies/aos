@@ -66,7 +66,10 @@ impl SimplifyPass for CaseOfKnown {
             };
             // The folded node becomes the taken branch, inheriting its kind,
             // effect, and payload; the `If`'s own (pure) effect is discarded.
-            if ir.arena.set_node(id, branch.kind, branch.effect, branch.data) {
+            if ir
+                .arena
+                .set_node(id, branch.kind, branch.effect, branch.data)
+            {
                 changed = true;
             }
         }

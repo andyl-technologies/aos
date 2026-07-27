@@ -145,7 +145,7 @@ impl TreeWalk {
         out: &mut Vec<u8>,
         context: &mut StringContext,
     ) -> Result<(), TreeWalkError> {
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: string_id,
@@ -163,7 +163,9 @@ impl TreeWalk {
             &[(b"value".as_slice(), string.bytes())],
         )?;
         *context = context
-            .union(string.context())
+            .union(&string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(())
     }
@@ -178,7 +180,7 @@ impl TreeWalk {
         depth: usize,
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
-        let path = self.heap.get_path(value).map_err(|source| {
+        let path = self.heap.get_path_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: path_id,
@@ -211,7 +213,7 @@ impl TreeWalk {
         drvs_seen: &mut Vec<Vec<u8>>,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -349,7 +351,7 @@ impl TreeWalk {
         if type_value.tag() != ValueTag::String {
             return Ok(false);
         }
-        let string = self.heap.get_string(type_value).map_err(|source| {
+        let string = self.heap.get_string_view(type_value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: attrs_id,
@@ -375,7 +377,7 @@ impl TreeWalk {
         if attr.tag() != ValueTag::String {
             return Ok(None);
         }
-        let string = self.heap.get_string(attr).map_err(|source| {
+        let string = self.heap.get_string_view(attr).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: attrs_id,
@@ -405,7 +407,7 @@ impl TreeWalk {
         drvs_seen: &mut Vec<Vec<u8>>,
     ) -> Result<(), TreeWalkError> {
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,

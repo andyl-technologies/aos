@@ -23,8 +23,9 @@ use thiserror::Error;
 use crate::heap::flat::shared::{SharedFlatObjectError, SharedFlatObjectStore};
 use crate::heap::flat::{
     FlatKindSet, FlatObjectError, FlatObjectKind, FlatObjectStore, SharedFlatStoreArena,
+    SharedReservationZeroPageAdviceReport, ValidatedFlatStoreRetirement,
 };
-use crate::heap::{ArenaDomainId, ArenaIndex, ReservedArena};
+use crate::heap::{ArenaDomainId, ArenaIndex, ReservedArena, ReservedArenaDeadPageAdviceError};
 
 use super::ValueTag;
 
@@ -316,6 +317,19 @@ impl CompressedValueWord {
         })
     }
 
+    /// Returns the same checked word with the thunk `FORCED` shortcut cleared.
+    ///
+    /// The shortcut records mutable thunk state rather than object location.
+    /// Clearing it is therefore useful when deriving a stable identity for an
+    /// indexed object. Other checked kinds are returned unchanged because the
+    /// codec rejects the forced bit on non-thunks.
+    #[inline]
+    pub const fn without_forced_bit(self) -> Self {
+        Self {
+            raw: self.raw & !((COMPRESSED_FORCED_BIT as u64) << 32),
+        }
+    }
+
     const fn compose(kind: CompressedValueKind, payload: u32) -> Self {
         Self {
             raw: ((kind as u64) << 32) | payload as u64,
@@ -347,6 +361,79 @@ pub struct CandidateCScalarStore {
     floats: FlatObjectStore<u64>,
     int_addresses: HashMap<i64, usize>,
     float_addresses: HashMap<u64, usize>,
+}
+
+/// Result of retiring every boxed scalar in one serial Candidate-C store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CandidateCScalarRetirementReport {
+    retired_ints: usize,
+    retired_floats: usize,
+    arena_domain: Option<ArenaDomainId>,
+    zero_page_advice:
+        Option<Result<SharedReservationZeroPageAdviceReport, ReservedArenaDeadPageAdviceError>>,
+}
+
+/// Fully validated, allocation-free commit token for serial boxed scalars.
+///
+/// The token exclusively borrows both typed stores and hash-cons maps. It can
+/// therefore be held alongside retirement tokens for other disjoint heap
+/// stores, allowing every source lane to validate before any lane mutates.
+pub struct PreparedCandidateCScalarRetirement<'a> {
+    ints: ValidatedFlatStoreRetirement<'a, i64>,
+    floats: ValidatedFlatStoreRetirement<'a, u64>,
+    int_addresses: &'a mut HashMap<i64, usize>,
+    float_addresses: &'a mut HashMap<u64, usize>,
+    arena: SharedFlatStoreArena,
+    domain: Option<ArenaDomainId>,
+}
+
+impl PreparedCandidateCScalarRetirement<'_> {
+    /// Retires the validated scalar stores without allocation or failure.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from a boxed scalar payload destructor. The standard
+    /// `i64` and `u64` payloads used by this store do not panic on drop.
+    pub fn commit(self) -> CandidateCScalarRetirementReport {
+        let retired_ints = self.ints.commit_and_reset();
+        let retired_floats = self.floats.commit_and_reset();
+        *self.int_addresses = HashMap::new();
+        *self.float_addresses = HashMap::new();
+        CandidateCScalarRetirementReport {
+            retired_ints,
+            retired_floats,
+            arena_domain: self.domain,
+            zero_page_advice: self.arena.advise_zero_liveness_pages(),
+        }
+    }
+}
+
+impl CandidateCScalarRetirementReport {
+    /// Returns the number of boxed integer cells retired.
+    pub const fn retired_ints(self) -> usize {
+        self.retired_ints
+    }
+
+    /// Returns the number of boxed float cells retired.
+    pub const fn retired_floats(self) -> usize {
+        self.retired_floats
+    }
+
+    /// Returns the unchanged reservation domain used by the replacement store.
+    pub const fn arena_domain(self) -> Option<ArenaDomainId> {
+        self.arena_domain
+    }
+
+    /// Returns the result of advising arena pages that became wholly dead.
+    ///
+    /// `None` means the store uses the chunked compatibility backend or its
+    /// reservation page-liveness accounting is unavailable.
+    pub const fn zero_page_advice(
+        self,
+    ) -> Option<Result<SharedReservationZeroPageAdviceReport, ReservedArenaDeadPageAdviceError>>
+    {
+        self.zero_page_advice
+    }
 }
 
 impl CandidateCScalarStore {
@@ -523,6 +610,74 @@ impl CandidateCScalarStore {
     /// Returns the number of distinct boxed float bit patterns.
     pub fn boxed_float_count(&self) -> usize {
         self.floats.len()
+    }
+
+    /// Retires every boxed scalar and installs empty stores in the same arena.
+    ///
+    /// Inline integers are independent of the boxed stores and continue to
+    /// decode unchanged. Every boxed cell and every hash-cons entry is
+    /// validated before the first retirement, so a validation error leaves the
+    /// store untouched. Successful retirement tombstones all old cells,
+    /// removes their page-liveness contributions, clears both hash-cons maps,
+    /// and permits later boxing in the original reservation domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before mutation if an inventory allocation fails, a
+    /// boxed cell does not resolve with its expected kind, or a hash-cons entry
+    /// does not name the scalar value recorded in its key.
+    pub fn retire_all_boxed(
+        &mut self,
+    ) -> Result<CandidateCScalarRetirementReport, CandidateCScalarError> {
+        Ok(self.prepare_retire_all_boxed()?.commit())
+    }
+
+    /// Validates every boxed scalar and returns an allocation-free commit token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without mutation if a boxed cell does not resolve with
+    /// its expected kind, a hash-cons entry names a different scalar, or a
+    /// typed flat-store registry is inconsistent.
+    pub fn prepare_retire_all_boxed(
+        &mut self,
+    ) -> Result<PreparedCandidateCScalarRetirement<'_>, CandidateCScalarError> {
+        for (&value, &address) in &self.int_addresses {
+            let ptr = pointer_from_exposed_address(address, "integer")?;
+            let actual = *self.ints.resolve(ptr, FlatObjectKind::BoxedInt)?.payload();
+            if actual != value {
+                return Err(CandidateCScalarError::HashConsValueMismatch {
+                    kind: "integer",
+                    address,
+                });
+            }
+        }
+        for (&bits, &address) in &self.float_addresses {
+            let ptr = pointer_from_exposed_address(address, "float")?;
+            let actual = *self
+                .floats
+                .resolve(ptr, FlatObjectKind::BoxedFloat)?
+                .payload();
+            if actual != bits {
+                return Err(CandidateCScalarError::HashConsValueMismatch {
+                    kind: "float",
+                    address,
+                });
+            }
+        }
+
+        let arena = self.arena.clone();
+        let domain = self.domain;
+        let ints = self.ints.prepare_retire_all_live()?;
+        let floats = self.floats.prepare_retire_all_live()?;
+        Ok(PreparedCandidateCScalarRetirement {
+            ints,
+            floats,
+            int_addresses: &mut self.int_addresses,
+            float_addresses: &mut self.float_addresses,
+            arena,
+            domain,
+        })
     }
 
     /// Primes the typed cell stores' membership indexes for a scalar store

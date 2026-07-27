@@ -5,8 +5,8 @@
 //! child-pushing walkers those classifications and the dependency collector
 //! iterate the IR with.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 impl TreeWalk {
     pub(super) fn subtree_is_speculable(ir: &Ir, symbols: &SymbolTable, root: IrId) -> bool {

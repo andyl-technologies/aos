@@ -2,6 +2,20 @@
 
 use super::*;
 
+#[test]
+fn compact_flat_capture_site_admission_fails_closed_at_each_bit_bound() {
+    assert!(EvalFlatCapture::supports_allocation_site(EvalNodeRef::new(
+        EvalModuleId::new(4095),
+        IrId::new(1_048_575),
+    )));
+    assert!(!EvalFlatCapture::supports_allocation_site(
+        EvalNodeRef::new(EvalModuleId::new(4096), IrId::new(0),)
+    ));
+    assert!(!EvalFlatCapture::supports_allocation_site(
+        EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(1_048_576),)
+    ));
+}
+
 // Baseline two-word AtomicValueCell internals. The `candidate_c_value`
 // variant collapses the cell to one word (different fields), so these are
 // gated off there; the one-word cell's store/load is exercised end-to-end by
@@ -102,7 +116,12 @@ fn held_test_borrow_rejects_mutation_but_admits_reads() {
         Err(EvalEnvError::BorrowConflict)
     );
     assert_eq!(frame.validate_set(0), Err(EvalEnvError::BorrowConflict));
-    assert!(frame.get(0).expect("reads stay admitted").raw_eq(Value::int(5)));
+    assert!(
+        frame
+            .get(0)
+            .expect("reads stay admitted")
+            .raw_eq(Value::int(5))
+    );
     assert!(
         frame
             .slot_values()
@@ -134,6 +153,15 @@ fn persistent_dynamic_environments_share_heads_and_rebuild_writebacks() {
             .as_ref()
             .expect("captured with head")
     ));
+    assert_eq!(with_scopes.len(), 1);
+    assert!(!with_scopes.is_empty());
+    assert!(
+        with_scopes
+            .scopes
+            .head
+            .as_ref()
+            .is_some_and(|head| head.values.get().is_none())
+    );
     assert!(with_scopes.replace_value(0, Value::int(11)));
     assert!(with_scopes[0].value().raw_eq(Value::int(11)));
     assert!(captured_with[0].value().raw_eq(Value::int(10)));
@@ -149,6 +177,15 @@ fn persistent_dynamic_environments_share_heads_and_rebuild_writebacks() {
             .as_ref()
             .expect("captured global head")
     ));
+    assert_eq!(globals.len(), 1);
+    assert!(!globals.is_empty());
+    assert!(
+        globals
+            .scopes
+            .head
+            .as_ref()
+            .is_some_and(|head| head.values.get().is_none())
+    );
     assert!(globals.replace_value(0, Value::int(21)));
     assert!(globals[0].raw_eq(Value::int(21)));
     assert!(captured_globals[0].raw_eq(Value::int(20)));

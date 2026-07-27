@@ -44,8 +44,7 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 #[test]
 fn native_uncached_expression_eval_runs_analysis_in_process() -> Result<()> {
     let native = NixNative::new(0)?;
-    let (json, stats) =
-        native.eval_expr_with_stats("let a = 1 + 1; in (x: a + x) 3")?;
+    let (json, stats) = native.eval_expr_with_stats("let a = 1 + 1; in (x: a + x) 3")?;
 
     assert_eq!(json, "5");
     assert!(
@@ -948,4 +947,3 @@ fn native_expression_instantiation_reports_caller_diagnostic_source() -> Result<
     assert!(!message.contains("__aos_repl_scope"), "{message}");
     Ok(())
 }
-

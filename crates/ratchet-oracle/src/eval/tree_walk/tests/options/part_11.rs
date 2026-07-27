@@ -1,6 +1,368 @@
 //! Split-out tests (part_11). See parent module.
 
 use super::*;
+#[cfg(feature = "candidate_c_value")]
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+#[cfg(feature = "candidate_c_value")]
+use crate::eval::heap::{EvalHeapSnapshotError, EvalRootSource};
+
+#[test]
+fn typed_apply_heads_force_reforce_and_release_work() {
+    let ir = lower(
+        "let ys = builtins.map (x: x + 1) [ 1 ]; \
+         y = builtins.elemAt ys 0; in y + y",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("typed-head source evaluates");
+
+    assert_eq!(value.as_int(), Ok(4));
+    let (heads, live, peak_live, _, _) = evaluator.heap.typed_thunk_head_counts();
+    assert!(heads > 0, "ordinary Apply thunks use typed heads");
+    assert_eq!(live, 0, "successful forces release suspended work");
+    assert!(peak_live > 0, "work pool observes live suspended work");
+    assert!(
+        evaluator.active_typed_thunk_work_leases.is_empty(),
+        "successful force releases its detached-work lease"
+    );
+}
+
+#[test]
+fn typed_node_work_pool_matches_baseline_and_releases_shape_payload() {
+    let source = "let x = 20 + 1; y = x + x; in y + y";
+    let baseline_ir = lower(source);
+    let baseline = TreeWalk::new(&baseline_ir)
+        .eval_root()
+        .expect("baseline Node thunks evaluate");
+
+    let typed_ir = lower(source);
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&typed_ir, options);
+    let typed = evaluator
+        .eval_root()
+        .expect("shape-sized Node thunks evaluate");
+
+    assert!(typed.raw_eq(baseline));
+    assert_eq!(typed.as_int(), Ok(84));
+    let (node_live, node_slots, _, _) = evaluator.heap.typed_thunk_work_shape_counts();
+    assert_eq!(
+        node_live, 0,
+        "successful Node forces release their payloads"
+    );
+    assert!(
+        node_slots > 0,
+        "ordinary Node work used the shape-sized pool"
+    );
+}
+
+#[test]
+fn typed_heads_preserve_dynamic_scope_capture_via_general_pool() {
+    let source = "with { n = 40; }; let x = n + 2; in x + x";
+    let baseline_ir = lower(source);
+    let baseline = TreeWalk::new(&baseline_ir)
+        .eval_root()
+        .expect("baseline dynamic capture evaluates");
+
+    let typed_ir = lower(source);
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&typed_ir, options);
+    let typed = evaluator
+        .eval_root()
+        .expect("shape-sized dynamic capture evaluates");
+
+    assert!(typed.raw_eq(baseline));
+    assert_eq!(typed.as_int(), Ok(84));
+    assert!(
+        evaluator.heap.typed_thunk_work_shape_counts().3 > 0,
+        "dynamic-scope Node work stays in the full general pool"
+    );
+}
+
+#[test]
+fn typed_apply_heads_admit_the_layout_identical_genlist_marker() {
+    let ir = lower(
+        "let xs = [ 10 20 30 ]; \
+         ys = builtins.genList (i: builtins.elemAt xs (i + 1)) 2; \
+         in builtins.elemAt ys 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("typed genList marker evaluates");
+
+    assert_eq!(value.as_int(), Ok(20));
+    let (heads, live, peak_live, _, _) = evaluator.heap.typed_thunk_head_counts();
+    assert!(
+        heads >= 4,
+        "generated markers and serial node work use stable heads"
+    );
+    assert!(
+        live >= 1,
+        "the unselected generated element stays suspended"
+    );
+    assert!(peak_live >= 2);
+}
+
+#[test]
+fn typed_apply_heads_retain_work_after_force_error() {
+    let ir = lower(
+        "let ys = builtins.map (x: builtins.abort \"typed-head retry\") [ 1 ]; \
+         in builtins.elemAt ys 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    evaluator
+        .eval_root()
+        .expect_err("failed force preserves suspended work for retry");
+
+    let (heads, live, peak_live, _, _) = evaluator.heap.typed_thunk_head_counts();
+    assert!(heads > 0, "ordinary Apply thunks use typed heads");
+    assert!(live > 0, "failed publication does not recycle work");
+    assert!(peak_live >= live);
+    assert!(
+        evaluator.active_typed_thunk_work_leases.is_empty(),
+        "failed force restores and releases its detached-work lease"
+    );
+}
+
+#[cfg(feature = "candidate_c_value")]
+#[test]
+#[allow(unsafe_code)]
+fn claimed_typed_head_scans_detached_work_edges_from_evaluator_lease() {
+    let ir = lower("null");
+    let id = ir.root;
+    let span = ir.arena.node(id).expect("root exists").span;
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let retained = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"retained typed edge".to_vec()))
+        .expect("retained string allocates");
+    let typed = evaluator
+        .alloc_apply_thunk(id, span, id, span, retained, id, retained)
+        .expect("typed Apply head allocates");
+    let holder = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![typed]))
+        .expect("ordinary rooted object can retain the typed head");
+    let ptr = evaluator
+        .heap
+        .thunk_ptr(typed)
+        .expect("typed thunk pointer resolves");
+    let parts = evaluator
+        .heap
+        .typed_thunk_force_parts(ptr)
+        .expect("typed force parts resolve")
+        .expect("value uses a typed head");
+
+    // SAFETY: `parts` originates from `evaluator.heap`, which remains alive
+    // until the claim is dropped below.
+    let crate::eval::heap::TypedThunkForceClaim::Claimed(guard) =
+        (unsafe { parts.begin_force() }).expect("fresh typed head claims")
+    else {
+        panic!("fresh typed head cannot already be forced");
+    };
+    let handle = guard.handle();
+    let work = evaluator
+        .heap
+        .take_typed_thunk_work(ptr, handle)
+        .expect("claimed work detaches");
+    evaluator
+        .push_active_typed_thunk_work_lease(id, span, typed, ptr, handle, work)
+        .map_err(|(error, _)| error)
+        .expect("evaluator owns detached work");
+
+    assert_eq!(
+        evaluator.heap.typed_thunk_state_if_any(typed),
+        Some(ThunkState::Blackhole)
+    );
+    let roots = evaluator
+        .safepoint_root_set()
+        .expect("blackholed head's detached work roots build");
+    let detached: Vec<_> = roots
+        .roots()
+        .iter()
+        .filter(|root| matches!(root.source(), EvalRootSource::DetachedTypedThunkWork { .. }))
+        .collect();
+    assert_eq!(detached.len(), 2, "Apply retains function and argument");
+    assert!(detached.iter().all(|root| root.value().raw_eq(retained)));
+    assert!(roots.roots().iter().any(|root| {
+        matches!(
+            root.source(),
+            EvalRootSource::DetachedTypedThunkHead { depth: 0 }
+        ) && root.value().raw_eq(typed)
+    }));
+
+    // Reach the same blackholed head through an ordinary object as well as its
+    // special lease root. Previsiting the latter must make the former safe
+    // without weakening unmatched-blackhole rejection.
+    evaluator.active_force_roots.push(holder);
+    let scan = evaluator
+        .safepoint_heap_scan()
+        .expect("detached roots make the claimed blackhole scan complete");
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(typed)),
+        "the leased head itself is counted live"
+    );
+    evaluator
+        .heap
+        .weak_liveness_census(&roots)
+        .expect("weak scanner accepts the matching detached-work lease");
+    evaluator.active_force_roots.pop();
+
+    let work = evaluator
+        .pop_active_typed_thunk_work_lease(id, span, typed, ptr, handle)
+        .expect("matching detached-work lease pops");
+    evaluator
+        .heap
+        .restore_typed_thunk_work(ptr, handle, work)
+        .expect("detached work restores");
+    drop(guard);
+    assert_eq!(
+        evaluator.heap.typed_thunk_state_if_any(typed),
+        Some(ThunkState::Suspended)
+    );
+    assert!(evaluator.active_typed_thunk_work_leases.is_empty());
+}
+
+#[cfg(feature = "candidate_c_value")]
+#[test]
+#[allow(unsafe_code)]
+fn unmatched_typed_blackhole_still_rejects_precise_and_weak_scans() {
+    let ir = lower("null");
+    let id = ir.root;
+    let span = ir.arena.node(id).expect("root exists").span;
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let typed = evaluator
+        .alloc_apply_thunk(id, span, id, span, Value::int(1), id, Value::int(2))
+        .expect("typed Apply head allocates");
+    let ptr = evaluator
+        .heap
+        .thunk_ptr(typed)
+        .expect("typed thunk pointer resolves");
+    let parts = evaluator
+        .heap
+        .typed_thunk_force_parts(ptr)
+        .expect("typed force parts resolve")
+        .expect("value uses a typed head");
+    // SAFETY: `parts` originates from the live evaluator heap and the claim is
+    // dropped before the evaluator.
+    let crate::eval::heap::TypedThunkForceClaim::Claimed(guard) =
+        (unsafe { parts.begin_force() }).expect("fresh typed head claims")
+    else {
+        panic!("fresh typed head cannot already be forced");
+    };
+    let handle = guard.handle();
+    let work = evaluator
+        .heap
+        .take_typed_thunk_work(ptr, handle)
+        .expect("claimed work detaches");
+    let roots = evaluator
+        .safepoint_root_set_with_value_stack([typed])
+        .expect("ordinary root set builds");
+
+    assert!(matches!(
+        evaluator.heap.scan_precise_roots(&roots),
+        Err(EvalHeapError::ShedRejected { .. })
+    ));
+    assert!(matches!(
+        evaluator.heap.weak_liveness_census(&roots),
+        Err(EvalHeapError::ShedRejected { .. })
+    ));
+
+    evaluator
+        .heap
+        .restore_typed_thunk_work(ptr, handle, work)
+        .expect("unmatched test work restores");
+    drop(guard);
+}
+
+#[cfg(feature = "candidate_c_value")]
+#[test]
+fn typed_apply_head_panic_restores_work_and_clears_evaluator_lease() {
+    let ir = lower(
+        "let ys = builtins.map (x: x + 1) [ 1 ]; \
+         in builtins.elemAt ys 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    evaluator.panic_typed_thunk_body_once = true;
+
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let _ = evaluator.eval_root();
+    }));
+
+    assert!(panic.is_err(), "test hook injects a typed-body panic");
+    assert!(
+        evaluator.active_typed_thunk_work_leases.is_empty(),
+        "panic cleanup removes evaluator-owned detached work"
+    );
+    let (heads, live, _, _, _) = evaluator.heap.typed_thunk_head_counts();
+    assert!(heads > 0, "the injected force used a typed head");
+    assert!(live > 0, "panic cleanup restores suspended work");
+    let value = evaluator
+        .eval_root()
+        .expect("restored typed work can be evaluated again");
+    assert_eq!(value.as_int(), Ok(2));
+}
+
+#[test]
+fn typed_apply_heads_fall_back_when_stats_are_enabled() {
+    let ir = lower(
+        "let ys = builtins.map (x: x + 1) [ 1 ]; \
+         in builtins.elemAt ys 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    options.set_eval_stats_dump(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("incompatible options retain ordinary closures");
+
+    assert_eq!(value.as_int(), Ok(2));
+    assert_eq!(evaluator.heap.typed_thunk_head_counts().0, 0);
+}
+
+#[test]
+#[cfg(feature = "candidate_c_value")]
+fn typed_apply_heads_explicitly_refuse_regions_and_snapshots() {
+    let ir = lower(
+        "let ys = builtins.map (x: x + 1) [ 1 ]; \
+         in builtins.elemAt ys 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    assert!(matches!(
+        evaluator.heap.worker_region_mark(),
+        Err(EvalHeapError::TypedThunkHeadsRegionUnsupported)
+    ));
+    evaluator
+        .eval_root()
+        .expect("typed-head source evaluates before snapshot refusal");
+    assert!(matches!(
+        evaluator.heap.capture_heap_image(),
+        Err(EvalHeapSnapshotError::UnsnapshottableTypedThunkHeads { count })
+            if count > 0
+    ));
+}
 
 #[test]
 fn detailed_heap_dereference_counters_are_opt_in() {
@@ -30,6 +392,168 @@ fn detailed_heap_dereference_counters_record_under_stats_dump() {
             + campaign.flat_thunk_resolutions
             > 0,
         "stats-dump evaluation records flat heap resolutions",
+    );
+}
+
+#[test]
+fn genlist_selected_child_census_classifies_scalar_node_and_apply_values() {
+    let scalar_ir = lower("null");
+    let mut scalar_eval = TreeWalk::new(&scalar_ir);
+    let scalar = scalar_eval.genlist_selected_child_descriptor(Value::int(7));
+    assert_eq!(scalar.runtime_kind, "int");
+    assert_eq!(scalar.thunk_kind, "not-thunk");
+    assert_eq!(scalar.thunk_state, "not-thunk");
+    assert_eq!(scalar.body, "not-node");
+    assert!(scalar.apply.is_none());
+
+    let node_ir = lower("[ (1 + 2) ]");
+    let mut node_eval = TreeWalk::new(&node_ir);
+    let node_list = node_eval
+        .eval_node(node_ir.root)
+        .expect("lazy arithmetic list evaluates");
+    let node_value = node_eval
+        .heap()
+        .get_list(node_list)
+        .expect("root is a list")
+        .get(0)
+        .expect("list has one element");
+    let node = node_eval.genlist_selected_child_descriptor(node_value);
+    assert_eq!(node.runtime_kind, "thunk");
+    assert_eq!(node.thunk_kind, "node");
+    assert_eq!(node.thunk_state, "suspended");
+    assert_eq!(node.body, "BinOp:Add");
+    assert!(node.apply.is_none());
+
+    let apply_ir = lower("builtins.map (x: x + 1) [ 1 ]");
+    let mut apply_eval = TreeWalk::new(&apply_ir);
+    let apply_list = apply_eval
+        .eval_node(apply_ir.root)
+        .expect("lazy mapped list evaluates");
+    let apply_value = apply_eval
+        .heap()
+        .get_list(apply_list)
+        .expect("map returns a list")
+        .get(0)
+        .expect("mapped list has one element");
+    let apply = apply_eval.genlist_selected_child_descriptor(apply_value);
+    assert_eq!(apply.runtime_kind, "thunk");
+    assert_eq!(apply.thunk_kind, "apply");
+    assert_eq!(apply.thunk_state, "suspended");
+    assert_eq!(apply.body, "not-node");
+    let signature = apply.apply.expect("Apply child carries an Apply signature");
+    assert_eq!(signature.callee, "lambda");
+    assert_eq!(signature.pattern, "simple-formal");
+    assert_eq!(signature.body, "BinOp:Add");
+    let selected = apply
+        .selected_apply
+        .expect("Apply child carries reducer-oriented detail");
+    assert_eq!(selected.callee_kind, "lambda");
+    assert_eq!(selected.lambda_module, "root");
+    assert_eq!(selected.lexical_frames, 0);
+    assert_eq!(selected.with_scopes, 0);
+    assert_eq!(selected.scoped_globals, 0);
+    assert_eq!(selected.body.root_kind, "BinOp:Add");
+    assert_eq!(selected.body.grammar, "supported");
+    assert_ne!(selected.body.features & (1 << 0), 0, "literal observed");
+    assert_ne!(
+        selected.body.features & (1 << 1),
+        0,
+        "lexical read observed"
+    );
+    assert_ne!(selected.body.features & (1 << 8), 0, "operator observed");
+}
+
+#[test]
+fn genlist_selected_child_census_summarizes_reducer_grammar_and_captures() {
+    let ir = lower(
+        "let captured = 7; in builtins.map \
+         (x: let bundle = { item = [ x captured ]; }; \
+         in builtins.elemAt bundle.item 0) [ 1 ]",
+    );
+    let mut evaluator = TreeWalk::new(&ir);
+    let list = evaluator
+        .eval_node(ir.root)
+        .expect("lazy mapped list evaluates");
+    let value = evaluator
+        .heap()
+        .get_list(list)
+        .expect("map returns a list")
+        .get(0)
+        .expect("mapped list has one element");
+    let descriptor = evaluator.genlist_selected_child_descriptor(value);
+    let selected = descriptor
+        .selected_apply
+        .expect("mapped Apply child carries reducer-oriented detail");
+
+    assert_eq!(selected.callee_kind, "lambda");
+    assert_eq!(selected.lambda_module, "root");
+    assert_eq!(selected.lexical_frames, 1);
+    assert_eq!(selected.body.root_kind, "Let");
+    assert_eq!(selected.body.grammar, "supported");
+    for (bit, family) in [
+        (1 << 0, "literal"),
+        (1 << 1, "lexical"),
+        (1 << 2, "select"),
+        (1 << 3, "primop"),
+        (1 << 5, "let"),
+        (1 << 6, "attrs"),
+        (1 << 7, "list"),
+        (1 << 9, "thunk"),
+    ] {
+        assert_ne!(selected.body.features & bit, 0, "{family} family observed");
+    }
+}
+
+#[test]
+fn genlist_selected_child_census_is_a_default_no_op() {
+    use crate::eval::tree_walk::force_shape_census::recorded_genlist_selected_children;
+
+    let ir = lower("null");
+    let mut options = TreeWalkOptions::new();
+    options.set_genlist_selected_child_census_enabled(true);
+    assert!(
+        !options.genlist_selected_child_census_enabled(),
+        "the child-census knob alone cannot enable non-stats instrumentation"
+    );
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let descriptor = evaluator.genlist_selected_child_descriptor(Value::int(91));
+    let before = recorded_genlist_selected_children(descriptor);
+
+    evaluator.record_genlist_selected_child_if_enabled(Value::int(91));
+
+    assert_eq!(recorded_genlist_selected_children(descriptor), before);
+}
+
+#[test]
+fn stg_session_is_default_off_and_explicitly_enabled() {
+    let mut options = TreeWalkOptions::new();
+    assert!(!options.stg_session_enabled());
+    options.set_stg_session_enabled(true);
+    assert!(options.stg_session_enabled());
+}
+
+#[test]
+fn genlist_selected_child_census_records_the_exact_pre_force_child() {
+    use crate::eval::tree_walk::force_shape_census::recorded_genlist_selected_child_kind;
+
+    let ir = lower(
+        "let xs = builtins.map (x: x + 1) [ 10 20 ]; \
+         generated = builtins.genList (i: builtins.elemAt xs (i + 1)) 1; \
+         in builtins.elemAt generated 0",
+    );
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_stats_dump(true);
+    options.set_genlist_selected_child_census_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let before = recorded_genlist_selected_child_kind("thunk", "apply");
+    let value = evaluator
+        .eval_root()
+        .expect("stats-only exact genList census preserves evaluation");
+
+    assert_eq!(value.as_int(), Ok(21));
+    assert!(
+        recorded_genlist_selected_child_kind("thunk", "apply") > before,
+        "the directly selected mapped Apply thunk is classified before forcing"
     );
 }
 
@@ -440,7 +964,25 @@ fn heap_cheap_memory_advice_option_reports_after_tree_walk_eval() {
     )
     .expect("string evaluates");
 
-    assert_eq!(outcome.stats(), default_outcome.stats());
+    let normalize_process_wide_env_counters = |stats: &EvalStats| {
+        let mut stats = *stats;
+        stats.campaign.env_captures = 0;
+        stats.campaign.env_capture_frame_handles = 0;
+        stats.campaign.flat_env_captures = 0;
+        stats.campaign.flat_env_capture_values = 0;
+        stats.campaign.with_env_captures = 0;
+        stats.campaign.with_env_capture_scopes = 0;
+        stats.campaign.scoped_global_env_captures = 0;
+        stats.campaign.scoped_global_env_capture_scopes = 0;
+        stats.campaign.env_frame_allocs = 0;
+        stats.campaign.env_frame_slot_bytes = 0;
+        stats.campaign.env_frames_recyclable = 0;
+        stats
+    };
+    assert_eq!(
+        normalize_process_wide_env_counters(outcome.stats()),
+        normalize_process_wide_env_counters(default_outcome.stats()),
+    );
     assert_eq!(
         outcome
             .heap()
@@ -959,10 +1501,15 @@ fn boundary_admission_recognizes_a_keyed_package_application() {
 /// bound on the delta — concurrent tests can only inflate it.
 #[test]
 fn force_shape_census_classifies_forced_body_shapes_under_stats_dump() {
-    use crate::eval::tree_walk::force_shape_census::recorded_forces;
+    use crate::eval::tree_walk::force_shape_census::{
+        recorded_allocations, recorded_forces, recorded_work_releases,
+    };
 
+    let before_update_allocations = recorded_allocations("BinOp:Update");
+    let before_add_allocations = recorded_allocations("BinOp:Add");
     let before_update = recorded_forces("BinOp:Update");
     let before_add = recorded_forces("BinOp:Add");
+    let before_work_releases = recorded_work_releases();
 
     let mut options = TreeWalkOptions::new();
     options.set_eval_stats_dump(true);
@@ -975,11 +1522,23 @@ fn force_shape_census_classifies_forced_body_shapes_under_stats_dump() {
     assert_eq!(bytes, b"3");
 
     assert!(
+        recorded_allocations("BinOp:Update") > before_update_allocations,
+        "expected a new BinOp:Update thunk allocation to be classified",
+    );
+    assert!(
+        recorded_allocations("BinOp:Add") > before_add_allocations,
+        "expected a new BinOp:Add thunk allocation to be classified",
+    );
+    assert!(
         recorded_forces("BinOp:Update") > before_update,
         "expected a new BinOp:Update thunk force to be classified",
     );
     assert!(
         recorded_forces("BinOp:Add") > before_add,
         "expected a new BinOp:Add thunk force to be classified",
+    );
+    assert!(
+        recorded_work_releases() > before_work_releases,
+        "expected a forced thunk to release its hypothetical suspended work",
     );
 }

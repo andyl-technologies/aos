@@ -105,6 +105,46 @@ impl TreeWalk {
         // resolution. They are diagnostic data emitted only by the explicit
         // stats-dump path, so keep that bookkeeping out of normal evaluation.
         heap.set_deref_counters_enabled(options.eval_stats_dump());
+        // Typed heads are an intentionally narrow memory-layout experiment.
+        // Unsupported modes keep the established flat closure layout rather
+        // than silently exercising an incomplete GC/cache/parallel coupling.
+        if options.typed_apply_thunk_heads_enabled()
+            && options.parallel_workers().is_none()
+            && !options.parallel_thunk_payloads_enabled()
+            && options.gc_mode() == EvalGcMode::Off
+            && options.gc_stress_policy() == GcStressPolicy::disabled()
+            && options.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
+            && !options.record_worker_closures_for_gc_scaffolding()
+            && !options.eval_cache_enabled()
+            && options.persist_cache_root().is_none()
+            && !options.eval_stats_dump()
+            && !options.jit_tier1_publish_enabled()
+            && options.heap_memory_budget().is_none()
+            && options.heap_cheap_memory_advice_min_idle_epochs().is_none()
+        {
+            heap.enable_typed_apply_thunk_heads();
+        }
+        #[cfg(feature = "active_packed_thunk_probe")]
+        if let Some(capacities) = options.active_packed_thunk_capacities()
+            && !options.typed_apply_thunk_heads_enabled()
+            && !options.stg_session_enabled()
+            && options.parallel_workers().is_none()
+            && !options.parallel_thunk_payloads_enabled()
+            && options.gc_mode() == EvalGcMode::Off
+            && options.gc_stress_policy() == GcStressPolicy::disabled()
+            && options.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
+            && !options.record_worker_closures_for_gc_scaffolding()
+            && !options.eval_cache_enabled()
+            && options.persist_cache_root().is_none()
+            && !options.memo_active()
+            && !options.boundary_memo_active()
+            && !options.eval_stats_dump()
+            && !options.jit_tier1_publish_enabled()
+            && options.heap_memory_budget().is_none()
+            && options.heap_cheap_memory_advice_min_idle_epochs().is_none()
+        {
+            heap.enable_active_packed_thunks(capacities);
+        }
         // The generational thunk-resolve write barrier resolves published
         // values against record generations, so barrier-exercising tiers keep
         // the record-table worker placement alongside the GC-stress proving
@@ -140,6 +180,21 @@ impl TreeWalk {
         // results.
         let force_cache_active = options.persist_cache_root().is_some()
             || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
+        #[cfg(feature = "lifetime_cohort_probe")]
+        let lifetime_cohort_probe = super::lifetime_cohort_probe::LifetimeCohortProbe::from_env(
+            &options,
+            force_cache_active,
+        );
+        #[cfg(feature = "lifetime_cohort_probe")]
+        if lifetime_cohort_probe.is_some() {
+            // The admitted residual-retirement shadow window consumes generic
+            // object touch epochs. Default and refused probe modes retain the
+            // ordinary cheap-advice-only stamping policy above.
+            heap.set_epoch_tracking_enabled(true);
+        }
+        #[cfg(feature = "young_increment_projection_probe")]
+        let young_increment_projection_probe =
+            super::young_increment_projection_probe::YoungIncrementProjectionProbe::from_env(&heap);
         let store_validity_checker = StoreValidityChecker::for_store_dir(options.store_dir());
         // Parallel forcing gives each evaluator a wait registry; demand-graph
         // workers replace it with one shared through `set_parallel_force_registry`.
@@ -169,8 +224,59 @@ impl TreeWalk {
             with_scopes: EvalWithEnv::default(),
             scoped_globals: EvalScopedGlobalEnv::default(),
             capture_on_demand: super::capture_on_demand::CaptureOnDemand::from_env(),
+            promise_region_census:
+                super::promise_region_census::PromiseRegionRuntimeCensus::from_env(),
+            #[cfg(feature = "maximal_laziness_probe")]
+            maximal_laziness_census:
+                super::maximal_laziness_census::MaximalLazinessRuntimeCensus::from_env(&options),
+            #[cfg(feature = "demand_region_shadow_probe")]
+            demand_region_shadow_probe:
+                super::demand_region_shadow_probe::DemandRegionShadowProbe::from_env(
+                    &options,
+                    force_cache_active,
+                ),
+            #[cfg(feature = "lifetime_cohort_probe")]
+            lifetime_cohort_probe,
+            #[cfg(feature = "immutable_cohort_projection_probe")]
+            immutable_cohort_projection_probe:
+                super::immutable_cohort_projection_probe::ImmutableCohortProbe::from_env(),
+            #[cfg(feature = "root_continuation_probe")]
+            root_continuation_probe:
+                super::root_continuation_probe::RootContinuationProbe::from_env(),
+            #[cfg(feature = "collection_poll_probe")]
+            whole_demand_dispatcher:
+                super::whole_demand_dispatcher::WholeDemandDispatcherRuntime::default(),
+            #[cfg(feature = "collection_poll_probe")]
+            restart_to_root_probe: super::restart_to_root_probe::RestartToRootProbe::from_env(),
+            #[cfg(feature = "collection_poll_probe")]
+            nested_nonmoving_safepoint_probe:
+                super::nested_nonmoving_safepoint_probe::NestedNonmovingSafepointProbe::from_env(),
+            #[cfg(feature = "nested_nonmoving_retirement_probe")]
+            nested_nonmoving_retirement_probe:
+                super::nested_nonmoving_retirement_probe::NestedNonmovingRetirementProbe::from_env(),
+            #[cfg(feature = "nested_nonmoving_retirement_probe")]
+            rotating_rollover_probe:
+                super::rotating_rollover_probe::RotatingRolloverProbe::from_env(),
+            #[cfg(feature = "young_increment_projection_probe")]
+            young_increment_projection_probe,
+            #[cfg(feature = "collection_poll_probe")]
+            native_continuation_shadow:
+                super::native_continuation_shadow::NativeContinuationShadow::from_env(),
+            #[cfg(feature = "dedup_string_list_canary")]
+            dedup_string_list_plans: HashMap::new(),
+            #[cfg(feature = "final_config_trie_canary")]
+            final_config_trie_plans: HashMap::new(),
+            #[cfg(feature = "option_map_fold_probe")]
+            option_map_fold_probe_plans: HashMap::new(),
+            #[cfg(feature = "ready_exclusive_probe")]
+            ready_exclusive_window: None,
             options,
             stats: EvalStats::default(),
+            #[cfg(feature = "peak_ordinal_probe")]
+            peak_ordinal_contexts: Vec::new(),
+            demand_machine_import_counters:
+                super::demand_machine::DemandMachineImportCounters::default(),
+            direct_island_probe: super::direct_island_probe::DirectIslandProbe::from_env(),
             campaign_env_baseline: crate::eval::env::capture_stats::snapshot(),
             attr_telemetry: AttrTelemetry::new(),
             // Hidden-class shape projection stores dense `ShapeId`s in shared
@@ -213,6 +319,25 @@ impl TreeWalk {
             shared_import_log_cursor: 0,
             shared_version_seen: 0,
             import_cache: BTreeMap::new(),
+            active_import_cache_leases: Vec::new(),
+            next_import_cache_lease_generation: 0,
+            active_import_module_leases: Vec::new(),
+            next_import_module_lease_generation: 0,
+            active_force_leases: Vec::new(),
+            next_force_lease_generation: 0,
+            #[cfg(feature = "collection_poll_probe")]
+            active_node_work_leases: Vec::new(),
+            #[cfg(all(test, feature = "collection_poll_probe"))]
+            active_node_work_detachment_test_enabled: false,
+            active_typed_thunk_work_leases: Vec::new(),
+            stg_apply_runtime: stg_apply_machine::StgApplyRuntime::default(),
+            stg_session_active: false,
+            genlist_elem_at_add_one_plans: HashMap::new(),
+            genlist_selected_child_body_plans: HashMap::new(),
+            stg_session_marker_claims: 0,
+            stg_session_max_update_depth: 0,
+            active_lambda_call_leases: Vec::new(),
+            next_lambda_call_lease_generation: 0,
             import_traceable_nonsymlink_prefixes: HashSet::new(),
             import_paths_cache: HashMap::new(),
             parse_cache,
@@ -263,6 +388,10 @@ impl TreeWalk {
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]
             gc_stress_permanent_root_allocation_dispatches: Vec::new(),
+            #[cfg(test)]
+            panic_typed_thunk_body_once: false,
+            #[cfg(all(test, feature = "active_packed_thunk_probe"))]
+            panic_active_packed_thunk_body_once: false,
             #[cfg(test)]
             capture_plan_validation: None,
         }
@@ -463,8 +592,12 @@ impl TreeWalk {
     pub fn eval_root(&mut self) -> Result<Value, TreeWalkError> {
         let root = self.current_ir().root;
         let previous_root_eval_node = self.active_root_eval_node.replace(root);
+        #[cfg(feature = "root_continuation_probe")]
+        self.begin_root_continuation_probe();
         let result = self.eval_node(root);
         self.active_root_eval_node = previous_root_eval_node;
+        #[cfg(feature = "root_continuation_probe")]
+        self.finish_root_continuation_probe(result.is_ok());
         result
     }
 
@@ -552,7 +685,7 @@ impl TreeWalk {
             .map_err(|error| self.error_with_current_source(error))
     }
 
-    fn error_with_current_source(&self, error: TreeWalkError) -> TreeWalkError {
+    pub(super) fn error_with_current_source(&self, error: TreeWalkError) -> TreeWalkError {
         if error.source().is_some() {
             return error;
         }
@@ -598,7 +731,39 @@ impl TreeWalk {
             if self.is_suspended_lazy_identity_thunk(id, span, value)? {
                 return Ok(value);
             }
-            let forced = self.force_value(id, span, value)?;
+            let forced = if self.gc_mode.is_enabled() || self.native_continuation_shadow_enabled() {
+                let mut roots = [value];
+                let forced = self.with_writeback_native_continuation(
+                    super::native_continuation_shadow::NativeContinuationKind::ForceNodeResult,
+                    id,
+                    span,
+                    &mut roots,
+                    super::native_continuation_shadow::NativeContinuationEdge::ForceValue,
+                    |eval, slots| {
+                        let value = eval
+                            .current_transient_value_stack_root(slots.start)
+                            .ok_or_else(|| {
+                                TreeWalkError::new(
+                                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                                    span,
+                                )
+                            })?;
+                        eval.force_value(id, span, value)
+                    },
+                )?;
+                value = roots[0];
+                forced
+            } else {
+                self.with_nonmoving_native_continuation(
+                    super::native_continuation_shadow::NativeContinuationKind::ForceNodeResult,
+                    id,
+                    &[value],
+                    Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                    |eval| eval.force_value(id, span, value),
+                )?
+            };
+            self.heap.observe_value_identity(forced);
+            self.heap.observe_value_identity(value);
             if forced.raw_eq(value) {
                 return Ok(forced);
             }
@@ -612,12 +777,20 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(value);
         if !value.is_thunk()
             || !self
                 .lazy_identity_thunks
                 .contains(&value.relocation_sensitive_identity_bits())
         {
             return Ok(false);
+        }
+        if let Some(state) = self.heap.typed_thunk_state_if_any(value) {
+            return Ok(state == ThunkState::Suspended);
+        }
+        #[cfg(feature = "active_packed_thunk_probe")]
+        if let Some(state) = self.heap.active_packed_thunk_state(value) {
+            return Ok(state == ThunkState::Suspended);
         }
         let thunk = self
             .heap
@@ -631,6 +804,7 @@ impl TreeWalk {
     }
 
     pub(super) fn mark_lazy_identity_thunk(&mut self, value: Value) {
+        self.heap.observe_value_identity(value);
         if value.is_thunk() {
             self.lazy_identity_thunks
                 .insert(value.relocation_sensitive_identity_bits());
@@ -692,7 +866,17 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<bool, TreeWalkError> {
+        self.heap.observe_value_identity(value);
         if !value.is_thunk() {
+            return Ok(false);
+        }
+        if let Some(state) = self.heap.typed_thunk_state_if_any(value)
+            && state != ThunkState::Suspended
+        {
+            return Ok(false);
+        }
+        #[cfg(feature = "active_packed_thunk_probe")]
+        if self.heap.active_packed_thunk_state(value).is_some() {
             return Ok(false);
         }
         let thunk = self
@@ -730,7 +914,21 @@ impl TreeWalk {
                 .contains(&value.relocation_sensitive_identity_bits())
         {
             self.unmark_lazy_identity_thunk_payload(value.relocation_sensitive_identity_bits());
-            return self.force_value(id, span, value);
+            return self.with_uncovered_native_continuation_marker(
+                super::native_continuation_shadow::NativeContinuationKind::LazyFoldlInitialForceLeaf,
+                id,
+                |eval| {
+                    eval.with_nonmoving_native_continuation(
+                        super::native_continuation_shadow::NativeContinuationKind::LazyDemandForce,
+                        id,
+                        &[],
+                        Some(
+                            super::native_continuation_shadow::NativeContinuationEdge::ForceValue,
+                        ),
+                        |eval| eval.force_value(id, span, value),
+                    )
+                },
+            );
         }
         Ok(value)
     }
@@ -742,11 +940,49 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         if self.consume_suspended_lazy_identity_thunk(id, span, value)? {
-            return self.force_value(id, span, value);
+            return self.with_uncovered_native_continuation_marker(
+                super::native_continuation_shadow::NativeContinuationKind::DemandedConsumedForceLeaf,
+                id,
+                |eval| {
+                    eval.with_nonmoving_native_continuation(
+                        super::native_continuation_shadow::NativeContinuationKind::LazyDemandForce,
+                        id,
+                        &[],
+                        Some(
+                            super::native_continuation_shadow::NativeContinuationEdge::ForceValue,
+                        ),
+                        |eval| eval.force_value(id, span, value),
+                    )
+                },
+            );
         }
-        let value = self.force_value(id, span, value)?;
+        let value = self.with_uncovered_native_continuation_marker(
+            super::native_continuation_shadow::NativeContinuationKind::DemandedPrimaryForceLeaf,
+            id,
+            |eval| {
+                eval.with_nonmoving_native_continuation(
+                    super::native_continuation_shadow::NativeContinuationKind::LazyDemandForce,
+                    id,
+                    &[],
+                    Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                    |eval| eval.force_value(id, span, value),
+                )
+            },
+        )?;
         if self.consume_suspended_lazy_identity_thunk(id, span, value)? {
-            return self.force_value(id, span, value);
+            return self.with_uncovered_native_continuation_marker(
+                super::native_continuation_shadow::NativeContinuationKind::DemandedRetryForceLeaf,
+                id,
+                |eval| {
+                    eval.with_nonmoving_native_continuation(
+                        super::native_continuation_shadow::NativeContinuationKind::LazyDemandForce,
+                        id,
+                        &[],
+                        Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                        |eval| eval.force_value(id, span, value),
+                    )
+                },
+            );
         }
         Ok(value)
     }

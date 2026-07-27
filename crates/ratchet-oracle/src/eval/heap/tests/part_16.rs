@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -64,7 +63,6 @@ fn collector_poll_minor_gc_plan_uses_remembered_old_edge() {
     }));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -112,7 +110,6 @@ fn collector_poll_minor_gc_plan_rejects_unremembered_permanent_edge_outside_root
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -166,7 +163,6 @@ fn collector_poll_minor_gc_plan_rejects_stale_heap_graph_snapshot() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -214,7 +210,6 @@ fn collector_poll_minor_gc_plan_rejects_heap_growth_after_scan() {
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -281,7 +276,6 @@ fn precise_root_scan_tracks_thunk_state_instead_of_stale_captures() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -339,7 +333,6 @@ fn precise_root_scan_reports_parallel_thunk_payload_value() {
     assert!(object_for(&scan, payload).edges().is_empty());
     assert_eq!(thunk_record.cell().state(), Ok(ThunkState::Suspended));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -430,7 +423,6 @@ fn precise_root_scan_reports_lambda_captured_scopes() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -474,7 +466,6 @@ fn precise_root_scan_reports_primop_heap_arguments() {
     );
     assert!(edges[0].value().raw_eq(argument_value));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -595,7 +586,6 @@ fn precise_root_scan_reports_suspended_thunk_capture_variants() {
     assert!(object_for(&scan, builtin_attr).edges().is_empty());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -643,7 +633,6 @@ fn precise_root_scan_reports_blackholed_thunk_captures() {
     guard.abort().expect("claim aborts");
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -675,7 +664,6 @@ fn precise_root_scan_ignores_external_heap_values_owned_elsewhere() {
     assert_eq!(scan.objects().len(), 1);
     assert!(object_for(&scan, list).edges().is_empty());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -756,7 +744,6 @@ fn interned_root_set_enumerates_hash_consed_permanent_roots() {
             .any(|object| object.value().raw_eq(attrs))
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

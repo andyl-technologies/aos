@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -43,7 +42,6 @@ fn cached_value_hashes_reject_mismatched_rewrites() {
     );
     assert_eq!(heap.cached_value_hash(value), Ok(Some(first_hash)));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -87,7 +85,6 @@ fn captured_value_hash_cache_rejects_unsupported_values() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -121,7 +118,6 @@ fn value_hash_cache_rejects_unsupported_values() {
     assert_eq!(heap.cached_value_hash(thunk), Err(expected_thunk.clone()));
     assert_eq!(heap.cache_value_hash(thunk, hash), Err(expected_thunk));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -161,7 +157,6 @@ fn captured_value_hash_cache_validates_heap_ownership_and_record_type() {
     assert_eq!(heap.cache_captured_value_hash(foreign, hash), Err(unknown));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -194,7 +189,6 @@ fn value_hash_cache_validates_heap_ownership_and_record_type() {
     assert_eq!(heap.cached_value_hash(foreign), Err(unknown.clone()));
     assert_eq!(heap.cache_value_hash(foreign, hash), Err(unknown));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -233,7 +227,6 @@ fn identical_string_bytes_with_different_contexts_do_not_collapse() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -260,7 +253,6 @@ fn allocates_path_values_and_recovers_bytes() {
         HeapAllocationDomain::PermanentShared
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -296,7 +288,6 @@ fn identical_path_values_reuse_heap_record() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -319,7 +310,6 @@ fn string_and_path_cons_tables_are_separate() {
     assert_ne!(string.payload_bits(), path.payload_bits());
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -348,7 +338,6 @@ fn allocates_list_values_and_recovers_spine() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -373,7 +362,6 @@ fn identical_list_values_reuse_heap_record() {
     assert_eq!(list.get(1).expect("second element").as_bool(), Ok(true));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -393,7 +381,6 @@ fn list_values_with_different_elements_do_not_collapse() {
     assert_ne!(first.payload_bits(), second.payload_bits());
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -417,7 +404,6 @@ fn list_values_with_same_thunk_identity_reuse_heap_record() {
     assert!(first.raw_eq(second));
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -489,7 +475,6 @@ fn permanent_container_records_can_reference_worker_domain_children() {
     assert!(object_for(&scan, thunk).edges().is_empty());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -515,7 +500,6 @@ fn list_values_with_distinct_thunk_identities_do_not_collapse() {
     assert_ne!(first.payload_bits(), second.payload_bits());
     assert_eq!(heap.len(), 4);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -543,7 +527,6 @@ fn allocates_thunk_values_and_recovers_body() {
         HeapAllocationDomain::Worker
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -573,7 +556,6 @@ fn allocates_apply_thunk_values_and_recovers_work() {
     assert!(matches!(thunk.kind(), EvalThunkKind::Apply { .. }));
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -605,7 +587,6 @@ fn allocates_lambda_values_and_recovers_closure() {
         HeapAllocationDomain::Worker
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -644,7 +625,6 @@ fn allocates_primop_values_and_recovers_record() {
         HeapAllocationDomain::Worker
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -716,7 +696,6 @@ fn lambdas_primops_and_thunks_are_not_hash_consed() {
     assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
 
-
 #[test]
 fn public_primop_constructors_keep_symbol_only_records() {
     let mut symbols = SymbolTable::new();
@@ -733,7 +712,6 @@ fn public_primop_constructors_keep_symbol_only_records() {
     assert_eq!(partial.symbol(), symbol);
     assert_eq!(partial.args().len(), 1);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -769,7 +747,6 @@ fn allocates_attr_values_and_recovers_entries() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -790,7 +767,6 @@ fn allocates_attr_values_with_explicit_repr_metadata() {
     assert_eq!(metadata.projected_shape(), None);
     assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -818,7 +794,6 @@ fn allocates_attr_values_with_projected_shape_metadata() {
     assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -840,7 +815,6 @@ fn identical_attr_values_with_same_shape_reuse_heap_record() {
     let attrs = heap.get_attrs(second).expect("second attrs exist");
     assert_eq!(attrs.len(), 1);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

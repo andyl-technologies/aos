@@ -489,6 +489,21 @@ impl TreeWalk {
             );
             return;
         }
+        #[cfg(feature = "maximal_laziness_probe")]
+        self.disable_maximal_laziness_for_jit();
+        #[cfg(feature = "lifetime_cohort_probe")]
+        if self.lifetime_cohort_probe.take().is_some() {
+            self.heap.clear_lifetime_quarantine();
+            eprintln!(
+                "aos_nix_lifetime_cohort_refused \
+                 {{\"reason\":\"tier-1 engine installed after probe admission\"}}"
+            );
+            self.heap.set_epoch_tracking_enabled(
+                self.options
+                    .heap_cheap_memory_advice_min_idle_epochs()
+                    .is_some(),
+            );
+        }
         self.tier1_engine = Some(engine);
     }
 

@@ -12,7 +12,8 @@ impl TreeWalk {
         expected: &'static str,
         tag: ValueTag,
     ) -> Result<Value, TreeWalkError> {
-        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        let value =
+            self.force_uncovered_primop_leaf(argument.id(), argument.span(), argument.value())?;
         let value = self.force_lazy_foldl_initial_value(argument.id(), argument.span(), value)?;
         if value.tag() != tag {
             return Err(TreeWalkError::new(
@@ -31,7 +32,8 @@ impl TreeWalk {
         &mut self,
         argument: EvalPrimOpArg,
     ) -> Result<i64, TreeWalkError> {
-        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        let value =
+            self.force_uncovered_primop_leaf(argument.id(), argument.span(), argument.value())?;
         self.expect_int(argument.id(), value, argument.span())
     }
 
@@ -68,7 +70,7 @@ impl TreeWalk {
         let op = self.force_callable_value(op_arg.id(), op_arg.span(), op_arg.value())?;
         let list_value = self.force_primop_value(list_arg, "list", ValueTag::List)?;
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_arg.id(),
@@ -80,6 +82,73 @@ impl TreeWalk {
             Self::clone_list_elements(list_arg.id(), list_arg.span(), list)?
         };
 
+        #[cfg(feature = "lifetime_cohort_probe")]
+        {
+            let root_len = elements.len().checked_add(3).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+            let mut roots = Vec::new();
+            roots.try_reserve_exact(root_len).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackAllocationFailed {
+                        id,
+                        roots: root_len,
+                    },
+                    span,
+                )
+            })?;
+            roots.push(op);
+            roots.push(list_value);
+            roots.push(initial_arg.value());
+            roots.extend_from_slice(&elements);
+            return self.with_lifetime_cohort_shadow_roots(id, span, &mut roots, |eval, slots| {
+                eval.eval_foldl_strict_primop_value_shadowed(
+                    id,
+                    span,
+                    op_arg,
+                    initial_arg,
+                    list_arg,
+                    op,
+                    &elements,
+                    slots.start.checked_add(2).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?,
+                )
+            });
+        }
+        #[cfg(not(feature = "lifetime_cohort_probe"))]
+        {
+            self.eval_foldl_strict_primop_value_unshadowed(
+                id,
+                span,
+                op_arg,
+                initial_arg,
+                list_arg,
+                op,
+                &elements,
+            )
+        }
+    }
+
+    #[cfg(feature = "lifetime_cohort_probe")]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_foldl_strict_primop_value_shadowed(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_arg: EvalPrimOpArg,
+        initial_arg: EvalPrimOpArg,
+        list_arg: EvalPrimOpArg,
+        op: Value,
+        elements: &[Value],
+        accumulator_slot: usize,
+    ) -> Result<Value, TreeWalkError> {
         let mut accumulator = initial_arg.value();
         if elements.is_empty() {
             return self.eval_lazy_foldl_initial_value(
@@ -90,6 +159,77 @@ impl TreeWalk {
         }
         // Tier-2 fold seam: identical to the direct `eval_foldl_strict_primop`
         // loop — at most two engine consults, native runs advance the index.
+        let mut index = 0usize;
+        let mut fold_consults = 0u32;
+        while index < elements.len() {
+            if fold_consults < 2 && self.tier1_engine.is_some() {
+                fold_consults += 1;
+                if let Some((consumed, folded)) =
+                    self.try_tier2_foldl(id, span, op, accumulator, &elements[index..])
+                {
+                    accumulator = folded;
+                    if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        ));
+                    }
+                    index += consumed;
+                    continue;
+                }
+            }
+            let element = elements[index];
+            let step = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                op,
+                op_arg.span(),
+                initial_arg.id(),
+                accumulator,
+            )?;
+            let result = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                step,
+                op_arg.span(),
+                list_arg.id(),
+                element,
+            )?;
+            accumulator = self.force_uncovered_primop_leaf(op_arg.id(), op_arg.span(), result)?;
+            if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                ));
+            }
+            index += 1;
+        }
+
+        Ok(accumulator)
+    }
+
+    #[cfg(not(feature = "lifetime_cohort_probe"))]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_foldl_strict_primop_value_unshadowed(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_arg: EvalPrimOpArg,
+        initial_arg: EvalPrimOpArg,
+        list_arg: EvalPrimOpArg,
+        op: Value,
+        elements: &[Value],
+    ) -> Result<Value, TreeWalkError> {
+        let mut accumulator = initial_arg.value();
+        if elements.is_empty() {
+            return self.eval_lazy_foldl_initial_value(
+                initial_arg.id(),
+                initial_arg.span(),
+                accumulator,
+            );
+        }
         let mut index = 0usize;
         let mut fold_consults = 0u32;
         while index < elements.len() {
@@ -122,10 +262,9 @@ impl TreeWalk {
                 list_arg.id(),
                 element,
             )?;
-            accumulator = self.force_value(op_arg.id(), op_arg.span(), result)?;
+            accumulator = self.force_uncovered_primop_leaf(op_arg.id(), op_arg.span(), result)?;
             index += 1;
         }
-
         Ok(accumulator)
     }
 
@@ -139,7 +278,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let from_value = self.force_primop_value(from_arg, "list", ValueTag::List)?;
         let from_values = {
-            let from = self.heap.get_list(from_value).map_err(|source| {
+            let from = self.heap.get_list_view(from_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: from_arg.id(),
@@ -153,7 +292,7 @@ impl TreeWalk {
 
         let to_value = self.force_primop_value(to_arg, "list", ValueTag::List)?;
         let to_values = {
-            let to = self.heap.get_list(to_value).map_err(|source| {
+            let to = self.heap.get_list_view(to_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: to_arg.id(),
@@ -187,7 +326,7 @@ impl TreeWalk {
             )
         })?;
         for (from, replacement) in from_values.into_iter().zip(to_values) {
-            let from = self.force_value(from_arg.id(), from_arg.span(), from)?;
+            let from = self.force_uncovered_primop_leaf(from_arg.id(), from_arg.span(), from)?;
             if from.tag() != ValueTag::String {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -199,7 +338,7 @@ impl TreeWalk {
                 ));
             }
             let from = {
-                let string = self.heap.get_string(from).map_err(|source| {
+                let string = self.heap.get_string_view(from).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: from_arg.id(),
@@ -215,7 +354,7 @@ impl TreeWalk {
 
         let string_value = self.force_primop_value(string_arg, "string", ValueTag::String)?;
         let (source, context) = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: string_arg.id(),
@@ -226,18 +365,15 @@ impl TreeWalk {
             })?;
             let source =
                 Self::copy_bytes_for_node(string_arg.id(), string_arg.span(), string.bytes())?;
-            let context = string
-                .context()
-                .union(&StringContext::empty())
-                .map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::String {
-                            id: string_arg.id(),
-                            source,
-                        },
-                        string_arg.span(),
-                    )
-                })?;
+            let context = string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: string_arg.id(),
+                        source,
+                    },
+                    string_arg.span(),
+                )
+            })?;
             (source, context)
         };
 
@@ -273,10 +409,14 @@ impl TreeWalk {
         }
 
         let len = self.force_int_primop_value(len_arg)? as u32 as usize;
-        let value = self.force_value(string_arg.id(), string_arg.span(), string_arg.value())?;
+        let value = self.force_uncovered_primop_leaf(
+            string_arg.id(),
+            string_arg.span(),
+            string_arg.value(),
+        )?;
         let string = self.coerce_to_string(string_arg.id(), value, string_arg.span())?;
         let result = {
-            let string = self.heap.get_string(string).map_err(|source| {
+            let string = self.heap.get_string_view(string).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: string_arg.id(),
@@ -286,7 +426,8 @@ impl TreeWalk {
                 )
             })?;
             string
-                .substring_preserve_context(start_offset as usize, len)
+                .try_to_owned()
+                .and_then(|string| string.substring_preserve_context(start_offset as usize, len))
                 .map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::String {
@@ -315,10 +456,12 @@ impl TreeWalk {
             }
             StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop_value(first, second),
             StrictBinaryPrimOp::HashString => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left =
+                    self.force_uncovered_primop_leaf(first.id(), first.span(), first.value())?;
                 let algorithm =
                     self.eval_hash_algorithm(first.id(), first.span(), left, "hashString")?;
-                let string = self.force_value(second.id(), second.span(), second.value())?;
+                let string =
+                    self.force_uncovered_primop_leaf(second.id(), second.span(), second.value())?;
                 if string.tag() != ValueTag::String {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -332,10 +475,12 @@ impl TreeWalk {
                 self.eval_hash_string_value(id, span, second.id(), second.span(), string, algorithm)
             }
             StrictBinaryPrimOp::HashFile => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left =
+                    self.force_uncovered_primop_leaf(first.id(), first.span(), first.value())?;
                 let algorithm =
                     self.eval_hash_algorithm(first.id(), first.span(), left, "hashFile")?;
-                let path_value = self.force_value(second.id(), second.span(), second.value())?;
+                let path_value =
+                    self.force_uncovered_primop_leaf(second.id(), second.span(), second.value())?;
                 self.eval_hash_file_path_value(
                     id,
                     span,
@@ -346,14 +491,16 @@ impl TreeWalk {
                 )
             }
             StrictBinaryPrimOp::CompareVersions => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left =
+                    self.force_uncovered_primop_leaf(first.id(), first.span(), first.value())?;
                 let left = self.context_free_string_bytes(
                     first.id(),
                     first.span(),
                     left,
                     "compareVersions",
                 )?;
-                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right =
+                    self.force_uncovered_primop_leaf(second.id(), second.span(), second.value())?;
                 let right = self.context_free_string_bytes(
                     second.id(),
                     second.span(),
@@ -387,9 +534,11 @@ impl TreeWalk {
                 self.eval_numeric_values(id, &node, op, left, right)
             }
             StrictBinaryPrimOp::BitAnd | StrictBinaryPrimOp::BitOr | StrictBinaryPrimOp::BitXor => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left =
+                    self.force_uncovered_primop_leaf(first.id(), first.span(), first.value())?;
                 let left = self.expect_int(first.id(), left, first.span())?;
-                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right =
+                    self.force_uncovered_primop_leaf(second.id(), second.span(), second.value())?;
                 let right = self.expect_int(second.id(), right, second.span())?;
                 let op = match primop {
                     StrictBinaryPrimOp::BitAnd => BitwiseOp::And,
@@ -405,8 +554,10 @@ impl TreeWalk {
                 self.runtime_int_value(id, span, op.apply(left, right))
             }
             StrictBinaryPrimOp::LessThan => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
-                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let left =
+                    self.force_uncovered_primop_leaf(first.id(), first.span(), first.value())?;
+                let right =
+                    self.force_uncovered_primop_leaf(second.id(), second.span(), second.value())?;
                 let node = *self.node(id)?;
                 self.eval_comparison_values(
                     id,
@@ -549,7 +700,7 @@ impl TreeWalk {
 
         if !layout.ellipsis() {
             let unexpected = {
-                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                 })?;
                 attrs
@@ -567,7 +718,7 @@ impl TreeWalk {
 
         for (slot, formal) in layout.entries().iter().enumerate() {
             let selected = {
-                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                 })?;
                 attrs.get(formal.name)

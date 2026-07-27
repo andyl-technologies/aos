@@ -99,7 +99,13 @@ fn registered_tier1_slot_preflight_installs_update_artifact_with_candidates() {
     );
     assert_eq!(
         artifact_runtime_import_names(preflight.finalization().artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         preflight
@@ -127,9 +133,8 @@ fn registered_tier1_slot_preflight_installs_constant_artifact_with_registration_
     let artifact =
         lower_constant_thunk_body_artifact(Value::int(21)).expect("constant artifact lowers");
 
-    let preflight =
-        jit_cranelift_registered_tier1_slot_preflight_with_candidates(artifact, &[])
-            .expect("registered constant tier-1 slot preflight builds");
+    let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(artifact, &[])
+        .expect("registered constant tier-1 slot preflight builds");
 
     assert_eq!(
         preflight.finalized_function().symbol_name(),
@@ -170,9 +175,8 @@ fn registered_tier1_slot_preflight_requires_candidates_for_artifact_imports() {
         panic!("registered tier-1 env-get slot requires env helper candidate");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -216,9 +220,8 @@ fn registered_tier1_slot_preflight_rejects_wrong_kind_candidates_for_artifact_im
         panic!("wrong-kind env helper candidate must not satisfy artifact imports");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -269,9 +272,7 @@ fn promotion_preflight_compiles_literal_root_at_threshold() {
         Vec::new(),
     );
     let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(
-            DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-        )),
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
@@ -380,9 +381,7 @@ fn promotion_preflight_reports_lowering_error_only_after_promotion() {
         Vec::new(),
     );
     let result = jit_cranelift_tier1_promotion_preflight_for_ir_root(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(
-            DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-        )),
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
@@ -422,16 +421,15 @@ fn registered_promotion_preflight_records_cold_invocation_without_lowering_unsup
         )],
         Vec::new(),
     );
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &arena,
-            IrId::new(0),
-            &[],
-        )
-        .expect("cold unsupported root does not lower");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+        &[],
+    )
+    .expect("cold unsupported root does not lower");
 
     assert!(!result.did_compile());
     assert_eq!(
@@ -462,18 +460,15 @@ fn registered_promotion_preflight_compiles_env_get_root_at_threshold_with_candid
         env_get_address,
     )];
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::with_counter(TierUpCounter::new(
-                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-            )),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &arena,
-            IrId::new(0),
-            &candidates,
-        )
-        .expect("threshold env-get root compiles with registered helper");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(0),
+        &candidates,
+    )
+    .expect("threshold env-get root compiles with registered helper");
 
     assert!(result.did_compile());
     assert_eq!(
@@ -532,18 +527,15 @@ fn registered_promotion_preflight_compiles_apply_root_with_candidates() {
         ),
     ];
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::with_counter(TierUpCounter::new(
-                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-            )),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &arena,
-            IrId::new(2),
-            &candidates,
-        )
-        .expect("threshold apply root compiles with registered helpers");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(2),
+        &candidates,
+    )
+    .expect("threshold apply root compiles with registered helpers");
 
     assert!(result.did_compile());
     assert_eq!(
@@ -619,18 +611,15 @@ fn registered_promotion_preflight_compiles_update_root_with_candidates() {
         ),
     ]);
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::with_counter(TierUpCounter::new(
-                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-            )),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &arena,
-            IrId::new(2),
-            &candidates,
-        )
-        .expect("threshold update root compiles with registered helpers");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(2),
+        &candidates,
+    )
+    .expect("threshold update root compiles with registered helpers");
 
     assert!(result.did_compile());
     assert_eq!(
@@ -651,7 +640,13 @@ fn registered_promotion_preflight_compiles_update_root_with_candidates() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted
@@ -687,16 +682,15 @@ fn registered_promotion_preflight_compiles_wrapped_env_get_root_with_candidate()
         synthetic_runtime_import_address(),
     )];
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(0),
-            &candidates,
-        )
-        .expect("wrapped env-get root compiles with registered helper");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+        &candidates,
+    )
+    .expect("wrapped env-get root compiles with registered helper");
 
     assert!(result.did_compile());
     let promoted = result
@@ -728,16 +722,15 @@ fn registered_promotion_preflight_compiles_literal_root_without_candidates() {
         )],
         Vec::new(),
     );
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(0),
-            &[],
-        )
-        .expect("multi-use literal root compiles without runtime candidates");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+        &[],
+    )
+    .expect("multi-use literal root compiles without runtime candidates");
 
     assert!(result.did_compile());
     assert_eq!(
@@ -781,16 +774,15 @@ fn registered_promotion_preflight_compiles_wrapped_literal_root_without_candidat
         Vec::new(),
     );
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(0),
-            &[],
-        )
-        .expect("wrapped literal root compiles without runtime candidates");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        JitTieredCodeSlot::new(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+        &[],
+    )
+    .expect("wrapped literal root compiles without runtime candidates");
 
     assert!(result.did_compile());
     let promoted = result
@@ -823,9 +815,7 @@ fn registered_promotion_preflight_reports_missing_candidate_after_promotion() {
         Vec::new(),
     );
     let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(
-            DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-        )),
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,
@@ -844,9 +834,8 @@ fn registered_promotion_preflight_reports_missing_candidate_after_promotion() {
         error.decision().reasons(),
         Some(TierUpReasons::new(true, false))
     );
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error.setup_error()
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error.setup_error()
     else {
         panic!("expected artifact runtime-import registration guard");
     };

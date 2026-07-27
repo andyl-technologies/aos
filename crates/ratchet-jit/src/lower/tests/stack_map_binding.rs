@@ -56,7 +56,9 @@ fn forced_env_get_brackets_force_with_a_bound_stack_map() {
         entry_block_values(&function)[1]
     );
     assert_eq!(
-        function.dfg.value_type(function.dfg.inst_args(env_get_call)[1]),
+        function
+            .dfg
+            .value_type(function.dfg.inst_args(env_get_call)[1]),
         types::I32
     );
     assert_eq!(iconst_words(&function), vec![13, 0, 1]);
@@ -68,6 +70,9 @@ fn forced_env_get_brackets_force_with_a_bound_stack_map() {
             function.dfg.inst_results(env_get_call)[1],
         ]
     );
-    assert_eq!(return_operands(&function), function.dfg.inst_results(force_call));
+    assert_eq!(
+        return_operands(&function),
+        function.dfg.inst_results(force_call)
+    );
     verify_clif_function(&function).expect("forced env-get function verifies independently");
 }

@@ -68,7 +68,9 @@ fn write_behind_dedups_within_the_buffer() {
     let payload: &[u8] = b"a repeatedly materialized value";
     let key = value_key(payload);
 
-    cache.ensure_blob_indexed(key, payload).expect("first buffers");
+    cache
+        .ensure_blob_indexed(key, payload)
+        .expect("first buffers");
     // A within-run re-materialization of an already-buffered value must not
     // double-append; it is counted as a buffered-miss recompute.
     cache
@@ -101,7 +103,9 @@ fn crash_before_flush_loses_the_buffer_as_a_clean_miss() {
         let cache = PersistCache::open(&root)
             .expect("cache opens")
             .with_write_behind_values(true);
-        cache.ensure_blob_indexed(key, payload).expect("value buffers");
+        cache
+            .ensure_blob_indexed(key, payload)
+            .expect("value buffers");
         assert!(!cache.write_behind_buffer_is_empty());
         // Simulate a crash: drop the handle without running its flush.
         std::mem::forget(cache);
@@ -132,8 +136,12 @@ fn torn_tail_from_a_mid_flush_crash_is_never_wrong_bytes() {
         let cache = PersistCache::open(&root)
             .expect("cache opens")
             .with_write_behind_values(true);
-        cache.ensure_blob_indexed(first_key, first).expect("first buffers");
-        cache.ensure_blob_indexed(torn_key, torn).expect("torn buffers");
+        cache
+            .ensure_blob_indexed(first_key, first)
+            .expect("first buffers");
+        cache
+            .ensure_blob_indexed(torn_key, torn)
+            .expect("torn buffers");
         cache
             .flush_buffered_value_blobs()
             .expect("value buffer flushes");
@@ -498,7 +506,10 @@ fn torn_file_flush_tail_is_never_wrong_bytes() {
         .expect("torn lookup")
     {
         match reopened.read_blob(value.blob_key(), value.location()) {
-            Ok(bytes) => assert_eq!(bytes, torn_payload, "a torn record must never return wrong bytes"),
+            Ok(bytes) => assert_eq!(
+                bytes, torn_payload,
+                "a torn record must never return wrong bytes"
+            ),
             Err(_) => {}
         }
     }

@@ -140,8 +140,7 @@ fn force_native_wrapper_blockers_are_clear_while_oracle_gate_remains() {
             binding.symbol_name()
         );
         assert!(
-            oracle_blockers
-                .contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented),
+            oracle_blockers.contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented),
             "{} oracle export gate is unchanged by wrapper trap transfer",
             binding.symbol_name()
         );
@@ -420,8 +419,7 @@ fn force_deep_native_wrapper_binding_function_returns_leaf_values() {
     let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
     let rt = context.as_mut().as_mut_ptr();
     let deep_expected = Value::bool(true);
-    let RuntimeForcingNativeWrapperFunction::ForceDeepValue(function) = binding.function()
-    else {
+    let RuntimeForcingNativeWrapperFunction::ForceDeepValue(function) = binding.function() else {
         panic!("aos_force_deep binding must carry a force-deep-value function");
     };
 
@@ -446,8 +444,7 @@ fn blackhole_native_wrapper_binding_function_returns_for_non_thunks() {
     let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
     let rt = context.as_mut().as_mut_ptr();
     let value = Value::bool(false);
-    let RuntimeForcingNativeWrapperFunction::BlackholeCheck(function) = binding.function()
-    else {
+    let RuntimeForcingNativeWrapperFunction::BlackholeCheck(function) = binding.function() else {
         panic!("aos_blackhole_check binding must carry a blackhole-check function");
     };
 

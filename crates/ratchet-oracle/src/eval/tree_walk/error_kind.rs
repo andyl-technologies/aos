@@ -26,6 +26,87 @@ pub enum TreeWalkErrorKind {
         /// The number of modules already loaded.
         modules: usize,
     },
+    /// The active import-cache lease stack could not grow.
+    #[error("failed to reserve import-cache lease {leases} at node {id:?}")]
+    ImportCacheLeaseAllocationFailed {
+        /// The import argument that needed another active lease.
+        id: IrId,
+        /// The requested active lease count.
+        leases: usize,
+    },
+    /// The import-cache lease generation space was exhausted.
+    #[error("import-cache lease generation exhausted at node {id:?}")]
+    ImportCacheLeaseGenerationExhausted {
+        /// The import argument that needed another active lease.
+        id: IrId,
+    },
+    /// The active imported-module context lease stack could not grow.
+    #[error("failed to reserve imported-module context lease {leases} at node {id:?}")]
+    ImportModuleLeaseAllocationFailed {
+        /// The import node that needed another active context.
+        id: IrId,
+        /// The requested active context lease count.
+        leases: usize,
+    },
+    /// The imported-module context lease generation space was exhausted.
+    #[error("imported-module context lease generation exhausted at node {id:?}")]
+    ImportModuleLeaseGenerationExhausted {
+        /// The import node that needed another active context.
+        id: IrId,
+    },
+    /// The evaluator-owned force lease stack could not grow.
+    #[error("failed to reserve force lease {leases} at node {id:?}")]
+    ForceLeaseAllocationFailed {
+        /// The force site that needed another active lease.
+        id: IrId,
+        /// The requested active lease count.
+        leases: usize,
+    },
+    /// The evaluator-owned force lease generation space was exhausted.
+    #[error("force lease generation exhausted at node {id:?}")]
+    ForceLeaseGenerationExhausted {
+        /// The force site that needed another active lease.
+        id: IrId,
+    },
+    /// The default-off FinalForce portal requested an internal unwind.
+    ///
+    /// This category is consumed by the owning outer dispatcher and must
+    /// never escape as a user-visible evaluation error.
+    #[error("internal FinalForce portal suspension {ordinal} at node {id:?}")]
+    FinalForcePortalSuspend {
+        /// The outer FinalForce source node.
+        id: IrId,
+        /// The selected successful final-config completion ordinal.
+        ordinal: u64,
+    },
+    /// A selected FinalForce unwind did not restore the declared loop head.
+    #[error("FinalForce portal invariant failed after suspension {ordinal} at node {id:?}")]
+    FinalForcePortalInvariant {
+        /// The outer FinalForce source node.
+        id: IrId,
+        /// The selected successful final-config completion ordinal.
+        ordinal: u64,
+    },
+    /// Detached typed-work lease nesting disagreed with the active force.
+    #[error("typed thunk work lease invariant failed at node {id:?}")]
+    TypedThunkWorkLeaseInvariant {
+        /// The force site whose detached-work lease was missing or mismatched.
+        id: IrId,
+    },
+    /// The evaluator-owned lambda-call lease stack could not grow.
+    #[error("failed to reserve lambda-call lease {leases} at node {id:?}")]
+    LambdaCallLeaseAllocationFailed {
+        /// The application that needed another active lease.
+        id: IrId,
+        /// The requested active lease count.
+        leases: usize,
+    },
+    /// The evaluator-owned lambda-call lease generation space was exhausted.
+    #[error("lambda-call lease generation exhausted at node {id:?}")]
+    LambdaCallLeaseGenerationExhausted {
+        /// The application that needed another active lease.
+        id: IrId,
+    },
     /// A content-memo CHECK-mode hit diverged from a fresh evaluation.
     ///
     /// Raised only under `AOS_NIX_MEMO_CHECK`, where every content-memo hit
@@ -886,6 +967,20 @@ pub enum TreeWalkErrorKind {
     GcQuiescentSweep {
         /// The lower-level root-collection or heap-sweep failure.
         source: TreeWalkGcSweepError,
+    },
+    /// Default-off terminal permanent publication failed.
+    ///
+    /// This is an evaluator invariant failure rather than a user expression
+    /// error. The stage identifies the last source-untouched or roll-forward
+    /// boundary reached by the transaction.
+    #[error("terminal permanent publication failed at node {id:?} during {stage}: {reason}")]
+    TerminalPermanentPublication {
+        /// The completed root node whose heap was being compacted.
+        id: IrId,
+        /// The publication transaction stage that rejected the heap.
+        stage: &'static str,
+        /// The lower-level invariant or allocation failure.
+        reason: String,
     },
     /// Automatic post-evaluation Tier-B admission failed.
     #[error("Tier-B transition admission failed at node {id:?}: {source}")]

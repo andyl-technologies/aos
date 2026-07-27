@@ -459,6 +459,24 @@ fn strictness_analysis_elides_direct_formal_set_argument_thunk() {
 }
 
 #[test]
+fn demand_position_lexical_alias_reuses_the_referenced_thunk() {
+    let ir = lower("let x = x; in [ x ]");
+
+    let outcome = eval_whnf_owned(&ir).expect("list construction keeps x lazy");
+    let element = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    assert_eq!(element.tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 1);
+}
+
+#[test]
 fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
     let mut ir = lower(r#"builtins.foldl' (acc: x: acc + x) (builtins.throw "initial") []"#);
     crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");

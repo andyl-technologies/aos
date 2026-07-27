@@ -74,6 +74,9 @@ pub enum HeapInnateUnsafeOperation {
     /// Places, resolves, and drops immutable shared objects after compact
     /// reservation-index registry publication proves their exact type.
     SharedReservationObjectPublication,
+    /// Places, resolves, mutates, and drops typed payloads in fixed-stride
+    /// lanes after exact initialized-slot membership has been checked.
+    HeaderlessTypedLanePayloadAccess,
 }
 
 /// Standing controls required before unsafe heap or GC code can land.
@@ -165,47 +168,33 @@ mod tests {
             discipline.innate_unsafe_operations(),
             HEAP_INNATE_UNSAFE_OPERATIONS
         );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::Miri)
-        );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::AddressSanitizer)
-        );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::UndefinedBehaviorSanitizer)
-        );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::ThreadSanitizer)
-        );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::Loom)
-        );
-        assert!(
-            discipline
-                .audit_tools()
-                .contains(&HeapUnsafeAuditTool::GcFuzzTarget)
-        );
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::Miri));
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::AddressSanitizer));
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::UndefinedBehaviorSanitizer));
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::ThreadSanitizer));
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::Loom));
+        assert!(discipline
+            .audit_tools()
+            .contains(&HeapUnsafeAuditTool::GcFuzzTarget));
     }
 
     #[test]
     fn crate_root_declares_unsafe_operation_lint() {
         let crate_root = include_str!("../lib.rs");
 
-        assert!(
-            crate_root
-                .lines()
-                .any(|line| line.trim() == HEAP_UNSAFE_CRATE_LINT)
-        );
+        assert!(crate_root
+            .lines()
+            .any(|line| line.trim() == HEAP_UNSAFE_CRATE_LINT));
     }
 
     #[test]
@@ -423,12 +412,46 @@ mod tests {
         // site is the one reviewed unsafe operation outside `src/heap`, so
         // the scan above covers `attrs.rs` explicitly. All under
         // `FlatObjectPayloadAccess`.
+        // flat.rs count 6 -> 9 (packed-retirement preparation): one header
+        // read validates an exact live registry entry before retirement, and
+        // two allocation-free commit blocks wipe that header and destroy the
+        // payload after an exclusive validation token or exact-slot proof.
+        // Tombstoning precedes destruction so unwinding cannot double-drop;
+        // all three remain under `FlatObjectPayloadAccess`.
+        // flat/backing.rs count 0 -> 3 (zero-liveness page reclamation): one
+        // unsafe forwarding method and call preserve the reservation's
+        // caller-proven-dead contract, while one arena-owned page-liveness
+        // scan discharges that contract before advising a whole page run.
+        // These are under `ContiguousAddressReservation`.
+        // flat/fixed_lane.rs count 0 -> 3 (headerless typed lanes): one
+        // placement write, one shared-reference reconstruction, and one
+        // drop-in-place sweep operate only on exact initialized fixed-stride
+        // slots owned by the lane, under `HeaderlessTypedLanePayloadAccess`.
+        // flat/relocation.rs count 0 -> 2 (packed retirement): two staged
+        // relocation commits placement-write payloads into already validated
+        // destination slots after all fallible planning has completed, under
+        // `FlatObjectPayloadAccess`.
+        // stable_lane.rs count 0 -> 5 (reserved typed lanes): one placement
+        // write, one contiguous copy, checked shared and exclusive reference
+        // reconstruction, and one destruction sweep operate only below the
+        // initialized cursor in a stable reservation, under
+        // `HeaderlessTypedLanePayloadAccess`.
+        // reservation/mod.rs count 8 -> 19 (resident-page reclamation): the
+        // mapped reservation now owns page-size and residency queries, one
+        // caller-validated dead-page advice boundary for supported and
+        // unsupported platforms, and tests that exercise accepted and
+        // rejected ranges plus page touching. Address/range validation
+        // precedes every syscall or write, under
+        // `ContiguousAddressReservation`.
         for (file_name, expected_count) in [
             ("../attrs.rs", 2usize),
             ("advice.rs", 13usize),
             ("arena.rs", 10usize),
             ("arena/tests.rs", 3usize),
-            ("flat.rs", 6usize),
+            ("flat.rs", 9usize),
+            ("flat/backing.rs", 3usize),
+            ("flat/fixed_lane.rs", 3usize),
+            ("flat/relocation.rs", 2usize),
             ("flat/restore.rs", 1usize),
             ("flat/alloc.rs", 5usize),
             ("flat/bytes.rs", 3usize),
@@ -437,8 +460,9 @@ mod tests {
             ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
-            ("reservation/mod.rs", 8usize),
+            ("reservation/mod.rs", 19usize),
             ("reservation/image.rs", 3usize),
+            ("stable_lane.rs", 5usize),
         ] {
             let source_path = heap_root.join(file_name);
             let source = fs::read_to_string(&source_path).expect("source file is readable");
@@ -507,6 +531,9 @@ mod tests {
                     | "arena.rs"
                     | "arena/tests.rs"
                     | "flat.rs"
+                    | "flat/backing.rs"
+                    | "flat/fixed_lane.rs"
+                    | "flat/relocation.rs"
                     | "flat/restore.rs"
                     | "flat/alloc.rs"
                     | "flat/bytes.rs"
@@ -517,6 +544,7 @@ mod tests {
                     | "reservation/mod.rs"
                     | "reservation/image.rs"
                     | "resident.rs"
+                    | "stable_lane.rs"
             )
         )
     }

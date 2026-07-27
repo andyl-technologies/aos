@@ -38,9 +38,9 @@
 
 #[cfg(not(feature = "candidate_c_value"))]
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
+use cranelift_codegen::ir::condcodes::IntCC;
 #[cfg(not(feature = "candidate_c_value"))]
 use cranelift_codegen::ir::{Function, InstBuilder, types};
-use cranelift_codegen::ir::condcodes::IntCC;
 #[cfg(not(feature = "candidate_c_value"))]
 use ratchet_core::runtime_thunk_call_signature;
 use ratchet_core::{IrArena, IrData, IrId, IrKind, syntax::BinOpKind};
@@ -318,31 +318,28 @@ fn emit_operand(
         (IrKind::LocalVar, IrData::Local { slot }) => {
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
             let loaded = call2(cursor, ctx.env_get, &[ctx.env, slot], AOS_ENV_GET_SYMBOL)?;
-            let forced = ctx.safepoints.force(
-                cursor,
-                ctx.force,
-                ctx.rt,
-                loaded,
-                live,
-            )?;
+            let forced = ctx
+                .safepoints
+                .force(cursor, ctx.force, ctx.rt, loaded, live)?;
             Ok((forced[0], forced[1]))
         }
         (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
-            let upval_get =
-                ctx.upval_get
-                    .ok_or(JitLowerError::MissingRuntimeHelperSignature {
-                        symbol_name: AOS_UPVAL_GET_SYMBOL,
-                    })?;
+            let upval_get = ctx
+                .upval_get
+                .ok_or(JitLowerError::MissingRuntimeHelperSignature {
+                    symbol_name: AOS_UPVAL_GET_SYMBOL,
+                })?;
             let depth = cursor.ins().iconst(types::I32, i64::from(depth));
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
-            let loaded = call2(cursor, upval_get, &[ctx.env, depth, slot], AOS_UPVAL_GET_SYMBOL)?;
-            let forced = ctx.safepoints.force(
+            let loaded = call2(
                 cursor,
-                ctx.force,
-                ctx.rt,
-                loaded,
-                live,
+                upval_get,
+                &[ctx.env, depth, slot],
+                AOS_UPVAL_GET_SYMBOL,
             )?;
+            let forced = ctx
+                .safepoints
+                .force(cursor, ctx.force, ctx.rt, loaded, live)?;
             Ok((forced[0], forced[1]))
         }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {

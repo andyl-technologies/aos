@@ -40,6 +40,16 @@ fn full_laziness_rejects_dynamic_scope_probes_as_closed_values() {
 }
 
 #[test]
+fn full_laziness_rejects_scoped_global_probes_and_applications() {
+    for source in ["x: let y = __nixPath; in y", "x: let y = typeOf 1; in y"] {
+        assert!(
+            full_laziness_candidates(source).is_empty(),
+            "{source} must not float across scoped-global changes"
+        );
+    }
+}
+
+#[test]
 fn full_laziness_keeps_effectful_root_thunks_conservative() {
     let mut symbols = SymbolTable::new();
     let arg = symbols.intern(b"x").expect("argument symbol interns");
@@ -444,4 +454,3 @@ fn full_laziness_validates_with_chain_scope_nodes() {
         } if id == IrId::new(1)
     ));
 }
-

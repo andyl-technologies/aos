@@ -266,7 +266,12 @@ fn annotate_import_ir_produces_only_import_runtime_contracts() {
     assert_eq!(summary.formals.len(), 1);
     assert_eq!(summary.formals[0].escape, Escape::NoEscape);
     assert!(ir.facts.capture_plan(ir.root).is_some());
-    assert!(ir.facts.structurally_total_bits().iter().any(|total| *total));
+    assert!(
+        ir.facts
+            .structurally_total_bits()
+            .iter()
+            .any(|total| *total)
+    );
     assert_eq!(report.cardinality, CardinalityAnalysisReport::default());
     assert_eq!(report.escape, EscapeAnalysisReport::default());
     assert!(
@@ -336,12 +341,7 @@ fn annotate_import_ir_leaves_conservative_facts_after_analysis_error() {
     assert!(error.to_string().contains("invalid payload"));
     assert_eq!(ir.node_facts(ir.root), Some(ExprFacts::conservative()));
     assert!(ir.facts.lambda_call_summaries().is_empty());
-    assert!(
-        ir.facts
-            .capture_plans()
-            .iter()
-            .all(Option::is_none)
-    );
+    assert!(ir.facts.capture_plans().iter().all(Option::is_none));
 }
 
 #[test]

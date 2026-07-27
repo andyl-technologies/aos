@@ -177,8 +177,25 @@ impl EvalHeap {
     /// stack length overflows, [`EvalHeapError::WorkerRegionMarkAllocationFailed`]
     /// if the stack cannot reserve another marker, or
     /// [`EvalHeapError::WorkerRegionMarkIdExhausted`] if the per-heap marker id
-    /// space is exhausted.
+    /// space is exhausted. Returns
+    /// [`EvalHeapError::TypedThunkHeadsRegionUnsupported`] while typed thunk
+    /// heads are enabled because their permanent identities cannot participate
+    /// in worker-region rewind.
     pub fn worker_region_mark(&mut self) -> Result<EvalHeapWorkerRegionMark, EvalHeapError> {
+        if self.typed_apply_thunk_heads_enabled
+            || cfg!(feature = "active_packed_thunk_probe") && {
+                #[cfg(feature = "active_packed_thunk_probe")]
+                {
+                    self.active_packed_thunks.is_configured()
+                }
+                #[cfg(not(feature = "active_packed_thunk_probe"))]
+                {
+                    false
+                }
+            }
+        {
+            return Err(EvalHeapError::TypedThunkHeadsRegionUnsupported);
+        }
         let marks = self
             .worker_region_mark_stack
             .len()

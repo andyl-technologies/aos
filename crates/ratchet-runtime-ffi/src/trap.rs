@@ -38,8 +38,8 @@
 use std::cell::RefCell;
 use std::process;
 
-use ratchet_oracle::eval::{EvalEnvError, heap::EvalRootSetError};
 use ratchet_oracle::eval::tree_walk::TreeWalkError;
+use ratchet_oracle::eval::{EvalEnvError, heap::EvalRootSetError};
 use ratchet_oracle::value::Value;
 
 thread_local! {

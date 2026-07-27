@@ -32,8 +32,14 @@ fn forced_env_get_artifact_imports_stack_map_brackets() {
         vec![
             ("aos_env_get", clif_external_name_for_aos_env_get()),
             ("aos_force", clif_external_name_for_aos_force()),
-            ("aos_jit_stack_map_enter", clif_external_name_for_aos_jit_stack_map_enter()),
-            ("aos_jit_stack_map_exit", clif_external_name_for_aos_jit_stack_map_exit()),
+            (
+                "aos_jit_stack_map_enter",
+                clif_external_name_for_aos_jit_stack_map_enter()
+            ),
+            (
+                "aos_jit_stack_map_exit",
+                clif_external_name_for_aos_jit_stack_map_exit()
+            ),
         ]
     );
     assert!(preflight.artifact_runtime_import_gaps().is_empty());

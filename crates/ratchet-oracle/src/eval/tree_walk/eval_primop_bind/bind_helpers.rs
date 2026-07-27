@@ -266,6 +266,7 @@ impl TreeWalk {
         if recursive {
             self.pop_env_frame();
         }
+        drop(frame_values);
         let entries = result?;
 
         let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
@@ -321,10 +322,26 @@ impl TreeWalk {
         }
 
         let override_entries = {
-            let attrs = self.heap.get_attrs(overrides_value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            let attrs = self
+                .heap
+                .get_attrs_view(overrides_value)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+            let mut cloned = Vec::new();
+            cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: attrs.len(),
+                        },
+                    },
+                    span,
+                )
             })?;
-            Self::clone_attr_entries_source_order(id, span, attrs)?
+            cloned.extend(attrs.iter_source_order());
+            cloned
         };
         entries
             .try_reserve_exact(override_entries.len())

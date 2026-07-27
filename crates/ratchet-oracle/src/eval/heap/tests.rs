@@ -26,8 +26,8 @@ use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::{Span, SymbolTable};
 
-mod errors;
 mod environment_writeback;
+mod errors;
 mod gc;
 fn attrs_with_one_entry() -> FlatAttrs {
     attrs_with_value(Value::int(7))
@@ -282,6 +282,13 @@ fn assert_forced_apply_thunk_cached_result(
 }
 
 mod part_1;
+mod part_10;
+mod part_11;
+mod part_12;
+mod part_13;
+mod part_14;
+mod part_15;
+mod part_16;
 mod part_2;
 mod part_3;
 mod part_4;
@@ -290,10 +297,3 @@ mod part_6;
 mod part_7;
 mod part_8;
 mod part_9;
-mod part_10;
-mod part_11;
-mod part_12;
-mod part_13;
-mod part_14;
-mod part_15;
-mod part_16;

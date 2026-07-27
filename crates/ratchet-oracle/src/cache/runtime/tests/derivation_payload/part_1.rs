@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn eval_cache_observes_derivation_aterm_expression() {
     let mut cache = EvalCache::new();

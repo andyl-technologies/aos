@@ -5,6 +5,9 @@ use super::*;
 /// A tree-walk safepoint root-set construction failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TreeWalkSafepointRootError {
+    /// A flat capture owner could not be reconstructed from its signed handle.
+    #[error("failed to resolve tree-walk flat-capture owner: {0}")]
+    Heap(#[from] EvalHeapError),
     /// Active environment state could not be snapshotted.
     #[error("failed to snapshot tree-walk environment roots: {0}")]
     Environment(#[from] EvalEnvError),
@@ -74,6 +77,22 @@ pub enum TreeWalkSafepointRootWritebackError {
     #[error("tree-walk safepoint root writeback source {root_source:?} is not live")]
     SourceUnavailable {
         /// The unavailable root source.
+        root_source: EvalRootSource,
+    },
+    /// Two roots claimed the same mutable evaluator slot.
+    #[cfg(feature = "collection_poll_probe")]
+    #[error("tree-walk safepoint root source {root_source:?} was enumerated more than once")]
+    DuplicateSource {
+        /// The duplicated root source.
+        root_source: EvalRootSource,
+    },
+    /// A root changed between enumeration and readback.
+    #[cfg(feature = "collection_poll_probe")]
+    #[error(
+        "tree-walk safepoint root source {root_source:?} changed between enumeration and readback"
+    )]
+    SnapshotMismatch {
+        /// The root source whose current value differs from the snapshot.
         root_source: EvalRootSource,
     },
     /// A root-only safepoint writeback helper encountered heap-field

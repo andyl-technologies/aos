@@ -18,8 +18,11 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use thiserror::Error;
 
 use super::reservation_registry::{
-    ReservationRegistryError, register_reservation_base, unregister_reservation_base,
+    register_reservation_base, unregister_reservation_base, ReservationRegistryError,
 };
+#[cfg(test)]
+use super::MemoryAdviceKind;
+use super::{advise_dead, MemoryAdviceOutcome, MemoryAdviceRange};
 use crate::value::HeapObject;
 
 /// Heap-image round-trip primitive for the Candidate-C address-free snapshot
@@ -78,6 +81,23 @@ impl ArenaDomainId {
         self.0
     }
 
+    /// Allocates a process-unique logical Candidate-C domain.
+    ///
+    /// Logical domains share the same non-reusing identity sequence as mapped
+    /// reservations, but deliberately publish no native base address. They are
+    /// used by heap-owned packed representations whose low 32-bit coordinate
+    /// is a direct lane index rather than a byte offset. Consequently,
+    /// context-free pointer reconstruction fails closed while the owning heap
+    /// can route the word through its representation-specific resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReservedArenaError::ArenaDomainExhausted`] when the 23-bit
+    /// non-reusing identity space is exhausted.
+    pub fn allocate_logical() -> Result<Self, ReservedArenaError> {
+        Self::next()
+    }
+
     fn next() -> Result<Self, ReservedArenaError> {
         let raw = NEXT_ARENA_DOMAIN
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
@@ -116,6 +136,60 @@ pub struct ReservedArenaStats {
     pub high_used_bytes: usize,
     /// Bytes still available after the bump cursor.
     pub available_bytes: usize,
+}
+
+/// Physical residency for one used lane of a Candidate-C reservation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedArenaLaneResidency {
+    /// Used bytes covered by the residency query.
+    pub used_bytes: usize,
+    /// Distinct operating-system pages intersecting the used bytes.
+    pub pages: usize,
+    /// Queried pages that were resident when `mincore` sampled them.
+    pub resident_pages: usize,
+}
+
+/// Physical residency for both used lanes of a Candidate-C reservation.
+///
+/// `total_pages` and `total_resident_pages` count the union of the lane page
+/// ranges. They therefore remain exact if nearly colliding lanes share a page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedArenaResidency {
+    /// Operating-system page size used by the query.
+    pub page_size: usize,
+    /// Residency of the upward-growing permanent lane.
+    pub low: ReservedArenaLaneResidency,
+    /// Residency of the downward-growing rewindable lane.
+    pub high: ReservedArenaLaneResidency,
+    /// Distinct pages intersecting either used lane.
+    pub total_pages: usize,
+    /// Distinct resident pages intersecting either used lane.
+    pub total_resident_pages: usize,
+}
+
+/// Result of applying dead-page advice to a validated Candidate-C page run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedArenaDeadPageAdvice {
+    start: ArenaIndex,
+    byte_len: usize,
+    outcome: MemoryAdviceOutcome,
+}
+
+impl ReservedArenaDeadPageAdvice {
+    /// Returns the reservation-relative start of the advised page run.
+    pub const fn start(self) -> ArenaIndex {
+        self.start
+    }
+
+    /// Returns the page-multiple byte length presented to the advice shim.
+    pub const fn byte_len(self) -> usize {
+        self.byte_len
+    }
+
+    /// Returns whether the operating system applied or skipped the advice.
+    pub const fn outcome(self) -> MemoryAdviceOutcome {
+        self.outcome
+    }
 }
 
 /// A LIFO marker in one contiguous Candidate-C reservation.
@@ -571,6 +645,293 @@ impl ReservedArena {
             available_bytes: self.high_cursor.saturating_sub(low_used_bytes),
         }
     }
+
+    /// Samples physical residency for the reservation's currently used lanes.
+    ///
+    /// The untouched gap between the lanes is not queried, so a 4 GiB virtual
+    /// reservation requires only one status byte per used page. Callers that
+    /// compare this sample with process RSS should capture RSS first because
+    /// the query allocates temporary status buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operating-system page size is unavailable,
+    /// page-range arithmetic overflows, or `mincore` rejects either used lane.
+    #[cfg(unix)]
+    pub fn residency(&self) -> Result<ReservedArenaResidency, ReservedArenaError> {
+        let page_size = operating_system_page_size()?;
+        let low_used_bytes = self.low_cursor.load(Ordering::Acquire);
+        let low_start = self.base.as_ptr() as usize;
+        let low = sample_residency_range(low_start, low_used_bytes, page_size)?;
+
+        let high_used_bytes = self.capacity - self.high_cursor;
+        let high_start = low_start
+            .checked_add(self.high_cursor)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        let high = sample_residency_range(high_start, high_used_bytes, page_size)?;
+
+        let shared_boundary_page = low.pages != 0
+            && high.pages != 0
+            && page_base(
+                low_start
+                    .checked_add(low_used_bytes - 1)
+                    .ok_or(ReservedArenaError::SizeOverflow)?,
+                page_size,
+            ) == page_base(high_start, page_size);
+        let shared_resident_page = shared_boundary_page
+            && page_is_resident(
+                page_base(high_start, page_size),
+                page_size,
+                "shared lane boundary",
+            )?;
+
+        Ok(ReservedArenaResidency {
+            page_size,
+            low,
+            high,
+            total_pages: low
+                .pages
+                .saturating_add(high.pages)
+                .saturating_sub(usize::from(shared_boundary_page)),
+            total_resident_pages: low
+                .resident_pages
+                .saturating_add(high.resident_pages)
+                .saturating_sub(usize::from(shared_resident_page)),
+        })
+    }
+
+    /// Reports that physical-residency sampling is unavailable on non-Unix
+    /// hosts.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`ReservedArenaError::UnsupportedPlatform`].
+    #[cfg(not(unix))]
+    pub fn residency(&self) -> Result<ReservedArenaResidency, ReservedArenaError> {
+        Err(ReservedArenaError::UnsupportedPlatform)
+    }
+
+    /// Returns whether the page containing `index` is physically resident.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `index` is outside the reservation, the operating
+    /// system page size is unavailable, or the page-residency query fails.
+    #[cfg(unix)]
+    pub fn page_is_resident_at_index(&self, index: ArenaIndex) -> Result<bool, ReservedArenaError> {
+        let offset = index.raw() as usize;
+        if offset >= self.capacity {
+            return Err(ReservedArenaError::SizeOverflow);
+        }
+        let page_size = operating_system_page_size()?;
+        let address = self.base.as_ptr().cast::<u8>().wrapping_add(offset) as usize;
+        page_is_resident(page_base(address, page_size), page_size, "arena index")
+    }
+
+    /// Discards a caller-proven-dead run of whole reservation pages.
+    ///
+    /// Both `start` and `byte_len` are reservation-relative and must be
+    /// operating-system-page aligned. The entire non-empty run must belong to
+    /// exactly one currently used allocation lane; free-gap and cross-lane
+    /// ranges are rejected before a [`MemoryAdviceRange`] is constructed.
+    ///
+    /// This operation does not change either allocation cursor or any typed
+    /// object registry. It is a narrowly controlled page-reclamation door for
+    /// a collector that has already updated those owners.
+    ///
+    /// # Safety
+    ///
+    /// Before calling this method, the caller must prove that every typed
+    /// allocation intersecting any page in the run has been tombstoned or
+    /// moved, and that no live reference can read its former bytes. Lane
+    /// membership alone does not establish that proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the page size is unavailable, the range is empty
+    /// or unaligned, its arithmetic overflows, it exceeds the reservation, or
+    /// it is not wholly contained in one currently used lane.
+    #[cfg(unix)]
+    pub unsafe fn advise_dead_pages_caller_validated(
+        &self,
+        start: ArenaIndex,
+        byte_len: usize,
+    ) -> Result<ReservedArenaDeadPageAdvice, ReservedArenaDeadPageAdviceError> {
+        let page_size = operating_system_page_size()
+            .map_err(|_| ReservedArenaDeadPageAdviceError::PageSizeUnavailable)?;
+        let start_offset = start.raw() as usize;
+        if byte_len == 0 {
+            return Err(ReservedArenaDeadPageAdviceError::EmptyRange);
+        }
+        if start_offset % page_size != 0 || byte_len % page_size != 0 {
+            return Err(ReservedArenaDeadPageAdviceError::UnalignedRange {
+                start: start.raw(),
+                byte_len,
+                page_size,
+            });
+        }
+        let end = start_offset
+            .checked_add(byte_len)
+            .ok_or(ReservedArenaDeadPageAdviceError::RangeOverflow)?;
+        if end > self.capacity {
+            return Err(ReservedArenaDeadPageAdviceError::OutsideReservation {
+                start: start.raw(),
+                byte_len,
+                capacity: self.capacity,
+            });
+        }
+
+        let low_cursor = self.low_cursor.load(Ordering::Acquire);
+        let in_low_lane = end <= low_cursor;
+        let in_high_lane = start_offset >= self.high_cursor && end <= self.capacity;
+        if !in_low_lane && !in_high_lane {
+            return Err(ReservedArenaDeadPageAdviceError::OutsideUsedLane {
+                start: start.raw(),
+                byte_len,
+                low_used_bytes: low_cursor,
+                high_lane_start: self.high_cursor,
+            });
+        }
+
+        // SAFETY: the checks above prove that this non-empty page-aligned range
+        // lies wholly inside the live reservation mapping. The caller's safety
+        // obligation proves that destructive dead-page advice cannot invalidate
+        // a live typed value.
+        let range = unsafe {
+            let ptr = NonNull::new_unchecked(self.base.as_ptr().add(start_offset));
+            MemoryAdviceRange::from_raw_parts(ptr, byte_len)
+        };
+        Ok(ReservedArenaDeadPageAdvice {
+            start,
+            byte_len,
+            outcome: advise_dead(range),
+        })
+    }
+
+    /// Reports that dead-page advice is unavailable on non-Unix hosts.
+    ///
+    /// # Safety
+    ///
+    /// The caller has the same typed-allocation proof obligation as the Unix
+    /// implementation, though this implementation never applies advice.
+    ///
+    /// # Errors
+    ///
+    /// Always returns
+    /// [`ReservedArenaDeadPageAdviceError::UnsupportedPlatform`].
+    #[cfg(not(unix))]
+    pub unsafe fn advise_dead_pages_caller_validated(
+        &self,
+        _start: ArenaIndex,
+        _byte_len: usize,
+    ) -> Result<ReservedArenaDeadPageAdvice, ReservedArenaDeadPageAdviceError> {
+        Err(ReservedArenaDeadPageAdviceError::UnsupportedPlatform)
+    }
+
+    /// Reports that page-residency sampling is unavailable on non-Unix hosts.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`ReservedArenaError::UnsupportedPlatform`].
+    #[cfg(not(unix))]
+    pub fn page_is_resident_at_index(
+        &self,
+        _index: ArenaIndex,
+    ) -> Result<bool, ReservedArenaError> {
+        Err(ReservedArenaError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(unix)]
+fn operating_system_page_size() -> Result<usize, ReservedArenaError> {
+    // SAFETY: `_SC_PAGESIZE` takes no pointer argument and has no memory-safety
+    // preconditions.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(page_size)
+        .ok()
+        .filter(|page_size| *page_size != 0)
+        .ok_or(ReservedArenaError::PageSizeUnavailable)
+}
+
+#[cfg(unix)]
+fn page_base(address: usize, page_size: usize) -> usize {
+    address - address % page_size
+}
+
+#[cfg(unix)]
+fn sample_residency_range(
+    start: usize,
+    byte_len: usize,
+    page_size: usize,
+) -> Result<ReservedArenaLaneResidency, ReservedArenaError> {
+    if byte_len == 0 {
+        return Ok(ReservedArenaLaneResidency {
+            used_bytes: 0,
+            pages: 0,
+            resident_pages: 0,
+        });
+    }
+    let aligned_start = page_base(start, page_size);
+    let end = start
+        .checked_add(byte_len)
+        .ok_or(ReservedArenaError::SizeOverflow)?;
+    let page_count = end
+        .checked_sub(aligned_start)
+        .and_then(|span| span.checked_add(page_size - 1))
+        .map(|span| span / page_size)
+        .ok_or(ReservedArenaError::SizeOverflow)?;
+    let query_len = page_count
+        .checked_mul(page_size)
+        .ok_or(ReservedArenaError::SizeOverflow)?;
+    let mut status = vec![0_u8; page_count];
+    // SAFETY: `aligned_start` is page aligned and names a live mapping owned by
+    // the arena. `query_len` covers pages intersecting the used lane, and
+    // `status` contains one writable byte per queried page as required by
+    // `mincore`.
+    let result = unsafe {
+        libc::mincore(
+            aligned_start as *mut libc::c_void,
+            query_len,
+            status.as_mut_ptr().cast(),
+        )
+    };
+    if result != 0 {
+        return Err(ReservedArenaError::ResidencyQueryFailed {
+            lane: "used lane",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(ReservedArenaLaneResidency {
+        used_bytes: byte_len,
+        pages: page_count,
+        resident_pages: status.into_iter().filter(|status| status & 1 != 0).count(),
+    })
+}
+
+#[cfg(unix)]
+fn page_is_resident(
+    aligned_address: usize,
+    page_size: usize,
+    lane: &'static str,
+) -> Result<bool, ReservedArenaError> {
+    let mut status = 0_u8;
+    // SAFETY: `aligned_address` is page aligned and is a page in the arena's
+    // live reservation. `status` provides the one output byte required for a
+    // one-page query.
+    let result = unsafe {
+        libc::mincore(
+            aligned_address as *mut libc::c_void,
+            page_size,
+            (&mut status as *mut u8).cast(),
+        )
+    };
+    if result != 0 {
+        return Err(ReservedArenaError::ResidencyQueryFailed {
+            lane,
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(status & 1 != 0)
 }
 
 #[cfg(unix)]
@@ -662,6 +1023,18 @@ pub enum ReservedArenaError {
     /// Anonymous virtual mappings are unavailable on this platform.
     #[error("Candidate-C address reservation is unsupported on this platform")]
     UnsupportedPlatform,
+    /// The operating system did not report a positive page size.
+    #[error("operating-system page size is unavailable")]
+    PageSizeUnavailable,
+    /// The operating system rejected a physical-residency query.
+    #[error("could not query physical residency for {lane}: {source}")]
+    ResidencyQueryFailed {
+        /// The queried reservation lane.
+        lane: &'static str,
+        /// The operating-system error.
+        #[source]
+        source: std::io::Error,
+    },
     /// The non-reusing compressed-word domain space was exhausted.
     #[error("Candidate-C arena domain identity space is exhausted")]
     ArenaDomainExhausted,
@@ -743,6 +1116,61 @@ pub enum ReservedArenaError {
     DomainRegistry(#[from] ReservationRegistryError),
 }
 
+/// Validation failure for Candidate-C dead-page advice.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum ReservedArenaDeadPageAdviceError {
+    /// Dead-page advice is unavailable on this target.
+    #[error("Candidate-C dead-page advice is unsupported on this platform")]
+    UnsupportedPlatform,
+    /// The operating system did not report a positive page size.
+    #[error("operating-system page size is unavailable")]
+    PageSizeUnavailable,
+    /// An empty run cannot establish ownership of a used lane.
+    #[error("Candidate-C dead-page advice requires a non-empty page run")]
+    EmptyRange,
+    /// The start or length was not page granular.
+    #[error(
+        "dead-page run at offset {start} with length {byte_len} is not aligned to {page_size}-byte pages"
+    )]
+    UnalignedRange {
+        /// The rejected reservation-relative start.
+        start: u32,
+        /// The rejected byte length.
+        byte_len: usize,
+        /// The operating-system page size.
+        page_size: usize,
+    },
+    /// Range-end arithmetic overflowed.
+    #[error("Candidate-C dead-page run arithmetic overflowed")]
+    RangeOverflow,
+    /// The page run exceeded the virtual reservation.
+    #[error(
+        "dead-page run at offset {start} with length {byte_len} exceeds the {capacity}-byte reservation"
+    )]
+    OutsideReservation {
+        /// The rejected reservation-relative start.
+        start: u32,
+        /// The rejected byte length.
+        byte_len: usize,
+        /// The reservation's total byte capacity.
+        capacity: usize,
+    },
+    /// The page run was not wholly owned by one currently used lane.
+    #[error(
+        "dead-page run at offset {start} with length {byte_len} is outside the low {low_used_bytes}-byte lane and high lane starting at {high_lane_start}"
+    )]
+    OutsideUsedLane {
+        /// The rejected reservation-relative start.
+        start: u32,
+        /// The rejected byte length.
+        byte_len: usize,
+        /// The current low-lane cursor.
+        low_used_bytes: usize,
+        /// The current high-lane cursor.
+        high_lane_start: usize,
+    },
+}
+
 #[cfg(all(test, unix, target_pointer_width = "64"))]
 mod tests {
     use std::sync::Arc;
@@ -788,6 +1216,26 @@ mod tests {
             ArenaDomainId::from_raw(CANDIDATE_C_ARENA_DOMAIN_MAX + 1),
             None
         );
+    }
+
+    #[test]
+    fn logical_domains_are_unique_and_have_no_native_base() {
+        let first = ArenaDomainId::allocate_logical().expect("logical domain allocates");
+        let second = ArenaDomainId::allocate_logical().expect("logical domain allocates");
+        let mapped = ReservedArena::with_capacity(4096).expect("reservation maps");
+
+        assert_ne!(first, second);
+        assert_ne!(first, mapped.domain_id());
+        assert_ne!(second, mapped.domain_id());
+        assert_eq!(
+            super::super::reservation_registry::reservation_base(first),
+            None
+        );
+        assert_eq!(
+            super::super::reservation_registry::reservation_base(second),
+            None
+        );
+        assert!(super::super::reservation_registry::reservation_base(mapped.domain_id()).is_some());
     }
 
     #[test]
@@ -864,6 +1312,70 @@ mod tests {
     }
 
     #[test]
+    fn dead_page_advice_requires_an_aligned_run_inside_one_used_lane() {
+        let page_size = operating_system_page_size().expect("page size is available");
+        let capacity = page_size.checked_mul(3).expect("test capacity fits");
+        let arena = ReservedArena::with_capacity(capacity).expect("reservation maps");
+        let allocation = arena
+            .alloc(page_size, page_size)
+            .expect("one complete low-lane page fits");
+        assert_eq!(allocation.index, ArenaIndex::new(0));
+
+        // SAFETY: This test has not constructed a typed value in the raw
+        // allocation, so the complete first page is caller-proven dead.
+        let advised =
+            // SAFETY: The immediately preceding proof applies to this call.
+            unsafe { arena.advise_dead_pages_caller_validated(ArenaIndex::new(0), page_size) }
+                .expect("a complete used low-lane page is eligible");
+        assert_eq!(advised.start(), ArenaIndex::new(0));
+        assert_eq!(advised.byte_len(), page_size);
+        assert!(matches!(
+            advised.outcome(),
+            MemoryAdviceOutcome::Applied {
+                kind: MemoryAdviceKind::Dead
+            } | MemoryAdviceOutcome::Unsupported {
+                kind: MemoryAdviceKind::Dead
+            } | MemoryAdviceOutcome::EmptyRange {
+                kind: MemoryAdviceKind::Dead
+            } | MemoryAdviceOutcome::Rejected {
+                kind: MemoryAdviceKind::Dead,
+                ..
+            }
+        ));
+
+        // SAFETY: Invalid runs are rejected before advice is constructed; the
+        // caller proof for the only used page remains the one established
+        // above.
+        let unaligned =
+            // SAFETY: The immediately preceding rejection proof applies here.
+            unsafe { arena.advise_dead_pages_caller_validated(ArenaIndex::new(1), page_size) };
+        assert!(matches!(
+            unaligned,
+            Err(ReservedArenaDeadPageAdviceError::UnalignedRange { .. })
+        ));
+
+        // SAFETY: The run is in the reservation's untouched free gap and must
+        // be rejected before destructive advice.
+        let free_gap = unsafe {
+            arena.advise_dead_pages_caller_validated(ArenaIndex::new(page_size as u32), page_size)
+        };
+        assert!(matches!(
+            free_gap,
+            Err(ReservedArenaDeadPageAdviceError::OutsideUsedLane { .. })
+        ));
+
+        // SAFETY: The range begins at the reservation end and must be rejected
+        // before destructive advice.
+        let out_of_range = unsafe {
+            arena.advise_dead_pages_caller_validated(ArenaIndex::new(capacity as u32), page_size)
+        };
+        assert!(matches!(
+            out_of_range,
+            Err(ReservedArenaDeadPageAdviceError::OutsideReservation { .. })
+        ));
+    }
+
+    #[test]
     fn low_and_high_lanes_share_indices_and_rewind_independently() {
         let mut arena = ReservedArena::with_capacity(4096).expect("small reservation maps");
         let low = arena.alloc_exclusive(24, 8).expect("low object fits");
@@ -923,6 +1435,43 @@ mod tests {
         assert!(matches!(
             arena.alloc_exclusive_high(16, 8),
             Err(ReservedArenaError::OutOfSpace { .. })
+        ));
+    }
+
+    #[test]
+    fn residency_counts_touched_pages_in_both_used_lanes() {
+        let page_size = operating_system_page_size().expect("page size is available");
+        let capacity = page_size.checked_mul(3).expect("test capacity fits");
+        let mut arena = ReservedArena::with_capacity(capacity).expect("reservation maps");
+        let low = arena.alloc_exclusive(1, 1).expect("low allocation fits");
+        let high = arena
+            .alloc_exclusive_high(1, 1)
+            .expect("high allocation fits");
+
+        // SAFETY: Both allocations exclusively own at least one writable byte
+        // in the still-live anonymous reservation.
+        unsafe {
+            low.ptr.cast::<u8>().as_ptr().write(0x5a);
+            high.ptr.cast::<u8>().as_ptr().write(0xa5);
+        }
+
+        let residency = arena.residency().expect("residency query succeeds");
+        assert_eq!(residency.page_size, page_size);
+        assert_eq!(residency.low.pages, 1);
+        assert_eq!(residency.high.pages, 1);
+        assert_eq!(residency.low.resident_pages, 1);
+        assert_eq!(residency.high.resident_pages, 1);
+        assert_eq!(residency.total_pages, 2);
+        assert_eq!(residency.total_resident_pages, 2);
+        assert!(arena
+            .page_is_resident_at_index(low.index)
+            .expect("low page query succeeds"));
+        assert!(arena
+            .page_is_resident_at_index(high.index)
+            .expect("high page query succeeds"));
+        assert!(matches!(
+            arena.page_is_resident_at_index(ArenaIndex::new(u32::MAX)),
+            Err(ReservedArenaError::SizeOverflow)
         ));
     }
 

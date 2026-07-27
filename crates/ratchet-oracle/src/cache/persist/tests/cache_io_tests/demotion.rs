@@ -65,7 +65,11 @@ fn zero_target_selects_no_victims() {
 
 #[test]
 fn target_beyond_available_selects_all() {
-    let mut candidates = vec![candidate(1, 100, 5), candidate(2, 300, 9), candidate(3, 200, 1)];
+    let mut candidates = vec![
+        candidate(1, 100, 5),
+        candidate(2, 300, 9),
+        candidate(3, 200, 1),
+    ];
     let victims = select_demotion_victims(&mut candidates, 10_000);
     assert_eq!(victims.len(), 3);
 }
@@ -74,7 +78,11 @@ fn target_beyond_available_selects_all() {
 fn minimal_prefix_relieves_the_target() {
     // 300 + 200 = 500 >= 450, so the two largest suffice; the 100-byte tail is
     // left resident.
-    let mut candidates = vec![candidate(1, 100, 5), candidate(2, 300, 9), candidate(3, 200, 1)];
+    let mut candidates = vec![
+        candidate(1, 100, 5),
+        candidate(2, 300, 9),
+        candidate(3, 200, 1),
+    ];
     let victims = select_demotion_victims(&mut candidates, 450);
     let order: Vec<u8> = victims
         .iter()
@@ -120,14 +128,14 @@ fn demotion_moves_cold_victims_down_and_keeps_small_records_resident() {
 
     // Bound the primary 3 KiB below its footprint: enough to demote the two
     // large records (~4 KiB together) but not the tiny tail.
-    let used = primary.primary_used_bytes().expect("primary footprint measures");
+    let used = primary
+        .primary_used_bytes()
+        .expect("primary footprint measures");
     let bound = used.saturating_sub(3000);
     let policy = PersistStorageMaintenancePolicy::default().with_primary_size_pressure_bytes(bound);
 
-    let locations = PersistCacheLocations::with_primary(
-        primary,
-        vec![(PersistLatencyClass::Ssd, secondary)],
-    );
+    let locations =
+        PersistCacheLocations::with_primary(primary, vec![(PersistLatencyClass::Ssd, secondary)]);
     let outcome = locations
         .demote_under_size_pressure(policy)
         .expect("demotion runs");
@@ -139,7 +147,10 @@ fn demotion_moves_cold_victims_down_and_keeps_small_records_resident() {
             target_class,
         } => {
             assert_eq!(*target_class, PersistLatencyClass::Ssd);
-            assert!(*estimated_bytes_freed > 0, "moved records must report freed bytes");
+            assert!(
+                *estimated_bytes_freed > 0,
+                "moved records must report freed bytes"
+            );
             let mut demoted = demoted_keys.clone();
             demoted.sort();
             let mut expected = vec![sample_key(10), sample_key(11)];
@@ -181,11 +192,14 @@ fn demotion_moves_cold_victims_down_and_keeps_small_records_resident() {
             "a small record must stay resident in the primary"
         );
     }
-    for key in [sample_key(10), sample_key(11), sample_key(12), sample_key(13)] {
+    for key in [
+        sample_key(10),
+        sample_key(11),
+        sample_key(12),
+        sample_key(13),
+    ] {
         assert!(
-            locations
-                .load_root_instantiation(key)
-                .is_some(),
+            locations.load_root_instantiation(key).is_some(),
             "every record must remain findable across the location stack"
         );
     }
@@ -199,7 +213,13 @@ fn demotion_without_size_pressure_is_a_no_op() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     cache
-        .store_root_instantiation(sample_key(20), b"/nix/store/x.drv", &sized_closure("/nix/store/x.drv", b'x', 64), &[], 1)
+        .store_root_instantiation(
+            sample_key(20),
+            b"/nix/store/x.drv",
+            &sized_closure("/nix/store/x.drv", b'x', 64),
+            &[],
+            1,
+        )
         .expect("record stores");
 
     // Default policy leaves demotion disabled; a bound above the footprint keeps
@@ -240,7 +260,13 @@ fn demotion_without_a_secondary_is_a_no_op() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     cache
-        .store_root_instantiation(sample_key(30), b"/nix/store/y.drv", &sized_closure("/nix/store/y.drv", b'y', 2000), &[], 1)
+        .store_root_instantiation(
+            sample_key(30),
+            b"/nix/store/y.drv",
+            &sized_closure("/nix/store/y.drv", b'y', 2000),
+            &[],
+            1,
+        )
         .expect("record stores");
     let used = cache.primary_used_bytes().expect("footprint measures");
     let policy = PersistStorageMaintenancePolicy::default()

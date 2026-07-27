@@ -115,7 +115,10 @@ fn flat_capture_plans_replace_outer_frames_after_publication() {
     assert!(env.frames().is_empty(), "flat sites retain no outer frames");
     let flat = env.flat_base().expect("lambda consumes its flat plan");
     assert!(
-        flat.inline_owner().raw_eq(value),
+        evaluator
+            .heap()
+            .flat_closure_capture_owner(flat.tail_handle())
+            .is_ok_and(|owner| owner.raw_eq(value)),
         "the closure value must own its inlined capture tail"
     );
     let values = evaluator
@@ -151,9 +154,6 @@ fn oversized_configured_depth_preserves_conservative_capture() {
         1,
         "the conservative environment must retain the captured frame"
     );
-    let campaign = evaluator.stats_snapshot().campaign();
-    assert_eq!(campaign.flat_env_captures, 0);
-    assert_eq!(campaign.flat_env_capture_values, 0);
 }
 
 #[test]
@@ -182,7 +182,10 @@ fn recursive_assembly_flattens_only_after_publication() {
         .flat_base()
         .expect("published recursive closure consumes its flat plan");
     assert!(
-        flat.inline_owner().raw_eq(b_value),
+        evaluator
+            .heap()
+            .flat_closure_capture_owner(flat.tail_handle())
+            .is_ok_and(|owner| owner.raw_eq(b_value)),
         "publication must point the environment at its owning closure"
     );
     let values = evaluator

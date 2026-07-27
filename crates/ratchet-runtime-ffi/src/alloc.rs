@@ -171,7 +171,8 @@ pub unsafe extern "C" fn aos_alloc_cons(
     let tail = NonNull::new(tail).map(NonNull::cast::<HeapObject>);
     // SAFETY: The caller supplies the pinned RuntimeJitContext and exclusive
     // evaluator access required by `with_native_runtime_context`.
-    let allocated = unsafe { // aos_alloc_cons runtime-context decode
+    let allocated = unsafe {
+        // aos_alloc_cons runtime-context decode
         with_native_runtime_context(rt, |eval, id, span| {
             rust_callable_aos_alloc_cons(eval, id, span, head, tail)
         })
@@ -735,7 +736,10 @@ mod tests {
             binding.remaining_export_blockers(),
             remaining_export_blockers
         );
-        assert_eq!(binding.is_export_ready(), remaining_export_blockers.is_empty());
+        assert_eq!(
+            binding.is_export_ready(),
+            remaining_export_blockers.is_empty()
+        );
     }
 
     fn assert_child_process_aborts(test_name: &str) {

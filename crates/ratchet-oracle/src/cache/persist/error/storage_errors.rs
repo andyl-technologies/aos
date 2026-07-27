@@ -131,9 +131,7 @@ pub enum PersistBlobPackTrimError {
         source: PersistRootRecordIndexError,
     },
     /// The shared root-record advisory lock could not be acquired.
-    #[error(
-        "failed to acquire persistent root-record advisory lock at {path} before tail trim"
-    )]
+    #[error("failed to acquire persistent root-record advisory lock at {path} before tail trim")]
     RootRecordLock {
         /// The advisory lock file path.
         path: PathBuf,

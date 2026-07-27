@@ -740,6 +740,9 @@ pub struct NixEvalConfig {
     native_root_cutoff: bool,
     native_root_cutoff_check: bool,
     native_eval_stats: bool,
+    native_genlist_selected_child_census: bool,
+    native_stg_session: bool,
+    native_typed_apply_thunk_heads: bool,
     native_jit: bool,
     native_gc_sweep: bool,
     native_gc_sweep_threshold: Option<u64>,
@@ -1075,6 +1078,36 @@ impl NixEvalConfig {
     /// Enables or disables native evaluation work-volume statistics dumping.
     pub fn set_native_eval_stats(&mut self, native_eval_stats: bool) {
         self.native_eval_stats = native_eval_stats;
+    }
+
+    /// Returns whether the stats-only exact `genList` child census is enabled.
+    pub const fn native_genlist_selected_child_census(&self) -> bool {
+        self.native_genlist_selected_child_census
+    }
+
+    /// Enables or disables the stats-only exact `genList` child census.
+    pub fn set_native_genlist_selected_child_census(&mut self, enabled: bool) {
+        self.native_genlist_selected_child_census = enabled;
+    }
+
+    /// Returns whether the default-off native session evaluator is enabled.
+    pub const fn native_stg_session(&self) -> bool {
+        self.native_stg_session
+    }
+
+    /// Enables or disables the native session evaluator.
+    pub fn set_native_stg_session(&mut self, enabled: bool) {
+        self.native_stg_session = enabled;
+    }
+
+    /// Returns whether the default-off serial `Apply` typed-head probe is enabled.
+    pub const fn native_typed_apply_thunk_heads(&self) -> bool {
+        self.native_typed_apply_thunk_heads
+    }
+
+    /// Enables or disables the serial `Apply` typed-head probe.
+    pub fn set_native_typed_apply_thunk_heads(&mut self, enabled: bool) {
+        self.native_typed_apply_thunk_heads = enabled;
     }
 
     /// Returns the configured native heap high-water budget in bytes, if set.
@@ -1424,6 +1457,9 @@ impl NixEvalConfig {
             native_root_cutoff: true,
             native_root_cutoff_check: false,
             native_eval_stats: false,
+            native_genlist_selected_child_census: false,
+            native_stg_session: false,
+            native_typed_apply_thunk_heads: false,
             native_jit: false,
             native_gc_sweep: false,
             native_gc_sweep_threshold: None,
@@ -1463,6 +1499,15 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_EVAL_STATS") {
             config.set_aos_nix_eval_stats_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_GENLIST_SELECTED_CHILD_CENSUS") {
+            config.set_native_genlist_selected_child_census(matches!(value.trim(), "1" | "true"));
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_STG_SESSION") {
+            config.set_native_stg_session(matches!(value.trim(), "1" | "true"));
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_TYPED_THUNK_HEADS") {
+            config.set_native_typed_apply_thunk_heads(value.trim() == "apply");
         }
         if let Ok(value) = std::env::var("AOS_NIX_JIT") {
             config.set_aos_nix_jit_env_var(&value);
@@ -1696,10 +1741,9 @@ impl NixEvalConfig {
                     "l1" => memo.check_l1 = true,
                     "l2" => memo.check_l2 = true,
                     "l3" => memo.check_l3 = true,
-                    other => tracing::warn!(
-                        tier = other,
-                        "unknown AOS_NIX_MEMO_CHECK tier; ignoring it"
-                    ),
+                    other => {
+                        tracing::warn!(tier = other, "unknown AOS_NIX_MEMO_CHECK tier; ignoring it")
+                    }
                 }
             }
         }
@@ -2042,7 +2086,9 @@ enum NativeVerifyMode {
     /// This is the RFC-0007 rollout canary (doc 14 §6.2/§7.2): a low-rate
     /// residual verification that can stay on in CI and the fleet after
     /// default-on without paying the full oracle re-run on every evaluation.
-    Sample { period: std::num::NonZeroU64 },
+    Sample {
+        period: std::num::NonZeroU64,
+    },
 }
 
 /// Parses a fractional `AOS_NIX_NATIVE_VERIFY` sample rate such as `0.05` or
@@ -3288,6 +3334,10 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     options.set_trace_verbose(config.trace_verbose());
     options.set_eval_stats_dump(config.native_eval_stats());
+    options
+        .set_genlist_selected_child_census_enabled(config.native_genlist_selected_child_census());
+    options.set_stg_session_enabled(config.native_stg_session());
+    options.set_typed_apply_thunk_heads_enabled(config.native_typed_apply_thunk_heads());
     let memo = config.native_memo();
     options.set_memo_options(MemoOptions {
         enabled: memo.enabled,
@@ -5623,10 +5673,7 @@ mod tests {
 
         let options = tree_walk_options_from_config(&config).expect("options build");
 
-        assert_eq!(
-            options.parallel_workers().map(|count| count.get()),
-            Some(4)
-        );
+        assert_eq!(options.parallel_workers().map(|count| count.get()), Some(4));
         assert!(
             !options.jit_tier1_publish_enabled(),
             "AOS_NIX_JIT must be ignored under AOS_NIX_PARALLEL"

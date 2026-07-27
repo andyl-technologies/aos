@@ -44,9 +44,8 @@ pub use conformance::{
     nix_jit_arith_native_differential, nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
     nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root,
     nix_jit_forced_env_slot_native_differential, nix_jit_forced_upval_slot_native_differential,
-    nix_jit_literal_native_differential_for_ir_root,
-    nix_jit_static_has_attr_native_differential, nix_jit_static_select_native_differential,
-    nix_jit_tier1_conformance_readiness_for_ir_root,
+    nix_jit_literal_native_differential_for_ir_root, nix_jit_static_has_attr_native_differential,
+    nix_jit_static_select_native_differential, nix_jit_tier1_conformance_readiness_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_lowered_ir_root,
     nix_jit_tier1_forced_env_slot_publish_dispatch, nix_jit_update_native_differential,
 };

@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 #[test]
 fn collector_poll_minor_gc_object_generation_write_plan_rejects_destination_source_overlap() {
     let first_source = static_gc_address(0x1000_0000);
@@ -77,7 +76,6 @@ fn collector_poll_minor_gc_object_generation_write_plan_rejects_destination_sour
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -124,7 +122,6 @@ fn collector_poll_minor_gc_plan_rejects_unremembered_permanent_to_worker_edge() 
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -372,7 +369,6 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     assert_eq!(commit_remembered_set, expected_next_remembered_set);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -427,7 +423,6 @@ fn collector_poll_minor_gc_card_table_plan_requires_dirty_remembered_source_card
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -480,7 +475,6 @@ fn collector_poll_minor_gc_card_table_plan_accepts_dirty_remembered_source_card(
     assert_eq!(planned.plan().survivors()[0].address(), edge.target());
     assert_eq!(planned.reference_slots().len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -596,7 +590,6 @@ fn collector_poll_minor_gc_card_table_plan_adds_dirty_unremembered_survivor_edge
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -707,7 +700,6 @@ fn collector_poll_minor_gc_card_table_plan_promotes_dirty_unremembered_survivor_
         }
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

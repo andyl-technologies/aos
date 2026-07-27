@@ -26,16 +26,16 @@ pub mod runner;
 pub mod store;
 
 pub use env::{aos_nix_command, aos_nix_env, aos_tokio_nix_command};
-pub use native_memory::{
-    NativeArenaGauges, children_peak_rss_bytes, current_rss_bytes, native_arena_gauges,
-    native_memory_probes_supported, peak_rss_bytes, release_free_memory, reset_native_arena_peak,
-};
 pub use eval::{
     DrvClosure, NativeEvalStats, NativeFallbackStats, NativeMode, NativeShadowStats,
     NativeSuccessStats, NativeVerifyStats, NixEval, NixEvalConfig, NixEvalMode,
     NixEvalStrictJsonStats, native_eval_stats, native_fallback_stats, native_mode_from_env,
     native_shadow_stats, native_success_stats, native_verify_stats, select_evaluator,
     select_evaluator_with_config, select_native_diff_candidate_with_config,
+};
+pub use native_memory::{
+    NativeArenaGauges, children_peak_rss_bytes, current_rss_bytes, native_arena_gauges,
+    native_memory_probes_supported, peak_rss_bytes, release_free_memory, reset_native_arena_peak,
 };
 pub use runner::NixRunner;
 pub use store::{NixCli, NixInstantiateStats, PathInfo};

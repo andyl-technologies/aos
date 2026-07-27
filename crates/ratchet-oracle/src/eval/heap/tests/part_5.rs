@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -39,7 +38,6 @@ fn attr_values_with_different_projected_shape_metadata_do_not_collapse() {
     assert_eq!(heap.len(), 2);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -59,7 +57,6 @@ fn attr_values_with_different_shapes_do_not_collapse() {
     assert_ne!(first.payload_bits(), second.payload_bits());
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -95,7 +92,6 @@ fn attr_values_with_different_binding_values_do_not_collapse() {
     assert_eq!(heap.len(), 6);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -115,7 +111,6 @@ fn attr_values_with_different_source_order_do_not_collapse() {
     assert_ne!(first.payload_bits(), second.payload_bits());
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -156,7 +151,6 @@ fn attr_values_with_different_positions_do_not_collapse() {
     assert_ne!(first.payload_bits(), second.payload_bits());
     assert_eq!(heap.len(), 2);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -231,7 +225,6 @@ fn mixed_heap_object_types_keep_distinct_records() {
     );
 }
 
-
 #[test]
 fn preserves_context_bearing_strings() {
     let context = StringContext::singleton(
@@ -249,7 +242,6 @@ fn preserves_context_bearing_strings() {
     assert_eq!(stored.context().elements()[0].path(), b"/nix/store/source");
 }
 
-
 #[test]
 fn rejects_string_values_from_another_live_heap() {
     let heap = EvalHeap::new();
@@ -264,7 +256,6 @@ fn rejects_string_values_from_another_live_heap() {
 
     assert_eq!(error, EvalHeapError::unknown(ValueTag::String, ptr));
 }
-
 
 #[test]
 fn rejects_path_values_from_another_live_heap() {
@@ -281,7 +272,6 @@ fn rejects_path_values_from_another_live_heap() {
     assert_eq!(error, EvalHeapError::unknown(ValueTag::Path, ptr));
 }
 
-
 #[test]
 fn rejects_list_values_from_another_live_heap() {
     let heap = EvalHeap::new();
@@ -296,7 +286,6 @@ fn rejects_list_values_from_another_live_heap() {
 
     assert_eq!(error, EvalHeapError::unknown(ValueTag::List, ptr));
 }
-
 
 #[test]
 fn rejects_attr_values_from_another_live_heap() {
@@ -313,7 +302,6 @@ fn rejects_attr_values_from_another_live_heap() {
     assert_eq!(error, EvalHeapError::unknown(ValueTag::Attrs, ptr));
 }
 
-
 #[test]
 fn rejects_thunk_values_from_another_live_heap() {
     let heap = EvalHeap::new();
@@ -328,7 +316,6 @@ fn rejects_thunk_values_from_another_live_heap() {
 
     assert_eq!(error, EvalHeapError::unknown(ValueTag::Thunk, ptr));
 }
-
 
 #[test]
 fn rejects_primop_values_from_another_live_heap() {
@@ -347,7 +334,6 @@ fn rejects_primop_values_from_another_live_heap() {
     assert_eq!(error, EvalHeapError::unknown(ValueTag::Primop, ptr));
 }
 
-
 #[test]
 fn rejects_wrong_value_tags_for_string_lookup() {
     let heap = EvalHeap::new();
@@ -363,7 +349,6 @@ fn rejects_wrong_value_tags_for_string_lookup() {
         })
     );
 }
-
 
 #[test]
 fn rejects_wrong_value_tags_for_path_lookup() {
@@ -381,7 +366,6 @@ fn rejects_wrong_value_tags_for_path_lookup() {
     );
 }
 
-
 #[test]
 fn rejects_wrong_value_tags_for_list_lookup() {
     let heap = EvalHeap::new();
@@ -397,7 +381,6 @@ fn rejects_wrong_value_tags_for_list_lookup() {
         })
     );
 }
-
 
 #[test]
 fn rejects_wrong_value_tags_for_thunk_lookup() {
@@ -415,7 +398,6 @@ fn rejects_wrong_value_tags_for_thunk_lookup() {
     );
 }
 
-
 #[test]
 fn rejects_wrong_value_tags_for_primop_lookup() {
     let heap = EvalHeap::new();
@@ -432,7 +414,6 @@ fn rejects_wrong_value_tags_for_primop_lookup() {
     );
 }
 
-
 #[test]
 fn rejects_wrong_value_tags_for_attrs_lookup() {
     let heap = EvalHeap::new();
@@ -448,7 +429,6 @@ fn rejects_wrong_value_tags_for_attrs_lookup() {
         })
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -524,7 +504,6 @@ fn precise_root_scan_filters_inline_values_and_walks_typed_fields() {
     assert!(list_edges[0].value().raw_eq(leaf));
     assert!(object_for(&scan, leaf).edges().is_empty());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

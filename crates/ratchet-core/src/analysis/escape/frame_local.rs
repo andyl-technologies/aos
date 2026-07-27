@@ -194,8 +194,7 @@ pub(super) fn frame_local_let_thunks(ir: &Ir) -> Result<Vec<IrId>, EscapeAnalysi
                 .arena
                 .node(binding.value)
                 .ok_or(EscapeAnalysisError::InvalidNode { id: binding.value })?;
-            let (IrKind::ThunkAlloc, IrData::Node(thunk_body)) =
-                (value_node.kind, value_node.data)
+            let (IrKind::ThunkAlloc, IrData::Node(thunk_body)) = (value_node.kind, value_node.data)
             else {
                 continue;
             };

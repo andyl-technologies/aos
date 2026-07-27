@@ -143,7 +143,10 @@ impl PersistBlobPack {
     ///
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
     /// inspected, truncated, or if `end_offset` is outside the packfile.
-    pub(in crate::cache::persist) fn trim_tail(&self, end_offset: u64) -> Result<u64, PersistBlobPackError> {
+    pub(in crate::cache::persist) fn trim_tail(
+        &self,
+        end_offset: u64,
+    ) -> Result<u64, PersistBlobPackError> {
         self.appender
             .trim_tail(end_offset)
             .map_err(engine_trim_error_to_persist)

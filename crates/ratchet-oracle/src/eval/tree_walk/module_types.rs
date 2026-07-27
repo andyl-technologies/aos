@@ -246,6 +246,200 @@ pub(crate) enum ImportCacheEntry {
     },
 }
 
+/// Opaque coordinate for one active import-cache miss.
+///
+/// The token carries only a stack coordinate, rather than borrowing the
+/// evaluator, so an explicit demand executor can retain it while continuing
+/// to mutate [`TreeWalk`]. Import-cache leases are strictly nested, and the
+/// monotonic generation rejects a stale token reused at the same stack depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ImportCacheLeaseToken {
+    depth: usize,
+    generation: u64,
+}
+
+impl ImportCacheLeaseToken {
+    pub(crate) const fn new(depth: usize, generation: u64) -> Self {
+        Self { depth, generation }
+    }
+
+    pub(crate) const fn depth(self) -> usize {
+        self.depth
+    }
+
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Bookkeeping retained while an import-cache entry is `Evaluating`.
+#[derive(Debug)]
+pub(crate) struct ActiveImportCacheLease {
+    pub(crate) token: ImportCacheLeaseToken,
+    pub(crate) cache_path: PathBuf,
+    pub(crate) trace_cursor: ImpureInputTraceCursor,
+    pub(crate) allow_empty_impure_trace: bool,
+    /// Serial heap allocation watermarks for the default-off import census.
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) epoch_census_fence: Option<ImportEpochCensusFence>,
+}
+
+/// Result of beginning an import-cache operation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BeginCachedImport {
+    /// A completed import was already available.
+    Hit(Value),
+    /// This evaluator owns the new `Evaluating` entry.
+    Miss(ImportCacheLeaseToken),
+}
+
+/// Opaque coordinate for one evaluator-owned ordinary thunk claim.
+///
+/// The generation rejects a stale token after strict stack depth reuse. The
+/// claimed thunk itself lives in the evaluator's scanned active-force root
+/// stack, so this token can cross allocating continuation steps without
+/// borrowing either the heap or the thunk cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ForceLeaseToken {
+    depth: usize,
+    generation: u64,
+}
+
+impl ForceLeaseToken {
+    pub(crate) const fn new(depth: usize, generation: u64) -> Self {
+        Self { depth, generation }
+    }
+
+    pub(crate) const fn depth(self) -> usize {
+        self.depth
+    }
+
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Bookkeeping for one detached ordinary thunk claim.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActiveForceLease {
+    pub(crate) token: ForceLeaseToken,
+    pub(crate) id: IrId,
+    pub(crate) span: Span,
+    pub(crate) source_root_index: usize,
+    pub(crate) result_root_index: usize,
+}
+
+/// Result of trying to begin an evaluator-owned force claim.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BeginForceLease {
+    /// The thunk had already published its cached value.
+    AlreadyForced(Value),
+    /// The evaluator owns a blackholed thunk and its scanned root.
+    Claimed(ForceLeaseToken),
+    /// The value is not an ordinary reusable Node thunk.
+    Declined,
+}
+
+/// Opaque coordinate for one evaluator-owned simple lambda call.
+///
+/// The generation distinguishes later calls that reuse the same strict stack
+/// depth. The token owns no borrow, so an explicit demand executor can retain
+/// it while the evaluator-owned call context remains installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LambdaCallLeaseToken {
+    depth: usize,
+    generation: u64,
+}
+
+impl LambdaCallLeaseToken {
+    pub(crate) const fn new(depth: usize, generation: u64) -> Self {
+        Self { depth, generation }
+    }
+
+    pub(crate) const fn depth(self) -> usize {
+        self.depth
+    }
+
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Bookkeeping retained while one simple lambda body owns the active context.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActiveLambdaCallLease {
+    pub(crate) token: LambdaCallLeaseToken,
+    pub(crate) module: EvalModuleId,
+    pub(crate) saved_module: EvalModuleId,
+    pub(crate) suspended_env_depth: usize,
+    pub(crate) saved_call_depth: usize,
+}
+
+/// A simple lambda body made ready for an evaluator continuation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LambdaCallWork {
+    /// The owned context lease that must be finished or aborted.
+    pub(crate) token: LambdaCallLeaseToken,
+    /// The module containing [`Self::body`].
+    pub(crate) module: EvalModuleId,
+    /// The lambda body to execute in the installed call context.
+    pub(crate) body: IrId,
+}
+
+/// Result of trying to begin an evaluator-owned simple lambda call.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BeginLambdaCallLease {
+    /// The interpreted simple-formal lambda call is installed.
+    Ready(LambdaCallWork),
+    /// This substrate does not own the requested apply mode.
+    Declined,
+}
+
+/// Opaque coordinate for one installed imported-module evaluation context.
+///
+/// The generation distinguishes later leases that reuse the same strict stack
+/// depth, while the owned token avoids borrowing the evaluator across explicit
+/// demand-machine continuations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ImportModuleLeaseToken {
+    depth: usize,
+    generation: u64,
+}
+
+impl ImportModuleLeaseToken {
+    pub(crate) const fn new(depth: usize, generation: u64) -> Self {
+        Self { depth, generation }
+    }
+
+    pub(crate) const fn depth(self) -> usize {
+        self.depth
+    }
+
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Bookkeeping retained while one imported module owns the active context.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActiveImportModuleLease {
+    pub(crate) token: ImportModuleLeaseToken,
+    pub(crate) module: EvalModuleId,
+    pub(crate) saved_module: EvalModuleId,
+    pub(crate) suspended_env_depth: usize,
+}
+
+/// Imported module body made ready for an evaluator continuation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ImportModuleWork {
+    /// The owned context lease that must be finished or aborted.
+    pub(crate) token: ImportModuleLeaseToken,
+    /// The registered module containing `root`.
+    pub(crate) module: EvalModuleId,
+    /// The imported module's root node.
+    pub(crate) root: IrId,
+}
+
 /// The runtime global scope used while evaluating an imported file.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ImportGlobalScope {

@@ -294,11 +294,13 @@ impl<'a> FullLazinessAnalyzer<'a> {
                     node.kind,
                     IrKind::LocalVar
                         | IrKind::UpvalVar
+                        | IrKind::GlobalVar
                         | IrKind::Lambda
                         | IrKind::Let
                         | IrKind::FormalSet
                         | IrKind::Formal
                         | IrKind::ThunkAlloc
+                        | IrKind::Apply
                         | IrKind::PrimOp
                 )
             {

@@ -27,6 +27,9 @@ pub enum EvalHeapError {
     /// Inline capture values were handed to a heap placement without tails.
     #[error("inline flat capture requires the serial flat closure store")]
     InlineCapturePlacementUnsupported,
+    /// Lexical regions do not yet scan typed-head work slots as retained edges.
+    #[error("worker regions are unsupported while typed thunk heads are enabled")]
+    TypedThunkHeadsRegionUnsupported,
     /// The evaluator heap cons table length overflowed.
     #[error("evaluator heap cons table length overflow")]
     ConsTableLengthOverflow,
@@ -52,6 +55,43 @@ pub enum EvalHeapError {
     /// An attrset operation failed while rewriting a checked heap field.
     #[error("heap attrset operation failed: {0}")]
     Attr(#[from] AttrError),
+    /// A packed immutable collection coordinate or lane was malformed.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    #[error("packed heap collection operation failed: {message}")]
+    PackedCollection {
+        /// Rendered packed-lane error without exposing the private lane API.
+        message: String,
+    },
+    /// A packed boxed-scalar coordinate or lane was malformed.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    #[error("packed heap scalar operation failed: {message}")]
+    PackedScalar {
+        /// Rendered packed-lane error without exposing the private lane API.
+        message: String,
+    },
+    /// A packed string or path coordinate or lane was malformed.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    #[error("packed heap string/path operation failed: {message}")]
+    PackedString {
+        /// Rendered packed-lane error without exposing the private lane API.
+        message: String,
+    },
+    /// An active packed thunk lane operation failed.
+    #[cfg(feature = "active_packed_thunk_probe")]
+    #[error("active packed thunk operation failed: {message}")]
+    ActivePackedThunk {
+        /// Rendered packed-lane error without exposing the private lane API.
+        message: String,
+    },
     /// A heap pointer did not belong to this evaluator heap.
     #[error("unknown heap pointer for {tag:?}: 0x{address:x}")]
     UnknownPointer {
@@ -1850,6 +1890,42 @@ impl From<HashConsError> for EvalHeapError {
             | HashConsError::BucketAllocationFailed { entries } => {
                 Self::ConsTableAllocationFailed { entries }
             }
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+impl From<packed_collection_lane::PackedCollectionLaneError> for EvalHeapError {
+    fn from(error: packed_collection_lane::PackedCollectionLaneError) -> Self {
+        Self::PackedCollection {
+            message: error.to_string(),
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+impl From<packed_scalar_lane::PackedScalarLaneError> for EvalHeapError {
+    fn from(error: packed_scalar_lane::PackedScalarLaneError) -> Self {
+        Self::PackedScalar {
+            message: error.to_string(),
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+impl From<packed_string_lane::PackedStringLaneError> for EvalHeapError {
+    fn from(error: packed_string_lane::PackedStringLaneError) -> Self {
+        Self::PackedString {
+            message: error.to_string(),
         }
     }
 }

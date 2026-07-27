@@ -50,12 +50,12 @@ use ratchet_core::{
     IrArena, IrBinding, IrData, IrId, IrKind, syntax::BinOpKind, syntax::UnaryOpKind,
 };
 
+use super::super::lambda_rec::import_tier2_local_function;
 use super::super::{
     AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
     clif_external_name_for_aos_upval_get, import_runtime_helper_function, stack_maps,
 };
-use super::super::lambda_rec::import_tier2_local_function;
 use super::scan::{flatten_apply_chain, require_static_bool_condition, unwrap_thunk_alloc};
 use super::{
     JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee, TAG_BOOL, TAG_INT,
@@ -266,7 +266,13 @@ pub(super) fn build_inner_function(
             inline_params: Some(vec![index_pair]),
             let_scopes: Vec::new(),
         };
-        let element = emit_expr(&mut cursor, arena, &mut ctx, generator_body, &mut generator_state)?;
+        let element = emit_expr(
+            &mut cursor,
+            arena,
+            &mut ctx,
+            generator_body,
+            &mut generator_state,
+        )?;
         // The generated element replaces the raw element parameter: it is by
         // construction already in weak head normal form, so the operator body
         // sees it as forced and never round-trips through `aos_force`.
@@ -329,14 +335,10 @@ fn emit_expr(
         (IrKind::LocalVar, IrData::Local { slot }) if state.inline_params.is_none() => {
             emit_frame_read(cursor, arena, ctx, id, 0, slot, state)
         }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot })
-            if state.inline_params.is_none() =>
-        {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) if state.inline_params.is_none() => {
             emit_frame_read(cursor, arena, ctx, id, depth, slot, state)
         }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
-            if state.inline_params.is_some() =>
-        {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 }) if state.inline_params.is_some() => {
             let inline = state
                 .inline_params
                 .as_ref()
@@ -440,12 +442,7 @@ fn emit_frame_read(
             });
         }
         // Chain parameter j at normalized depth K-1-j: index = K-1-depth.
-        return emit_forced_param(
-            cursor,
-            ctx,
-            (ctx.arity - 1 - normalized) as usize,
-            state,
-        );
+        return emit_forced_param(cursor, ctx, (ctx.arity - 1 - normalized) as usize, state);
     }
     emit_forced_upval(cursor, ctx, normalized, slot, state)
 }
@@ -672,7 +669,12 @@ fn emit_binop(
             let result = cursor.ins().sdiv(lhs_payload, rhs_payload);
             Ok(int_pair(cursor, result))
         }
-        BinOpKind::Lt => Ok(bool_pair(cursor, IntCC::SignedLessThan, lhs_payload, rhs_payload)),
+        BinOpKind::Lt => Ok(bool_pair(
+            cursor,
+            IntCC::SignedLessThan,
+            lhs_payload,
+            rhs_payload,
+        )),
         BinOpKind::Gt => Ok(bool_pair(
             cursor,
             IntCC::SignedGreaterThan,
@@ -803,7 +805,12 @@ fn emit_call_chain(
         return emit_self_call(cursor, ctx, &argument_pairs);
     }
 
-    let Some(pinned) = ctx.pinned.iter().find(|callee| callee.upval == upval).copied() else {
+    let Some(pinned) = ctx
+        .pinned
+        .iter()
+        .find(|callee| callee.upval == upval)
+        .copied()
+    else {
         return Err(JitLowerError::UnsupportedArithOperand {
             operand: id,
             kind: IrKind::Apply,

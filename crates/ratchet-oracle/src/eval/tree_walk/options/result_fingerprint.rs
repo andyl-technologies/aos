@@ -7,8 +7,8 @@
 //! stability contract: each field is length-tagged and labeled so no two field
 //! sets can alias, and the domain string is versioned.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 /// Computes a stable digest over the result-affecting evaluator settings.
 ///

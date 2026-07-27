@@ -107,13 +107,12 @@ const FOLD_STEP_I64ACC_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
 /// deopt (a non-integer element, division error, etc.) is signaled out of band
 /// by the runtime trap flag, and the loop then re-encodes the current `acc` to
 /// a `Value` and resumes the fold interpreted from that element.
-pub const RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE: RuntimeCallSignature =
-    RuntimeCallSignature::new(
-        RuntimeCallableKind::LambdaBody,
-        RuntimeAbiCallingConvention::ExternC,
-        FOLD_STEP_I64ACC_CALL_PARAMETERS,
-        RuntimeAbiReturnKind::DecodedInt,
-    );
+pub const RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::LambdaBody,
+    RuntimeAbiCallingConvention::ExternC,
+    FOLD_STEP_I64ACC_CALL_PARAMETERS,
+    RuntimeAbiReturnKind::DecodedInt,
+);
 
 const RUNTIME_PRIMOP_0_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Primop { arity: 0 },

@@ -15,15 +15,32 @@ impl EvalHeap {
     /// and foreign values.
     #[cfg(feature = "candidate_c_value")]
     #[inline]
-    fn serial_heap_ptr(&self, value: Value, expected: ValueTag) -> Option<NonNull<HeapObject>> {
+    pub(in crate::eval::heap) fn serial_heap_location(
+        &self,
+        value: Value,
+        expected: ValueTag,
+    ) -> Option<SerialHeapLocation> {
         if self.shared.is_some() || value.tag() != expected {
             return None;
         }
-        let resolver = self.serial_reservation?;
         let word = value.word();
-        if word.arena_domain()? != resolver.domain {
+        let domain = word.arena_domain()?;
+        let (generation, resolver) = if self
+            .serial_reservation
+            .is_some_and(|resolver| resolver.domain == domain)
+        {
+            (SerialHeapGeneration::Nursery, self.serial_reservation?)
+        } else if self
+            .evacuated_serial_reservation
+            .is_some_and(|resolver| resolver.domain == domain)
+        {
+            (
+                SerialHeapGeneration::Evacuated,
+                self.evacuated_serial_reservation?,
+            )
+        } else {
             return None;
-        }
+        };
         let offset = word.arena_index()?.raw() as usize;
         if offset > resolver.capacity.saturating_sub(std::mem::size_of::<u64>()) {
             return None;
@@ -32,7 +49,80 @@ impl EvalHeap {
         if address % std::mem::align_of::<u64>() != 0 {
             return None;
         }
-        NonNull::new(address as *mut HeapObject)
+        Some(SerialHeapLocation {
+            ptr: NonNull::new(address as *mut HeapObject)?,
+            generation,
+        })
+    }
+
+    /// Resolves one heap value through either hot serial reservation.
+    #[cfg(feature = "candidate_c_value")]
+    #[inline]
+    fn serial_heap_ptr(&self, value: Value, expected: ValueTag) -> Option<NonNull<HeapObject>> {
+        self.serial_heap_location(value, expected)
+            .map(|location| location.ptr)
+    }
+
+    /// Canonicalizes a temporarily retained nursery closure word.
+    ///
+    /// This is intentionally limited to the safe evaluator access paths wired
+    /// below. GC, JIT, FFI, and context-free `Value` pointer reconstruction
+    /// still observe source coordinates and therefore remain blockers to
+    /// production alias publication.
+    #[cfg(feature = "candidate_c_value")]
+    #[inline]
+    fn canonicalize_evacuated_closure_value(&self, value: Value, expected: ValueTag) -> Value {
+        self.evacuated_closure_forwarding
+            .as_ref()
+            .and_then(|forwarding| forwarding.translate(value, expected))
+            .unwrap_or(value)
+    }
+
+    /// Canonicalizes a raw nursery pointer when its offset was evacuated.
+    #[cfg(feature = "candidate_c_value")]
+    #[inline]
+    fn canonicalize_evacuated_closure_ptr(
+        &self,
+        ptr: NonNull<HeapObject>,
+        expected: ValueTag,
+    ) -> NonNull<HeapObject> {
+        let Some(source) = self.serial_reservation else {
+            return ptr;
+        };
+        let address = ptr.as_ptr() as usize;
+        let Some(offset) = address.checked_sub(source.base) else {
+            return ptr;
+        };
+        if offset >= source.capacity {
+            return ptr;
+        }
+        let Ok(offset) = u32::try_from(offset) else {
+            return ptr;
+        };
+        let Some(source_value) = Value::from_domain_index(
+            expected,
+            source.domain,
+            crate::heap::ArenaIndex::new(offset),
+        )
+        .ok() else {
+            return ptr;
+        };
+        let canonical = self.canonicalize_evacuated_closure_value(source_value, expected);
+        self.serial_heap_location(canonical, expected)
+            .filter(|location| location.generation == SerialHeapGeneration::Evacuated)
+            .map_or(ptr, |location| location.ptr)
+    }
+
+    /// Returns whether `ptr` lies inside the installed evacuated reservation.
+    #[cfg(feature = "candidate_c_value")]
+    #[inline]
+    pub(in crate::eval::heap) fn is_evacuated_ptr(&self, ptr: NonNull<HeapObject>) -> bool {
+        self.evacuated_serial_reservation.is_some_and(|resolver| {
+            let address = ptr.as_ptr() as usize;
+            address
+                .checked_sub(resolver.base)
+                .is_some_and(|offset| offset < resolver.capacity)
+        })
     }
 
     /// Resolves a thunk pointer, preferring the heap-owned serial reservation.
@@ -253,6 +343,8 @@ impl EvalHeap {
             object: HeapObjectValue::Lambda(lambda),
         });
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Lambda);
         self.poll_memory_budget_after_allocation();
         Ok((value, None))
     }
@@ -292,6 +384,8 @@ impl EvalHeap {
             object: HeapObjectValue::Primop(primop),
         });
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Primop);
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -333,7 +427,22 @@ impl EvalHeap {
             return self.shared_alloc_thunk(thunk).map(|value| (value, None));
         }
         if self.worker_closure_placement == WorkerClosurePlacement::Flat {
-            return self.flat_alloc_thunk(thunk, capture);
+            let mut thunk = thunk;
+            if let Some(capture) = capture {
+                return self.flat_alloc_thunk(thunk, Some(capture));
+            }
+            #[cfg(feature = "active_packed_thunk_probe")]
+            if let Some(value) = self.try_active_packed_alloc_thunk(&thunk)? {
+                self.alloc_counters.note_value_allocated();
+                return Ok((value, None));
+            }
+            match self.try_typed_alloc_thunk(thunk)? {
+                Ok(value) => return Ok((value, None)),
+                Err(fallback) => {
+                    thunk = fallback;
+                }
+            }
+            return self.flat_alloc_thunk(thunk, None);
         }
         // Record-table placement (the GC-stress proving ground) detaches force
         // handles by deep-cloning the whole record on every share/clone, so the
@@ -360,6 +469,8 @@ impl EvalHeap {
             object: HeapObjectValue::Thunk(thunk),
         });
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::Thunk);
         self.poll_memory_budget_after_allocation();
         Ok((value, None))
     }
@@ -614,6 +725,28 @@ impl EvalHeap {
         self.get_string_ptr(ptr)
     }
 
+    /// Returns an allocation-free flat or packed string view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when an ordinary string cannot be resolved or
+    /// a packed coordinate is stale or structurally malformed.
+    pub(crate) fn get_string_view(
+        &self,
+        value: Value,
+    ) -> Result<EvalStringView<'_>, EvalHeapError> {
+        #[cfg(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))]
+        if let Some(generation) = self.packed_generation()
+            && let Some(view) = generation.string_view(value)
+        {
+            return Ok(EvalStringView::packed(view?));
+        }
+        self.get_string(value).map(EvalStringView::flat)
+    }
+
     /// Returns the string object referenced by an opaque heap pointer.
     ///
     /// # Errors
@@ -624,6 +757,17 @@ impl EvalHeap {
     pub fn get_string_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_string_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_string_ptr(ptr);
         }
         self.flat_get(FlatObjectKind::String, ptr)
     }
@@ -645,6 +789,25 @@ impl EvalHeap {
         self.get_path_ptr(ptr)
     }
 
+    /// Returns an allocation-free flat or packed path view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when an ordinary path cannot be resolved or a
+    /// packed coordinate is stale or structurally malformed.
+    pub(crate) fn get_path_view(&self, value: Value) -> Result<EvalStringView<'_>, EvalHeapError> {
+        #[cfg(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))]
+        if let Some(generation) = self.packed_generation()
+            && let Some(view) = generation.path_view(value)
+        {
+            return Ok(EvalStringView::packed(view?));
+        }
+        self.get_path(value).map(EvalStringView::flat)
+    }
+
     /// Returns the path object referenced by an opaque heap pointer.
     ///
     /// # Errors
@@ -655,6 +818,17 @@ impl EvalHeap {
     pub fn get_path_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_path_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_path_ptr(ptr);
         }
         self.flat_get(FlatObjectKind::Path, ptr)
     }
@@ -676,6 +850,36 @@ impl EvalHeap {
         self.get_list_ptr(ptr)
     }
 
+    /// Returns an allocation-free flat or packed list view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when an ordinary list cannot be resolved or a
+    /// packed coordinate is stale or structurally malformed.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    pub(crate) fn get_list_view(&self, value: Value) -> Result<EvalListView<'_>, EvalHeapError> {
+        if let Some(generation) = self.packed_generation()
+            && let Some(reference) = generation.list_reference(value)
+        {
+            return Ok(EvalListView::packed(generation.collections(), reference)?);
+        }
+        self.get_list(value).map(EvalListView::flat)
+    }
+
+    #[cfg(all(
+        feature = "candidate_c_value",
+        not(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))
+    ))]
+    pub(crate) fn get_list_view(&self, value: Value) -> Result<EvalListView<'_>, EvalHeapError> {
+        self.get_list(value).map(EvalListView::flat)
+    }
+
     /// Returns the list object referenced by an opaque heap pointer.
     ///
     /// # Errors
@@ -686,6 +890,17 @@ impl EvalHeap {
     pub fn get_list_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixList, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_list_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_list_ptr(ptr);
         }
         self.flat_get_list(ptr)
     }
@@ -707,6 +922,36 @@ impl EvalHeap {
         self.get_attrs_ptr(ptr)
     }
 
+    /// Returns an allocation-free flat or packed attrset view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] when an ordinary attrset cannot be resolved or
+    /// a packed coordinate is stale or structurally malformed.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    pub(crate) fn get_attrs_view(&self, value: Value) -> Result<EvalAttrsView<'_>, EvalHeapError> {
+        if let Some(generation) = self.packed_generation()
+            && let Some(reference) = generation.attrs_reference(value)
+        {
+            return Ok(EvalAttrsView::packed(generation.collections(), reference)?);
+        }
+        self.get_attrs(value).map(EvalAttrsView::flat)
+    }
+
+    #[cfg(all(
+        feature = "candidate_c_value",
+        not(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))
+    ))]
+    pub(crate) fn get_attrs_view(&self, value: Value) -> Result<EvalAttrsView<'_>, EvalHeapError> {
+        self.get_attrs(value).map(EvalAttrsView::flat)
+    }
+
     /// Returns the attribute-set object referenced by an opaque heap pointer.
     ///
     /// # Errors
@@ -717,6 +962,17 @@ impl EvalHeap {
     pub fn get_attrs_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&FlatAttrs, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_attrs_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_attrs_ptr(ptr);
         }
         self.flat_get_attrs(ptr)
     }
@@ -730,6 +986,15 @@ impl EvalHeap {
     /// belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if
     /// the handle belongs to this heap but references a non-attrset record.
     pub fn get_attrs_metadata(&self, value: Value) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        #[cfg(any(
+            feature = "compact_destination_probe",
+            feature = "evacuation_plan_probe"
+        ))]
+        if let Some(generation) = self.packed_generation()
+            && let Some(reference) = generation.attrs_reference(value)
+        {
+            return Ok(generation.collections().attrs_metadata(reference)?);
+        }
         #[cfg(feature = "candidate_c_value")]
         if let Some(ptr) = self.serial_heap_ptr(value, ValueTag::Attrs) {
             return self.get_attrs_metadata_ptr(ptr);
@@ -751,6 +1016,17 @@ impl EvalHeap {
     ) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_attrs_metadata_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_attrs_metadata_ptr(ptr);
         }
         self.flat_get_attrs_metadata(ptr)
     }
@@ -779,17 +1055,55 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_lambda_ptr(ptr);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)?
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated closure resolver has no generation owner",
+                })?
+                .closures()
+                .get_lambda_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let mut ptr = ptr;
+        match self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr) {
+            Ok(Some(payload)) => {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::GetLambda);
+                return match payload {
+                    FlatClosurePayload::Lambda(lambda) => Ok(lambda),
+                    payload => Err(EvalHeapError::record_type_mismatch(
+                        ValueTag::Lambda,
+                        payload.tag(),
+                        ptr,
+                    )),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                #[cfg(feature = "candidate_c_value")]
+                {
+                    let canonical = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Lambda);
+                    if canonical == ptr {
+                        return Err(error);
+                    }
+                    // The source tombstone is an expected alias miss.
+                    ptr = canonical;
+                }
+                #[cfg(not(feature = "candidate_c_value"))]
+                return Err(error);
+            }
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let ptr = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Lambda);
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(generation) = &self.evacuated_generation
+            && let Some(result) = generation.closures().lambda_probe(ptr)
         {
-            return match payload {
-                FlatClosurePayload::Lambda(lambda) => Ok(lambda),
-                payload => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Lambda,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
+            return result;
         }
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
@@ -829,17 +1143,55 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_primop_ptr(ptr);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)?
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated closure resolver has no generation owner",
+                })?
+                .closures()
+                .get_primop_ptr(ptr);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let mut ptr = ptr;
+        match self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr) {
+            Ok(Some(payload)) => {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::GetPrimop);
+                return match payload {
+                    FlatClosurePayload::Primop(inner) => Ok(inner),
+                    payload => Err(EvalHeapError::record_type_mismatch(
+                        ValueTag::Primop,
+                        payload.tag(),
+                        ptr,
+                    )),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                #[cfg(feature = "candidate_c_value")]
+                {
+                    let canonical = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Primop);
+                    if canonical == ptr {
+                        return Err(error);
+                    }
+                    // The source tombstone is an expected alias miss.
+                    ptr = canonical;
+                }
+                #[cfg(not(feature = "candidate_c_value"))]
+                return Err(error);
+            }
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let ptr = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Primop);
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(generation) = &self.evacuated_generation
+            && let Some(result) = generation.closures().primop_probe(ptr)
         {
-            return match payload {
-                FlatClosurePayload::Primop(inner) => Ok(inner),
-                payload => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Primop,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
+            return result;
         }
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
@@ -879,17 +1231,58 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_thunk_ptr(ptr);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)?
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated closure resolver has no generation owner",
+                })?
+                .closures()
+                .get_thunk_ptr(ptr);
+        }
+        if let Some(work) = self.typed_thunk_work_ref(ptr)? {
+            return Ok(work);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let mut ptr = ptr;
+        match self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr) {
+            Ok(Some(payload)) => {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::GetThunk);
+                return match payload.as_thunk() {
+                    Some(inner) => Ok(inner),
+                    None => Err(EvalHeapError::record_type_mismatch(
+                        ValueTag::Thunk,
+                        payload.tag(),
+                        ptr,
+                    )),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                #[cfg(feature = "candidate_c_value")]
+                {
+                    let canonical = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Thunk);
+                    if canonical == ptr {
+                        return Err(error);
+                    }
+                    // The source tombstone is an expected alias miss.
+                    ptr = canonical;
+                }
+                #[cfg(not(feature = "candidate_c_value"))]
+                return Err(error);
+            }
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let ptr = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Thunk);
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(generation) = &self.evacuated_generation
+            && let Some(result) = generation.closures().thunk_probe(ptr)
         {
-            return match payload.as_thunk() {
-                Some(inner) => Ok(inner),
-                None => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Thunk,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
+            return result;
         }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
@@ -926,6 +1319,11 @@ impl EvalHeap {
         else {
             return Ok(None);
         };
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(
+            ptr,
+            LifetimeQuarantineOrigin::SerialFlatThunkPayloadPtr,
+        );
         match payload.as_thunk() {
             Some(thunk) => Ok(Some(NonNull::from(thunk))),
             None => Err(EvalHeapError::record_type_mismatch(
@@ -946,21 +1344,69 @@ impl EvalHeap {
                 .note_thunk_state_arc_clones(thunk.state_arc_clone_count());
             return Ok(thunk);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)?
-        {
-            return match payload.as_thunk() {
-                Some(inner) => {
-                    self.deref_counters
-                        .note_thunk_state_arc_clones(inner.state_arc_clone_count());
-                    Ok(inner.clone())
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            let thunk = self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated closure resolver has no generation owner",
+                })?
+                .closures()
+                .get_thunk_ptr(ptr)?
+                .clone();
+            self.deref_counters
+                .note_thunk_state_arc_clones(thunk.state_arc_clone_count());
+            return Ok(thunk);
+        }
+        if let Some(work) = self.typed_thunk_work_ref(ptr)? {
+            return Ok(work.clone());
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let mut ptr = ptr;
+        match self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr) {
+            Ok(Some(payload)) => {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::CloneThunk);
+                return match payload.as_thunk() {
+                    Some(inner) => {
+                        self.deref_counters
+                            .note_thunk_state_arc_clones(inner.state_arc_clone_count());
+                        Ok(inner.clone())
+                    }
+                    None => Err(EvalHeapError::record_type_mismatch(
+                        ValueTag::Thunk,
+                        payload.tag(),
+                        ptr,
+                    )),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                #[cfg(feature = "candidate_c_value")]
+                {
+                    let canonical = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Thunk);
+                    if canonical == ptr {
+                        return Err(error);
+                    }
+                    // The source tombstone is an expected alias miss.
+                    ptr = canonical;
                 }
-                None => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Thunk,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
+                #[cfg(not(feature = "candidate_c_value"))]
+                return Err(error);
+            }
+        }
+        #[cfg(feature = "candidate_c_value")]
+        let ptr = self.canonicalize_evacuated_closure_ptr(ptr, ValueTag::Thunk);
+        #[cfg(feature = "candidate_c_value")]
+        if let Some(generation) = &self.evacuated_generation
+            && let Some(result) = generation.closures().thunk_probe(ptr)
+        {
+            let thunk = result?.clone();
+            self.deref_counters
+                .note_thunk_state_arc_clones(thunk.state_arc_clone_count());
+            return Ok(thunk);
         }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
@@ -1043,62 +1489,109 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.clone_lambda_ptr(ptr);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)?
-        {
-            return match payload {
-                FlatClosurePayload::Lambda(inner) => Ok(inner.clone()),
-                payload => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Lambda,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
-        }
-        let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
-        match &record.object {
-            HeapObjectValue::Lambda(lambda) => {
-                self.touch_record(record);
-                Ok(lambda.clone())
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Lambda,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.get_lambda_ptr(ptr).cloned()
     }
 
     /// Clones builtin metadata so application can release the heap borrow
     /// before forcing captured arguments.
     pub(crate) fn clone_primop(&self, value: Value) -> Result<EvalPrimOp, EvalHeapError> {
-        let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
+        let ptr = self.primop_ptr(value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_primop_ptr(ptr);
         }
-        if let Some(payload) =
-            self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)?
-        {
-            return match payload {
-                FlatClosurePayload::Primop(inner) => Ok(inner.clone()),
-                payload => Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Primop,
-                    payload.tag(),
-                    ptr,
-                )),
-            };
-        }
-        let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
-        match &record.object {
-            HeapObjectValue::Primop(primop) => {
-                self.touch_record(record);
-                Ok(primop.clone())
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Primop,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.get_primop_ptr(ptr).cloned()
+    }
+}
+
+#[cfg(all(test, feature = "candidate_c_value"))]
+mod serial_reservation_tests {
+    use super::*;
+    use crate::heap::ArenaIndex;
+
+    #[test]
+    fn two_hot_serial_domains_resolve_without_the_global_fallback() {
+        let mut nursery = EvalHeap::new();
+        let mut evacuated = EvalHeap::new();
+        let nursery_value = nursery
+            .alloc_string(NixString::from_bytes(b"nursery".to_vec()))
+            .expect("nursery string allocates");
+        let evacuated_value = evacuated
+            .alloc_string(NixString::from_bytes(b"evacuated".to_vec()))
+            .expect("evacuated string allocates");
+
+        nursery.evacuated_serial_reservation = evacuated.serial_reservation;
+
+        let nursery_location = nursery
+            .serial_heap_location(nursery_value, ValueTag::String)
+            .expect("nursery domain resolves");
+        assert_eq!(nursery_location.generation, SerialHeapGeneration::Nursery);
+        assert_eq!(
+            nursery_location.ptr,
+            nursery_value
+                .as_string_ptr()
+                .expect("nursery value has pointer")
+        );
+
+        let evacuated_location = nursery
+            .serial_heap_location(evacuated_value, ValueTag::String)
+            .expect("evacuated domain resolves");
+        assert_eq!(
+            evacuated_location.generation,
+            SerialHeapGeneration::Evacuated
+        );
+        assert_eq!(
+            evacuated_location.ptr,
+            evacuated_value
+                .as_string_ptr()
+                .expect("evacuated value has pointer")
+        );
+    }
+
+    #[test]
+    fn two_hot_serial_domain_router_rejects_wrong_foreign_and_malformed_words() {
+        let mut nursery = EvalHeap::new();
+        let evacuated = EvalHeap::new();
+        let mut foreign = EvalHeap::new();
+        let foreign_value = foreign
+            .alloc_string(NixString::from_bytes(b"foreign".to_vec()))
+            .expect("foreign string allocates");
+        nursery.evacuated_serial_reservation = evacuated.serial_reservation;
+
+        assert!(
+            nursery
+                .serial_heap_location(foreign_value, ValueTag::String)
+                .is_none()
+        );
+        assert!(
+            nursery
+                .serial_heap_location(foreign_value, ValueTag::Path)
+                .is_none()
+        );
+
+        let resolver = nursery
+            .serial_reservation
+            .expect("production heap has a reservation");
+        let unaligned =
+            Value::from_domain_index(ValueTag::String, resolver.domain, ArenaIndex::new(1))
+                .expect("indexed string word encodes");
+        assert!(
+            nursery
+                .serial_heap_location(unaligned, ValueTag::String)
+                .is_none()
+        );
+
+        let final_byte = u32::try_from(resolver.capacity - 1)
+            .expect("Candidate-C reservation capacity fits its index width");
+        let truncated = Value::from_domain_index(
+            ValueTag::String,
+            resolver.domain,
+            ArenaIndex::new(final_byte),
+        )
+        .expect("final-byte string word encodes");
+        assert!(
+            nursery
+                .serial_heap_location(truncated, ValueTag::String)
+                .is_none()
+        );
     }
 }

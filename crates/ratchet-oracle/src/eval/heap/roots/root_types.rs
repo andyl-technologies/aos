@@ -201,6 +201,35 @@ pub enum EvalRootSource {
         /// The continuation depth, with zero nearest the active force.
         depth: usize,
     },
+    /// A value retained by the packed-STG machine's value stack.
+    StgValue {
+        /// The stack depth, with zero nearest the active continuation.
+        depth: usize,
+    },
+    /// A lazy argument retained by the packed-STG machine.
+    StgArgument {
+        /// The stack depth, with zero nearest the active continuation.
+        depth: usize,
+    },
+    /// An edge retained by ordinary Node work detached from a blackholed cell.
+    DetachedNodeThunkWork {
+        /// Active detached-Node lease depth, nearest force first.
+        depth: usize,
+        /// Edge index in the canonical suspended-thunk edge stream.
+        edge: usize,
+    },
+    /// An edge retained by typed thunk work detached from a blackholed head.
+    DetachedTypedThunkWork {
+        /// Active typed-work lease depth, with zero nearest the active force.
+        depth: usize,
+        /// Edge index in the canonical suspended-thunk edge stream.
+        edge: usize,
+    },
+    /// A blackholed typed head whose work is expanded by sibling lease roots.
+    DetachedTypedThunkHead {
+        /// Active typed-work lease depth, with zero nearest the active force.
+        depth: usize,
+    },
     /// A primop argument slot spilled at a safepoint.
     PrimopArgument {
         /// The argument index in application order.
@@ -501,6 +530,82 @@ impl EvalRootSet {
         value: Value,
     ) -> Result<bool, EvalRootSetError> {
         self.try_push_heap_root(EvalRootSource::ForceContinuation { depth }, value)
+    }
+
+    /// Records a packed-STG value-stack slot when it contains a heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if root storage cannot grow.
+    pub(in crate::eval) fn try_push_stg_value(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::StgValue { depth }, value)
+    }
+
+    /// Records a packed-STG lazy-argument slot when it contains a heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if root storage cannot grow.
+    pub(in crate::eval) fn try_push_stg_argument(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::StgArgument { depth }, value)
+    }
+
+    /// Records one heap edge retained by detached typed thunk work.
+    ///
+    /// Returns `true` when the value was recorded, and `false` for an inline
+    /// value that does not require tracing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if root storage cannot grow.
+    pub(in crate::eval) fn try_push_detached_typed_thunk_work(
+        &mut self,
+        depth: usize,
+        edge: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::DetachedTypedThunkWork { depth, edge },
+            value,
+        )
+    }
+
+    /// Records one heap edge retained by detached ordinary Node work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if root storage cannot grow.
+    pub(in crate::eval) fn try_push_detached_node_thunk_work(
+        &mut self,
+        depth: usize,
+        edge: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::DetachedNodeThunkWork { depth, edge }, value)
+    }
+
+    /// Records the permanent typed head owned by one detached-work lease.
+    ///
+    /// The precise scanners recognize this evaluator-only source as evidence
+    /// that the matching lease roots externally expand the head's work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if root storage cannot grow.
+    pub(in crate::eval) fn try_push_detached_typed_thunk_head(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::DetachedTypedThunkHead { depth }, value)
     }
 
     /// Records a primop argument root when it contains a heap value.

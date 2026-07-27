@@ -65,10 +65,23 @@ impl TreeWalk {
         value: Value,
     ) -> Result<FlakeRefAttrs, TreeWalkError> {
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
-            Self::clone_attr_entries_lexicographic(id, span, attrs)?
+            let mut cloned = Vec::new();
+            cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: attrs.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            cloned.extend(attrs.iter_lexicographic());
+            cloned
         };
         let mut values = FlakeRefAttrs::new();
         for entry in entries {

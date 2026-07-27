@@ -901,4 +901,3 @@ fn scalar_replacement_plan_rejects_malformed_with_chain_scope_references() {
         ScalarReplacementError::InvalidNode { id: missing_scope }
     );
 }
-

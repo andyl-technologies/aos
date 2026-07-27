@@ -153,14 +153,8 @@ fn attr_access_abi_signatures_pin_static_key_value_returns() {
                 "rt",
                 RuntimeAttrAccessAbiParameterKind::RuntimeContext,
             ),
-            RuntimeAttrAccessAbiParameter::new(
-                "left",
-                RuntimeAttrAccessAbiParameterKind::Value,
-            ),
-            RuntimeAttrAccessAbiParameter::new(
-                "right",
-                RuntimeAttrAccessAbiParameterKind::Value,
-            ),
+            RuntimeAttrAccessAbiParameter::new("left", RuntimeAttrAccessAbiParameterKind::Value,),
+            RuntimeAttrAccessAbiParameter::new("right", RuntimeAttrAccessAbiParameterKind::Value,),
         ]
         .as_slice()
     );
@@ -179,13 +173,14 @@ fn attr_access_abi_signature_matches_core_runtime_call_metadata() {
             .collect::<Vec<_>>();
 
         let expected_local_parameters = match local_signature.entrypoint() {
-            RuntimeAttrAccessEntryPoint::AosHasAttr
-            | RuntimeAttrAccessEntryPoint::AosSelectIc => vec![
-                ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
-                ("attrs", RuntimeAttrAccessAbiParameterKind::Value),
-                ("symbol", RuntimeAttrAccessAbiParameterKind::SymbolId),
-                ("site", RuntimeAttrAccessAbiParameterKind::InlineCacheSiteId),
-            ],
+            RuntimeAttrAccessEntryPoint::AosHasAttr | RuntimeAttrAccessEntryPoint::AosSelectIc => {
+                vec![
+                    ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
+                    ("attrs", RuntimeAttrAccessAbiParameterKind::Value),
+                    ("symbol", RuntimeAttrAccessAbiParameterKind::SymbolId),
+                    ("site", RuntimeAttrAccessAbiParameterKind::InlineCacheSiteId),
+                ]
+            }
             RuntimeAttrAccessEntryPoint::AosUpdate => vec![
                 ("rt", RuntimeAttrAccessAbiParameterKind::RuntimeContext),
                 ("left", RuntimeAttrAccessAbiParameterKind::Value),
@@ -193,13 +188,14 @@ fn attr_access_abi_signature_matches_core_runtime_call_metadata() {
             ],
         };
         let expected_core_parameters = match local_signature.entrypoint() {
-            RuntimeAttrAccessEntryPoint::AosHasAttr
-            | RuntimeAttrAccessEntryPoint::AosSelectIc => vec![
-                ("rt", RuntimeAbiParameterKind::RuntimeContext),
-                ("attrs", RuntimeAbiParameterKind::Value),
-                ("symbol", RuntimeAbiParameterKind::SymbolId),
-                ("site", RuntimeAbiParameterKind::InlineCacheSiteId),
-            ],
+            RuntimeAttrAccessEntryPoint::AosHasAttr | RuntimeAttrAccessEntryPoint::AosSelectIc => {
+                vec![
+                    ("rt", RuntimeAbiParameterKind::RuntimeContext),
+                    ("attrs", RuntimeAbiParameterKind::Value),
+                    ("symbol", RuntimeAbiParameterKind::SymbolId),
+                    ("site", RuntimeAbiParameterKind::InlineCacheSiteId),
+                ]
+            }
             RuntimeAttrAccessEntryPoint::AosUpdate => vec![
                 ("rt", RuntimeAbiParameterKind::RuntimeContext),
                 ("left", RuntimeAbiParameterKind::Value),
@@ -336,8 +332,7 @@ fn attr_access_native_export_preflight_preserves_frozen_abi_and_callable() {
         assert_eq!(record.blockers(), entrypoint.native_export_blockers());
         assert!(!record.is_export_ready());
         match entrypoint {
-            RuntimeAttrAccessEntryPoint::AosHasAttr
-            | RuntimeAttrAccessEntryPoint::AosSelectIc => {
+            RuntimeAttrAccessEntryPoint::AosHasAttr | RuntimeAttrAccessEntryPoint::AosSelectIc => {
                 assert_eq!(
                     record.blockers(),
                     [
@@ -385,9 +380,11 @@ fn attr_access_native_export_preflight_preserves_frozen_abi_and_callable() {
                 .blockers()
                 .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper)
         );
-        assert!(record.blockers().contains(
-            &RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented
-        ));
+        assert!(
+            record
+                .blockers()
+                .contains(&RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented)
+        );
         assert!(record.blockers().contains(
             &RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented
         ));
@@ -397,9 +394,9 @@ fn attr_access_native_export_preflight_preserves_frozen_abi_and_callable() {
                 .contains(&RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented)
         );
         assert!(
-            record.blockers().contains(
-                &RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized
-            )
+            record
+                .blockers()
+                .contains(&RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized)
         );
     }
 }
@@ -560,8 +557,8 @@ fn attr_access_rust_callable_updates_attrsets_shallowly() {
     let right = eval
         .force_value(ir.root, span, right)
         .expect("right attrset thunk forces");
-    let result = rust_callable_aos_update(&mut eval, ir.root, span, left, right)
-        .expect("attrsets update");
+    let result =
+        rust_callable_aos_update(&mut eval, ir.root, span, left, right).expect("attrsets update");
     let attrs = eval
         .heap()
         .get_attrs(result)

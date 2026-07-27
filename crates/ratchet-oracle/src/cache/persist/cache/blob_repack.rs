@@ -3,9 +3,9 @@
 use super::super::INDEX_REWRITE_ID;
 use super::repack_helpers::{
     FileRepackPaths, FileRepackStagePaths, file_relocation_locations, file_repack_replacements,
-    relocate_file_artifact_entries, relocate_parse_artifact_entries,
-    relocate_root_record_entries, swap_repacked_file_store, swap_repacked_value_store,
-    value_repack_replacements, write_repacked_blob_index, write_repacked_file_artifact_index,
+    relocate_file_artifact_entries, relocate_parse_artifact_entries, relocate_root_record_entries,
+    swap_repacked_file_store, swap_repacked_value_store, value_repack_replacements,
+    write_repacked_blob_index, write_repacked_file_artifact_index,
     write_repacked_parse_artifact_index, write_repacked_root_record_index,
 };
 use super::*;

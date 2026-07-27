@@ -2,21 +2,19 @@
 
 use super::*;
 
-/// Inline capacity for compatibility active lexical frame suffixes.
-const ACTIVE_ENV_INLINE_FRAMES: usize = 2;
-
 /// The active lexical suffix as a persistent innermost frame head.
 ///
 /// Production frames already carry immutable parent links. Retaining only the
 /// innermost head makes captured-environment installation and suspension one
 /// `Arc` clone instead of rebuilding an outermost-first frame stack. The
-/// inline compatibility array is reserved for independently constructed frames
-/// that do not form a parent-linked production chain.
+/// boxed compatibility vector is reserved for independently constructed frames
+/// that do not form a parent-linked production chain, keeping its three-word
+/// vector header out of the production handle moved on every force and call.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ActiveEvalFrames {
     head: Option<Arc<EvalFrame>>,
     len: usize,
-    compatibility: Option<smallvec::SmallVec<[Arc<EvalFrame>; ACTIVE_ENV_INLINE_FRAMES]>>,
+    compatibility: Option<Box<Vec<Arc<EvalFrame>>>>,
 }
 
 impl ActiveEvalFrames {
@@ -45,11 +43,10 @@ impl ActiveEvalFrames {
         }) {
             return Self::from_linked(frames.last().cloned(), frames.len());
         }
-        let frames = smallvec::SmallVec::from_vec(frames);
         Self {
             head: frames.last().cloned(),
             len: frames.len(),
-            compatibility: Some(frames),
+            compatibility: Some(Box::new(frames)),
         }
     }
 
@@ -107,11 +104,11 @@ impl ActiveEvalFrames {
                 .parent()
                 .is_some_and(|parent| Arc::ptr_eq(parent, head))
         }) {
-            let mut frames = smallvec::SmallVec::new();
+            let mut frames = Vec::new();
             frames.extend(self.iter_innermost().cloned());
             frames.reverse();
             frames.push(Arc::clone(&frame));
-            self.compatibility = Some(frames);
+            self.compatibility = Some(Box::new(frames));
         }
         self.head = Some(frame);
         self.len = self.len.saturating_add(1);

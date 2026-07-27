@@ -128,9 +128,7 @@ impl FlatAttrs {
                     len,
                 })?
                 .key;
-            symbols
-                .resolve(key)
-                .ok_or(AttrError::UnknownSymbol { key })
+            symbols.resolve(key).ok_or(AttrError::UnknownSymbol { key })
         };
         let remap = |slots: &[u32], order: &[u32]| -> Result<Vec<u32>, AttrError> {
             let mut remapped = reserve(order.len())?;
@@ -185,7 +183,11 @@ impl FlatAttrs {
             }
         }
 
-        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
+        Ok(Self::from_owned_parts(
+            entries,
+            source_order,
+            iteration_order,
+        ))
     }
 
     /// Merges `right` over `self` when `right`'s keys are a subset of `self`'s.
@@ -313,7 +315,11 @@ mod tests {
         let left = FlatAttrs::new(
             vec![
                 AttrEntry::new(ids[0], Value::int(1)),
-                AttrEntry::with_position(ids[1], Value::int(2), AttrPosition::new(0, Span::new(0, 1))),
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(2),
+                    AttrPosition::new(0, Span::new(0, 1)),
+                ),
                 AttrEntry::new(ids[2], Value::int(3)),
             ],
             &symbols,
@@ -324,7 +330,11 @@ mod tests {
         let late = symbols.intern(b"aa").expect("late symbol interns");
         let right = FlatAttrs::new(
             vec![
-                AttrEntry::with_position(ids[1], Value::int(20), AttrPosition::new(1, Span::new(5, 9))),
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(20),
+                    AttrPosition::new(1, Span::new(5, 9)),
+                ),
                 AttrEntry::new(ids[3], Value::int(4)),
                 AttrEntry::new(late, Value::int(5)),
             ],
@@ -386,7 +396,11 @@ mod tests {
         let left = FlatAttrs::new(
             vec![
                 AttrEntry::new(ids[0], Value::int(1)),
-                AttrEntry::with_position(ids[1], Value::int(2), AttrPosition::new(0, Span::new(0, 1))),
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(2),
+                    AttrPosition::new(0, Span::new(0, 1)),
+                ),
                 AttrEntry::new(ids[2], Value::int(3)),
                 AttrEntry::new(ids[3], Value::int(4)),
             ],
@@ -398,7 +412,11 @@ mod tests {
         let _late = symbols.intern(b"aa").expect("late symbol interns");
         let right = FlatAttrs::new(
             vec![
-                AttrEntry::with_position(ids[1], Value::int(20), AttrPosition::new(1, Span::new(5, 9))),
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(20),
+                    AttrPosition::new(1, Span::new(5, 9)),
+                ),
                 AttrEntry::new(ids[3], Value::int(40)),
             ],
             &symbols,
@@ -441,10 +459,11 @@ mod tests {
         )
         .expect("right attrset builds");
 
-        assert!(left
-            .update_right_biased_same_keys(&right)
-            .expect("subset probe runs")
-            .is_none());
+        assert!(
+            left.update_right_biased_same_keys(&right)
+                .expect("subset probe runs")
+                .is_none()
+        );
         // Oversized right short-circuits before any scan.
         let bigger = FlatAttrs::new(
             vec![
@@ -455,10 +474,11 @@ mod tests {
             &symbols,
         )
         .expect("bigger attrset builds");
-        assert!(left
-            .update_right_biased_same_keys(&bigger)
-            .expect("subset probe runs")
-            .is_none());
+        assert!(
+            left.update_right_biased_same_keys(&bigger)
+                .expect("subset probe runs")
+                .is_none()
+        );
     }
 
     #[test]
@@ -533,4 +553,5 @@ mod tests {
                 );
             }
         }
-    }}
+    }
+}

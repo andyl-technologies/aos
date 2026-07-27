@@ -88,6 +88,17 @@ pub enum CandidateCScalarError {
         /// The rejected native address.
         address: usize,
     },
+    /// A hash-cons key did not match the scalar payload at its recorded cell.
+    #[error("boxed {kind} hash-cons entry at 0x{address:x} has a mismatched payload")]
+    HashConsValueMismatch {
+        /// The scalar population whose entry was inconsistent.
+        kind: &'static str,
+        /// The address recorded by the hash-cons table.
+        address: usize,
+    },
+    /// Whole-store retirement was requested from a shared worker heap.
+    #[error("boxed-scalar whole-store retirement requires an exclusive serial heap")]
+    SerialRetirementRequiresExclusiveHeap,
 }
 
 /// A Candidate-C value could not be encoded or decoded.

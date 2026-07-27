@@ -198,6 +198,57 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
 }
 
 #[test]
+fn precise_scan_sweep_keeps_every_scanned_worker_and_retires_only_absent_workers() {
+    let mut heap = EvalHeap::new();
+    let (live, _live_frame) = alloc_capturing_thunk(&mut heap);
+    let (dead, dead_frame) = alloc_capturing_thunk(&mut heap);
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, live)
+        .expect("live root records");
+    let scan = heap.scan_precise_roots(&roots).expect("root graph scans");
+
+    let report = heap
+        .sweep_unreachable_worker_records_from_precise_scan(&scan)
+        .expect("scan-driven sweep succeeds");
+
+    assert_eq!(report.marked, 1);
+    assert_eq!(report.live_worker_records, 1);
+    assert_eq!(report.swept_thunks, 1);
+    heap.get_thunk(live).expect("scanned worker remains live");
+    assert!(heap.get_thunk(dead).is_err());
+    assert_eq!(Arc::strong_count(&dead_frame), 1);
+}
+
+#[test]
+fn precise_scan_sweep_rejects_blackhole_before_retiring_any_worker() {
+    let mut heap = EvalHeap::new();
+    let (ordinary_dead, _ordinary_frame) = alloc_capturing_thunk(&mut heap);
+    let (blackholed, _blackhole_frame) = alloc_capturing_thunk(&mut heap);
+    let cell = heap
+        .test_share_thunk_cell(blackholed)
+        .expect("blackhole thunk resolves");
+    let crate::eval::ForceClaim::Claimed(guard) = cell.begin_force().expect("claim succeeds")
+    else {
+        panic!("thunk should be claimable");
+    };
+    let scan = heap
+        .scan_precise_roots(&EvalRootSet::new())
+        .expect("empty graph scans");
+
+    let error = heap
+        .sweep_unreachable_worker_records_from_precise_scan(&scan)
+        .expect_err("unreachable blackhole rejects scan-driven sweep");
+
+    assert!(matches!(error, EvalHeapError::ShedRejected { .. }));
+    heap.get_thunk(ordinary_dead)
+        .expect("ordinary dead worker was not partially retired");
+    heap.get_thunk(blackholed)
+        .expect("blackholed worker remains live");
+    drop(guard);
+}
+
+#[test]
 fn sweep_keeps_worker_values_reachable_from_permanent_attrs() {
     let mut heap = EvalHeap::new();
     let (thunk, frame) = alloc_capturing_thunk(&mut heap);

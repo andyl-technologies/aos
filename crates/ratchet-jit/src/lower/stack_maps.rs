@@ -9,8 +9,7 @@
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{
-        Inst, InstBuilder, StackSlot, StackSlotData, StackSlotKind, UserStackMapEntry, Value,
-        types,
+        Inst, InstBuilder, StackSlot, StackSlotData, StackSlotKind, UserStackMapEntry, Value, types,
     },
 };
 
@@ -92,15 +91,14 @@ impl ForceSafepoints {
         values.extend_from_slice(live);
         let binding = spill_values(cursor, &values);
         let safepoint = self.next_safepoint;
-        self.next_safepoint = self.next_safepoint.checked_add(1).ok_or(
-            JitLowerError::MalformedForceSafepoint {
-                reason: "function contains more than u32::MAX force calls",
-            },
-        )?;
+        self.next_safepoint =
+            self.next_safepoint
+                .checked_add(1)
+                .ok_or(JitLowerError::MalformedForceSafepoint {
+                    reason: "function contains more than u32::MAX force calls",
+                })?;
         enter(cursor, self.runtime, rt, binding, safepoint);
-        let call = cursor
-            .ins()
-            .call(force, &[rt, input[0], input[1]]);
+        let call = cursor.ins().call(force, &[rt, input[0], input[1]]);
         attach(cursor, call, binding);
         let results = cursor.func.dfg.inst_results(call).to_vec();
         exit(cursor, self.runtime, rt, binding);
@@ -187,9 +185,8 @@ pub(super) struct Binding {
 #[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
 pub(super) fn spill_values(cursor: &mut FuncCursor<'_>, values: &[[Value; 2]]) -> Binding {
     let value_count = values.len() as u32;
-    let size = BINDING_HEADER_BYTES.saturating_add(
-        value_count.saturating_mul(VALUE_STACK_SLOT_BYTES),
-    );
+    let size =
+        BINDING_HEADER_BYTES.saturating_add(value_count.saturating_mul(VALUE_STACK_SLOT_BYTES));
     let slot = cursor.func.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         size,
@@ -274,21 +271,14 @@ pub(super) fn enter(
     let values = cursor
         .ins()
         .iconst(types::I32, i64::from(value_count(binding)));
-    cursor
-        .ins()
-        .call(
-            runtime.enter,
-            &[rt, binding_address, identity_address, safepoint, values],
-        );
+    cursor.ins().call(
+        runtime.enter,
+        &[rt, binding_address, identity_address, safepoint, values],
+    );
 }
 
 /// Unlinks the current binding region after its safepoint returns.
-pub(super) fn exit(
-    cursor: &mut FuncCursor<'_>,
-    runtime: Runtime,
-    rt: Value,
-    binding: Binding,
-) {
+pub(super) fn exit(cursor: &mut FuncCursor<'_>, runtime: Runtime, rt: Value, binding: Binding) {
     let binding_address = address(cursor, binding);
     cursor.ins().call(runtime.exit, &[rt, binding_address]);
 }
@@ -367,7 +357,11 @@ pub(super) fn attach_one_word(cursor: &mut FuncCursor<'_>, call: Inst, binding: 
 
 /// Reloads a one-word value that may have been rewritten at a safepoint.
 #[cfg_attr(not(feature = "candidate_c_value"), allow(dead_code))]
-pub(super) fn reload_one_word(cursor: &mut FuncCursor<'_>, binding: Binding, index: usize) -> Value {
+pub(super) fn reload_one_word(
+    cursor: &mut FuncCursor<'_>,
+    binding: Binding,
+    index: usize,
+) -> Value {
     cursor
         .ins()
         .stack_load(types::I64, binding.slot, one_word_value_offset(index))
@@ -447,9 +441,8 @@ mod tests {
         signature.params.push(AbiParam::new(types::I64));
         signature.params.push(AbiParam::new(types::I64));
         let mut function = Function::with_name_signature(UserFuncName::default(), signature);
-        let callee_signature = function.import_signature(Signature::new(
-            cranelift_codegen::isa::CallConv::SystemV,
-        ));
+        let callee_signature =
+            function.import_signature(Signature::new(cranelift_codegen::isa::CallConv::SystemV));
         let callee = function.import_function(cranelift_codegen::ir::ExtFuncData {
             name: cranelift_codegen::ir::ExternalName::testcase("safepoint"),
             signature: callee_signature,

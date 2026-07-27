@@ -696,4 +696,3 @@ fn native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs() -> R
 
     Ok(())
 }
-

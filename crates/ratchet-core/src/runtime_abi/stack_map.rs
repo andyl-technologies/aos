@@ -60,12 +60,28 @@ mod tests {
         assert_eq!(
             helper_symbols,
             BTreeSet::from([
-                "aos_alloc_attrs", "aos_alloc_cons", "aos_alloc_lambda", "aos_alloc_list",
-                "aos_alloc_raw", "aos_alloc_string", "aos_alloc_thunk", "aos_apply",
-                "aos_blackhole_check", "aos_deopt", "aos_env_get", "aos_force",
-                "aos_force_deep", "aos_gc_write_barrier", "aos_has_attr",
-                "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_primop_call",
-                "aos_select_ic", "aos_string_length", "aos_throw", "aos_update",
+                "aos_alloc_attrs",
+                "aos_alloc_cons",
+                "aos_alloc_lambda",
+                "aos_alloc_list",
+                "aos_alloc_raw",
+                "aos_alloc_string",
+                "aos_alloc_thunk",
+                "aos_apply",
+                "aos_blackhole_check",
+                "aos_deopt",
+                "aos_env_get",
+                "aos_force",
+                "aos_force_deep",
+                "aos_gc_write_barrier",
+                "aos_has_attr",
+                "aos_jit_stack_map_enter",
+                "aos_jit_stack_map_exit",
+                "aos_primop_call",
+                "aos_select_ic",
+                "aos_string_length",
+                "aos_throw",
+                "aos_update",
                 "aos_upval_get",
             ])
         );
@@ -74,7 +90,9 @@ mod tests {
         }
         let expected_order = runtime_helper_symbols()
             .iter()
-            .filter_map(|symbol| runtime_helper_call_signature(symbol.name()).map(|_| symbol.name()))
+            .filter_map(|symbol| {
+                runtime_helper_call_signature(symbol.name()).map(|_| symbol.name())
+            })
             .collect::<Vec<_>>();
         let actual_order = helper_signatures
             .iter()

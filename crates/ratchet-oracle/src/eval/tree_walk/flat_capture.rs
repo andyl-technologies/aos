@@ -30,9 +30,32 @@ impl PendingFlatCapture {
             env,
         }
     }
+
+    /// Returns the closure awaiting flat-capture publication.
+    pub(super) const fn value(&self) -> Value {
+        self.value
+    }
+
+    /// Returns the lexical environment needed by later publication.
+    pub(super) const fn env(&self) -> &EvalEnv {
+        &self.env
+    }
 }
 
 impl TreeWalk {
+    /// Installs one pending capture for focused root-inventory tests.
+    #[cfg(test)]
+    pub(super) fn test_push_pending_flat_capture(
+        &mut self,
+        site: EvalNodeRef,
+        value: Value,
+        tail: crate::heap::flat::FlatValueTailHandle,
+        env: EvalEnv,
+    ) {
+        self.pending_flat_captures
+            .push(PendingFlatCapture::new(site, value, tail, env));
+    }
+
     /// Records a flat-plan closure allocated inside binding assembly.
     pub(super) fn defer_flat_capture_if_assembling(
         &mut self,

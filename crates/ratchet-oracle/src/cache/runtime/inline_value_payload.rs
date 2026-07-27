@@ -1,12 +1,12 @@
 //! Inline cached expression payload representation and codec helpers.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
-mod payload_cursor;
 mod decode;
 mod encode;
+mod payload_cursor;
 
 pub(in crate::cache::runtime) use self::payload_cursor::PayloadCursor;
 
@@ -213,7 +213,6 @@ impl InlineValuePayload {
             CachedExpressionPayloadValueHash::from_hasher(hasher),
         )
     }
-
 
     pub(super) fn attr_repr_kind(&self) -> Option<AttrSetReprKind> {
         match self {

@@ -137,6 +137,9 @@ mod tests {
                     if is_allowed_native_lambda_call_token(&source_path, &code, token) {
                         continue;
                     }
+                    if is_allowed_mixed_superblock_token(&source_path, &code, token) {
+                        continue;
+                    }
 
                     if matches!(token, "unsafe" | "extern" | "transmute") {
                         findings.push(format!(
@@ -177,6 +180,33 @@ mod tests {
             || trimmed.starts_with("pub type JitFoldStepI64AccFn = unsafe extern")
     }
 
+    fn is_allowed_mixed_superblock_token(source_path: &Path, code: &str, token: &str) -> bool {
+        if source_path.file_name().and_then(|name| name.to_str()) != Some("mixed_superblock.rs") {
+            return false;
+        }
+
+        let trimmed = code.trim_start();
+        match token {
+            "unsafe" | "extern"
+                if trimmed == "type Entry = unsafe extern \"C\" fn(*mut RawActivation) -> u32;" =>
+            {
+                true
+            }
+            "unsafe"
+                if trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, Entry>(self.code.as_ptr()) };" =>
+            {
+                true
+            }
+            "transmute" => {
+                trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, Entry>(self.code.as_ptr()) };"
+            }
+            "unsafe" if trimmed == "let status = unsafe { entry(&mut activation.raw) };" => true,
+            _ => false,
+        }
+    }
+
     fn is_allowed_native_thunk_call_token(source_path: &Path, code: &str, token: &str) -> bool {
         let file_name = source_path.file_name().and_then(|name| name.to_str());
         if file_name == Some("candidate_b.rs") {
@@ -185,7 +215,7 @@ mod tests {
                 "unsafe" => trimmed.starts_with(
                     "pub unsafe fn jit_cranelift_call_context_finalized_candidate_b_thunk_entry(",
                 ) || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateBThunkFn>(code_ptr.as_ptr()) };"
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateBThunkFn>(code_ptr.as_ptr()) };"
                     || trimmed == "let word = unsafe { entry(rt, env) };"
                     || trimmed == "let word = unsafe {"
                     || trimmed == "let active_error = unsafe {"
@@ -203,7 +233,7 @@ mod tests {
                 "unsafe" => trimmed.starts_with(
                     "pub unsafe fn jit_cranelift_call_context_finalized_candidate_c_thunk_entry(",
                 ) || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateCThunkFn>(code_ptr.as_ptr()) };"
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateCThunkFn>(code_ptr.as_ptr()) };"
                     || trimmed == "let word = unsafe { entry(rt, env) };"
                     || trimmed == "let word = unsafe {"
                     || trimmed == "let active_error = unsafe {"
@@ -279,23 +309,24 @@ mod tests {
 
         let trimmed = code.trim_start();
         match token {
-            "unsafe" => {
-                trimmed.starts_with(
-                    "pub unsafe fn jit_cranelift_call_context_finalized_lambda_entry(",
-                ) || trimmed.starts_with(
+            "unsafe" => trimmed
+                .starts_with("pub unsafe fn jit_cranelift_call_context_finalized_lambda_entry(")
+                || trimmed.starts_with(
                     "pub unsafe fn jit_cranelift_call_context_finalized_lambda_argv_entry(",
-                ) || trimmed.starts_with(
+                )
+                || trimmed.starts_with(
                     "pub unsafe fn jit_cranelift_call_context_finalized_fold_step_i64acc_entry(",
-                ) || trimmed == "let lambda_dispatched = unsafe { lambda_entry(rt, env, argument) };"
-                    || trimmed == "let chain_dispatched = unsafe { argv_entry(rt, env, argv.as_ptr()) };"
-                    || trimmed == "let acc_next = unsafe { fold_step_entry(rt, env, acc, elem) };"
-                    || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
-                    || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };"
-                    || trimmed
-                        == "let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };"
-            }
+                )
+                || trimmed == "let lambda_dispatched = unsafe { lambda_entry(rt, env, argument) };"
+                || trimmed
+                    == "let chain_dispatched = unsafe { argv_entry(rt, env, argv.as_ptr()) };"
+                || trimmed == "let acc_next = unsafe { fold_step_entry(rt, env, acc, elem) };"
+                || trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
+                || trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };"
+                || trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitFoldStepI64AccFn>(code_ptr.as_ptr()) };",
             "transmute" => {
                 trimmed
                     == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
@@ -368,10 +399,39 @@ mod tests {
         // the submodule that owns it. The total pin count is preserved.
         let context = fs::read_to_string(source_root.join("cranelift").join("context.rs"))
             .expect("Cranelift context source file is readable");
-        let preflight_fns = fs::read_to_string(source_root.join("cranelift").join("preflight_fns.rs"))
-            .expect("Cranelift preflight-fns source file is readable");
+        let preflight_fns =
+            fs::read_to_string(source_root.join("cranelift").join("preflight_fns.rs"))
+                .expect("Cranelift preflight-fns source file is readable");
         let tier1 = fs::read_to_string(source_root.join("cranelift").join("tier1.rs"))
             .expect("Cranelift tier1 source file is readable");
+        let mixed_superblock =
+            fs::read_to_string(source_root.join("cranelift").join("mixed_superblock.rs"))
+                .expect("mixed-superblock Cranelift source file is readable");
+
+        assert_eq!(
+            trimmed_line_occurrences(
+                &mixed_superblock,
+                "type Entry = unsafe extern \"C\" fn(*mut RawActivation) -> u32;",
+            ),
+            1,
+            "mixed-superblock native entry signature must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &mixed_superblock,
+                "let entry = unsafe { mem::transmute::<*mut u8, Entry>(self.code.as_ptr()) };",
+            ),
+            1,
+            "mixed-superblock code-pointer transmute must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &mixed_superblock,
+                "let status = unsafe { entry(&mut activation.raw) };",
+            ),
+            1,
+            "mixed-superblock native call must stay singly reviewed"
+        );
 
         assert_eq!(
             trimmed_line_occurrences(
@@ -406,7 +466,10 @@ mod tests {
             "no-import native thunk call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&preflight_fns, "let value = unsafe { thunk_entry(rt, env) };"),
+            trimmed_line_occurrences(
+                &preflight_fns,
+                "let value = unsafe { thunk_entry(rt, env) };"
+            ),
             1,
             "registered native thunk call must stay singly reviewed"
         );

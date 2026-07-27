@@ -86,7 +86,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         for entry in attrs.iter_lexicographic() {
             let key = self.symbols.resolve(entry.key).ok_or_else(|| {
@@ -405,7 +405,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         for entry in attrs.iter_lexicographic() {
             let key = self.symbols.resolve(entry.key).ok_or_else(|| {
@@ -458,18 +458,21 @@ impl TreeWalk {
         }
 
         let (contents, references, reference_context) = {
-            let string = self.heap.get_string(contents_value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: contents_id,
-                        source,
-                    },
-                    contents_span,
-                )
-            })?;
+            let string = self
+                .heap
+                .get_string_view(contents_value)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: contents_id,
+                            source,
+                        },
+                        contents_span,
+                    )
+                })?;
             let contents = Self::copy_bytes_for_node(contents_id, contents_span, string.bytes())?;
             let mut references = BTreeSet::new();
-            for element in string.context() {
+            for element in string.context().iter() {
                 if element.kind() != ContextKind::OpaquePath {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::ToFileDerivationReference {
@@ -489,19 +492,15 @@ impl TreeWalk {
                 )?);
                 references.insert(reference);
             }
-            let reference_context =
-                string
-                    .context()
-                    .union(&StringContext::empty())
-                    .map_err(|source| {
-                        TreeWalkError::new(
-                            TreeWalkErrorKind::String {
-                                id: contents_id,
-                                source,
-                            },
-                            contents_span,
-                        )
-                    })?;
+            let reference_context = string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: contents_id,
+                        source,
+                    },
+                    contents_span,
+                )
+            })?;
             (contents, references, reference_context)
         };
 
@@ -571,6 +570,53 @@ impl TreeWalk {
         allow_empty_impure_trace: bool,
         load: impl FnOnce(&mut Self) -> Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
+        let begin = self.begin_cached_import(
+            argument,
+            argument_span,
+            cache_path,
+            diagnostic_path,
+            current_force_cache_trace_complete,
+            allow_empty_impure_trace,
+        )?;
+        let lease = match begin {
+            BeginCachedImport::Hit(value) => return Ok(value),
+            BeginCachedImport::Miss(lease) => lease,
+        };
+
+        // Stage A owns cache-marker unwind only. The module-context lease added
+        // by the next stage will restore current module and environments before
+        // this outer cache lease is aborted.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load(self)));
+        match result {
+            Ok(result) => self.finish_cached_import(lease, result),
+            Err(payload) => {
+                self.abort_cached_import(lease);
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    /// Begins one import-cache lookup or installs an owned miss lease.
+    ///
+    /// The lease stack reserves before the `Evaluating` marker is installed.
+    /// Therefore allocation failure cannot strand a recursive-import marker.
+    /// A hit performs the same trace replay and shared-context synchronization
+    /// as the former closure-shaped cache helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an import diagnostic for recursive imports, an allocation
+    /// diagnostic if the owned lease stack cannot grow, or a generation
+    /// exhaustion diagnostic after all possible lease tokens have been used.
+    pub(super) fn begin_cached_import(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        cache_path: PathBuf,
+        diagnostic_path: Vec<u8>,
+        current_force_cache_trace_complete: bool,
+        allow_empty_impure_trace: bool,
+    ) -> Result<BeginCachedImport, TreeWalkError> {
         if !current_force_cache_trace_complete {
             self.mark_force_cache_impure_input_trace_incomplete();
         }
@@ -596,7 +642,7 @@ impl TreeWalk {
                 if !force_cache_trace_complete {
                     self.mark_force_cache_impure_input_trace_incomplete();
                 }
-                return Ok(value);
+                return Ok(BeginCachedImport::Hit(value));
             }
             Some(ImportCacheEntry::Evaluating) => {
                 return Err(TreeWalkError::new(
@@ -610,32 +656,141 @@ impl TreeWalk {
             None => {}
         }
 
+        let lease_count = self
+            .active_import_cache_leases
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportCacheLeaseAllocationFailed {
+                        id: argument,
+                        leases: usize::MAX,
+                    },
+                    argument_span,
+                )
+            })?;
+        self.active_import_cache_leases
+            .try_reserve(1)
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportCacheLeaseAllocationFailed {
+                        id: argument,
+                        leases: lease_count,
+                    },
+                    argument_span,
+                )
+            })?;
+        let generation = self
+            .next_import_cache_lease_generation
+            .checked_add(1)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportCacheLeaseGenerationExhausted { id: argument },
+                    argument_span,
+                )
+            })?;
+
         self.import_cache
             .insert(cache_path.clone(), ImportCacheEntry::Evaluating);
+        #[cfg(feature = "candidate_c_value")]
+        let epoch_census_fence =
+            std::env::var_os("AOS_NIX_IMPORT_EPOCH_CENSUS").and_then(|sample| {
+                let stride = sample
+                    .to_str()
+                    .and_then(|sample| sample.parse::<u64>().ok())
+                    .unwrap_or(1);
+                let prior_imports = self.stats.imports_evaluated;
+                if stride != 0 && prior_imports % stride == 0 {
+                    self.heap.import_epoch_census_fence(
+                        prior_imports.saturating_add(1),
+                        self.active_import_cache_leases.len().saturating_add(1),
+                    )
+                } else {
+                    None
+                }
+            });
         self.increment_imports_evaluated();
         let trace_cursor = self.impure_input_trace_cursor();
-        let result = load(self);
+        self.next_import_cache_lease_generation = generation;
+        let token = ImportCacheLeaseToken::new(self.active_import_cache_leases.len(), generation);
+        self.active_import_cache_leases
+            .push(ActiveImportCacheLease {
+                token,
+                cache_path,
+                trace_cursor,
+                allow_empty_impure_trace,
+                #[cfg(feature = "candidate_c_value")]
+                epoch_census_fence,
+            });
+        Ok(BeginCachedImport::Miss(token))
+    }
+
+    /// Finishes the most recently begun import-cache miss.
+    ///
+    /// Success publishes the completed shared result before replacing the
+    /// local `Evaluating` marker, preserving the existing parallel visibility
+    /// order. Failure removes the marker and leaves all other evaluator state
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns the loader error supplied in `result`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no active cache lease exists or `token` is not the innermost
+    /// lease; either case indicates an internal continuation-stack imbalance.
+    pub(super) fn finish_cached_import(
+        &mut self,
+        token: ImportCacheLeaseToken,
+        result: Result<Value, TreeWalkError>,
+    ) -> Result<Value, TreeWalkError> {
+        let lease = self.pop_cached_import_lease(token);
         match result {
             Ok(value) => {
-                let trace = self.impure_input_trace_segment(trace_cursor);
+                #[cfg(feature = "candidate_c_value")]
+                if let Some(fence) = lease.epoch_census_fence {
+                    let census = self
+                        .mutator_root_set()
+                        .and_then(|mut roots| {
+                            roots
+                                .try_push_value_stack(0, value)
+                                .map_err(TreeWalkSafepointRootError::RootSet)?;
+                            Ok(roots)
+                        })
+                        .map_err(|error| error.to_string())
+                        .and_then(|roots| {
+                            self.heap
+                                .import_epoch_census(fence, &roots)
+                                .map_err(|error| error.to_string())
+                        });
+                    match census {
+                        Ok(census) => eprintln!("{census}"),
+                        Err(error) => {
+                            eprintln!("aos_nix_import_epoch_census_error {error:?}");
+                        }
+                    }
+                }
+                let trace = self.impure_input_trace_segment(lease.trace_cursor);
                 let force_cache_trace_complete = self
-                    .force_cache_impure_input_trace_segment(trace_cursor)
+                    .force_cache_impure_input_trace_segment(lease.trace_cursor)
                     .complete;
-                let trace =
-                    if trace.complete && (allow_empty_impure_trace || !trace.trace.is_empty()) {
-                        Some(trace.trace)
-                    } else {
-                        self.mark_impure_input_trace_incomplete();
-                        None
-                    };
+                let trace = if trace.complete
+                    && (lease.allow_empty_impure_trace || !trace.trace.is_empty())
+                {
+                    Some(trace.trace)
+                } else {
+                    self.mark_impure_input_trace_incomplete();
+                    None
+                };
                 self.publish_shared_import_result(
-                    &cache_path,
+                    &lease.cache_path,
                     value,
                     trace.as_deref(),
                     force_cache_trace_complete,
                 );
                 self.import_cache.insert(
-                    cache_path,
+                    lease.cache_path,
                     ImportCacheEntry::Ready {
                         value,
                         trace,
@@ -645,10 +800,38 @@ impl TreeWalk {
                 Ok(value)
             }
             Err(error) => {
-                self.import_cache.remove(&cache_path);
+                self.import_cache.remove(&lease.cache_path);
                 Err(error)
             }
         }
+    }
+
+    /// Removes one active miss marker while a panic is unwinding its loader.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no active cache lease exists or `token` is not the innermost
+    /// lease.
+    pub(super) fn abort_cached_import(&mut self, token: ImportCacheLeaseToken) {
+        let lease = self.pop_cached_import_lease(token);
+        self.import_cache.remove(&lease.cache_path);
+    }
+
+    /// Pops a strictly nested cache lease.
+    fn pop_cached_import_lease(&mut self, token: ImportCacheLeaseToken) -> ActiveImportCacheLease {
+        let Some(active) = self.active_import_cache_leases.last() else {
+            unreachable!("active import-cache lease stack is unbalanced");
+        };
+        assert_eq!(
+            active.token, token,
+            "import-cache lease token is stale or out of order"
+        );
+        debug_assert_eq!(token.depth(), self.active_import_cache_leases.len() - 1);
+        debug_assert_eq!(token.generation(), active.token.generation());
+        let Some(lease) = self.active_import_cache_leases.pop() else {
+            unreachable!("checked active import-cache lease disappeared");
+        };
+        lease
     }
 
     pub(super) fn eval_import_primop(

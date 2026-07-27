@@ -20,7 +20,12 @@ fn workers(count: usize) -> NonZeroUsize {
     NonZeroUsize::new(count).expect("test worker count is nonzero")
 }
 
-fn test_cells(count: usize) -> (Arc<ParallelForceCycleRegistry>, Vec<TreeWalkParallelThunkCell>) {
+fn test_cells(
+    count: usize,
+) -> (
+    Arc<ParallelForceCycleRegistry>,
+    Vec<TreeWalkParallelThunkCell>,
+) {
     let registry = Arc::new(ParallelForceCycleRegistry::new());
     let cells = shared_parallel_thunk_cells(count, &registry, |index| {
         TreeWalkError::new(
@@ -176,8 +181,8 @@ fn error_thunk_replays_identically_and_body_runs_once() {
     );
 
     // Later forces replay the published failure without re-running the body.
-    let replay = force_shared_parallel_roots(&cells, &[0], workers(1), &body)
-        .expect("replay harness runs");
+    let replay =
+        force_shared_parallel_roots(&cells, &[0], workers(1), &body).expect("replay harness runs");
     assert_eq!(
         replay[0].root_results[0]
             .as_ref()
@@ -194,8 +199,7 @@ fn same_worker_reentrant_force_is_infinite_recursion() {
     // The body of cell 0 forces cell 0 again on the same worker: serial
     // blackhole re-entry, which must surface the serial infinite-recursion
     // error, published for every other observer.
-    let body =
-        |forcer: &ParallelSharedGraphForcer<'_>, _index: usize| forcer.force(0);
+    let body = |forcer: &ParallelSharedGraphForcer<'_>, _index: usize| forcer.force(0);
 
     let reports =
         force_shared_parallel_roots(&cells, &[0], workers(1), &body).expect("harness runs");
@@ -360,9 +364,10 @@ fn stress_random_dags_with_yield_injection() {
                 }
                 let mut total = index as i64;
                 for &dep in &dependencies_reference[index] {
-                    total += forcer.force(dep)?.as_int().map_err(|_| {
-                        infinite_recursion_error(index)
-                    })?;
+                    total += forcer
+                        .force(dep)?
+                        .as_int()
+                        .map_err(|_| infinite_recursion_error(index))?;
                 }
                 Ok(Value::int(total))
             };
@@ -515,8 +520,7 @@ fn eval_stats_merge_accumulates_per_worker_counters() {
 #[test]
 fn harness_rejects_out_of_range_roots_and_worker_counts() {
     let (_registry, cells) = test_cells(1);
-    let body =
-        |_forcer: &ParallelSharedGraphForcer<'_>, _index: usize| Ok(Value::int(1));
+    let body = |_forcer: &ParallelSharedGraphForcer<'_>, _index: usize| Ok(Value::int(1));
 
     let result = force_shared_parallel_roots(&cells, &[3], workers(1), &body);
     assert!(matches!(

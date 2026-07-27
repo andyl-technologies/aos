@@ -16,6 +16,44 @@ use super::*;
 /// stress cadence).
 pub const DEFAULT_GC_SWEEP_THRESHOLD: u64 = 1_048_576;
 
+/// Fixed admitted counts for the serial active packed-thunk experiment.
+#[cfg(feature = "active_packed_thunk_probe")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActivePackedThunkCapacities {
+    /// Total Apply plus GenList thunk heads admitted for the evaluation.
+    pub heads: usize,
+    /// Total ordinary Apply work records admitted for the evaluation.
+    pub apply: usize,
+    /// Total exact GenListElemAtAddOne work records admitted for the evaluation.
+    pub gen_list_elem_at_add_one: usize,
+}
+
+#[cfg(feature = "active_packed_thunk_probe")]
+fn active_packed_thunk_capacities_from_env() -> Option<ActivePackedThunkCapacities> {
+    const HEADS: &str = "AOS_NIX_ACTIVE_PACKED_THUNK_HEADS";
+    const APPLY: &str = "AOS_NIX_ACTIVE_PACKED_THUNK_APPLY";
+    const GEN_LIST: &str = "AOS_NIX_ACTIVE_PACKED_THUNK_GENLIST";
+    let heads = std::env::var_os(HEADS);
+    let apply = std::env::var_os(APPLY);
+    let gen_list = std::env::var_os(GEN_LIST);
+    if heads.is_none() && apply.is_none() && gen_list.is_none() {
+        return None;
+    }
+    let parse = |name: &'static str, value: Option<std::ffi::OsString>| {
+        value
+            .unwrap_or_else(|| panic!("{name} is required when active packed thunks are enabled"))
+            .to_str()
+            .unwrap_or_else(|| panic!("{name} must be valid UTF-8"))
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("{name} must be a non-negative integer"))
+    };
+    Some(ActivePackedThunkCapacities {
+        heads: parse(HEADS, heads),
+        apply: parse(APPLY, apply),
+        gen_list_elem_at_add_one: parse(GEN_LIST, gen_list),
+    })
+}
+
 /// Runtime options used by the tree-walk evaluator.
 ///
 /// These options carry interpreter settings that C++ Nix normally reads from
@@ -48,11 +86,16 @@ pub struct TreeWalkOptions {
     pub(crate) root_cutoff_enabled: bool,
     pub(crate) root_cutoff_check: bool,
     pub(crate) eval_stats_dump: bool,
+    pub(crate) genlist_selected_child_census_enabled: bool,
+    pub(crate) stg_session_enabled: bool,
     pub(crate) force_cache_materialization_costs: MaterializationCosts,
     pub(crate) heap_memory_budget: Option<HeapMemoryBudget>,
     pub(crate) heap_tier_b_transition_admission_enabled: bool,
     pub(crate) record_worker_closures_for_gc_scaffolding: bool,
     pub(crate) heap_thread_local_tier_a_enabled: bool,
+    pub(crate) typed_apply_thunk_heads_enabled: bool,
+    #[cfg(feature = "active_packed_thunk_probe")]
+    pub(crate) active_packed_thunk_capacities: Option<ActivePackedThunkCapacities>,
     pub(crate) gc_stress_policy: GcStressPolicy,
     pub(crate) gc_mode: EvalGcMode,
     pub(crate) gc_sweep_threshold: u64,
@@ -101,11 +144,16 @@ impl Default for TreeWalkOptions {
             root_cutoff_enabled: false,
             root_cutoff_check: false,
             eval_stats_dump: false,
+            genlist_selected_child_census_enabled: false,
+            stg_session_enabled: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             heap_memory_budget: None,
             heap_tier_b_transition_admission_enabled: false,
             record_worker_closures_for_gc_scaffolding: false,
             heap_thread_local_tier_a_enabled: false,
+            typed_apply_thunk_heads_enabled: false,
+            #[cfg(feature = "active_packed_thunk_probe")]
+            active_packed_thunk_capacities: active_packed_thunk_capacities_from_env(),
             gc_stress_policy: GcStressPolicy::disabled(),
             gc_mode: EvalGcMode::Off,
             gc_sweep_threshold: DEFAULT_GC_SWEEP_THRESHOLD,

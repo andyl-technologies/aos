@@ -54,7 +54,11 @@ impl<T> FlatObjectStore<T> {
             });
         }
         self.validate_backing_mark(mark.backing)?;
-        for entry in &self.entries[mark.entries..] {
+        let mut popped_entries = 0;
+        for entry in self.entries[mark.entries..]
+            .iter()
+            .filter(|entry| entry.is_live())
+        {
             // SAFETY: each registry entry names one live placement-written
             // `FlatObject<T>`. Truncation below prevents a second drop, and the
             // backing remains mapped until after this loop.
@@ -62,8 +66,8 @@ impl<T> FlatObjectStore<T> {
             // SAFETY: the same exclusive live allocation remains writable;
             // zeroing its kind word makes a stale resolution fail loudly.
             unsafe { (entry.ptr.as_ptr() as *mut u64).write(0) };
+            popped_entries += 1;
         }
-        let popped_entries = self.entries.len() - mark.entries;
         self.entries.truncate(mark.entries);
         let arena = self.pop_backing_to_mark(mark.backing)?;
         self.regions.clear();

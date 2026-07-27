@@ -20,6 +20,7 @@ fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
             "nrThunks": thunks,
         }),
         child_peak_rss_bytes: None,
+        exact_child_peak_rss: ExactOracleChildPeakRss::NotRecorded,
     }
 }
 
@@ -30,6 +31,7 @@ fn sample_without_stats(elapsed_seconds: f64) -> BenchmarkSample {
         drv_path: "/nix/store/example.drv".to_string(),
         stats: serde_json::json!({}),
         child_peak_rss_bytes: None,
+        exact_child_peak_rss: ExactOracleChildPeakRss::NotRecorded,
     }
 }
 
@@ -826,6 +828,72 @@ fn native_memory_summary_is_absent_without_memory_probes() {
 }
 
 #[test]
+fn exact_oracle_child_peak_never_falls_back_to_children_watermark() {
+    let mut unavailable = sample(1.0, 0.5, 10);
+    unavailable.child_peak_rss_bytes = Some(900);
+    unavailable.exact_child_peak_rss =
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi;
+
+    let summary = summarize_samples(&[unavailable]);
+
+    assert_eq!(summary.child_peak_rss_bytes_max, Some(900));
+    assert_eq!(
+        summary.exact_child_peak_rss,
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi
+    );
+}
+
+#[test]
+fn exact_oracle_child_peak_summary_uses_maximum_measured_sample() {
+    let mut smaller = sample(1.0, 0.5, 10);
+    smaller.exact_child_peak_rss = ExactOracleChildPeakRss::Measured { bytes: 700 };
+    let mut larger = sample(1.0, 0.5, 10);
+    larger.exact_child_peak_rss = ExactOracleChildPeakRss::Measured { bytes: 1_200 };
+
+    let summary = summarize_samples(&[smaller, larger]);
+
+    assert_eq!(
+        summary.exact_child_peak_rss,
+        ExactOracleChildPeakRss::Measured { bytes: 1_200 }
+    );
+}
+
+#[test]
+fn exact_oracle_child_peak_summary_refuses_partial_measurement() {
+    let mut measured = sample(1.0, 0.5, 10);
+    measured.exact_child_peak_rss = ExactOracleChildPeakRss::Measured { bytes: 1_200 };
+    let mut unavailable = sample(1.0, 0.5, 10);
+    unavailable.exact_child_peak_rss =
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi;
+
+    let summary = summarize_samples(&[measured, unavailable]);
+
+    assert_eq!(
+        summary.exact_child_peak_rss,
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi
+    );
+}
+
+#[test]
+fn memory_report_names_exact_unavailability_and_watermark_separately() {
+    let mut benchmark = record("leaf:cold:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+    benchmark.samples[0].child_peak_rss_bytes = Some(1024 * 1024);
+    benchmark.samples[0].exact_child_peak_rss =
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi;
+    benchmark.summary = summarize_samples(&benchmark.samples);
+    let outcome = BenchmarkOutcome {
+        record: benchmark,
+        comparison: None,
+    };
+
+    let line = render_memory_line(&outcome).expect("oracle state renders");
+
+    assert!(line.contains("oracle_exact_child_peak_rss=unavailable:safe-per-child-wait-api"));
+    assert!(line.contains("oracle_child_peak_rss_watermark=1.0MiB"));
+    assert!(!line.contains(" oracle_child_peak_rss=1.0MiB"));
+}
+
+#[test]
 fn memory_regression_is_flagged_past_the_memory_threshold() {
     let previous = record_with_memory("leaf:cold:pkgs.zlib", 1_000);
     let current = record_with_memory("leaf:cold:pkgs.zlib", 1_500);
@@ -948,6 +1016,14 @@ fn v2_history_records_without_memory_fields_still_parse() {
     let history = read_history(&path).expect("v2 history parses");
     let benchmark = &history[0].benchmarks[0];
     assert!(benchmark.summary.child_peak_rss_bytes_max.is_none());
+    assert_eq!(
+        benchmark.summary.exact_child_peak_rss,
+        ExactOracleChildPeakRss::NotRecorded
+    );
     assert!(benchmark.native_summary.memory.is_none());
     assert!(benchmark.samples[0].child_peak_rss_bytes.is_none());
+    assert_eq!(
+        benchmark.samples[0].exact_child_peak_rss,
+        ExactOracleChildPeakRss::NotRecorded
+    );
 }

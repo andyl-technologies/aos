@@ -84,11 +84,15 @@ pub const fn runtime_ffi_unsafe_discipline() -> RuntimeFfiUnsafeDiscipline {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::{Path, PathBuf}};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use super::*;
 
-    mod candidate_b_env; mod stack_map;
+    mod candidate_b_env;
+    mod stack_map;
 
     const UNSAFE_TOKEN: &str = concat!("uns", "afe");
     const EXTERN_TOKEN: &str = concat!("ext", "ern");
@@ -108,7 +112,8 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {"
     );
-    const ENV_GET_DECODER_CALL_LINE: &str = concat!("uns", "afe { // aos_env_get runtime-environment decode");
+    const ENV_GET_DECODER_CALL_LINE: &str =
+        concat!("uns", "afe { // aos_env_get runtime-environment decode");
     const DIRECT_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_env_get(env_ptr, 1) };");
     const BINDING_TEST_CALL_LINE: &str = concat!(
@@ -181,8 +186,7 @@ mod tests {
         concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const RUNTIME_ENV_CONTEXT_EVAL_LINE: &str =
         concat!("uns", "afe { env_context.eval.as_mut() },");
-    const RUNTIME_ENV_CONTEXT_ENV_LINE: &str =
-        concat!("uns", "afe { env.as_ref() },");
+    const RUNTIME_ENV_CONTEXT_ENV_LINE: &str = concat!("uns", "afe { env.as_ref() },");
     const ALLOC_CODE_ENV_FN_TYPE_LINE: &str = concat!(
         "uns",
         "afe ",
@@ -222,8 +226,13 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_alloc_attrs("
     );
-    const ALLOC_CONS_FN_LINE: &str = concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_cons(");
-    const ALLOC_CONS_DECODER_CALL_LINE: &str = concat!("let allocated = ", "uns", "afe { // aos_alloc_cons runtime-context decode");
+    const ALLOC_CONS_FN_LINE: &str =
+        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_cons(");
+    const ALLOC_CONS_DECODER_CALL_LINE: &str = concat!(
+        "let allocated = ",
+        "uns",
+        "afe { // aos_alloc_cons runtime-context decode"
+    );
     const ALLOC_LAMBDA_FN_LINE: &str = concat!(
         "pub ",
         "uns",
@@ -549,9 +558,18 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };"
     );
-    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) }");
-    const CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) }");
-    const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!("uns", "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) }");
+    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!(
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) }"
+    );
+    const CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE: &str = concat!(
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) }"
+    );
+    const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!(
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) }"
+    );
     const CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE: &str = concat!(
         "let lambda_dispatched = ",
         "uns",
@@ -698,12 +716,7 @@ mod tests {
                             line,
                             token,
                         )
-                        || stack_map::is_allowed_token(
-                            &source_root,
-                            &source_path,
-                            line,
-                            token,
-                        )
+                        || stack_map::is_allowed_token(&source_root, &source_path, line, token)
                     {
                         continue;
                     }
@@ -744,7 +757,9 @@ mod tests {
         if source_path != source_root.join("env.rs") {
             return false;
         }
-        if candidate_b_env::is_allowed_token(line, token) { return true; }
+        if candidate_b_env::is_allowed_token(line, token) {
+            return true;
+        }
 
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
@@ -795,7 +810,8 @@ mod tests {
                 || trimmed == ALLOC_RAW_FN_TYPE_LINE
                 || trimmed == ALLOC_EXPORT_ATTR_LINE
                 || trimmed == ALLOC_ATTRS_FN_LINE
-                || trimmed == ALLOC_CONS_FN_LINE || trimmed == ALLOC_CONS_DECODER_CALL_LINE
+                || trimmed == ALLOC_CONS_FN_LINE
+                || trimmed == ALLOC_CONS_DECODER_CALL_LINE
                 || trimmed == ALLOC_LAMBDA_FN_LINE
                 || trimmed == ALLOC_LIST_FN_LINE
                 || trimmed == ALLOC_RAW_FN_LINE
@@ -1404,15 +1420,36 @@ mod unchecked_cfg;
 
         for (line, boundary) in [
             (FINALIZED_CALL_JIT_BOUNDARY_LINE, "thunk call"),
-            (CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE, "context thunk call"),
-            (CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE, "Candidate-B thunk call"),
-            (CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "Candidate-C thunk call"),
-            (CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE, "lambda call"),
+            (
+                CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE,
+                "context thunk call",
+            ),
+            (
+                CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE,
+                "Candidate-B thunk call",
+            ),
+            (
+                CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE,
+                "Candidate-C thunk call",
+            ),
+            (
+                CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE,
+                "lambda call",
+            ),
             (CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE, "chain call"),
             (CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE, "fold step"),
-            (CONTEXT_FINALIZED_FOLD_STEP_I64ACC_JIT_BOUNDARY_LINE, "fold step i64acc"),
-            (CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE, "filter step"),
-            (CONTEXT_FINALIZED_ALL_ANY_STEP_JIT_BOUNDARY_LINE, "all/any step"),
+            (
+                CONTEXT_FINALIZED_FOLD_STEP_I64ACC_JIT_BOUNDARY_LINE,
+                "fold step i64acc",
+            ),
+            (
+                CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE,
+                "filter step",
+            ),
+            (
+                CONTEXT_FINALIZED_ALL_ANY_STEP_JIT_BOUNDARY_LINE,
+                "all/any step",
+            ),
         ] {
             assert_eq!(
                 trimmed_line_occurrences(&native_call, line),
@@ -1527,7 +1564,10 @@ mod unchecked_cfg;
             "aos_alloc_attrs native wrapper must stay singly reviewed"
         );
         assert_eq!(
-            (trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_LINE), trimmed_line_occurrences(&alloc, ALLOC_CONS_DECODER_CALL_LINE)),
+            (
+                trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_LINE),
+                trimmed_line_occurrences(&alloc, ALLOC_CONS_DECODER_CALL_LINE)
+            ),
             (1, 1),
             "aos_alloc_cons wrapper and runtime decode must stay singly reviewed"
         );
@@ -1917,7 +1957,10 @@ mod unchecked_cfg;
             "force-deep null-context abort test call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&force_tests, FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE),
+            trimmed_line_occurrences(
+                &force_tests,
+                FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE
+            ),
             1,
             "force-deep tree-walk error abort test call must stay singly reviewed"
         );
@@ -1968,10 +2011,26 @@ mod unchecked_cfg;
         let force_tests_lines = force_tests.lines().collect::<Vec<_>>();
         let native_call_lines = native_call.lines().collect::<Vec<_>>();
 
-        assert_has_safety_comment_before(&native_call_lines, FINALIZED_CALL_JIT_BOUNDARY_LINE, "finalized native thunk-call jit boundary must keep a SAFETY comment");
-        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE, "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment");
-        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE, "shared-context Candidate-B thunk-call jit boundary must keep a SAFETY comment");
-        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "shared-context Candidate-C thunk-call jit boundary must keep a SAFETY comment");
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            FINALIZED_CALL_JIT_BOUNDARY_LINE,
+            "finalized native thunk-call jit boundary must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE,
+            "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE,
+            "shared-context Candidate-B thunk-call jit boundary must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE,
+            "shared-context Candidate-C thunk-call jit boundary must keep a SAFETY comment",
+        );
         assert_has_safety_comment_before(
             &native_call_lines,
             CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE,
@@ -2053,7 +2112,11 @@ mod unchecked_cfg;
             RUNTIME_ENV_CONTEXT_ENV_LINE,
             "raw shared runtime environment pointer must keep a SAFETY comment",
         );
-        assert_has_safety_comment_before(&alloc_lines, ALLOC_CONS_DECODER_CALL_LINE, "cons allocation decoder call must keep a SAFETY comment");
+        assert_has_safety_comment_before(
+            &alloc_lines,
+            ALLOC_CONS_DECODER_CALL_LINE,
+            "cons allocation decoder call must keep a SAFETY comment",
+        );
         assert_has_safety_comment_before(
             &alloc_lines,
             ALLOC_ATTRS_ABORT_TEST_CALL_LINE,

@@ -1,22 +1,18 @@
 //! Tier-1 CLIF emission helpers and runtime-helper imports (moved from `lower.rs`).
 
-use cranelift_codegen::{
-    cursor::{Cursor, FuncCursor},
-    ir::{
-        ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName, types,
-    },
-};
-use ratchet_core::{
-    IrData,
-    IrId, IrKind, IrNode,
-    runtime_helper_call_signature, runtime_thunk_call_signature,
-};
-use ratchet_value::value::Value;
 use crate::{
     abi::clif_signature_for_runtime_call,
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     tier::JitTier,
 };
+use cranelift_codegen::{
+    cursor::{Cursor, FuncCursor},
+    ir::{ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName, types},
+};
+use ratchet_core::{
+    IrData, IrId, IrKind, IrNode, runtime_helper_call_signature, runtime_thunk_call_signature,
+};
+use ratchet_value::value::Value;
 
 use super::*;
 
@@ -153,10 +149,8 @@ pub(crate) fn lower_apply_local_slots_thunk_body_with_name(
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let env_get = import_env_get_function(&mut function)?;
-    let upval_get = maybe_import_upval_get_function(
-        &mut function,
-        [function_operand, argument_operand],
-    )?;
+    let upval_get =
+        maybe_import_upval_get_function(&mut function, [function_operand, argument_operand])?;
     let apply = import_runtime_helper_function(
         &mut function,
         AOS_APPLY_SYMBOL,
@@ -184,8 +178,7 @@ pub(crate) fn lower_update_local_slots_thunk_body_with_name(
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let env_get = import_env_get_function(&mut function)?;
-    let upval_get =
-        maybe_import_upval_get_function(&mut function, [left_operand, right_operand])?;
+    let upval_get = maybe_import_upval_get_function(&mut function, [left_operand, right_operand])?;
     let force = import_runtime_helper_function(
         &mut function,
         AOS_FORCE_SYMBOL,
@@ -367,7 +360,10 @@ pub(crate) fn import_runtime_helper_function(
     }))
 }
 
-pub(crate) fn thunk_body_artifact(source: JitClifArtifactSource, function: Function) -> JitClifArtifact {
+pub(crate) fn thunk_body_artifact(
+    source: JitClifArtifactSource,
+    function: Function,
+) -> JitClifArtifact {
     JitClifArtifact::new(
         JitTier::Tier1Baseline,
         JitClifArtifactKind::ThunkBody,
@@ -471,7 +467,8 @@ fn emit_forced_upval_get_return(
     let slot = cursor.ins().iconst(types::I32, i64::from(slot));
     let upval_get_call = cursor.ins().call(upval_get, &[env, depth, slot]);
     let upval_get_results = cursor.func.dfg.inst_results(upval_get_call).to_vec();
-    let upval_get_words = value_words::expect_value_words(AOS_UPVAL_GET_SYMBOL, &upval_get_results)?;
+    let upval_get_words =
+        value_words::expect_value_words(AOS_UPVAL_GET_SYMBOL, &upval_get_results)?;
 
     let force_input_slot = value_words::spill(&mut cursor, &[upval_get_words]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
@@ -506,7 +503,9 @@ pub(crate) fn emit_primop_call_return(
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
     let module_id = cursor.ins().iconst(types::I32, i64::from(module_id));
     let node_id = cursor.ins().iconst(types::I32, i64::from(node_id.as_u32()));
-    let call = cursor.ins().call(primop_call, &[rt, env, module_id, node_id]);
+    let call = cursor
+        .ins()
+        .call(primop_call, &[rt, env, module_id, node_id]);
     let results = cursor.func.dfg.inst_results(call).to_vec();
     let words = value_words::expect_value_words(AOS_PRIMOP_CALL_SYMBOL, &results)?;
 
@@ -550,8 +549,7 @@ fn emit_string_length_inline_return(
     value_words::push_words(&mut length_args, force_words);
     let length_call = cursor.ins().call(string_length, &length_args);
     let length_results = cursor.func.dfg.inst_results(length_call).to_vec();
-    let length_words =
-        value_words::expect_value_words(AOS_STRING_LENGTH_SYMBOL, &length_results)?;
+    let length_words = value_words::expect_value_words(AOS_STRING_LENGTH_SYMBOL, &length_results)?;
 
     cursor.ins().return_(&length_words);
     Ok(())
@@ -653,8 +651,10 @@ pub(crate) fn emit_apply_local_slots_return(
         .get(1)
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let function_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, function_operand)?;
-    let argument_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, argument_operand)?;
+    let function_value =
+        emit_slot_operand_load(&mut cursor, env, env_get, upval_get, function_operand)?;
+    let argument_value =
+        emit_slot_operand_load(&mut cursor, env, env_get, upval_get, argument_operand)?;
 
     let mut apply_args = vec![rt];
     value_words::push_words(&mut apply_args, function_value);
@@ -699,13 +699,11 @@ fn emit_update_local_slots_return(
     value_words::attach(&mut cursor, left_force_call, left_input_slot);
     let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
     stack_maps::exit(&mut cursor, stack_map_runtime, rt, left_input_slot);
-    let left_force_words =
-        value_words::expect_value_words(AOS_FORCE_SYMBOL, &left_force_results)?;
+    let left_force_words = value_words::expect_value_words(AOS_FORCE_SYMBOL, &left_force_results)?;
 
     let right_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, right_operand)?;
 
-    let right_force_binding =
-        value_words::spill(&mut cursor, &[left_force_words, right_value]);
+    let right_force_binding = value_words::spill(&mut cursor, &[left_force_words, right_value]);
     stack_maps::enter(&mut cursor, stack_map_runtime, rt, right_force_binding, 1);
     let mut right_force_args = vec![rt];
     value_words::push_words(&mut right_force_args, right_value);
@@ -831,8 +829,7 @@ fn emit_attr_select_default_local_slot_return(
     has_attr_args.push(site);
     let has_attr_call = cursor.ins().call(has_attr, &has_attr_args);
     let has_attr_results = cursor.func.dfg.inst_results(has_attr_call).to_vec();
-    let has_attr_words =
-        value_words::expect_value_words(AOS_HAS_ATTR_SYMBOL, &has_attr_results)?;
+    let has_attr_words = value_words::expect_value_words(AOS_HAS_ATTR_SYMBOL, &has_attr_results)?;
 
     let is_present = value_words::truthy_test(&mut cursor, has_attr_words);
     cursor

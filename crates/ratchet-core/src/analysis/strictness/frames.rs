@@ -60,7 +60,11 @@ impl FrameScope {
     }
 
     /// Builds the frame scope for a recursive attrset literal.
-    pub(super) fn for_rec_attrs(analysis: &Analysis<'_>, node: IrId, bindings: IrBindingSlice) -> Self {
+    pub(super) fn for_rec_attrs(
+        analysis: &Analysis<'_>,
+        node: IrId,
+        bindings: IrBindingSlice,
+    ) -> Self {
         let opaque = analysis
             .bindings(node, bindings)
             .ok()
@@ -228,9 +232,9 @@ fn chase_static_attr(
         return Ok(None);
     }
     let entries = analysis.bindings(attrset, bindings)?;
-    let selected = entries.iter().find(|binding| {
-        matches!(binding.key, IrAttrPathSegment::Static(key) if key == symbol)
-    });
+    let selected = entries
+        .iter()
+        .find(|binding| matches!(binding.key, IrAttrPathSegment::Static(key) if key == symbol));
     let Some(selected) = selected else {
         return Ok(None);
     };

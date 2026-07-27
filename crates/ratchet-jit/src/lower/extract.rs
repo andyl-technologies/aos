@@ -2,8 +2,8 @@
 
 use cranelift_codegen::ir::UserExternalName;
 use ratchet_core::{
-    Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData,
-    IrId, IrInlineCacheSiteId, IrKind, IrNode,
+    Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrInlineCacheSiteId, IrKind,
+    IrNode,
     syntax::{BinOpKind, Symbol},
 };
 use ratchet_value::value::Value;
@@ -146,7 +146,10 @@ pub(crate) fn env_slot_for_node(node: IrNode) -> Result<u32, JitLowerError> {
     }
 }
 
-pub(crate) fn upval_depth_slot_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+pub(crate) fn upval_depth_slot_for_root(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<(u32, u32), JitLowerError> {
     let node = arena
         .node(root)
         .copied()
@@ -211,7 +214,10 @@ pub(crate) fn primop_node_id_for_root(arena: &IrArena, root: IrId) -> Option<IrI
     }
 }
 
-pub(crate) fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn apply_local_slots_for_root(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     let node = arena
         .node(root)
         .copied()
@@ -234,7 +240,10 @@ pub(crate) fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<
     }
 }
 
-pub(crate) fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn apply_local_slots_for_body(
+    arena: &IrArena,
+    node: IrNode,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Apply, IrData::Pair { first, second }) => Ok((
             apply_local_child_slot(arena, first)?,
@@ -249,7 +258,10 @@ pub(crate) fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Resul
     }
 }
 
-pub(crate) fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn apply_local_slots_for_node(
+    arena: &IrArena,
+    node: IrNode,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Apply, IrData::Pair { first, second }) => Ok((
             apply_local_child_slot(arena, first)?,
@@ -264,7 +276,10 @@ pub(crate) fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Resul
     }
 }
 
-pub(crate) fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<Tier1SlotOperand, JitLowerError> {
+pub(crate) fn apply_local_child_slot(
+    arena: &IrArena,
+    child: IrId,
+) -> Result<Tier1SlotOperand, JitLowerError> {
     let node = arena
         .node(child)
         .copied()
@@ -289,7 +304,10 @@ pub(crate) fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<Tie
     }
 }
 
-pub(crate) fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn update_local_slots_for_root(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     let node = arena
         .node(root)
         .copied()
@@ -312,7 +330,10 @@ pub(crate) fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result
     }
 }
 
-pub(crate) fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn update_local_slots_for_body(
+    arena: &IrArena,
+    node: IrNode,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (
             IrKind::BinOp,
@@ -337,7 +358,10 @@ pub(crate) fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Resu
     }
 }
 
-pub(crate) fn update_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
+pub(crate) fn update_local_slots_for_node(
+    arena: &IrArena,
+    node: IrNode,
+) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (
             IrKind::BinOp,
@@ -524,7 +548,10 @@ pub(crate) fn attr_lookup(
     })
 }
 
-pub(crate) fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<Tier1SlotOperand, JitLowerError> {
+pub(crate) fn attr_receiver_slot(
+    ir: &Ir,
+    receiver: IrId,
+) -> Result<Tier1SlotOperand, JitLowerError> {
     let node = ir
         .arena
         .node(receiver)
@@ -550,7 +577,10 @@ pub(crate) fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<Tier1SlotOpe
     }
 }
 
-pub(crate) fn single_static_attr_path_symbol(ir: &Ir, path: IrAttrPathId) -> Result<Symbol, JitLowerError> {
+pub(crate) fn single_static_attr_path_symbol(
+    ir: &Ir,
+    path: IrAttrPathId,
+) -> Result<Symbol, JitLowerError> {
     let segments = ir
         .attr_paths
         .get(path.index())

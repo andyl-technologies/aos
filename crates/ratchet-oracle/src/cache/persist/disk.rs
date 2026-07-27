@@ -16,8 +16,8 @@
 //!   files/        file/frontend blob pack and hash-to-offset index
 //! ```
 
-use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 use super::*;
+use crate::cache::hashing::{CacheDigestHasher, CacheHashFamily};
 
 use ratchet_cache::owned_paths::{OwnedPathError, OwnedPaths};
 use ratchet_cache::schema::{CacheSchema, CacheSchemaError, CacheSchemaRecord};

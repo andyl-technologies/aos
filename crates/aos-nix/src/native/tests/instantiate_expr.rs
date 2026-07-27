@@ -940,4 +940,3 @@ fn native_instantiation_reports_parse_errors_with_source() -> Result<()> {
     assert!(!feature.contains(".drvPath"), "{feature}");
     Ok(())
 }
-

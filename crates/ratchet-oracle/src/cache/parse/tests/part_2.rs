@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn lowered_ir_artifacts_roundtrip_through_entry_files() {
     let root = temp_root();
@@ -87,9 +86,7 @@ fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
         escape: Escape::NoEscape,
     };
     *expected.get_mut(fact_id).expect("root fact exists") = root_fact;
-    let stored = entry
-        .read_artifact_bundle()
-        .expect("artifact bundle reads");
+    let stored = entry.read_artifact_bundle().expect("artifact bundle reads");
     let overlaid = ParseArtifactBundle::new_with_facts(
         stored.resolved_bytes(),
         stored.ir_bytes(),
@@ -141,7 +138,10 @@ fn write_fact_sidecar_persists_refreshed_analysis_facts() {
 
     assert!(lowered_ir_matches(&loaded, &analyzed));
     assert_eq!(loaded.facts.as_slice(), analyzed.facts.as_slice());
-    assert!(facts_current, "refreshed sidecar records the current analysis version");
+    assert!(
+        facts_current,
+        "refreshed sidecar records the current analysis version"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -153,8 +153,7 @@ fn write_fact_sidecar_rejects_ir_for_different_artifact() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_bundle =
-        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
+    let original_bundle = fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     let mut other = lowered_ir_for_source("let y = 2; in y");
     crate::compile::annotate_ir(&mut other).expect("analysis succeeds");
 
@@ -192,8 +191,7 @@ fn write_fact_sidecar_rejects_wrong_fact_table_length() {
     let parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_bundle =
-        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
+    let original_bundle = fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     let mut invalid = parsed.ir.clone();
     invalid.facts = IrFacts::conservative(invalid.arena.nodes().len() + 1);
 
@@ -446,8 +444,7 @@ fn cached_parse_refresh_facts_updates_memory_without_sidecar_write() {
     let mut parsed = cache
         .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_bundle =
-        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
+    let original_bundle = fs::read(parsed.entry.bundle_path()).expect("original bundle read");
 
     parsed.refresh_facts().expect("facts refresh");
 
@@ -474,8 +471,7 @@ fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing
     let mut parsed = cache
         .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
         .expect("source parses on miss");
-    let original_bundle =
-        fs::read(parsed.entry.bundle_path()).expect("original bundle read");
+    let original_bundle = fs::read(parsed.entry.bundle_path()).expect("original bundle read");
     parsed.ir.root = IrId::new(u32::MAX);
 
     let error = parsed
@@ -762,7 +758,10 @@ fn content_hash_key_matches_source_key_and_addresses_the_same_entry() {
     let content_hash = ParseFileContentHash::for_source(source);
 
     // The source-bytes and content-hash key derivations must agree.
-    assert_eq!(cache.key_for_source(source), cache.key_for_content_hash(content_hash));
+    assert_eq!(
+        cache.key_for_source(source),
+        cache.key_for_content_hash(content_hash)
+    );
 
     // Storing through the content-hash path is a hit through the source path and
     // vice versa: both derivations address the same on-disk entry.

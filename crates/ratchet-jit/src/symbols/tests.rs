@@ -4,8 +4,8 @@ use std::num::NonZeroUsize;
 
 use ratchet_core::{
     RuntimeCallableKind, RuntimeHelperRole, RuntimeSymbolKind, runtime_builtin_call_preflight,
-    runtime_helper_call_signature, runtime_helper_call_signatures,
-    runtime_primop_call_signature, runtime_symbol_manifest,
+    runtime_helper_call_signature, runtime_helper_call_signatures, runtime_primop_call_signature,
+    runtime_symbol_manifest,
 };
 
 use super::*;
@@ -25,8 +25,7 @@ fn synthetic_address_candidate(
 
 #[test]
 fn jit_runtime_symbol_inventory_mirrors_core_manifest() {
-    let inventory =
-        jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
+    let inventory = jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
     let core_manifest = runtime_symbol_manifest().expect("core runtime symbol manifest builds");
 
     assert_eq!(inventory.symbols(), core_manifest.as_slice());
@@ -34,8 +33,7 @@ fn jit_runtime_symbol_inventory_mirrors_core_manifest() {
 
 #[test]
 fn jit_runtime_symbol_inventory_preserves_representative_kinds() {
-    let inventory =
-        jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
+    let inventory = jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
 
     assert!(inventory.contains_symbol("aos_alloc_attrs"));
     assert_eq!(
@@ -52,8 +50,7 @@ fn jit_runtime_symbol_inventory_preserves_representative_kinds() {
 
 #[test]
 fn jit_runtime_symbol_inventory_keeps_core_ordering() {
-    let inventory =
-        jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
+    let inventory = jit_runtime_symbol_inventory().expect("JIT runtime symbol inventory builds");
 
     assert!(
         inventory
@@ -82,10 +79,9 @@ fn jit_runtime_symbol_declaration_preflight_declares_callable_builtins() {
     let declaration = preflight
         .declaration_for_symbol("nix.builtin.derivationStrict")
         .expect("callable builtin has a CLIF declaration");
-    let expected_signature = clif_signature_for_runtime_call(
-        runtime_primop_call_signature(1).expect("arity lowers"),
-    )
-    .expect("arity 1 CLIF signature lowers");
+    let expected_signature =
+        clif_signature_for_runtime_call(runtime_primop_call_signature(1).expect("arity lowers"))
+            .expect("arity 1 CLIF signature lowers");
 
     assert_eq!(declaration.symbol_name(), "nix.builtin.derivationStrict");
     assert_eq!(declaration.kind(), RuntimeSymbolKind::Builtin);
@@ -138,13 +134,11 @@ fn jit_runtime_symbol_declaration_preflight_declares_core_owned_helpers() {
     )
     .expect("allocation helper signature lowers");
     let expected_apply = clif_signature_for_runtime_call(
-        runtime_helper_call_signature("aos_apply")
-            .expect("apply helper signature is core-owned"),
+        runtime_helper_call_signature("aos_apply").expect("apply helper signature is core-owned"),
     )
     .expect("apply helper signature lowers");
     let expected_deopt = clif_signature_for_runtime_call(
-        runtime_helper_call_signature("aos_deopt")
-            .expect("deopt helper signature is core-owned"),
+        runtime_helper_call_signature("aos_deopt").expect("deopt helper signature is core-owned"),
     )
     .expect("deopt helper signature lowers");
     let expected_env_get = clif_signature_for_runtime_call(
@@ -158,8 +152,7 @@ fn jit_runtime_symbol_declaration_preflight_declares_core_owned_helpers() {
     )
     .expect("write-barrier helper signature lowers");
     let expected_force = clif_signature_for_runtime_call(
-        runtime_helper_call_signature("aos_force")
-            .expect("force helper signature is core-owned"),
+        runtime_helper_call_signature("aos_force").expect("force helper signature is core-owned"),
     )
     .expect("force helper signature lowers");
     let expected_force_deep = clif_signature_for_runtime_call(
@@ -183,13 +176,11 @@ fn jit_runtime_symbol_declaration_preflight_declares_core_owned_helpers() {
     )
     .expect("select-IC helper signature lowers");
     let expected_update = clif_signature_for_runtime_call(
-        runtime_helper_call_signature("aos_update")
-            .expect("update helper signature is core-owned"),
+        runtime_helper_call_signature("aos_update").expect("update helper signature is core-owned"),
     )
     .expect("update helper signature lowers");
     let expected_throw = clif_signature_for_runtime_call(
-        runtime_helper_call_signature("aos_throw")
-            .expect("throw helper signature is core-owned"),
+        runtime_helper_call_signature("aos_throw").expect("throw helper signature is core-owned"),
     )
     .expect("throw helper signature lowers");
 
@@ -582,8 +573,7 @@ fn jit_runtime_symbol_registration_preflight_rejects_duplicate_candidates() {
         synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 1),
         synthetic_address_candidate("aos_alloc_attrs", RuntimeSymbolKind::Builtin, 2),
     ];
-    let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
-    else {
+    let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates) else {
         panic!("duplicate address candidates must be rejected");
     };
 
@@ -601,8 +591,7 @@ fn jit_runtime_symbol_registration_preflight_rejects_unknown_candidates() {
         RuntimeSymbolKind::Builtin,
         1,
     )];
-    let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates)
-    else {
+    let Err(error) = jit_runtime_symbol_registration_preflight_with_candidates(&candidates) else {
         panic!("unknown address candidates must be rejected");
     };
 

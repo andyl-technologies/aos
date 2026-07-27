@@ -486,35 +486,35 @@ impl TreeWalk {
                 CachedExpressionValue::null()
             }
             ValueTag::String => {
-                let string = self.heap.get_string(value).ok()?;
+                let string = self.heap.get_string_view(value).ok()?;
                 let bytes = try_clone_bytes(string.bytes()).ok()?;
                 if string.has_context() {
-                    let context = string.context().try_clone_context().ok()?;
+                    let context = string.context().try_to_owned().ok()?;
                     CachedExpressionValue::context_string(bytes, context)
                 } else {
                     CachedExpressionValue::context_free_string(bytes)
                 }
             }
             ValueTag::Path => {
-                let path = self.heap.get_path(value).ok()?;
+                let path = self.heap.get_path_view(value).ok()?;
                 let bytes = try_clone_bytes(path.bytes()).ok()?;
                 if path.has_context() {
-                    let context = path.context().try_clone_context().ok()?;
+                    let context = path.context().try_to_owned().ok()?;
                     CachedExpressionValue::context_path(bytes, context)
                 } else {
                     CachedExpressionValue::path(bytes)
                 }
             }
             ValueTag::List => {
-                let list = self.heap.get_list(value).ok()?;
+                let list = self.heap.get_list_view(value).ok()?;
                 if list.is_empty() {
                     CachedExpressionValue::empty_list()
                 } else {
                     let mut elements = Vec::new();
                     elements.try_reserve_exact(list.len()).ok()?;
-                    for element in list {
+                    for element in list.iter() {
                         elements.push(self.force_cache_payload_for_value_with_depth(
-                            *element,
+                            element,
                             depth.saturating_add(1),
                             seen_thunks,
                             allow_suspended_capture_aliases,
@@ -525,14 +525,13 @@ impl TreeWalk {
             }
             ValueTag::Attrs => {
                 let metadata = self.heap.get_attrs_metadata(value).ok()?;
-                let attrs = self.heap.get_attrs(value).ok()?;
+                let attrs = self.heap.get_attrs_view(value).ok()?;
                 let payload = if attrs.is_empty() {
                     CachedExpressionValue::empty_attrs()
                 } else {
                     let mut entries = Vec::new();
                     entries.try_reserve_exact(attrs.len()).ok()?;
-                    let source_order_is_lexicographic =
-                        attrs.source_order() == attrs.iteration_order();
+                    let source_order_is_lexicographic = attrs.source_order_is_lexicographic();
                     let has_positions =
                         attrs.iter_by_symbol().any(|entry| entry.position.is_some());
                     if source_order_is_lexicographic {

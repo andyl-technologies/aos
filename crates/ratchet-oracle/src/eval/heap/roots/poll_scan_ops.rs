@@ -149,10 +149,132 @@ impl EvalHeap {
 
         for root in root_set.roots() {
             scan.roots.push(root.clone());
-            push_worklist(&mut worklist, root.value())?;
+            if matches!(root.source(), EvalRootSource::DetachedTypedThunkHead { .. }) {
+                let ptr = self.validate_detached_typed_thunk_head_root(root.value())?;
+                if push_visited(
+                    &mut visited,
+                    PreciseScanIdentity::Native(ptr.as_ptr() as usize),
+                )? {
+                    push_object_scan(
+                        &mut scan.objects,
+                        HeapObjectScan::new(root.value(), Vec::new()),
+                    )?;
+                }
+            } else {
+                push_worklist(&mut worklist, root.value())?;
+            }
         }
 
         while let Some(value) = worklist.pop_front() {
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            if let Some(generation) = self.packed_generation()
+                && value.word().arena_domain() == Some(generation.domain())
+            {
+                let identity = PreciseScanIdentity::Packed(value.word().raw());
+                if let Some(view) = generation.string_view(value) {
+                    view?;
+                    if push_visited(&mut visited, identity)? {
+                        push_object_scan(
+                            &mut scan.objects,
+                            HeapObjectScan::new(value, Vec::new()),
+                        )?;
+                    }
+                    continue;
+                }
+                if let Some(view) = generation.path_view(value) {
+                    view?;
+                    if push_visited(&mut visited, identity)? {
+                        push_object_scan(
+                            &mut scan.objects,
+                            HeapObjectScan::new(value, Vec::new()),
+                        )?;
+                    }
+                    continue;
+                }
+                if let Some(reference) = generation.list_reference(value) {
+                    let view = EvalListView::packed(generation.collections(), reference)?;
+                    let mut edges = Vec::new();
+                    for (index, child) in view.iter().enumerate() {
+                        push_heap_edge(&mut edges, HeapEdgeSource::ListElement { index }, child)?;
+                    }
+                    if !push_visited(&mut visited, identity)? {
+                        continue;
+                    }
+                    for edge in &edges {
+                        push_worklist(&mut worklist, edge.value())?;
+                    }
+                    push_object_scan(&mut scan.objects, HeapObjectScan::new(value, edges))?;
+                    continue;
+                }
+                if let Some(reference) = generation.attrs_reference(value) {
+                    let view = EvalAttrsView::packed(generation.collections(), reference)?;
+                    let metadata = generation.collections().attrs_metadata(reference)?;
+                    let mut edges = Vec::new();
+                    for (slot, entry) in view.iter_by_symbol().enumerate() {
+                        push_heap_edge(
+                            &mut edges,
+                            HeapEdgeSource::AttrBinding {
+                                shape: metadata.shape(),
+                                slot,
+                                key: entry.key,
+                            },
+                            entry.value,
+                        )?;
+                    }
+                    if !push_visited(&mut visited, identity)? {
+                        continue;
+                    }
+                    for edge in &edges {
+                        push_worklist(&mut worklist, edge.value())?;
+                    }
+                    push_object_scan(&mut scan.objects, HeapObjectScan::new(value, edges))?;
+                    continue;
+                }
+                if let Some(payload) = generation.integer(value) {
+                    payload?;
+                    if push_visited(&mut visited, identity)? {
+                        push_object_scan(
+                            &mut scan.objects,
+                            HeapObjectScan::new(value, Vec::new()),
+                        )?;
+                    }
+                    continue;
+                }
+                if let Some(payload) = generation.float(value) {
+                    payload?;
+                    if push_visited(&mut visited, identity)? {
+                        push_object_scan(
+                            &mut scan.objects,
+                            HeapObjectScan::new(value, Vec::new()),
+                        )?;
+                    }
+                    continue;
+                }
+            }
+            #[cfg(feature = "candidate_c_value")]
+            if matches!(
+                value.word().kind(),
+                crate::value::compressed::CompressedValueKind::BoxedInt
+                    | crate::value::compressed::CompressedValueKind::BoxedFloat
+            ) {
+                match value.word().kind() {
+                    crate::value::compressed::CompressedValueKind::BoxedInt => {
+                        self.decode_int_value(value)?;
+                    }
+                    crate::value::compressed::CompressedValueKind::BoxedFloat => {
+                        self.decode_float_value(value)?;
+                    }
+                    _ => {}
+                }
+                let identity = PreciseScanIdentity::Packed(value.word().raw());
+                if push_visited(&mut visited, identity)? {
+                    push_object_scan(&mut scan.objects, HeapObjectScan::new(value, Vec::new()))?;
+                }
+                continue;
+            }
             let (tag, ptr) = heap_ptr(value)?;
             let address = ptr.as_ptr() as usize;
             // Flat strings/paths (doc 30 FV-1) are edge-free leaf objects
@@ -161,7 +283,7 @@ impl EvalHeap {
             // produced before flattening.
             if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
                 self.flat_verify(tag, ptr)?;
-                if !push_visited(&mut visited, address)? {
+                if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
                     continue;
                 }
                 push_object_scan(&mut scan.objects, HeapObjectScan::new(value, Vec::new()))?;
@@ -172,7 +294,7 @@ impl EvalHeap {
             // produced and keep traversing through them.
             if self.shared.is_none() && tag == ValueTag::List {
                 let edges = self.scan_flat_list_edges(self.flat_list_payload(ptr)?)?;
-                if !push_visited(&mut visited, address)? {
+                if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
                     continue;
                 }
                 for edge in &edges {
@@ -186,9 +308,47 @@ impl EvalHeap {
             // produced and keep traversing through them.
             if self.shared.is_none() && tag == ValueTag::Attrs {
                 let edges = self.scan_flat_attrs_edges(self.flat_attrs_payload(ptr)?)?;
-                if !push_visited(&mut visited, address)? {
+                if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
                     continue;
                 }
+                for edge in &edges {
+                    push_worklist(&mut worklist, edge.value())?;
+                }
+                push_object_scan(&mut scan.objects, HeapObjectScan::new(value, edges))?;
+                continue;
+            }
+            // Flat worker closures (FV-3) are outside the record table just
+            // like flat permanent values. Scan their payload-owned, shared
+            // frame, and optional inline-tail edges through the flat-closure
+            // door before falling back to legacy records. Typed thunk heads
+            // deliberately return `None` here and retain their specialized
+            // work-pool branch below.
+            if self.shared.is_none()
+                && matches!(tag, ValueTag::Thunk | ValueTag::Lambda | ValueTag::Primop)
+                && let Some(payload) = self.flat_closure_payload_any(ptr)
+            {
+                let edges = self.scan_flat_closure_edges(ptr, payload)?;
+                if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
+                    continue;
+                }
+                for edge in &edges {
+                    push_worklist(&mut worklist, edge.value())?;
+                }
+                push_object_scan(&mut scan.objects, HeapObjectScan::new(value, edges))?;
+                continue;
+            }
+            // A suspended typed head exposes work-pool edges; an unmatched
+            // blackhole is rejected by `scan_typed_thunk_edges`. A leased
+            // blackhole was previsited above from its evaluator-only special
+            // root, so another ordinary root or edge reaches this `continue`
+            // without globally accepting blackholes.
+            if self.shared.is_none() && tag == ValueTag::Thunk && self.is_typed_thunk_head(ptr) {
+                if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
+                    continue;
+                }
+                let edges = self
+                    .scan_typed_thunk_edges(ptr)?
+                    .ok_or_else(|| EvalHeapError::unknown(tag, ptr))?;
                 for edge in &edges {
                     push_worklist(&mut worklist, edge.value())?;
                 }
@@ -200,7 +360,7 @@ impl EvalHeap {
             if actual != tag {
                 return Err(EvalHeapError::record_type_mismatch(tag, actual, ptr));
             }
-            if !push_visited(&mut visited, address)? {
+            if !push_visited(&mut visited, PreciseScanIdentity::Native(address))? {
                 continue;
             }
 

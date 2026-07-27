@@ -73,7 +73,12 @@ fn copied_heap_field_write_relocates_every_alias_of_a_captured_frame_cell() {
     assert_eq!(report.fields(), 1);
     assert_captured_slot(&heap, parent_destination, child_destination);
     assert_captured_slot(&heap, alias, child_destination);
-    assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
+    assert!(
+        frame
+            .get(0)
+            .expect("shared slot reads")
+            .raw_eq(child_destination)
+    );
 }
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
@@ -101,9 +106,8 @@ fn direct_heap_field_write_relocates_an_old_captured_frame_cell() {
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        child_request,
-    ]);
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
     heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
         .expect("replacement body binds");
     heap.apply_collector_poll_minor_gc_object_generation_writes(
@@ -131,7 +135,12 @@ fn direct_heap_field_write_relocates_an_old_captured_frame_cell() {
     assert_eq!(report.fields(), 1);
     assert_captured_slot(&heap, parent, child_destination);
     assert_captured_slot(&heap, alias, child_destination);
-    assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
+    assert!(
+        frame
+            .get(0)
+            .expect("shared slot reads")
+            .raw_eq(child_destination)
+    );
 }
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
@@ -159,9 +168,8 @@ fn direct_heap_field_write_relocates_a_suspended_thunk_capture_cell() {
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        child_request,
-    ]);
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
     heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
         .expect("replacement body binds");
     heap.apply_collector_poll_minor_gc_object_generation_writes(
@@ -193,7 +201,12 @@ fn direct_heap_field_write_relocates_a_suspended_thunk_capture_cell() {
     assert_eq!(report.fields(), 1);
     assert_captured_thunk_slot(&heap, parent, child_destination);
     assert_captured_thunk_slot(&heap, alias, child_destination);
-    assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
+    assert!(
+        frame
+            .get(0)
+            .expect("shared slot reads")
+            .raw_eq(child_destination)
+    );
 }
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
@@ -226,9 +239,8 @@ fn direct_heap_field_write_relocates_a_blackholed_thunk_capture_cell() {
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        child_request,
-    ]);
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
     heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
         .expect("replacement body binds");
     heap.apply_collector_poll_minor_gc_object_generation_writes(
@@ -286,9 +298,8 @@ fn captured_frame_borrow_conflict_rejects_writeback_before_mutation() {
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        child_request,
-    ]);
+    let copy_plan =
+        AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![child_request]);
     heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
         .expect("replacement body binds");
     heap.apply_collector_poll_minor_gc_object_generation_writes(
@@ -308,15 +319,16 @@ fn captured_frame_borrow_conflict_rejects_writeback_before_mutation() {
         },
         child_request,
     );
-    let borrowed = frame
-        .borrow_slots_for_test()
-        .expect("test borrow acquires");
+    let borrowed = frame.borrow_slots_for_test().expect("test borrow acquires");
 
     let error = heap
         .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
         .expect_err("borrowed captured cell rejects writeback");
 
-    assert_eq!(error, EvalHeapError::Environment(EvalEnvError::BorrowConflict));
+    assert_eq!(
+        error,
+        EvalHeapError::Environment(EvalEnvError::BorrowConflict)
+    );
     assert!(borrowed[0].raw_eq(child));
     drop(borrowed);
     assert!(frame.get(0).expect("shared slot reads").raw_eq(child));
@@ -358,7 +370,9 @@ const fn captured_lambda_slot() -> HeapEdgeSource {
 }
 
 fn assert_captured_slot(heap: &EvalHeap, owner: Value, expected: Value) {
-    let lambda = heap.get_lambda(owner).expect("capturing lambda remains typed");
+    let lambda = heap
+        .get_lambda(owner)
+        .expect("capturing lambda remains typed");
     assert!(
         lambda.env().frames()[0]
             .get(0)
@@ -368,7 +382,9 @@ fn assert_captured_slot(heap: &EvalHeap, owner: Value, expected: Value) {
 }
 
 fn assert_captured_thunk_slot(heap: &EvalHeap, owner: Value, expected: Value) {
-    let thunk = heap.clone_thunk(owner).expect("capturing thunk remains typed");
+    let thunk = heap
+        .clone_thunk(owner)
+        .expect("capturing thunk remains typed");
     let EvalThunkKind::Node { env, .. } = thunk.kind() else {
         panic!("capturing thunk remains suspended");
     };

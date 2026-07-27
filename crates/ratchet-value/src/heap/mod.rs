@@ -17,8 +17,10 @@ pub mod reservation;
 pub mod reservation_registry;
 pub mod resident;
 pub mod safety;
+pub mod segmented;
 #[cfg(feature = "candidate_c_value")]
 pub mod snapshot;
+pub mod stable_lane;
 
 pub use advice::{
     AllocatorReleaseOutcome, MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
@@ -41,22 +43,23 @@ pub use concurrent_gc::{
 };
 pub use flat::{
     FlatAllocation, FlatObjectError, FlatObjectKind, FlatObjectRef, FlatObjectStore,
-    FlatStoredObject,
+    FlatStoredObject, HeaderlessFlatAllocation, HeaderlessFlatLane,
+    SharedReservationZeroPageAdviceReport,
 };
 pub use gauges::ArenaProcessGauges;
 pub use gc::{
     DEFAULT_GC_CARD_SIZE_BYTES, GcCardTable, GcCardTableClearReport, GcCardTableSnapshot,
-    GcCardTableUpdate, GcDirtyCard, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
-    HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan, MinorGcCommitReport,
-    MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
-    MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcForwardingPointer,
-    MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcOldFieldRescan, MinorGcOldFieldRescanPlan,
-    MinorGcOldObjectFields, MinorGcOwnedCommitBuffers, MinorGcOwnedDestinationStorage,
-    MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocation,
-    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
-    MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
+    GcCardTableUpdate, GcDirtyCard, GcHeapAddress, GcObjectIdentity, GenerationalGcError,
+    GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan,
+    MinorGcCommitReport, MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan,
+    MinorGcDestinationBases, MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan,
+    MinorGcForwardingPointer, MinorGcForwardingPointerPlan, MinorGcForwardingSlot,
+    MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcOldFieldRescan,
+    MinorGcOldFieldRescanPlan, MinorGcOldObjectFields, MinorGcOwnedCommitBuffers,
+    MinorGcOwnedDestinationStorage, MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan,
+    MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
+    MinorGcRelocation, MinorGcRelocationDestination, MinorGcRelocationDestinationPlan,
+    MinorGcRelocationPlan, MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
     MinorGcRememberedSetRefreshPlan, MinorGcSourceObjectBytes, MinorGcSurvivor,
     MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
     RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot, RememberedSetUpdate,
@@ -70,8 +73,9 @@ pub use region::{
 };
 pub use reservation::{
     ArenaDomainId, ArenaIndex, CANDIDATE_C_ADDRESS_SPACE_BYTES, CANDIDATE_C_ARENA_DOMAIN_MAX,
-    ReservedArena, ReservedArenaAllocation, ReservedArenaError, ReservedArenaHighMark,
-    ReservedArenaMark, ReservedArenaStats,
+    ReservedArena, ReservedArenaAllocation, ReservedArenaDeadPageAdvice,
+    ReservedArenaDeadPageAdviceError, ReservedArenaError, ReservedArenaHighMark,
+    ReservedArenaLaneResidency, ReservedArenaMark, ReservedArenaResidency, ReservedArenaStats,
 };
 pub use reservation_registry::{
     ReservationRegistryError, register_reservation_base, reservation_base,
@@ -82,9 +86,11 @@ pub use resident::{
     ProcessResidentMemorySource, peak_resident_memory_bytes, process_resident_memory_sample,
     process_resident_memory_sample_from_linux_statm,
 };
+pub use segmented::{SegmentCoordinate, SegmentedLane, SegmentedLaneError};
 #[cfg(feature = "candidate_c_value")]
 pub use snapshot::{
     ClosurePayload, ContextPayload, FramePayload, HeapImage, IMAGE_VERSION, ListPayload,
     OwnedAttrsPayload, OwnedStringPayload, PrimopPayload, RelocationEntry, SnapshotError,
     capture_reservation, restore_reservation,
 };
+pub use stable_lane::{StableLaneCoordinate, StableLaneError, StableReservedLane};

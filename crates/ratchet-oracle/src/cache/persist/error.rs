@@ -24,12 +24,12 @@ pub use indexed_errors::{
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistError, PersistFileArtifactFlushError,
-    PersistFileArtifactHydrationError,
-    PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
-    PersistParseArtifactHydrationError, PersistParseArtifactIndexedHydrationError,
-    PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
-    PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError, PersistRootRecordError,
+    PersistFileArtifactHydrationError, PersistFileArtifactIndexedHydrationError,
+    PersistFileArtifactIndexedWriteError, PersistParseArtifactHydrationError,
+    PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
+    PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
+    PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
+    PersistParseSourceIndexedLoadError, PersistRootRecordError,
 };
 pub use storage_errors::{
     PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError, PersistBlobIndexesRebuildError,

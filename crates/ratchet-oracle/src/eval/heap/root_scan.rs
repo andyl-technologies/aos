@@ -11,6 +11,15 @@ const VISITED_TABLE: &str = "visited";
 const OBJECTS_TABLE: &str = "objects";
 const EDGES_TABLE: &str = "edges";
 
+/// Representation-neutral identity used to deduplicate one precise scan.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum PreciseScanIdentity {
+    /// A native address owned by an ordinary evaluator store.
+    Native(usize),
+    /// A canonical Candidate-C word owned by a registry-free packed lane.
+    Packed(u64),
+}
+
 pub(super) fn push_heap_edge(
     edges: &mut Vec<HeapEdge>,
     source: HeapEdgeSource,
@@ -54,10 +63,10 @@ pub(super) fn push_worklist(
 }
 
 pub(super) fn push_visited(
-    visited: &mut HashSet<usize>,
-    address: usize,
+    visited: &mut HashSet<PreciseScanIdentity>,
+    identity: PreciseScanIdentity,
 ) -> Result<bool, EvalHeapError> {
-    if visited.contains(&address) {
+    if visited.contains(&identity) {
         return Ok(false);
     }
     let entries = visited
@@ -72,7 +81,7 @@ pub(super) fn push_visited(
             table: VISITED_TABLE,
             entries,
         })?;
-    Ok(visited.insert(address))
+    Ok(visited.insert(identity))
 }
 
 pub(super) fn push_object_scan(
@@ -95,8 +104,8 @@ pub(super) fn push_object_scan(
     Ok(())
 }
 
-pub(super) const fn is_scannable_eval_heap_value(value: Value) -> bool {
-    matches!(
+pub(super) fn is_scannable_eval_heap_value(value: Value) -> bool {
+    if matches!(
         value.tag(),
         ValueTag::String
             | ValueTag::Path
@@ -105,12 +114,24 @@ pub(super) const fn is_scannable_eval_heap_value(value: Value) -> bool {
             | ValueTag::Lambda
             | ValueTag::Primop
             | ValueTag::Thunk
-    )
+    ) {
+        return true;
+    }
+    #[cfg(feature = "candidate_c_value")]
+    {
+        matches!(
+            value.word().kind(),
+            crate::value::compressed::CompressedValueKind::BoxedInt
+                | crate::value::compressed::CompressedValueKind::BoxedFloat
+        )
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        false
+    }
 }
 
-pub(super) fn heap_ptr(
-    value: Value,
-) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
+pub(super) fn heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
     let tag = value.tag();
     let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
     Ok((tag, ptr))

@@ -108,6 +108,25 @@ pub(in crate::eval::tree_walk) struct PrimopBuiltinCache {
 }
 
 impl PrimopBuiltinCache {
+    /// Returns structural allocation counts for memory attribution.
+    pub(in crate::eval::tree_walk) fn storage_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let slots = self.modules.iter().map(Vec::len).sum();
+        let slot_capacity = self.modules.iter().map(Vec::capacity).sum();
+        let populated = self
+            .modules
+            .iter()
+            .flat_map(|module| module.iter())
+            .filter(|entry| entry.is_some())
+            .count();
+        (
+            self.modules.len(),
+            self.modules.capacity(),
+            slots,
+            slot_capacity,
+            populated,
+        )
+    }
+
     /// Returns the cache entry for a primop node, if one was recorded.
     pub(in crate::eval::tree_walk) fn get(
         &self,

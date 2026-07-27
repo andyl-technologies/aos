@@ -37,9 +37,9 @@ use crate::compile::{
     IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
     IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError, IrFacts, IrId, IrInlineCacheSiteId,
     IrKind, IrNode, IrShape, IrShapeId, IrWithChain, LambdaAttrKeys, LambdaAttrValueSummary,
-    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, PASS_SET_VERSION, ResolvedAst, ScopeError,
-    ScopeTables, SharedChainReason, SimplifyError, Strictness, Upvalue, WithChain, annotate_ir,
-    resolve, simplify_ir,
+    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, PASS_SET_VERSION, ResolvedAst,
+    ScopeError, ScopeTables, SharedChainReason, SimplifyError, Strictness, Upvalue, WithChain,
+    annotate_ir, resolve, simplify_ir,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
@@ -490,7 +490,11 @@ impl ParseCache {
     /// Re-derives both the content hash and the composite key under `family`,
     /// for probing a foreign-family persist location that stored the artifact
     /// under a different content-hash family (RFC-0007 §P4 Option C).
-    pub fn key_for_source_with_family(&self, source: &[u8], family: CacheHashFamily) -> ParseCacheKey {
+    pub fn key_for_source_with_family(
+        &self,
+        source: &[u8],
+        family: CacheHashFamily,
+    ) -> ParseCacheKey {
         ParseCacheKey::from_content_hash_with_family(
             ParseFileContentHash::for_source_with_family(source, family),
             self.schema_version,
@@ -702,8 +706,8 @@ impl CachedParse {
     ///
     /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR.
     pub fn refresh_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
-        let report =
-            annotate_ir(&mut self.ir).map_err(|source| ParseFactRefreshError::Analyze { source })?;
+        let report = annotate_ir(&mut self.ir)
+            .map_err(|source| ParseFactRefreshError::Analyze { source })?;
         // Capture-plan distribution telemetry (RFC-0007 Phase 4 Chunk D):
         // per-module free-variable histogram for FLAT_CAPTURE_MAX_SLOTS
         // sizing. Debug-level so production evals pay one disabled check.

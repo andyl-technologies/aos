@@ -207,9 +207,10 @@ impl NixJitTier1Engine {
             return continued_hook(false, false, false);
         }
         let entry_addr = entry.entry_addr();
-        if eval
-            .install_and_publish_tier2_def_site_slot(key, OpaqueTier1Slot::new(entry_addr, Box::new(entry)))
-        {
+        if eval.install_and_publish_tier2_def_site_slot(
+            key,
+            OpaqueTier1Slot::new(entry_addr, Box::new(entry)),
+        ) {
             continued_hook(true, false, false)
         } else {
             continued_hook(false, false, false)
@@ -654,7 +655,9 @@ mod tests {
         );
         let mut first_eval = TreeWalk::with_options(&ir, options.clone());
         first_eval.set_tier1_engine(first_engine);
-        let first = first_eval.eval_root().expect("first tak evaluation succeeds");
+        let first = first_eval
+            .eval_root()
+            .expect("first tak evaluation succeeds");
         assert!(first_eval.stats().tier2_promoted() >= 1);
         drop(first_eval);
 
@@ -768,8 +771,7 @@ mod tests {
     /// deeper runs within its 1024-frame budget.
     #[test]
     fn arity_two_accumulator_recursion_promotes_and_matches() {
-        let source =
-            "let addTo = a: n: if n < 1 then a else 1 + addTo a (n - 1); in addTo 5 16";
+        let source = "let addTo = a: n: if n < 1 then a else 1 + addTo a (n - 1); in addTo 5 16";
         let oracle = eval_oracle(source);
         let (native, stats) = eval_with_tier2(source);
 

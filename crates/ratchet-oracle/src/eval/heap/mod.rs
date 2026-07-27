@@ -50,37 +50,249 @@ use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 mod alloc_counters;
 mod arena;
-#[cfg(all(test, feature = "candidate_c_value"))]
+#[cfg(feature = "candidate_c_value")]
 mod census;
 #[cfg(feature = "candidate_c_value")]
 mod closure_code_ref;
+#[cfg(feature = "candidate_c_value")]
+#[allow(dead_code)] // Production heap routing is the next packed-publication slice.
+mod collection_view;
+#[cfg(feature = "compact_destination_probe")]
+mod compact_destination;
+#[cfg(feature = "candidate_c_value")]
+#[allow(unused_imports)] // Used by the next packed resolver integration slice.
+pub(crate) use collection_view::{EvalAttrsView, EvalListView};
+#[cfg(feature = "active_packed_thunk_probe")]
+mod active_packed_thunks;
+#[cfg(feature = "demand_region_shadow_probe")]
+mod demand_region;
 mod deref_counters;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe",
+    feature = "active_packed_thunk_probe"
+))]
+#[allow(dead_code)] // Consumed by the next packed-rotation publication hook.
+mod direct_root_rewrite;
 mod environment_writeback;
 mod errors;
+#[cfg(feature = "candidate_c_value")]
+#[allow(dead_code)] // Installed by the next selective-evacuation publication slice.
+mod evacuation_forwarding;
+#[cfg(feature = "evacuation_plan_probe")]
+mod evacuation_plan;
 mod flat_values;
 mod gc;
+#[cfg(feature = "immutable_cohort_projection_probe")]
+mod immutable_cohort_projection;
 mod lambda;
+#[cfg(feature = "lifetime_cohort_probe")]
+mod lifetime_quarantine;
+#[cfg(feature = "mesh_projection_probe")]
+mod mesh_projection;
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+mod nested_nonmoving_retirement;
+#[cfg(feature = "nonmoving_reclaim_probe")]
+mod nonmoving_reclaim;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Destination machinery awaits whole-heap publication wiring.
+mod packed_collection_lane;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Destination machinery awaits whole-heap publication wiring.
+mod packed_frame_lane;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Owner admission is consumed by the production publication slice.
+mod packed_generation;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Consumed by the tree-walk packed publication hook.
+mod packed_publication;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Prepared stage is consumed by the packed publication transaction.
+mod packed_retained_heap_healing;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Prepared transaction is consumed by the publication hook.
+mod packed_rotation_prepare;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Destination machinery awaits whole-heap publication wiring.
+mod packed_scalar_lane;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Consumed by the packed publication transaction.
+mod packed_source_retirement;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Destination machinery awaits whole-heap publication wiring.
+mod packed_string_lane;
+#[cfg(any(
+    feature = "active_packed_thunk_probe",
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Destination machinery awaits whole-heap publication wiring.
+mod packed_thunk_lane;
+#[cfg(feature = "active_packed_thunk_probe")]
+pub(in crate::eval) use active_packed_thunks::{ActivePackedApplyWork, ActivePackedThunkForce};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Construction scratch is dropped at packed publication.
+mod packed_translation;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(dead_code)] // Prepared replacement is consumed by the publication hook.
+mod packed_weak_indexes;
+#[cfg(feature = "young_increment_projection_probe")]
+mod young_increment_projection;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(unused_imports)] // Consumed by the packed publication transaction.
+pub(in crate::eval) use packed_weak_indexes::{PackedWeakIndexError, PreparedPackedWeakIndexes};
+#[cfg(feature = "peak_ordinal_probe")]
+mod peak_ordinal;
 mod primop;
+#[cfg(feature = "ready_exclusive_probe")]
+mod ready_exclusive;
 mod record_table;
+#[allow(dead_code)] // Production string consumers are migrated incrementally.
+mod string_view;
+#[allow(unused_imports)] // Used by packed-aware evaluator read paths.
+pub(crate) use string_view::{EvalStringContextView, EvalStringView};
 mod root_scan;
 mod roots;
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+#[allow(dead_code)] // Consumed by the next exact multi-checkpoint probe wiring.
+mod rotating_rollover_projection;
 mod shared_arena;
 mod shared_backend;
 #[cfg(feature = "candidate_c_value")]
 mod snapshot;
 mod structural_writeback;
 mod thunk;
+#[cfg(feature = "lifetime_cohort_probe")]
+mod weak_hash_cons_purge;
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
+#[cfg(feature = "candidate_c_value")]
+pub(crate) use census::ImportEpochCensusFence;
+#[cfg(feature = "lifetime_cohort_probe")]
+pub(crate) use census::{
+    LifetimeCohortCandidate, LifetimeCohortCandidateKind, LifetimeCohortCandidateObservation,
+    LifetimeCohortCensus, LifetimeCohortMass,
+};
+#[cfg(feature = "demand_region_shadow_probe")]
+pub(crate) use demand_region::{DemandRegionAllocationCensus, DemandRegionAllocationFence};
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(unused_imports)] // Consumed by the next packed-rotation publication hook.
+pub(in crate::eval) use direct_root_rewrite::{
+    DirectRootBinding, DirectRootObservation, DirectRootRewrite, DirectRootRewriteError,
+    DirectRootRewritePlan, DirectRootRewriteReport,
+};
+#[cfg(feature = "candidate_c_value")]
+use evacuation_forwarding::EvacuationForwardingDirectory;
+#[cfg(feature = "candidate_c_value")]
+use flat_values::EvacuatedGeneration;
 use flat_values::FlatColdHashStore;
 pub(crate) use flat_values::attrs::FlatAttrsPayload;
 pub(in crate::eval) use flat_values::closures::FlatCapturePublication;
 pub use flat_values::closures::WorkerClosurePlacement;
 pub(crate) use flat_values::closures::{FlatClosurePayload, serial_flat_closure_store};
+#[cfg(feature = "candidate_c_value")]
+pub(in crate::eval) use flat_values::permanent_publication::PermanentRetirementReport;
+pub(in crate::eval) use flat_values::thunk_heads::TypedThunkWorkHandle;
+use flat_values::thunk_heads::{StableThunkHead, TypedThunkWorkPool};
+pub(in crate::eval) use flat_values::thunk_heads::{TypedThunkForceClaim, TypedThunkForceParts};
+#[cfg(feature = "immutable_cohort_projection_probe")]
+pub(crate) use immutable_cohort_projection::{
+    ImmutableCohortFingerprint, ImmutableCohortProjection,
+};
+#[cfg(feature = "lifetime_cohort_probe")]
+pub(crate) use lifetime_quarantine::{LifetimeQuarantineInstallReport, LifetimeQuarantineOrigin};
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+pub(crate) use nested_nonmoving_retirement::{
+    NestedNonmovingRetirementReport, NestedNonmovingRuntimeHeapSnapshot,
+    NestedNonmovingRuntimeReservationSnapshot,
+};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(unused_imports)] // Consumed by the tree-walk packed publication hook.
+pub(in crate::eval) use packed_publication::{
+    PackedPublicationCommit, PackedPublicationError, PackedPublicationRetirementReport,
+    PackedSourceAliasAuditFailure, PreparedPackedPublication, PublishedPackedPublication,
+    ZeroAliasPackedPublication,
+};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+#[allow(unused_imports)] // Consumed by the packed publication transaction.
+pub(in crate::eval) use packed_retained_heap_healing::{
+    PackedRetainedHeapHealingError, PackedRetainedHeapHealingStage,
+};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+pub(in crate::eval) use packed_rotation_prepare::PackedRotationAdmissionInput;
+#[cfg(feature = "peak_ordinal_probe")]
+pub(crate) use peak_ordinal::{PeakAllocationSample, PeakOrdinalProbe};
+#[cfg(feature = "ready_exclusive_probe")]
+#[allow(unused_imports)] // Consumed by the later tree-walk phase-window wiring.
+pub(crate) use ready_exclusive::{
+    ReadyExclusiveCandidate, ReadyExclusiveCensus, ReadyExclusiveObjectKind,
+};
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+#[allow(unused_imports)] // Exported for the next exact multi-checkpoint probe wiring.
+pub(crate) use rotating_rollover_projection::{
+    ROTATING_ROLLOVER_ENGINEERING_GATE_BYTES, ROTATING_ROLLOVER_ORDINALS, RotatingRolloverBlockers,
+    RotatingRolloverCheckpointInput, RotatingRolloverDestinationInput, RotatingRolloverEvidence,
+    RotatingRolloverExternalCohort, RotatingRolloverExternalLifecycle,
+    RotatingRolloverIntervalInput, RotatingRolloverOwnershipLedger, RotatingRolloverProjection,
+    RotatingRolloverProjectionError, RotatingRolloverReplayInput, RotatingRolloverWatermarkInput,
+    project_rotating_rollover,
+};
+#[cfg(feature = "lifetime_cohort_probe")]
+pub(crate) use weak_hash_cons_purge::{WeakHashConsPurgeReport, WeakHashConsTablePurgeReport};
+#[cfg(feature = "young_increment_projection_probe")]
+pub(crate) use young_increment_projection::YoungIncrementProjection;
 
 use crate::heap::flat::{
     FlatKindSet, FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark,
-    SharedFlatStoreArena,
+    HeaderlessFlatLane, SharedFlatStoreArena,
 };
 #[cfg(feature = "candidate_c_value")]
 pub(crate) use closure_code_ref::{LambdaCodeFingerprints, LambdaCodeResolver};
@@ -152,6 +364,24 @@ pub(crate) enum EvalThunkKind {
         /// The IR node that produced the argument.
         argument: EvalNodeRef,
         /// The lazy argument value.
+        argument_value: Value,
+    },
+    /// Applies a `genList` generator whose body is `elemAt receiver (index + 1)`.
+    ///
+    /// The payload intentionally matches [`Self::Apply`] exactly. The marker
+    /// admits a guarded force-time fast path without widening the common thunk
+    /// record or changing its roots; unsupported evaluator modes execute it as
+    /// an ordinary application.
+    GenListElemAtAddOne {
+        /// The IR node that produced the generator.
+        function: EvalNodeRef,
+        /// The source span associated with the generator.
+        function_span: Span,
+        /// The forced generator lambda.
+        function_value: Value,
+        /// The IR node associated with the generated index.
+        argument: EvalNodeRef,
+        /// The generated lazy index value.
         argument_value: Value,
     },
     /// Applies a forced function value to two lazy argument values.
@@ -243,6 +473,19 @@ pub struct EvalThunk {
     /// Dynamic scopes, single-entry state, and parallel state stay out of line
     /// so the common record remains compact.
     storage_extension: Option<Box<EvalThunkStorageExtension>>,
+}
+
+/// Shape-sized suspended work for the dominant ordinary Node thunk.
+///
+/// Typed stable heads keep this payload in a dedicated reusable pool instead
+/// of reserving one full [`EvalThunk`] enum slot. The compatibility expansion
+/// is initialized only when a metadata reader requires `&EvalThunk`; forcing
+/// consumes this record directly and drops both representations after update.
+#[derive(Debug)]
+pub(in crate::eval::heap) struct TypedNodeThunkWork {
+    body: EvalNodeRef,
+    env: EvalEnv,
+    expanded: std::sync::OnceLock<Box<EvalThunk>>,
 }
 
 /// Force-storage state absent from the common serial thunk.
@@ -348,8 +591,13 @@ pub struct EvalHeap {
     attrs_cons: HashConsTable<HotXxh3Hash, Value>,
     attrs_hash_cons_enabled: bool,
     alloc_counters: EvalHeapAllocationCounters,
+    #[cfg(feature = "peak_ordinal_probe")]
+    peak_ordinal_probe: PeakOrdinalProbe,
     /// Dereference-chain volume counters (RFC-0007 doc 30 FV-0).
     deref_counters: EvalHeapDerefCounters,
+    /// Default-off nonmoving shadow for execution-176 dead candidates.
+    #[cfg(feature = "lifetime_cohort_probe")]
+    lifetime_quarantine: Option<lifetime_quarantine::LifetimeQuarantine>,
     /// Flat string/path objects (RFC-0007 doc 30 FV-1, serial mode).
     ///
     /// Owns its own arena; payload drop glue runs in the store's `Drop`
@@ -370,6 +618,21 @@ pub struct EvalHeap {
     /// decision). The store participates in the same four GC couplings as
     /// the flat list store; see `flat_values::attrs` for the seam.
     flat_attrs: FlatObjectStore<FlatAttrsPayload>,
+    /// Permanent stable identities for the default-off typed-thunk experiment.
+    ///
+    /// Unlike `flat_closures`, this store occupies the non-rewindable low lane:
+    /// a published thunk value must never name an address that a lexical region
+    /// pop can recycle.
+    typed_thunk_heads: HeaderlessFlatLane<StableThunkHead>,
+    /// Reusable, generational suspended-work slots for typed thunk heads.
+    typed_thunk_work: TypedThunkWorkPool<EvalThunk>,
+    /// Shape-sized reusable work slots for ordinary serial Node thunks.
+    typed_node_thunk_work: TypedThunkWorkPool<TypedNodeThunkWork>,
+    /// Whether plain serial no-tail thunk allocations may use typed heads.
+    typed_apply_thunk_heads_enabled: bool,
+    /// Fixed-capacity serial packed Apply/GenList execution experiment.
+    #[cfg(feature = "active_packed_thunk_probe")]
+    active_packed_thunks: active_packed_thunks::ActivePackedThunkStore,
     /// The shared permanent-domain flat arena (doc 30 FV-4, serial mode).
     ///
     /// One Candidate-C reservation hosts the string/path, list, and attrset
@@ -428,6 +691,40 @@ pub struct EvalHeap {
     /// pointer with one checked `base + index` operation instead.
     #[cfg(feature = "candidate_c_value")]
     serial_reservation: Option<SerialReservationResolver>,
+    /// Cached identity for the compact serial generation, when evacuation has
+    /// installed one alongside the allocation/nursery reservation.
+    ///
+    /// This is metadata only: the generation owner must keep the corresponding
+    /// reservation mapped for as long as this resolver is present.
+    #[cfg(feature = "candidate_c_value")]
+    evacuated_serial_reservation: Option<SerialReservationResolver>,
+    /// Owner of the installed compact aggregate generation.
+    ///
+    /// The owner and [`Self::evacuated_serial_reservation`] are published
+    /// together by the explicit installation boundary. Ordinary construction
+    /// and object movement leave both absent.
+    #[cfg(feature = "candidate_c_value")]
+    evacuated_generation: Option<EvacuatedGeneration>,
+    /// Owner of the installed registry-free packed generation.
+    ///
+    /// Its logical Candidate-C domain has no native reservation base. Typed
+    /// heap access must recognize the domain and resolve a direct lane
+    /// coordinate before attempting ordinary pointer reconstruction.
+    #[cfg(any(
+        feature = "compact_destination_probe",
+        feature = "evacuation_plan_probe"
+    ))]
+    packed_generation: Option<packed_generation::PackedGeneration>,
+    /// Temporary nursery-offset aliases for evacuated plain closures.
+    ///
+    /// This directory is installed atomically with
+    /// [`Self::evacuated_generation`] and its resolver. It currently
+    /// participates only in the safe evaluator's primop/lambda get, raw-pointer
+    /// get, and clone paths. GC, JIT, FFI, and context-free `Value` access do
+    /// not canonicalize these aliases yet, so no production batch publishes
+    /// the directory.
+    #[cfg(feature = "candidate_c_value")]
+    evacuated_closure_forwarding: Option<EvacuationForwardingDirectory>,
 }
 
 /// Heap-owned Candidate-C reservation metadata used by serial hot paths.
@@ -437,6 +734,31 @@ struct SerialReservationResolver {
     domain: crate::heap::ArenaDomainId,
     base: usize,
     capacity: usize,
+}
+
+/// One of the two allocation-free serial Candidate-C resolution targets.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SerialHeapGeneration {
+    /// The reservation receiving new serial allocations.
+    Nursery,
+    /// The compact reservation containing evacuated survivors.
+    Evacuated,
+}
+
+/// A serial heap address together with the generation that owns its stores.
+#[cfg(feature = "candidate_c_value")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SerialHeapLocation {
+    ptr: NonNull<HeapObject>,
+    generation: SerialHeapGeneration,
+}
+
+#[cfg(not(feature = "lifetime_cohort_probe"))]
+impl EvalHeap {
+    /// Ignores raw-identity observations when the quarantine probe is disabled.
+    #[inline]
+    pub(in crate::eval) fn observe_value_identity(&self, _value: Value) {}
 }
 
 impl Default for EvalHeap {

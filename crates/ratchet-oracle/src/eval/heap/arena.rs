@@ -57,6 +57,16 @@ pub use budget_types::{
 };
 
 impl EvalHeap {
+    /// Samples physical residency for the serial Candidate-C reservation.
+    ///
+    /// Returns `None` when the heap uses the chunked compatibility backend. A
+    /// present error means the operating system rejected the residency query.
+    pub fn flat_reservation_residency(
+        &self,
+    ) -> Option<Result<crate::heap::ReservedArenaResidency, crate::heap::ReservedArenaError>> {
+        self.flat_arena.reservation_residency()
+    }
+
     /// Creates an empty evaluator heap.
     ///
     /// # Panics
@@ -100,6 +110,12 @@ impl EvalHeap {
         flat_arena: SharedFlatStoreArena,
         allocator: RuntimeAllocator,
     ) -> Self {
+        #[cfg(feature = "hole_reuse_shadow_probe")]
+        if flat_arena.uses_reservation()
+            && std::env::var("AOS_NIX_HOLE_REUSE_SHADOW").is_ok_and(|value| value == "1")
+        {
+            ratchet_value::heap::flat::hole_reuse_shadow::start_hole_reuse_shadow();
+        }
         #[cfg(feature = "candidate_c_value")]
         let serial_reservation = serial_reservation_resolver(&flat_arena);
         let flat_closures = serial_flat_closure_store(&flat_arena);
@@ -124,7 +140,11 @@ impl EvalHeap {
             attrs_cons: HashConsTable::new(),
             attrs_hash_cons_enabled: true,
             alloc_counters: EvalHeapAllocationCounters::default(),
+            #[cfg(feature = "peak_ordinal_probe")]
+            peak_ordinal_probe: PeakOrdinalProbe::from_env(),
             deref_counters: EvalHeapDerefCounters::default(),
+            #[cfg(feature = "lifetime_cohort_probe")]
+            lifetime_quarantine: None,
             flat: FlatObjectStore::with_shared_arena(
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
@@ -137,6 +157,15 @@ impl EvalHeap {
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::Attrs]),
             ),
+            typed_thunk_heads: HeaderlessFlatLane::new(
+                flat_arena.clone(),
+                FlatObjectKind::ThunkHead,
+            ),
+            typed_thunk_work: TypedThunkWorkPool::default(),
+            typed_node_thunk_work: TypedThunkWorkPool::default(),
+            typed_apply_thunk_heads_enabled: false,
+            #[cfg(feature = "active_packed_thunk_probe")]
+            active_packed_thunks: active_packed_thunks::ActivePackedThunkStore::default(),
             compressed_scalars: crate::value::compressed::CandidateCScalarStore::new(
                 flat_arena.clone(),
             ),
@@ -149,6 +178,17 @@ impl EvalHeap {
             shared: None,
             #[cfg(feature = "candidate_c_value")]
             serial_reservation,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_serial_reservation: None,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_generation: None,
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            packed_generation: None,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_closure_forwarding: None,
         }
     }
 
@@ -188,7 +228,11 @@ impl EvalHeap {
             attrs_cons: HashConsTable::new(),
             attrs_hash_cons_enabled: true,
             alloc_counters: EvalHeapAllocationCounters::default(),
+            #[cfg(feature = "peak_ordinal_probe")]
+            peak_ordinal_probe: PeakOrdinalProbe::from_env(),
             deref_counters: EvalHeapDerefCounters::default(),
+            #[cfg(feature = "lifetime_cohort_probe")]
+            lifetime_quarantine: None,
             flat: FlatObjectStore::with_shared_arena(
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
@@ -201,6 +245,15 @@ impl EvalHeap {
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::Attrs]),
             ),
+            typed_thunk_heads: HeaderlessFlatLane::new(
+                flat_arena.clone(),
+                FlatObjectKind::ThunkHead,
+            ),
+            typed_thunk_work: TypedThunkWorkPool::default(),
+            typed_node_thunk_work: TypedThunkWorkPool::default(),
+            typed_apply_thunk_heads_enabled: false,
+            #[cfg(feature = "active_packed_thunk_probe")]
+            active_packed_thunks: active_packed_thunks::ActivePackedThunkStore::default(),
             compressed_scalars: crate::value::compressed::CandidateCScalarStore::new(
                 flat_arena.clone(),
             ),
@@ -214,6 +267,17 @@ impl EvalHeap {
             shared: None,
             #[cfg(feature = "candidate_c_value")]
             serial_reservation: None,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_serial_reservation: None,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_generation: None,
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            packed_generation: None,
+            #[cfg(feature = "candidate_c_value")]
+            evacuated_closure_forwarding: None,
         })
     }
 
@@ -247,14 +311,24 @@ impl EvalHeap {
         // ground's record placement.
         if let Some(actual) = self.flat_closure_tag(ptr) {
             return if actual == tag {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(
+                    ptr,
+                    LifetimeQuarantineOrigin::AllocationDomain,
+                );
                 Ok(HeapAllocationDomain::Worker)
             } else {
                 Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
             };
         }
+        if tag == ValueTag::Thunk && self.is_typed_thunk_head(ptr) {
+            return Ok(HeapAllocationDomain::Worker);
+        }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
         if actual == tag {
+            #[cfg(feature = "lifetime_cohort_probe")]
+            self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::Record);
             Ok(record.allocation_domain)
         } else {
             Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
@@ -286,6 +360,8 @@ impl EvalHeap {
         // proving ground's generation machinery uses the record placement.
         if let Some(actual) = self.flat_closure_tag(ptr) {
             return if actual == tag {
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::Generation);
                 Ok(initial_generation_for_allocation_domain(
                     HeapAllocationDomain::Worker,
                 ))
@@ -293,9 +369,16 @@ impl EvalHeap {
                 Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
             };
         }
+        if tag == ValueTag::Thunk && self.is_typed_thunk_head(ptr) {
+            return Ok(initial_generation_for_allocation_domain(
+                HeapAllocationDomain::Worker,
+            ));
+        }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
         if actual == tag {
+            #[cfg(feature = "lifetime_cohort_probe")]
+            self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::Record);
             Ok(record.generation)
         } else {
             Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
@@ -358,6 +441,7 @@ impl EvalHeap {
             .saturating_add(self.flat.len())
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.typed_thunk_heads.len())
             .saturating_add(self.flat_closures.len())
     }
 
@@ -385,6 +469,7 @@ impl EvalHeap {
             .len()
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.typed_thunk_heads.len())
             .saturating_add(self.flat_closures.len())
     }
 
@@ -502,13 +587,18 @@ impl EvalHeap {
 
     pub(super) fn touch_reusable_value(&self, value: Value) -> Result<(), EvalHeapError> {
         let (tag, ptr) = value_heap_ptr(value)?;
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::HashConsReuse);
         if self.shared.is_none()
             && matches!(
                 tag,
                 ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
             )
         {
-            self.flat_canonical_address(tag, ptr)?;
+            self.flat_canonical_address_unobserved(tag, ptr)?;
+            return Ok(());
+        }
+        if self.shared.is_none() && tag == ValueTag::Thunk && self.is_typed_thunk_head(ptr) {
             return Ok(());
         }
         self.record_for_value(value)?;
@@ -754,10 +844,14 @@ impl EvalHeap {
     }
 
     fn touch_record(&self, record: &HeapRecord) {
+        #[cfg(feature = "lifetime_cohort_probe")]
+        self.observe_lifetime_quarantine_ptr(record.ptr, LifetimeQuarantineOrigin::Record);
         record.last_touch_epoch.set(self.next_access_epoch());
     }
 
-    fn value_for_record(record: &HeapRecord) -> Result<Value, EvalHeapError> {
+    pub(in crate::eval::heap) fn value_for_record(
+        record: &HeapRecord,
+    ) -> Result<Value, EvalHeapError> {
         Ok(Value::heap(record.object.tag(), record.ptr)?)
     }
 

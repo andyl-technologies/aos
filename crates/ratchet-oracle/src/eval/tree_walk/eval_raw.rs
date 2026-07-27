@@ -55,7 +55,7 @@ impl TreeWalk {
         let tracks_repeated = match tag {
             ValueTag::Attrs => !self
                 .heap
-                .get_attrs(value)
+                .get_attrs_view(value)
                 .map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
@@ -70,12 +70,12 @@ impl TreeWalk {
             _ => false,
         };
         let entered = if tracks_repeated {
-            if Self::raw_identity_contains(seen, value) {
+            if self.raw_identity_contains(seen, value) {
                 return match tag {
                     ValueTag::List
-                        if Self::raw_identity_contains(active, value)
+                        if self.raw_identity_contains(active, value)
                             && *active_list_expansion_depth == 0
-                            && !Self::raw_identity_contains(expanded_active_lists, value)
+                            && !self.raw_identity_contains(expanded_active_lists, value)
                             && self
                                 .raw_repeated_list_can_expand(value_id, value_span, value)? =>
                     {
@@ -245,8 +245,12 @@ impl TreeWalk {
         result
     }
 
-    fn raw_identity_contains(identities: &[Value], value: Value) -> bool {
-        identities.iter().any(|identity| identity.raw_eq(value))
+    fn raw_identity_contains(&self, identities: &[Value], value: Value) -> bool {
+        self.heap.observe_value_identity(value);
+        identities.iter().any(|identity| {
+            self.heap.observe_value_identity(*identity);
+            identity.raw_eq(value)
+        })
     }
 
     fn raw_repeated_list_can_expand(
@@ -255,7 +259,7 @@ impl TreeWalk {
         list_span: Span,
         value: Value,
     ) -> Result<bool, TreeWalkError> {
-        let list = self.heap.get_list(value).map_err(|source| {
+        let list = self.heap.get_list_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: list_id,
@@ -276,7 +280,7 @@ impl TreeWalk {
         value: Value,
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: value_id,
@@ -327,7 +331,7 @@ impl TreeWalk {
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let mut elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -415,7 +419,7 @@ impl TreeWalk {
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,

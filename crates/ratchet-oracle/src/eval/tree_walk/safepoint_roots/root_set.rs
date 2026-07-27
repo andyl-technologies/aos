@@ -3,6 +3,160 @@
 use super::*;
 
 impl TreeWalk {
+    /// Builds roots for a proof-only nested nonmoving collection attempt.
+    ///
+    /// The returned sources are deliberately anonymous value-stack slots after
+    /// the evaluator's real transient slots. No caller may use this set for a
+    /// moving collection or root writeback: pending flat captures do not expose
+    /// stable mutable writeback coordinates.
+    #[cfg(feature = "collection_poll_probe")]
+    pub(in crate::eval::tree_walk) fn nested_nonmoving_root_set(
+        &self,
+        result: Value,
+    ) -> Result<
+        (
+            EvalRootSet,
+            super::super::nested_nonmoving_safepoint_probe::NestedNonmovingRootInventory,
+        ),
+        TreeWalkSafepointRootError,
+    > {
+        let mut roots = self.mutator_root_set()?;
+        let mut inventory =
+            super::super::nested_nonmoving_safepoint_probe::NestedNonmovingRootInventory::default();
+        let mut slot = self.transient_value_stack_roots.len();
+        if roots.try_push_value_stack(slot, result)? {
+            inventory.result_roots = 1;
+        }
+        slot = slot
+            .checked_add(1)
+            .ok_or(crate::eval::heap::EvalRootSetError::LengthOverflow)?;
+
+        for pending in &self.pending_flat_captures {
+            if roots.try_push_value_stack(slot, pending.value())? {
+                inventory.pending_values = inventory.pending_values.saturating_add(1);
+            }
+            slot = slot
+                .checked_add(1)
+                .ok_or(crate::eval::heap::EvalRootSetError::LengthOverflow)?;
+            for frame in pending.env().frames().iter() {
+                for value in frame.slot_values()? {
+                    if roots.try_push_value_stack(slot, value)? {
+                        inventory.pending_env_values =
+                            inventory.pending_env_values.saturating_add(1);
+                    }
+                    slot = slot
+                        .checked_add(1)
+                        .ok_or(crate::eval::heap::EvalRootSetError::LengthOverflow)?;
+                }
+            }
+            if let Some(flat) = pending.env().flat_base() {
+                let owner = self.heap.flat_closure_capture_owner(flat.tail_handle())?;
+                if roots.try_push_value_stack(slot, owner)? {
+                    inventory.pending_flat_owners = inventory.pending_flat_owners.saturating_add(1);
+                }
+                slot = slot
+                    .checked_add(1)
+                    .ok_or(crate::eval::heap::EvalRootSetError::LengthOverflow)?;
+            }
+        }
+        if let Some(shadow) = self.native_continuation_shadow.as_ref() {
+            for value in shadow.roots().iter().copied() {
+                if roots.try_push_value_stack(slot, value)? {
+                    inventory.native_shadow_values =
+                        inventory.native_shadow_values.saturating_add(1);
+                }
+                slot = slot
+                    .checked_add(1)
+                    .ok_or(crate::eval::heap::EvalRootSetError::LengthOverflow)?;
+            }
+        }
+        inventory.total_roots = roots.len();
+        Ok((roots, inventory))
+    }
+
+    /// Runs one lifetime-cohort experiment body with explicit nonmoving roots.
+    ///
+    /// This is deliberately compiled only with the cohort probe: production
+    /// evaluation must not pay for duplicate shadow storage. The underlying
+    /// indexed helper restores the stack on success, error, and panic and
+    /// copies any slot updates back to `roots`.
+    #[cfg(feature = "lifetime_cohort_probe")]
+    pub(in crate::eval::tree_walk) fn with_lifetime_cohort_shadow_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        roots: &mut [Value],
+        body: impl FnOnce(&mut Self, Range<usize>) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.with_indexed_transient_value_stack_roots(id, span, roots, body)
+    }
+
+    /// Runs a native recursive portal with writable caller-owned roots.
+    ///
+    /// The native-continuation shadow records the semantic portal and expected
+    /// child edge, while the indexed transient stack is the sole owner of the
+    /// live [`Value`] copies. A moving collector may therefore rewrite those
+    /// slots without leaving a duplicate read-only shadow copy. Callers must
+    /// read live values from `slots` inside `body` and use the copied-back
+    /// `roots` after this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkError`] if transient-root storage cannot be reserved or
+    /// if `body` returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` panics. Both the semantic continuation and transient
+    /// root stack are restored before the panic resumes.
+    pub(in crate::eval::tree_walk) fn with_writeback_native_continuation<T>(
+        &mut self,
+        kind: super::super::native_continuation_shadow::NativeContinuationKind,
+        id: IrId,
+        span: Span,
+        roots: &mut [Value],
+        expected_child: super::super::native_continuation_shadow::NativeContinuationEdge,
+        body: impl FnOnce(&mut Self, Range<usize>) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.with_indexed_transient_value_stack_roots(id, span, roots, |eval, slots| {
+            eval.with_nonmoving_native_continuation(kind, id, &[], Some(expected_child), |eval| {
+                body(eval, slots)
+            })
+        })
+    }
+
+    /// Runs one terminal native frame with writable caller-owned roots.
+    ///
+    /// Unlike [`Self::with_writeback_native_continuation`], this helper does
+    /// not authorize a recursive child edge. The indexed transient stack is
+    /// the sole owner of the live [`Value`] copies while `body` runs; the
+    /// semantic shadow records only control, with an empty read-only root
+    /// manifest. Callers must load values from `slots` inside `body` and use
+    /// either those slots or the copied-back `roots` after a possible moving
+    /// statepoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkError`] if transient-root storage cannot be reserved or
+    /// if `body` returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` panics. Both the semantic continuation and transient
+    /// root stack are restored before the panic resumes.
+    pub(in crate::eval::tree_walk) fn with_terminal_writeback_native_continuation<T>(
+        &mut self,
+        kind: super::super::native_continuation_shadow::NativeContinuationKind,
+        id: IrId,
+        span: Span,
+        roots: &mut [Value],
+        body: impl FnOnce(&mut Self, Range<usize>) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.with_indexed_transient_value_stack_roots(id, span, roots, |eval, slots| {
+            eval.with_nonmoving_native_continuation(kind, id, &[], None, |eval| body(eval, slots))
+        })
+    }
+
     /// Runs `body` with caller-owned values published to allocation safepoints.
     ///
     /// The supplied slots are appended to the tree-walk transient value stack
@@ -65,6 +219,11 @@ impl TreeWalk {
         let result = match catch_unwind(AssertUnwindSafe(|| body(self, start..end))) {
             Ok(result) => result,
             Err(payload) => {
+                if let Some(updated_roots) = self.transient_value_stack_roots.get(start..end) {
+                    for (root, updated) in roots.iter_mut().zip(updated_roots.iter().copied()) {
+                        *root = updated;
+                    }
+                }
                 self.transient_value_stack_roots.truncate(start);
                 resume_unwind(payload);
             }
@@ -146,7 +305,9 @@ impl TreeWalk {
             }
         }
         if let Some(flat) = &self.flat_env {
-            roots.try_push_tree_walk_flat_capture_owner(flat.inline_owner())?;
+            roots.try_push_tree_walk_flat_capture_owner(
+                self.heap.flat_closure_capture_owner(flat.tail_handle())?,
+            )?;
         }
 
         for (depth, scope) in self.with_scopes.iter().enumerate() {
@@ -171,8 +332,10 @@ impl TreeWalk {
                 }
             }
             if let Some(flat) = &suspended.env.flat_base {
-                roots
-                    .try_push_suspended_tree_walk_flat_capture_owner(depth, flat.inline_owner())?;
+                roots.try_push_suspended_tree_walk_flat_capture_owner(
+                    depth,
+                    self.heap.flat_closure_capture_owner(flat.tail_handle())?,
+                )?;
             }
             for (scope_depth, scope) in suspended.with_scopes.iter().enumerate() {
                 roots.try_push_suspended_with_scope(depth, scope_depth, scope.value())?;
@@ -184,6 +347,52 @@ impl TreeWalk {
 
         for (depth, value) in self.active_force_roots.iter().rev().copied().enumerate() {
             roots.try_push_force_continuation(depth, value)?;
+        }
+        for (slot, value) in self.transient_value_stack_roots.iter().copied().enumerate() {
+            roots.try_push_value_stack(slot, value)?;
+        }
+        for (depth, value) in self
+            .stg_apply_runtime
+            .value_stack
+            .iter()
+            .rev()
+            .copied()
+            .enumerate()
+        {
+            roots.try_push_stg_value(depth, value)?;
+        }
+        for (depth, argument) in self
+            .stg_apply_runtime
+            .argument_stack
+            .iter()
+            .rev()
+            .enumerate()
+        {
+            roots.try_push_stg_argument(depth, argument.value())?;
+        }
+
+        #[cfg(feature = "collection_poll_probe")]
+        for (depth, lease) in self.active_node_work_leases.iter().rev().enumerate() {
+            for (edge, retained) in self
+                .heap
+                .detached_active_thunk_work_edges(lease.ptr, &lease.work)?
+                .into_iter()
+                .enumerate()
+            {
+                roots.try_push_detached_node_thunk_work(depth, edge, retained.value())?;
+            }
+        }
+
+        for (depth, lease) in self.active_typed_thunk_work_leases.iter().rev().enumerate() {
+            roots.try_push_detached_typed_thunk_head(depth, lease.source)?;
+            for (edge, retained) in self
+                .heap
+                .detached_typed_thunk_work_edges(&lease.work)?
+                .into_iter()
+                .enumerate()
+            {
+                roots.try_push_detached_typed_thunk_work(depth, edge, retained.value())?;
+            }
         }
 
         for (call_depth, frame) in self.active_primop_arg_frames.iter().rev().enumerate() {

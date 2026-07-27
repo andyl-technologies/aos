@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn keys_depend_on_source_schema_and_flags() {
     let flags = ParseCacheFlags::new();
@@ -83,7 +82,8 @@ fn lowered_ir_fact_artifacts_roundtrip() {
     };
     *facts.get_mut(IrId::new(1)).expect("fact slot exists") = expected;
 
-    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
     let (decoded, analysis_version) =
         decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
     assert_eq!(analysis_version, crate::compile::IR_ANALYSIS_VERSION);
@@ -189,8 +189,7 @@ fn lowered_ir_fact_artifacts_without_capture_section_decode_for_old_versions() {
     let fingerprint = test_lowered_ir_fingerprint(b"fact-capture-version-test");
 
     for version in [0u32, 2, 3] {
-        let encoded =
-            encode_ir_facts(&facts, fingerprint, version).expect("fact artifact encodes");
+        let encoded = encode_ir_facts(&facts, fingerprint, version).expect("fact artifact encodes");
         let (decoded, analysis_version) =
             decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
         assert_eq!(analysis_version, version);
@@ -238,7 +237,8 @@ fn lowered_ir_fact_artifacts_reject_invalid_flag_bytes() {
 fn lowered_ir_fact_artifacts_reject_count_mismatch() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
-    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
     let error = decode_ir_facts(&encoded, 2, fingerprint).expect_err("mismatched count errors");
 
     assert!(error.contains("does not match node count"), "{error}");
@@ -248,7 +248,8 @@ fn lowered_ir_fact_artifacts_reject_count_mismatch() {
 fn lowered_ir_fact_artifacts_reject_invalid_tags() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
-    let mut encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
+    let mut encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
     // magic + artifact version + analysis version + fingerprint + count.
     encoded[FACTS_MAGIC.len() + 4 + 4 + 32 + 4] = 99;
 
@@ -260,8 +261,12 @@ fn lowered_ir_fact_artifacts_reject_invalid_tags() {
 #[test]
 fn lowered_ir_fact_artifacts_reject_fingerprint_mismatch() {
     let facts = IrFacts::conservative(1);
-    let encoded = encode_ir_facts(&facts, test_lowered_ir_fingerprint(b"old-ir"), crate::compile::IR_ANALYSIS_VERSION)
-        .expect("fact artifact encodes");
+    let encoded = encode_ir_facts(
+        &facts,
+        test_lowered_ir_fingerprint(b"old-ir"),
+        crate::compile::IR_ANALYSIS_VERSION,
+    )
+    .expect("fact artifact encodes");
 
     let error = decode_ir_facts(&encoded, 1, test_lowered_ir_fingerprint(b"new-ir"))
         .expect_err("mismatched fingerprint errors");

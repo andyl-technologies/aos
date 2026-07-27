@@ -24,6 +24,16 @@ impl TreeWalk {
                 span,
             )
         })?;
+        if self.options.eval_stats_dump() {
+            super::force_shape_census::record_synthetic_apply_site(
+                "map",
+                self.current_module.as_u32(),
+                function_id.as_u32(),
+                self.current_module.as_u32(),
+                list_id.as_u32(),
+                elements.len(),
+            );
+        }
         for element in elements {
             mapped.push(self.alloc_apply_thunk(
                 id,
@@ -47,13 +57,14 @@ impl TreeWalk {
         length_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let length_span = self.node(length_id)?.span;
-        let length_value = self.eval_node(length_id)?;
-        let length_value = self.force_value(length_id, length_span, length_value)?;
+        let length_value = self.eval_uncovered_primop_child(length_id)?;
+        let length_value =
+            self.force_uncovered_primop_leaf(length_id, length_span, length_value)?;
         let length = self.expect_int(length_id, length_value, length_span)?;
         let length = self.expect_non_negative_list_length(length_id, length, length_span)?;
 
         let generator_span = self.node(generator_id)?.span;
-        let generator = self.eval_node(generator_id)?;
+        let generator = self.eval_uncovered_primop_child(generator_id)?;
         let generator = self.force_callable_value(generator_id, generator_span, generator)?;
 
         self.alloc_generated_list(
@@ -74,7 +85,8 @@ impl TreeWalk {
         generator: EvalPrimOpArg,
         length: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let length_value = self.force_value(length.id(), length.span(), length.value())?;
+        let length_value =
+            self.force_uncovered_primop_leaf(length.id(), length.span(), length.value())?;
         let length_value = self.expect_int(length.id(), length_value, length.span())?;
         let length_value =
             self.expect_non_negative_list_length(length.id(), length_value, length.span())?;
@@ -111,6 +123,17 @@ impl TreeWalk {
                 span,
             )
         })?;
+        if self.options.eval_stats_dump() {
+            super::force_shape_census::record_synthetic_apply_site(
+                "genList",
+                self.current_module.as_u32(),
+                generator_id.as_u32(),
+                self.current_module.as_u32(),
+                length_id.as_u32(),
+                length,
+            );
+        }
+        let elem_at_add_one = self.is_genlist_elem_at_add_one_generator(generator);
         for index in 0..length {
             let index = i64::try_from(index).map_err(|_| {
                 TreeWalkError::new(
@@ -122,15 +145,27 @@ impl TreeWalk {
                 )
             })?;
             let index = self.runtime_int_value(length_id, span, index)?;
-            generated.push(self.alloc_apply_thunk(
-                id,
-                span,
-                generator_id,
-                generator_span,
-                generator,
-                length_id,
-                index,
-            )?);
+            generated.push(if elem_at_add_one {
+                self.alloc_genlist_elem_at_add_one_thunk(
+                    id,
+                    span,
+                    generator_id,
+                    generator_span,
+                    generator,
+                    length_id,
+                    index,
+                )?
+            } else {
+                self.alloc_apply_thunk(
+                    id,
+                    span,
+                    generator_id,
+                    generator_span,
+                    generator,
+                    length_id,
+                    index,
+                )?
+            });
         }
 
         self.alloc_tree_walk_list(id, span, NixList::new(generated))
@@ -167,12 +202,12 @@ impl TreeWalk {
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let predicate_span = self.node(predicate_id)?.span;
-        let predicate = self.eval_node(predicate_id)?;
+        let predicate = self.eval_uncovered_primop_child(predicate_id)?;
         let predicate = self.force_callable_value(predicate_id, predicate_span, predicate)?;
 
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
+        let list_value = self.force_uncovered_primop_leaf(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -184,7 +219,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -193,7 +228,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         self.eval_partition_elements(
@@ -219,7 +254,7 @@ impl TreeWalk {
         let predicate_value =
             self.force_callable_value(predicate.id(), predicate.span(), predicate.value())?;
 
-        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        let list_value = self.force_uncovered_primop_leaf(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -231,7 +266,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -240,7 +275,7 @@ impl TreeWalk {
                     list.span(),
                 )
             })?;
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
+            Self::clone_list_view_elements(list.id(), list.span(), list_value)?
         };
 
         self.eval_partition_elements(
@@ -288,7 +323,7 @@ impl TreeWalk {
             )
         })?;
         for element in elements {
-            let element = self.force_value(list_id, list_span, element)?;
+            let element = self.force_uncovered_primop_leaf(list_id, list_span, element)?;
             let result = self.apply_lambda_value(
                 id,
                 span,
@@ -298,7 +333,7 @@ impl TreeWalk {
                 list_id,
                 element,
             )?;
-            let result = self.force_value(predicate_id, predicate_span, result)?;
+            let result = self.force_uncovered_primop_leaf(predicate_id, predicate_span, result)?;
             let actual = result.tag();
             let ValueTag::Bool = actual else {
                 return Err(TreeWalkError::new(
@@ -340,12 +375,12 @@ impl TreeWalk {
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
-        let function = self.eval_node(function_id)?;
+        let function = self.eval_uncovered_primop_child(function_id)?;
         let function = self.force_callable_value(function_id, function_span, function)?;
 
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
+        let list_value = self.force_uncovered_primop_leaf(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -357,7 +392,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -366,7 +401,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         self.eval_concat_map_elements(
@@ -391,7 +426,7 @@ impl TreeWalk {
         let function_value =
             self.force_callable_value(function.id(), function.span(), function.value())?;
 
-        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        let list_value = self.force_uncovered_primop_leaf(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -403,7 +438,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -412,7 +447,7 @@ impl TreeWalk {
                     list.span(),
                 )
             })?;
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
+            Self::clone_list_view_elements(list.id(), list.span(), list_value)?
         };
 
         self.eval_concat_map_elements(
@@ -438,17 +473,29 @@ impl TreeWalk {
         elements: Vec<Value>,
     ) -> Result<Value, TreeWalkError> {
         let mut output = Vec::new();
+        let mut reused_lambda = self.prepare_reused_lambda_call(
+            function_id,
+            function,
+            function_span,
+            list_id,
+            !elements.is_empty(),
+        )?;
         for element in elements {
-            let mapped = self.apply_lambda_value(
-                id,
-                span,
-                function_id,
-                function,
-                function_span,
-                list_id,
-                element,
-            )?;
-            let mapped = self.force_value(function_id, function_span, mapped)?;
+            let mapped = match reused_lambda.as_mut() {
+                Some(call) => self.apply_prepared_reused_lambda_call(
+                    id, span, function, call, list_id, element,
+                )?,
+                None => self.apply_lambda_value(
+                    id,
+                    span,
+                    function_id,
+                    function,
+                    function_span,
+                    list_id,
+                    element,
+                )?,
+            };
+            let mapped = self.force_uncovered_primop_leaf(function_id, function_span, mapped)?;
             if mapped.tag() != ValueTag::List {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -460,7 +507,7 @@ impl TreeWalk {
                 ));
             }
             let inner = {
-                let list = self.heap.get_list(mapped).map_err(|source| {
+                let list = self.heap.get_list_view(mapped).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: function_id,
@@ -469,7 +516,7 @@ impl TreeWalk {
                         function_span,
                     )
                 })?;
-                Self::clone_list_elements(function_id, function_span, list)?
+                Self::clone_list_view_elements(function_id, function_span, list)?
             };
             let len = output.len().checked_add(inner.len()).ok_or_else(|| {
                 TreeWalkError::new(
@@ -506,12 +553,12 @@ impl TreeWalk {
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
-        let function = self.eval_node(function_id)?;
+        let function = self.eval_uncovered_primop_child(function_id)?;
         let function = self.force_callable_value(function_id, function_span, function)?;
 
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
+        let list_value = self.force_uncovered_primop_leaf(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -523,7 +570,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -532,7 +579,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         self.eval_group_by_elements(
@@ -557,7 +604,7 @@ impl TreeWalk {
         let function_value =
             self.force_callable_value(function.id(), function.span(), function.value())?;
 
-        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        let list_value = self.force_uncovered_primop_leaf(list.id(), list.span(), list.value())?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -569,7 +616,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -578,7 +625,7 @@ impl TreeWalk {
                     list.span(),
                 )
             })?;
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
+            Self::clone_list_view_elements(list.id(), list.span(), list_value)?
         };
 
         self.eval_group_by_elements(
@@ -615,17 +662,29 @@ impl TreeWalk {
                 span,
             )
         })?;
+        let mut reused_lambda = self.prepare_reused_lambda_call(
+            function_id,
+            function,
+            function_span,
+            list_id,
+            !elements.is_empty(),
+        )?;
         for element in elements {
-            let key = self.apply_lambda_value(
-                id,
-                span,
-                function_id,
-                function,
-                function_span,
-                list_id,
-                element,
-            )?;
-            let key = self.force_value(function_id, function_span, key)?;
+            let key = match reused_lambda.as_mut() {
+                Some(call) => self.apply_prepared_reused_lambda_call(
+                    id, span, function, call, list_id, element,
+                )?,
+                None => self.apply_lambda_value(
+                    id,
+                    span,
+                    function_id,
+                    function,
+                    function_span,
+                    list_id,
+                    element,
+                )?,
+            };
+            let key = self.force_uncovered_primop_leaf(function_id, function_span, key)?;
             if key.tag() != ValueTag::String {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -693,8 +752,8 @@ impl TreeWalk {
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
+        let list_value = self.eval_uncovered_primop_child(list_id)?;
+        let list_value = self.force_uncovered_primop_leaf(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -706,7 +765,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -718,12 +777,13 @@ impl TreeWalk {
             if list.is_empty() {
                 return Ok(list_value);
             }
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         let comparator_span = self.node(comparator_id)?.span;
-        let comparator = self.eval_node(comparator_id)?;
-        let comparator = self.force_value(comparator_id, comparator_span, comparator)?;
+        let comparator = self.eval_uncovered_primop_child(comparator_id)?;
+        let comparator =
+            self.force_uncovered_primop_leaf(comparator_id, comparator_span, comparator)?;
         self.eval_sort_elements(
             id,
             span,
@@ -743,7 +803,7 @@ impl TreeWalk {
         comparator: EvalPrimOpArg,
         list: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
-        let forced_list = self.force_value(list.id(), list.span(), list.value())?;
+        let forced_list = self.force_uncovered_primop_leaf(list.id(), list.span(), list.value())?;
         if forced_list.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -755,7 +815,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list_value = self.heap.get_list(forced_list).map_err(|source| {
+            let list_value = self.heap.get_list_view(forced_list).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -767,11 +827,14 @@ impl TreeWalk {
             if list_value.is_empty() {
                 return Ok(forced_list);
             }
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
+            Self::clone_list_view_elements(list.id(), list.span(), list_value)?
         };
 
-        let comparator_value =
-            self.force_value(comparator.id(), comparator.span(), comparator.value())?;
+        let comparator_value = self.force_uncovered_primop_leaf(
+            comparator.id(),
+            comparator.span(),
+            comparator.value(),
+        )?;
         self.eval_sort_elements(
             id,
             span,

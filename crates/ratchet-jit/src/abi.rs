@@ -57,16 +57,14 @@ pub type JitThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr)
 /// Calling this type is unsafe for the same raw-pointer and executable-code
 /// lifetime reasons as [`JitThunkFn`]. The returned integer is validated as a
 /// tagged word after the call.
-pub type JitCandidateBThunkFn =
-    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
+pub type JitCandidateBThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
 
 /// Native entry type for a Candidate-C one-word compiled thunk body.
 ///
 /// Calling this type is unsafe for the same raw-pointer and executable-code
 /// lifetime reasons as [`JitThunkFn`]. The returned integer is validated as a
 /// compressed word after the call.
-pub type JitCandidateCThunkFn =
-    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
+pub type JitCandidateCThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
 
 /// Native entry type for a compiled lambda body.
 ///
@@ -93,7 +91,8 @@ pub type JitLambdaFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr
 /// not create, cast, register, or call any function pointer.
 ///
 /// [`runtime_lambda_argv_call_signature`]: ratchet_core::runtime_lambda_argv_call_signature
-pub type JitLambdaArgvFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, *const Value) -> Value;
+pub type JitLambdaArgvFn =
+    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, *const Value) -> Value;
 
 /// Native entry type for a compiled fold-step with a decoded `i64` accumulator.
 ///
@@ -110,7 +109,8 @@ pub type JitLambdaArgvFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFram
 /// register, or call any function pointer.
 ///
 /// [`runtime_fold_step_i64acc_call_signature`]: ratchet_core::runtime_fold_step_i64acc_call_signature
-pub type JitFoldStepI64AccFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, i64, Value) -> i64;
+pub type JitFoldStepI64AccFn =
+    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, i64, Value) -> i64;
 
 /// Address-free runtime-call signatures required by JIT lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,10 +190,7 @@ pub fn clif_signature_for_runtime_call(
 pub fn clif_signature_for_candidate_b_runtime_call(
     signature: RuntimeCallSignature,
 ) -> Result<Signature, JitClifSignatureError> {
-    clif_signature_for_runtime_call_with_layout(
-        signature,
-        candidate_b_runtime_abi_value_layout(),
-    )
+    clif_signature_for_runtime_call_with_layout(signature, candidate_b_runtime_abi_value_layout())
 }
 
 /// Converts a frozen runtime-call signature using Candidate C's one-word values.
@@ -205,10 +202,7 @@ pub fn clif_signature_for_candidate_b_runtime_call(
 pub fn clif_signature_for_candidate_c_runtime_call(
     signature: RuntimeCallSignature,
 ) -> Result<Signature, JitClifSignatureError> {
-    clif_signature_for_runtime_call_with_layout(
-        signature,
-        candidate_c_runtime_abi_value_layout(),
-    )
+    clif_signature_for_runtime_call_with_layout(signature, candidate_c_runtime_abi_value_layout())
 }
 
 fn clif_signature_for_runtime_call_with_layout(

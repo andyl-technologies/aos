@@ -147,7 +147,11 @@ impl AttrShape {
         if keys.len() == 2 && keys[0] == keys[1] {
             return Err(ShapeError::DuplicateKey { key: keys[0] });
         }
-        let resolve = |key: Symbol| symbols.resolve(key).ok_or(ShapeError::UnknownSymbol { key });
+        let resolve = |key: Symbol| {
+            symbols
+                .resolve(key)
+                .ok_or(ShapeError::UnknownSymbol { key })
+        };
         let (sorted_keys, source_order, iteration_order): (Vec<Symbol>, Vec<u32>, Vec<u32>) =
             match keys {
                 [] => (Vec::new(), Vec::new(), Vec::new()),
@@ -179,8 +183,7 @@ impl AttrShape {
             keys: sorted_keys.into_boxed_slice(),
             source_order: source_order.into_boxed_slice(),
             iteration_order: iteration_order.into_boxed_slice(),
-            lexicographic_rank_by_symbol_slot: lexicographic_rank_by_symbol_slot
-                .into_boxed_slice(),
+            lexicographic_rank_by_symbol_slot: lexicographic_rank_by_symbol_slot.into_boxed_slice(),
             fingerprint,
         })
     }

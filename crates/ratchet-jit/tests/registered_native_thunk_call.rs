@@ -88,11 +88,7 @@ extern "C" fn test_aos_jit_stack_map_enter(
 ) {
 }
 
-extern "C" fn test_aos_jit_stack_map_exit(
-    _rt: JitRuntimeContextPtr,
-    _binding: *mut c_void,
-) {
-}
+extern "C" fn test_aos_jit_stack_map_exit(_rt: JitRuntimeContextPtr, _binding: *mut c_void) {}
 
 fn local_var_arena(slot: u32) -> IrArena {
     IrArena::from_raw_parts(

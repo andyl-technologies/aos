@@ -8,8 +8,7 @@ use ratchet_jit::{
 };
 use ratchet_oracle::{
     compile::{
-        EffectClass, IrArena, IrData, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
-        resolve,
+        EffectClass, IrArena, IrData, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind, resolve,
     },
     eval::{heap::EvalGcMode, tree_walk::TreeWalkOptions},
     syntax::{Symbol, parse_str},
@@ -111,8 +110,8 @@ fn tier2_inner_force_dispatches_sweep_through_retained_stack_map() {
             crate::stack_map::aos_jit_stack_map_exit_native_wrapper_address(),
         ),
     ];
-    let context = JitModuleContext::with_candidates(&candidates)
-        .expect("tier-2 module context builds");
+    let context =
+        JitModuleContext::with_candidates(&candidates).expect("tier-2 module context builds");
     let body = context
         .define_and_finalize_tier2_lambda(lowering)
         .expect("tier-2 pair finalizes");

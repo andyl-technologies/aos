@@ -176,11 +176,12 @@ impl JitModuleContext {
                 },
             );
         }
-        let declaration_preflight = jit_runtime_symbol_declaration_preflight().map_err(|error| {
-            JitCraneliftModuleSetupError::RuntimeSymbolRegistration(
-                crate::symbols::JitRuntimeSymbolRegistrationError::Declaration(error),
-            )
-        })?;
+        let declaration_preflight =
+            jit_runtime_symbol_declaration_preflight().map_err(|error| {
+                JitCraneliftModuleSetupError::RuntimeSymbolRegistration(
+                    crate::symbols::JitRuntimeSymbolRegistrationError::Declaration(error),
+                )
+            })?;
         let declarations: Vec<_> = declaration_preflight
             .declarations()
             .iter()
@@ -208,7 +209,11 @@ impl JitModuleContext {
         let mut inner_function = inner;
         let inner_id = inner_ctx
             .module
-            .declare_function(&inner_symbol_name, Linkage::Local, &inner_function.signature)
+            .declare_function(
+                &inner_symbol_name,
+                Linkage::Local,
+                &inner_function.signature,
+            )
             .map_err(
                 |source| JitCraneliftModuleSetupError::DeclareArtifactFunction {
                     symbol_name: inner_symbol_name.clone(),
@@ -264,12 +269,14 @@ fn define_declared_function(
     func_id: cranelift_module::FuncId,
 ) -> Result<JitCraneliftDefinedFunction, JitCraneliftModuleSetupError> {
     let mut context = cranelift_codegen::Context::for_function(function);
-    module.define_function(func_id, &mut context).map_err(
-        |source| JitCraneliftModuleSetupError::DefineArtifactFunction {
-            symbol_name: symbol_name.clone(),
-            source,
-        },
-    )?;
+    module
+        .define_function(func_id, &mut context)
+        .map_err(
+            |source| JitCraneliftModuleSetupError::DefineArtifactFunction {
+                symbol_name: symbol_name.clone(),
+                source,
+            },
+        )?;
     let user_stack_maps = super::compiled_user_stack_maps(&context);
     Ok(JitCraneliftDefinedFunction::new(
         symbol_name,
@@ -536,8 +543,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use ratchet_core::{
-        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole,
-        RuntimeSymbolKind,
+        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
         syntax::{Span, Symbol},
     };
 
@@ -604,8 +610,8 @@ mod tests {
                 5,
             ),
         ];
-        let context = JitModuleContext::with_candidates(&candidates)
-            .expect("tier-2 module context builds");
+        let context =
+            JitModuleContext::with_candidates(&candidates).expect("tier-2 module context builds");
         let body = context
             .define_and_finalize_tier2_lambda(lowering)
             .expect("tier-2 pair finalizes");

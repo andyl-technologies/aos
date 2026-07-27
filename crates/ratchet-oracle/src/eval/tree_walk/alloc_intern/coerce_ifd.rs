@@ -26,7 +26,7 @@ impl TreeWalk {
         })?;
         let attrs = self
             .heap
-            .get_attrs(attrs_value)
+            .get_attrs_view(attrs_value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         Ok(attrs.get(symbol))
     }
@@ -50,7 +50,7 @@ impl TreeWalk {
         }
         let string = self
             .heap
-            .get_string(value)
+            .get_string_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if string.has_context() {
             return Err(TreeWalkError::new(

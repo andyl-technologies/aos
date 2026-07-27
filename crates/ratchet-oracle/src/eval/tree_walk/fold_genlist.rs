@@ -224,6 +224,12 @@ impl TreeWalk {
                 list_span,
             )
         })?;
+        if self.options.eval_stats_dump() {
+            super::force_shape_census::record_synthetic_apply_origin(
+                "foldl-genList-tail",
+                length - index,
+            );
+        }
         for element_index in index..length {
             elements.push(self.alloc_genlist_element_thunk(
                 list_id,

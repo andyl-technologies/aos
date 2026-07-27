@@ -187,6 +187,12 @@ impl ForcePayloadMemo {
         self.retained_bytes = 0;
     }
 
+    /// Returns the number of currently retained identity-keyed payloads.
+    #[cfg(feature = "lifetime_cohort_probe")]
+    pub(in crate::eval::tree_walk) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Live payload bytes retained by the memo, for byte attribution.
     ///
     /// The wiring hook for fv5's memory-campaign retained-bytes counter: once

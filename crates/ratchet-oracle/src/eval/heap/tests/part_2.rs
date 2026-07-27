@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 #[test]
 fn worker_region_epoch_overflow_rotates_region_owner() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
@@ -22,7 +21,6 @@ fn worker_region_epoch_overflow_rotates_region_owner() {
     assert_eq!(heap.worker_allocator_epoch, 0);
 }
 
-
 #[test]
 fn worker_allocator_epoch_overflow_rotates_region_owner() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
@@ -35,7 +33,6 @@ fn worker_allocator_epoch_overflow_rotates_region_owner() {
     assert_eq!(heap.worker_allocator_epoch, 0);
     assert_eq!(heap.worker_region_epoch, 0);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -92,7 +89,6 @@ fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
     assert_eq!(barrier.remembered_set().edges(), &[edge]);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -140,7 +136,6 @@ fn thunk_resolve_write_barrier_marks_card_for_permanent_to_young_forced_value() 
     assert_eq!(card_table.dirty_cards()[0].source(), edge.source());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -177,7 +172,6 @@ fn thunk_resolve_write_barrier_skips_inline_forced_values() {
     );
     assert!(barrier.remembered_set().is_empty());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -217,7 +211,6 @@ fn thunk_resolve_write_barrier_skips_external_forced_values() {
     );
     assert!(barrier.remembered_set().is_empty());
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -286,7 +279,6 @@ fn thunk_resolve_write_barrier_records_its_source_when_guard_is_mispaired() {
     assert_eq!(barrier.remembered_set().edges(), &[edge]);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -323,7 +315,6 @@ fn thunk_resolve_write_barrier_rejects_non_thunk_sources() {
     assert!(remembered_set.is_empty());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -350,7 +341,6 @@ fn allocates_string_values_and_recovers_contents() {
         HeapAllocationDomain::PermanentShared
     );
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -395,7 +385,6 @@ fn cold_hash_consed_bytes_follow_permanent_record_touches() {
     assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -435,7 +424,6 @@ fn cold_hash_consed_values_snapshot_does_not_refresh_touch_epoch() {
     assert_eq!(heap.cold_hash_consed_bytes(1), 0);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -466,7 +454,6 @@ fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
     assert_eq!(heap.access_epoch(), 3);
     assert_eq!(heap.cold_hash_consed_bytes(1), 0);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -512,7 +499,6 @@ fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
     assert_eq!(hot_report.requested_bytes(), 0);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -556,7 +542,6 @@ fn evict_hash_consed_advice_reports_selected_records_without_removing_values() {
     assert_eq!(hot_report.records(), 0);
     assert_eq!(hot_report.requested_bytes(), 0);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -620,7 +605,6 @@ fn cheap_memory_range_advice_combines_tails_and_cold_hash_consed_hints() {
     assert_eq!(heap.memory_budget_poll_count(), poll_count);
     assert_eq!(heap.last_memory_budget_action(), Some(previous_action));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -707,7 +691,6 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     assert!(tier_b_decision.requests_tier_b());
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -789,7 +772,6 @@ fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -821,7 +803,6 @@ fn tier_b_admission_plan_keeps_existing_old_worker_generation_stable() {
     assert!(!worker_record.needs_generation_rewrite());
     assert_eq!(heap_generation(&heap, worker), HeapGeneration::Old);
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake

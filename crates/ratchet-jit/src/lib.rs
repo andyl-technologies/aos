@@ -54,8 +54,8 @@ pub mod tier;
 pub mod warmup;
 
 pub use abi::{
-    JitCandidateBThunkFn, JitCandidateCThunkFn, JitClifSignatureError, JitEnvFramePtr,
-    JitLambdaFn, JitRuntimeAbiInventory, JitRuntimeContextPtr, JitThunkFn,
+    JitCandidateBThunkFn, JitCandidateCThunkFn, JitClifSignatureError, JitEnvFramePtr, JitLambdaFn,
+    JitRuntimeAbiInventory, JitRuntimeContextPtr, JitThunkFn,
     clif_signature_for_candidate_b_runtime_call, clif_signature_for_candidate_c_runtime_call,
     clif_signature_for_runtime_call, jit_runtime_abi_inventory,
 };
@@ -65,26 +65,22 @@ pub use compiled_body::{
     decode_tier2_lambda_lowering, encode_tier2_chain_lowering, encode_tier2_lambda_lowering,
 };
 pub use cost::{Tier1BodyCost, estimate_tier1_body_cost};
-pub use lower::interp::{
-    InterpFusibility, classify_interp_thunk_body, interp_child_inner_kinds, interp_child_kinds,
-};
 pub use cranelift::{
     ACTIVE_CRANELIFT_CODEGEN_VERSION, ACTIVE_CRANELIFT_JIT_VERSION,
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
     JitCraneliftArtifactDefinitionPreflight, JitCraneliftArtifactFinalizationPreflight,
     JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
-    JitCraneliftUserStackMap, JitCraneliftUserStackMapEntry,
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
     JitCraneliftModuleSetupError, JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation,
-    JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     JitCraneliftRegisteredArtifactDefinitionPreflight,
     JitCraneliftRegisteredArtifactFinalizationPreflight,
     JitCraneliftRegisteredNativeThunkInvocation, JitCraneliftRegisteredSymbol,
     JitCraneliftRegisteredTier1NativeCallError, JitCraneliftRegisteredTier1NativeCallPreflight,
     JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftRegisteredTier1SlotPreflight,
     JitCraneliftSymbolRegistrationPreflight, JitCraneliftTier1PromotionError,
-    JitCraneliftTier1PromotionPreflight, JitCraneliftTier1SlotPreflight,
-    PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
+    JitCraneliftTier1PromotionPreflight, JitCraneliftTier1SlotPreflight, JitCraneliftUserStackMap,
+    JitCraneliftUserStackMapEntry, JitModuleContext, JitModuleContextFinalizedBody,
+    JitModuleContextKeepAlive, PINNED_CRANELIFT_CODEGEN_VERSION, PINNED_CRANELIFT_JIT_VERSION,
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact,
@@ -112,32 +108,22 @@ pub use cranelift::{
     jit_cranelift_tier1_promotion_preflight_for_ir_root,
     jit_cranelift_tier1_slot_preflight_for_artifact,
 };
-pub use lower::{
-    AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
-    lower_tier2_self_recursive_lambda, tier2_self_recursive_lambda_cache_eligible,
-};
-pub use lower::{
-    JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
-    JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain,
-    lower_tier2_fold_genlist, lower_tier2_fold_i64acc, scan_tier2_curried_chain,
-    scan_tier2_pinned_callee, scan_tier2_unary_predicate,
+pub use lower::interp::{
+    InterpFusibility, classify_interp_thunk_body, interp_child_inner_kinds, interp_child_kinds,
 };
 pub use lower::{
     AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,
     AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX,
-    AOS_IR_ROOT_FUNCTION_NAMESPACE,
-    AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
-    AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
-    AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
-    AOS_UPVAL_GET_FUNCTION_INDEX,
+    AOS_IR_ROOT_FUNCTION_NAMESPACE, AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX,
+    AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX, AOS_PRIMOP_CALL_FUNCTION_INDEX,
+    AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX,
+    AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, AOS_UPVAL_GET_FUNCTION_INDEX,
     JitCandidateBConstantError, JitCandidateCConstantError, JitLowerError,
-    JitTier1ThunkFactDecision, JitTier1ThunkFactPlan,
-    clif_external_name_for_aos_alloc_cons, clif_external_name_for_aos_apply,
-    clif_external_name_for_aos_deopt,
+    JitTier1ThunkFactDecision, JitTier1ThunkFactPlan, clif_external_name_for_aos_alloc_cons,
+    clif_external_name_for_aos_apply, clif_external_name_for_aos_deopt,
     clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
-    clif_external_name_for_aos_has_attr, clif_external_name_for_aos_primop_call,
-    clif_external_name_for_aos_jit_stack_map_enter,
-    clif_external_name_for_aos_jit_stack_map_exit,
+    clif_external_name_for_aos_has_attr, clif_external_name_for_aos_jit_stack_map_enter,
+    clif_external_name_for_aos_jit_stack_map_exit, clif_external_name_for_aos_primop_call,
     clif_external_name_for_aos_select_ic, clif_external_name_for_aos_string_length,
     clif_external_name_for_aos_update, clif_external_name_for_aos_upval_get, clif_name_for_ir_root,
     jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
@@ -164,8 +150,7 @@ pub use lower::{
     lower_has_attr_local_slot_ir_thunk_body_artifact, lower_primop_call_ir_thunk_body,
     lower_primop_call_ir_thunk_body_artifact, lower_select_local_slot_ir_root_thunk_body,
     lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
-    lower_select_local_slot_ir_thunk_body_artifact,
-    lower_singleton_list_ir_thunk_body_artifact,
+    lower_select_local_slot_ir_thunk_body_artifact, lower_singleton_list_ir_thunk_body_artifact,
     lower_string_length_inline_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
     lower_tier1_ir_thunk_body_artifact, lower_tier1_ir_thunk_body_artifact_for_ir,
     lower_tier1_ir_thunk_body_for_ir, lower_update_local_slots_ir_root_thunk_body,
@@ -173,6 +158,16 @@ pub use lower::{
     lower_update_local_slots_ir_thunk_body_artifact, lower_upval_get_ir_root_thunk_body,
     lower_upval_get_ir_root_thunk_body_artifact, lower_upval_get_ir_thunk_body,
     lower_upval_get_ir_thunk_body_artifact,
+};
+pub use lower::{
+    AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
+    lower_tier2_self_recursive_lambda, tier2_self_recursive_lambda_cache_eligible,
+};
+pub use lower::{
+    JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
+    JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain,
+    lower_tier2_fold_genlist, lower_tier2_fold_i64acc, scan_tier2_curried_chain,
+    scan_tier2_pinned_callee, scan_tier2_unary_predicate,
 };
 pub use module::{
     JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleArtifactRuntimeImportGap,

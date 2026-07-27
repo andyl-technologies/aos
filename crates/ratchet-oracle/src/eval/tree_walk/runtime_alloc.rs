@@ -55,21 +55,16 @@ impl TreeWalk {
                 let rooted_head = eval.runtime_cons_root(id, span, slots.start)?;
                 let rooted_tail = eval.runtime_cons_root(id, span, slots.start + 1)?;
                 let tail_values = if rooted_tail.tag() == ValueTag::Null {
-                    &[][..]
+                    None
                 } else {
-                    eval.heap
-                        .get_list(rooted_tail)
-                        .map_err(|source| {
-                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                        })?
-                        .as_slice()
+                    Some(eval.heap.get_list_view(rooted_tail).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })?)
                 };
-                let len = tail_values.len().checked_add(1).ok_or_else(|| {
+                let tail_len = tail_values.map_or(0, |values| values.len());
+                let len = tail_len.checked_add(1).ok_or_else(|| {
                     TreeWalkError::new(
-                        TreeWalkErrorKind::ListAllocationFailed {
-                            id,
-                            len: tail_values.len(),
-                        },
+                        TreeWalkErrorKind::ListAllocationFailed { id, len: tail_len },
                         span,
                     )
                 })?;
@@ -78,7 +73,9 @@ impl TreeWalk {
                     TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
                 })?;
                 values.push(rooted_head);
-                values.extend_from_slice(tail_values);
+                if let Some(tail_values) = tail_values {
+                    values.extend(tail_values.iter());
+                }
                 let value = eval.alloc_tree_walk_list(id, span, NixList::new(values))?;
                 value.as_list_ptr().map_err(|source| {
                     TreeWalkError::new(
@@ -132,7 +129,7 @@ mod tests {
             .expect("head cons allocates");
         let value = Value::list(list).expect("list pointer is aligned");
 
-        let list = eval.heap().get_list(value).expect("list resolves");
+        let list = eval.heap().get_list_view(value).expect("list resolves");
         assert!(list.get(0).is_some_and(|value| value.raw_eq(Value::int(1))));
         assert!(list.get(1).is_some_and(|value| value.raw_eq(Value::int(2))));
         assert_eq!(list.len(), 2);

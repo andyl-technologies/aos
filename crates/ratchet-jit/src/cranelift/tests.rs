@@ -2,9 +2,7 @@
 
 use std::{num::NonZeroUsize, ptr::NonNull};
 
-use cranelift_codegen::ir::{
-    ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName,
-};
+use cranelift_codegen::ir::{ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName};
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
     IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
@@ -637,7 +635,13 @@ fn registered_artifact_definition_defines_update_artifact_with_candidates() {
     assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
     assert_eq!(
         artifact_runtime_import_names(preflight.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -669,9 +673,8 @@ fn registered_artifact_definition_requires_candidates_for_artifact_imports() {
         panic!("env-get artifact definition requires registered env helper candidate");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -694,9 +697,8 @@ fn registered_artifact_definition_requires_force_candidate_for_forced_artifacts(
         panic!("forced env-get artifact definition requires registered force helper candidate");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };
@@ -740,9 +742,8 @@ fn registered_artifact_definition_rejects_wrong_kind_candidates_for_artifact_imp
         panic!("wrong-kind env helper candidate must not satisfy artifact imports");
     };
 
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error
     else {
         panic!("expected artifact runtime-import registration guard");
     };

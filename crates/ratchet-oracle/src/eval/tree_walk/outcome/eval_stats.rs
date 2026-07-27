@@ -77,6 +77,12 @@ pub struct EvalStats {
     /// campaign L0 attribution gauge, not an exact allocator figure.
     pub(crate) symbol_table_resident_bytes: u64,
     pub(crate) imports_evaluated: u64,
+    /// Imported module roots whose bodies ran in the demand machine.
+    pub(crate) demand_machine_import_bodies: u64,
+    /// Imported module roots declined by the enabled demand machine.
+    pub(crate) demand_machine_import_declines: u64,
+    /// One-shot imported-root oracle continuations entered after a decline.
+    pub(crate) demand_machine_import_oracle_calls: u64,
     /// Nanoseconds spent in `parse_bytes_with_symbols` across imports, accumulated
     /// only under `AOS_NIX_EVAL_STATS`. Part of the RFC-0007 Tier-1a front-end
     /// share measurement (parse/lower is ~25% of cold eval).
@@ -496,6 +502,9 @@ impl EvalStats {
             symbols_interned,
             symbol_table_resident_bytes,
             imports_evaluated,
+            demand_machine_import_bodies,
+            demand_machine_import_declines,
+            demand_machine_import_oracle_calls,
             front_end_parse_nanos,
             front_end_resolve_nanos,
             front_end_lower_nanos,
@@ -636,6 +645,15 @@ impl EvalStats {
             .symbol_table_resident_bytes
             .saturating_add(symbol_table_resident_bytes);
         self.imports_evaluated = self.imports_evaluated.saturating_add(imports_evaluated);
+        self.demand_machine_import_bodies = self
+            .demand_machine_import_bodies
+            .saturating_add(demand_machine_import_bodies);
+        self.demand_machine_import_declines = self
+            .demand_machine_import_declines
+            .saturating_add(demand_machine_import_declines);
+        self.demand_machine_import_oracle_calls = self
+            .demand_machine_import_oracle_calls
+            .saturating_add(demand_machine_import_oracle_calls);
         self.front_end_parse_nanos = self
             .front_end_parse_nanos
             .saturating_add(front_end_parse_nanos);
@@ -834,6 +852,21 @@ impl EvalStats {
     /// number of `import` expressions demonstrates the import cache working.
     pub const fn imports_evaluated(&self) -> u64 {
         self.imports_evaluated
+    }
+
+    /// Returns imported module roots whose bodies ran in the demand machine.
+    pub const fn demand_machine_import_bodies(&self) -> u64 {
+        self.demand_machine_import_bodies
+    }
+
+    /// Returns imported module roots declined by the enabled demand machine.
+    pub const fn demand_machine_import_declines(&self) -> u64 {
+        self.demand_machine_import_declines
+    }
+
+    /// Returns one-shot imported-root oracle calls entered after a decline.
+    pub const fn demand_machine_import_oracle_calls(&self) -> u64 {
+        self.demand_machine_import_oracle_calls
     }
 
     /// Returns nanoseconds spent parsing imported sources (`AOS_NIX_EVAL_STATS`).

@@ -6,7 +6,9 @@
 //! indices as the permanent flat-object stores. This module owns the evaluator
 //! seam for exercising that storage before the value/FFI/JIT ABI switches.
 
-use crate::value::compressed::{CandidateCScalarError, CompressedValueWord};
+use crate::value::compressed::{
+    CandidateCScalarError, CandidateCScalarRetirementReport, CompressedValueWord,
+};
 
 use super::*;
 
@@ -76,6 +78,25 @@ impl EvalHeap {
         }
         self.compressed_scalars.decode_float(word)
     }
+
+    /// Retires all boxed Candidate-C scalars owned by this serial heap.
+    ///
+    /// The replacement scalar stores retain the heap's existing flat arena and
+    /// reservation domain. Shared worker heaps must coordinate retirement at
+    /// their common arena owner and are therefore rejected here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without mutation if the heap is shared or the scalar
+    /// store's pre-retirement inventory is inconsistent.
+    pub fn retire_candidate_c_scalar_store(
+        &mut self,
+    ) -> Result<CandidateCScalarRetirementReport, CandidateCScalarError> {
+        if self.shared.is_some() {
+            return Err(CandidateCScalarError::SerialRetirementRequiresExclusiveHeap);
+        }
+        self.compressed_scalars.retire_all_boxed()
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +150,36 @@ mod tests {
     }
 
     #[test]
+    fn evaluator_retires_and_reopens_its_serial_scalar_store() {
+        let mut heap = EvalHeap::new();
+        let wide = i64::MAX;
+        let old = heap
+            .candidate_c_encode_int(wide)
+            .expect("wide integer boxes");
+        let domain = old.arena_domain();
+
+        let report = heap
+            .retire_candidate_c_scalar_store()
+            .expect("serial store retires");
+
+        assert_eq!(report.retired_ints(), 1);
+        assert_eq!(report.retired_floats(), 0);
+        assert_eq!(report.arena_domain(), domain);
+        assert!(heap.candidate_c_decode_int(old).is_err());
+
+        let new = heap
+            .candidate_c_encode_int(wide)
+            .expect("wide integer boxes after reset");
+        assert_ne!(new, old);
+        assert_eq!(new.arena_domain(), domain);
+        assert_eq!(
+            heap.candidate_c_decode_int(new)
+                .expect("replacement cell decodes"),
+            wide
+        );
+    }
+
+    #[test]
     fn parallel_workers_share_candidate_c_scalar_cells() {
         let arena = Arc::new(SharedHeapArena::new(2, 32));
         let mut first = EvalHeap::with_shared_shard(
@@ -155,6 +206,16 @@ mod tests {
             second
                 .candidate_c_decode_int(first_int)
                 .expect("second worker decodes first worker integer"),
+            i64::MAX
+        );
+        assert!(matches!(
+            first.retire_candidate_c_scalar_store(),
+            Err(CandidateCScalarError::SerialRetirementRequiresExclusiveHeap)
+        ));
+        assert_eq!(
+            second
+                .candidate_c_decode_int(first_int)
+                .expect("refused retirement leaves shared cell live"),
             i64::MAX
         );
         assert_eq!(

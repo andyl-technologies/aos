@@ -26,6 +26,18 @@ impl IrArena {
         &self.children
     }
 
+    /// Returns bytes allocated for the fixed node and child vectors.
+    pub fn storage_bytes(&self) -> usize {
+        self.nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<IrNode>())
+            .saturating_add(
+                self.children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<IrId>()),
+            )
+    }
+
     /// Returns one node by id.
     pub fn node(&self, id: IrId) -> Option<&IrNode> {
         self.nodes.get(id.index())
@@ -126,7 +138,11 @@ mod tests {
         let node = arena.node(id).expect("node still present at the same id");
         assert_eq!(node.kind, IrKind::Bool);
         assert_eq!(node.data, IrData::Bool(true));
-        assert_eq!(node.span, Span::new(4, 9), "span is preserved across the rewrite");
+        assert_eq!(
+            node.span,
+            Span::new(4, 9),
+            "span is preserved across the rewrite"
+        );
         assert_eq!(arena.nodes().len(), 1, "no node is added or removed");
     }
 
@@ -134,7 +150,16 @@ mod tests {
     fn set_node_out_of_range_makes_no_change() {
         let (mut arena, _id) = one_node_arena();
         let before = arena.nodes().to_vec();
-        assert!(!arena.set_node(IrId::new(7), IrKind::Null, EffectClass::pure(), IrData::None));
-        assert_eq!(arena.nodes(), before.as_slice(), "an out-of-range id is a no-op");
+        assert!(!arena.set_node(
+            IrId::new(7),
+            IrKind::Null,
+            EffectClass::pure(),
+            IrData::None
+        ));
+        assert_eq!(
+            arena.nodes(),
+            before.as_slice(),
+            "an out-of-range id is a no-op"
+        );
     }
 }

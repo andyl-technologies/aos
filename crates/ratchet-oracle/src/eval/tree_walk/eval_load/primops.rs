@@ -19,7 +19,7 @@ impl TreeWalk {
             ));
         }
         let result = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -60,9 +60,13 @@ impl TreeWalk {
                         argument_span,
                     )
                 })?;
-            let context = string.context().union(&store_context).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
-            })?;
+            let context = string
+                .context()
+                .try_to_owned()
+                .and_then(|context| context.union(&store_context))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
             NixString::new(full_path, context)
         };
         self.alloc_tree_walk_string(id, span, result)
@@ -78,7 +82,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string_value = self.coerce_to_string(argument, value, argument_span)?;
         let result = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -89,12 +93,9 @@ impl TreeWalk {
             })?;
             let bytes =
                 Self::absolute_path_bytes_for_node(argument, argument_span, string.bytes())?;
-            let context = string
-                .context()
-                .union(&StringContext::empty())
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
-                })?;
+            let context = string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
             NixString::new(bytes, context)
         };
         self.alloc_tree_walk_string(id, span, result)
@@ -110,7 +111,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string_value = self.coerce_to_string(argument, value, argument_span)?;
         let result = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -129,7 +130,7 @@ impl TreeWalk {
                     argument_span,
                 ));
             }
-            let Some(element) = context.elements().first() else {
+            let Some(element) = context.iter().next() else {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::StringContextElementCount {
                         id: argument,
@@ -194,7 +195,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string_value = self.coerce_to_string(argument, value, argument_span)?;
         let result = {
-            let string = self.heap.get_string(string_value).map_err(|source| {
+            let string = self.heap.get_string_view(string_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -217,7 +218,7 @@ impl TreeWalk {
                         argument_span,
                     )
                 })?;
-            for element in string.context() {
+            for element in string.context().iter() {
                 let path = Self::copy_bytes_for_node(argument, argument_span, element.path())?;
                 let rewritten = match element.kind() {
                     ContextKind::OpaquePath | ContextKind::DeepDerivation => {
@@ -263,7 +264,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string = self.coerce_to_string(argument, value, argument_span)?;
         let result = {
-            let string = self.heap.get_string(string).map_err(|source| {
+            let string = self.heap.get_string_view(string).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -272,15 +273,11 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
-            string.discard_context().map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::String {
-                        id: argument,
-                        source,
-                    },
-                    argument_span,
-                )
-            })?
+            NixString::from_bytes(Self::copy_bytes_for_node(
+                argument,
+                argument_span,
+                string.bytes(),
+            )?)
         };
         self.alloc_tree_walk_string(id, span, result)
     }
@@ -292,7 +289,7 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let string = self.coerce_to_string(argument, value, argument_span)?;
-        let string = self.heap.get_string(string).map_err(|source| {
+        let string = self.heap.get_string_view(string).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: argument,
@@ -327,7 +324,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let string = self
             .heap
-            .get_string(value)
+            .get_string_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         self.runtime_int_value(id, span, string.len() as i64)
     }

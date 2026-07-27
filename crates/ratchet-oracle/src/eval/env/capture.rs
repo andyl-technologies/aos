@@ -9,31 +9,62 @@ use crate::eval::module::EvalNodeRef;
 use crate::heap::flat::FlatValueTailHandle;
 use crate::value::Value;
 
+const FLAT_CAPTURE_SITE_NODE_BITS: u32 = 20;
+const FLAT_CAPTURE_SITE_NODE_MASK: u32 = (1 << FLAT_CAPTURE_SITE_NODE_BITS) - 1;
+const FLAT_CAPTURE_SITE_MODULE_MAX: u32 = (1 << (u32::BITS - FLAT_CAPTURE_SITE_NODE_BITS)) - 1;
+
+/// A checked module-qualified capture site packed into one word.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EvalFlatCaptureSite(u32);
+
+impl EvalFlatCaptureSite {
+    /// Packs a site admitted by the flat-capture optimization.
+    fn new(site: EvalNodeRef) -> Option<Self> {
+        let module = site.module().as_u32();
+        let node = site.id().as_u32();
+        if module > FLAT_CAPTURE_SITE_MODULE_MAX || node > FLAT_CAPTURE_SITE_NODE_MASK {
+            return None;
+        }
+        Some(Self((module << FLAT_CAPTURE_SITE_NODE_BITS) | node))
+    }
+
+    /// Reconstructs the exact module-qualified site.
+    const fn node_ref(self) -> EvalNodeRef {
+        EvalNodeRef::new(
+            crate::eval::module::EvalModuleId::new(self.0 >> FLAT_CAPTURE_SITE_NODE_BITS),
+            crate::compile::IrId::new(self.0 & FLAT_CAPTURE_SITE_NODE_MASK),
+        )
+    }
+}
+
 /// A compact handle to values named by one flat capture plan.
 #[derive(Clone, Debug)]
 pub(crate) struct EvalFlatCapture {
-    allocation_site: EvalNodeRef,
-    owner: Value,
+    allocation_site: EvalFlatCaptureSite,
     tail: FlatValueTailHandle,
     frame_count: u16,
     linked_frame_count: u16,
 }
 
 impl EvalFlatCapture {
-    /// Creates a handle to values inlined in `owner`'s flat object.
+    /// Creates a handle to values inlined in one flat closure object.
     pub(crate) fn inline(
         allocation_site: EvalNodeRef,
         frame_count: usize,
-        owner: Value,
         tail: FlatValueTailHandle,
     ) -> Result<Self, EvalEnvError> {
+        let allocation_site = EvalFlatCaptureSite::new(allocation_site).ok_or(
+            EvalEnvError::CompactCaptureSiteUnsupported {
+                module: allocation_site.module().as_u32(),
+                node: allocation_site.id().as_u32(),
+            },
+        )?;
         let frame_count =
             u16::try_from(frame_count).map_err(|_| EvalEnvError::CaptureAllocationFailed {
                 frames: frame_count,
             })?;
         Ok(Self {
             allocation_site,
-            owner,
             tail,
             frame_count,
             linked_frame_count: 0,
@@ -57,9 +88,14 @@ impl EvalFlatCapture {
         frame_count <= u16::MAX as usize
     }
 
+    /// Returns whether a module-qualified site fits compact capture metadata.
+    pub(crate) fn supports_allocation_site(site: EvalNodeRef) -> bool {
+        EvalFlatCaptureSite::new(site).is_some()
+    }
+
     /// Returns the module-qualified allocation site that owns the plan.
     pub(crate) const fn allocation_site(&self) -> EvalNodeRef {
-        self.allocation_site
+        self.allocation_site.node_ref()
     }
 
     /// Returns the conceptual frame depth at the allocation site.
@@ -68,18 +104,13 @@ impl EvalFlatCapture {
     }
 
     /// Returns the number of values in the canonical capture order.
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.tail.len()
     }
 
     /// Returns whether no lexical value is captured.
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Returns the flat closure that owns the inline values.
-    pub(crate) const fn inline_owner(&self) -> Value {
-        self.owner
     }
 
     /// Returns the prevalidated coordinate of the owning closure's value tail.
@@ -92,7 +123,6 @@ impl EvalFlatCapture {
         self.allocation_site == other.allocation_site
             && self.frame_count == other.frame_count
             && self.linked_frame_count == other.linked_frame_count
-            && self.owner.raw_eq(other.owner)
             && self.tail == other.tail
     }
 }
@@ -185,7 +215,11 @@ enum EvalEnvStorage {
     /// Production persistent chain: capture clones one non-empty head pointer.
     Chain { head: Arc<EvalFrame>, frames: u32 },
     /// Compatibility fallback for independently constructed, unlinked frames.
-    Array(Arc<[Arc<EvalFrame>]>),
+    ///
+    /// The vector is kept behind a thin [`Arc`] rather than an unsized
+    /// `Arc<[Arc<EvalFrame>]>`: this compatibility-only variant must not widen
+    /// the production [`EvalEnvStorage`] enum carried by every closure.
+    Array(Arc<Vec<Arc<EvalFrame>>>),
     /// A statically selected flat prefix without conservative frames.
     Flat(EvalFlatCapture),
     /// A production chain following a statically selected flat prefix.
@@ -195,7 +229,7 @@ enum EvalEnvStorage {
     },
     /// A compatibility frame array following a statically selected flat prefix.
     ArrayFlat {
-        frames: Arc<[Arc<EvalFrame>]>,
+        frames: Arc<Vec<Arc<EvalFrame>>>,
         flat: EvalFlatCapture,
     },
 }
@@ -207,6 +241,18 @@ impl Default for EvalEnvStorage {
 }
 
 impl EvalEnvStorage {
+    /// Returns the stable telemetry name for this storage representation.
+    const fn class(&self) -> &'static str {
+        match self {
+            Self::Empty => "Empty",
+            Self::Chain { .. } => "Chain",
+            Self::Array(_) => "Array",
+            Self::Flat(_) => "Flat",
+            Self::ChainFlat { .. } => "ChainFlat",
+            Self::ArrayFlat { .. } => "ArrayFlat",
+        }
+    }
+
     fn linked(head: Option<Arc<EvalFrame>>, frames: usize) -> Result<Self, EvalEnvError> {
         debug_assert_eq!(head.is_some(), frames != 0);
         let frames =
@@ -234,7 +280,7 @@ impl EvalEnvStorage {
             }
         })?;
         captured.extend_from_slice(frames);
-        Ok(Self::Array(captured.into()))
+        Ok(Self::Array(Arc::new(captured)))
     }
 
     fn with_flat_base(self, flat: Option<EvalFlatCapture>) -> Result<Self, EvalEnvError> {
@@ -271,7 +317,9 @@ impl EvalEnvStorage {
             Self::ChainFlat { head, flat } => {
                 EvalEnvFrames::chain(Some(head), flat.linked_frame_count())
             }
-            Self::Array(frames) | Self::ArrayFlat { frames, .. } => EvalEnvFrames::array(frames),
+            Self::Array(frames) | Self::ArrayFlat { frames, .. } => {
+                EvalEnvFrames::array(frames.as_slice())
+            }
         }
     }
 
@@ -354,6 +402,11 @@ pub struct EvalEnv {
 }
 
 impl EvalEnv {
+    /// Returns the storage representation used by this capture.
+    pub(crate) const fn storage_class(&self) -> &'static str {
+        self.storage.class()
+    }
+
     /// Returns whether two snapshots share the same lexical and flat backing.
     pub(crate) fn raw_eq(&self, other: &Self) -> bool {
         self.storage.raw_eq(&other.storage)
@@ -438,14 +491,12 @@ impl EvalEnv {
     pub(crate) fn inline_flat(
         allocation_site: EvalNodeRef,
         frame_count: usize,
-        owner: Value,
         tail: FlatValueTailHandle,
     ) -> Result<Self, EvalEnvError> {
         Ok(Self {
             storage: EvalEnvStorage::Flat(EvalFlatCapture::inline(
                 allocation_site,
                 frame_count,
-                owner,
                 tail,
             )?),
         })

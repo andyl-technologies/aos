@@ -47,9 +47,11 @@
 //! form a tree is declined (no facts are produced) rather than analyzed
 //! unsoundly.
 
+mod closure_flow;
 mod collect;
 mod derivation;
 mod frames;
+mod known_calls;
 mod summary;
 mod totality;
 mod walk;
@@ -73,6 +75,49 @@ use collect::{CollectCtx, SlotDemand};
 pub struct StrictnessAnalysisReport {
     /// Number of fact records strengthened from a weaker demand level.
     pub nodes_marked_strict: usize,
+}
+
+/// One source application whose callee resolves to a literal lambda.
+///
+/// The resolution follows immutable lexical bindings and static attribute
+/// selections within one module. It never crosses lambda parameters, dynamic
+/// scope, dynamic attribute keys, imports, or override-carrying recursive
+/// attrsets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KnownCallTarget {
+    /// The resolved application node.
+    pub apply: IrId,
+    /// The literal lambda reached by the application's function expression.
+    pub lambda: IrId,
+}
+
+/// Candidate lambda targets inferred for one application.
+///
+/// Candidates are positive, module-local flow facts. They are intentionally
+/// not completeness proofs: lambdas can enter through imports, dynamic scope,
+/// or escaping closures. Consumers must guard the actual forced closure
+/// identity before direct dispatch and retain the generic fallback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallTargetCandidates {
+    /// The application whose function value was analyzed.
+    pub apply: IrId,
+    /// Lambda definition sites propagated to the function expression.
+    pub lambdas: Box<[IrId]>,
+    /// Whether the bounded target set discarded additional candidates.
+    pub overflow: bool,
+}
+
+/// Summary of one bounded closure-flow analysis.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClosureFlowReport {
+    /// Sparse application candidate sets in source walk order.
+    pub calls: Vec<CallTargetCandidates>,
+    /// Number of ordinary inclusion edges in the solved constraint graph.
+    pub inclusion_edges: usize,
+    /// Number of argument/formal and body/result edges activated by calls.
+    pub activated_call_edges: usize,
+    /// Number of worklist variable visits required to reach the fixed point.
+    pub worklist_pops: usize,
 }
 
 /// Errors returned when strictness analysis sees malformed IR storage.
@@ -167,24 +212,7 @@ pub enum StrictnessAnalysisError {
 pub fn annotate_strictness(
     ir: &mut Ir,
 ) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
-    let node_count = ir.arena.nodes().len();
-    if ir.facts.len() != node_count {
-        return Err(StrictnessAnalysisError::InvalidFactTableLength {
-            expected: node_count,
-            actual: ir.facts.len(),
-        });
-    }
-    for index in 0..node_count {
-        let id = IrId::new(index as u32);
-        let node = *ir
-            .arena
-            .node(id)
-            .ok_or(StrictnessAnalysisError::InvalidNode { id })?;
-        validate_payload(id, node)?;
-        ir.facts
-            .get(id)
-            .ok_or(StrictnessAnalysisError::MissingFact { id })?;
-    }
+    validate_ir(ir)?;
     if !edges_form_tree(ir)? {
         return Ok(StrictnessAnalysisReport::default());
     }
@@ -197,14 +225,61 @@ pub fn annotate_strictness(
     apply_analysis_results(ir, results)
 }
 
-/// Produces only the strictness contracts consumed by fresh imports.
+/// Resolves lexically known call targets without retaining a dense node table.
 ///
-/// Fresh imports need structural totality, direct derivation-boundary assembly
-/// seeds, and cross-module lambda summaries. They do not consume the ordinary
-/// intramodule top-down demand marks before a durable full-analysis refresh.
-pub(crate) fn annotate_import_strictness(
-    ir: &mut Ir,
-) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
+/// Results are sparse `(apply, lambda)` pairs in IR walk order. The analysis
+/// uses the same frame-stack chase as strictness inference, so aliases through
+/// `let`, non-opaque recursive attrsets, thunk wrappers, and static attribute
+/// selections resolve consistently between the two passes. Unknown callees
+/// are omitted.
+///
+/// # Errors
+///
+/// Returns [`StrictnessAnalysisError`] if an arena node payload does not match
+/// its kind, or if the IR arena, child pool, frame table, binding table,
+/// attribute-path table, symbol table, or fact table is internally
+/// inconsistent.
+pub fn analyze_known_call_targets(
+    ir: &Ir,
+) -> Result<Vec<KnownCallTarget>, StrictnessAnalysisError> {
+    validate_ir(ir)?;
+    if !edges_form_tree(ir)? {
+        return Ok(Vec::new());
+    }
+
+    let mut analysis = Analysis::new(ir);
+    known_calls::run(&mut analysis)?;
+    Ok(analysis.known_call_targets)
+}
+
+/// Infers guarded call-target candidates through lexical slots and calls.
+///
+/// The module-local 0CFA propagates lambda definition sites through thunk
+/// wrappers, `let` and lambda-frame slots, conditionals, and application
+/// results. A call whose function gains a simple-formal lambda target adds
+/// argument-to-formal and lambda-body-to-result constraints, iterating to a
+/// fixed point. Target sets are bounded to eight definition sites.
+///
+/// The result is not a closed-world proof. A consumer may use it to choose
+/// guarded direct-dispatch versions, but must first evaluate and force the
+/// function normally, compare the actual closure's definition site with a
+/// candidate, and fall back generically on a miss.
+///
+/// # Errors
+///
+/// Returns [`StrictnessAnalysisError`] for malformed arena nodes, child or
+/// binding slices, frame references, attribute paths, or fact storage.
+pub fn analyze_call_target_candidates(
+    ir: &Ir,
+) -> Result<ClosureFlowReport, StrictnessAnalysisError> {
+    validate_ir(ir)?;
+    if !edges_form_tree(ir)? {
+        return Ok(ClosureFlowReport::default());
+    }
+    closure_flow::analyze(ir)
+}
+
+fn validate_ir(ir: &Ir) -> Result<(), StrictnessAnalysisError> {
     let node_count = ir.arena.nodes().len();
     if ir.facts.len() != node_count {
         return Err(StrictnessAnalysisError::InvalidFactTableLength {
@@ -223,6 +298,18 @@ pub(crate) fn annotate_import_strictness(
             .get(id)
             .ok_or(StrictnessAnalysisError::MissingFact { id })?;
     }
+    Ok(())
+}
+
+/// Produces only the strictness contracts consumed by fresh imports.
+///
+/// Fresh imports need structural totality, direct derivation-boundary assembly
+/// seeds, and cross-module lambda summaries. They do not consume the ordinary
+/// intramodule top-down demand marks before a durable full-analysis refresh.
+pub(crate) fn annotate_import_strictness(
+    ir: &mut Ir,
+) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
+    validate_ir(ir)?;
     if !edges_form_tree(ir)? {
         return Ok(StrictnessAnalysisReport::default());
     }
@@ -255,9 +342,7 @@ fn seed_import_derivation_boundaries(
                     BuiltinExecution::DerivationStrict => {
                         Some(derivation::DerivationBoundary::Strict)
                     }
-                    BuiltinExecution::Derivation => {
-                        Some(derivation::DerivationBoundary::Wrapper)
-                    }
+                    BuiltinExecution::Derivation => Some(derivation::DerivationBoundary::Wrapper),
                     _ => None,
                 };
                 let args = analysis.child_ids(id, args)?;
@@ -367,6 +452,8 @@ struct Analysis<'a> {
     /// Eager-assembly licenses (derivation-boundary seeding) to flag after
     /// the run completes.
     assembly_eager: Vec<IrId>,
+    /// Sparse applications whose callees resolve through lexical bindings.
+    known_call_targets: Vec<KnownCallTarget>,
     /// Active cross-module trace nodes; recursive aliases fail closed.
     summary_trace_active: Vec<(IrId, IrId, CollectCtx)>,
 }
@@ -381,6 +468,7 @@ impl<'a> Analysis<'a> {
             marks: Vec::new(),
             barriers: Vec::new(),
             assembly_eager: Vec::new(),
+            known_call_targets: Vec::new(),
             summary_trace_active: Vec::new(),
         }
     }

@@ -230,11 +230,7 @@ impl ExprFacts {
     pub const fn thunk_sharing(self) -> ThunkSharing {
         match (self.cardinality, self.strictness, self.escape) {
             (Cardinality::Absent, Strictness::Unknown, _) => ThunkSharing::Omit,
-            (
-                Cardinality::Absent,
-                Strictness::Demanded | Strictness::DemandedBeforeEffect,
-                _,
-            )
+            (Cardinality::Absent, Strictness::Demanded | Strictness::DemandedBeforeEffect, _)
             | (Cardinality::Once | Cardinality::Many, _, Escape::Escapes)
             | (Cardinality::Many, _, Escape::NoEscape) => ThunkSharing::Update,
             (Cardinality::Once, _, Escape::NoEscape) => ThunkSharing::SingleEntry,
@@ -380,6 +376,36 @@ impl IrFacts {
         &self.nodes
     }
 
+    /// Returns bytes allocated by the dense facts arrays and nested summaries.
+    pub fn storage_bytes(&self) -> usize {
+        let dense = std::mem::size_of_val(&*self.nodes)
+            .saturating_add(std::mem::size_of_val(&*self.try_eval_barriers))
+            .saturating_add(std::mem::size_of_val(&*self.assembly_eager))
+            .saturating_add(std::mem::size_of_val(&*self.structurally_total))
+            .saturating_add(std::mem::size_of_val(&*self.capture_plans))
+            .saturating_add(std::mem::size_of_val(&*self.flat_capture_accesses))
+            .saturating_add(std::mem::size_of_val(&*self.lambda_call_summaries));
+        let capture_slots = self
+            .capture_plans
+            .iter()
+            .filter_map(|plan| match plan {
+                Some(CapturePlan::Flat(slots)) => Some(std::mem::size_of_val(&**slots)),
+                Some(CapturePlan::SharedChain(_)) | None => None,
+            })
+            .sum::<usize>();
+        let summary_arrays = self
+            .lambda_call_summaries
+            .iter()
+            .map(|summary| {
+                std::mem::size_of_val(&*summary.formals)
+                    .saturating_add(std::mem::size_of_val(&*summary.attr_values))
+            })
+            .sum::<usize>();
+        dense
+            .saturating_add(capture_slots)
+            .saturating_add(summary_arrays)
+    }
+
     /// Returns one fact record by node id.
     pub fn get(&self, id: IrId) -> Option<ExprFacts> {
         self.nodes.get(id.index()).copied()
@@ -441,7 +467,10 @@ impl IrFacts {
     /// its force), yet eager evaluation of it is still invisible because its
     /// body cannot produce events.
     pub fn assembly_eager(&self, id: IrId) -> bool {
-        self.assembly_eager.get(id.index()).copied().unwrap_or(false)
+        self.assembly_eager
+            .get(id.index())
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Marks `id` as carrying the eager-assembly license.
@@ -515,7 +544,10 @@ impl IrFacts {
     /// not run. Consumers must retain coordinate lookup for those cases.
     #[inline]
     pub fn flat_capture_access(&self, id: IrId) -> Option<FlatCaptureAccess> {
-        self.flat_capture_accesses.get(id.index()).copied().flatten()
+        self.flat_capture_accesses
+            .get(id.index())
+            .copied()
+            .flatten()
     }
 
     /// Installs the constant flat-capture access for one lexical read.

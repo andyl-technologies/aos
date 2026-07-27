@@ -46,7 +46,13 @@ fn registered_lowered_ir_promotion_preflight_installs_static_select_root() {
             .iter()
             .map(JitModuleArtifactRuntimeImport::symbol_name)
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted
@@ -99,7 +105,13 @@ fn registered_lowered_ir_promotion_preflight_installs_update_root() {
         .expect("promotion owns registered tier-1 preflight");
     assert_eq!(
         artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted
@@ -243,7 +255,13 @@ fn force_aware_registered_lowered_ir_promotion_preflight_installs_static_select_
             .iter()
             .map(JitModuleArtifactRuntimeImport::symbol_name)
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted
@@ -324,7 +342,13 @@ fn force_aware_registered_lowered_ir_promotion_preflight_installs_update_root() 
         .expect("promotion owns registered tier-1 preflight");
     assert_eq!(
         artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted
@@ -570,9 +594,8 @@ fn force_aware_registered_promotion_preflight_requires_force_candidate() {
         error.decision().reasons(),
         Some(TierUpReasons::new(true, false))
     );
-    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration {
-        symbol_names,
-    } = error.setup_error()
+    let JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names } =
+        error.setup_error()
     else {
         panic!("expected force helper registration guard");
     };
@@ -652,8 +675,7 @@ fn force_aware_registered_promotion_preflight_forces_wrapped_env_slot() {
 }
 
 #[test]
-fn force_aware_registered_promotion_preflight_reports_malformed_local_payload_after_promotion()
-{
+fn force_aware_registered_promotion_preflight_reports_malformed_local_payload_after_promotion() {
     let arena = IrArena::from_raw_parts(
         vec![IrNode::new(
             IrKind::LocalVar,
@@ -718,16 +740,15 @@ fn registered_promotion_preflight_installed_slot_skips_repeat_compilation() {
     slot.install_tier1_code(code_ptr)
         .expect("test tier-1 metadata installs");
 
-    let result =
-        jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-            slot,
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(0),
-            &[],
-        )
-        .expect("installed registered slot does not recompile");
+    let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+        slot,
+        TierUpPolicy::default(),
+        TierUpDemandHint::MultiUse,
+        &arena,
+        IrId::new(0),
+        &[],
+    )
+    .expect("installed registered slot does not recompile");
 
     assert!(!result.did_compile());
     assert_eq!(
@@ -752,9 +773,7 @@ fn registered_promotion_preflight_reports_lowering_error_only_after_promotion() 
         Vec::new(),
     );
     let result = jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(
-            DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-        )),
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
         TierUpPolicy::default(),
         TierUpDemandHint::NoMultiUseEvidence,
         &arena,

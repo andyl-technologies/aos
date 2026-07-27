@@ -270,7 +270,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         for entry in attrs.iter_lexicographic() {
             let key = self.symbols.resolve(entry.key).ok_or_else(|| {

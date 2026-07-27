@@ -240,12 +240,34 @@ impl TreeWalk {
     /// [`TreeWalk::safepoint_root_set`] (plus caller-supplied extra roots),
     /// which is exactly the precondition of the precise sweep.
     fn is_heap_sweep_quiescent(&self) -> bool {
+        self.has_complete_terminal_root_set()
+    }
+
+    /// Returns whether post-root diagnostics can build a complete root set.
+    ///
+    /// The returned root set still needs the caller-owned result value. Active
+    /// evaluator continuations, detached work, or locally assembled composite
+    /// state make a terminal census incomplete even when their ordinary force
+    /// stacks happen to be empty.
+    pub(super) fn has_complete_terminal_root_set(&self) -> bool {
         self.transient_value_stack_roots.is_empty()
             && self.active_force_roots.is_empty()
             && self.active_primop_arg_frames.is_empty()
             && self.active_primop_arg_roots.is_empty()
             && self.suspended_env_roots.is_empty()
             && self.active_memo_read_nodes.is_empty()
+            && self.pending_flat_captures.is_empty()
+            && self.active_call_argument_plans.is_empty()
+            && self.active_composite_accumulator_depth == 0
+            && self.order_sensitive_binding_depth == 0
+            && self.active_import_cache_leases.is_empty()
+            && self.active_import_module_leases.is_empty()
+            && self.active_force_leases.is_empty()
+            && self.active_typed_thunk_work_leases.is_empty()
+            && self.active_lambda_call_leases.is_empty()
+            && self.stg_apply_runtime.is_idle()
+            && !self.stg_session_active
+            && self.active_root_eval_node.is_none()
             && self.call_depth == 0
             && self.shared.is_none()
     }
@@ -260,6 +282,7 @@ impl TreeWalk {
             && self.active_call_argument_plans.is_empty()
             && self.active_composite_accumulator_depth == 0
             && self.active_force_roots.is_empty()
+            && self.stg_apply_runtime.is_idle()
             && self.active_primop_arg_frames.is_empty()
             && self.active_primop_arg_roots.is_empty()
             && self.suspended_env_roots.is_empty()

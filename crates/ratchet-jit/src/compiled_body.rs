@@ -276,7 +276,8 @@ mod tests {
                     if matches!(
                         ir.arena.node(body).map(|body_node| body_node.data),
                         Some(ratchet_core::IrData::Lambda { .. })
-                    ) => {
+                    ) =>
+                {
                     Some((pattern, body))
                 }
                 _ => None,

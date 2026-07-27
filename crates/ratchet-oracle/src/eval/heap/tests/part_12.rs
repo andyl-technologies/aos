@@ -8,7 +8,6 @@
 use super::super::*;
 use super::*;
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -155,7 +154,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_suspended_thunk_capt
     }));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -263,7 +261,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_forced_thunk_cached_
     assert_forced_apply_thunk_cached_result(&parent_thunk, function, argument, forced);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -345,7 +342,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_fiel
     assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Suspended));
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -418,7 +414,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_cach
     guard.abort().expect("claim aborts");
     assert_eq!(parent_thunk.cell().state(), Ok(ThunkState::Suspended));
 }
-
 
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
@@ -505,7 +500,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_forced_thunk_cached_
     assert_forced_apply_thunk_cached_result(&parent_thunk, function, argument, forced_destination);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -525,7 +519,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_paylo
         .alloc_thunk(EvalThunk::new(IrId::new(2)))
         .expect("parallel payload destination thunk allocates");
     let parent = heap
-        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None))
+        .alloc_thunk(
+            EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None),
+        )
         .expect("parent thunk allocates");
     let parent_destination = heap
         .alloc_thunk(EvalThunk::new(IrId::new(4)))
@@ -585,7 +581,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_paylo
     assert_parallel_payload(&parent_thunk, forced);
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -605,7 +600,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_parallel_thunk_paylo
         .alloc_thunk(EvalThunk::new(IrId::new(2)))
         .expect("parallel payload destination thunk allocates");
     let parent = heap
-        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None))
+        .alloc_thunk(
+            EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None),
+        )
         .expect("parent thunk allocates");
     set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
     set_heap_generation(&mut heap, parent, HeapGeneration::Old);
@@ -647,7 +644,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_parallel_thunk_paylo
     let parent_thunk = heap.clone_thunk(parent).expect("parent thunk still clones");
     assert_parallel_payload(&parent_thunk, forced_destination);
 }
-
 
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_request_set() {
@@ -725,7 +721,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_reques
     );
 }
 
-
 // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
 // reservation heap geometry (GC-stress record placement / chunked / fake
 // pointer) or reads a boxed wide scalar context-free — both unavailable under
@@ -792,7 +787,6 @@ fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_w
         HeapGeneration::Permanent
     );
 }
-
 
 #[test]
 fn collector_poll_minor_gc_object_generation_write_plan_rejects_generation_action_mismatch() {

@@ -172,7 +172,6 @@ impl EvalCache {
         self.graph.recompute_ready_dirty_nodes(recompute)
     }
 
-
     pub(crate) fn record_memo_read_dependency(
         &mut self,
         dependent: DemandNodeId,
@@ -260,7 +259,6 @@ impl EvalCache {
         }
         Ok(has_dirty_dependency)
     }
-
 
     /// Reconsiders one node from a recomputed inline scalar value.
     ///

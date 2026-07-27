@@ -13,7 +13,7 @@ impl TreeWalk {
         let left_value = self.force_primop_value(left, "attrs", ValueTag::Attrs)?;
         let right_value = self.force_primop_value(right, "attrs", ValueTag::Attrs)?;
         let left_keys = {
-            let attrs = self.heap.get_attrs(left_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(left_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: left.id(),
@@ -32,11 +32,11 @@ impl TreeWalk {
                     left.span(),
                 )
             })?;
-            keys.extend(attrs.entries_by_symbol().iter().map(|entry| entry.key));
+            keys.extend(attrs.iter_by_symbol().map(|entry| entry.key));
             keys
         };
         let entries = {
-            let attrs = self.heap.get_attrs(right_value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(right_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: right.id(),
@@ -55,9 +55,9 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            for entry in attrs.entries_by_symbol() {
+            for entry in attrs.iter_by_symbol() {
                 if left_keys.contains(&entry.key) {
-                    entries.push(*entry);
+                    entries.push(entry);
                 }
             }
             entries
@@ -76,7 +76,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -111,7 +111,7 @@ impl TreeWalk {
                 ));
             }
             let selected = {
-                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                let attrs = self.heap.get_attrs_view(element).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: list.id(),
@@ -137,7 +137,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
         let elements = {
-            let list_values = self.heap.get_list(list_value).map_err(|source| {
+            let list_values = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),
@@ -179,15 +179,18 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let separator_value = self.force_primop_value(separator, "string", ValueTag::String)?;
         let (separator_bytes, separator_context) = {
-            let separator_string = self.heap.get_string(separator_value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: separator.id(),
-                        source,
-                    },
-                    separator.span(),
-                )
-            })?;
+            let separator_string =
+                self.heap
+                    .get_string_view(separator_value)
+                    .map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Heap {
+                                id: separator.id(),
+                                source,
+                            },
+                            separator.span(),
+                        )
+                    })?;
             let bytes = Self::copy_bytes_for_node(
                 separator.id(),
                 separator.span(),
@@ -195,7 +198,7 @@ impl TreeWalk {
             )?;
             let context = separator_string
                 .context()
-                .union(&StringContext::empty())
+                .try_to_owned()
                 .map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::String {
@@ -210,7 +213,7 @@ impl TreeWalk {
 
         let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
         let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
+            let list_value = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list.id(),

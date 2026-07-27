@@ -8,19 +8,37 @@
 //! module; see the [parent module docs](super) for the object layout and the
 //! fail-loud contract.
 
+use super::value_tail::VALUE_TAIL_PACKED_SIZE_MASK;
 use super::*;
 use crate::value::Value;
 
 /// Post-monomorphization payload layout checks for [`FlatObject<T>`].
-struct FlatLayoutCheck<T>(PhantomData<T>);
+pub(super) struct FlatLayoutCheck<T>(PhantomData<T>);
 
 impl<T> FlatLayoutCheck<T> {
     /// Fails compilation (post-mono) for payloads the arena cannot host.
-    const PAYLOAD_FITS_ARENA_ALIGNMENT: () =
+    pub(super) const PAYLOAD_FITS_ARENA_ALIGNMENT: () =
         assert!(mem::align_of::<FlatObject<T>>() <= MAX_ALIGN);
 }
 
 impl<T> FlatObjectStore<T> {
+    #[cfg(feature = "hole_reuse_shadow_probe")]
+    pub(super) fn note_hole_reuse_shadow_allocation(&self, allocation: ArenaAllocation) {
+        let uses_reservation = match &self.backing {
+            FlatStoreBacking::Owned(_) => false,
+            FlatStoreBacking::Rewindable { arena, .. } | FlatStoreBacking::Shared(arena) => {
+                arena.uses_reservation()
+            }
+        };
+        if uses_reservation {
+            hole_reuse_shadow::note_candidate_c_allocation(
+                allocation.ptr.as_ptr() as usize,
+                allocation.reserved_size,
+                allocation.align,
+            );
+        }
+    }
+
     /// Allocates a flat object and returns its stable address.
     ///
     /// The object header stores `kind`, `hash`, and `epoch` (with an `aux`
@@ -66,9 +84,12 @@ impl<T> FlatObjectStore<T> {
         self.check_kind_allowed(kind)?;
         let size = mem::size_of::<FlatObject<T>>();
         let store_index = self.entries.len();
-        let entries = store_index
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
+        let entries =
+            store_index
+                .checked_add(1)
+                .ok_or(FlatObjectError::RegistryAllocationFailed {
+                    entries: usize::MAX,
+                })?;
         self.entries
             .try_reserve(1)
             .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
@@ -76,6 +97,8 @@ impl<T> FlatObjectStore<T> {
             .backing
             .alloc_raw(size, kind)
             .map_err(FlatObjectError::Arena)?;
+        #[cfg(feature = "hole_reuse_shadow_probe")]
+        self.note_hole_reuse_shadow_allocation(allocation);
         debug_assert!(allocation.reserved_size >= size);
         debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
         let object = FlatObject {
@@ -132,9 +155,12 @@ impl<T> FlatObjectStore<T> {
             .checked_add(bytes.len())
             .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
         let store_index = self.entries.len();
-        let entries = store_index
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
+        let entries =
+            store_index
+                .checked_add(1)
+                .ok_or(FlatObjectError::RegistryAllocationFailed {
+                    entries: usize::MAX,
+                })?;
         self.entries
             .try_reserve(1)
             .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
@@ -142,6 +168,8 @@ impl<T> FlatObjectStore<T> {
             .backing
             .alloc_raw(size, kind)
             .map_err(FlatObjectError::Arena)?;
+        #[cfg(feature = "hole_reuse_shadow_probe")]
+        self.note_hole_reuse_shadow_allocation(allocation);
         debug_assert!(allocation.reserved_size >= size);
         debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
         let ptr = allocation.ptr;
@@ -225,9 +253,12 @@ impl<T> FlatObjectStore<T> {
             .checked_add(tail.bytes())
             .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
         let store_index = self.entries.len();
-        let entries = store_index
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
+        let entries =
+            store_index
+                .checked_add(1)
+                .ok_or(FlatObjectError::RegistryAllocationFailed {
+                    entries: usize::MAX,
+                })?;
         self.entries
             .try_reserve(1)
             .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
@@ -235,12 +266,13 @@ impl<T> FlatObjectStore<T> {
             .backing
             .alloc_raw(size, kind)
             .map_err(FlatObjectError::Arena)?;
+        #[cfg(feature = "hole_reuse_shadow_probe")]
+        self.note_hole_reuse_shadow_allocation(allocation);
         debug_assert!(allocation.reserved_size >= size);
         debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
         let ptr = allocation.ptr;
-        let Some(tail_ptr) = NonNull::new(
-            ptr.as_ptr().cast::<u8>().wrapping_add(object_size),
-        ) else {
+        let Some(tail_ptr) = NonNull::new(ptr.as_ptr().cast::<u8>().wrapping_add(object_size))
+        else {
             return Err(FlatObjectError::UnknownAddress {
                 address: ptr.as_ptr() as usize,
             });
@@ -309,10 +341,16 @@ impl<T> FlatObjectStore<T> {
         let size = object_size
             .checked_add(tail_size)
             .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
+        if size > VALUE_TAIL_PACKED_SIZE_MASK {
+            return Err(FlatObjectError::Arena(ArenaError::SizeOverflow));
+        }
         let store_index = self.entries.len();
-        let entries = store_index
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
+        let entries =
+            store_index
+                .checked_add(1)
+                .ok_or(FlatObjectError::RegistryAllocationFailed {
+                    entries: usize::MAX,
+                })?;
         self.entries
             .try_reserve(1)
             .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
@@ -320,6 +358,8 @@ impl<T> FlatObjectStore<T> {
             .backing
             .alloc_raw(size, kind)
             .map_err(FlatObjectError::Arena)?;
+        #[cfg(feature = "hole_reuse_shadow_probe")]
+        self.note_hole_reuse_shadow_allocation(allocation);
         debug_assert!(allocation.reserved_size >= size);
         debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
         debug_assert_eq!(object_size % mem::align_of::<Value>(), 0);
@@ -345,8 +385,10 @@ impl<T> FlatObjectStore<T> {
                 payload,
             });
         }
+        let generation = self.issue_value_tail_generation();
         let mut entry = FlatStoreEntry::plain(ptr, allocation.reserved_size);
-        entry.mark_value_tail();
+        let marked = entry.mark_value_tail(generation.unwrap_or(0));
+        debug_assert!(marked, "checked compact tail extent must fit");
         self.entries.push(entry);
         self.refresh_regions();
         let allocation = FlatAllocation {
@@ -354,7 +396,8 @@ impl<T> FlatObjectStore<T> {
             store_index,
             allocation,
         };
-        let handle = FlatValueTailHandle::new(store_index, values.len());
+        let handle = generation
+            .and_then(|generation| FlatValueTailHandle::new(store_index, values.len(), generation));
         Ok(FlatValueTailAllocation { allocation, handle })
     }
 }

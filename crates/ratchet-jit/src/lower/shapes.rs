@@ -1,15 +1,12 @@
 //! Tier-1 delegating-shape public lowering entry points (moved from `lower.rs`).
 
-use cranelift_codegen::ir::{Function, UserFuncName};
-use ratchet_core::{
-    Ir, IrArena, IrData,
-    IrId, IrKind, runtime_thunk_call_signature,
-};
-use ratchet_value::value::Value;
 use crate::{
     abi::clif_signature_for_runtime_call,
     artifact::{JitClifArtifact, JitClifArtifactSource},
 };
+use cranelift_codegen::ir::{Function, UserFuncName};
+use ratchet_core::{Ir, IrArena, IrData, IrId, IrKind, runtime_thunk_call_signature};
+use ratchet_value::value::Value;
 
 use super::*;
 

@@ -76,7 +76,8 @@ const ENV_ACCESS_REMAINING_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocke
 pub unsafe extern "C" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
     // pinned runtime-environment contract documented on this function.
-    unsafe { // aos_env_get runtime-environment decode
+    unsafe {
+        // aos_env_get runtime-environment decode
         with_native_runtime_env_context(env, |eval, env, _, _| {
             innermost_frame_slot(eval, env, slot)
         })
@@ -103,7 +104,8 @@ pub unsafe extern "C" fn aos_candidate_b_env_get(env: *mut c_void, slot: u32) ->
     // SAFETY: The JIT call boundary supplies the same pinned runtime context
     // required by `aos_env_get`; this candidate wrapper only changes the return
     // representation after copying the active frame value.
-    unsafe { // aos_candidate_b_env_get runtime-environment decode
+    unsafe {
+        // aos_candidate_b_env_get runtime-environment decode
         with_native_runtime_env_context(env, |eval, captured, _, _| {
             let value = innermost_frame_slot(eval, captured, slot);
             match eval.candidate_b_runtime_value_word(value) {
@@ -157,7 +159,8 @@ pub type RuntimeUpvalGetNativeFn = unsafe extern "C" fn(*mut c_void, u32, u32) -
 pub unsafe extern "C" fn aos_upval_get(env: *mut c_void, depth: u32, slot: u32) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
     // pinned runtime-environment contract documented on this function.
-    unsafe { // aos_upval_get runtime-environment decode
+    unsafe {
+        // aos_upval_get runtime-environment decode
         with_native_runtime_env_context(env, |eval, env, _, _| {
             upval_frame_slot(eval, env, depth, slot)
         })

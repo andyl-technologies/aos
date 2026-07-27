@@ -206,8 +206,7 @@ fn incremental_insert_order_matches_batch_across_rank_renumbering() {
     // identical to a batch rebuild (the guarantee the O(n) insert relies on).
     let mut table = SymbolTable::new();
     let m = table.intern(b"m").expect("m interns");
-    let base =
-        HamtAttrs::new(vec![AttrEntry::new(m, Value::int(1))], &table).expect("base builds");
+    let base = HamtAttrs::new(vec![AttrEntry::new(m, Value::int(1))], &table).expect("base builds");
 
     // These intern AFTER `base`; "a" sorts before "m", so all ranks renumber.
     let a = table.intern(b"a").expect("a interns");

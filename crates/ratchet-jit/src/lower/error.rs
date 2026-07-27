@@ -287,7 +287,10 @@ impl fmt::Display for JitLowerError {
                 "runtime helper {symbol_name:?} produced {actual} CLIF results, expected {expected}"
             ),
             Self::MalformedForceSafepoint { reason } => {
-                write!(formatter, "generated force safepoint is malformed: {reason}")
+                write!(
+                    formatter,
+                    "generated force safepoint is malformed: {reason}"
+                )
             }
             Self::MissingIrNode { root } => {
                 write!(formatter, "IR root {root:?} is not present in the arena")

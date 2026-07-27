@@ -7,10 +7,11 @@
 //!
 //! The baseline representation stores the cached result in an
 //! `AtomicValueCell` published under a separate state word. Candidate C instead
-//! reserves two invalid tagged-value words for suspended and blackholed, then
-//! publishes the forced value directly into that same atomic word. In both
-//! layouts readers acquire-load the publication word, and `Forced` is terminal:
-//! the result is never rewritten after publication.
+//! reserves invalid tagged-value words for suspended, blackholed, and
+//! single-entry state, then publishes an ordinary thunk's forced value directly
+//! into that same atomic word. In both layouts readers acquire-load the
+//! publication word, and `Forced` is terminal: the result is never rewritten
+//! after publication.
 
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,9 @@ const FORCED: u64 = 2;
 const COMPACT_SUSPENDED: u64 = u64::MAX;
 #[cfg(feature = "candidate_c_value")]
 const COMPACT_BLACKHOLE: u64 = u64::MAX - 1;
+/// A non-publishing, single-entry thunk marker stored in the otherwise unused cell.
+#[cfg(feature = "candidate_c_value")]
+const COMPACT_SINGLE_ENTRY: u64 = u64::MAX - 2;
 
 /// The serial Phase-1 thunk state encoded in the atomic state word.
 #[repr(u64)]
@@ -80,6 +84,20 @@ pub enum ForceClaim<'a> {
     /// The caller transitioned the thunk from suspended to blackholed and must
     /// evaluate the thunk body.
     Claimed(ForceGuard<'a>),
+    /// The thunk was already forced and the cached value can be reused.
+    AlreadyForced(Value),
+}
+
+/// Result of claiming a thunk without retaining a borrow of its cell.
+///
+/// This crate-private protocol exists for evaluator-owned continuation
+/// leases. Unlike [`ForceClaim`], the claimed arm carries no RAII guard: the
+/// evaluator must later call [`ThunkCell::finish_detached_force`] or
+/// [`ThunkCell::abort_detached_force`] after resolving the rooted thunk again.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DetachedForceClaim {
+    /// The caller transitioned the thunk from suspended to blackholed.
+    Claimed,
     /// The thunk was already forced and the cached value can be reused.
     AlreadyForced(Value),
 }
@@ -264,6 +282,24 @@ impl ThunkCell {
         }
     }
 
+    /// Creates a cell whose word marks a proven single-entry thunk.
+    ///
+    /// The evaluator checks this marker before entering the ordinary force
+    /// protocol. Its body is evaluated directly and no result is published, so
+    /// the marker remains stable for the lifetime of the thunk.
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) const fn single_entry() -> Self {
+        Self {
+            word: AtomicU64::new(COMPACT_SINGLE_ENTRY),
+        }
+    }
+
+    /// Returns whether this cell carries the Candidate-C single-entry marker.
+    #[cfg(feature = "candidate_c_value")]
+    pub(crate) fn is_single_entry(&self) -> bool {
+        self.word.load(Ordering::Relaxed) == COMPACT_SINGLE_ENTRY
+    }
+
     /// Creates a forced thunk cell with an already relocated cached result.
     pub(crate) fn forced(value: Value) -> Self {
         #[cfg(feature = "candidate_c_value")]
@@ -293,6 +329,7 @@ impl ThunkCell {
             return Ok(match self.word.load(Ordering::Acquire) {
                 COMPACT_SUSPENDED => ThunkState::Suspended,
                 COMPACT_BLACKHOLE => ThunkState::Blackhole,
+                COMPACT_SINGLE_ENTRY => ThunkState::Suspended,
                 _ => ThunkState::Forced,
             });
         }
@@ -314,7 +351,7 @@ impl ThunkCell {
         {
             let word = self.word.load(Ordering::Acquire);
             return match word {
-                COMPACT_SUSPENDED | COMPACT_BLACKHOLE => Ok(None),
+                COMPACT_SUSPENDED | COMPACT_BLACKHOLE | COMPACT_SINGLE_ENTRY => Ok(None),
                 _ => Ok(Some(compact_forced_value(word))),
             };
         }
@@ -382,6 +419,9 @@ impl ThunkCell {
                         }
                     }
                     COMPACT_BLACKHOLE => return Err(ForceError::InfiniteRecursion),
+                    COMPACT_SINGLE_ENTRY => {
+                        return Err(ForceError::InvalidStateWord { raw: word });
+                    }
                     _ => return Ok(ForceClaim::AlreadyForced(compact_forced_value(word))),
                 }
             }
@@ -415,6 +455,48 @@ impl ThunkCell {
                 }
             }
         }
+    }
+
+    /// Claims a suspended thunk without returning a cell-borrowing guard.
+    ///
+    /// This is the state-cell half of the evaluator-owned force-lease
+    /// protocol. It deliberately remains crate-private because a detached
+    /// claim has no drop guard; callers must own a separately rooted thunk
+    /// handle and provide panic-safe finish/abort orchestration.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::begin_force`].
+    pub(crate) fn begin_detached_force(&self) -> Result<DetachedForceClaim, ForceError> {
+        match self.begin_force()? {
+            ForceClaim::AlreadyForced(value) => Ok(DetachedForceClaim::AlreadyForced(value)),
+            ForceClaim::Claimed(mut guard) => {
+                guard.active = false;
+                Ok(DetachedForceClaim::Claimed)
+            }
+        }
+    }
+
+    /// Publishes a detached claim's result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`ForceGuard::finish_with_barrier`].
+    pub(crate) fn finish_detached_force(
+        &self,
+        value: Value,
+        barrier: &mut impl ThunkResolveBarrier,
+    ) -> Result<Value, ForceError> {
+        self.publish_forced_with_barrier(value, barrier)
+    }
+
+    /// Aborts a detached claim and restores the suspended state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`ForceGuard::abort`].
+    pub(crate) fn abort_detached_force(&self) -> Result<(), ForceError> {
+        self.abort_claim()
     }
 
     fn publish_forced_with_barrier(
@@ -496,8 +578,10 @@ impl ThunkCell {
 fn compact_forced_value(word: u64) -> Value {
     debug_assert_ne!(word, COMPACT_SUSPENDED);
     debug_assert_ne!(word, COMPACT_BLACKHOLE);
-    // SAFETY: the private word is initialized only to the two sentinels and
-    // every non-sentinel write copies a validated Candidate-C `Value` intact.
+    debug_assert_ne!(word, COMPACT_SINGLE_ENTRY);
+    // SAFETY: the private word is initialized only to the reserved sentinels
+    // and every non-sentinel write copies a validated Candidate-C `Value`
+    // intact.
     unsafe { Value::from_validated_raw_unchecked(word) }
 }
 
@@ -545,6 +629,9 @@ mod tests {
         );
         assert!(
             crate::value::compressed::CompressedValueWord::from_raw(COMPACT_BLACKHOLE).is_err()
+        );
+        assert!(
+            crate::value::compressed::CompressedValueWord::from_raw(COMPACT_SINGLE_ENTRY).is_err()
         );
     }
 

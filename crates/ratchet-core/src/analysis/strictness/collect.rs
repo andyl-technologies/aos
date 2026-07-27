@@ -132,7 +132,11 @@ impl Sequence {
 
     pub(super) fn push(&mut self, map: &SlotDemand, step_total: bool) {
         for (key, level) in &map.entries {
-            let level = if self.effect_seen { cap(*level) } else { *level };
+            let level = if self.effect_seen {
+                cap(*level)
+            } else {
+                *level
+            };
             self.result.insert_first_wins(*key, level);
         }
         if !step_total {
@@ -185,9 +189,7 @@ pub(super) fn collect(
     let popped = analysis.collect_active.pop();
     debug_assert_eq!(popped, Some((id, ctx)));
     let map = Rc::new(result?);
-    analysis
-        .collect_memo
-        .insert((id, ctx), Rc::clone(&map));
+    analysis.collect_memo.insert((id, ctx), Rc::clone(&map));
     Ok(map)
 }
 
@@ -258,13 +260,7 @@ fn collect_uncached(
             let IrData::Let { bindings, body, .. } = node.data else {
                 return Ok(SlotDemand::default());
             };
-            let inner = frame_demand_fixpoint(
-                analysis,
-                id,
-                bindings,
-                Some((body, ctx)),
-                false,
-            )?;
+            let inner = frame_demand_fixpoint(analysis, id, bindings, Some((body, ctx)), false)?;
             Ok(inner.shifted_out())
         }
         IrKind::AttrSet => {
@@ -574,7 +570,9 @@ pub(super) fn lambda_argument_demand(
         }
         IrKind::FormalSet => {
             if formal_set_pattern_forces_argument(analysis, lambda, pattern_id, pattern, frame)? {
-                Ok(LambdaArgumentDemand::Level(Strictness::DemandedBeforeEffect))
+                Ok(LambdaArgumentDemand::Level(
+                    Strictness::DemandedBeforeEffect,
+                ))
             } else {
                 Ok(LambdaArgumentDemand::Level(Strictness::Unknown))
             }
@@ -582,7 +580,6 @@ pub(super) fn lambda_argument_demand(
         _ => Ok(LambdaArgumentDemand::Level(Strictness::Unknown)),
     }
 }
-
 
 /// Validates a formal-set pattern and returns whether binding it must force
 /// the argument to an attribute set.
@@ -716,9 +713,7 @@ fn frame_demand_fixpoint(
             .depth_zero()
             .map(|(slot, _)| slot)
             .filter(|slot| {
-                usize::try_from(*slot).is_ok_and(|slot| {
-                    slot < visited.len() && !visited[slot]
-                })
+                usize::try_from(*slot).is_ok_and(|slot| slot < visited.len() && !visited[slot])
             })
             .collect();
         for slot in pending {

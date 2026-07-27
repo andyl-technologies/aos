@@ -324,7 +324,9 @@ fn decode_shared_chain_reason(tag: u8) -> Result<SharedChainReason, String> {
         0 => Ok(SharedChainReason::TooManyFreeVars),
         1 => Ok(SharedChainReason::DynamicScope),
         2 => Ok(SharedChainReason::CoordinateOverflow),
-        tag => Err(format!("invalid capture plan shared-chain reason tag {tag}")),
+        tag => Err(format!(
+            "invalid capture plan shared-chain reason tag {tag}"
+        )),
     }
 }
 
@@ -363,10 +365,7 @@ fn decode_capture_plans(
     Ok(())
 }
 
-fn encode_flat_capture_accesses(
-    out: &mut Vec<u8>,
-    facts: &IrFacts,
-) -> Result<(), ParseCacheError> {
+fn encode_flat_capture_accesses(out: &mut Vec<u8>, facts: &IrFacts) -> Result<(), ParseCacheError> {
     let access_count = facts
         .flat_capture_accesses()
         .iter()

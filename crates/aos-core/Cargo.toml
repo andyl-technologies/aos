@@ -10,6 +10,8 @@ native-eval = ["dep:aos-nix"]
 # and forwards to aos-nix; gates the native JIT off by construction under the
 # variant (see `EvalConfig::native_jit`).
 candidate_c_value = ["native-eval", "aos-nix/candidate_c_value"]
+# Default-off serial Apply/GenList active packed-thunk experiment.
+active_packed_thunk_probe = ["candidate_c_value", "aos-nix/active_packed_thunk_probe"]
 
 [dependencies]
 anyhow = { workspace = true }

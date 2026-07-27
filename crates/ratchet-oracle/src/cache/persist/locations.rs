@@ -483,8 +483,7 @@ mod tests {
 
     #[test]
     fn parse_list_preserves_declared_order_within_a_class() {
-        let locations =
-            PersistDiskLocation::parse_list("hdd:/one,hdd:/two").expect("spec parses");
+        let locations = PersistDiskLocation::parse_list("hdd:/one,hdd:/two").expect("spec parses");
         assert_eq!(locations[0].root(), Path::new("/one"));
         assert_eq!(locations[1].root(), Path::new("/two"));
     }

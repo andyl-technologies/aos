@@ -605,4 +605,3 @@ pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_prefl
         },
     )
 }
-

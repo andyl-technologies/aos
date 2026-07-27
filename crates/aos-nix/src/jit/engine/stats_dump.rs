@@ -8,7 +8,10 @@ impl Drop for NixJitTier1Engine {
         if std::env::var("AOS_NIX_EVAL_STATS").as_deref() != Ok("1") {
             return;
         }
-        dump_u32_histogram("aos_nix_tier1_blacklist_histogram", self.blacklist_histogram());
+        dump_u32_histogram(
+            "aos_nix_tier1_blacklist_histogram",
+            self.blacklist_histogram(),
+        );
         dump_u64_histogram(
             "aos_nix_tier1_dispatched_histogram",
             self.dispatched_histogram(),
@@ -45,7 +48,12 @@ impl Drop for NixJitTier1Engine {
 }
 
 fn dump_u32_histogram(name: &str, entries: Vec<(String, u32)>) {
-    dump_histogram(name, entries.into_iter().map(|(key, value)| (key, u64::from(value))));
+    dump_histogram(
+        name,
+        entries
+            .into_iter()
+            .map(|(key, value)| (key, u64::from(value))),
+    );
 }
 
 fn dump_u64_histogram(name: &str, entries: Vec<(String, u64)>) {

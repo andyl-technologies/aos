@@ -552,13 +552,11 @@ impl TreeWalk {
         if Self::derivation_scalar_only_attr(key) {
             return;
         }
-        let Ok(list) = self.heap.get_list(value) else {
+        let Ok(list) = self.heap.get_list_view(value) else {
             return;
         };
         let elements: Vec<Value> = list
-            .as_slice()
             .iter()
-            .copied()
             .filter(|element| {
                 matches!(
                     classify_whnf_tag_fast_path(*element),
@@ -597,10 +595,10 @@ impl TreeWalk {
         match value.tag() {
             ValueTag::List => {
                 let elements: Vec<Value> = {
-                    let list = self.heap.get_list(value).map_err(|source| {
+                    let list = self.heap.get_list_view(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
-                    list.as_slice().to_vec()
+                    list.iter().collect()
                 };
                 let keep = demand_task_chunk(DemandTaskKind::Coerce);
                 if elements.len() > keep {

@@ -152,12 +152,12 @@ impl TreeWalk {
     ) -> Result<NixString, TreeWalkError> {
         let string = self
             .heap
-            .get_string(value)
+            .get_string_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
         let context = string
             .context()
-            .union(&StringContext::empty())
+            .try_to_owned()
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(NixString::new(bytes, context))
     }
@@ -170,7 +170,7 @@ impl TreeWalk {
     ) -> Result<NixString, TreeWalkError> {
         let path = self
             .heap
-            .get_path(value)
+            .get_path_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         let bytes = Self::copy_bytes_for_node(id, span, path.bytes())?;
         Ok(NixString::from_bytes(bytes))
@@ -184,7 +184,7 @@ impl TreeWalk {
     ) -> Result<NixString, TreeWalkError> {
         let path = self
             .heap
-            .get_path(value)
+            .get_path_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         let bytes = path_without_trailing_path_markers(path.bytes()).to_vec();
         self.source_path_store_string_from_default_name(id, span, &bytes, true, None, None)
@@ -726,7 +726,7 @@ impl TreeWalk {
         out: &mut Vec<u8>,
         context: &mut StringContext,
     ) -> Result<(), TreeWalkError> {
-        let string = self.heap.get_string(value).map_err(|source| {
+        let string = self.heap.get_string_view(value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: string_id,
@@ -737,7 +737,9 @@ impl TreeWalk {
         })?;
         Self::write_json_string_bytes(id, span, string.bytes(), out)?;
         *context = context
-            .union(string.context())
+            .union(&string.context().try_to_owned().map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(())
     }
@@ -813,7 +815,7 @@ impl TreeWalk {
         context: &mut StringContext,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -832,7 +834,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            elements.extend_from_slice(list.as_slice());
+            elements.extend(list.iter());
             elements
         };
 
@@ -869,12 +871,21 @@ impl TreeWalk {
         if let Some(out_path) =
             self.attr_value_by_name(attrs_id, value, OUT_PATH_ATTR, attrs_span)?
         {
+            #[cfg(feature = "collection_poll_probe")]
+            let value = self.with_nonmoving_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::JsonOutPathForce,
+                attrs_id,
+                &[out_path],
+                Some(super::native_continuation_shadow::NativeContinuationEdge::ForceValue),
+                |eval| eval.force_value(attrs_id, attrs_span, out_path),
+            )?;
+            #[cfg(not(feature = "collection_poll_probe"))]
             let value = self.force_value(attrs_id, attrs_span, out_path)?;
             return self.write_json_value(id, span, attrs_id, attrs_span, value, out, context);
         }
 
         let entries = {
-            let attrs = self.heap.get_attrs(value).map_err(|source| {
+            let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,

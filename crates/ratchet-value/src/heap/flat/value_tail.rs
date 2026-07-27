@@ -19,17 +19,19 @@ use super::{
 const VALUE_TAIL_FLAG: usize = 1;
 const VALUE_TAIL_HANDLE_LEN_BITS: u32 = 4;
 const VALUE_TAIL_HANDLE_LEN_MASK: u32 = (1 << VALUE_TAIL_HANDLE_LEN_BITS) - 1;
+pub(super) const VALUE_TAIL_PACKED_SIZE_MASK: usize = u32::MAX as usize & !VALUE_TAIL_FLAG;
 
 /// A compact prevalidated registry coordinate for one inline `Value` tail.
 ///
 /// Resolution-based construction checks the exact registry entry, header
 /// length, and reserved extent once; the allocation door signs the coordinate
-/// while those facts are already exclusively known. Resolution requires the
-/// owning store and exact object pointer separately; the indexed registry
-/// entry checks that pointer before any tail read.
+/// while those facts are already exclusively known. The generation is never
+/// rewound with a lexical region, so an old coordinate cannot alias a later
+/// object that reuses the same registry index and arena address.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlatValueTailHandle {
     index_and_len: u32,
+    generation: u32,
 }
 
 /// The object allocation and compact handle produced by a `Value`-tail door.
@@ -43,7 +45,10 @@ pub struct FlatValueTailAllocation {
 }
 
 impl FlatValueTailHandle {
-    pub(super) fn new(store_index: usize, len: usize) -> Option<Self> {
+    pub(super) fn new(store_index: usize, len: usize, generation: u32) -> Option<Self> {
+        if generation == 0 {
+            return None;
+        }
         let len = u32::try_from(len).ok()?;
         if len > VALUE_TAIL_HANDLE_LEN_MASK {
             return None;
@@ -53,6 +58,7 @@ impl FlatValueTailHandle {
             .checked_shl(VALUE_TAIL_HANDLE_LEN_BITS)?;
         Some(Self {
             index_and_len: index | len,
+            generation,
         })
     }
 
@@ -77,28 +83,104 @@ impl FlatStoreEntry {
         Self {
             ptr,
             size_and_flags: size_bytes,
+            #[cfg(target_pointer_width = "32")]
+            value_tail_generation: 0,
         }
     }
 
-    pub(super) fn mark_value_tail(&mut self) {
+    pub(super) fn mark_value_tail(&mut self, generation: u32) -> bool {
         debug_assert_eq!(self.size_and_flags & VALUE_TAIL_FLAG, 0);
+        #[cfg(target_pointer_width = "64")]
+        {
+            if self.size_and_flags > VALUE_TAIL_PACKED_SIZE_MASK {
+                return false;
+            }
+            self.size_and_flags |= (generation as usize) << u32::BITS;
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.value_tail_generation = generation;
+        }
         self.size_and_flags |= VALUE_TAIL_FLAG;
+        true
+    }
+
+    /// Returns whether this registry slot still owns an initialized object.
+    pub(super) const fn is_live(self) -> bool {
+        self.size_and_flags != 0
+    }
+
+    /// Invalidates this registry slot without changing its stable index.
+    pub(super) fn tombstone(&mut self) {
+        self.clear_value_tail();
+        self.size_and_flags = 0;
     }
 
     fn clear_value_tail(&mut self) {
+        #[cfg(target_pointer_width = "64")]
+        {
+            self.size_and_flags &= VALUE_TAIL_PACKED_SIZE_MASK;
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.value_tail_generation = 0;
+        }
         self.size_and_flags &= !VALUE_TAIL_FLAG;
     }
 
     pub(super) const fn size_bytes(self) -> usize {
+        #[cfg(target_pointer_width = "64")]
+        if self.has_value_tail() {
+            return self.size_and_flags & VALUE_TAIL_PACKED_SIZE_MASK;
+        }
         self.size_and_flags & !VALUE_TAIL_FLAG
     }
 
-    const fn has_value_tail(self) -> bool {
+    pub(super) const fn has_value_tail(self) -> bool {
         self.size_and_flags & VALUE_TAIL_FLAG != 0
+    }
+
+    const fn value_tail_generation(self) -> u32 {
+        if !self.has_value_tail() {
+            return 0;
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            (self.size_and_flags >> u32::BITS) as u32
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.value_tail_generation
+        }
     }
 }
 
 impl<T> FlatObjectStore<T> {
+    /// Issues a tail identity that is never rewound with the registry.
+    pub(super) fn issue_value_tail_generation(&mut self) -> Option<u32> {
+        let generation = u32::try_from(self.next_value_tail_generation).ok()?;
+        self.next_value_tail_generation = self.next_value_tail_generation.saturating_add(1);
+        Some(generation)
+    }
+
+    /// Returns the registered owner address signed into `handle`.
+    ///
+    /// This is an error-reporting and rooting companion to
+    /// [`Self::resolve_value_tail_handle_owner`]. It does not expose payload
+    /// bytes and returns `None` for a stale or retired tail handle.
+    pub fn value_tail_handle_owner(
+        &self,
+        handle: FlatValueTailHandle,
+    ) -> Option<NonNull<HeapObject>> {
+        self.entries
+            .get(handle.store_index())
+            .copied()
+            .filter(|entry| {
+                entry.has_value_tail() && entry.value_tail_generation() == handle.generation
+            })
+            .map(|entry| entry.ptr)
+    }
+
     /// Resolves the initialized inline `Value` run trailing one flat object.
     ///
     /// Returns `Ok(None)` when the exact registry entry was not allocated by
@@ -246,7 +328,7 @@ impl<T> FlatObjectStore<T> {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         let _ = checked_value_tail::<T>(ptr, entry, expected_len)?;
-        FlatValueTailHandle::new(store_index, expected_len)
+        FlatValueTailHandle::new(store_index, expected_len, entry.value_tail_generation())
             .ok_or(FlatObjectError::UnknownAddress { address })
     }
 
@@ -265,11 +347,46 @@ impl<T> FlatObjectStore<T> {
     ) -> Result<(FlatObjectRef<'_, T>, &[Value]), FlatObjectError> {
         let address = ptr.as_ptr() as usize;
         let (object, entry) = self.object_and_entry_at(handle.store_index(), ptr)?;
-        if !entry.has_value_tail() || object.aux() as usize != handle.len() {
+        if !entry.has_value_tail()
+            || entry.value_tail_generation() != handle.generation
+            || object.aux() as usize != handle.len()
+        {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         let values = self.value_tail_slice_prevalidated(ptr, handle.len())?;
         Ok((object, values))
+    }
+
+    /// Resolves a prevalidated inline `Value` tail and its owning address.
+    ///
+    /// The handle's signed registry index identifies the owner directly, so
+    /// closure metadata does not need to retain a duplicate heap [`Value`].
+    /// The private tail flag and signed header length are still validated
+    /// before any bytes are exposed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlatObjectError`] when the handle's registry entry is stale,
+    /// its private tail flag is absent, or its signed header length changed.
+    #[inline]
+    pub fn resolve_value_tail_handle_owner(
+        &self,
+        handle: FlatValueTailHandle,
+    ) -> Result<(NonNull<HeapObject>, FlatObjectRef<'_, T>, &[Value]), FlatObjectError> {
+        let Some(entry) = self.entries.get(handle.store_index()).copied() else {
+            return Err(FlatObjectError::UnknownAddress { address: 0 });
+        };
+        let ptr = entry.ptr;
+        let address = ptr.as_ptr() as usize;
+        let (object, checked_entry) = self.object_and_entry_at(handle.store_index(), ptr)?;
+        if !checked_entry.has_value_tail()
+            || checked_entry.value_tail_generation() != handle.generation
+            || object.aux() as usize != handle.len()
+        {
+            return Err(FlatObjectError::UnknownAddress { address });
+        }
+        let values = self.value_tail_slice_prevalidated(ptr, handle.len())?;
+        Ok((ptr, object, values))
     }
 
     /// Copies one value through a prevalidated inline-tail handle.
@@ -289,13 +406,34 @@ impl<T> FlatObjectStore<T> {
         let Some(entry) = self.entries.get(handle.store_index()).copied() else {
             return Err(FlatObjectError::UnknownAddress { address });
         };
-        if entry.ptr != ptr || !entry.has_value_tail() {
+        if entry.ptr != ptr
+            || !entry.has_value_tail()
+            || entry.value_tail_generation() != handle.generation
+        {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         if index >= handle.len() {
             return Ok(None);
         }
         let values = self.value_tail_slice_prevalidated(ptr, handle.len())?;
+        Ok(values.get(index).copied())
+    }
+
+    /// Copies one value through a handle that identifies its owner by registry
+    /// index.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::resolve_value_tail_handle_owner`]. An out-of-range element index
+    /// returns `Ok(None)`.
+    #[inline]
+    pub fn value_tail_get_handle_owner(
+        &self,
+        handle: FlatValueTailHandle,
+        index: usize,
+    ) -> Result<Option<Value>, FlatObjectError> {
+        let (_, _, values) = self.resolve_value_tail_handle_owner(handle)?;
         Ok(values.get(index).copied())
     }
 
@@ -367,6 +505,15 @@ impl<T> FlatObjectStore<T> {
         kind: FlatObjectKind,
     ) -> Result<(&mut T, &mut [Value]), FlatObjectError> {
         let address = ptr.as_ptr() as usize;
+        let Some(entry) = self.entries.get(handle.store_index()).copied() else {
+            return Err(FlatObjectError::UnknownAddress { address });
+        };
+        if entry.ptr != ptr
+            || !entry.has_value_tail()
+            || entry.value_tail_generation() != handle.generation
+        {
+            return Err(FlatObjectError::UnknownAddress { address });
+        }
         let (payload, values) =
             self.resolve_mut_with_value_tail_at(handle.store_index(), ptr, kind)?;
         let Some(values) = values else {
@@ -396,7 +543,7 @@ impl<T> FlatObjectStore<T> {
         let Some(entry) = self.entries.get(store_index).copied() else {
             return Err(FlatObjectError::UnknownAddress { address });
         };
-        if entry.ptr != ptr {
+        if entry.ptr != ptr || !entry.is_live() {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         // SAFETY: the exact live registry entry proves `ptr` starts this
@@ -435,7 +582,7 @@ impl<T> FlatObjectStore<T> {
         let Some(entry) = self.entries.get(store_index).copied() else {
             return Err(FlatObjectError::UnknownAddress { address });
         };
-        if entry.ptr != ptr {
+        if entry.ptr != ptr || !entry.is_live() {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         // SAFETY: the exact live registry entry proves `ptr` starts this typed
@@ -500,7 +647,7 @@ impl<T> FlatObjectStore<T> {
             .then_some(index)
     }
 
-    fn entry_index_for_address(&self, address: usize) -> Option<usize> {
+    pub(super) fn entry_index_for_address(&self, address: usize) -> Option<usize> {
         let ordering = |entry: &FlatStoreEntry| (entry.ptr.as_ptr() as usize).cmp(&address);
         match &self.backing {
             super::FlatStoreBacking::Rewindable { .. } => self

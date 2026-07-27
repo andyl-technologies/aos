@@ -7,6 +7,7 @@
 //! sibling references keep resolving.
 
 use super::*;
+use crate::heap::flat::FlatValueTailHandle;
 
 pub(super) fn gc_address_for_value(value: Value) -> Result<GcHeapAddress, EvalHeapError> {
     let (_tag, ptr) = heap_ptr(value)?;
@@ -180,6 +181,93 @@ pub(super) fn validate_flat_attrs_direct_heap_field_write_source(
             field_source: write.source().clone(),
         },
     )
+}
+
+/// Source-shape validation for a nursery flat closure.
+pub(super) fn validate_flat_closure_direct_heap_field_write_source(
+    payload: &FlatClosurePayload,
+    write: &AllocationCollectorPollDirectHeapFieldWrite,
+) -> Result<(), EvalHeapError> {
+    if validate_flat_closure_captured_environment_source(payload, write.source())
+        .map_err(EvalHeapError::Environment)?
+    {
+        return Ok(());
+    }
+    let supported = match (payload, write.source()) {
+        (
+            FlatClosurePayload::Thunk(_) | FlatClosurePayload::SharedThunk(_),
+            HeapEdgeSource::CapturedFlatEnv {
+                owner: CapturedRootOwner::Thunk,
+                ..
+            },
+        )
+        | (
+            FlatClosurePayload::Lambda(_),
+            HeapEdgeSource::CapturedFlatEnv {
+                owner: CapturedRootOwner::Lambda,
+                ..
+            },
+        ) => true,
+        (FlatClosurePayload::Primop(primop), HeapEdgeSource::PrimopArgument { index }) => {
+            *index < primop.args().len()
+        }
+        (
+            FlatClosurePayload::Lambda(lambda),
+            HeapEdgeSource::CapturedWithScope {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) => *index < lambda.with_scope_env().scopes().len(),
+        (
+            FlatClosurePayload::Lambda(lambda),
+            HeapEdgeSource::CapturedScopedGlobal {
+                owner: CapturedRootOwner::Lambda,
+                index,
+            },
+        ) => *index < lambda.scoped_global_env().scopes().len(),
+        (FlatClosurePayload::Thunk(thunk), source) => {
+            validate_suspended_thunk_field_write_source(thunk, source)?
+                || validate_forced_thunk_cached_result_write_source(thunk, source)?
+                || validate_parallel_thunk_payload_write_source(thunk, source)?
+        }
+        // Rebuilding an `Arc<EvalThunk>` would replace the shared identity
+        // observed by outstanding force clones. Captured shared-frame and
+        // inline-tail writes are handled separately without changing the Arc.
+        (FlatClosurePayload::SharedThunk(_), _) => false,
+        _ => false,
+    };
+    if supported {
+        return Ok(());
+    }
+    Err(
+        EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+            writeback_object: write.writeback_object(),
+            field_index: write.field_index(),
+            field_source: write.source().clone(),
+        },
+    )
+}
+
+/// Returns a cloned flat-closure payload with one directly owned edge replaced.
+pub(super) fn flat_closure_heap_field_write_object(
+    payload: &StagedFlatClosurePayload,
+    source: &HeapEdgeSource,
+    replacement: Value,
+) -> Result<StagedFlatClosurePayload, RecordOwnedHeapFieldWriteObjectError> {
+    let object = match payload {
+        StagedFlatClosurePayload::Thunk(thunk) => HeapObjectValue::Thunk(thunk.clone()),
+        StagedFlatClosurePayload::SharedThunk(_) => {
+            return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+        }
+        StagedFlatClosurePayload::Lambda(lambda) => HeapObjectValue::Lambda(lambda.clone()),
+        StagedFlatClosurePayload::Primop(primop) => HeapObjectValue::Primop(primop.clone()),
+    };
+    match record_owned_heap_field_write_object(&object, source, replacement)? {
+        HeapObjectValue::Thunk(thunk) => Ok(StagedFlatClosurePayload::Thunk(thunk)),
+        HeapObjectValue::Lambda(lambda) => Ok(StagedFlatClosurePayload::Lambda(lambda)),
+        HeapObjectValue::Primop(primop) => Ok(StagedFlatClosurePayload::Primop(primop)),
+        _ => Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource),
+    }
 }
 
 /// Rewrites one entry value of staged flat-attrs entry storage.
@@ -577,7 +665,7 @@ pub(super) fn thunk_supports_suspended_field_write(
         || matches!(
             (thunk.kind(), source),
             (
-                EvalThunkKind::Apply { .. },
+                EvalThunkKind::Apply { .. } | EvalThunkKind::GenListElemAtAddOne { .. },
                 HeapEdgeSource::ThunkApplyFunction | HeapEdgeSource::ThunkApplyArgument,
             )
         )
@@ -673,20 +761,35 @@ pub(super) fn rewrite_suspended_thunk_field(
                 argument,
                 argument_value,
                 ..
+            }
+            | EvalThunkKind::GenListElemAtAddOne {
+                function,
+                function_span,
+                argument,
+                argument_value,
+                ..
             },
             HeapEdgeSource::ThunkApplyFunction,
         ) => rebuild_thunk_for_heap_field_write(
             thunk,
-            EvalThunkKind::Apply {
-                function: *function,
-                function_span: *function_span,
-                function_value: replacement,
-                argument: *argument,
-                argument_value: *argument_value,
-            },
+            rebuilt_apply_kind(
+                thunk.kind(),
+                *function,
+                *function_span,
+                replacement,
+                *argument,
+                *argument_value,
+            ),
         ),
         (
             EvalThunkKind::Apply {
+                function,
+                function_span,
+                function_value,
+                argument,
+                ..
+            }
+            | EvalThunkKind::GenListElemAtAddOne {
                 function,
                 function_span,
                 function_value,
@@ -696,13 +799,14 @@ pub(super) fn rewrite_suspended_thunk_field(
             HeapEdgeSource::ThunkApplyArgument,
         ) => rebuild_thunk_for_heap_field_write(
             thunk,
-            EvalThunkKind::Apply {
-                function: *function,
-                function_span: *function_span,
-                function_value: *function_value,
-                argument: *argument,
-                argument_value: replacement,
-            },
+            rebuilt_apply_kind(
+                thunk.kind(),
+                *function,
+                *function_span,
+                *function_value,
+                *argument,
+                replacement,
+            ),
         ),
         (EvalThunkKind::Apply2(apply2), HeapEdgeSource::ThunkApply2Function) => {
             rebuild_thunk_for_heap_field_write(
@@ -766,6 +870,33 @@ pub(super) fn rewrite_suspended_thunk_field(
     }
 }
 
+fn rebuilt_apply_kind(
+    original: &EvalThunkKind,
+    function: EvalNodeRef,
+    function_span: Span,
+    function_value: Value,
+    argument: EvalNodeRef,
+    argument_value: Value,
+) -> EvalThunkKind {
+    if matches!(original, EvalThunkKind::GenListElemAtAddOne { .. }) {
+        EvalThunkKind::GenListElemAtAddOne {
+            function,
+            function_span,
+            function_value,
+            argument,
+            argument_value,
+        }
+    } else {
+        EvalThunkKind::Apply {
+            function,
+            function_span,
+            function_value,
+            argument,
+            argument_value,
+        }
+    }
+}
+
 pub(super) fn push_parallel_thunk_payload_edge(
     edges: &mut Vec<HeapEdge>,
     thunk: &EvalThunk,
@@ -784,6 +915,7 @@ pub(super) fn push_parallel_thunk_payload_edge(
 pub(super) fn push_thunk_edges(
     edges: &mut Vec<HeapEdge>,
     thunk: &EvalThunk,
+    resolve_flat_owner: &impl Fn(FlatValueTailHandle) -> Result<Value, EvalHeapError>,
 ) -> Result<(), EvalHeapError> {
     match thunk.kind() {
         EvalThunkKind::Node { env, .. } => {
@@ -797,9 +929,15 @@ pub(super) fn push_thunk_edges(
                 env,
                 with_env,
                 scoped_globals,
+                resolve_flat_owner,
             )
         }
         EvalThunkKind::Apply {
+            function_value,
+            argument_value,
+            ..
+        }
+        | EvalThunkKind::GenListElemAtAddOne {
             function_value,
             argument_value,
             ..
@@ -841,6 +979,7 @@ pub(super) fn push_capture_edges(
     env: &EvalEnv,
     with_env: &EvalWithEnv,
     scoped_globals: &EvalScopedGlobalEnv,
+    resolve_flat_owner: &impl Fn(FlatValueTailHandle) -> Result<Value, EvalHeapError>,
 ) -> Result<(), EvalHeapError> {
     for (frame_index, frame) in env.frames().iter().enumerate() {
         let slots = frame.slot_values()?;
@@ -860,7 +999,7 @@ pub(super) fn push_capture_edges(
         push_heap_edge(
             edges,
             HeapEdgeSource::CapturedFlatEnvOwner { owner },
-            flat.inline_owner(),
+            resolve_flat_owner(flat.tail_handle())?,
         )?;
     }
 

@@ -254,7 +254,8 @@ fn inline_value_into_use(ir: &mut Ir, use_id: IrId, value: IrId) -> bool {
     if target.kind == source.kind && target.data == source.data {
         return false;
     }
-    ir.arena.set_node(use_id, source.kind, source.effect, source.data)
+    ir.arena
+        .set_node(use_id, source.kind, source.effect, source.data)
 }
 
 #[cfg(test)]
@@ -320,8 +321,14 @@ mod tests {
         let IrData::Binary { lhs, rhs, .. } = let_body(&ir) else {
             panic!("body is a binop");
         };
-        assert!(matches!(ir.arena.node(lhs).expect("lhs").data, IrData::Local { .. }));
-        assert!(matches!(ir.arena.node(rhs).expect("rhs").data, IrData::Local { .. }));
+        assert!(matches!(
+            ir.arena.node(lhs).expect("lhs").data,
+            IrData::Local { .. }
+        ));
+        assert!(matches!(
+            ir.arena.node(rhs).expect("rhs").data,
+            IrData::Local { .. }
+        ));
     }
 
     #[test]

@@ -487,7 +487,7 @@ pub(crate) fn require_supported_native_value_abi() -> Result<(), JitCraneliftNat
     }
 }
 
-fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
+pub(super) fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
     Ok(JITBuilder::with_isa(
         cached_native_isa()?,
         cranelift_module::default_libcall_names(),
@@ -528,4 +528,3 @@ fn cached_native_isa() -> Result<OwnedTargetIsa, JitCraneliftModuleSetupError> {
         Ok(isa)
     })
 }
-

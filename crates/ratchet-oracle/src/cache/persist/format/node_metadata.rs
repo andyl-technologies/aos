@@ -1,7 +1,7 @@
 //! Demand-node metadata key, value, entry, and index format adapters.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::hashing::PersistNodeMetadataKeyHash;
 use ratchet_cache::node_metadata::{
     NodeMetadataEntry as EngineNodeMetadataEntry,

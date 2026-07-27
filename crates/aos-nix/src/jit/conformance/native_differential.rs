@@ -44,8 +44,8 @@ use ratchet_value::value::Value;
 use thiserror::Error;
 
 use crate::jit::{
-    NixJitRuntimeSymbolAddressCandidateError,
-    nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_upval_get_address_candidate,
+    NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
+    nix_jit_upval_get_address_candidate,
 };
 
 /// The runtime symbols imported by a forced environment-slot artifact, in order.
@@ -383,14 +383,18 @@ fn forced_upval_slot_candidates()
     )?;
     let stack_map_enter = preflight
         .address_candidate_for("aos_jit_stack_map_enter")
-        .ok_or(NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
-            symbol_name: "aos_jit_stack_map_enter",
-        })?;
+        .ok_or(
+            NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
+                symbol_name: "aos_jit_stack_map_enter",
+            },
+        )?;
     let stack_map_exit = preflight
         .address_candidate_for("aos_jit_stack_map_exit")
-        .ok_or(NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
-            symbol_name: "aos_jit_stack_map_exit",
-        })?;
+        .ok_or(
+            NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
+                symbol_name: "aos_jit_stack_map_exit",
+            },
+        )?;
     Ok(vec![
         JitRuntimeSymbolAddressCandidate::new(
             upval_get.symbol_name().to_owned(),
@@ -586,11 +590,9 @@ mod tests {
         let source = "{ v = 40 + 2; }";
         let source_ir = lower_source(source).expect("source lowers");
         let source_span = Span::new(0, source.len() as u32);
-        let artifact = lower_forced_env_get_ir_thunk_body_artifact(
-            &local_slot_zero_arena(),
-            IrId::new(0),
-        )
-        .expect("forced artifact lowers");
+        let artifact =
+            lower_forced_env_get_ir_thunk_body_artifact(&local_slot_zero_arena(), IrId::new(0))
+                .expect("forced artifact lowers");
         let candidates = forced_env_slot_candidates().expect("candidates build");
         let mut options = TreeWalkOptions::default();
         options.set_gc_mode(EvalGcMode::Sweep);

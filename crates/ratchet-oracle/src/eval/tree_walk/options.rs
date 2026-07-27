@@ -8,6 +8,7 @@ mod memo;
 mod path_policy;
 mod result_fingerprint;
 mod root_cutoff;
+mod session_machine;
 
 pub use boundary_memo::BoundaryMemoOptions;
 pub use memo::{MemoNetMode, MemoNetOptions, MemoOptions};
@@ -709,6 +710,23 @@ impl TreeWalkOptions {
     /// default.
     pub fn set_heap_thread_local_tier_a_enabled(&mut self, enabled: bool) {
         self.heap_thread_local_tier_a_enabled = enabled;
+    }
+
+    /// Enables or disables the default-off serial Apply-shaped typed-head experiment.
+    pub fn set_typed_apply_thunk_heads_enabled(&mut self, enabled: bool) {
+        self.typed_apply_thunk_heads_enabled = enabled;
+    }
+
+    /// Enables the serial active packed Apply/GenList experiment.
+    #[cfg(feature = "active_packed_thunk_probe")]
+    pub fn set_active_packed_thunk_capacities(&mut self, capacities: ActivePackedThunkCapacities) {
+        self.active_packed_thunk_capacities = Some(capacities);
+    }
+
+    /// Disables the serial active packed Apply/GenList experiment.
+    #[cfg(feature = "active_packed_thunk_probe")]
+    pub fn clear_active_packed_thunk_capacities(&mut self) {
+        self.active_packed_thunk_capacities = None;
     }
 
     /// Installs a GC-stress polling policy for evaluator heap allocations.

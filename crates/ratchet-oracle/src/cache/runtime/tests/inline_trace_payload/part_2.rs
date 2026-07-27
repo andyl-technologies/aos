@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn eval_cache_expression_trace_adapter_invalidates_existing_trace_backed_payload() {
     let first_fingerprint = read_file_trace(b"/tmp/first", b"same");

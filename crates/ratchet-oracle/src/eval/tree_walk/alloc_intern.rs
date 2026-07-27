@@ -79,7 +79,7 @@ impl TreeWalk {
         span: Span,
     ) -> Result<Symbol, TreeWalkError> {
         let bytes = {
-            let string = self.heap.get_string(value).map_err(|source| {
+            let string = self.heap.get_string_view(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
             let mut bytes = Vec::new();
@@ -250,7 +250,7 @@ impl TreeWalk {
         if let Some(value) = self.eval_call_summary_planned_thunk(id, node)? {
             return Ok(value);
         }
-        let IrData::Node(_) = node.data else {
+        let IrData::Node(body) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
         let context = self.thunk_allocation_context();
@@ -258,6 +258,27 @@ impl TreeWalk {
             tree_walk_thunk_allocation_plan(self.current_ir(), id, context).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::ThunkAllocation { id, source }, node.span)
             })?;
+        let body_node = *self.node(body)?;
+        if context == TreeWalkThunkAllocationContext::DemandPosition
+            && !self.force_cache_active
+            && EvalFlatCapture::supports_frame_count(self.options.max_call_depth())
+        {
+            // A lexical alias has no work or dynamic scope of its own. Once
+            // order-sensitive frame population has finished, reading the
+            // referenced slot now returns exactly the value the deferred body
+            // would return later, including an existing thunk's identity and
+            // laziness. Assembly keeps storage because the target frame may
+            // still be populated or semantically rewritten.
+            let alias = match body_node.kind {
+                IrKind::LocalVar => Some(self.eval_local_var(body, &body_node)),
+                IrKind::UpvalVar => Some(self.eval_upval_var(body, &body_node)),
+                _ => None,
+            };
+            if let Some(value) = alias {
+                self.increment_thunks_elided();
+                return value;
+            }
+        }
         match plan {
             TreeWalkThunkAllocationPlan::UpdateSlot(update) => {
                 self.alloc_update_thunk_from_plan(update.thunk(), update.body(), node.span)
@@ -450,10 +471,11 @@ impl TreeWalk {
                 global_ambient_empty,
             );
         }
-        Ok((
-            EvalThunk::with_captures(self.current_module, body, env, with_env, scoped_globals),
-            capture,
-        ))
+        let thunk =
+            EvalThunk::with_captures(self.current_module, body, env, with_env, scoped_globals);
+        #[cfg(feature = "maximal_laziness_probe")]
+        self.note_maximal_laziness_allocation(&thunk);
+        Ok((thunk, capture))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -467,7 +489,7 @@ impl TreeWalk {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        let value = self.alloc_tree_walk_thunk(
+        self.alloc_tree_walk_thunk(
             id,
             span,
             EvalThunk::apply(
@@ -479,8 +501,33 @@ impl TreeWalk {
                 argument_id,
                 argument,
             ),
-        )?;
-        Ok(value)
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn alloc_genlist_elem_at_add_one_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.alloc_tree_walk_thunk(
+            id,
+            span,
+            EvalThunk::genlist_elem_at_add_one(
+                self.current_module,
+                function_id,
+                function_span,
+                function,
+                self.current_module,
+                argument_id,
+                argument,
+            ),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -581,6 +628,8 @@ impl TreeWalk {
         thunk: EvalThunk,
         capture: Option<EvalFlatCaptureBuffer>,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        let demand_region_before = self.demand_region_allocation_cursor();
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_thunk_allocation_safepoint(id, &thunk);
         let previous_poll =
@@ -591,10 +640,23 @@ impl TreeWalk {
             .and_then(|_| thunk.env().cloned());
         #[cfg(test)]
         let kind_is_node = matches!(thunk.kind(), EvalThunkKind::Node { .. });
-        let (allocated_value, pending_tail) = self
-            .heap
-            .alloc_thunk_with_flat_capture(thunk, capture)
+        if self.options.eval_stats_dump() {
+            super::force_shape_census::record_allocation(
+                self.force_shape_class(&thunk),
+                self.order_sensitive_binding_depth > 0,
+                thunk.env().map(EvalEnv::storage_class),
+            );
+        }
+        let allocation = self.heap.alloc_thunk_with_flat_capture(thunk, capture);
+        let (allocated_value, pending_tail) = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        #[cfg(feature = "demand_region_shadow_probe")]
+        self.note_demand_region_source_allocation(
+            id,
+            crate::compile::VirtualAllocationKind::Promise,
+            demand_region_before,
+            0,
+        );
         #[cfg(test)]
         self.capture_validation_record_alloc(id, allocated_value, kind_is_node);
         self.increment_thunks_allocated();
@@ -612,6 +674,8 @@ impl TreeWalk {
         };
         let pending_tail = pending_tail.filter(|_| value.raw_eq(allocated_value));
         self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
         Ok(value)
     }
 
@@ -622,6 +686,11 @@ impl TreeWalk {
         lambda: EvalLambda,
         capture: Option<EvalFlatCaptureBuffer>,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        let demand_region_before = self.demand_region_allocation_cursor();
+        if self.options.eval_stats_dump() {
+            super::force_shape_census::record_lambda_env_storage(lambda.env().storage_class());
+        }
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_lambda_allocation_safepoint(id, &lambda);
         let previous_poll =
@@ -630,10 +699,16 @@ impl TreeWalk {
             .as_ref()
             .filter(|capture| !capture.is_ready())
             .map(|_| lambda.env().clone());
-        let (allocated_value, pending_tail) = self
-            .heap
-            .alloc_lambda_with_flat_capture(lambda, capture)
+        let allocation = self.heap.alloc_lambda_with_flat_capture(lambda, capture);
+        let (allocated_value, pending_tail) = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        #[cfg(feature = "demand_region_shadow_probe")]
+        self.note_demand_region_source_allocation(
+            id,
+            crate::compile::VirtualAllocationKind::Closure,
+            demand_region_before,
+            0,
+        );
         let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
                 id,
@@ -648,6 +723,8 @@ impl TreeWalk {
         };
         let pending_tail = pending_tail.filter(|_| value.raw_eq(allocated_value));
         self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
         Ok(value)
     }
 
@@ -661,11 +738,10 @@ impl TreeWalk {
             self.can_dispatch_gc_stress_primop_allocation_safepoint(id, &primop);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
-        let value = self
-            .heap
-            .alloc_primop(primop)
+        let allocation = self.heap.alloc_primop(primop);
+        let value = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -676,7 +752,10 @@ impl TreeWalk {
             )
         } else {
             Ok(value)
-        }
+        }?;
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
+        Ok(value)
     }
 
     pub(super) fn alloc_tree_walk_string(
@@ -689,11 +768,10 @@ impl TreeWalk {
             self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
-        let value = self
-            .heap
-            .alloc_string(string)
+        let allocation = self.heap.alloc_string(string);
+        let value = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        let value = if dispatch_gc_stress_safepoint {
             #[cfg(test)]
             self.record_gc_stress_permanent_root_allocation_dispatch(
                 RuntimeAllocationEntryPoint::AosAllocString,
@@ -706,7 +784,10 @@ impl TreeWalk {
             )
         } else {
             Ok(value)
-        }
+        }?;
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
+        Ok(value)
     }
 
     pub(super) fn alloc_replayed_payload_string(
@@ -715,10 +796,20 @@ impl TreeWalk {
         string: NixString,
     ) -> Option<Value> {
         let Some(origin) = origin else {
-            return self.heap.alloc_string(string).ok();
+            let allocation = self.heap.alloc_string(string);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         };
         if origin.module() != self.current_module {
-            return self.heap.alloc_string(string).ok();
+            let allocation = self.heap.alloc_string(string);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         }
         let span = self.node_in_module(origin.module(), origin.id()).ok()?.span;
         self.alloc_tree_walk_string(origin.id(), span, string).ok()
@@ -730,10 +821,20 @@ impl TreeWalk {
         path: NixString,
     ) -> Option<Value> {
         let Some(origin) = origin else {
-            return self.heap.alloc_path(path).ok();
+            let allocation = self.heap.alloc_path(path);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         };
         if origin.module() != self.current_module {
-            return self.heap.alloc_path(path).ok();
+            let allocation = self.heap.alloc_path(path);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         }
         let span = self.node_in_module(origin.module(), origin.id()).ok()?.span;
         self.alloc_tree_walk_path(origin.id(), span, path).ok()
@@ -745,10 +846,20 @@ impl TreeWalk {
         list: NixList,
     ) -> Option<Value> {
         let Some(origin) = origin else {
-            return self.heap.alloc_list(list).ok();
+            let allocation = self.heap.alloc_list(list);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         };
         if origin.module() != self.current_module {
-            return self.heap.alloc_list(list).ok();
+            let allocation = self.heap.alloc_list(list);
+            #[cfg(feature = "peak_ordinal_probe")]
+            if allocation.is_ok() {
+                self.capture_peak_ordinal_context();
+            }
+            return allocation.ok();
         }
         let span = self.node_in_module(origin.module(), origin.id()).ok()?.span;
         self.alloc_tree_walk_list(origin.id(), span, list).ok()
@@ -808,11 +919,10 @@ impl TreeWalk {
             self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
-        let value = self
-            .heap
-            .alloc_path(path)
+        let allocation = self.heap.alloc_path(path);
+        let value = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        let value = if dispatch_gc_stress_safepoint {
             #[cfg(test)]
             self.record_gc_stress_permanent_root_allocation_dispatch(
                 RuntimeAllocationEntryPoint::AosAllocString,
@@ -825,7 +935,10 @@ impl TreeWalk {
             )
         } else {
             Ok(value)
-        }
+        }?;
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
+        Ok(value)
     }
 
     pub(super) fn alloc_tree_walk_list(
@@ -834,6 +947,11 @@ impl TreeWalk {
         span: Span,
         list: NixList,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        let demand_region_before = self.demand_region_allocation_cursor();
+        #[cfg(feature = "demand_region_shadow_probe")]
+        let demand_region_spine_bytes =
+            list.capacity().saturating_mul(std::mem::size_of::<Value>());
         #[cfg(test)]
         {
             self.tree_walk_list_wrapper_calls = self.tree_walk_list_wrapper_calls.saturating_add(1);
@@ -842,11 +960,17 @@ impl TreeWalk {
             self.can_dispatch_gc_stress_permanent_list_allocation_safepoint(id, &list);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
-        let value = self
-            .heap
-            .alloc_list(list)
+        let allocation = self.heap.alloc_list(list);
+        let value = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        self.note_demand_region_source_allocation(
+            id,
+            crate::compile::VirtualAllocationKind::List,
+            demand_region_before,
+            demand_region_spine_bytes,
+        );
+        let value = if dispatch_gc_stress_safepoint {
             #[cfg(test)]
             self.record_gc_stress_permanent_root_allocation_dispatch(
                 RuntimeAllocationEntryPoint::AosAllocList,
@@ -859,7 +983,10 @@ impl TreeWalk {
             )
         } else {
             Ok(value)
-        }
+        }?;
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
+        Ok(value)
     }
 
     #[cfg(test)]
@@ -892,15 +1019,28 @@ impl TreeWalk {
         projected_shape: Option<ShapeId>,
         attrs: FlatAttrs,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        let demand_region_before = self.demand_region_allocation_cursor();
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_permanent_attrs_allocation_safepoint(id, &attrs);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
-        let value = self
-            .heap
-            .alloc_attrs_with_projected_shape_metadata(shape, repr, projected_shape, attrs)
+        let allocation = self.heap.alloc_attrs_with_projected_shape_metadata(
+            shape,
+            repr,
+            projected_shape,
+            attrs,
+        );
+        let value = allocation
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        #[cfg(feature = "demand_region_shadow_probe")]
+        self.note_demand_region_source_allocation(
+            id,
+            crate::compile::VirtualAllocationKind::Attrs,
+            demand_region_before,
+            0,
+        );
+        let value = if dispatch_gc_stress_safepoint {
             #[cfg(test)]
             self.record_gc_stress_permanent_root_allocation_dispatch(
                 RuntimeAllocationEntryPoint::AosAllocAttrs,
@@ -913,6 +1053,9 @@ impl TreeWalk {
             )
         } else {
             Ok(value)
-        }
+        }?;
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.capture_peak_ordinal_context();
+        Ok(value)
     }
 }

@@ -44,6 +44,8 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalEnvFrames, EvalFlatCapture, EvalFlatCaptureBuffer, EvalFrame,
     EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
+#[cfg(feature = "candidate_c_value")]
+use super::heap::ImportEpochCensusFence;
 use super::heap::{
     AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,
     AllocationCollectorPollForwardingInstallReport, AllocationCollectorPollHeapFieldWritebackSlot,
@@ -59,11 +61,22 @@ use super::heap::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
     EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapSweepReport,
     EvalHeapTierBAdmissionReport, EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp,
-    EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, HeapAllocationDomain, HeapEdgeSource,
-    PreciseHeapScan,
+    EvalPrimOpArg, EvalRootSet, EvalRootSource, EvalThunk, EvalThunkKind, HeapAllocationDomain,
+    HeapEdgeSource, PreciseHeapScan,
+};
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+use super::heap::{DirectRootObservation, DirectRootRewriteError, DirectRootRewritePlan};
+#[cfg(feature = "lifetime_cohort_probe")]
+use super::heap::{
+    LifetimeCohortCandidate, LifetimeCohortCandidateKind, LifetimeCohortCandidateObservation,
+    LifetimeCohortCensus, LifetimeCohortMass, WeakHashConsPurgeReport,
+    WeakHashConsTablePurgeReport,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
-use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
+use super::thunk::{DetachedForceClaim, ForceClaim, ForceError, ForceGuard, ThunkState};
 use super::thunk_cas::ParallelThunkWorkerId;
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
 use super::thunk_registry::ParallelForceCycleRegistry;
@@ -108,18 +121,23 @@ use crate::compile::Strictness;
 use crate::compile::{
     CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, annotate_import_ir,
-    dead_binding_elimination_plan, resolve,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, PromiseRegionOptions,
+    PromiseRegionSymbolValidation, PromiseStatepointKind, ResolverOptions, ScopeResolver,
+    analyze_call_target_candidates, analyze_known_call_targets, annotate_import_ir,
+    dead_binding_elimination_plan, plan_promise_region, resolve,
 };
+#[cfg(feature = "lifetime_cohort_probe")]
+use crate::heap::flat::FlatObjectKind;
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
     GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget, MinorGcCommitReport,
     MinorGcDestinationBases, MinorGcDestinationPlacementPlan, MinorGcForwardingSlot,
     MinorGcObjectByteCopyBuffer, MinorGcObjectCopyPlan, MinorGcOwnedDestinationStorage,
     MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcSourceObjectBytes, MinorGcSurvivorAction, NurseryObjectLayout, RegionEffect,
-    RegionLifetime, RegionPlacement, RegionPlacementReason, RegionPlan, RegionRuntimeTier,
-    RegionSharing, RememberedEdge, RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
+    MinorGcSourceObjectBytes, MinorGcSurvivorAction, NurseryObjectLayout,
+    ProcessResidentMemorySample, RegionEffect, RegionLifetime, RegionPlacement,
+    RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedEdge,
+    RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 #[cfg(test)]
@@ -130,6 +148,8 @@ use crate::string::{
     ContextElement, ContextKind, NixString, NixStringError, StringContext, try_clone_bytes,
 };
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
+#[cfg(feature = "lifetime_cohort_probe")]
+use crate::value::HeapObject;
 use crate::value::{Value, ValueTag};
 use aos_nix_compat::drv_materialize::materialize_drv;
 use aos_nix_dialect::{nix_lower, nix_lower_with_options};
@@ -144,14 +164,42 @@ mod capture_on_demand;
 mod capture_probe;
 #[cfg(test)]
 mod capture_validation;
+#[cfg(feature = "collection_poll_probe")]
+mod collection_poll;
 mod constants;
 mod error_kind;
 mod errors;
+#[cfg(feature = "collection_poll_probe")]
+mod final_force_leaf_pmu;
+mod native_continuation_shadow;
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+mod nested_nonmoving_retirement_probe;
+#[cfg(feature = "collection_poll_probe")]
+mod nested_nonmoving_safepoint_probe;
 mod op_types;
 mod options;
 mod outcome;
+#[cfg(any(
+    feature = "compact_destination_probe",
+    feature = "evacuation_plan_probe"
+))]
+mod packed_mutator_root_stage;
+#[cfg(feature = "packed_portal_cutover")]
+mod packed_portal_cutover;
+#[cfg(feature = "peak_ordinal_probe")]
+mod peak_ordinal;
+#[cfg(feature = "collection_poll_probe")]
+mod restart_to_root_probe;
+#[cfg(feature = "nested_nonmoving_retirement_probe")]
+mod rotating_rollover_probe;
 mod toml_normalize;
 mod version;
+#[cfg(feature = "collection_poll_probe")]
+mod whole_demand_corridor_census;
+#[cfg(feature = "collection_poll_probe")]
+mod whole_demand_dispatcher;
+#[cfg(feature = "young_increment_projection_probe")]
+mod young_increment_projection_probe;
 pub(crate) use constants::*;
 mod config_types;
 pub use config_types::*;
@@ -277,8 +325,71 @@ pub struct TreeWalk {
     /// Opt-in capture-on-demand elision state for dynamic environments
     /// (RFC-0007 §P1). Default-inert; see [`capture_on_demand`].
     capture_on_demand: capture_on_demand::CaptureOnDemand,
+    /// Default-off runtime-weighted Promise/PIR entry census.
+    promise_region_census: Option<promise_region_census::PromiseRegionRuntimeCensus>,
+    /// Compile-time-only projected duplicate-work census.
+    #[cfg(feature = "maximal_laziness_probe")]
+    maximal_laziness_census: Option<maximal_laziness_census::MaximalLazinessRuntimeCensus>,
+    /// Compile-time-only whole-demand allocation/statepoint shadow census.
+    #[cfg(feature = "demand_region_shadow_probe")]
+    demand_region_shadow_probe: Option<demand_region_shadow_probe::DemandRegionShadowProbe>,
+    /// Compile-time-only chronological allocation-cohort aggregate probe.
+    #[cfg(feature = "lifetime_cohort_probe")]
+    lifetime_cohort_probe: Option<lifetime_cohort_probe::LifetimeCohortProbe>,
+    /// Compile-time-only all-object immutable-cohort packing projection.
+    #[cfg(feature = "immutable_cohort_projection_probe")]
+    immutable_cohort_projection_probe:
+        Option<immutable_cohort_projection_probe::ImmutableCohortProbe>,
+    /// Compile-time-only root-session continuation coverage shadow.
+    #[cfg(feature = "root_continuation_probe")]
+    root_continuation_probe: Option<root_continuation_probe::RootContinuationProbe>,
+    /// Compile-time-only whole-demand suspended-dispatch coverage state.
+    #[cfg(feature = "collection_poll_probe")]
+    whole_demand_dispatcher: whole_demand_dispatcher::WholeDemandDispatcherRuntime,
+    /// Compile-time-only restart-to-API eligibility falsifier.
+    #[cfg(feature = "collection_poll_probe")]
+    restart_to_root_probe: Option<restart_to_root_probe::RestartToRootProbe>,
+    /// Default-off proof-only inventory for a nested nonmoving safepoint.
+    #[cfg(feature = "collection_poll_probe")]
+    nested_nonmoving_safepoint_probe:
+        Option<nested_nonmoving_safepoint_probe::NestedNonmovingSafepointProbe>,
+    /// Default-off report-only admission for one nested retirement ordinal.
+    #[cfg(feature = "nested_nonmoving_retirement_probe")]
+    nested_nonmoving_retirement_probe:
+        Option<nested_nonmoving_retirement_probe::NestedNonmovingRetirementProbe>,
+    /// Bounded read-only producer for the rotating-rollover checkpoint schedule.
+    #[cfg(feature = "nested_nonmoving_retirement_probe")]
+    rotating_rollover_probe: Option<rotating_rollover_probe::RotatingRolloverProbe>,
+    /// Read-only packed-at-birth chronological increment projection.
+    #[cfg(feature = "young_increment_projection_probe")]
+    young_increment_projection_probe:
+        Option<young_increment_projection_probe::YoungIncrementProjectionProbe>,
+    /// Bounded proof-only roots and edge census for native continuations.
+    #[cfg(feature = "collection_poll_probe")]
+    native_continuation_shadow: Option<native_continuation_shadow::NativeContinuationShadow>,
+    /// Cached exact-body admissions for the string-list deduplication canary.
+    #[cfg(feature = "dedup_string_list_canary")]
+    dedup_string_list_plans:
+        HashMap<EvalNodeRef, Option<dedup_string_list_canary::DedupStringListPlan>>,
+    /// Cached exact-fold admissions for the final-config trie canary.
+    #[cfg(feature = "final_config_trie_canary")]
+    final_config_trie_plans:
+        HashMap<EvalNodeRef, Option<final_config_trie_canary::FinalConfigTriePlan>>,
+    /// Cached source-independent admissions for the report-only option-map fold probe.
+    #[cfg(feature = "option_map_fold_probe")]
+    option_map_fold_probe_plans:
+        HashMap<EvalNodeRef, Option<option_map_fold_probe::OptionMapFoldPlan>>,
+    /// Ready-import-exclusive objects captured before the terminal demand window.
+    #[cfg(feature = "ready_exclusive_probe")]
+    ready_exclusive_window: Option<crate::eval::heap::ReadyExclusiveCensus>,
     options: TreeWalkOptions,
     stats: EvalStats,
+    #[cfg(feature = "peak_ordinal_probe")]
+    peak_ordinal_contexts: Vec<peak_ordinal::PeakOrdinalContext>,
+    /// Default-off imported-root machine coverage and oracle-boundary counts.
+    demand_machine_import_counters: demand_machine::DemandMachineImportCounters,
+    /// Default-off inclusive coverage probe for the `lib/modules.nix` island.
+    direct_island_probe: Option<direct_island_probe::DirectIslandProbe>,
     /// Process-wide environment capture counters observed at construction;
     /// `stats_snapshot` reports the movement since this baseline (doc 30 FV-0).
     campaign_env_baseline: super::env::capture_stats::EnvCaptureStats,
@@ -357,6 +468,49 @@ pub struct TreeWalk {
     /// Last observed [`parallel_demand::SharedEvalContext`] version.
     shared_version_seen: u64,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
+    /// Strictly nested misses whose cache entries are currently `Evaluating`.
+    ///
+    /// This is evaluator-owned rather than represented by a borrowing guard so
+    /// an explicit demand machine can suspend and resume import evaluation.
+    active_import_cache_leases: Vec<ActiveImportCacheLease>,
+    /// Last generation assigned to an import-cache lease token.
+    next_import_cache_lease_generation: u64,
+    /// Strictly nested imported-module contexts currently installed.
+    active_import_module_leases: Vec<ActiveImportModuleLease>,
+    /// Last generation assigned to an imported-module context lease.
+    next_import_module_lease_generation: u64,
+    /// Strictly nested ordinary thunk claims owned by explicit continuations.
+    active_force_leases: Vec<ActiveForceLease>,
+    /// Last generation assigned to an evaluator-owned force lease.
+    next_force_lease_generation: u64,
+    /// Tail-free Node work detached from ordinary blackholed flat thunks.
+    #[cfg(feature = "collection_poll_probe")]
+    active_node_work_leases: Vec<ActiveNodeWorkLease>,
+    /// Test-only override for the default-off active Node detachment experiment.
+    #[cfg(all(test, feature = "collection_poll_probe"))]
+    active_node_work_detachment_test_enabled: bool,
+    /// Typed-head work detached from its pool while the stable head is blackholed.
+    ///
+    /// A claimed typed head contains no scannable suspended-work pointer, so
+    /// the evaluator owns the moved work here until publication or rollback.
+    active_typed_thunk_work_leases: Vec<ActiveTypedThunkWorkLease>,
+    /// Default-off generic packed-STG apply executor and its owned stacks.
+    stg_apply_runtime: stg_apply_machine::StgApplyRuntime,
+    /// Whether the default-off session evaluator currently owns control.
+    stg_session_active: bool,
+    /// Immutable exact-marker recipes keyed by generator closure identity.
+    genlist_elem_at_add_one_plans: HashMap<u64, genlist_elem_at::GenListElemAtAddOneRecipe>,
+    /// Stats-only static body classifications keyed by selected lambda code.
+    genlist_selected_child_body_plans:
+        HashMap<EvalNodeRef, force_shape_census::SelectedApplyBodyDescriptor>,
+    /// Number of exact marker claims made by the session evaluator.
+    stg_session_marker_claims: u64,
+    /// Maximum compact marker-update depth reached by one session.
+    stg_session_max_update_depth: usize,
+    /// Strictly nested simple lambda calls owned by explicit continuations.
+    active_lambda_call_leases: Vec<ActiveLambdaCallLease>,
+    /// Last generation assigned to an evaluator-owned lambda-call lease.
+    next_lambda_call_lease_generation: u64,
     /// Path prefixes confirmed to contain no symlink component during
     /// force-cache traceability checks. The Nix store is immutable for the
     /// duration of an evaluation, so `symlink_metadata` results are stable and
@@ -501,6 +655,12 @@ pub struct TreeWalk {
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
     gc_stress_permanent_root_allocation_dispatches: Vec<RuntimeAllocationEntryPoint>,
+    /// Test-only one-shot panic injected inside typed detached-work evaluation.
+    #[cfg(test)]
+    panic_typed_thunk_body_once: bool,
+    /// Test-only one-shot panic injected inside active packed evaluation.
+    #[cfg(all(test, feature = "active_packed_thunk_probe"))]
+    panic_active_packed_thunk_body_once: bool,
     // Test-mode FV-5 capture-plan validation state. `None` (the default)
     // keeps every hook a no-op; see `capture_validation`.
     #[cfg(test)]
@@ -510,14 +670,24 @@ pub struct TreeWalk {
 
 // The `impl TreeWalk` body is split across concern-focused submodules below.
 // Each re-opens `impl TreeWalk` and shares private items via `use super::*;`.
+#[cfg(feature = "collection_poll_probe")]
+mod active_node_work_lease;
+mod all_any_eq_island;
 mod alloc_intern;
 mod attr_repr_stats;
 mod boundary_admission;
 mod boundary_apply_hooks;
 mod call_summary;
 mod coerce_paths;
+#[cfg(feature = "dedup_string_list_canary")]
+mod dedup_string_list_canary;
+mod demand_epoch_probe;
+mod demand_machine;
+#[cfg(feature = "demand_region_shadow_probe")]
+mod demand_region_shadow_probe;
 mod derivation_build;
 mod derivation_serialize;
+mod direct_island_probe;
 mod eval_apply;
 mod eval_codec;
 mod eval_compare;
@@ -543,34 +713,61 @@ mod eval_sort;
 mod eval_source;
 mod eval_stats;
 mod eval_trace;
+#[cfg(feature = "lifetime_cohort_probe")]
+mod exec176_weak_purge;
 mod fetch_git_clone;
 mod fetch_git_store;
 mod fetch_git_tree;
 mod fetch_tree_access;
 mod fetch_tree_args;
 mod fetch_tree_forge;
+#[cfg(feature = "final_config_trie_canary")]
+mod final_config_trie_canary;
 mod flake_git;
 mod flake_ref;
 mod flat_capture;
 mod force_shape_census;
 mod formal_set_layout_cache;
 mod gc_sweep;
+mod genlist_elem_at;
+#[cfg(feature = "immutable_cohort_projection_probe")]
+mod immutable_cohort_projection_probe;
 mod import_persist_locations;
 mod json_float;
+mod lambda_call_lease;
+#[cfg(feature = "lifetime_cohort_probe")]
+mod lifetime_cohort_probe;
+#[cfg(feature = "maximal_laziness_probe")]
+mod maximal_laziness_census;
 mod memo;
+#[cfg(feature = "option_map_fold_probe")]
+mod option_map_fold_probe;
 mod parallel_demand;
 mod parallel_import;
 mod parallel_shape;
 mod pkg_boundary_probe;
 mod primop_builtin_cache;
+mod promise_region_census;
 mod region;
+#[cfg(test)]
+mod region_machine;
 mod relocation_identity;
+#[cfg(feature = "root_continuation_probe")]
+mod root_continuation_probe;
 mod runtime_alloc;
 mod safepoint_roots;
 mod select_cache_hash;
+mod session_machine;
 mod speculation;
+mod stg_apply_machine;
+#[cfg(feature = "candidate_c_value")]
+mod terminal_permanent_publication;
 mod tier1_dispatch;
+mod typed_thunk_work_lease;
+#[cfg(feature = "collection_poll_probe")]
+use active_node_work_lease::ActiveNodeWorkLease;
 use select_cache_hash::SelectCacheMap;
+use typed_thunk_work_lease::ActiveTypedThunkWorkLease;
 mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;

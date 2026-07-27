@@ -502,7 +502,10 @@ pub struct JitCraneliftNativeThunkInvocation {
 }
 
 impl JitCraneliftNativeThunkInvocation {
-    pub(crate) fn new(finalization: JitCraneliftArtifactFinalizationPreflight, value: Value) -> Self {
+    pub(crate) fn new(
+        finalization: JitCraneliftArtifactFinalizationPreflight,
+        value: Value,
+    ) -> Self {
         Self {
             finalization,
             value,
@@ -848,4 +851,3 @@ impl JitCraneliftRegisteredTier1NativeCallPreflight {
         }
     }
 }
-

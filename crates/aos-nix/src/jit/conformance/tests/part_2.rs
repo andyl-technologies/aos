@@ -62,7 +62,13 @@ fn tier1_conformance_readiness_reports_update_publish_gaps() {
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
     assert!(
         promoted
@@ -136,7 +142,13 @@ fn force_aware_tier1_conformance_readiness_reports_static_select_publish_gaps() 
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted
@@ -210,7 +222,13 @@ fn force_aware_tier1_conformance_readiness_reports_static_has_attr_publish_gaps(
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr"
+        ]
     );
     assert!(
         promoted
@@ -284,7 +302,13 @@ fn tier1_conformance_readiness_reports_static_select_publish_gaps() {
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted
@@ -358,7 +382,13 @@ fn tier1_conformance_readiness_reports_static_has_attr_publish_gaps() {
         .collect::<Vec<_>>();
     assert_eq!(
         artifact_runtime_imports,
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr"
+        ]
     );
     assert!(
         promoted

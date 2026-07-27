@@ -157,7 +157,10 @@ impl ParallelForceCycleRegistry {
     /// later wait) is left untouched.
     pub fn deregister_waiter(&self, waiter: ParallelThunkWorkerId, cell: usize) {
         let mut waits = self.lock_waits();
-        if waits.get(&waiter.get()).is_some_and(|edge| edge.cell == cell) {
+        if waits
+            .get(&waiter.get())
+            .is_some_and(|edge| edge.cell == cell)
+        {
             waits.remove(&waiter.get());
         }
     }
@@ -342,9 +345,13 @@ mod tests {
                 .expect("state decodes"),
             ParallelForceWaitRegistration::Registered
         );
-        registry
-            .lock_waits()
-            .insert(3, ParallelForceWaitEdge { cell: 0xb, owner: worker(2) });
+        registry.lock_waits().insert(
+            3,
+            ParallelForceWaitEdge {
+                cell: 0xb,
+                owner: worker(2),
+            },
+        );
 
         // Worker 1 waits into the foreign 2 <-> 3 ring: the walk terminates
         // without reaching worker 1, so worker 1 may park.

@@ -434,7 +434,7 @@ impl TreeWalk {
             ));
         }
         let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
+            let list = self.heap.get_list_view(list_value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -443,11 +443,90 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
+        #[cfg(feature = "lifetime_cohort_probe")]
+        {
+            let mut roots = Vec::new();
+            let root_len = elements.len().checked_add(3).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+            roots.try_reserve_exact(root_len).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackAllocationFailed {
+                        id,
+                        roots: root_len,
+                    },
+                    span,
+                )
+            })?;
+            roots.push(op);
+            roots.push(list_value);
+            roots.push(Value::null());
+            roots.extend_from_slice(&elements);
+            return self.with_lifetime_cohort_shadow_roots(id, span, &mut roots, |eval, slots| {
+                eval.eval_foldl_strict_primop_shadowed(
+                    id,
+                    span,
+                    op_id,
+                    op_span,
+                    op,
+                    initial_id,
+                    list_id,
+                    list_value,
+                    &elements,
+                    slots.start.checked_add(2).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?,
+                )
+            });
+        }
+        #[cfg(not(feature = "lifetime_cohort_probe"))]
+        {
+            self.eval_foldl_strict_primop_unshadowed(
+                id, span, op_id, op_span, op, initial_id, list_id, list_value, &elements,
+            )
+        }
+    }
+
+    #[cfg(feature = "lifetime_cohort_probe")]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_foldl_strict_primop_shadowed(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_id: IrId,
+        op_span: Span,
+        op: Value,
+        initial_id: IrId,
+        list_id: IrId,
+        list_value: Value,
+        elements: &[Value],
+        accumulator_slot: usize,
+    ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "option_map_fold_probe")]
+        let option_map_fold_plan = self.observe_option_map_fold(id, op, elements.len());
+        #[cfg(feature = "final_config_trie_canary")]
+        if let Some(value) =
+            self.try_eval_final_config_trie_fold_with_native_shadow(id, op, list_value, elements)?
+        {
+            return Ok(value);
+        }
 
         let initial_span = self.node(initial_id)?.span;
         let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
+        if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                span,
+            ));
+        }
         if elements.is_empty() {
             return self.eval_lazy_foldl_initial_value(initial_id, initial_span, accumulator);
         }
@@ -456,6 +535,73 @@ impl TreeWalk {
         // forced the operator's callee bindings (see `Tier2FoldHook`). A
         // native run advances the loop past its consumed prefix; everything
         // else proceeds through the interpreted steps byte-for-byte unchanged.
+        let mut index = 0usize;
+        let mut fold_consults = 0u32;
+        while index < elements.len() {
+            if fold_consults < 2 && self.tier1_engine.is_some() {
+                fold_consults += 1;
+                if let Some((consumed, folded)) =
+                    self.try_tier2_foldl(id, span, op, accumulator, &elements[index..])
+                {
+                    accumulator = folded;
+                    if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        ));
+                    }
+                    index += consumed;
+                    continue;
+                }
+            }
+            let element = elements[index];
+            let step =
+                self.apply_lambda_value(id, span, op_id, op, op_span, initial_id, accumulator)?;
+            let result =
+                self.apply_lambda_value(id, span, op_id, step, op_span, list_id, element)?;
+            accumulator = self.force_value(op_id, op_span, result)?;
+            if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                ));
+            }
+            index += 1;
+        }
+
+        #[cfg(feature = "option_map_fold_probe")]
+        self.finish_option_map_fold_probe(option_map_fold_plan, elements);
+        Ok(accumulator)
+    }
+
+    #[cfg(not(feature = "lifetime_cohort_probe"))]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_foldl_strict_primop_unshadowed(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_id: IrId,
+        op_span: Span,
+        op: Value,
+        initial_id: IrId,
+        list_id: IrId,
+        list_value: Value,
+        elements: &[Value],
+    ) -> Result<Value, TreeWalkError> {
+        #[cfg(feature = "option_map_fold_probe")]
+        let option_map_fold_plan = self.observe_option_map_fold(id, op, elements.len());
+        #[cfg(feature = "final_config_trie_canary")]
+        if let Some(value) =
+            self.try_eval_final_config_trie_fold_with_native_shadow(id, op, list_value, elements)?
+        {
+            return Ok(value);
+        }
+
+        let initial_span = self.node(initial_id)?.span;
+        let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
+        if elements.is_empty() {
+            return self.eval_lazy_foldl_initial_value(initial_id, initial_span, accumulator);
+        }
         let mut index = 0usize;
         let mut fold_consults = 0u32;
         while index < elements.len() {
@@ -477,8 +623,41 @@ impl TreeWalk {
             accumulator = self.force_value(op_id, op_span, result)?;
             index += 1;
         }
-
+        #[cfg(feature = "option_map_fold_probe")]
+        self.finish_option_map_fold_probe(option_map_fold_plan, elements);
         Ok(accumulator)
+    }
+
+    #[cfg(feature = "final_config_trie_canary")]
+    fn try_eval_final_config_trie_fold_with_native_shadow(
+        &mut self,
+        id: IrId,
+        op: Value,
+        list_value: Value,
+        elements: &[Value],
+    ) -> Result<Option<Value>, TreeWalkError> {
+        #[cfg(feature = "collection_poll_probe")]
+        if self.native_continuation_shadow_enabled() {
+            let mut roots = Vec::new();
+            let root_len = match elements.len().checked_add(2) {
+                Some(root_len) => root_len,
+                None => return self.try_eval_final_config_trie_fold(id, op, elements),
+            };
+            if roots.try_reserve_exact(root_len).is_err() {
+                return self.try_eval_final_config_trie_fold(id, op, elements);
+            }
+            roots.push(op);
+            roots.push(list_value);
+            roots.extend_from_slice(elements);
+            return self.with_nonmoving_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::FoldCanary,
+                id,
+                &roots,
+                None,
+                |eval| eval.try_eval_final_config_trie_fold(id, op, elements),
+            );
+        }
+        self.try_eval_final_config_trie_fold(id, op, elements)
     }
 
     pub(super) fn eval_generic_closure_primop(
@@ -516,7 +695,7 @@ impl TreeWalk {
             ));
         }
         let start_items = {
-            let start_set = self.heap.get_list(start_set).map_err(|source| {
+            let start_set = self.heap.get_list_view(start_set).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: argument,
@@ -525,7 +704,7 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
-            Self::clone_list_elements(argument, argument_span, start_set)?
+            Self::clone_list_view_elements(argument, argument_span, start_set)?
         };
 
         if start_items.is_empty() {
@@ -576,7 +755,7 @@ impl TreeWalk {
                 ));
             }
             let produced_items = {
-                let produced = self.heap.get_list(produced).map_err(|source| {
+                let produced = self.heap.get_list_view(produced).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -585,7 +764,7 @@ impl TreeWalk {
                         argument_span,
                     )
                 })?;
-                Self::clone_list_elements(argument, argument_span, produced)?
+                Self::clone_list_view_elements(argument, argument_span, produced)?
             };
             self.enqueue_generic_closure_generated_items(
                 id,

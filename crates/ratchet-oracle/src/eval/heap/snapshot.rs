@@ -80,9 +80,10 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapSnapshotError`] for a parallel heap, a heap holding a
-    /// kind not yet snapshottable (worker thunks or lambdas, or record-table
-    /// objects — primops are captured), a flat object outside the reservation, a
-    /// reservation that is not address-free, or a failed completeness audit.
+    /// kind not yet snapshottable (typed thunk heads, worker thunks or lambdas,
+    /// or record-table objects — primops are captured), a flat object outside
+    /// the reservation, a reservation that is not address-free, or a failed
+    /// completeness audit.
     pub fn capture_heap_image(&self) -> Result<HeapImage, EvalHeapSnapshotError> {
         self.capture_heap_image_inner(None)
     }
@@ -118,6 +119,12 @@ impl EvalHeap {
     ) -> Result<HeapImage, EvalHeapSnapshotError> {
         if self.shared.is_some() {
             return Err(EvalHeapSnapshotError::ParallelMode);
+        }
+        let typed_heads = self.typed_thunk_heads.len();
+        if typed_heads != 0 {
+            return Err(EvalHeapSnapshotError::UnsnapshottableTypedThunkHeads {
+                count: typed_heads,
+            });
         }
         // Without a code-identity context, worker closures other than primops
         // refuse (their code cannot be content-keyed). Count refusals before
@@ -713,6 +720,12 @@ pub enum EvalHeapSnapshotError {
     /// A shared/parallel heap cannot be snapshotted (serial only).
     #[error("cannot snapshot a shared/parallel evaluator heap")]
     ParallelMode,
+    /// Typed heads require logical work serialization rather than raw handles.
+    #[error("cannot snapshot a heap with {count} typed thunk head(s)")]
+    UnsnapshottableTypedThunkHeads {
+        /// The number of stable typed thunk identities.
+        count: usize,
+    },
     /// The arena holds worker closures (thunks/lambdas/primops); their interior
     /// `Arc`s are the stage-2 collapse (doc 31 §3.2).
     #[error("cannot snapshot a heap with {count} live worker closure(s)")]

@@ -370,10 +370,7 @@ fn eval_fail_plain_dynamic_attr_key_with_string_interp_rejects_null() {
 #[test]
 fn eval_okay_quoted_interp_attr_key_still_binds_strings() {
     assert_eq!(eval_raw_case(br#"{ "${"x"}" = 1; }"#), b"{ x = 1; }");
-    assert_eq!(
-        eval_raw_case(br#"{ "${"a"}${"b"}" = 1; }"#),
-        b"{ ab = 1; }"
-    );
+    assert_eq!(eval_raw_case(br#"{ "${"a"}${"b"}" = 1; }"#), b"{ ab = 1; }");
 }
 
 #[test]
@@ -391,8 +388,8 @@ fn resolve_fail_quoted_interp_let_binding_is_dynamic() {
 #[test]
 fn resolve_fail_quoted_interp_inherit_target_is_dynamic() {
     // C++ Nix: "dynamic attributes not allowed in inherit".
-    let parsed = parse_bytes(br#"let x = { a = 1; }; in { inherit (x) "${"a"}"; }"#)
-        .expect("source parses");
+    let parsed =
+        parse_bytes(br#"let x = { a = 1; }; in { inherit (x) "${"a"}"; }"#).expect("source parses");
     let error = resolve(parsed).expect_err("quoted-interpolation inherit target must be dynamic");
     assert!(
         format!("{error:?}").contains("DynamicInheritTarget"),

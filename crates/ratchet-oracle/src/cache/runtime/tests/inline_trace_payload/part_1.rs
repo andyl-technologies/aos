@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn eval_cache_observes_inline_expression_results_with_impure_edges_without_hits() {
     let source = TraceSource {

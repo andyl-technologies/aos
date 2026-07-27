@@ -36,8 +36,7 @@ impl NixNative {
         for (_, secondary) in
             open_secondary_caches(secondaries, self.options.persist_cache_verify())
         {
-            if let Some(cached) = load_parse_artifact_from(&secondary, cache, source_path, source)
-            {
+            if let Some(cached) = load_parse_artifact_from(&secondary, cache, source_path, source) {
                 return Some((cached, true));
             }
         }

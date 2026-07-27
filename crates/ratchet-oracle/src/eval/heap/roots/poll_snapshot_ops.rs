@@ -405,6 +405,13 @@ impl EvalHeap {
         value: Value,
     ) -> Result<ResolvedValueGeneration, EvalHeapError> {
         let (tag, ptr) = heap_ptr(value)?;
+        if self.flat_closure_tag(ptr).is_some() {
+            return Ok(ResolvedValueGeneration::Heap {
+                address: GcHeapAddress::new(ptr.as_ptr() as usize)
+                    .map_err(EvalHeapError::GenerationalGc)?,
+                generation: HeapGeneration::Young,
+            });
+        }
         if self.shared.is_none()
             && matches!(
                 tag,
@@ -440,6 +447,11 @@ impl EvalHeap {
         address: GcHeapAddress,
         role: &'static str,
     ) -> Result<HeapGeneration, EvalHeapError> {
+        if let Some(ptr) = NonNull::new(address.address_bits() as *mut HeapObject)
+            && self.flat_closure_tag(ptr).is_some()
+        {
+            return Ok(HeapGeneration::Young);
+        }
         // Flat strings/paths/lists (doc 30 FV-1) are permanent by
         // construction and have no record.
         if self.flat_tag_at_gc_address(address).is_some() {
@@ -454,6 +466,11 @@ impl EvalHeap {
         address: GcHeapAddress,
         role: &'static str,
     ) -> Result<HeapAllocationDomain, EvalHeapError> {
+        if let Some(ptr) = NonNull::new(address.address_bits() as *mut HeapObject)
+            && self.flat_closure_tag(ptr).is_some()
+        {
+            return Ok(HeapAllocationDomain::Worker);
+        }
         if self.flat_tag_at_gc_address(address).is_some() {
             return Ok(HeapAllocationDomain::PermanentShared);
         }

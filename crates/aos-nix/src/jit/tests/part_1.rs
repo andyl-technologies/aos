@@ -455,9 +455,21 @@ fn nix_jit_registered_full_ir_promotion_installs_static_select() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"] {
+    for symbol_name in [
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_select_ic",
+    ] {
         assert!(
             promoted
                 .finalization()
@@ -504,9 +516,23 @@ fn nix_jit_registered_full_ir_promotion_installs_static_select_scalar_default() 
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+            "aos_select_ic"
+        ]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"] {
+    for symbol_name in [
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_has_attr",
+        "aos_select_ic",
+    ] {
         assert!(
             promoted
                 .finalization()
@@ -553,9 +579,21 @@ fn nix_jit_registered_full_ir_promotion_installs_static_has_attr() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr"
+        ]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"] {
+    for symbol_name in [
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_has_attr",
+    ] {
         assert!(
             promoted
                 .finalization()
@@ -602,9 +640,21 @@ fn nix_jit_registered_promotion_installs_update() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update"
+        ]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"] {
+    for symbol_name in [
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_update",
+    ] {
         assert!(
             promoted
                 .finalization()
@@ -652,7 +702,13 @@ fn nix_jit_registered_full_ir_install_plan_carries_static_select_pointer_and_mod
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted
@@ -699,7 +755,13 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_has_attr_pointer_and_
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr"
+        ]
     );
     assert!(
         promoted
@@ -746,7 +808,13 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_pointer_and_mo
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic"
+        ]
     );
     assert!(
         promoted

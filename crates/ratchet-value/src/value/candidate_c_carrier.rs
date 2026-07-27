@@ -29,7 +29,7 @@ use std::mem;
 use std::ptr::NonNull;
 
 use crate::heap::{
-    ArenaDomainId, ArenaIndex, reservation_base, reservation_containing_address,
+    ArenaDomainId, ArenaIndex, GcObjectIdentity, reservation_base, reservation_containing_address,
 };
 use crate::value::compressed::{CompressedValueKind, CompressedValueWord};
 
@@ -63,10 +63,9 @@ impl Value {
                 // keeps the release path total without a silent wrong value in
                 // the common (in-range) case.
                 Self {
-                    word: CompressedValueWord::inline_int(value.clamp(
-                        i64::from(i32::MIN),
-                        i64::from(i32::MAX),
-                    ))
+                    word: CompressedValueWord::inline_int(
+                        value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
+                    )
                     .unwrap_or_else(|_| CompressedValueWord::null()),
                 }
             }
@@ -200,8 +199,8 @@ impl Value {
         domain: ArenaDomainId,
         index: ArenaIndex,
     ) -> Result<Self, ValueError> {
-        let word =
-            CompressedValueWord::heap(domain, tag, index).map_err(|_| ValueError::NotHeapTag { tag })?;
+        let word = CompressedValueWord::heap(domain, tag, index)
+            .map_err(|_| ValueError::NotHeapTag { tag })?;
         Ok(Self { word })
     }
 
@@ -230,6 +229,16 @@ impl Value {
     /// Returns the underlying compressed word.
     pub const fn word(self) -> CompressedValueWord {
         self.word
+    }
+
+    /// Returns canonical object identity when this value names an indexed cell.
+    ///
+    /// Boxed integers and floats have identity because they name arena cells.
+    /// Inline integers, booleans, and null return `None`. The thunk `FORCED`
+    /// shortcut is normalized away, so forcing does not change object identity.
+    #[inline]
+    pub fn object_identity(self) -> Option<GcObjectIdentity> {
+        GcObjectIdentity::from_word(self.word)
     }
 
     /// Returns the encoding kind byte (the low 8 bits of the high half).
@@ -356,13 +365,13 @@ impl Value {
     /// [`ValueError::BoxedScalarRequiresHeap`] for them.
     pub fn as_int(self) -> Result<i64, ValueError> {
         match self.word.kind() {
-            CompressedValueKind::InlineInt => {
-                self.word.as_inline_int().ok_or(ValueError::Type {
-                    expected: "int",
-                    actual: ValueTag::Int,
-                })
+            CompressedValueKind::InlineInt => self.word.as_inline_int().ok_or(ValueError::Type {
+                expected: "int",
+                actual: ValueTag::Int,
+            }),
+            CompressedValueKind::BoxedInt => {
+                Err(ValueError::BoxedScalarRequiresHeap { kind: "int" })
             }
-            CompressedValueKind::BoxedInt => Err(ValueError::BoxedScalarRequiresHeap { kind: "int" }),
             _ => Err(ValueError::Type {
                 expected: "int",
                 actual: self.word.semantic_tag(),
@@ -419,8 +428,14 @@ impl Value {
         if !tag.is_heap() {
             return Err(ValueError::NotHeapTag { tag });
         }
-        let domain = self.word.arena_domain().ok_or(ValueError::NotHeapTag { tag })?;
-        let index = self.word.arena_index().ok_or(ValueError::NotHeapTag { tag })?;
+        let domain = self
+            .word
+            .arena_domain()
+            .ok_or(ValueError::NotHeapTag { tag })?;
+        let index = self
+            .word
+            .arena_index()
+            .ok_or(ValueError::NotHeapTag { tag })?;
         let base = reservation_base(domain).ok_or(ValueError::UnregisteredReservation {
             address: index.raw() as usize,
         })?;

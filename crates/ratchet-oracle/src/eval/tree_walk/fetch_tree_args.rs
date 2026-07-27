@@ -12,7 +12,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let attrs = self
             .heap
-            .get_attrs(value)
+            .get_attrs_view(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         for entry in attrs.iter_lexicographic() {
             let key = self.symbols.resolve(entry.key).ok_or_else(|| {
@@ -108,10 +108,10 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Vec<GitPublicKeyEntry>, TreeWalkError> {
         let values = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
             })?;
-            list.iter().copied().collect::<Vec<_>>()
+            list.iter().collect::<Vec<_>>()
         };
         let mut keys = Vec::new();
         keys.try_reserve_exact(values.len()).map_err(|_| {

@@ -720,6 +720,18 @@ impl SharedHeapArena {
         self.flat_reservation.as_ref().map(|arena| arena.stats())
     }
 
+    /// Samples physical residency for the shared Candidate-C reservation.
+    ///
+    /// Returns `None` when construction fell back to per-store allocations. A
+    /// present error means the operating system rejected the residency query.
+    pub fn flat_reservation_residency(
+        &self,
+    ) -> Option<Result<crate::heap::ReservedArenaResidency, crate::heap::ReservedArenaError>> {
+        self.flat_reservation
+            .as_ref()
+            .map(|arena| arena.residency())
+    }
+
     /// Returns the number of shards (workers) in this arena.
     pub fn shard_count(&self) -> usize {
         self.shards.len()

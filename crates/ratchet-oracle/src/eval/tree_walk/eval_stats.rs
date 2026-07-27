@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod apply_spine;
+
 /// The per-evaluation "K-tax" work counters surfaced on the parallel-demand
 /// stats line (RFC-0007 L2), so a single `AOS_NIX_EVAL_STATS=1` benchmark pass
 /// captures the coordination cost alongside the scheduler counters.
@@ -37,6 +39,8 @@ impl TreeWalk {
     }
 
     pub(super) fn stats_snapshot(&self) -> EvalStats {
+        #[cfg(feature = "maximal_laziness_probe")]
+        self.emit_maximal_laziness_census_once();
         let arena = self.heap.arena_stats();
         let permanent_arena = self.heap.permanent_arena_stats();
         let alloc_counters = self.heap.allocation_counters();
@@ -118,6 +122,11 @@ impl TreeWalk {
             symbols_interned: self.symbols.len() as u64,
             symbol_table_resident_bytes: self.symbols.resident_bytes() as u64,
             imports_evaluated: self.stats.imports_evaluated,
+            demand_machine_import_bodies: self.demand_machine_import_counters.machine_bodies,
+            demand_machine_import_declines: self.demand_machine_import_counters.module_declines,
+            demand_machine_import_oracle_calls: self
+                .demand_machine_import_counters
+                .oracle_module_calls,
             front_end_parse_nanos: self.stats.front_end_parse_nanos,
             front_end_resolve_nanos: self.stats.front_end_resolve_nanos,
             front_end_lower_nanos: self.stats.front_end_lower_nanos,
@@ -240,6 +249,11 @@ impl TreeWalk {
         // fused tier-2 grammar could remove wall from, on the same stderr dump
         // path. A no-op unless a force was recorded this process.
         super::force_shape_census::emit_force_shape_census_report();
+        // Exact genList selected-child census: a separate default-off
+        // structural report emitted beside the force-shape census. It records
+        // no clocks and remains empty unless the explicit child-census option
+        // admitted the exact marker path during this stats evaluation.
+        super::force_shape_census::emit_genlist_selected_child_census_report();
         tracing::debug!(
             target: "aos_nix::eval::stats",
             thunks_forced = stats.thunks_forced(),
@@ -661,12 +675,13 @@ impl TreeWalk {
             self.stats.prelude_thunks_forced = self.stats.prelude_thunks_forced.saturating_add(1);
         }
         let shape = self.force_shape_class(thunk);
-        let saved_children = force_shape_census::open_force();
+        let descriptor = self.apply_spine_descriptor(thunk);
+        let census_token = force_shape_census::open_force(descriptor);
         Some(ForceAccounting {
             is_prelude,
             start: std::time::Instant::now(),
             shape,
-            saved_children,
+            census_token,
         })
     }
 
@@ -676,12 +691,16 @@ impl TreeWalk {
     /// class in the [force-shape census](super::force_shape_census). Inclusive of
     /// nested forces for the prelude timer, so only its ratio is meaningful; the
     /// census subtracts nested child forces to attribute exclusive self-time.
-    pub(super) fn end_force_accounting(&mut self, timing: Option<ForceAccounting>) {
+    pub(super) fn end_force_accounting(
+        &mut self,
+        timing: Option<ForceAccounting>,
+        outcome: force_shape_census::ForceOutcomeClass,
+    ) {
         let Some(ForceAccounting {
             is_prelude,
             start,
             shape,
-            saved_children,
+            census_token,
         }) = timing
         else {
             return;
@@ -691,7 +710,7 @@ impl TreeWalk {
         if is_prelude {
             self.stats.prelude_force_nanos = self.stats.prelude_force_nanos.saturating_add(nanos);
         }
-        force_shape_census::close_force(shape, nanos, saved_children);
+        force_shape_census::close_force(shape, nanos, census_token, outcome);
     }
 
     /// Classifies a forced thunk into a force-shape census class.
@@ -703,12 +722,13 @@ impl TreeWalk {
     /// def-site census share shape names. The remaining deferred-work kinds map
     /// to their own classes (`"apply"`, `"apply2"`, `"select-thunk"`,
     /// `"builtin-attr"`, `"released"`).
-    fn force_shape_class(&self, thunk: &EvalThunk) -> &'static str {
+    pub(super) fn force_shape_class(&self, thunk: &EvalThunk) -> &'static str {
         match thunk.kind() {
             EvalThunkKind::Node { .. } => thunk
                 .body_ref()
                 .map_or("node", |body| self.node_shape_class(body)),
             EvalThunkKind::Apply { .. } => "apply",
+            EvalThunkKind::GenListElemAtAddOne { .. } => "apply",
             EvalThunkKind::Apply2(_) => "apply2",
             EvalThunkKind::Select { .. } => "select-thunk",
             EvalThunkKind::BuiltinAttr { .. } => "builtin-attr",
@@ -780,8 +800,8 @@ pub(super) struct ForceAccounting {
     start: std::time::Instant,
     /// The forced body's force-shape census class.
     shape: &'static str,
-    /// The census child-nanos accumulator saved on frame open.
-    saved_children: u64,
+    /// The force census nesting and exclusive-time token.
+    census_token: force_shape_census::ForceCensusToken,
 }
 
 /// Maps an [`IrKind`] to its stable force-shape census class name.
@@ -790,7 +810,7 @@ pub(super) struct ForceAccounting {
 /// signature vocabulary (`"AttrSet"`, `"Select"`, `"Interp"`, `"LocalVar"`,
 /// `"PrimOp"`, …) so the dynamic wall census and the static def-site census can
 /// be joined by shape name.
-const fn irkind_shape_class(kind: IrKind) -> &'static str {
+pub(super) const fn irkind_shape_class(kind: IrKind) -> &'static str {
     match kind {
         IrKind::Int => "Int",
         IrKind::Float => "Float",
@@ -830,7 +850,7 @@ const fn irkind_shape_class(kind: IrKind) -> &'static str {
 /// the attrset-`//` update-merge mass — a prime fuse-shapes candidate — from
 /// arithmetic and comparison operators, matching the JIT engine's
 /// `body_kind_signature` qualification.
-const fn binop_shape_class(op: BinOpKind) -> &'static str {
+pub(super) const fn binop_shape_class(op: BinOpKind) -> &'static str {
     match op {
         BinOpKind::Add => "BinOp:Add",
         BinOpKind::Sub => "BinOp:Sub",

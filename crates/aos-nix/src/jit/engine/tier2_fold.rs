@@ -427,7 +427,8 @@ impl NixJitTier1Engine {
             return FoldOperatorResolution::Structural;
         };
         let arena = &ir.arena;
-        let Ok(scan) = scan_tier2_curried_chain(arena, &ir.bindings, lambda.pattern(), lambda.body())
+        let Ok(scan) =
+            scan_tier2_curried_chain(arena, &ir.bindings, lambda.pattern(), lambda.body())
         else {
             return FoldOperatorResolution::Structural;
         };
@@ -539,11 +540,9 @@ pub(super) fn fold_pins_still_valid(
         if depth as usize > conceptual_len || (depth as usize) < arity {
             return false;
         }
-        let Some(raw) = eval.tier2_captured_value_at_index(
-            lambda.env(),
-            conceptual_len - depth as usize,
-            slot,
-        ) else {
+        let Some(raw) =
+            eval.tier2_captured_value_at_index(lambda.env(), conceptual_len - depth as usize, slot)
+        else {
             return false;
         };
         let Some(resolved) = eval.tier2_peek_forced(raw) else {

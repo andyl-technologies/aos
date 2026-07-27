@@ -34,9 +34,7 @@ fn gc_conformance_invocations_pin_cargo_test_filters() {
     assert_eq!(invocations.len(), 2);
     let raw_invocation = invocations
         .iter()
-        .find(|invocation| {
-            invocation.target().scope() == GcConformanceScope::TierATierBRawBytes
-        })
+        .find(|invocation| invocation.target().scope() == GcConformanceScope::TierATierBRawBytes)
         .expect("Tier-A/Tier-B invocation is present");
     assert_eq!(raw_invocation.cargo_program(), "cargo");
     assert_eq!(

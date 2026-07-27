@@ -103,9 +103,9 @@ pub struct NixJitTier1Engine {
     tier2_filter: RefCell<tier2_filter::Tier2FilterState>,
 }
 
-mod tier2;
 mod dispatch_policy;
 mod stats_dump;
+mod tier2;
 mod tier2_chain;
 mod tier2_filter;
 mod tier2_fold;
@@ -236,8 +236,7 @@ impl NixJitTier1Engine {
             threshold: threshold.max(1),
             record_dispatched_kinds: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
             record_gated_cost: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
-            force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref()
-                == Ok("1"),
+            force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref() == Ok("1"),
             literal_value_abi: value_abi::configured_literal_value_abi(),
             context: RefCell::new(None),
             state: RefCell::new(EngineState::default()),
@@ -845,10 +844,7 @@ impl NixJitTier1DispatchEntry {
 }
 
 /// Returns the published tier-1 finalized body for a def-site key, if any.
-fn published_body(
-    eval: &TreeWalk,
-    def_site: u64,
-) -> Option<Rc<JitModuleContextFinalizedBody>> {
+fn published_body(eval: &TreeWalk, def_site: u64) -> Option<Rc<JitModuleContextFinalizedBody>> {
     let slot = eval.tier1_def_site_slot(def_site)?;
     if !slot.is_published() {
         return None;

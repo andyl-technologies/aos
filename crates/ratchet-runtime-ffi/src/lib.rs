@@ -59,8 +59,8 @@ pub mod force;
 pub mod native_call;
 pub mod primop;
 pub mod safety;
-pub mod string_length;
 pub mod stack_map;
+pub mod string_length;
 pub mod trap;
 pub mod wrappers;
 
@@ -71,26 +71,25 @@ pub use native_call::{
     NativeFoldLoopOutcome, NativeThunkCallOutcome, run_context_finalized_native_all_any_loop,
     run_context_finalized_native_chain_call, run_context_finalized_native_filter_loop,
     run_context_finalized_native_fold_genlist_loop,
-    run_context_finalized_native_fold_genlist_loop_i64acc,
-    run_context_finalized_native_fold_loop, run_context_finalized_native_fold_loop_i64acc,
-    run_context_finalized_native_lambda_call,
+    run_context_finalized_native_fold_genlist_loop_i64acc, run_context_finalized_native_fold_loop,
+    run_context_finalized_native_fold_loop_i64acc, run_context_finalized_native_lambda_call,
     run_context_finalized_native_thunk_call, run_finalized_native_thunk_call,
     run_registered_native_thunk_call,
 };
 pub use primop::{
     RuntimePrimopCallNativeFn, aos_primop_call, aos_primop_call_native_wrapper_address,
 };
-pub use string_length::{
-    RuntimeStringLengthNativeFn, aos_string_length, aos_string_length_native_wrapper_address,
-};
-pub use stack_map::{
-    RuntimeJitStackMapEnterNativeFn, RuntimeJitStackMapExitNativeFn,
-    RuntimeJitStackMapWritebackError,
-    aos_jit_stack_map_enter, aos_jit_stack_map_enter_native_wrapper_address,
-    aos_jit_stack_map_exit, aos_jit_stack_map_exit_native_wrapper_address,
-};
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,
     RuntimeFfiInnateUnsafeOperation, RuntimeFfiUnsafeDiscipline, runtime_ffi_unsafe_discipline,
+};
+pub use stack_map::{
+    RuntimeJitStackMapEnterNativeFn, RuntimeJitStackMapExitNativeFn,
+    RuntimeJitStackMapWritebackError, aos_jit_stack_map_enter,
+    aos_jit_stack_map_enter_native_wrapper_address, aos_jit_stack_map_exit,
+    aos_jit_stack_map_exit_native_wrapper_address,
+};
+pub use string_length::{
+    RuntimeStringLengthNativeFn, aos_string_length, aos_string_length_native_wrapper_address,
 };
 pub use trap::{RuntimeTrap, RuntimeTrapScope, runtime_trap_sentinel_value};

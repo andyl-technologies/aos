@@ -165,9 +165,7 @@ pub enum PrimOpArgumentEscape {
 /// argument — except `hasAttr`, whose attribute-name argument crosses the
 /// symbol-interning boundary and is therefore [`PrimOpArgumentEscape::Retained`]
 /// (the RFC treats to-be-interned values as escapes, §7.3).
-pub fn primop_argument_escape_signature(
-    name: &[u8],
-) -> Option<&'static [PrimOpArgumentEscape]> {
+pub fn primop_argument_escape_signature(name: &[u8]) -> Option<&'static [PrimOpArgumentEscape]> {
     use PrimOpArgumentEscape::{Consumed, Retained};
     const CONSUMED_1: &[PrimOpArgumentEscape] = &[Consumed];
     const CONSUMED_2: &[PrimOpArgumentEscape] = &[Consumed, Consumed];

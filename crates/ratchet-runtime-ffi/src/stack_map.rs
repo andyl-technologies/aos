@@ -107,11 +107,11 @@ impl RuntimeJitContext<'_> {
 
         for writeback in plan.stack_map_writebacks() {
             let source = writeback.source();
-            let pointer = self
-                .bound_stack_map_value(source)
-                .ok_or_else(|| RuntimeJitStackMapWritebackError::MissingBinding {
+            let pointer = self.bound_stack_map_value(source).ok_or_else(|| {
+                RuntimeJitStackMapWritebackError::MissingBinding {
                     source: source.clone(),
-                })?;
+                }
+            })?;
             // SAFETY: The binding remains linked for this method's exclusive
             // context borrow, and `bound_stack_map_value` checked its index.
             let value = unsafe { pointer.as_ptr().read() };
@@ -270,10 +270,16 @@ impl fmt::Display for RuntimeJitStackMapWritebackError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AllocationFailed { slots } => {
-                write!(formatter, "failed to reserve {slots} compiled root bindings")
+                write!(
+                    formatter,
+                    "failed to reserve {slots} compiled root bindings"
+                )
             }
             Self::MissingBinding { source } => {
-                write!(formatter, "compiled root source is no longer bound: {source:?}")
+                write!(
+                    formatter,
+                    "compiled root source is no longer bound: {source:?}"
+                )
             }
             Self::Heap(source) => source.fmt(formatter),
         }
@@ -330,10 +336,11 @@ pub unsafe extern "C" fn aos_jit_stack_map_enter(
     };
     // SAFETY: The native caller supplies the writable binding region and pinned
     // context described by this function's contract.
-    unsafe { // aos_jit_stack_map_enter runtime-context decode
+    unsafe {
+        // aos_jit_stack_map_enter runtime-context decode
         with_native_jit_context(rt, |context| {
-            let (frame, selected_safepoint) = context
-                .compiled_frame_base_and_safepoint(binding, identity, safepoint, values);
+            let (frame, selected_safepoint) =
+                context.compiled_frame_base_and_safepoint(binding, identity, safepoint, values);
             let previous = context
                 .stack_map_head()
                 .map_or(std::ptr::null_mut(), NonNull::as_ptr);
@@ -362,7 +369,8 @@ pub unsafe extern "C" fn aos_jit_stack_map_exit(rt: *mut c_void, binding: *mut c
     };
     // SAFETY: The native caller supplies the active LIFO binding and pinned
     // context described by this function's contract.
-    unsafe { // aos_jit_stack_map_exit runtime-context decode
+    unsafe {
+        // aos_jit_stack_map_exit runtime-context decode
         with_native_jit_context(rt, |context| {
             if context.stack_map_head() != Some(binding) {
                 process::abort();
@@ -405,17 +413,15 @@ mod tests {
         let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
         let ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
         let mut eval = TreeWalk::new(&ir);
-        let mut context = std::pin::pin!(RuntimeJitContext::new(
-            &mut eval,
-            ir.root,
-            Span::new(0, 0),
-        ));
+        let mut context =
+            std::pin::pin!(RuntimeJitContext::new(&mut eval, ir.root, Span::new(0, 0),));
         let rt = context.as_mut().as_mut_ptr();
         let mut outer = [0_u64; 6];
         let mut inner = [0_u64; 6];
 
         // SAFETY: Both aligned stack buffers outlive their balanced calls.
-        unsafe { // balanced stack-map binding exercise
+        unsafe {
+            // balanced stack-map binding exercise
             aos_jit_stack_map_enter(
                 rt,
                 outer.as_mut_ptr().cast(),
@@ -457,7 +463,14 @@ mod tests {
                 .bound_stack_map_value(roots.roots()[0].source())
                 .expect("typed physical root resolves to its live slot");
             bound.as_ptr().write(Value::int(9));
-            assert!(inner.as_ptr().add(4).cast::<Value>().read().raw_eq(Value::int(9)));
+            assert!(
+                inner
+                    .as_ptr()
+                    .add(4)
+                    .cast::<Value>()
+                    .read()
+                    .raw_eq(Value::int(9))
+            );
             aos_jit_stack_map_exit(rt, inner.as_mut_ptr().cast());
             aos_jit_stack_map_exit(rt, outer.as_mut_ptr().cast());
         }

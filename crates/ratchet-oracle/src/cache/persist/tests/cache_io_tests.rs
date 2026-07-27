@@ -33,8 +33,8 @@ mod metadata_sidecars;
 mod node_metadata_io;
 mod node_metadata_reuse;
 mod storage_maintenance;
-mod write_behind;
 mod value_blob_repack;
+mod write_behind;
 
 #[derive(Clone, Debug)]
 struct StaticRevalidator {
@@ -920,4 +920,3 @@ fn cache_cached_expression_node_payload_trace_revalidation_misses_without_value_
 
     let _ = fs::remove_dir_all(root);
 }
-

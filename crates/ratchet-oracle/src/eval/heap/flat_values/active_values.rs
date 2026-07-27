@@ -179,6 +179,15 @@ impl EvalHeap {
         // words, so the whole int seam funnels through it.
         #[cfg(feature = "candidate_c_value")]
         {
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            if let Some(generation) = self.packed_generation()
+                && let Some(payload) = generation.integer(value)
+            {
+                return payload.map_err(EvalHeapError::from);
+            }
             self.candidate_c_decode_int(value.word()).map_err(|error| {
                 EvalHeapError::CandidateCScalar {
                     message: error.to_string(),
@@ -202,11 +211,19 @@ impl EvalHeap {
         }
         #[cfg(feature = "candidate_c_value")]
         {
-            self.candidate_c_decode_float(value.word()).map_err(|error| {
-                EvalHeapError::CandidateCScalar {
+            #[cfg(any(
+                feature = "compact_destination_probe",
+                feature = "evacuation_plan_probe"
+            ))]
+            if let Some(generation) = self.packed_generation()
+                && let Some(payload) = generation.float(value)
+            {
+                return payload.map_err(EvalHeapError::from);
+            }
+            self.candidate_c_decode_float(value.word())
+                .map_err(|error| EvalHeapError::CandidateCScalar {
                     message: error.to_string(),
-                }
-            })
+                })
         }
     }
 }
@@ -230,7 +247,10 @@ fn candidate_c_shadow_anomaly(kind: &str, phase: &str, error: &CandidateCScalarE
 /// Reports a Candidate-C scalar shadow round-trip that decoded a wrong value.
 #[cold]
 fn candidate_c_shadow_mismatch(kind: &str) {
-    debug_assert!(false, "AOS_NIX_CANDIDATE_C_SHADOW: {kind} round-trip mismatch");
+    debug_assert!(
+        false,
+        "AOS_NIX_CANDIDATE_C_SHADOW: {kind} round-trip mismatch"
+    );
     if !cfg!(debug_assertions) {
         eprintln!("AOS_NIX_CANDIDATE_C_SHADOW: {kind} round-trip mismatch");
     }
@@ -288,7 +308,10 @@ mod tests {
         }
         #[cfg(feature = "candidate_c_value")]
         {
-            assert!(matches!(int_err, Err(EvalHeapError::CandidateCScalar { .. })));
+            assert!(matches!(
+                int_err,
+                Err(EvalHeapError::CandidateCScalar { .. })
+            ));
             assert!(matches!(
                 float_err,
                 Err(EvalHeapError::CandidateCScalar { .. })
@@ -342,7 +365,9 @@ mod tests {
         ] {
             let value = f64::from_bits(bits);
             heap.shadow_exercise_candidate_c_float(value);
-            let active = heap.alloc_float_value(value).expect("active float constructs");
+            let active = heap
+                .alloc_float_value(value)
+                .expect("active float constructs");
             assert_eq!(heap.decode_float_value(active).map(f64::to_bits), Ok(bits));
         }
     }

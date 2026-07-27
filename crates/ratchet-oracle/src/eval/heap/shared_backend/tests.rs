@@ -35,8 +35,11 @@ fn shared_heaps(workers: usize) -> (Arc<SharedHeapArena>, Vec<EvalHeap>) {
 fn attrs_with_int(value: i64) -> FlatAttrs {
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
-    FlatAttrs::new(vec![AttrEntry::new(key, crate::value::Value::int(value))], &symbols)
-        .expect("attrset builds")
+    FlatAttrs::new(
+        vec![AttrEntry::new(key, crate::value::Value::int(value))],
+        &symbols,
+    )
+    .expect("attrset builds")
 }
 
 /// Every typed shape round-trips through a shared-mode heap's own shard.
@@ -49,22 +52,32 @@ fn shared_heap_round_trips_every_typed_shape() {
     let string = heap
         .alloc_string(NixString::from_bytes(b"shared".to_vec()))
         .expect("string allocates");
-    assert_eq!(heap.get_string(string).expect("string resolves").bytes(), b"shared");
+    assert_eq!(
+        heap.get_string(string).expect("string resolves").bytes(),
+        b"shared"
+    );
 
     let path = heap
         .alloc_path(NixString::from_bytes(b"/shared/path".to_vec()))
         .expect("path allocates");
-    assert_eq!(heap.get_path(path).expect("path resolves").bytes(), b"/shared/path");
+    assert_eq!(
+        heap.get_path(path).expect("path resolves").bytes(),
+        b"/shared/path"
+    );
 
     let list = heap
         .alloc_list(NixList::new(vec![string]))
         .expect("list allocates");
     assert_eq!(heap.get_list(list).expect("list resolves").len(), 1);
 
-    let attrs = heap.alloc_attrs(0, attrs_with_int(7)).expect("attrs allocate");
+    let attrs = heap
+        .alloc_attrs(0, attrs_with_int(7))
+        .expect("attrs allocate");
     assert_eq!(heap.get_attrs(attrs).expect("attrs resolve").len(), 1);
     assert_eq!(
-        heap.get_attrs_metadata(attrs).expect("metadata resolves").shape(),
+        heap.get_attrs_metadata(attrs)
+            .expect("metadata resolves")
+            .shape(),
         0
     );
 
@@ -96,7 +109,10 @@ fn shared_heaps_resolve_each_others_allocations() {
 
     // Worker 1 dereferences worker 0's allocations (cross-shard probe).
     assert_eq!(
-        heaps[1].get_string(string).expect("cross-shard string").bytes(),
+        heaps[1]
+            .get_string(string)
+            .expect("cross-shard string")
+            .bytes(),
         b"from-worker-0"
     );
     assert!(heaps[1].get_thunk(thunk).is_ok());
@@ -107,7 +123,10 @@ fn shared_heaps_resolve_each_others_allocations() {
     let resolved = heaps[0].get_list(list).expect("cross-shard list");
     let element = resolved.get(0).expect("element 0");
     assert_eq!(
-        heaps[0].get_string(element).expect("element resolves").bytes(),
+        heaps[0]
+            .get_string(element)
+            .expect("element resolves")
+            .bytes(),
         b"from-worker-0"
     );
 }
@@ -115,7 +134,7 @@ fn shared_heaps_resolve_each_others_allocations() {
 /// Per-worker hash-consing still dedupes within one worker's shard, and two
 /// workers interning the same content get distinct (content-equal) records.
 #[test]
-fn shared_hash_cons_is_per_worker()  {
+fn shared_hash_cons_is_per_worker() {
     let (_arena, mut heaps) = shared_heaps(2);
 
     let first = heaps[0]
@@ -135,7 +154,10 @@ fn shared_hash_cons_is_per_worker()  {
         "workers intern independently in their own shards"
     );
     assert_eq!(
-        heaps[0].get_string(other).expect("cross-shard resolves").bytes(),
+        heaps[0]
+            .get_string(other)
+            .expect("cross-shard resolves")
+            .bytes(),
         heaps[0].get_string(first).expect("own resolves").bytes(),
         "distinct records stay content-equal"
     );

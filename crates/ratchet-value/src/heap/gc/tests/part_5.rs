@@ -43,9 +43,8 @@ fn minor_gc_commit_plan_rejects_stale_buffers_without_partial_writes() {
         ],
     )
     .expect("object-copy plan builds");
-    let forwarding_pointers =
-        MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
-            .expect("forwarding plan builds");
+    let forwarding_pointers = MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+        .expect("forwarding plan builds");
     let mut references = [
         ResolvedValueGeneration::young(copy),
         ResolvedValueGeneration::young(promote),
@@ -169,9 +168,8 @@ fn minor_gc_commit_plan_rejects_inconsistent_subplans() {
         ],
     )
     .expect("object-copy plan builds");
-    let forwarding_pointers =
-        MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
-            .expect("forwarding plan builds");
+    let forwarding_pointers = MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+        .expect("forwarding plan builds");
     let reference_rewrites = MinorGcReferenceRewritePlan::from_references(
         &relocation_plan,
         [ResolvedValueGeneration::young(first)],
@@ -215,8 +213,7 @@ fn minor_gc_commit_plan_rejects_inconsistent_subplans() {
         .expect("same-epoch remembered edge records");
     let unchanged_changed_same_epoch_remembered_set = changed_same_epoch_remembered_set.clone();
     assert_eq!(
-        publication_commit_plan
-            .publish_next_remembered_set(&mut changed_same_epoch_remembered_set),
+        publication_commit_plan.publish_next_remembered_set(&mut changed_same_epoch_remembered_set),
         Err(
             GenerationalGcError::MinorGcCommitRememberedSetPublicationLengthMismatch {
                 expected: 0,
@@ -251,8 +248,7 @@ fn minor_gc_commit_plan_rejects_inconsistent_subplans() {
     changed_same_length_remembered_set
         .record(actual_publication_edge)
         .expect("same-length remembered edge records");
-    let unchanged_changed_same_length_remembered_set =
-        changed_same_length_remembered_set.clone();
+    let unchanged_changed_same_length_remembered_set = changed_same_length_remembered_set.clone();
     assert_eq!(
         publication_commit_plan
             .publish_next_remembered_set(&mut changed_same_length_remembered_set),

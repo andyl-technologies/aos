@@ -35,6 +35,8 @@ impl TreeWalk {
             EvalFrame::new_linked(slot_count, self.env.last().cloned()).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
             })?;
+        #[cfg(feature = "demand_region_shadow_probe")]
+        self.note_demand_region_frame_allocation(id, slot_count);
         self.push_env_frame(Arc::clone(&frame_values));
         self.begin_order_sensitive_binding_assembly();
         let init_result = (|| {
@@ -66,8 +68,17 @@ impl TreeWalk {
             Ok(())
         })();
         self.end_order_sensitive_binding_assembly(init_result.is_ok());
-        let result = init_result.and_then(|()| self.eval_node(body));
+        let result = init_result.and_then(|()| {
+            self.with_nonmoving_native_continuation(
+                super::native_continuation_shadow::NativeContinuationKind::LetBody,
+                body,
+                &[],
+                Some(super::native_continuation_shadow::NativeContinuationEdge::EvalNode),
+                |eval| eval.eval_node(body),
+            )
+        });
         self.pop_env_frame();
+        drop(frame_values);
         result
     }
 
@@ -268,7 +279,12 @@ impl TreeWalk {
         if let Some(entry) = self.primop_builtin_cache.get(module, id) {
             self.primop_builtin_cache.record_hit();
             let builtin = Builtin::from_kind(entry.kind());
-            return builtin.apply_direct(self, call, node, entry.args());
+            return self.with_native_primop_context(
+                super::native_continuation_shadow::NativePrimOpContextMode::CachedDirect,
+                id,
+                symbol,
+                |eval| builtin.apply_direct(eval, call, node, entry.args()),
+            );
         }
 
         // Miss: resolve the builtin, preserving the original diagnostic order — an
@@ -308,7 +324,12 @@ impl TreeWalk {
                 id,
                 CachedPrimop::new(builtin.kind(), &buffer[..len]),
             );
-            builtin.apply_direct(self, call, node, &buffer[..len])
+            self.with_native_primop_context(
+                super::native_continuation_shadow::NativePrimOpContextMode::ResolvedInlineDirect,
+                id,
+                symbol,
+                |eval| builtin.apply_direct(eval, call, node, &buffer[..len]),
+            )
         } else {
             // An over-arity call cannot be a valid direct primop; leave it
             // uncached (the arity check rejects it identically every call) and
@@ -328,7 +349,12 @@ impl TreeWalk {
                 )
             })?;
             heap.extend_from_slice(child);
-            builtin.apply_direct(self, call, node, &heap)
+            self.with_native_primop_context(
+                super::native_continuation_shadow::NativePrimOpContextMode::ResolvedHeapDirect,
+                id,
+                symbol,
+                |eval| builtin.apply_direct(eval, call, node, &heap),
+            )
         }
     }
 
@@ -379,7 +405,7 @@ impl TreeWalk {
                         argument_span,
                     ));
                 }
-                let list = self.heap.get_list(value).map_err(|source| {
+                let list = self.heap.get_list_view(value).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -412,7 +438,7 @@ impl TreeWalk {
                     ));
                 }
                 let (names, order_parity_result) = {
-                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                    let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::Heap {
                                 id: argument,
@@ -431,11 +457,7 @@ impl TreeWalk {
                             span,
                         )
                     })?;
-                    let order_parity_result = collect_checked_lexicographic_keys(
-                        AttrOrderTarget::Flat(attrs),
-                        &self.symbols,
-                    )
-                    .map(|_| ());
+                    let order_parity_result = attrs.validate_lexicographic(&self.symbols);
                     for entry in attrs.iter_lexicographic() {
                         names.push(entry.key);
                     }
@@ -471,7 +493,7 @@ impl TreeWalk {
                     ));
                 }
                 let (values, order_parity_result) = {
-                    let attrs = self.heap.get_attrs(value).map_err(|source| {
+                    let attrs = self.heap.get_attrs_view(value).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::Heap {
                                 id: argument,
@@ -490,11 +512,7 @@ impl TreeWalk {
                             span,
                         )
                     })?;
-                    let order_parity_result = collect_checked_lexicographic_keys(
-                        AttrOrderTarget::Flat(attrs),
-                        &self.symbols,
-                    )
-                    .map(|_| ());
+                    let order_parity_result = attrs.validate_lexicographic(&self.symbols);
                     for entry in attrs.iter_lexicographic() {
                         values.push(entry.value);
                     }
@@ -516,7 +534,7 @@ impl TreeWalk {
                     ));
                 }
                 let values = {
-                    let list = self.heap.get_list(value).map_err(|source| {
+                    let list = self.heap.get_list_view(value).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::Heap {
                                 id: argument,
@@ -534,18 +552,15 @@ impl TreeWalk {
                             argument_span,
                         ));
                     }
-                    let tail = &list.as_slice()[1..];
                     let mut values = Vec::new();
-                    values.try_reserve_exact(tail.len()).map_err(|_| {
+                    let tail_len = list.len() - 1;
+                    values.try_reserve_exact(tail_len).map_err(|_| {
                         TreeWalkError::new(
-                            TreeWalkErrorKind::ListAllocationFailed {
-                                id,
-                                len: tail.len(),
-                            },
+                            TreeWalkErrorKind::ListAllocationFailed { id, len: tail_len },
                             span,
                         )
                     })?;
-                    values.extend_from_slice(tail);
+                    values.extend(list.iter().skip(1));
                     values
                 };
                 self.alloc_tree_walk_list(id, span, NixList::new(values))
@@ -561,7 +576,7 @@ impl TreeWalk {
                         argument_span,
                     ));
                 }
-                let list = self.heap.get_list(value).map_err(|source| {
+                let list = self.heap.get_list_view(value).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
                             id: argument,
@@ -692,7 +707,7 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let message = self.coerce_to_string(argument, value, argument_span)?;
-        let message = self.heap.get_string(message).map_err(|source| {
+        let message = self.heap.get_string_view(message).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: argument,
@@ -751,6 +766,9 @@ impl TreeWalk {
         context: IrId,
         error: TreeWalkError,
     ) -> Result<Value, TreeWalkError> {
+        if error.is_final_force_portal_suspend() {
+            return Err(error);
+        }
         let context_span = self.node(context)?.span;
         let context_value = self.eval_node(context)?;
         let message = self.coerce_add_error_context_message(
@@ -774,6 +792,9 @@ impl TreeWalk {
         context: EvalPrimOpArg,
         error: TreeWalkError,
     ) -> Result<Value, TreeWalkError> {
+        if error.is_final_force_portal_suspend() {
+            return Err(error);
+        }
         let context_value = self.force_value(context.id(), context.span(), context.value())?;
         let message = self.coerce_add_error_context_message(
             call_id,
@@ -816,7 +837,7 @@ impl TreeWalk {
             }
             Err(error) => return Err(error),
         };
-        let message = self.heap.get_string(message).map_err(|source| {
+        let message = self.heap.get_string_view(message).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: context,
@@ -916,7 +937,7 @@ impl TreeWalk {
                 message_span,
             ));
         }
-        let message = self.heap.get_string(message_value).map_err(|source| {
+        let message = self.heap.get_string_view(message_value).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Heap {
                     id: message_id,

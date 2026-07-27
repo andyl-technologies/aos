@@ -532,9 +532,7 @@ fn native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_ef
 
 #[test]
 fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()> {
-    use crate::cache::{
-        MaterializationDecision, ParseCache, ParseFileKey, PersistCache,
-    };
+    use crate::cache::{MaterializationDecision, ParseCache, ParseFileKey, PersistCache};
 
     let root = unique_temp_dir("aos-nix-native-instantiate-persist-root-hit");
     fs::create_dir_all(&root)?;
@@ -925,4 +923,3 @@ fn native_instantiation_selection_path_indexes_lists() -> Result<()> {
     fs::remove_dir_all(root)?;
     Ok(())
 }
-

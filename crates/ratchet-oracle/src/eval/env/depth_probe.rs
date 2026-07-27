@@ -1,10 +1,10 @@
 //! Lexical-depth distribution probe (RFC-0007 instruction-bloat / depth lane).
 //!
-//! Tests the depth-amplifier hypothesis: several per-op costs scale with lexical
-//! depth (`clone_env_frames` is `O(depth)` instructions per apply/force since the
-//! stage-A fix; `capture_env`), and the module fixpoint plausibly builds much
-//! deeper environments than shallow package bodies. If so, a flat per-op
-//! instruction average hides a depth-linear amplifier specific to the toplevel.
+//! Tests the depth-amplifier hypothesis: production linked-environment
+//! installation is constant-time, but lexical reads and root scans can still
+//! scale with depth, and the module fixpoint plausibly builds much deeper
+//! environments than shallow package bodies. If so, a flat per-op instruction
+//! average hides a depth-linear amplifier specific to the toplevel.
 //!
 //! This probe records the environment depth (`frames().len()`, the shared
 //! lexical frame count) at two sites, bucketed and weighted both by **count**

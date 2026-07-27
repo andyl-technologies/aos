@@ -14,12 +14,12 @@ use std::{
     ptr::NonNull,
 };
 
+use ratchet_jit::JitCraneliftUserStackMap;
 use ratchet_oracle::{
     compile::IrId,
     eval::{EvalEnv, tree_walk::TreeWalk},
     syntax::Span,
 };
-use ratchet_jit::JitCraneliftUserStackMap;
 
 use crate::stack_map::RuntimeJitStackMapBindingHeader;
 
@@ -107,9 +107,7 @@ impl<'eval> RuntimeJitContext<'eval> {
         self.as_ref().get_ref() as *const Self as *mut c_void
     }
 
-    pub(crate) const fn stack_map_head(
-        &self,
-    ) -> Option<NonNull<RuntimeJitStackMapBindingHeader>> {
+    pub(crate) const fn stack_map_head(&self) -> Option<NonNull<RuntimeJitStackMapBindingHeader>> {
         self.stack_map_head
     }
 
@@ -117,10 +115,7 @@ impl<'eval> RuntimeJitContext<'eval> {
         self.stack_map_head.is_some()
     }
 
-    pub(crate) fn finalized_stack_map(
-        &self,
-        safepoint: u32,
-    ) -> Option<&JitCraneliftUserStackMap> {
+    pub(crate) fn finalized_stack_map(&self, safepoint: u32) -> Option<&JitCraneliftUserStackMap> {
         self.stack_maps.get(safepoint as usize)
     }
 

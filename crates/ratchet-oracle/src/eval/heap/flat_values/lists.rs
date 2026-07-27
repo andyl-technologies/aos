@@ -30,12 +30,38 @@
 use super::*;
 
 impl EvalHeap {
+    /// Allocates one unpublished evacuation list without hash-cons admission.
+    ///
+    /// The caller must keep the containing heap unobservable and rebuild its
+    /// list hash-cons table before exposing the heap.
+    #[cfg(feature = "evacuation_plan_probe")]
+    pub(in crate::eval::heap) fn flat_alloc_evacuation_list(
+        &mut self,
+        list: NixList,
+    ) -> Result<Value, EvalHeapError> {
+        let len = list.len();
+        let epoch = self.next_access_epoch();
+        let allocation = self
+            .flat_lists
+            .alloc_with_aux(FlatObjectKind::List, flat_aux_for_len(len), 0, epoch, list)
+            .map_err(flat_alloc_error)?;
+        self.permanent_allocator
+            .record_flat_list_allocation_safepoint(len, allocation.allocation);
+        let value = self.value_for_flat_allocation(ValueTag::List, allocation.ptr)?;
+        self.alloc_counters.note_list_payload(len);
+        self.alloc_counters.note_value_allocated();
+        Ok(value)
+    }
+
     /// Serial [`EvalHeap::alloc_list`]: hash-cons admission over the flat
     /// list store, then one flat allocation (no heap record).
     pub(in crate::eval::heap) fn flat_alloc_list(
         &mut self,
         list: NixList,
     ) -> Result<Value, EvalHeapError> {
+        for value in &list {
+            self.observe_value_identity(*value);
+        }
         let hash = crate::eval::heap::arena::list_structural_hash(&list);
         let cons_slot = match self.admit_flat_list_cons(hash, &list)? {
             HashConsReservation::Existing(value) => {
@@ -87,6 +113,8 @@ impl EvalHeap {
         };
         self.push_list_cons_value(cons_slot, value);
         self.alloc_counters.note_value_allocated();
+        #[cfg(feature = "peak_ordinal_probe")]
+        self.note_peak_ordinal_publication(ValueTag::List);
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -104,6 +132,8 @@ impl EvalHeap {
         match self.flat_lists.resolve(ptr, FlatObjectKind::List) {
             Ok(object) => {
                 self.deref_counters.note_flat_resolution(ValueTag::List);
+                #[cfg(feature = "lifetime_cohort_probe")]
+                self.observe_lifetime_quarantine_ptr(ptr, LifetimeQuarantineOrigin::List);
                 if self.epoch_tracking_enabled {
                     object.touch(self.next_access_epoch());
                 }
@@ -134,6 +164,17 @@ impl EvalHeap {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&NixList, EvalHeapError> {
+        #[cfg(feature = "candidate_c_value")]
+        if self.is_evacuated_ptr(ptr) {
+            return self
+                .evacuated_generation
+                .as_ref()
+                .ok_or(EvalHeapError::ShedRejected {
+                    address: ptr.as_ptr() as usize,
+                    reason: "evacuated resolver has no aggregate generation owner",
+                })?
+                .get_list_ptr(ptr);
+        }
         match self.flat_lists.resolve(ptr, FlatObjectKind::List) {
             Ok(object) => Ok(object.payload()),
             Err(error) => Err(self.flat_resolution_error(ValueTag::List, ptr, error)),

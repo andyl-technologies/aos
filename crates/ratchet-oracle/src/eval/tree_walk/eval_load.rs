@@ -355,6 +355,34 @@ impl TreeWalk {
         ir: Ir,
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        let work = self.begin_import_module(id, span, path, base, source, ir, global_scope)?;
+        self.run_import_module_with(work, |eval, work| {
+            eval.eval_import_module_root_with_demand_machine_or_oracle(work.root, path)
+        })
+    }
+
+    /// Registers an imported module and installs its isolated evaluation context.
+    ///
+    /// All fallible lease-stack reservations happen before module publication
+    /// or environment mutation. Once this returns, `work.token` owns the current
+    /// module plus exactly one suspended environment frame and must be passed to
+    /// [`Self::finish_import_module`] or [`Self::abort_import_module`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a module-registration, scoped-global, suspended-root allocation,
+    /// context-lease allocation, or lease-generation exhaustion diagnostic.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn begin_import_module(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: &[u8],
+        base: &[u8],
+        source: &[u8],
+        ir: Ir,
+        global_scope: ImportGlobalScope,
+    ) -> Result<ImportModuleWork, TreeWalkError> {
         // Per-import module setup: registering the lowered module (with its path,
         // base, and source copies) and swapping in its evaluation scopes, before
         // the module body is evaluated. This is the tail-of-pipeline import work
@@ -363,6 +391,39 @@ impl TreeWalk {
         // imports and stays non-overlapping with the other import timers.
         let module_setup_timer = self.options.eval_stats_dump().then(std::time::Instant::now);
         self.reserve_suspended_env_root_frame(id, span)?;
+        let lease_count = self
+            .active_import_module_leases
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportModuleLeaseAllocationFailed {
+                        id,
+                        leases: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        self.active_import_module_leases
+            .try_reserve(1)
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportModuleLeaseAllocationFailed {
+                        id,
+                        leases: lease_count,
+                    },
+                    span,
+                )
+            })?;
+        let generation = self
+            .next_import_module_lease_generation
+            .checked_add(1)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportModuleLeaseGenerationExhausted { id },
+                    span,
+                )
+            })?;
         // The live symbol table (`self.symbols`) has already been advanced to the
         // superset covering this module's symbols by the caller: the fresh-parse
         // path moves the lowered table in with `mem::take`, and the cached-import
@@ -372,25 +433,133 @@ impl TreeWalk {
         let root = ir.root;
         let module =
             self.push_module(id, span, ir, base.to_vec(), path.to_vec(), source.to_vec())?;
+        self.emit_weak_liveness_import_milestone();
         let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
         let saved_env = self.swap_env_frames(Vec::new());
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);
         let saved_scoped_globals =
             std::mem::replace(&mut self.scoped_globals, imported_scoped_globals);
+        let suspended_env_depth = self.suspended_env_roots.len();
         self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
         if let Some(timer) = module_setup_timer {
             self.add_import_module_setup_nanos(timer);
         }
-        let result =
-            self.with_current_module(module, |eval| eval.eval_import_root_with_cache(root, path));
-        if let Some(saved) = self.pop_suspended_env_roots() {
-            self.restore_env_frames(saved.env);
-            self.with_scopes = saved.with_scopes;
-            self.scoped_globals = saved.scoped_globals;
-        } else {
-            debug_assert!(false, "suspended env root stack is unbalanced");
+
+        // `with_current_module` formerly installed this switch immediately
+        // before body evaluation. Keep it after the setup timer so telemetry
+        // retains the same boundary.
+        let saved_module = self.current_module;
+        self.current_module = module;
+        self.next_import_module_lease_generation = generation;
+        let token = ImportModuleLeaseToken::new(self.active_import_module_leases.len(), generation);
+        self.active_import_module_leases
+            .push(ActiveImportModuleLease {
+                token,
+                module,
+                saved_module,
+                suspended_env_depth,
+            });
+        Ok(ImportModuleWork {
+            token,
+            module,
+            root,
+        })
+    }
+
+    /// Runs one imported-module continuation with Result and panic cleanup.
+    ///
+    /// This remains the oracle wrapper used by `load_and_eval_import_ir`.
+    /// Demand-machine execution can consume the begin/finish seam directly in
+    /// a later stage without replaying module loading.
+    ///
+    /// # Errors
+    ///
+    /// Returns the continuation error after restoring the displaced module,
+    /// lexical environment, dynamic `with` scopes, and scoped globals.
+    ///
+    /// # Panics
+    ///
+    /// Resumes a panic raised by `run` after restoring the imported-module
+    /// context. Panics on an internally stale or out-of-order lease token.
+    pub(super) fn run_import_module_with(
+        &mut self,
+        work: ImportModuleWork,
+        run: impl FnOnce(&mut Self, ImportModuleWork) -> Result<Value, TreeWalkError>,
+    ) -> Result<Value, TreeWalkError> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, work)));
+        match result {
+            Ok(result) => self.finish_import_module(work.token, result),
+            Err(payload) => {
+                self.abort_import_module(work.token);
+                std::panic::resume_unwind(payload);
+            }
         }
+    }
+
+    /// Finishes the innermost imported-module context lease.
+    ///
+    /// A source-less error is associated with the imported module before the
+    /// current-module switch is restored, matching evaluation under
+    /// `with_current_module`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the continuation error supplied in `result`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `token` is stale or is not the innermost active module lease.
+    pub(super) fn finish_import_module(
+        &mut self,
+        token: ImportModuleLeaseToken,
+        result: Result<Value, TreeWalkError>,
+    ) -> Result<Value, TreeWalkError> {
+        let result = result.map_err(|error| self.error_with_current_source(error));
+        self.restore_import_module_context(token);
         result
+    }
+
+    /// Restores one imported-module context while a panic is unwinding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `token` is stale or is not the innermost active module lease.
+    pub(super) fn abort_import_module(&mut self, token: ImportModuleLeaseToken) {
+        self.restore_import_module_context(token);
+    }
+
+    /// Restores the context recorded by the innermost module lease.
+    fn restore_import_module_context(&mut self, token: ImportModuleLeaseToken) {
+        let Some(active) = self.active_import_module_leases.last().copied() else {
+            unreachable!("active imported-module lease stack is unbalanced");
+        };
+        assert_eq!(
+            active.token, token,
+            "imported-module lease token is stale or out of order"
+        );
+        debug_assert_eq!(active.module, self.current_module);
+        debug_assert_eq!(token.depth(), self.active_import_module_leases.len() - 1);
+        debug_assert_eq!(token.generation(), active.token.generation());
+        assert_eq!(
+            self.suspended_env_roots.len(),
+            active.suspended_env_depth + 1,
+            "imported-module suspended environment stack is unbalanced"
+        );
+
+        // Preserve the old nested-wrapper order: `with_current_module`
+        // restored the caller module before load_and_eval_import_ir restored
+        // the displaced lexical and dynamic environments.
+        self.current_module = active.saved_module;
+        let Some(saved) = self.pop_suspended_env_roots() else {
+            unreachable!("checked suspended imported environment disappeared");
+        };
+        self.restore_env_frames(saved.env);
+        self.with_scopes = saved.with_scopes;
+        self.scoped_globals = saved.scoped_globals;
+        let Some(popped) = self.active_import_module_leases.pop() else {
+            unreachable!("checked imported-module lease disappeared");
+        };
+        debug_assert_eq!(popped.token, token);
     }
     pub(super) fn remap_cached_import_ir(
         &mut self,

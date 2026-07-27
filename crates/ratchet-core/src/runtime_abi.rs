@@ -14,21 +14,21 @@ use thiserror::Error;
 
 use crate::builtins::BUILTINS;
 
+mod signature_tables;
 mod stack_map;
 mod value_layout;
-mod signature_tables;
-pub use value_layout::{
-    RuntimeAbiValueLayout, candidate_b_runtime_abi_value_layout,
-    candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
-};
 pub use signature_tables::{
     MAX_RUNTIME_PRIMOP_ABI_ARITY, RUNTIME_FOLD_STEP_I64ACC_CALL_SIGNATURE,
-    RUNTIME_HELPER_CALL_SIGNATURES, RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE, RUNTIME_LAMBDA_CALL_SIGNATURE,
-    RUNTIME_PRIMOP_CALL_SIGNATURES, RUNTIME_THUNK_CALL_SIGNATURE,
+    RUNTIME_HELPER_CALL_SIGNATURES, RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE,
+    RUNTIME_LAMBDA_CALL_SIGNATURE, RUNTIME_PRIMOP_CALL_SIGNATURES, RUNTIME_THUNK_CALL_SIGNATURE,
     runtime_fold_step_i64acc_call_signature, runtime_helper_call_signature,
     runtime_helper_call_signatures, runtime_lambda_argv_call_signature,
     runtime_lambda_call_signature, runtime_primop_call_signature, runtime_primop_call_signatures,
     runtime_thunk_call_signature,
+};
+pub use value_layout::{
+    RuntimeAbiValueLayout, candidate_b_runtime_abi_value_layout,
+    candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
 };
 
 /// The stable prefix for builtin runtime symbol names.
@@ -147,8 +147,14 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_force_deep", RuntimeHelperRole::ForcingControl),
     RuntimeHelperSymbol::new("aos_gc_write_barrier", RuntimeHelperRole::WriteBarrier),
     RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
-    RuntimeHelperSymbol::new("aos_jit_stack_map_enter", RuntimeHelperRole::SafepointControl),
-    RuntimeHelperSymbol::new("aos_jit_stack_map_exit", RuntimeHelperRole::SafepointControl),
+    RuntimeHelperSymbol::new(
+        "aos_jit_stack_map_enter",
+        RuntimeHelperRole::SafepointControl,
+    ),
+    RuntimeHelperSymbol::new(
+        "aos_jit_stack_map_exit",
+        RuntimeHelperRole::SafepointControl,
+    ),
     RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch),
     RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_string_length", RuntimeHelperRole::PrimopDispatch),

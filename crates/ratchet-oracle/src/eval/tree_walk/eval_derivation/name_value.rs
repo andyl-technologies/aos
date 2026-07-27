@@ -36,7 +36,7 @@ impl TreeWalk {
                     attrs_span,
                 ));
             }
-            let string = self.heap.get_string(value).map_err(|source| {
+            let string = self.heap.get_string_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: attrs_id,

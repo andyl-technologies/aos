@@ -22,16 +22,15 @@ pub(super) fn run_force_at_compiled_safepoint(
     span: Span,
     body: impl FnOnce(&mut TreeWalk) -> Result<Value, TreeWalkError>,
 ) -> Value {
-    let roots = if eval.compiled_safepoint_roots_required()
-        && context.has_active_stack_map_binding()
-    {
-        match context.active_stack_map_roots() {
-            Ok(roots) => Some(roots),
-            Err(error) => return record_stack_map_error(error),
-        }
-    } else {
-        None
-    };
+    let roots =
+        if eval.compiled_safepoint_roots_required() && context.has_active_stack_map_binding() {
+            match context.active_stack_map_roots() {
+                Ok(roots) => Some(roots),
+                Err(error) => return record_stack_map_error(error),
+            }
+        } else {
+            None
+        };
     let result = if let Some(roots) = roots.as_ref() {
         let mut values = Vec::new();
         if values.try_reserve_exact(roots.len()).is_err() {

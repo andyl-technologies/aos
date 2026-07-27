@@ -624,7 +624,7 @@ impl TreeWalk {
         fields: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -643,7 +643,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            elements.extend_from_slice(list.as_slice());
+            elements.extend(list.iter());
             elements
         };
 
@@ -667,7 +667,7 @@ impl TreeWalk {
         fields: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let elements = {
-            let list = self.heap.get_list(value).map_err(|source| {
+            let list = self.heap.get_list_view(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
                         id: list_id,
@@ -676,7 +676,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            Self::clone_list_view_elements(list_id, list_span, list)?
         };
 
         for element in elements {

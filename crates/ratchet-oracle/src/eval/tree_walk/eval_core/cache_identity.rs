@@ -4,8 +4,8 @@
 //! [`ForceCacheOptionsIdentity`] domain hashes so cached force payloads from
 //! a differently-configured evaluator can never collide.
 
-use crate::cache::hashing::CacheDigestHasher;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 
 impl ForceCacheOptionsIdentity {
     pub(super) fn new(options: &TreeWalkOptions) -> Self {

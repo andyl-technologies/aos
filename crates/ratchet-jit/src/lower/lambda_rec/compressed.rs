@@ -93,10 +93,7 @@ fn infer_class(arena: &IrArena, id: IrId) -> ExprClass {
             BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div => ExprClass::Int,
             _ => ExprClass::Word,
         },
-        (
-            IrKind::If,
-            IrData::Triple { second, third, .. },
-        ) => {
+        (IrKind::If, IrData::Triple { second, third, .. }) => {
             if infer_class(arena, second) == ExprClass::Int
                 && infer_class(arena, third) == ExprClass::Int
             {
@@ -325,9 +322,11 @@ fn emit_expr(
                 .ins()
                 .iconst(types::I64, CompressedValueWord::boolean(value).raw() as i64),
         )),
-        (IrKind::LocalVar, IrData::Local { slot: 0 }) => {
-            Ok(TypedVal::Word(emit_forced_param(cursor, ctx, forced_param)?))
-        }
+        (IrKind::LocalVar, IrData::Local { slot: 0 }) => Ok(TypedVal::Word(emit_forced_param(
+            cursor,
+            ctx,
+            forced_param,
+        )?)),
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
             emit_binop(cursor, arena, ctx, op, lhs, rhs, forced_param)
         }
@@ -421,7 +420,9 @@ fn to_int(cursor: &mut FuncCursor, ctx: &CompressedLambdaCtx, value: TypedVal) -
             let high = cursor.ins().ushr_imm(word, 32);
             let is_inline_int = cursor.ins().icmp_imm(IntCC::Equal, high, 0);
             let decode = cursor.func.dfg.make_block();
-            cursor.ins().brif(is_inline_int, decode, &[], ctx.deopt, &[]);
+            cursor
+                .ins()
+                .brif(is_inline_int, decode, &[], ctx.deopt, &[]);
             cursor.insert_block(decode);
             let low = cursor.ins().ireduce(types::I32, word);
             cursor.ins().sextend(types::I64, low)
@@ -512,7 +513,12 @@ fn emit_binop(
             lhs_int,
             rhs_int,
         ))),
-        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(cursor, IntCC::Equal, lhs_int, rhs_int))),
+        BinOpKind::Eq => Ok(TypedVal::Word(bool_word(
+            cursor,
+            IntCC::Equal,
+            lhs_int,
+            rhs_int,
+        ))),
         BinOpKind::Ne => Ok(TypedVal::Word(bool_word(
             cursor,
             IntCC::NotEqual,

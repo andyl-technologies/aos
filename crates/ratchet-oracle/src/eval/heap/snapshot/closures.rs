@@ -150,15 +150,15 @@ impl EvalHeap {
                 .raw();
             let (bytes, kind) = match object.object().payload() {
                 FlatClosurePayload::Thunk(thunk) => (
-                    encode_thunk(index, thunk, &frame_table, code)?,
+                    encode_thunk(self, index, thunk, &frame_table, code)?,
                     FlatObjectKind::Thunk,
                 ),
                 FlatClosurePayload::SharedThunk(thunk) => (
-                    encode_thunk(index, thunk, &frame_table, code)?,
+                    encode_thunk(self, index, thunk, &frame_table, code)?,
                     FlatObjectKind::Thunk,
                 ),
                 FlatClosurePayload::Lambda(lambda) => (
-                    encode_lambda(index, lambda, &frame_table, code)?,
+                    encode_lambda(self, index, lambda, &frame_table, code)?,
                     FlatObjectKind::Lambda,
                 ),
                 // Primops ride their own v5 segment; retired slots hold plain
@@ -481,9 +481,8 @@ impl EvalHeap {
             .flat_closures
             .value_tail_handle_at(store_index, owner_ptr, fixup.tail_len as usize)
             .map_err(|_| malformed())?;
-        let flat_base =
-            EvalFlatCapture::inline(fixup.site, fixup.plan_frames as usize, fixup.owner, handle)
-                .map_err(EvalHeapSnapshotError::EnvFrameUnreadable)?;
+        let flat_base = EvalFlatCapture::inline(fixup.site, fixup.plan_frames as usize, handle)
+            .map_err(EvalHeapSnapshotError::EnvFrameUnreadable)?;
         let env = EvalEnv::restore_parts(&fixup.frames, Some(flat_base))
             .map_err(EvalHeapSnapshotError::EnvFrameUnreadable)?;
         let ptr = self
@@ -519,6 +518,7 @@ fn drift_error(index: u32, error: LambdaCodeDrift) -> EvalHeapSnapshotError {
 
 /// Encodes one lambda closure body (kind byte included).
 fn encode_lambda(
+    heap: &EvalHeap,
     index: u32,
     lambda: &EvalLambda,
     frames: &CapturedFrameTable,
@@ -534,6 +534,7 @@ fn encode_lambda(
     out.extend_from_slice(&code_ref.to_bytes());
     out.extend_from_slice(&lambda.frame().as_u32().to_le_bytes());
     encode_env_group(
+        heap,
         &mut out,
         index,
         lambda.env(),
@@ -547,6 +548,7 @@ fn encode_lambda(
 
 /// Encodes one suspended thunk closure body (kind byte included).
 fn encode_thunk(
+    heap: &EvalHeap,
     index: u32,
     thunk: &EvalThunk,
     frames: &CapturedFrameTable,
@@ -592,9 +594,25 @@ fn encode_thunk(
             out.push(KIND_NODE_THUNK);
             out.push(single_entry);
             out.extend_from_slice(&node_ref(code, *body)?.to_bytes());
-            encode_env_group(&mut out, index, env, with_env, scoped_globals, frames, code)?;
+            encode_env_group(
+                heap,
+                &mut out,
+                index,
+                env,
+                with_env,
+                scoped_globals,
+                frames,
+                code,
+            )?;
         }
         EvalThunkKind::Apply {
+            function,
+            function_span,
+            function_value,
+            argument,
+            argument_value,
+        }
+        | EvalThunkKind::GenListElemAtAddOne {
             function,
             function_span,
             function_value,
@@ -719,6 +737,7 @@ fn node_ref(
 
 /// Serializes one environment group (see the module wire format).
 fn encode_env_group(
+    heap: &EvalHeap,
     out: &mut Vec<u8>,
     index: u32,
     env: &EvalEnv,
@@ -740,7 +759,10 @@ fn encode_env_group(
             out.push(1);
             out.extend_from_slice(&node_ref(code, flat.allocation_site())?.to_bytes());
             out.extend_from_slice(&(flat.frame_count() as u32).to_le_bytes());
-            encode_word(out, flat.inline_owner());
+            let owner = heap
+                .flat_closure_capture_owner(flat.tail_handle())
+                .map_err(|_| EvalHeapSnapshotError::MalformedClosurePayload { index })?;
+            encode_word(out, owner);
             out.extend_from_slice(&(flat.tail_handle().len() as u32).to_le_bytes());
         }
         None => out.push(0),

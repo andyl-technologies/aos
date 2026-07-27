@@ -14,9 +14,9 @@
 //! watermarks, arena gauges), and this file drives sampling and rendering.
 
 mod analysis;
-mod cold_only;
 #[cfg(feature = "native-eval")]
 mod changed_tree;
+mod cold_only;
 pub(crate) mod corpus;
 mod memory;
 mod record;
@@ -219,15 +219,14 @@ pub fn run(
             samples,
         )?;
         for record in records {
-            let comparison =
-                previous_benchmark(&previous_runs, &record, &commit).map(|previous| {
-                    compare_benchmarks(
-                        &record,
-                        previous,
-                        regression_threshold,
-                        memory_regression_threshold,
-                    )
-                });
+            let comparison = previous_benchmark(&previous_runs, &record, &commit).map(|previous| {
+                compare_benchmarks(
+                    &record,
+                    previous,
+                    regression_threshold,
+                    memory_regression_threshold,
+                )
+            });
             outcomes.push(BenchmarkOutcome { record, comparison });
         }
     }
@@ -482,12 +481,14 @@ fn capture_oracle_samples(
         let stats = oracle
             .instantiate_with_stats(&spec.file, &spec.attr)
             .with_context(|| format!("running nix-instantiate for {}", spec.name))?;
+        let child_peak = child_peak.finish();
         records.push(BenchmarkSample {
             elapsed_seconds: stats.elapsed.as_secs_f64(),
             elapsed_nanos: duration_nanos(stats.elapsed),
             drv_path: stats.drv_path.to_string_lossy().into_owned(),
             stats: stats.stats,
-            child_peak_rss_bytes: child_peak.finish(),
+            child_peak_rss_bytes: child_peak.watermark_bytes,
+            exact_child_peak_rss: child_peak.exact,
         });
     }
     Ok(records)
@@ -814,8 +815,12 @@ fn render_outcome(printer: &Printer, outcome: &BenchmarkOutcome) {
 fn render_memory_line(outcome: &BenchmarkOutcome) -> Option<String> {
     let record = &outcome.record;
     let memory = record.native_summary.memory;
-    let oracle_child = record.summary.child_peak_rss_bytes_max;
-    if memory.is_none() && oracle_child.is_none() {
+    let oracle_child_watermark = record.summary.child_peak_rss_bytes_max;
+    let oracle_child_exact = record.summary.exact_child_peak_rss;
+    if memory.is_none()
+        && oracle_child_watermark.is_none()
+        && oracle_child_exact == ExactOracleChildPeakRss::NotRecorded
+    {
         return None;
     }
     let mut line = "    memory:".to_string();
@@ -833,8 +838,22 @@ fn render_memory_line(outcome: &BenchmarkOutcome) -> Option<String> {
             line.push_str(&format!(" arena_after={}", mib(arena_after)));
         }
     }
-    if let Some(oracle_child) = oracle_child {
-        line.push_str(&format!(" oracle_child_peak_rss={}", mib(oracle_child)));
+    match oracle_child_exact {
+        ExactOracleChildPeakRss::NotRecorded => {}
+        ExactOracleChildPeakRss::UnavailableSafePerChildWaitApi => {
+            line.push_str(
+                " oracle_exact_child_peak_rss=unavailable:safe-per-child-wait-api",
+            );
+        }
+        ExactOracleChildPeakRss::Measured { bytes } => {
+            line.push_str(&format!(" oracle_exact_child_peak_rss={}", mib(bytes)));
+        }
+    }
+    if let Some(oracle_child) = oracle_child_watermark {
+        line.push_str(&format!(
+            " oracle_child_peak_rss_watermark={}",
+            mib(oracle_child)
+        ));
     }
     if let Some(movement) = outcome
         .comparison

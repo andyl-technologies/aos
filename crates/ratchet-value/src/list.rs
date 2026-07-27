@@ -38,6 +38,11 @@ impl NixList {
         self.elements.len()
     }
 
+    /// Returns the allocated element capacity of the list spine.
+    pub fn capacity(&self) -> usize {
+        self.elements.capacity()
+    }
+
     /// Returns whether the list has no elements.
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
@@ -102,6 +107,19 @@ impl NixList {
     /// Iterates over list elements in source order.
     pub fn iter(&self) -> std::slice::Iter<'_, Value> {
         self.elements.iter()
+    }
+
+    /// Rewrites every element in place through `map`.
+    ///
+    /// Candidate-C evacuation uses this exclusive mutation door while moving
+    /// an unpublished list between reservations. The caller is responsible
+    /// for repairing any structural-hash index that remains observable after
+    /// the rewrite.
+    #[cfg(feature = "candidate_c_value")]
+    pub fn rewrite_elements(&mut self, map: &mut dyn FnMut(Value) -> Value) {
+        for element in &mut self.elements {
+            *element = map(*element);
+        }
     }
 
     /// Consumes the list and returns the underlying contiguous element vector.

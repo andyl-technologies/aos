@@ -934,4 +934,3 @@ fn cache_file_artifact_hydration_from_index_misses_without_writing() {
 
     let _ = fs::remove_dir_all(root);
 }
-

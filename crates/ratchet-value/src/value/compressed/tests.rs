@@ -101,6 +101,100 @@ fn scalar_store_inlines_i32_and_hash_conses_boxed_values() {
 }
 
 #[test]
+fn scalar_store_retirement_rejects_old_words_and_reuses_its_domain() {
+    let arena = SharedFlatStoreArena::new();
+    let mut store = CandidateCScalarStore::new(arena);
+    let inline = store.encode_int(-7).expect("small integer encodes");
+    let wide_value = i64::from(i32::MAX) + 1;
+    let old_int = store.encode_int(wide_value).expect("wide integer boxes");
+    let old_float = store.encode_float(-0.0).expect("float boxes");
+    let domain = old_int.arena_domain().expect("boxed word has a domain");
+
+    let report = store
+        .retire_all_boxed()
+        .expect("valid scalar population retires");
+
+    assert_eq!(report.retired_ints(), 1);
+    assert_eq!(report.retired_floats(), 1);
+    assert_eq!(report.arena_domain(), Some(domain));
+    assert!(
+        report.zero_page_advice().is_some(),
+        "a live reservation reports its zero-page advice outcome"
+    );
+    assert_eq!(store.boxed_int_count(), 0);
+    assert_eq!(store.boxed_float_count(), 0);
+    assert!(store.decode_int(old_int).is_err());
+    assert!(store.decode_float(old_float).is_err());
+    assert_eq!(
+        store
+            .decode_int(inline)
+            .expect("inline values survive store retirement"),
+        -7
+    );
+
+    let new_int = store
+        .encode_int(wide_value)
+        .expect("boxing resumes after retirement");
+    let new_float = store
+        .encode_float(-0.0)
+        .expect("float boxing resumes after retirement");
+    assert_ne!(new_int, old_int);
+    assert_ne!(new_float, old_float);
+    assert_eq!(new_int.arena_domain(), Some(domain));
+    assert_eq!(new_float.arena_domain(), Some(domain));
+    assert_eq!(
+        store.decode_int(new_int).expect("new integer decodes"),
+        wide_value
+    );
+    assert_eq!(
+        store
+            .decode_float(new_float)
+            .expect("new float decodes")
+            .to_bits(),
+        (-0.0f64).to_bits()
+    );
+    assert_eq!(store.boxed_int_count(), 1);
+    assert_eq!(store.boxed_float_count(), 1);
+}
+
+#[test]
+fn scalar_store_retirement_validation_error_is_failure_atomic() {
+    let mut store = CandidateCScalarStore::new(SharedFlatStoreArena::new());
+    let first_value = i64::from(i32::MAX) + 1;
+    let second_value = first_value + 1;
+    let first = store.encode_int(first_value).expect("first integer boxes");
+    let second = store
+        .encode_int(second_value)
+        .expect("second integer boxes");
+    let second_address = *store
+        .int_addresses
+        .get(&second_value)
+        .expect("second hash-cons entry exists");
+    store.int_addresses.insert(first_value, second_address);
+
+    assert!(matches!(
+        store.retire_all_boxed(),
+        Err(CandidateCScalarError::HashConsValueMismatch {
+            kind: "integer",
+            ..
+        })
+    ));
+    assert_eq!(store.boxed_int_count(), 2);
+    assert_eq!(
+        store
+            .decode_int(first)
+            .expect("first cell remains live after refusal"),
+        first_value
+    );
+    assert_eq!(
+        store
+            .decode_int(second)
+            .expect("second cell remains live after refusal"),
+        second_value
+    );
+}
+
+#[test]
 fn raw_decoder_rejects_invalid_metadata() {
     let forced_bool = (u64::from(COMPRESSED_FORCED_BIT | 0x02) << 32) | 1;
     assert_eq!(

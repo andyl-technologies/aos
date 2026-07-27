@@ -328,9 +328,8 @@ fn nursery_ownership_derives_from_complete_fallible_scheduler_report() {
     .expect("fallible execution succeeds");
     let plan = parallel_worker_nursery_plan(report.task_count(), worker_count);
 
-    let ownership =
-        parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
-            .expect("fallible scheduler ownership succeeds");
+    let ownership = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+        .expect("fallible scheduler ownership succeeds");
 
     assert_eq!(
         ownership.completed_task_count(),
@@ -375,9 +374,8 @@ fn nursery_ownership_derives_from_cancelled_fallible_scheduler_report() {
     .expect("fallible execution succeeds");
     let plan = parallel_worker_nursery_plan(report.task_count(), worker_count);
 
-    let ownership =
-        parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
-            .expect("cancelled fallible scheduler ownership succeeds");
+    let ownership = parallel_task_nursery_ownership_from_fallible_top_level_report(&plan, &report)
+        .expect("cancelled fallible scheduler ownership succeeds");
 
     assert!(report.cancelled());
     assert_eq!(report.completed_task_count(), 1);

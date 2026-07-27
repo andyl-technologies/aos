@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn parallel_runtime_audit_manifest_covers_r4_tool_matrix() {
-    let manifest =
-        validate_parallel_runtime_audit_manifest().expect("audit manifest validates");
+    let manifest = validate_parallel_runtime_audit_manifest().expect("audit manifest validates");
     let expected_targets = [
         (
             ParallelRuntimeAuditTool::Loom,

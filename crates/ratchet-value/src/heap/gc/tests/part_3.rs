@@ -621,11 +621,9 @@ fn minor_gc_reference_rewrite_plan_rejects_stale_or_missing_slots() {
         ResolvedValueGeneration::young(first),
         ResolvedValueGeneration::young(second),
     ];
-    let rewrite_plan = MinorGcReferenceRewritePlan::from_references(
-        &relocation_plan,
-        original_references.clone(),
-    )
-    .expect("rewrite plan builds");
+    let rewrite_plan =
+        MinorGcReferenceRewritePlan::from_references(&relocation_plan, original_references.clone())
+            .expect("rewrite plan builds");
 
     let mut stale_references = original_references.clone();
     stale_references[1] = ResolvedValueGeneration::Inline;
@@ -744,11 +742,9 @@ fn minor_gc_remembered_set_refresh_rewrites_copied_edges_and_drops_old_targets()
         .record(RememberedEdge::new(second_source, copy))
         .expect("second copy edge records");
 
-    let refresh_plan = MinorGcRememberedSetRefreshPlan::from_snapshot(
-        remembered_set.snapshot(),
-        &relocation_plan,
-    )
-    .expect("refresh plan builds");
+    let refresh_plan =
+        MinorGcRememberedSetRefreshPlan::from_snapshot(remembered_set.snapshot(), &relocation_plan)
+            .expect("refresh plan builds");
 
     assert_eq!(refresh_plan.source_epoch(), RememberedSetEpoch::new(13));
     assert_eq!(refresh_plan.len(), 4);
@@ -810,11 +806,9 @@ fn minor_gc_remembered_set_refresh_accepts_empty_snapshots() {
     let relocation_plan = MinorGcRelocationPlan::default();
     let remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(21));
 
-    let refresh_plan = MinorGcRememberedSetRefreshPlan::from_snapshot(
-        remembered_set.snapshot(),
-        &relocation_plan,
-    )
-    .expect("empty refresh plan builds");
+    let refresh_plan =
+        MinorGcRememberedSetRefreshPlan::from_snapshot(remembered_set.snapshot(), &relocation_plan)
+            .expect("empty refresh plan builds");
 
     assert_eq!(refresh_plan.source_epoch(), RememberedSetEpoch::new(21));
     assert!(refresh_plan.is_empty());
@@ -827,11 +821,9 @@ fn minor_gc_remembered_set_refresh_accepts_empty_snapshots() {
     assert_eq!(rebuilt.edges(), &[]);
 
     let max_epoch_set = RememberedSet::with_epoch(RememberedSetEpoch::new(u64::MAX));
-    let max_epoch_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
-        max_epoch_set.snapshot(),
-        &relocation_plan,
-    )
-    .expect("max epoch empty refresh plan builds");
+    let max_epoch_refresh =
+        MinorGcRememberedSetRefreshPlan::from_snapshot(max_epoch_set.snapshot(), &relocation_plan)
+            .expect("max epoch empty refresh plan builds");
     assert_eq!(
         max_epoch_refresh.rebuild_remembered_set(),
         Err(GenerationalGcError::RememberedSetEpochOverflow)

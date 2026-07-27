@@ -91,6 +91,83 @@ fn restored_lambda_is_callable_through_code_identity() {
     assert_eq!(eval("(let a = 2 + 3; in x: x + a) 41").as_int(), Ok(46));
 }
 
+/// Snapshot images intentionally erase the runtime-only `genList` marker.
+///
+/// The ordinary apply encoding is the compatibility boundary: a restored
+/// image must retain lazy semantics without depending on the fast-path
+/// admission rules of the binary that produced it.
+#[test]
+fn gen_list_elem_at_marker_restores_as_ordinary_apply() {
+    const SOURCE: &str =
+        "let xs = [ 10 20 30 ]; in builtins.genList (i: builtins.elemAt xs (i + 1)) 2";
+    let ir = lower(SOURCE);
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        TreeWalkOptions::default(),
+        b"snapshot-genlist-marker".to_vec(),
+        SOURCE.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("genList evaluates");
+    let element = evaluator
+        .heap()
+        .get_list(root)
+        .expect("root is a list")
+        .get(0)
+        .expect("first generated element exists");
+    assert!(matches!(
+        evaluator
+            .heap()
+            .get_thunk(element)
+            .expect("generated element is a thunk")
+            .kind(),
+        EvalThunkKind::GenListElemAtAddOne { .. }
+    ));
+
+    let identity = evaluator.snapshot_code_identity();
+    let image = match evaluator
+        .heap()
+        .capture_heap_image_with_code_identity(&identity, &evaluator.symbols)
+    {
+        Ok(image) => image,
+        Err(EvalHeapSnapshotError::Snapshot(_)) => return,
+        Err(other) => panic!("genList marker capture failed: {other}"),
+    };
+    let bytes = image.to_bytes();
+
+    let old_heap = std::mem::replace(&mut evaluator.heap, EvalHeap::new());
+    drop(old_heap);
+    let reloaded = HeapImage::from_bytes(&bytes).expect("image parses");
+    evaluator.heap = EvalHeap::from_restored_heap_image_with_code_identity(
+        &reloaded,
+        &identity,
+        &mut evaluator.symbols,
+    )
+    .expect("genList marker image restores");
+
+    let restored_element = evaluator
+        .heap()
+        .get_list(root)
+        .expect("restored root is a list")
+        .get(0)
+        .expect("restored first element exists");
+    assert!(matches!(
+        evaluator
+            .heap()
+            .get_thunk(restored_element)
+            .expect("restored element is a thunk")
+            .kind(),
+        EvalThunkKind::Apply { .. }
+    ));
+    assert_eq!(
+        evaluator
+            .force_value(ir.root, root_span, restored_element)
+            .expect("restored ordinary apply remains forceable")
+            .as_int(),
+        Ok(20)
+    );
+}
+
 /// The increment-4 mutating collapse: force a captured thunk, collapse the
 /// heap, and round-trip — the collapsed wrapper sheds its captures, the
 /// lambda's captured word is rewritten to the cached value, and the restored

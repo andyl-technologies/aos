@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[test]
 fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges() {
     let mut cache = EvalCache::new();

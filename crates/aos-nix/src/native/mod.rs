@@ -25,7 +25,9 @@ use crate::cache::{
 };
 #[cfg(test)]
 use crate::compile::{EffectClass, IrFacts};
-use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, annotate_capture_plans, resolve};
+use crate::compile::{
+    Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, annotate_capture_plans, resolve,
+};
 use crate::diagnostic::EvalTraceStyle;
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
@@ -569,12 +571,7 @@ impl NixNative {
                 self.load_root_cutoff_closure(&options, key, &mut memo_events)
             {
                 self.verify_root_cutoff_closure(
-                    &file,
-                    attr,
-                    &options,
-                    hit_source,
-                    &closure,
-                    &source,
+                    &file, attr, &options, hit_source, &closure, &source,
                 )?;
                 let mut stats = EvalStats::for_root_cutoff();
                 stats.merge_memo_tier_events(&memo_events);
@@ -799,8 +796,7 @@ impl NixNative {
             return None;
         }
         NixJitTier1Engine::new().ok().map(|engine| {
-            Rc::new(engine.with_compiled_body_cache_options(options))
-                as Rc<dyn Tier1Engine>
+            Rc::new(engine.with_compiled_body_cache_options(options)) as Rc<dyn Tier1Engine>
         })
     }
 

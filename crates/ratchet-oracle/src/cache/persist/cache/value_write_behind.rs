@@ -89,7 +89,10 @@ impl PersistCache {
         // On-disk dedup: an already-durable identical record reuses its location.
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
             let pack = self.blob_pack(key.store());
-            if matches!(pack.payload_matches(location, key.hash(), payload), Ok(true)) {
+            if matches!(
+                pack.payload_matches(location, key.hash(), payload),
+                Ok(true)
+            ) {
                 return Ok(PersistBlobIndexEntry::new(key, location));
             }
         }
@@ -105,8 +108,9 @@ impl PersistCache {
             batch.by_key.insert(key, payload.to_vec());
             batch.order.push(key);
             batch.bytes = batch.bytes.saturating_add(payload.len());
-            batch.buffered_bytes_total =
-                batch.buffered_bytes_total.saturating_add(payload.len() as u64);
+            batch.buffered_bytes_total = batch
+                .buffered_bytes_total
+                .saturating_add(payload.len() as u64);
             batch.bytes >= WRITE_BEHIND_FLUSH_BYTES
         };
         if should_flush {
