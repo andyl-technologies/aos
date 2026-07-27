@@ -80,10 +80,10 @@ const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
 const DELAYED_RESPONSE_WALL_TIME: Duration = Duration::from_millis(100);
 /// Default busy-window ceiling the run advances the node toward.
 ///
-/// Above the observed first Linux 9p negotiation (~2.6 billion instructions),
+/// Above the observed first Linux 9p negotiation (~3.33 billion instructions),
 /// because the guest must boot to userspace and run its module-load +
 /// `mount -t 9p` sequence before it touches 9p.
-const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 3_200_000_000;
+const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 4_000_000_000;
 
 /// Inputs for one certifying live 9p-I/O gate run.
 #[derive(Clone, Debug)]

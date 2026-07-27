@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuLiveNetworkIo",
   taskIds ? ["T-PLUG-8" "T-PLUG-10" "T-PLUG-11"],
   openTaskIds ? [],
-  busyCeiling ? "3200000000",
+  busyCeiling ? "4000000000",
   networkTimeoutSecs ? "120",
   secondRunLoad ? "1",
 }: let

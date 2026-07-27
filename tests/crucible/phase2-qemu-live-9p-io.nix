@@ -15,7 +15,7 @@
   # A busy ceiling above the diskless idle onset (~15.8M): the guest boots to
   # userspace and runs its mount workload before it touches 9p, so the op lands
   # far later than a virtio-blk realize-time probe.
-  busyCeiling ? "3200000000",
+  busyCeiling ? "4000000000",
   ninepTimeoutSecs ? "60",
   secondRunLoad ? "1",
 }: let
