@@ -726,9 +726,9 @@ in
             cadence=600000000
             # The stock-entropy SMP guest reaches its four-thread affinity
             # workload at the S11-certified 3.6-billion-instruction horizon.
-            # Earlier boot-only horizons leave secondary vCPUs with zero
-            # retired instructions and therefore do not prove QEMU-34.
-            horizon=3600000000
+            # Observe 100 million instructions later so every vCPU has retired
+            # instructions while the horizon remains distinct from cadence.
+            horizon=3700000000
             quantum=4096
             memory_mib=128
             qemu_binary="${pkgs.qemu-crucible}/bin/qemu-system-x86_64"
@@ -1436,7 +1436,7 @@ in
             guest_entropy_path=stock-kaslr-aslr-with-fixed-qemu-seed
             guest_entropy_seal=fw-cfg-plus-seeded-rng-builtin-no-rdrand-rdseed
             firmware_artifact_digest_bound=true
-            guest_horizon=3600000000-cadence-aligned
+            guest_horizon=3700000000-non-cadence
             all_vcpus_retired_at_horizon=true
             live_device_io_observed=true
             zero_observation_hashes_rejected=true
