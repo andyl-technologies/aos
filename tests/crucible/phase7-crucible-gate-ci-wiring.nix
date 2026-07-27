@@ -304,11 +304,11 @@
       }
       {
         label = "qemu-inert compares raw TCG guest serial";
-        needle = ''compare_files boot-tcg-raw "$TMPDIR/serial-reference-tcg.log" "$TMPDIR/serial-patched-tcg.log"'';
+        needle = ''compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"'';
       }
       {
         label = "qemu-inert compares raw plain-icount guest serial";
-        needle = ''compare_files boot-plain-icount-raw "$TMPDIR/serial-reference-icount.log" "$TMPDIR/serial-patched-icount.log"'';
+        needle = ''compare_files boot-plain-icount-raw "$TMPDIR/authoritative-serial-reference-icount.log" "$TMPDIR/authoritative-serial-patched-icount.log"'';
       }
       {
         label = "qemu-inert disables guest printk timestamps before capture";

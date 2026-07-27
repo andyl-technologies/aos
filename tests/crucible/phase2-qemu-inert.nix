@@ -672,9 +672,12 @@ in
           exercise_serial_normalization_negative_control
 
           seed="$TMPDIR/seed.bin"
+          rng_input="$TMPDIR/rng-input.bin"
           block_image="$TMPDIR/block.img"
           ninep_root="$TMPDIR/9p-root"
           printf 'crucible-phase2-qemu-inert-seed-v1\n' > "$seed"
+          printf 'crucible-phase2-qemu-inert-rng-input-v1\n' > "$rng_input"
+          dd if=/dev/zero bs=1 count=128 status=none >> "$rng_input"
           dd if=/dev/zero of="$block_image" bs=1M count=8 status=none
           printf 'CRUCIBLE_QEMU_INERT_BLOCK payload v1\n' \
             | dd of="$block_image" bs=1 seek=0 conv=notrunc status=none
@@ -723,7 +726,7 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c001 \
               -fw_cfg name=opt/crucible/seed,file="$seed" \
-              -object rng-builtin,id=inert-rng0 \
+              -object rng-random,id=inert-rng0,filename="$rng_input" \
               -device virtio-rng-pci,rng=inert-rng0,id=inert-vrng0 \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
@@ -744,7 +747,10 @@ in
               fail "$label QMP socket did not appear"
             }
             if wait_for_guest_pass "$serial" "$qemu_pid"; then
-              :
+              gawk '
+                { print }
+                /^TEST_RESULT:PASS$/ { exit }
+              ' "$serial" > "$TMPDIR/authoritative-serial-$label.log"
             else
               wait_status="$?"
               cat "$serial" >&2 || true
@@ -912,14 +918,14 @@ in
 
           run_boot_case reference-tcg "$REFERENCE_QEMU" none
           run_boot_case patched-tcg "$PATCHED_QEMU" none
-          compare_files boot-tcg-raw "$TMPDIR/serial-reference-tcg.log" "$TMPDIR/serial-patched-tcg.log"
+          compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"
           compare_files boot-tcg "$TMPDIR/normalized-serial-reference-tcg.txt" "$TMPDIR/normalized-serial-patched-tcg.txt"
           compare_files execution-output-tcg "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$TMPDIR/execution-fingerprint-patched-tcg.txt"
           compare_files execution-output-tcg-digest "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$TMPDIR/execution-fingerprint-patched-tcg.sha256"
 
           run_boot_case reference-icount "$REFERENCE_QEMU" plain
           run_boot_case patched-icount "$PATCHED_QEMU" plain
-          compare_files boot-plain-icount-raw "$TMPDIR/serial-reference-icount.log" "$TMPDIR/serial-patched-icount.log"
+          compare_files boot-plain-icount-raw "$TMPDIR/authoritative-serial-reference-icount.log" "$TMPDIR/authoritative-serial-patched-icount.log"
           compare_files boot-plain-icount "$TMPDIR/normalized-serial-reference-icount.txt" "$TMPDIR/normalized-serial-patched-icount.txt"
           compare_files execution-output-plain-icount "$TMPDIR/execution-fingerprint-reference-icount.txt" "$TMPDIR/execution-fingerprint-patched-icount.txt"
           compare_files execution-output-plain-icount-digest "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$TMPDIR/execution-fingerprint-patched-icount.sha256"
@@ -987,7 +993,8 @@ in
           reference_vs_patched_boot_plain_icount_identical=true
           reference_vs_patched_device_io_identical=true
           real_virtio_rng_hwrng_request_exercised=true
-          virtio_rng_seeded_builtin_backend=true
+          virtio_rng_fixed_file_backend=true
+          raw_serial_authority=through-test-result-pass
           reference_vs_patched_rng_output_tcg_identical=true
           reference_vs_patched_rng_output_plain_icount_identical=true
           reference_vs_patched_rng_read_call_count_tcg_identical=true
