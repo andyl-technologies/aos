@@ -24,6 +24,10 @@
   # Drop-one probes need a successful derivation even when a full-minus-patch
   # QEMU produces a divergent trace. The canonical gate keeps this false.
   permitTraceMismatch ? false,
+  # A drop-one build may classify a patch as build-required before producing
+  # a runnable QEMU. In that case, preserve the successful classification
+  # without attempting this runtime discriminator.
+  skipUnlessBuilt ? null,
 }: let
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
@@ -399,6 +403,10 @@ in
       if realtimeDeadlineProbe
       then "1"
       else "0";
+    BUILD_GUARD =
+      if skipUnlessBuilt == null
+      then ""
+      else "${skipUnlessBuilt}";
     # RR cursor / RR switch-quantum export is gated to `-accel sim` in the
     # patch stack; under plain TCG the plugin reports inert cursor fields and
     # emits no rr_switch rows.
@@ -414,6 +422,18 @@ in
           set -eu
 
           unset LD_LIBRARY_PATH || true
+
+          if [ -n "$BUILD_GUARD" ] \
+            && [ "$(cat "$BUILD_GUARD/outcome")" != built ]; then
+            mkdir -p "$out"
+            cat > "$out/result" <<RESULT
+          PASS
+          check=phase0-s11
+          sim_discriminator_classification=not-applicable
+          reason=variant-not-built
+          RESULT
+            exit 0
+          fi
 
           active_qemu_pid=""
           active_timer_sink_pid=""
