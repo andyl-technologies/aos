@@ -76,7 +76,25 @@ in
           printf '%s\n' "$DROPPED_PATCH" > "$out/dropped-patch"
           printf '%s\n' "$DROP_INDEX" > "$out/drop-index"
 
-          fail() { echo "FAIL: $*" >&2; exit 1; }
+          record_build_failure() {
+            echo build-failed > "$out/outcome"
+            : > "$out/failing-symbols"
+            for log_path in "$out/configure.log" "$out/build.log"; do
+              if [ ! -f "$log_path" ]; then
+                continue
+              fi
+              grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
+                | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+              grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
+                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+              grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$log_path" \
+                | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
+              grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$log_path" \
+                | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
+            done
+            LC_ALL=C sort -u "$out/failing-symbols" -o "$out/failing-symbols"
+            exit 0
+          }
 
           # Deterministic git commit chain, oldest->newest.
           src="$TMPDIR/qemu-src"
@@ -165,7 +183,7 @@ in
             --prefix="$TMPDIR/install" \
             ${configureFlags} \
             --disable-werror \
-            > "$out/configure.log" 2>&1 || fail "full-minus-$DROP_INDEX configure failed"
+            > "$out/configure.log" 2>&1 || record_build_failure
           rm -f subprojects/.wraplock
 
           if ninja -C build -j "$NIX_BUILD_CORES" qemu-system-x86_64 \
@@ -173,17 +191,7 @@ in
             echo built > "$out/outcome"
             cp build/qemu-system-x86_64 "$out/variant-qemu-system-x86_64"
           else
-            echo build-failed > "$out/outcome"
-            : > "$out/failing-symbols"
-            grep -oE "undefined reference to .[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*to .([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            grep -oE "implicit declaration of function '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            grep -oE "'[A-Za-z_][A-Za-z0-9_]*' undeclared" "$out/build.log" \
-              | sed -E "s/'([A-Za-z_][A-Za-z0-9_]*)' undeclared/\1/" >> "$out/failing-symbols" || true
-            grep -oE "unknown type name '[A-Za-z_][A-Za-z0-9_]*'" "$out/build.log" \
-              | sed -E "s/.*'([A-Za-z_][A-Za-z0-9_]*)'/\1/" >> "$out/failing-symbols" || true
-            LC_ALL=C sort -u "$out/failing-symbols" -o "$out/failing-symbols"
+            record_build_failure
           fi
         '';
       }
