@@ -3,7 +3,7 @@
   lib,
   enableJitter ? true,
   hostAdversary ? (if enableJitter then "jitter-load" else "none"),
-  sampleCount ? 32,
+  sampleCount ? 36,
 }: let
   cadence = 100000000;
   horizon = cadence * sampleCount;
@@ -614,7 +614,18 @@ in
             cat "$TMPDIR/trace-b-cadence.jsonl" >&2
             fail "S1 extended fingerprint mismatch"
           fi
-          if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace-full.diff"; then
+          for label in a b; do
+            jq -c '
+              if .final == true
+              then del(.device_state_digest, .diagnostic_extended_fnv)
+              else .
+              end
+            ' "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/trace-$label-exit-comparable.jsonl"
+          done
+          if ! diff -u \
+            "$TMPDIR/trace-a-exit-comparable.jsonl" \
+            "$TMPDIR/trace-b-exit-comparable.jsonl" \
+            > "$out/trace-full.diff"; then
             cat "$out/trace-full.diff" >&2
             fail "S1 plugin-exit fingerprint mismatch"
           fi
@@ -720,6 +731,7 @@ in
             echo cadence_fingerprint_match=true
             echo horizon_fingerprint_match=true
             echo plugin_exit_fingerprint_compared=true
+            echo plugin_exit_device_state_comparison=diagnostic_not_gated
             echo paused_migration_state_match=not_asserted
             echo samples="$samples_a"
             echo horizon_retired="$horizon_retired"

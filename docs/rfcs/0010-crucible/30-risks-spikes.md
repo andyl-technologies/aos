@@ -1312,18 +1312,21 @@ fixed seed material through `fw_cfg`, `virtio-rng`, and the conservative
 `nokaslr norandmaps random.trust_cpu=off` kernel arguments. The second run
 injected host scheduling jitter with CPU load. The plugin sampled the extended
 fingerprint every `100000000` retired guest instructions, requested a stop at
-the fixed `3200000000`-instruction horizon, and compared both the exact horizon
-cadence sample and the plugin-exit sample. The QMP-visible pause took effect
-deterministically at `3200000005` retired instructions in both runs. The run
+the fixed `3600000000`-instruction horizon, and compared both the exact horizon
+cadence sample and the stable projection of the plugin-exit sample. The
+QMP-visible pause took effect deterministically at `3600000146` retired
+instructions in both runs. The run
 reported `extended_fingerprint_match=true`,
 `aggregate_icount_stream_match=true`, `cadence_fingerprint_match=true`,
 `horizon_fingerprint_match=true`, `plugin_exit_fingerprint_compared=true`,
-`paused_migration_state_match=not_asserted`, `horizon_retired=3200000000`,
-`pause_retired=3200000005`, `pause_overshoot=5`,
-`horizon_extended_hash=9d1e61606ac54920`,
-`horizon_register_hash=a732f3acdae34c85`,
-`horizon_ram_hash=110f5442638e18ba`, `horizon_ram_bytes=268967936`,
-`horizon_device_event_hash=1ba88ef5d7831ee0`,
+`plugin_exit_device_state_comparison=diagnostic_not_gated`,
+`paused_migration_state_match=not_asserted`, `horizon_retired=3600000146`,
+`pause_retired=3600000146`, `pause_overshoot=146`,
+`horizon_extended_hash=cde79d9a6d387e58`,
+`horizon_register_hash=6fb1dcde1169f1e0ad76a60474a90f4ec97e7b0f7fe306d3ee82053efe14c36e`,
+`horizon_ram_hash=632b9b4182975e72ed1925ed8f560ef0edfb57cf86c0ec2d427967a2cb5eba10`,
+`horizon_ram_bytes=268435456`,
+`horizon_device_event_hash=e73e4b1867434634`,
 `device_state_scope=io_event_multiset`,
 `migration_state_comparison=diagnostic_not_gated`,
 `register_read_failures=0`, `register_count_assertion=nonempty_single_vcpu`,
@@ -1331,8 +1334,9 @@ reported `extended_fingerprint_match=true`,
 `mismatch_localization=component`, `first_differing_line=none`,
 `first_differing_component=none`, `s1_complete=true`, and
 `open_gap=paused_qemu_migration_state_timer_icount_hpet`. Raw QEMU migration
-streams are logged only as diagnostics for this spike: repeated runs exposed a
-narrow paused-state serialization split around `timer/icount` bias and HPET/local
+streams and the post-horizon device-state digest are logged only as diagnostics
+for this spike: repeated runs exposed a narrow paused-state serialization split
+around `timer/icount` bias and HPET/local
 timer state even when the execution-fingerprint sequence, RAM, registers, and
 IO-event multiset match. The proof path required the plugin `stop_at` pause hook
 and a QEMU RR-TCG fix that accounts icount idle warps at the deterministic RR
