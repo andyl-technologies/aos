@@ -143,7 +143,7 @@ on_sim_observer_max_advance_icount(void *userdata)
 {
   (void)userdata;
 
-  if (terminal_horizon) {
+  if (terminal_horizon || (stop_at != 0 && stop_requested)) {
     return stop_at;
   }
   if (stop_at != 0 && !horizon_emitted && stop_at < next_sample) {
