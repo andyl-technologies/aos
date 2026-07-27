@@ -132,7 +132,7 @@ in
                   "$GUEST_INITRD" \
                   > "$report" 2>&1
             else
-              CRUCIBLE_9P_IO_BUSY_CEILING=3200000000 \
+              CRUCIBLE_9P_IO_BUSY_CEILING=4000000000 \
               CRUCIBLE_9P_IO_TIMEOUT_SECS=20 \
               CRUCIBLE_9P_IO_SECOND_RUN_LOAD=0 \
                 timeout -k 15 300 \

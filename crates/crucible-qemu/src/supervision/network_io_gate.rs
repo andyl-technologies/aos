@@ -49,9 +49,9 @@ const GATE_MEMORY_MIB: u32 = 128;
 const HOST_LOAD_WORKERS: usize = 4;
 const DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
-const PROBE_DISCOVERY_CEILING_ICOUNT: u64 = 2_820_000_000;
+const PROBE_DISCOVERY_CEILING_ICOUNT: u64 = 3_350_000_000;
 const QMP_PRIMER_WAKE_INTERVAL: Duration = Duration::from_millis(10);
-const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 3_200_000_000;
+const DEFAULT_BUSY_CEILING_ICOUNT: u64 = 4_000_000_000;
 
 /// Inputs for the live network-I/O certification.
 #[derive(Clone, Debug)]
