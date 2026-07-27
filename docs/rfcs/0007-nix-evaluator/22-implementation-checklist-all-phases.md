@@ -13482,6 +13482,22 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       locals. This run's `nix-bench` native/oracle timing and RSS lines are
       relative diagnostic output only, not a pinned C++/global speed or
       half-memory acceptance proof.
+      The earlier ordinal-160 seam is not a narrow replay-free escape hatch.
+      A per-attempt effect epoch records three changed observable classes before
+      the selected committed thunk publication: impure-input events rise
+      451--452, import-cache entries rise 229--230, and known derivations rise
+      383--392. Replaying the FinalForce attempt would therefore duplicate real
+      semantic work. Enabling the existing native-continuation inventory at the
+      same completion finds 426 active frames, 53 native-shadow values, 20
+      primop contexts, 106 transient roots, and 1,390 total inventoried roots.
+      Of those frames, 410 are covered and 16 remain uncovered; modeled shadow
+      storage is 31,696 bytes, so capacity is not the refusal. The completed
+      callback-free trie/fold state is already dead, but its result still
+      returns through a broad force/apply/select/interpolation/primop suffix.
+      Persisting only the canary result slot cannot resume that suffix. Do not
+      hand-specialize a purportedly small ordinal-160 continuation: this
+      measurement promotes generated whole-demand statepoints, which can own
+      that suffix while also providing the real-plan speed path.
       The residual factor-speed partition is now bounded. The measured sampled
       virtualizable families total 59.65% of instructions and 55.40% of
       cycles, approximately 8.37B/3.26B on the 14.027B/5.890B lean run.

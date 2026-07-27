@@ -7857,6 +7857,19 @@ loop heads while simultaneously scalar-replacing promises/frames. Earlier
 packed rotation and native superblocks are therefore coupled requirements, not
 independent optimizations that can be accepted separately.
 
+The ordinal-160 callback-free completion now quantifies how broad that missing
+boundary is. The selected FinalForce attempt changes an impure-input event, one
+import-cache entry, and nine known derivations before the next committed thunk
+publication, so root replay is observably unsafe. At the completion itself the
+native shadow contains 426 active frames, 53 declared native values, and 20
+primop contexts; the full root inventory contains 1,390 values, including 106
+transient roots. The fold/trie locals are already dead, but its result still
+flows through the large native-owned suffix. This falsifies a canary-only
+continuation and a small hand-written suffix. The next implementation should
+lower the real mixed plan into an explicit generated machine and make its
+statepoints own writable slots before attempting the dead-first packed
+rotation.
+
 ### Matched lean-control recovery
 
 The apparent 16.069-billion-instruction current control was not a production
