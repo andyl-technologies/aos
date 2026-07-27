@@ -43,7 +43,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 1;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 2;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -502,6 +502,7 @@ enum ClaimedResult {
 #[derive(Clone, Copy)]
 struct AdmittedCorridor {
     entry_local: u32,
+    call_target_count: u32,
     call_fallback: MixedStatepointId,
     force_fallback: MixedStatepointId,
     node: ClaimedResult,
@@ -587,7 +588,11 @@ fn lower_mixed_superblock(
             decision,
             field_offset!(JitMixedSuperblockCallDecision, target_ordinal),
         );
-        let exact_target = cursor.ins().icmp_imm(IntCC::Equal, ordinal, 0);
+        let exact_target = cursor.ins().icmp_imm(
+            IntCC::UnsignedLessThan,
+            ordinal,
+            i64::from(corridor.call_target_count),
+        );
         let call_declined = cursor.func.dfg.make_block();
         cursor
             .ins()
@@ -788,26 +793,31 @@ fn admit_corridor(
     else {
         return unsupported("entry block does not end in ApplyGuarded");
     };
-    if *callable != entry_function.parameter || apply_argument != argument || targets.len() != 1 {
-        return unsupported("guarded application is not the one-target entry shape");
+    if *callable != entry_function.parameter || apply_argument != argument || targets.len() == 0 {
+        return unsupported("guarded application is not the direct entry shape");
     }
-    let target_index = targets.start() as usize;
-    let target = plan
+    let target_start = targets.start() as usize;
+    let target_end = target_start
+        .checked_add(targets.len() as usize)
+        .ok_or_else(|| unsupported_error("guarded target range overflows"))?;
+    let guarded_targets = plan
         .call_targets()
-        .get(target_index)
-        .ok_or_else(|| unsupported_error("guarded target is absent"))?;
-    let callee = function(plan, target.function)?;
-    if target.argument_destination != callee.parameter {
-        return unsupported("callee argument mapping is not direct");
-    }
-    let callee_block = block(plan, callee.entry)?;
-    if !operations(plan, callee_block)?.is_empty()
-        || !matches!(
-            callee_block.terminator,
-            MixedTerminator::Return { value } if value == callee.parameter
-        )
-    {
-        return unsupported("guarded callee is not a direct parameter return");
+        .get(target_start..target_end)
+        .ok_or_else(|| unsupported_error("guarded target range is absent"))?;
+    for target in guarded_targets {
+        let callee = function(plan, target.function)?;
+        if target.argument_destination != callee.parameter {
+            return unsupported("callee argument mapping is not direct");
+        }
+        let callee_block = block(plan, callee.entry)?;
+        if !operations(plan, callee_block)?.is_empty()
+            || !matches!(
+                callee_block.terminator,
+                MixedTerminator::Return { value } if value == callee.parameter
+            )
+        {
+            return unsupported("guarded callee is not a direct parameter return");
+        }
     }
     let force_block = block(plan, *continuation)?;
     if !operations(plan, force_block)?.is_empty() {
@@ -840,6 +850,7 @@ fn admit_corridor(
     }
     Ok(AdmittedCorridor {
         entry_local: *entry_local,
+        call_target_count: targets.len(),
         call_fallback: *call_fallback,
         force_fallback: *force_fallback,
         node: admit_claimed_result(plan, *node, *force_result, *ready)?,
@@ -1418,6 +1429,26 @@ mod tests {
     }
 
     #[test]
+    fn direct_native_corridor_accepts_every_exact_guarded_target() {
+        let plan = corridor_plan_with_targets(41, 2);
+        let native = compile_mixed_superblock(&plan, 0).expect("polymorphic corridor compiles");
+        let frames = [9, 40];
+        let calls = [JitMixedSuperblockCallDecision::target(8, 1, 0)];
+        let forces = [JitMixedSuperblockForceDecision::ready(9, 40)];
+        let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
+        let mut activation =
+            JitMixedSuperblockActivation::new(8, 0, &frames, 1, &calls, &forces, &mut updates)
+                .expect("activation validates");
+
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::Complete(40)
+        );
+        assert_eq!(activation.consumed_calls(), 1);
+        assert_eq!(activation.consumed_forces(), 1);
+    }
+
+    #[test]
     fn artifact_contains_no_calls_or_interpreter_dispatch() {
         let artifact =
             lower_mixed_superblock(&corridor_plan(41), 0).expect("direct corridor lowers");
@@ -1556,9 +1587,85 @@ mod tests {
     }
 
     fn corridor_plan(apply_value: i64) -> MixedModulePlan {
+        corridor_plan_with_targets(apply_value, 1)
+    }
+
+    fn corridor_plan_with_targets(apply_value: i64, target_count: u32) -> MixedModulePlan {
+        let mut functions = vec![MixedFunction {
+            source: source(0),
+            parameter: MixedValueId::new(0),
+            parameter_type: MixedValueType::Value,
+            return_type: MixedValueType::Value,
+            entry: MixedBlockId::new(0),
+            blocks: MixedTableRange::new(0, 6),
+        }];
+        let mut target_blocks = Vec::with_capacity(target_count as usize);
+        let mut call_targets = Vec::with_capacity(target_count as usize);
+        for target in 0..target_count {
+            let parameter = MixedValueId::new(7 + target);
+            let block = MixedBlockId::new(6 + target);
+            functions.push(MixedFunction {
+                source: source(10 + target),
+                parameter,
+                parameter_type: MixedValueType::Value,
+                return_type: MixedValueType::Value,
+                entry: block,
+                blocks: MixedTableRange::new(block.as_u32(), 1),
+            });
+            target_blocks.push(MixedBlock {
+                source: source(10 + target),
+                operations: MixedTableRange::new(4, 0),
+                terminator: MixedTerminator::Return { value: parameter },
+            });
+            call_targets.push(MixedCallTarget {
+                code: code(8 + target),
+                function: MixedFunctionId::new(1 + target),
+                argument_destination: parameter,
+            });
+        }
+        let mut blocks = vec![
+            MixedBlock {
+                source: source(0),
+                operations: MixedTableRange::new(0, 1),
+                terminator: MixedTerminator::ApplyGuarded {
+                    function: MixedValueId::new(0),
+                    argument: MixedValueId::new(1),
+                    result: MixedValueId::new(2),
+                    targets: MixedTableRange::new(0, target_count),
+                    continuation: MixedBlockId::new(1),
+                    fallback: MixedStatepointId::new(0),
+                },
+            },
+            MixedBlock {
+                source: source(1),
+                operations: MixedTableRange::new(1, 0),
+                terminator: MixedTerminator::Force {
+                    subject: MixedValueId::new(2),
+                    result: MixedValueId::new(3),
+                    result_type: MixedValueType::Value,
+                    guards: MixedForceGuards::new(code(30), code(31), code(32)),
+                    ready: MixedBlockId::new(2),
+                    node: MixedBlockId::new(3),
+                    apply: MixedBlockId::new(4),
+                    gen_list: MixedBlockId::new(5),
+                    fallback: MixedStatepointId::new(1),
+                },
+            },
+            MixedBlock {
+                source: source(2),
+                operations: MixedTableRange::new(1, 0),
+                terminator: MixedTerminator::Return {
+                    value: MixedValueId::new(3),
+                },
+            },
+            claimed_block(3, 1, 1, MixedValueId::new(4)),
+            claimed_block(4, 2, 1, MixedValueId::new(5)),
+            claimed_block(5, 3, 1, MixedValueId::new(6)),
+        ];
+        blocks.extend(target_blocks);
         MixedModulePlan::new(
             MixedModuleKey::new([3; 32], [4; 32], 1),
-            MixedPlanBounds::new(8, 2, 2),
+            MixedPlanBounds::new(8 + target_count, 2, 2),
             vec![MixedEntry {
                 kind: MixedEntryKind::ForceWhnf,
                 source: source(0),
@@ -1566,70 +1673,8 @@ mod tests {
                 frame: None,
                 capture_layout_digest: [0; 32],
             }],
-            vec![
-                MixedFunction {
-                    source: source(0),
-                    parameter: MixedValueId::new(0),
-                    parameter_type: MixedValueType::Value,
-                    return_type: MixedValueType::Value,
-                    entry: MixedBlockId::new(0),
-                    blocks: MixedTableRange::new(0, 6),
-                },
-                MixedFunction {
-                    source: source(10),
-                    parameter: MixedValueId::new(7),
-                    parameter_type: MixedValueType::Value,
-                    return_type: MixedValueType::Value,
-                    entry: MixedBlockId::new(6),
-                    blocks: MixedTableRange::new(6, 1),
-                },
-            ],
-            vec![
-                MixedBlock {
-                    source: source(0),
-                    operations: MixedTableRange::new(0, 1),
-                    terminator: MixedTerminator::ApplyGuarded {
-                        function: MixedValueId::new(0),
-                        argument: MixedValueId::new(1),
-                        result: MixedValueId::new(2),
-                        targets: MixedTableRange::new(0, 1),
-                        continuation: MixedBlockId::new(1),
-                        fallback: MixedStatepointId::new(0),
-                    },
-                },
-                MixedBlock {
-                    source: source(1),
-                    operations: MixedTableRange::new(1, 0),
-                    terminator: MixedTerminator::Force {
-                        subject: MixedValueId::new(2),
-                        result: MixedValueId::new(3),
-                        result_type: MixedValueType::Value,
-                        guards: MixedForceGuards::new(code(30), code(31), code(32)),
-                        ready: MixedBlockId::new(2),
-                        node: MixedBlockId::new(3),
-                        apply: MixedBlockId::new(4),
-                        gen_list: MixedBlockId::new(5),
-                        fallback: MixedStatepointId::new(1),
-                    },
-                },
-                MixedBlock {
-                    source: source(2),
-                    operations: MixedTableRange::new(1, 0),
-                    terminator: MixedTerminator::Return {
-                        value: MixedValueId::new(3),
-                    },
-                },
-                claimed_block(3, 1, 1, MixedValueId::new(4)),
-                claimed_block(4, 2, 1, MixedValueId::new(5)),
-                claimed_block(5, 3, 1, MixedValueId::new(6)),
-                MixedBlock {
-                    source: source(10),
-                    operations: MixedTableRange::new(4, 0),
-                    terminator: MixedTerminator::Return {
-                        value: MixedValueId::new(7),
-                    },
-                },
-            ],
+            functions,
+            blocks,
             vec![
                 MixedOp::LoadLocal {
                     destination: MixedValueId::new(1),
@@ -1648,11 +1693,7 @@ mod tests {
                     value: 42,
                 },
             ],
-            vec![MixedCallTarget {
-                code: code(8),
-                function: MixedFunctionId::new(1),
-                argument_destination: MixedValueId::new(7),
-            }],
+            call_targets,
             vec![
                 statepoint(20, 1, 2, MixedStatepointReason::UnknownCall),
                 statepoint(21, 2, 3, MixedStatepointReason::UnsupportedForce),
