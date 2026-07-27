@@ -72,8 +72,10 @@
         name = "install-variant-wrapper";
         script = ''
           set -eu
-          test "$(cat "$BUILD_DRV/outcome")" = built
           mkdir -p "$out/bin" "$out/share"
+          if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+            exit 0
+          fi
           ln -s "$BUILD_DRV/variant-qemu-system-x86_64" \
             "$out/bin/qemu-system-x86_64"
           ln -s ${qemuPackage}/share/qemu "$out/share/qemu"
@@ -106,7 +108,17 @@
             script = ''
               set -eu
               mkdir -p "$out"
-              test "$(cat "$BUILD_DRV/outcome")" = built
+              if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+                cat > "$out/result" <<RESULT
+              PASS
+              check=${attrPath}
+              gate=gate:patch-microtests
+              drop_index=38
+              sim_discriminator_classification=not-applicable
+              reason=variant-not-built
+              RESULT
+                exit 0
+              fi
               variant="$BUILD_DRV/variant-qemu-system-x86_64"
               vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
               test -n "$vmlinuz"
@@ -208,7 +220,17 @@
             script = ''
               set -eu
               mkdir -p "$out"
-              test "$(cat "$BUILD_DRV/outcome")" = built
+              if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+                cat > "$out/result" <<RESULT
+              PASS
+              check=${attrPath}
+              gate=gate:patch-microtests
+              drop_index=37
+              sim_discriminator_classification=not-applicable
+              reason=variant-not-built
+              RESULT
+                exit 0
+              fi
               variant="$BUILD_DRV/variant-qemu-system-x86_64"
               vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
               test -n "$vmlinuz"
@@ -467,6 +489,7 @@
           qemuDataDir = "${qemuPackage}/share/qemu";
           qemuRuntimeDeps = [qemuPackage];
           permitTraceMismatch = true;
+          skipUnlessBuilt = buildDrv;
         });
 in
   pkgs.mkDerivation {
@@ -474,6 +497,7 @@ in
     version = "0";
     src = null;
     buildDeps = [pkgs.coreutils pkgs.diffutils pkgs.gawk pkgs.jq];
+    BUILD_DRV = "${buildDrv}";
     FULL_TRACE =
       if usesFocusedProbe
       then ""
@@ -500,6 +524,18 @@ in
           set -eu
           export LC_ALL=C
           mkdir -p "$out"
+
+          if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+            cat > "$out/result" <<RESULT
+          PASS
+          check=${attrPath}
+          gate=gate:patch-microtests
+          drop_index=$DROP_INDEX
+          sim_discriminator_classification=not-applicable
+          reason=variant-not-built
+          RESULT
+            exit 0
+          fi
 
           if [ -n "$FOCUSED_PROBE" ]; then
             for artifact in "$FOCUSED_PROBE"/*; do

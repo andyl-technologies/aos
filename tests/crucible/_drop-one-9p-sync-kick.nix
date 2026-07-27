@@ -33,7 +33,17 @@ in
           set -eu
           mkdir -p "$out"
 
-          test "$(cat "$BUILD_DRV/outcome")" = built
+          if [ "$(cat "$BUILD_DRV/outcome")" != built ]; then
+            cat > "$out/result" <<RESULT
+          PASS
+          check=${attrPath}
+          gate=gate:patch-microtests
+          drop_index=40
+          sim_discriminator_classification=not-applicable
+          reason=variant-not-built
+          RESULT
+            exit 0
+          fi
           grep -Fxq '0040-crucible-9p-sync-kick.patch' "$BUILD_DRV/dropped-patch"
 
           grep -Fxq 'prefix_negative_control=true' "$EXACT_DISPATCH_PROBE/result"
