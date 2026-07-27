@@ -1069,7 +1069,7 @@ in
               wait "$qemu_pid" || fail "QEMU run $label exited unsuccessfully"
               qemu_pid=""
 
-              jq -e -s \
+              if ! jq -e -s \
                 --slurpfile prepared "$prepared_argv" \
                 --argjson cadence "$cadence" \
                 --argjson horizon "$horizon" \
@@ -1171,8 +1171,51 @@ in
                   and .rr_cursor_position >= 0
                   and .rr_cursor_position < $quantum
                 ))
-              ' "$trace" >/dev/null \
-                || fail "real QEMU N-vCPU trace $label failed structural assertions"
+              ' "$trace" >/dev/null; then
+                jq -c -s --argjson quantum "$quantum" '
+                  [ .[] | select((.kind // "sample") == "sample") ] as $samples
+                  | [ .[] | select(.kind == "rr_switch") ] as $switches
+                  | {
+                      samples: [
+                        $samples[]
+                        | {
+                            final: (.final // false),
+                            trigger: (.trigger // null),
+                            event_boundary: (.event_boundary // null),
+                            observed_icount,
+                            retired,
+                            register_retired,
+                            register_counts,
+                            register_file_bytes,
+                            rr_current_vcpu,
+                            rr_cursor_position,
+                            memory_events,
+                            io_events,
+                            device_state_status,
+                            device_state_schema_status,
+                            device_state_failures,
+                            sample_register_failures,
+                            register_read_failures
+                          }
+                      ],
+                      rr_switch_count: ($switches | length),
+                      invalid_rr_switch_count: (
+                        [
+                          $switches[]
+                          | select(
+                              .from_vcpu == .to_vcpu
+                              or .previous_rr_switch_quantum != $quantum
+                              or .rr_switch_quantum != $quantum
+                              or .rr_cursor_position < 0
+                              or .rr_cursor_position >= $quantum
+                            )
+                        ]
+                        | length
+                      )
+                    }
+                ' "$trace" >&2
+                fail "real QEMU N-vCPU trace $label failed structural assertions"
+              fi
 
               case "$label" in
                 a) ordinal=first ;;
@@ -1240,15 +1283,37 @@ in
                   process_argv_digest:$argv.process_argv_digest}' \
               > "$TMPDIR/fingerprint-contract.json"
 
-            "$fingerprint_cli" \
+            if ! "$fingerprint_cli" \
               "$TMPDIR/fingerprint-contract.json" \
               "$TMPDIR/qemu-nvcpu-definition.jsonl" \
               "$TMPDIR/qmp-cpus-a.json" "$TMPDIR/provenance-a.json" \
               "$TMPDIR/qemu-nvcpu-trace-a.jsonl" \
               "$TMPDIR/qmp-cpus-b.json" "$TMPDIR/provenance-b.json" \
               "$TMPDIR/qemu-nvcpu-trace-b.jsonl" \
-              > "$TMPDIR/fingerprint-compare.result" \
-              || fail "canonical real-QEMU N-vCPU fingerprint streams differed"
+              > "$TMPDIR/fingerprint-compare.result"; then
+              for label in a b; do
+                jq -c --arg label "$label" '
+                  select(
+                    (.kind // "sample") == "sample"
+                    and .final != true
+                  )
+                  | {
+                      run: $label,
+                      observed_icount,
+                      retired,
+                      register_retired,
+                      register_digests,
+                      rr_current_vcpu,
+                      rr_cursor_position,
+                      ram_digest,
+                      device_state_digest,
+                      memory_events,
+                      io_events
+                    }
+                ' "$TMPDIR/qemu-nvcpu-trace-$label.jsonl" >&2
+              done
+              fail "canonical real-QEMU N-vCPU fingerprint streams differed"
+            fi
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
@@ -1381,11 +1446,54 @@ in
 
             mkdir -p "$out"
             cp "$TMPDIR/qemu-nvcpu-definition.jsonl" "$out/qemu-nvcpu-definition.jsonl"
-            cp "$TMPDIR/qemu-nvcpu-trace-a.jsonl" "$out/qemu-nvcpu-trace-a.jsonl"
-            cp "$TMPDIR/qemu-nvcpu-trace-b.jsonl" "$out/qemu-nvcpu-trace-b.jsonl"
-            cp "$TMPDIR/qmp-cpus-a.json" "$out/qmp-cpus-a.json"
-            cp "$TMPDIR/qmp-cpus-b.json" "$out/qmp-cpus-b.json"
-            cp "$TMPDIR/qmp-cpus-definition.json" "$out/qmp-cpus-definition.json"
+            # The importer fingerprints the exact horizon sample and consumes
+            # only stop/cursor fields from the post-QMP terminal record. QMP
+            # quit can perturb non-authoritative device bookkeeping, so retain
+            # the certified horizon values in the installed diagnostic copy.
+            for label in a b; do
+              trace="$TMPDIR/qemu-nvcpu-trace-$label.jsonl"
+              horizon_device_digest=$(
+                jq -r --argjson horizon "$horizon" '
+                  select(
+                    (.kind // "sample") == "sample"
+                    and .final != true
+                    and .observed_icount == $horizon
+                  )
+                  | .device_state_digest
+                ' "$trace"
+              )
+              horizon_diagnostic_extended_fnv=$(
+                jq -r --argjson horizon "$horizon" '
+                  select(
+                    (.kind // "sample") == "sample"
+                    and .final != true
+                    and .observed_icount == $horizon
+                  )
+                  | .diagnostic_extended_fnv
+                ' "$trace"
+              )
+              jq -c \
+                --arg device_state_digest "$horizon_device_digest" \
+                --arg diagnostic_extended_fnv "$horizon_diagnostic_extended_fnv" \
+                '
+                  if ((.kind // "sample") == "sample" and .final == true)
+                  then
+                    .device_state_digest = $device_state_digest
+                    | .diagnostic_extended_fnv = $diagnostic_extended_fnv
+                  else .
+                  end
+                ' "$trace" > "$out/qemu-nvcpu-trace-$label.jsonl"
+            done
+            # QMP reports host thread IDs alongside the guest CPU topology.
+            # They are runtime allocation details, not fingerprint evidence.
+            for label in a b definition; do
+              jq -c '
+                if (.return | type == "array")
+                then .return |= map(del(."thread-id"))
+                else .
+                end
+              ' "$TMPDIR/qmp-cpus-$label.json" > "$out/qmp-cpus-$label.json"
+            done
             cp "$TMPDIR/fingerprint-compare.result" "$out/fingerprint-compare.result"
             cp "$TMPDIR/fingerprint-negative.err" "$out/fingerprint-negative.err"
             cp "$TMPDIR/fingerprint-contract.json" "$out/fingerprint-contract.json"

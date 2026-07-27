@@ -39,6 +39,9 @@
     ++ lib.optionals (!(hasInfix "on_sim_observer_max_advance_icount" tracePluginSource)) [
       "crucible-qemu-trace-plugin.c: trace cadence is not exposed as an observer ceiling"
     ]
+    ++ lib.optionals (!(hasInfix "terminal_horizon || (stop_at != 0 && stop_requested)" tracePluginSource)) [
+      "crucible-qemu-trace-plugin.c: requested horizon stop does not retain the exact observer ceiling until pause"
+    ]
     ++ lib.optionals (!(hasInfix "on_sim_observe_icount, on_sim_observer_max_advance_icount" tracePluginSource)) [
       "crucible-qemu-trace-plugin.c: observer registration does not bind its exact ceiling"
     ]
@@ -81,6 +84,7 @@ in
             qemu_package_version=${qemuPackage.version}
             observer_budget_clamped=true
             observer_callback_bql_held=true
+            requested_stop_retains_exact_observer_ceiling=true
             instruction_callback_vmstate_serialization=false
             exact_horizon_boundary=true
             non_cadence_live_horizon=true
