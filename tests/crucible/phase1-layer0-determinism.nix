@@ -486,8 +486,8 @@ in
               "run_model=run-twice-and-diff" \
               "scenario=stock-linux-diskless-initramfs-workload" \
               "host_adversary=jitter-load" \
-              "samples=32" \
-              "horizon_icount=3200000000" \
+              "samples=36" \
+              "horizon_icount=3600000000" \
               "mismatch_policy=first-mismatch-is-failure"
 
             cat > "$out/result" <<'RESULT'

@@ -1433,34 +1433,36 @@ register.
   - **Check:** `checks.crucible.phase0.s1Fingerprint`.
   - **Result:** `scenario=stock-linux-diskless-initramfs-workload`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
-    `cadence=100000000`, `horizon_icount=3200000000`,
+    `cadence=100000000`, `horizon_icount=3600000000`,
     `host_adversary=jitter-load`, `stop_request=plugin-requested-icount-pause`,
     `extended_fingerprint_match=true`,
     `aggregate_icount_stream_match=true`,
     `cadence_fingerprint_match=true`,
     `horizon_fingerprint_match=true`,
     `plugin_exit_fingerprint_compared=true`,
-    `paused_migration_state_match=not_asserted`, `samples=32`,
-    `horizon_retired=3200000000`,
-    `horizon_extended_hash=9d1e61606ac54920`,
-    `horizon_register_hash=a732f3acdae34c85`,
-    `horizon_ram_hash=110f5442638e18ba`, `horizon_ram_bytes=268967936`,
-    `pause_retired=3200000005`, `pause_overshoot=5`,
-    `pause_extended_hash=5b766fd1f851292b`,
-    `pause_register_hash=d69c6c9e1a874f24`,
-    `pause_ram_hash=110f5442638e18ba`,
+    `plugin_exit_device_state_comparison=diagnostic_not_gated`,
+    `paused_migration_state_match=not_asserted`, `samples=36`,
+    `horizon_retired=3600000146`,
+    `horizon_extended_hash=cde79d9a6d387e58`,
+    `horizon_register_hash=6fb1dcde1169f1e0ad76a60474a90f4ec97e7b0f7fe306d3ee82053efe14c36e`,
+    `horizon_ram_hash=632b9b4182975e72ed1925ed8f560ef0edfb57cf86c0ec2d427967a2cb5eba10`,
+    `horizon_ram_bytes=268435456`,
+    `pause_retired=3600000146`, `pause_overshoot=146`,
+    `pause_extended_hash=0116a7960d1ef1ab`,
+    `pause_register_hash=6fb1dcde1169f1e0ad76a60474a90f4ec97e7b0f7fe306d3ee82053efe14c36e`,
+    `pause_ram_hash=632b9b4182975e72ed1925ed8f560ef0edfb57cf86c0ec2d427967a2cb5eba10`,
     `device_event_capture=true`,
     `device_event_scope=io_event_multiset`,
     `device_event_device_name_scope=excluded`,
     `device_event_value_scope=stores_only`,
     `device_state_scope=io_event_multiset`,
-    `horizon_device_event_hash=1ba88ef5d7831ee0`,
-    `pause_device_event_hash=1ba88ef5d7831ee0`,
+    `horizon_device_event_hash=e73e4b1867434634`,
+    `pause_device_event_hash=e73e4b1867434634`,
     `migration_state_hash_a=not_recorded`,
     `migration_state_hash_b=not_recorded`,
     `migration_state_comparison=diagnostic_not_gated`,
     `migration_state_scope=diagnostic_qemu_migration_stream_at_plugin_pause`,
-    `migration_state_retired=3200000005`,
+    `migration_state_retired=3600000146`,
     `migration_normalization=icount_host_timer_offsets_zeroed_by_qemu_patch`,
     `register_read_failures=0`,
     `register_count_assertion=nonempty_single_vcpu`,
@@ -1477,11 +1479,13 @@ register.
     controls. The second run adds scheduling jitter/load. The proof compares the
     aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
     IO-event multiset digest at each cadence point including the requested
-    `3200000000` horizon. It also compares the plugin-exit fingerprint at the
-    deterministic `3200000005` retired-instruction pause point. Raw QEMU
-    migration streams at that pause point are diagnostic-only because repeated
-    runs exposed nondeterministic serialized `timer/icount` bias and HPET/local
-    timer state after the guest-facing fingerprint had already matched. This
+    `3600000000` horizon. It also compares the stable projection of the
+    plugin-exit fingerprint at the deterministic `3600000146`
+    retired-instruction pause point. The post-horizon device-state digest and
+    raw QEMU migration streams at that pause point are diagnostic-only because
+    repeated runs exposed nondeterministic serialized `timer/icount` bias and
+    HPET/local timer state after the exact-horizon fingerprint had already
+    matched. This
     does not claim the full production DET-29 device-state digest at every
     cadence point; that remains owned by the later QEMU-device fingerprint gates.
     The QEMU RR-TCG icount idle-warp fix is load-bearing for this result.
