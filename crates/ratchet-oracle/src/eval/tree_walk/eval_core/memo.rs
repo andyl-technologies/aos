@@ -161,6 +161,19 @@ impl TreeWalk {
                 }
             };
         }
+        if local_ready_active && ready_cell_candidate.is_some() {
+            return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
+                Ok(value) => {
+                    self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
+                    self.publish_ready_cell_candidate(ready_cell_candidate.as_ref(), source_thunk);
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
+                    Err(error)
+                }
+            };
+        }
         let key_started = stats_enabled.then(Instant::now);
         let candidate = self.memo_candidate_for_thunk(thunk);
         self.record_memo_key_timing(key_started);

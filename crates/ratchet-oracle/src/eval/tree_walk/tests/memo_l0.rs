@@ -128,6 +128,54 @@ fn local_ready_directory_fails_closed_when_gc_is_enabled() {
 }
 
 #[test]
+fn local_ready_exclusively_handles_raw_candidates_but_leaves_impure_memo_enabled() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = memo_options(1);
+    let mut memo = *options.memo_options();
+    memo.local_ready_enabled = true;
+    options.set_memo_options(memo);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator.eval_root().expect("raw expression evaluates");
+    let (_, served_hits) = evaluator.test_ready_cell_directory_counts();
+    assert_eq!(value.as_int(), Ok(90));
+    assert!(served_hits >= 1, "the Ready directory serves the repeat");
+    assert_eq!(
+        evaluator.stats.memo_l0_misses(),
+        0,
+        "eligible Ready misses must bypass durable L0 probes"
+    );
+    assert_eq!(
+        evaluator.stats.memo_l0_admissions(),
+        0,
+        "eligible Ready misses must bypass durable L0 admission"
+    );
+
+    const READS_ENV: &str = r#"
+        let f = n:
+          let big = builtins.getEnv "LOCAL_READY_EXCLUSIVE_TEST_VAR";
+          in big + (if n > 0 then "" else "!");
+        in (f 1) + (f 2)
+    "#;
+    let ir = lower(READS_ENV);
+    let mut options = memo_options(1);
+    options.set_env_var(
+        b"LOCAL_READY_EXCLUSIVE_TEST_VAR".to_vec(),
+        b"memo-value".to_vec(),
+    );
+    let mut memo = *options.memo_options();
+    memo.local_ready_enabled = true;
+    options.set_memo_options(memo);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("impure expression evaluates");
+
+    assert!(
+        outcome.stats.memo_l0_hits() >= 1,
+        "a raw-ineligible impure site must retain durable memo behavior: {:?}",
+        outcome.stats
+    );
+}
+
+#[test]
 fn l0_stores_immediate_results_as_direct_values() {
     let ir = lower(DUPLICATED_SUBTREE);
     let mut evaluator = TreeWalk::with_options_and_source(
