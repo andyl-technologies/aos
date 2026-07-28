@@ -3,6 +3,34 @@
 use super::*;
 
 #[test]
+fn source_backed_forced_inline_thunks_include_nix_compat_profile_in_cache_identity() {
+    let first_options = TreeWalkOptions::new();
+    let mut second_options = first_options.clone();
+    second_options.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different Nix compatibility profiles must not reuse one demand node",
+    );
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_reported_nix_version_in_cache_identity() {
+    let first_options = TreeWalkOptions::new();
+    let mut second_options = first_options.clone();
+    second_options
+        .set_reported_nix_version(b"2.24.12-custom".to_vec())
+        .expect("non-empty reported version configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different reported Nix versions must not reuse one demand node",
+    );
+}
+
+#[test]
 fn source_backed_force_cache_identities_include_node_span() {
     let source = "{ a = 1 + 2; }";
     let ir = lower(source);

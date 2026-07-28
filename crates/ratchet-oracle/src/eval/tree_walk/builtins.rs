@@ -122,10 +122,11 @@ impl BuiltinExecutor for TreeWalk {
                 eval.alloc_static_string(id, span, &store_dir)
             }
             BuiltinExecution::NixVersionValue => {
-                eval.alloc_static_string(id, span, PINNED_NIX_VERSION)
+                let version = eval.options.reported_nix_version().to_vec();
+                eval.alloc_static_string(id, span, &version)
             }
             BuiltinExecution::LangVersionValue => {
-                eval.runtime_int_value(id, span, PINNED_NIX_LANG_VERSION)
+                eval.runtime_int_value(id, span, eval.options.nix_compat_profile().lang_version())
             }
             BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
             BuiltinExecution::Derivation => eval.eval_derivation_wrapper_lambda(id, span),

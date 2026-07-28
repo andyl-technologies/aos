@@ -26,6 +26,40 @@ pub(crate) use path_policy::{
 pub use path_policy::{canonicalize_policy_path, normalize_absolute_path_bytes};
 
 impl TreeWalkOptions {
+    /// Selects an exact stock-Nix semantic compatibility profile.
+    ///
+    /// The reported `builtins.nixVersion` bytes are independent. Call
+    /// [`Self::reset_reported_nix_version`] when they should follow the newly
+    /// selected profile.
+    pub fn set_nix_compat_profile(&mut self, profile: NixCompatProfile) {
+        self.nix_compat_profile = profile;
+    }
+
+    /// Replaces the bytes exposed through `builtins.nixVersion`.
+    ///
+    /// This does not change the semantic compatibility profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError::EmptyReportedNixVersion`] when `version`
+    /// is empty.
+    pub fn set_reported_nix_version(
+        &mut self,
+        version: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        let version = version.into();
+        if version.is_empty() {
+            return Err(TreeWalkOptionsError::EmptyReportedNixVersion);
+        }
+        self.reported_nix_version = version;
+        Ok(())
+    }
+
+    /// Resets `builtins.nixVersion` to the selected profile's stock version.
+    pub fn reset_reported_nix_version(&mut self) {
+        self.reported_nix_version = self.nix_compat_profile.stock_version().to_vec();
+    }
+
     /// Creates evaluator options using Nix-compatible defaults.
     pub fn new() -> Self {
         Self::default()
@@ -932,6 +966,9 @@ impl TreeWalkOptions {
 /// Errors raised while configuring a tree-walk evaluator.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum TreeWalkOptionsError {
+    /// The configured `builtins.nixVersion` value is empty.
+    #[error("reported Nix version must not be empty")]
+    EmptyReportedNixVersion,
     /// The configured Nix store directory is not an absolute path.
     #[error("Nix store directory must be absolute")]
     RelativeStoreDir,

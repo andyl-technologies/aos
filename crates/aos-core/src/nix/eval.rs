@@ -23,6 +23,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
+use aos_nix_compat::NixCompatProfile;
 
 use super::env::aos_nix_env;
 #[cfg(feature = "native-eval")]
@@ -724,6 +725,8 @@ pub enum NixEvalMode {
 /// Evaluator settings that must be shared by native and C++ Nix evaluators.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NixEvalConfig {
+    nix_compat_profile: NixCompatProfile,
+    reported_nix_version: String,
     eval_mode: NixEvalMode,
     allowed_paths: Vec<String>,
     allowed_uris: Vec<String>,
@@ -784,6 +787,43 @@ impl Default for NixEvalConfig {
 }
 
 impl NixEvalConfig {
+    /// Returns the exact stock-Nix semantic compatibility profile.
+    pub const fn nix_compat_profile(&self) -> NixCompatProfile {
+        self.nix_compat_profile
+    }
+
+    /// Returns the value exposed by native `builtins.nixVersion`.
+    pub fn reported_nix_version(&self) -> &str {
+        &self.reported_nix_version
+    }
+
+    /// Selects an exact stock-Nix semantic compatibility profile.
+    ///
+    /// The reported version remains independent. Call
+    /// [`Self::reset_reported_nix_version`] when it should follow the profile.
+    pub fn set_nix_compat_profile(&mut self, profile: NixCompatProfile) {
+        self.nix_compat_profile = profile;
+    }
+
+    /// Replaces the value exposed by native `builtins.nixVersion`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `version` is empty.
+    pub fn set_reported_nix_version(&mut self, version: impl Into<String>) -> Result<()> {
+        let version = version.into();
+        if version.is_empty() {
+            anyhow::bail!("reported Nix version must not be empty");
+        }
+        self.reported_nix_version = version;
+        Ok(())
+    }
+
+    /// Resets the reported version to the selected profile's stock version.
+    pub fn reset_reported_nix_version(&mut self) {
+        self.reported_nix_version = self.nix_compat_profile.stock_version_str().to_owned();
+    }
+
     /// Creates evaluator settings using C++ Nix's ambient defaults.
     ///
     /// Store, state, and log directories are captured from `AOS_ROOT`-derived
@@ -1440,7 +1480,10 @@ impl NixEvalConfig {
     }
 
     fn from_env() -> Self {
+        let nix_compat_profile = NixCompatProfile::default();
         let mut config = Self {
+            nix_compat_profile,
+            reported_nix_version: nix_compat_profile.stock_version_str().to_owned(),
             eval_mode: NixEvalMode::Ambient,
             allowed_paths: Vec::new(),
             allowed_uris: Vec::new(),
@@ -3236,6 +3279,8 @@ fn env_flag_is_falsy(value: &str) -> bool {
 #[cfg(feature = "native-eval")]
 fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
     let mut options = TreeWalkOptions::new();
+    options.set_nix_compat_profile(config.nix_compat_profile());
+    options.set_reported_nix_version(config.reported_nix_version().as_bytes().to_vec())?;
     options.set_eval_mode(match config.eval_mode() {
         NixEvalMode::Ambient => {
             anyhow::bail!("native evaluator requires an explicit evaluation mode")
@@ -4191,6 +4236,27 @@ mod tests {
         let options = tree_walk_options_from_config(&config)?;
 
         assert!(options.trace_verbose());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_compat_profile_and_reported_version_independently() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        assert_eq!(config.nix_compat_profile(), NixCompatProfile::Nix2_24_12);
+        assert_eq!(config.reported_nix_version(), "2.24.12");
+
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+        config.set_reported_nix_version("reported-independently")?;
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(options.nix_compat_profile(), NixCompatProfile::Nix2_34_8);
+        assert_eq!(options.reported_nix_version(), b"reported-independently");
+
+        config.reset_reported_nix_version();
+        assert_eq!(config.reported_nix_version(), "2.34.8");
+        assert!(config.set_reported_nix_version("").is_err());
         Ok(())
     }
 

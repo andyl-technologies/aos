@@ -1,6 +1,7 @@
 //! Evaluator configuration types: `TreeWalkOptions` and its enums
 //! (split from tree_walk.rs under the §2 file-size cap).
 use super::*;
+pub use aos_nix_compat::NixCompatProfile;
 
 /// Default worker-record growth between Tier-B quiescent sweeps.
 ///
@@ -61,6 +62,8 @@ fn active_packed_thunk_capacities_from_env() -> Option<ActivePackedThunkCapaciti
 /// and independent from ambient host state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeWalkOptions {
+    pub(crate) nix_compat_profile: NixCompatProfile,
+    pub(crate) reported_nix_version: Vec<u8>,
     pub(crate) store_dir: Vec<u8>,
     pub(crate) search_path_base: Vec<u8>,
     pub(crate) path_literal_base: Option<Vec<u8>>,
@@ -119,6 +122,8 @@ pub struct TreeWalkOptions {
 impl Default for TreeWalkOptions {
     fn default() -> Self {
         Self {
+            nix_compat_profile: NixCompatProfile::default(),
+            reported_nix_version: NixCompatProfile::default().stock_version().to_vec(),
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             search_path_base: b"/".to_vec(),
             path_literal_base: None,

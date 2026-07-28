@@ -10,6 +10,8 @@ use crate::cache::hashing::CacheDigestHasher;
 impl ForceCacheOptionsIdentity {
     pub(super) fn new(options: &TreeWalkOptions) -> Self {
         Self {
+            nix_compat_profile: options.nix_compat_profile(),
+            reported_nix_version: options.reported_nix_version().to_vec(),
             store_dir: options.store_dir().to_vec(),
             search_path_base: options.search_path_base().to_vec(),
             nix_path: options.nix_path().to_vec(),
@@ -27,7 +29,11 @@ impl ForceCacheOptionsIdentity {
     }
 
     pub(super) fn update_cache_identity(&self, hasher: &mut CacheDigestHasher) -> Option<()> {
-        hasher.update(b"force-cache-options-v4");
+        hasher.update(b"force-cache-options-v5");
+        hasher.update(b"nix-compat-profile");
+        hasher.update(self.nix_compat_profile.cache_identity_bytes());
+        hasher.update(b"reported-nix-version");
+        TreeWalk::update_cache_identity_chunk(hasher, &self.reported_nix_version)?;
         hasher.update(b"store-dir");
         TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
         hasher.update(b"search-path-base");
@@ -122,11 +128,12 @@ impl ForceCacheOptionsIdentity {
             }
             BuiltinExecution::NixVersionValue => {
                 hasher.update(b"nix-version");
-                TreeWalk::update_cache_identity_chunk(hasher, PINNED_NIX_VERSION)?;
+                hasher.update(self.nix_compat_profile.cache_identity_bytes());
+                TreeWalk::update_cache_identity_chunk(hasher, &self.reported_nix_version)?;
             }
             BuiltinExecution::LangVersionValue => {
                 hasher.update(b"lang-version");
-                hasher.update(&PINNED_NIX_LANG_VERSION.to_le_bytes());
+                hasher.update(&self.nix_compat_profile.lang_version().to_le_bytes());
             }
             BuiltinExecution::CurrentSystemValue => {
                 hasher.update(b"current-system");

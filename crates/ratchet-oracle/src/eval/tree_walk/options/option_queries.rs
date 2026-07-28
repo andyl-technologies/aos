@@ -3,6 +3,16 @@
 use super::*;
 
 impl TreeWalkOptions {
+    /// Returns the exact stock-Nix semantic compatibility profile.
+    pub const fn nix_compat_profile(&self) -> NixCompatProfile {
+        self.nix_compat_profile
+    }
+
+    /// Returns the bytes exposed through `builtins.nixVersion`.
+    pub fn reported_nix_version(&self) -> &[u8] {
+        &self.reported_nix_version
+    }
+
     /// Returns the configured evaluation start time, if one is available.
     pub const fn current_time(&self) -> Option<i64> {
         self.current_time

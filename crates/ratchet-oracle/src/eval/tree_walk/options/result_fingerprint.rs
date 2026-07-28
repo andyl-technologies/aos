@@ -20,13 +20,18 @@ use crate::cache::hashing::CacheDigestHasher;
 /// already covered fingerprint-by-fingerprint by the trace.
 pub(super) fn result_affecting_fingerprint(options: &TreeWalkOptions) -> [u8; 32] {
     let mut hasher = CacheDigestHasher::new();
-    hasher.update(b"aos-nix-treewalk-result-affecting-v1");
+    hasher.update(b"aos-nix-treewalk-result-affecting-v2");
     let mut field = |label: &[u8], bytes: &[u8]| {
         hasher.update(&(label.len() as u64).to_le_bytes());
         hasher.update(label);
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     };
+    field(
+        b"nix_compat_profile",
+        options.nix_compat_profile.cache_identity_bytes(),
+    );
+    field(b"reported_nix_version", &options.reported_nix_version);
     field(b"store_dir", &options.store_dir);
     field(b"search_path_base", &options.search_path_base);
     match &options.path_literal_base {

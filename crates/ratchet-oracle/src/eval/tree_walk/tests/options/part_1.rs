@@ -2,6 +2,76 @@
 
 use super::*;
 
+#[test]
+fn nix_compat_profile_and_reported_version_are_independent() {
+    let mut options = TreeWalkOptions::new();
+
+    assert_eq!(options.nix_compat_profile(), NixCompatProfile::Nix2_24_12);
+    assert_eq!(options.reported_nix_version(), b"2.24.12");
+
+    options.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+    assert_eq!(options.reported_nix_version(), b"2.24.12");
+
+    options.reset_reported_nix_version();
+    assert_eq!(options.reported_nix_version(), b"2.34.8");
+
+    options
+        .set_reported_nix_version(b"custom-report".to_vec())
+        .expect("non-empty reported version configures");
+    assert_eq!(options.reported_nix_version(), b"custom-report");
+    assert_eq!(
+        options.set_reported_nix_version(Vec::new()),
+        Err(TreeWalkOptionsError::EmptyReportedNixVersion)
+    );
+}
+
+#[test]
+fn nix_compat_profile_and_reported_version_salt_result_fingerprints() {
+    let baseline = TreeWalkOptions::new();
+    let mut changed_profile = baseline.clone();
+    changed_profile.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+    let mut changed_report = baseline.clone();
+    changed_report
+        .set_reported_nix_version(b"2.24.12-custom".to_vec())
+        .expect("non-empty reported version configures");
+
+    assert_ne!(
+        baseline.result_affecting_fingerprint(),
+        changed_profile.result_affecting_fingerprint()
+    );
+    assert_ne!(
+        baseline.result_affecting_fingerprint(),
+        changed_report.result_affecting_fingerprint()
+    );
+}
+
+#[test]
+fn nix_version_builtin_uses_reported_version_not_semantic_profile() {
+    let mut options = TreeWalkOptions::new();
+    options.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+    options
+        .set_reported_nix_version(b"reported-independently".to_vec())
+        .expect("non-empty reported version configures");
+
+    assert_eq!(
+        eval_string_bytes_with_options("builtins.nixVersion", options),
+        b"reported-independently"
+    );
+}
+
+#[test]
+fn lang_version_builtin_uses_semantic_profile() {
+    for profile in [NixCompatProfile::Nix2_24_12, NixCompatProfile::Nix2_34_8] {
+        let mut options = TreeWalkOptions::new();
+        options.set_nix_compat_profile(profile);
+
+        assert_eq!(
+            eval_with_options("builtins.langVersion", options).as_int(),
+            Ok(profile.lang_version())
+        );
+    }
+}
+
 // Baseline float/scalar ABI test; variant float path via scalars.rs + parity
 // battery (cutover plan section 7).
 #[cfg(not(feature = "candidate_c_value"))]

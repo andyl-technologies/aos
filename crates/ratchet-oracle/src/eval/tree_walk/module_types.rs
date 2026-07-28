@@ -119,6 +119,8 @@ pub(crate) fn module_source_is_prelude(source: Option<&ModuleSource>) -> bool {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ForceCacheOptionsIdentity {
+    pub(crate) nix_compat_profile: NixCompatProfile,
+    pub(crate) reported_nix_version: Vec<u8>,
     pub(crate) store_dir: Vec<u8>,
     pub(crate) search_path_base: Vec<u8>,
     pub(crate) nix_path: Vec<NixSearchPathEntry>,
