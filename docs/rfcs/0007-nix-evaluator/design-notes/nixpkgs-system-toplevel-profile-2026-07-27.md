@@ -186,6 +186,21 @@ noise of the preceding result. Direct scalar replay is sound and worth keeping,
 but the material opportunity is avoiding durable key and payload work for
 equivalent Ready thunk cells, not specializing more payload scalar cases.
 
+An opt-in worker-local raw-identity census measured that alternative without
+serving hits. Recipes contain the module-qualified def-site plus the
+relocation-sensitive words of only its statically referenced direct capture
+slots; effectful bodies, dynamic scopes, and projected dependencies are
+declined. At floor 64 it found only 12 Ready repeats. At floor zero it found
+675,707 exact Ready repeats, no Pending overlap, and 2,529,691 avoided static
+cost units. A one-entry-per-def-site shadow directory retained 473,552 hits
+(70.1 percent of the exact upper bound) and 2,008,397 cost units; a two-entry
+directory retained 512,367 hits (75.8 percent) and 2,075,959 cost units. The
+second way buys only 38,815 additional hits and still misses the proposed
+90-percent capture threshold. The first active experiment should therefore be
+a one-entry-per-def-site weak Ready-cell directory: it avoids a global recipe
+map and all durable key/payload work while retaining most of the measured
+bounded-cache benefit.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
