@@ -171,13 +171,15 @@ mod tests {
         }
 
         let trimmed = code.trim_start();
-        trimmed.starts_with("pub type JitThunkFn = unsafe extern")
-            || (trimmed.starts_with("unsafe extern")
-                && trimmed.contains("JitRuntimeContextPtr")
-                && trimmed.ends_with("-> u64;"))
-            || trimmed.starts_with("pub type JitLambdaFn = unsafe extern")
-            || trimmed.starts_with("pub type JitLambdaArgvFn = unsafe extern")
-            || trimmed.starts_with("pub type JitFoldStepI64AccFn = unsafe extern")
+        matches!(
+            trimmed,
+            "pub type JitThunkFn = unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr) -> Value;"
+                | "pub type JitCandidateBThunkFn = unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;"
+                | "pub type JitCandidateCThunkFn = unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;"
+                | "pub type JitLambdaFn = unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr, Value) -> Value;"
+                | "unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr, *const Value) -> Value;"
+                | "unsafe extern     fn(JitRuntimeContextPtr, JitEnvFramePtr, i64, Value) -> i64;"
+        )
     }
 
     fn is_allowed_mixed_superblock_token(source_path: &Path, code: &str, token: &str) -> bool {
@@ -188,7 +190,7 @@ mod tests {
         let trimmed = code.trim_start();
         match token {
             "unsafe" | "extern"
-                if trimmed == "type Entry = unsafe extern \"C\" fn(*mut RawActivation) -> u32;" =>
+                if trimmed == "type Entry = unsafe extern     fn(*mut RawActivation) -> u32;" =>
             {
                 true
             }

@@ -14,6 +14,7 @@ use std::{
     marker::PhantomData,
     mem::{self, offset_of},
     ptr::NonNull,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use cranelift_codegen::{
@@ -31,7 +32,7 @@ use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
 use ratchet_core::mixed_machine::{
     MixedBlockId, MixedEntryKind, MixedFunctionId, MixedModuleKey, MixedModulePlan, MixedOp,
-    MixedStatepointId, MixedTerminator, MixedValueId,
+    MixedStatepointId, MixedStatepointMode, MixedTerminator, MixedValueId, MixedValueType,
 };
 use thiserror::Error;
 
@@ -43,7 +44,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 6;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 7;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -51,6 +52,9 @@ const DECLINED_TARGET: u32 = u32::MAX;
 const STATUS_COMPLETE: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
 const STATUS_INVALID_ACTIVATION: u32 = 3;
+const GENERAL_VALUE_SLOT_CAP: u32 = 512;
+
+static NEXT_EXECUTABLE_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// Canonical identity of one directly compiled mixed-machine plan.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -235,12 +239,22 @@ struct RawActivation {
     side_exit: u32,
     padding: u32,
     result: u64,
+    value_slots: *mut u64,
+    value_capacity: u32,
+    live_value_count: u32,
+    resume_requested: u32,
+    resume_statepoint: u32,
+    resume_has_result: u32,
+    resume_padding: u32,
+    resume_result: u64,
+    executable_token: u64,
 }
 
 /// Validated caller-owned storage for one native superblock activation.
 pub struct JitMixedSuperblockActivation<'storage> {
     raw: RawActivation,
     updates: &'storage mut [JitMixedSuperblockPublishedUpdate],
+    value_slots: Option<&'storage mut [u64]>,
     _storage: PhantomData<&'storage mut [u64]>,
 }
 
@@ -277,6 +291,65 @@ impl<'storage> JitMixedSuperblockActivation<'storage> {
         forces: &'storage [JitMixedSuperblockForceDecision],
         updates: &'storage mut [JitMixedSuperblockPublishedUpdate],
     ) -> Result<Self, JitMixedSuperblockActivationError> {
+        Self::new_inner(
+            argument,
+            entry_frame,
+            frames,
+            frame_stride,
+            calls,
+            forces,
+            updates,
+            None,
+        )
+    }
+
+    /// Creates one activation with caller-owned writable statepoint slots.
+    ///
+    /// The slot slice is indexed by [`MixedValueId`]. Generated general-CFG
+    /// code clears it on entry, stores all activation values there, and clears
+    /// every slot absent from a side exit's exact `live_values` set before
+    /// returning control. A caller may rewrite the declared live slots before
+    /// resuming the artifact. Execution rejects a slice whose length differs
+    /// from the compiled plan's exact `value_slots` bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JitMixedSuperblockActivationError`] when frame geometry is
+    /// invalid or any buffer length exceeds the fixed-width native ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_resumable(
+        argument: u64,
+        entry_frame: u32,
+        frames: &'storage [u64],
+        frame_stride: u32,
+        calls: &'storage [JitMixedSuperblockCallDecision],
+        forces: &'storage [JitMixedSuperblockForceDecision],
+        updates: &'storage mut [JitMixedSuperblockPublishedUpdate],
+        value_slots: &'storage mut [u64],
+    ) -> Result<Self, JitMixedSuperblockActivationError> {
+        Self::new_inner(
+            argument,
+            entry_frame,
+            frames,
+            frame_stride,
+            calls,
+            forces,
+            updates,
+            Some(value_slots),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        argument: u64,
+        entry_frame: u32,
+        frames: &'storage [u64],
+        frame_stride: u32,
+        calls: &'storage [JitMixedSuperblockCallDecision],
+        forces: &'storage [JitMixedSuperblockForceDecision],
+        updates: &'storage mut [JitMixedSuperblockPublishedUpdate],
+        mut value_slots: Option<&'storage mut [u64]>,
+    ) -> Result<Self, JitMixedSuperblockActivationError> {
         if frame_stride == 0 {
             return Err(JitMixedSuperblockActivationError::ZeroFrameStride);
         }
@@ -287,7 +360,14 @@ impl<'storage> JitMixedSuperblockActivation<'storage> {
         let call_count = narrow_len("call decision", calls.len())?;
         let force_count = narrow_len("force decision", forces.len())?;
         let update_capacity = narrow_len("update", updates.len())?;
+        let value_capacity = narrow_len(
+            "statepoint value",
+            value_slots.as_ref().map_or(0, |slots| slots.len()),
+        )?;
         let update_pointer = updates.as_mut_ptr();
+        let value_pointer = value_slots
+            .as_deref_mut()
+            .map_or(std::ptr::null_mut(), <[u64]>::as_mut_ptr);
         Ok(Self {
             raw: RawActivation {
                 argument,
@@ -308,8 +388,18 @@ impl<'storage> JitMixedSuperblockActivation<'storage> {
                 side_exit: u32::MAX,
                 padding: 0,
                 result: 0,
+                value_slots: value_pointer,
+                value_capacity,
+                live_value_count: 0,
+                resume_requested: 0,
+                resume_statepoint: u32::MAX,
+                resume_has_result: 0,
+                resume_padding: 0,
+                resume_result: 0,
+                executable_token: 0,
             },
             updates,
+            value_slots,
             _storage: PhantomData,
         })
     }
@@ -328,6 +418,19 @@ impl<'storage> JitMixedSuperblockActivation<'storage> {
     pub fn published_updates(&self) -> &[JitMixedSuperblockPublishedUpdate] {
         let len = self.raw.published_updates.min(self.raw.update_capacity) as usize;
         &self.updates[..len]
+    }
+
+    /// Returns the indexed writable value slots used by resumable statepoints.
+    ///
+    /// After [`JitMixedSuperblockOutcome::SideExit`], slots absent from the
+    /// selected statepoint's declared live set contain zero.
+    pub fn value_slots_mut(&mut self) -> Option<&mut [u64]> {
+        self.value_slots.as_deref_mut()
+    }
+
+    /// Returns the number of exact live values declared by the latest side exit.
+    pub const fn live_value_count(&self) -> u32 {
+        self.raw.live_value_count
     }
 }
 
@@ -350,6 +453,10 @@ pub enum JitMixedSuperblockOutcome {
 pub struct JitMixedSuperblockArtifact {
     cache_key: JitMixedSuperblockCacheKey,
     function: Function,
+    resumable: bool,
+    value_slots: u32,
+    reachable_statepoints: Box<[bool]>,
+    resumable_statepoints: Box<[bool]>,
 }
 
 impl JitMixedSuperblockArtifact {
@@ -385,6 +492,9 @@ pub enum JitMixedSuperblockCompileError {
         /// Cranelift verifier diagnostic.
         message: String,
     },
+    /// The process exhausted unique activation-owner tokens.
+    #[error("mixed-superblock executable token space is exhausted")]
+    ExecutableTokenExhausted,
     /// Executable module construction or finalization failed.
     #[error(transparent)]
     Module(#[from] JitCraneliftModuleSetupError),
@@ -395,6 +505,18 @@ pub struct JitMixedSuperblockExecutable {
     artifact: JitMixedSuperblockCacheKey,
     module: JITModule,
     code: NonNull<u8>,
+    statepoints: Box<[JitMixedSuperblockStatepoint]>,
+    required_value_slots: Option<u32>,
+    executable_token: u64,
+}
+
+#[derive(Clone, Debug)]
+struct JitMixedSuperblockStatepoint {
+    live_values: Box<[MixedValueId]>,
+    result: Option<MixedValueId>,
+    result_type: Option<MixedValueType>,
+    reachable: bool,
+    resumable: bool,
 }
 
 impl JitMixedSuperblockExecutable {
@@ -412,6 +534,92 @@ impl JitMixedSuperblockExecutable {
         &self,
         activation: &mut JitMixedSuperblockActivation<'_>,
     ) -> JitMixedSuperblockOutcome {
+        if activation.raw.status != 0
+            || activation.raw.executable_token != 0
+            || !self.has_exact_value_slab(activation)
+        {
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        }
+        activation.raw.executable_token = self.executable_token;
+        activation.raw.resume_requested = 0;
+        self.invoke(activation)
+    }
+
+    /// Resumes the latest side exit after caller-owned roots were rewritten.
+    ///
+    /// `result` must be present exactly when the selected statepoint declares a
+    /// result slot. Generated code reloads every continuation value from the
+    /// writable activation slots, so a relocation or test mutation performed
+    /// while native code was suspended is observed after resumption.
+    pub fn resume(
+        &self,
+        activation: &mut JitMixedSuperblockActivation<'_>,
+        result: Option<u64>,
+    ) -> JitMixedSuperblockOutcome {
+        if activation.raw.status != STATUS_SIDE_EXIT {
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        }
+        if activation.raw.executable_token != self.executable_token
+            || !self.has_exact_value_slab(activation)
+            || activation.raw.side_exit != activation.raw.resume_statepoint
+        {
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        }
+        let Some(statepoint) = self.statepoints.get(activation.raw.side_exit as usize) else {
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        };
+        let result_matches = match (result, statepoint.result_type) {
+            (None, None) => true,
+            (Some(raw), Some(expected)) => resume_result_matches_type(raw, expected),
+            _ => false,
+        };
+        if !statepoint.resumable
+            || statepoint.result.is_some() != result.is_some()
+            || !result_matches
+        {
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        }
+        activation.raw.resume_requested = 1;
+        activation.raw.resume_has_result = u32::from(result.is_some());
+        activation.raw.resume_result = result.unwrap_or(0);
+        self.invoke(activation)
+    }
+
+    /// Returns the exact writable value-slot identities for one side exit.
+    pub fn statepoint_live_values(&self, statepoint: MixedStatepointId) -> Option<&[MixedValueId]> {
+        self.statepoints
+            .get(statepoint.as_u32() as usize)
+            .filter(|metadata| metadata.resumable)
+            .map(|metadata| metadata.live_values.as_ref())
+    }
+
+    /// Returns the declared result type that an oracle must satisfy on resume.
+    ///
+    /// Baseline-carrier callers must validate their opaque one-word adapter
+    /// encoding against this contract before calling [`Self::resume`].
+    pub fn statepoint_result_type(&self, statepoint: MixedStatepointId) -> Option<MixedValueType> {
+        self.statepoints
+            .get(statepoint.as_u32() as usize)
+            .filter(|metadata| metadata.resumable)
+            .and_then(|metadata| metadata.result_type)
+    }
+
+    /// Returns whether the compiled artifact can resume this statepoint.
+    pub fn statepoint_is_resumable(&self, statepoint: MixedStatepointId) -> bool {
+        self.statepoints
+            .get(statepoint.as_u32() as usize)
+            .is_some_and(|metadata| metadata.resumable)
+    }
+
+    fn has_exact_value_slab(&self, activation: &JitMixedSuperblockActivation<'_>) -> bool {
+        self.required_value_slots
+            .is_none_or(|required| activation.raw.value_capacity == required)
+    }
+
+    fn invoke(
+        &self,
+        activation: &mut JitMixedSuperblockActivation<'_>,
+    ) -> JitMixedSuperblockOutcome {
         type Entry = unsafe extern "C" fn(*mut RawActivation) -> u32;
         // SAFETY: `compile_mixed_superblock` finalized `code` from the exact
         // signature used below, `module` keeps its executable allocation live,
@@ -420,13 +628,69 @@ impl JitMixedSuperblockExecutable {
         // SAFETY: The activation's private raw record satisfies the generated
         // pointer, length, alignment, and mutability contract.
         let status = unsafe { entry(&mut activation.raw) };
+        self.outcome_from_status(activation, status)
+    }
+
+    fn outcome_from_status(
+        &self,
+        activation: &mut JitMixedSuperblockActivation<'_>,
+        status: u32,
+    ) -> JitMixedSuperblockOutcome {
+        if status != activation.raw.status {
+            activation.raw.status = STATUS_INVALID_ACTIVATION;
+            return JitMixedSuperblockOutcome::InvalidActivation;
+        }
         match status {
             STATUS_COMPLETE => JitMixedSuperblockOutcome::Complete(activation.raw.result),
-            STATUS_SIDE_EXIT => JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(
-                activation.raw.side_exit,
-            )),
+            STATUS_SIDE_EXIT => {
+                let Some(statepoint) = self.statepoints.get(activation.raw.side_exit as usize)
+                else {
+                    activation.raw.status = STATUS_INVALID_ACTIVATION;
+                    return JitMixedSuperblockOutcome::InvalidActivation;
+                };
+                if !statepoint.reachable {
+                    activation.raw.status = STATUS_INVALID_ACTIVATION;
+                    return JitMixedSuperblockOutcome::InvalidActivation;
+                }
+                if statepoint.resumable
+                    && activation.raw.resume_statepoint != activation.raw.side_exit
+                {
+                    activation.raw.status = STATUS_INVALID_ACTIVATION;
+                    return JitMixedSuperblockOutcome::InvalidActivation;
+                }
+                JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(
+                    activation.raw.side_exit,
+                ))
+            }
             _ => JitMixedSuperblockOutcome::InvalidActivation,
         }
+    }
+}
+
+#[cfg(not(feature = "candidate_c_value"))]
+fn resume_result_matches_type(_raw: u64, expected: MixedValueType) -> bool {
+    // The baseline superblock proving ABI carries one opaque test/adaptor word,
+    // not the production two-word `Value`. Its caller owns the documented type
+    // check until a production adapter replaces this substrate.
+    !matches!(
+        expected,
+        MixedValueType::VirtualThunk | MixedValueType::VirtualClosure
+    )
+}
+
+#[cfg(feature = "candidate_c_value")]
+fn resume_result_matches_type(raw: u64, expected: MixedValueType) -> bool {
+    use ratchet_value::value::{ValueTag, compressed::CompressedValueWord};
+
+    let Ok(word) = CompressedValueWord::from_raw(raw) else {
+        return false;
+    };
+    match expected {
+        MixedValueType::Value => true,
+        MixedValueType::Int => word.semantic_tag() == ValueTag::Int,
+        MixedValueType::Bool => word.semantic_tag() == ValueTag::Bool,
+        MixedValueType::Null => word.semantic_tag() == ValueTag::Null,
+        MixedValueType::VirtualThunk | MixedValueType::VirtualClosure => false,
     }
 }
 
@@ -451,6 +715,10 @@ pub fn compile_mixed_superblock(
 ) -> Result<JitMixedSuperblockExecutable, JitMixedSuperblockCompileError> {
     let artifact = lower_mixed_superblock(plan, entry)?;
     let cache_key = artifact.cache_key.clone();
+    let artifact_resumable = artifact.resumable;
+    let required_value_slots = artifact_resumable.then_some(artifact.value_slots);
+    let reachable_statepoints = artifact.reachable_statepoints;
+    let resumable_statepoints = artifact.resumable_statepoints;
     let mut module = JITModule::new(native_jit_builder()?);
     let function = artifact.function;
     let function_id = module
@@ -486,10 +754,30 @@ pub fn compile_mixed_superblock(
                 symbol_name: MIXED_SUPERBLOCK_SYMBOL.to_owned(),
             }
         })?;
+    let statepoints = plan
+        .statepoints()
+        .iter()
+        .enumerate()
+        .map(|(index, statepoint)| JitMixedSuperblockStatepoint {
+            live_values: statepoint.live_values.clone(),
+            result: statepoint.result,
+            result_type: statepoint.result_type,
+            reachable: reachable_statepoints.get(index).copied().unwrap_or(false),
+            resumable: resumable_statepoints.get(index).copied().unwrap_or(false),
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     Ok(JitMixedSuperblockExecutable {
         artifact: cache_key,
         module,
         code,
+        statepoints,
+        required_value_slots,
+        executable_token: NEXT_EXECUTABLE_TOKEN
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
+                token.checked_add(1)
+            })
+            .map_err(|_| JitMixedSuperblockCompileError::ExecutableTokenExhausted)?,
     })
 }
 
@@ -532,7 +820,18 @@ fn lower_mixed_superblock(
     plan: &MixedModulePlan,
     entry: usize,
 ) -> Result<JitMixedSuperblockArtifact, JitMixedSuperblockCompileError> {
-    let corridor = admit_corridor(plan, entry)?;
+    let corridor = match admit_corridor(plan, entry) {
+        Ok(corridor) => corridor,
+        Err(JitMixedSuperblockCompileError::UnsupportedPlan { .. }) => {
+            return lower_general_mixed_cfg(plan, entry);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut reachable_statepoints = vec![false; plan.statepoints().len()];
+    reachable_statepoints[corridor.call_fallback.as_u32() as usize] = true;
+    if let Some(force) = corridor.force.as_ref() {
+        reachable_statepoints[force.force_fallback.as_u32() as usize] = true;
+    }
     let mut signature = Signature::new(CallConv::SystemV);
     signature.params.push(AbiParam::new(types::I64));
     signature.returns.push(AbiParam::new(types::I32));
@@ -770,7 +1069,505 @@ fn lower_mixed_superblock(
     Ok(JitMixedSuperblockArtifact {
         cache_key: JitMixedSuperblockCacheKey::new(plan),
         function,
+        resumable: false,
+        value_slots: 0,
+        resumable_statepoints: vec![false; plan.statepoints().len()].into_boxed_slice(),
+        reachable_statepoints: reachable_statepoints.into_boxed_slice(),
     })
+}
+
+/// Lowers the first table-generic, resumable subset of a mixed plan.
+///
+/// Runtime Apply, Force, and Materialize terminators leave through their exact
+/// statepoints. Pure control resumes in a fresh native invocation over the
+/// caller-owned value-slot slab; no native stack or SSA value survives the
+/// boundary.
+fn lower_general_mixed_cfg(
+    plan: &MixedModulePlan,
+    entry: usize,
+) -> Result<JitMixedSuperblockArtifact, JitMixedSuperblockCompileError> {
+    let entry = plan
+        .entries()
+        .get(entry)
+        .ok_or(JitMixedSuperblockCompileError::InvalidEntry { entry })?;
+    if entry.kind != MixedEntryKind::ForceWhnf {
+        return unsupported("general entry is not ForceWhnf");
+    }
+    let mixed_function = function(plan, entry.function)?;
+    let block_start = mixed_function.blocks.start() as usize;
+    let block_end = block_start
+        .checked_add(mixed_function.blocks.len() as usize)
+        .ok_or_else(|| unsupported_error("general function block range overflows"))?;
+    let block_range = block_start..block_end;
+    let mut reachable_statepoints = vec![false; plan.statepoints().len()];
+    for block_index in block_range.clone() {
+        let statepoint = match &plan.blocks()[block_index].terminator {
+            MixedTerminator::Force { fallback, .. }
+            | MixedTerminator::ApplyGuarded { fallback, .. } => Some(*fallback),
+            MixedTerminator::Materialize { statepoint } => Some(*statepoint),
+            _ => None,
+        };
+        if let Some(statepoint) = statepoint {
+            reachable_statepoints[statepoint.as_u32() as usize] = true;
+        }
+    }
+    let function_end = mixed_function
+        .blocks
+        .start()
+        .saturating_add(mixed_function.blocks.len());
+    let resumable_statepoints = plan
+        .statepoints()
+        .iter()
+        .enumerate()
+        .map(|(index, statepoint)| {
+            let resume = statepoint.resume.as_u32();
+            reachable_statepoints[index]
+                && matches!(statepoint.mode, MixedStatepointMode::Resume)
+                && resume >= mixed_function.blocks.start()
+                && resume < function_end
+        })
+        .collect::<Vec<_>>();
+    if plan
+        .statepoints()
+        .iter()
+        .zip(&resumable_statepoints)
+        .any(|(statepoint, resumable)| {
+            *resumable
+                && matches!(
+                    statepoint.result_type,
+                    Some(MixedValueType::VirtualThunk | MixedValueType::VirtualClosure)
+                )
+        })
+    {
+        return unsupported("general resume result has an unsupported virtual type");
+    }
+    if plan.bounds().value_slots > GENERAL_VALUE_SLOT_CAP {
+        return unsupported("general value-slot bound exceeds the generated-code cap");
+    }
+    let semantic_blocks = block_range
+        .clone()
+        .map(|_| None)
+        .collect::<Vec<Option<Block>>>();
+    let mut signature = Signature::new(CallConv::SystemV);
+    signature.params.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I32));
+    let mut generated = Function::with_name_signature(
+        UserFuncName::user(MIXED_SUPERBLOCK_FUNCTION_NAMESPACE, entry.function.as_u32()),
+        signature,
+    );
+    let native_entry = generated.dfg.make_block();
+    generated.dfg.append_block_param(native_entry, types::I64);
+    let storage_ready = generated.dfg.make_block();
+    let initial = generated.dfg.make_block();
+    let resume_dispatch = generated.dfg.make_block();
+    let complete = generated.dfg.make_block();
+    let invalid = generated.dfg.make_block();
+    generated.dfg.append_block_param(complete, types::I64);
+    generated.layout.append_block(native_entry);
+
+    let activation = {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(native_entry);
+        let activation = cursor.func.dfg.block_params(native_entry)[0];
+        let nonnull = cursor.ins().icmp_imm(IntCC::NotEqual, activation, 0);
+        cursor.ins().brif(nonnull, storage_ready, &[], invalid, &[]);
+        activation
+    };
+
+    generated.layout.append_block(storage_ready);
+    {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(storage_ready);
+        let slots = load_i64(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, value_slots),
+        );
+        let slots_nonnull = cursor.ins().icmp_imm(IntCC::NotEqual, slots, 0);
+        let capacity = load_i32(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, value_capacity),
+        );
+        let capacity_ok = cursor.ins().icmp_imm(
+            IntCC::UnsignedGreaterThanOrEqual,
+            capacity,
+            i64::from(plan.bounds().value_slots),
+        );
+        let storage_ok = cursor.ins().band(slots_nonnull, capacity_ok);
+        let choose_entry = cursor.func.dfg.make_block();
+        cursor
+            .ins()
+            .brif(storage_ok, choose_entry, &[], invalid, &[]);
+        cursor.func.layout.append_block(choose_entry);
+        cursor.set_position(CursorPosition::After(choose_entry));
+        let resume_requested = load_i32(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, resume_requested),
+        );
+        let resume = cursor.ins().icmp_imm(IntCC::NotEqual, resume_requested, 0);
+        cursor
+            .ins()
+            .brif(resume, resume_dispatch, &[], initial, &[]);
+    }
+
+    let mut semantic_blocks = semantic_blocks;
+    for slot in &mut semantic_blocks {
+        *slot = Some(generated.dfg.make_block());
+    }
+    let semantic_block = |id: MixedBlockId| -> Result<Block, JitMixedSuperblockCompileError> {
+        let index = id
+            .as_u32()
+            .checked_sub(block_range.start as u32)
+            .ok_or_else(|| unsupported_error("general block precedes function range"))?
+            as usize;
+        semantic_blocks
+            .get(index)
+            .and_then(|block| *block)
+            .ok_or_else(|| unsupported_error("general block leaves function range"))
+    };
+
+    generated.layout.append_block(initial);
+    {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(initial);
+        clear_general_value_slots(&mut cursor, activation, plan.bounds().value_slots)?;
+        let argument = load_i64(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, argument),
+        );
+        store_general_value_slot(&mut cursor, activation, mixed_function.parameter, argument)?;
+        store_i32_imm(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, resume_requested),
+            0,
+        );
+        cursor
+            .ins()
+            .jump(semantic_block(mixed_function.entry)?, &[]);
+    }
+
+    generated.layout.append_block(resume_dispatch);
+    {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(resume_dispatch);
+        let requested = load_i32(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, resume_statepoint),
+        );
+        for (statepoint_index, statepoint) in plan.statepoints().iter().enumerate() {
+            let resume = statepoint.resume.as_u32();
+            let function_end = mixed_function
+                .blocks
+                .start()
+                .saturating_add(mixed_function.blocks.len());
+            if !matches!(statepoint.mode, MixedStatepointMode::Resume)
+                || resume < mixed_function.blocks.start()
+                || resume >= function_end
+            {
+                continue;
+            }
+            let matched = cursor.func.dfg.make_block();
+            let next = cursor.func.dfg.make_block();
+            let exact = cursor.ins().icmp_imm(
+                IntCC::Equal,
+                requested,
+                i64::try_from(statepoint_index).unwrap_or(i64::MAX),
+            );
+            cursor.ins().brif(exact, matched, &[], next, &[]);
+            cursor.func.layout.append_block(matched);
+            cursor.set_position(CursorPosition::After(matched));
+            let has_result = load_i32(
+                &mut cursor,
+                activation,
+                field_offset!(RawActivation, resume_has_result),
+            );
+            let result_shape_ok = cursor.ins().icmp_imm(
+                IntCC::Equal,
+                has_result,
+                i64::from(u32::from(statepoint.result.is_some())),
+            );
+            let install_result = cursor.func.dfg.make_block();
+            cursor
+                .ins()
+                .brif(result_shape_ok, install_result, &[], invalid, &[]);
+            cursor.func.layout.append_block(install_result);
+            cursor.set_position(CursorPosition::After(install_result));
+            if let Some(result_slot) = statepoint.result {
+                let result = load_i64(
+                    &mut cursor,
+                    activation,
+                    field_offset!(RawActivation, resume_result),
+                );
+                store_general_value_slot(&mut cursor, activation, result_slot, result)?;
+            }
+            store_i32_imm(
+                &mut cursor,
+                activation,
+                field_offset!(RawActivation, resume_requested),
+                0,
+            );
+            cursor.ins().jump(semantic_block(statepoint.resume)?, &[]);
+            cursor.func.layout.append_block(next);
+            cursor.set_position(CursorPosition::After(next));
+        }
+        cursor.ins().jump(invalid, &[]);
+    }
+
+    for block_index in block_range.clone() {
+        let block_id = MixedBlockId::new(block_index as u32);
+        let native_block = semantic_block(block_id)?;
+        generated.layout.append_block(native_block);
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(native_block);
+        for operation in operations(plan, &plan.blocks()[block_index])? {
+            emit_general_operation(&mut cursor, activation, invalid, *operation)?;
+        }
+        match &plan.blocks()[block_index].terminator {
+            MixedTerminator::Jump { target } => {
+                cursor.ins().jump(semantic_block(*target)?, &[]);
+            }
+            MixedTerminator::Branch {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                let condition = load_general_value_slot(&mut cursor, activation, *condition)?;
+                let is_true = cursor.ins().icmp_imm(
+                    IntCC::Equal,
+                    condition,
+                    encode_boolean_constant(true) as i64,
+                );
+                cursor.ins().brif(
+                    is_true,
+                    semantic_block(*when_true)?,
+                    &[],
+                    semantic_block(*when_false)?,
+                    &[],
+                );
+            }
+            MixedTerminator::Force { fallback, .. }
+            | MixedTerminator::ApplyGuarded { fallback, .. } => {
+                emit_general_side_exit(&mut cursor, activation, plan, *fallback)?;
+            }
+            MixedTerminator::Return { value } => {
+                let value = load_general_value_slot(&mut cursor, activation, *value)?;
+                cursor.ins().jump(complete, &[value.into()]);
+            }
+            MixedTerminator::Materialize { statepoint } => {
+                emit_general_side_exit(&mut cursor, activation, plan, *statepoint)?;
+            }
+            MixedTerminator::Update { .. } => {
+                return unsupported("general CFG does not own force-update publication");
+            }
+        }
+    }
+
+    generated.layout.append_block(complete);
+    {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(complete);
+        let result = cursor.func.dfg.block_params(complete)[0];
+        store_i64(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, result),
+            result,
+        );
+        store_i32_imm(
+            &mut cursor,
+            activation,
+            field_offset!(RawActivation, live_value_count),
+            0,
+        );
+        store_status(&mut cursor, activation, STATUS_COMPLETE);
+        let status = cursor.ins().iconst(types::I32, i64::from(STATUS_COMPLETE));
+        cursor.ins().return_(&[status]);
+    }
+
+    generated.layout.append_block(invalid);
+    {
+        let mut cursor = FuncCursor::new(&mut generated).at_first_insertion_point(invalid);
+        store_status(&mut cursor, activation, STATUS_INVALID_ACTIVATION);
+        let status = cursor
+            .ins()
+            .iconst(types::I32, i64::from(STATUS_INVALID_ACTIVATION));
+        cursor.ins().return_(&[status]);
+    }
+
+    let flags = settings::Flags::new(settings::builder());
+    verify_function(&generated, &flags).map_err(|errors| {
+        JitMixedSuperblockCompileError::Verification {
+            message: errors.to_string(),
+        }
+    })?;
+    Ok(JitMixedSuperblockArtifact {
+        cache_key: JitMixedSuperblockCacheKey::new(plan),
+        function: generated,
+        resumable: true,
+        value_slots: plan.bounds().value_slots,
+        reachable_statepoints: reachable_statepoints.into_boxed_slice(),
+        resumable_statepoints: resumable_statepoints.into_boxed_slice(),
+    })
+}
+
+fn emit_general_operation(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    invalid: Block,
+    operation: MixedOp,
+) -> Result<(), JitMixedSuperblockCompileError> {
+    let (destination, value) = match operation {
+        MixedOp::ConstInt { destination, value } => {
+            let value = encode_integer_constant(value)
+                .ok_or_else(|| unsupported_error("general integer is not inline-representable"))?;
+            (destination, cursor.ins().iconst(types::I64, value as i64))
+        }
+        MixedOp::ConstBool { destination, value } => (
+            destination,
+            cursor
+                .ins()
+                .iconst(types::I64, encode_boolean_constant(value) as i64),
+        ),
+        MixedOp::ConstNull { destination } => (
+            destination,
+            cursor
+                .ins()
+                .iconst(types::I64, encode_null_constant() as i64),
+        ),
+        MixedOp::Move {
+            destination,
+            source,
+        } => (
+            destination,
+            load_general_value_slot(cursor, activation, source)?,
+        ),
+        MixedOp::LoadLocal { destination, slot } => {
+            let frame = load_i32(
+                cursor,
+                activation,
+                field_offset!(RawActivation, entry_frame),
+            );
+            let Some(value) = emit_frame_load(cursor, activation, frame, slot, invalid) else {
+                return unsupported("general local load did not emit a value");
+            };
+            (destination, value)
+        }
+        MixedOp::LoadUpvalue { .. } => {
+            return unsupported("general CFG lacks parent-frame coordinates");
+        }
+        MixedOp::VirtualThunk { .. } | MixedOp::VirtualClosure { .. } => {
+            return unsupported("general CFG lacks virtual materialization recipes");
+        }
+        MixedOp::AddInt { .. } | MixedOp::LessThanInt { .. } => {
+            return unsupported("general CFG scalar arithmetic is not carrier-generic yet");
+        }
+    };
+    store_general_value_slot(cursor, activation, destination, value)?;
+    Ok(())
+}
+
+fn emit_general_side_exit(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    plan: &MixedModulePlan,
+    statepoint_id: MixedStatepointId,
+) -> Result<(), JitMixedSuperblockCompileError> {
+    let statepoint = plan
+        .statepoints()
+        .get(statepoint_id.as_u32() as usize)
+        .ok_or_else(|| unsupported_error("general statepoint is absent"))?;
+    for slot in 0..plan.bounds().value_slots {
+        let value = MixedValueId::new(slot);
+        if statepoint.live_values.binary_search(&value).is_err() {
+            let zero = cursor.ins().iconst(types::I64, 0);
+            store_general_value_slot(cursor, activation, value, zero)?;
+        }
+    }
+    store_i32_imm(
+        cursor,
+        activation,
+        field_offset!(RawActivation, live_value_count),
+        statepoint.live_values.len() as u32,
+    );
+    store_i32_imm(
+        cursor,
+        activation,
+        field_offset!(RawActivation, side_exit),
+        statepoint_id.as_u32(),
+    );
+    store_i32_imm(
+        cursor,
+        activation,
+        field_offset!(RawActivation, resume_statepoint),
+        statepoint_id.as_u32(),
+    );
+    store_i32_imm(
+        cursor,
+        activation,
+        field_offset!(RawActivation, resume_requested),
+        0,
+    );
+    store_status(cursor, activation, STATUS_SIDE_EXIT);
+    let status = cursor.ins().iconst(types::I32, i64::from(STATUS_SIDE_EXIT));
+    cursor.ins().return_(&[status]);
+    Ok(())
+}
+
+fn clear_general_value_slots(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    count: u32,
+) -> Result<(), JitMixedSuperblockCompileError> {
+    for slot in 0..count {
+        let zero = cursor.ins().iconst(types::I64, 0);
+        store_general_value_slot(cursor, activation, MixedValueId::new(slot), zero)?;
+    }
+    Ok(())
+}
+
+fn load_general_value_slot(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    slot: MixedValueId,
+) -> Result<Value, JitMixedSuperblockCompileError> {
+    let base = load_i64(
+        cursor,
+        activation,
+        field_offset!(RawActivation, value_slots),
+    );
+    let offset = general_value_slot_offset(slot)?;
+    Ok(cursor
+        .ins()
+        .load(types::I64, MemFlags::trusted(), base, offset))
+}
+
+fn store_general_value_slot(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    slot: MixedValueId,
+    value: Value,
+) -> Result<(), JitMixedSuperblockCompileError> {
+    let base = load_i64(
+        cursor,
+        activation,
+        field_offset!(RawActivation, value_slots),
+    );
+    let offset = general_value_slot_offset(slot)?;
+    cursor.ins().store(MemFlags::trusted(), value, base, offset);
+    Ok(())
+}
+
+fn general_value_slot_offset(slot: MixedValueId) -> Result<i32, JitMixedSuperblockCompileError> {
+    let bytes = slot
+        .as_u32()
+        .checked_mul(u64::BITS / 8)
+        .ok_or_else(|| unsupported_error("general value-slot byte offset overflows u32"))?;
+    i32::try_from(bytes)
+        .map_err(|_| unsupported_error("general value-slot byte offset exceeds i32"))
+}
+
+fn store_i32_imm(cursor: &mut FuncCursor<'_>, base: Value, offset: i32, value: u32) {
+    let value = cursor.ins().iconst(types::I32, i64::from(value));
+    store_i32(cursor, base, offset, value);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1088,6 +1885,28 @@ fn encode_integer_constant(value: i64) -> Option<u64> {
     #[cfg(not(feature = "candidate_c_value"))]
     {
         Some(value as u64)
+    }
+}
+
+fn encode_boolean_constant(value: bool) -> u64 {
+    #[cfg(feature = "candidate_c_value")]
+    {
+        ratchet_value::value::Value::bool(value).transient_identity_bits()
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        u64::from(value)
+    }
+}
+
+fn encode_null_constant() -> u64 {
+    #[cfg(feature = "candidate_c_value")]
+    {
+        ratchet_value::value::Value::null().transient_identity_bits()
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        0
     }
 }
 
@@ -1592,6 +2411,14 @@ mod tests {
                 padding: 0,
             }]
         );
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
     }
 
     #[test]
@@ -1609,9 +2436,410 @@ mod tests {
             native.run(&mut activation),
             JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(0))
         );
+        assert!(!native.statepoint_is_resumable(MixedStatepointId::new(0)));
+        assert_eq!(
+            native.statepoint_live_values(MixedStatepointId::new(0)),
+            None
+        );
+        assert_eq!(
+            native.statepoint_result_type(MixedStatepointId::new(0)),
+            None
+        );
+        assert_eq!(
+            native.resume(&mut activation, Some(0)),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
         assert_eq!(activation.consumed_calls(), 1);
         assert_eq!(activation.consumed_forces(), 0);
         assert!(activation.published_updates().is_empty());
+    }
+
+    #[test]
+    fn general_statepoint_resume_observes_caller_rewritten_spill() {
+        let plan = resumable_move_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general CFG compiles");
+        let mut updates = [];
+        let mut value_slots = [u64::MAX; 4];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            17,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut value_slots,
+        )
+        .expect("resumable activation validates");
+
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(0))
+        );
+        assert_eq!(
+            native.statepoint_live_values(MixedStatepointId::new(0)),
+            Some(&[MixedValueId::new(1)][..])
+        );
+        assert_eq!(activation.live_value_count(), 1);
+        let suspended_slots = activation
+            .value_slots_mut()
+            .expect("resumable activation owns value slots")
+            .to_vec();
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            activation
+                .value_slots_mut()
+                .expect("suspended slots remain owned"),
+            suspended_slots
+        );
+        let slots = activation
+            .value_slots_mut()
+            .expect("resumable activation owns value slots");
+        assert_eq!(slots, &[0, 17, 0, 0]);
+        slots[1] = 99;
+
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::Complete(99)
+        );
+        assert_eq!(activation.live_value_count(), 0);
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+    }
+
+    #[test]
+    fn general_resume_executes_branches_and_jumps() {
+        let plan = resumable_branch_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general branch CFG compiles");
+        assert_eq!(
+            native.statepoint_result_type(MixedStatepointId::new(0)),
+            Some(MixedValueType::Bool)
+        );
+        assert!(native.statepoint_is_resumable(MixedStatepointId::new(0)));
+
+        for (condition, expected) in [(true, 41), (false, 42)] {
+            let mut updates = [];
+            let mut value_slots = [u64::MAX; 5];
+            let mut activation = JitMixedSuperblockActivation::new_resumable(
+                0,
+                0,
+                &[],
+                1,
+                &[],
+                &[],
+                &mut updates,
+                &mut value_slots,
+            )
+            .expect("resumable activation validates");
+            assert_eq!(
+                native.run(&mut activation),
+                JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(0))
+            );
+            assert_eq!(activation.live_value_count(), 0);
+            assert!(
+                activation
+                    .value_slots_mut()
+                    .expect("value slots exist")
+                    .iter()
+                    .all(|value| *value == 0),
+                "no undeclared Value may cross the side exit"
+            );
+            assert_eq!(
+                native.resume(&mut activation, Some(encode_boolean_constant(condition))),
+                JitMixedSuperblockOutcome::Complete(
+                    encode_integer_constant(expected).expect("fixture integer is representable")
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn general_resume_rejects_missing_or_unexpected_oracle_results() {
+        let no_result_plan = resumable_move_plan();
+        let no_result = compile_mixed_superblock(&no_result_plan, 0).expect("move CFG compiles");
+        let mut updates = [];
+        let mut value_slots = [0; 4];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            17,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut value_slots,
+        )
+        .expect("activation validates");
+        assert!(matches!(
+            no_result.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(_)
+        ));
+        assert_eq!(
+            no_result.resume(&mut activation, Some(1)),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+
+        let result_plan = resumable_branch_plan();
+        let result = compile_mixed_superblock(&result_plan, 0).expect("branch CFG compiles");
+        let mut result_updates = [];
+        let mut result_slots = [0; 5];
+        let mut result_activation = JitMixedSuperblockActivation::new_resumable(
+            0,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut result_updates,
+            &mut result_slots,
+        )
+        .expect("activation validates");
+        assert!(matches!(
+            result.run(&mut result_activation),
+            JitMixedSuperblockOutcome::SideExit(_)
+        ));
+        assert_eq!(
+            result.resume(&mut result_activation, None),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+    }
+
+    #[test]
+    fn general_execution_requires_the_exact_compiled_value_slab() {
+        let plan = resumable_move_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general CFG compiles");
+
+        for mut slots in [vec![0; 3], vec![0; 5]] {
+            let slot_count = slots.len();
+            let mut updates = [];
+            let mut activation = JitMixedSuperblockActivation::new_resumable(
+                17,
+                0,
+                &[],
+                1,
+                &[],
+                &[],
+                &mut updates,
+                &mut slots,
+            )
+            .expect("storage geometry itself is valid");
+            assert_eq!(
+                native.run(&mut activation),
+                JitMixedSuperblockOutcome::InvalidActivation
+            );
+            assert_eq!(
+                activation.value_slots_mut().expect("slots remain present"),
+                vec![0; slot_count]
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_native_side_exit_is_never_wrapped_as_a_statepoint() {
+        let plan = resumable_move_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general CFG compiles");
+        let mut updates = [];
+        let mut slots = [0; 4];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            17,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut slots,
+        )
+        .expect("activation validates");
+        assert!(matches!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(_)
+        ));
+
+        activation.raw.resume_statepoint = 1;
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        activation.raw.resume_statepoint = 0;
+        activation.raw.side_exit = u32::MAX;
+        assert_eq!(
+            native.outcome_from_status(&mut activation, STATUS_SIDE_EXIT),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(activation.raw.status, STATUS_INVALID_ACTIVATION);
+    }
+
+    #[test]
+    fn suspended_activation_rejects_a_different_executable() {
+        let first_plan = resumable_move_plan_with_bound_and_key(4, 31);
+        let second_plan = resumable_move_plan_with_bound_and_key(4, 41);
+        let first = compile_mixed_superblock(&first_plan, 0).expect("first CFG compiles");
+        let second = compile_mixed_superblock(&second_plan, 0).expect("second CFG compiles");
+        let mut updates = [];
+        let mut slots = [0; 4];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            17,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut slots,
+        )
+        .expect("activation validates");
+
+        assert!(matches!(
+            first.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(_)
+        ));
+        assert_eq!(
+            second.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            first.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::Complete(17)
+        );
+    }
+
+    #[test]
+    fn resumable_metadata_is_scoped_to_the_compiled_entry_function() {
+        let plan = multi_function_statepoint_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("selected function compiles");
+
+        assert!(native.statepoint_is_resumable(MixedStatepointId::new(0)));
+        assert!(!native.statepoint_is_resumable(MixedStatepointId::new(1)));
+        assert_eq!(
+            native.statepoint_live_values(MixedStatepointId::new(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn general_lowering_rejects_pathological_value_slot_bounds() {
+        let plan =
+            resumable_move_plan_with_bound_and_key(GENERAL_VALUE_SLOT_CAP.saturating_add(1), 51);
+        assert!(matches!(
+            compile_mixed_superblock(&plan, 0),
+            Err(JitMixedSuperblockCompileError::UnsupportedPlan {
+                reason: "general value-slot bound exceeds the generated-code cap"
+            })
+        ));
+        assert!(matches!(
+            general_value_slot_offset(MixedValueId::new(u32::MAX)),
+            Err(JitMixedSuperblockCompileError::UnsupportedPlan {
+                reason: "general value-slot byte offset overflows u32"
+            })
+        ));
+    }
+
+    #[test]
+    fn general_resume_can_cross_consecutive_exact_statepoints() {
+        let plan = consecutive_statepoint_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general CFG compiles");
+        let mut updates = [];
+        let mut slots = [u64::MAX; 4];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            17,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut slots,
+        )
+        .expect("activation validates");
+
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(0))
+        );
+        activation.value_slots_mut().expect("slots exist")[1] = 23;
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::SideExit(MixedStatepointId::new(1))
+        );
+        assert_eq!(
+            activation.value_slots_mut().expect("slots exist"),
+            &[0, 23, 0, 0]
+        );
+        activation.value_slots_mut().expect("slots exist")[1] = 29;
+        assert_eq!(
+            native.resume(&mut activation, None),
+            JitMixedSuperblockOutcome::Complete(29)
+        );
+    }
+
+    #[cfg(feature = "candidate_c_value")]
+    #[test]
+    fn candidate_c_resume_rejects_malformed_and_wrong_typed_words() {
+        use ratchet_value::value::compressed::CompressedValueWord;
+
+        let plan = resumable_branch_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("general CFG compiles");
+        let mut updates = [];
+        let mut slots = [0; 5];
+        let mut activation = JitMixedSuperblockActivation::new_resumable(
+            0,
+            0,
+            &[],
+            1,
+            &[],
+            &[],
+            &mut updates,
+            &mut slots,
+        )
+        .expect("activation validates");
+        assert!(matches!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::SideExit(_)
+        ));
+
+        assert_eq!(
+            native.resume(&mut activation, Some((0x02_u64 << 32) | 2)),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            native.resume(
+                &mut activation,
+                Some(CompressedValueWord::inline_int(1).expect("inline").raw())
+            ),
+            JitMixedSuperblockOutcome::InvalidActivation
+        );
+        assert_eq!(
+            native.resume(
+                &mut activation,
+                Some(CompressedValueWord::boolean(true).raw())
+            ),
+            JitMixedSuperblockOutcome::Complete(
+                encode_integer_constant(41).expect("fixture integer is representable")
+            )
+        );
+    }
+
+    #[test]
+    fn virtual_resume_results_are_never_accepted_by_the_proving_abi() {
+        assert!(!resume_result_matches_type(0, MixedValueType::VirtualThunk));
+        assert!(!resume_result_matches_type(
+            0,
+            MixedValueType::VirtualClosure
+        ));
     }
 
     #[test]
@@ -1768,6 +2996,10 @@ mod tests {
         activation.raw.call_cursor = 0;
         activation.raw.force_cursor = 0;
         activation.raw.published_updates = 0;
+        activation.raw.status = 0;
+        activation.raw.side_exit = u32::MAX;
+        activation.raw.result = 0;
+        activation.raw.executable_token = 0;
     }
 
     fn probe_checksum(checksum: u64, iteration: u64, value: u64, token: u64) -> u64 {
@@ -1849,6 +3081,323 @@ mod tests {
             panic!("real corridor must lower");
         };
         plan
+    }
+
+    fn resumable_move_plan() -> MixedModulePlan {
+        resumable_move_plan_with_bound_and_key(4, 31)
+    }
+
+    fn resumable_move_plan_with_bound_and_key(value_slots: u32, key_byte: u8) -> MixedModulePlan {
+        MixedModulePlan::new(
+            MixedModuleKey::new([key_byte; 32], [key_byte.wrapping_add(1); 32], 1),
+            MixedPlanBounds::new(value_slots, 1, 1),
+            vec![MixedEntry {
+                kind: MixedEntryKind::ForceWhnf,
+                source: source(100),
+                function: MixedFunctionId::new(0),
+                frame: None,
+                capture_layout_digest: [0; 32],
+            }],
+            vec![MixedFunction {
+                source: source(100),
+                parameter: MixedValueId::new(0),
+                parameter_type: MixedValueType::Value,
+                return_type: MixedValueType::Value,
+                entry: MixedBlockId::new(0),
+                blocks: MixedTableRange::new(0, 2),
+            }],
+            vec![
+                MixedBlock {
+                    source: source(100),
+                    operations: MixedTableRange::new(0, 1),
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(0),
+                    },
+                },
+                MixedBlock {
+                    source: source(101),
+                    operations: MixedTableRange::new(1, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(1),
+                    },
+                },
+            ],
+            vec![MixedOp::Move {
+                destination: MixedValueId::new(1),
+                source: MixedValueId::new(0),
+            }],
+            vec![],
+            vec![MixedStatepoint {
+                source: source(102),
+                resume: MixedBlockId::new(1),
+                live_values: Box::new([MixedValueId::new(1)]),
+                live_virtuals: Box::new([]),
+                result: None,
+                result_type: None,
+                mode: MixedStatepointMode::Resume,
+                reason: MixedStatepointReason::Unsupported,
+            }],
+        )
+        .expect("resumable move fixture validates")
+    }
+
+    fn consecutive_statepoint_plan() -> MixedModulePlan {
+        MixedModulePlan::new(
+            MixedModuleKey::new([35; 32], [36; 32], 1),
+            MixedPlanBounds::new(4, 1, 1),
+            vec![MixedEntry {
+                kind: MixedEntryKind::ForceWhnf,
+                source: source(120),
+                function: MixedFunctionId::new(0),
+                frame: None,
+                capture_layout_digest: [0; 32],
+            }],
+            vec![MixedFunction {
+                source: source(120),
+                parameter: MixedValueId::new(0),
+                parameter_type: MixedValueType::Value,
+                return_type: MixedValueType::Value,
+                entry: MixedBlockId::new(0),
+                blocks: MixedTableRange::new(0, 3),
+            }],
+            vec![
+                MixedBlock {
+                    source: source(120),
+                    operations: MixedTableRange::new(0, 1),
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(0),
+                    },
+                },
+                MixedBlock {
+                    source: source(121),
+                    operations: MixedTableRange::new(1, 0),
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(1),
+                    },
+                },
+                MixedBlock {
+                    source: source(122),
+                    operations: MixedTableRange::new(1, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(1),
+                    },
+                },
+            ],
+            vec![MixedOp::Move {
+                destination: MixedValueId::new(1),
+                source: MixedValueId::new(0),
+            }],
+            vec![],
+            vec![
+                MixedStatepoint {
+                    source: source(123),
+                    resume: MixedBlockId::new(1),
+                    live_values: Box::new([MixedValueId::new(1)]),
+                    live_virtuals: Box::new([]),
+                    result: None,
+                    result_type: None,
+                    mode: MixedStatepointMode::Resume,
+                    reason: MixedStatepointReason::Unsupported,
+                },
+                MixedStatepoint {
+                    source: source(124),
+                    resume: MixedBlockId::new(2),
+                    live_values: Box::new([MixedValueId::new(1)]),
+                    live_virtuals: Box::new([]),
+                    result: None,
+                    result_type: None,
+                    mode: MixedStatepointMode::Resume,
+                    reason: MixedStatepointReason::Unsupported,
+                },
+            ],
+        )
+        .expect("consecutive statepoint fixture validates")
+    }
+
+    fn multi_function_statepoint_plan() -> MixedModulePlan {
+        MixedModulePlan::new(
+            MixedModuleKey::new([61; 32], [62; 32], 1),
+            MixedPlanBounds::new(4, 1, 1),
+            vec![MixedEntry {
+                kind: MixedEntryKind::ForceWhnf,
+                source: source(130),
+                function: MixedFunctionId::new(0),
+                frame: None,
+                capture_layout_digest: [0; 32],
+            }],
+            vec![
+                MixedFunction {
+                    source: source(130),
+                    parameter: MixedValueId::new(0),
+                    parameter_type: MixedValueType::Value,
+                    return_type: MixedValueType::Value,
+                    entry: MixedBlockId::new(0),
+                    blocks: MixedTableRange::new(0, 2),
+                },
+                MixedFunction {
+                    source: source(132),
+                    parameter: MixedValueId::new(2),
+                    parameter_type: MixedValueType::Value,
+                    return_type: MixedValueType::Value,
+                    entry: MixedBlockId::new(2),
+                    blocks: MixedTableRange::new(2, 2),
+                },
+            ],
+            vec![
+                MixedBlock {
+                    source: source(130),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::ApplyGuarded {
+                        function: MixedValueId::new(0),
+                        argument: MixedValueId::new(0),
+                        result: MixedValueId::new(1),
+                        targets: MixedTableRange::new(0, 1),
+                        continuation: MixedBlockId::new(1),
+                        fallback: MixedStatepointId::new(0),
+                    },
+                },
+                MixedBlock {
+                    source: source(131),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(1),
+                    },
+                },
+                MixedBlock {
+                    source: source(132),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(1),
+                    },
+                },
+                MixedBlock {
+                    source: source(133),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(2),
+                    },
+                },
+            ],
+            vec![],
+            vec![MixedCallTarget {
+                code: code(136),
+                function: MixedFunctionId::new(1),
+                argument_destination: MixedValueId::new(2),
+            }],
+            vec![
+                MixedStatepoint {
+                    source: source(134),
+                    resume: MixedBlockId::new(1),
+                    live_values: Box::new([]),
+                    live_virtuals: Box::new([]),
+                    result: Some(MixedValueId::new(1)),
+                    result_type: Some(MixedValueType::Value),
+                    mode: MixedStatepointMode::Resume,
+                    reason: MixedStatepointReason::Unsupported,
+                },
+                MixedStatepoint {
+                    source: source(135),
+                    resume: MixedBlockId::new(3),
+                    live_values: Box::new([MixedValueId::new(2)]),
+                    live_virtuals: Box::new([]),
+                    result: None,
+                    result_type: None,
+                    mode: MixedStatepointMode::Resume,
+                    reason: MixedStatepointReason::Unsupported,
+                },
+            ],
+        )
+        .expect("multi-function statepoint fixture validates")
+    }
+
+    fn resumable_branch_plan() -> MixedModulePlan {
+        MixedModulePlan::new(
+            MixedModuleKey::new([33; 32], [34; 32], 1),
+            MixedPlanBounds::new(5, 1, 1),
+            vec![MixedEntry {
+                kind: MixedEntryKind::ForceWhnf,
+                source: source(110),
+                function: MixedFunctionId::new(0),
+                frame: None,
+                capture_layout_digest: [0; 32],
+            }],
+            vec![MixedFunction {
+                source: source(110),
+                parameter: MixedValueId::new(0),
+                parameter_type: MixedValueType::Value,
+                return_type: MixedValueType::Value,
+                entry: MixedBlockId::new(0),
+                blocks: MixedTableRange::new(0, 6),
+            }],
+            vec![
+                MixedBlock {
+                    source: source(110),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(0),
+                    },
+                },
+                MixedBlock {
+                    source: source(111),
+                    operations: MixedTableRange::new(0, 0),
+                    terminator: MixedTerminator::Branch {
+                        condition: MixedValueId::new(1),
+                        when_true: MixedBlockId::new(2),
+                        when_false: MixedBlockId::new(3),
+                    },
+                },
+                MixedBlock {
+                    source: source(112),
+                    operations: MixedTableRange::new(0, 1),
+                    terminator: MixedTerminator::Jump {
+                        target: MixedBlockId::new(4),
+                    },
+                },
+                MixedBlock {
+                    source: source(113),
+                    operations: MixedTableRange::new(1, 1),
+                    terminator: MixedTerminator::Jump {
+                        target: MixedBlockId::new(5),
+                    },
+                },
+                MixedBlock {
+                    source: source(114),
+                    operations: MixedTableRange::new(2, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(2),
+                    },
+                },
+                MixedBlock {
+                    source: source(115),
+                    operations: MixedTableRange::new(2, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(3),
+                    },
+                },
+            ],
+            vec![
+                MixedOp::ConstInt {
+                    destination: MixedValueId::new(2),
+                    value: 41,
+                },
+                MixedOp::ConstInt {
+                    destination: MixedValueId::new(3),
+                    value: 42,
+                },
+            ],
+            vec![],
+            vec![MixedStatepoint {
+                source: source(116),
+                resume: MixedBlockId::new(1),
+                live_values: Box::new([]),
+                live_virtuals: Box::new([]),
+                result: Some(MixedValueId::new(1)),
+                result_type: Some(MixedValueType::Bool),
+                mode: MixedStatepointMode::Resume,
+                reason: MixedStatepointReason::Unsupported,
+            }],
+        )
+        .expect("resumable branch fixture validates")
     }
 
     fn corridor_plan(apply_value: i64) -> MixedModulePlan {

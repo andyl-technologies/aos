@@ -2047,6 +2047,30 @@ harness, never cut for scope.
       lowerers: no generic IR traversal, non-local applications, attrsets,
       branches, exported helper wrappers, evaluator thunk publication, or broad
       native execution is implemented by these selector entrypoints.
+- [x] Current resumable mixed-CFG executable substrate:
+      `ratchet-jit::cranelift::mixed_superblock` lowers the plan's pure
+      constant, move, local-load, branch, jump, and return operations into one
+      callback-free native artifact. Force, apply, and materialization
+      boundaries return the exact statepoint to a caller-owned value slab; each
+      resume is a fresh native invocation, non-live slab entries are scrubbed,
+      and the activation is bound to one process-unique executable owner.
+      Per-entry reachable/resumable statepoint metadata rejects unrelated
+      functions, result tags are checked under both baseline and Candidate-C
+      value layouts, checked offsets and a 512-value cap bound the general
+      lowering, and the legacy version-6 corridor remains explicitly
+      non-resumable. Focused tests cover caller-written spills, branches after
+      resume, consecutive statepoints, cross-executable misuse, unrelated
+      function metadata, malformed side exits, capacity/offset rejection, and
+      exact callback-free native parity.
+- [ ] Production mixed-CFG plan and dispatch integration remains: build whole
+      demand plans from evaluator IR, publish/own the executable beside the
+      thunk or lambda, transfer exact live roots and statepoint results through
+      the evaluator dispatcher, and prove byte-identical Nix output plus a
+      profitable whole-system benchmark. Update/arithmetic/upvalue lowering,
+      virtual materialization, moving-GC root repair, and general runtime helper
+      statepoints also remain open. Until that adapter and acceptance gate are
+      complete, the resumable substrate receives no native evaluator benchmark
+      credit.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy and force-call implementation:

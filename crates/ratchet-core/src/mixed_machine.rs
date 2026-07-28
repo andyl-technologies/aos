@@ -3168,6 +3168,74 @@ mod tests {
         )
     }
 
+    fn resumable_materialize_plan(
+        live_values: Box<[MixedValueId]>,
+        result: Option<(MixedValueId, MixedValueType)>,
+    ) -> Result<MixedModulePlan, MixedPlanError> {
+        let oracle_defines_result = result.is_some();
+        let (result, result_type) = result.unzip();
+        let (entry_operations, continuation_operation_start, operations) = if oracle_defines_result
+        {
+            (MixedTableRange::new(0, 0), 0, Vec::new())
+        } else {
+            (
+                MixedTableRange::new(0, 1),
+                1,
+                vec![MixedOp::Move {
+                    destination: MixedValueId::new(1),
+                    source: MixedValueId::new(0),
+                }],
+            )
+        };
+        MixedModulePlan::new(
+            MixedModuleKey::new([31; 32], [32; 32], 1),
+            MixedPlanBounds::new(2, 1, 1),
+            vec![MixedEntry {
+                kind: MixedEntryKind::ForceWhnf,
+                source: source(100),
+                function: MixedFunctionId::new(0),
+                frame: None,
+                capture_layout_digest: [0; 32],
+            }],
+            vec![MixedFunction {
+                source: source(100),
+                parameter: MixedValueId::new(0),
+                parameter_type: MixedValueType::Value,
+                return_type: MixedValueType::Value,
+                entry: MixedBlockId::new(0),
+                blocks: MixedTableRange::new(0, 2),
+            }],
+            vec![
+                MixedBlock {
+                    source: source(100),
+                    operations: entry_operations,
+                    terminator: MixedTerminator::Materialize {
+                        statepoint: MixedStatepointId::new(0),
+                    },
+                },
+                MixedBlock {
+                    source: source(101),
+                    operations: MixedTableRange::new(continuation_operation_start, 0),
+                    terminator: MixedTerminator::Return {
+                        value: MixedValueId::new(1),
+                    },
+                },
+            ],
+            operations,
+            vec![],
+            vec![MixedStatepoint {
+                source: source(102),
+                resume: MixedBlockId::new(1),
+                live_values,
+                live_virtuals: Box::new([]),
+                result,
+                result_type,
+                mode: MixedStatepointMode::Resume,
+                reason: MixedStatepointReason::Unsupported,
+            }],
+        )
+    }
+
     #[test]
     fn canonical_encoding_is_deterministic() {
         let first = connected_plan(1).expect("sample validates");
@@ -3239,6 +3307,37 @@ mod tests {
                 missing: MixedValueId::new(1),
             })
         );
+    }
+
+    #[test]
+    fn materialize_resume_rejects_a_value_used_by_the_continuation() {
+        let mut plan = resumable_materialize_plan(Box::new([MixedValueId::new(1)]), None)
+            .expect("complete live set validates");
+        plan.statepoints[0].live_values = Box::new([]);
+
+        assert_eq!(
+            plan.validate(),
+            Err(MixedPlanError::IncompleteStatepointLiveSet {
+                statepoint: 0,
+                resume: MixedBlockId::new(1),
+                missing: MixedValueId::new(1),
+            })
+        );
+    }
+
+    #[test]
+    fn statepoint_result_is_defined_on_resume_and_need_not_be_live() {
+        let plan = resumable_materialize_plan(
+            Box::new([]),
+            Some((MixedValueId::new(1), MixedValueType::Value)),
+        )
+        .expect("oracle-defined continuation result validates");
+        let live_in = compute_function_live_in(&plan, 0);
+
+        assert!(live_in[1][1], "the continuation consumes the result slot");
+        assert!(plan.statepoints[0].live_values.is_empty());
+        assert_eq!(plan.statepoints[0].result, Some(MixedValueId::new(1)));
+        assert_eq!(plan.validate(), Ok(()));
     }
 
     #[test]
