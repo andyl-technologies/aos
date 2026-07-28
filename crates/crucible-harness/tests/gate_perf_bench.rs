@@ -23,12 +23,13 @@
 use std::time::Instant;
 
 use crucible_harness::perf::{
-    BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode,
+    BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode, DEVICE_WORK_OVERLAP,
     FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismClass, PerfBenchError,
-    RealizationConfig, SYNC_OVERHEAD_FAIL_PCT, advance_syscall_count, canonical_bench_corpus,
-    canonical_host_parallelism_admissions, canonical_host_profile, canonical_perf_bench_input,
-    core_count_speedup_sweep, evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep,
-    perf_corpus_digest, realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
+    RealizationConfig, SEGMENT_PARALLEL_REPLAY, SYNC_OVERHEAD_FAIL_PCT, TRANSLATION_PREFETCH,
+    advance_syscall_count, canonical_bench_corpus, canonical_host_parallelism_admissions,
+    canonical_host_profile, canonical_perf_bench_input, core_count_speedup_sweep,
+    evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep, perf_corpus_digest,
+    realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
     scenario_result_fingerprint, snapshot_latency_series,
 };
 
@@ -486,6 +487,27 @@ fn gate_perf_bench_requires_complete_host_parallelism_admission_register() {
         }),
         "fingerprint digestion must be admitted as Class A"
     );
+    assert!(
+        admissions.iter().any(|admission| {
+            admission.mechanism == DEVICE_WORK_OVERLAP
+                && admission.class == HostParallelismClass::CommitPinnedToVirtualTime
+        }),
+        "device host-work overlap must be admitted as Class B"
+    );
+    assert!(
+        admissions.iter().any(|admission| {
+            admission.mechanism == TRANSLATION_PREFETCH
+                && admission.class == HostParallelismClass::OutsideObservableBoundary
+        }),
+        "translation prefetch must be admitted as Class A"
+    );
+    assert!(
+        admissions.iter().any(|admission| {
+            admission.mechanism == SEGMENT_PARALLEL_REPLAY
+                && admission.class == HostParallelismClass::OutsideObservableBoundary
+        }),
+        "segment-parallel replay must be admitted as Class A"
+    );
 
     let mut missing = canonical_perf_bench_input();
     missing
@@ -516,5 +538,25 @@ fn gate_perf_bench_rejects_unproved_host_parallelism_admission() {
         error,
         PerfBenchError::InvalidHostParallelismAdmission { mechanism }
             if mechanism == FINGERPRINT_DIGEST_OFFLOAD
+    ));
+}
+
+/// [PERF-34] — a label that does not name a canonical determinism gate is not
+/// accepted as proof, even when the admission otherwise has a valid class.
+#[test]
+fn gate_perf_bench_rejects_unknown_proving_gate() {
+    let mut input = canonical_perf_bench_input();
+    let admission = input
+        .host_parallelism_admissions
+        .iter_mut()
+        .find(|admission| admission.mechanism == SEGMENT_PARALLEL_REPLAY)
+        .expect("canonical segment-replay admission");
+    admission.proving_gates = vec![String::from("gate:not-a-real-gate")];
+
+    let error = run_perf_bench_gate(&input).expect_err("unknown proving gate must fail");
+    assert!(matches!(
+        error,
+        PerfBenchError::InvalidHostParallelismAdmission { mechanism }
+            if mechanism == SEGMENT_PARALLEL_REPLAY
     ));
 }

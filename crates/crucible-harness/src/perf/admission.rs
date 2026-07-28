@@ -28,6 +28,14 @@ const REQUIRED_MECHANISMS: [&str; 5] = [
     TRANSLATION_PREFETCH,
     SEGMENT_PARALLEL_REPLAY,
 ];
+const PROVING_GATES: [&str; 6] = [
+    "gate:adversarial-determinism",
+    "gate:divergence-bisect",
+    "gate:e2e-determinism",
+    "gate:perf-bench",
+    "gate:replay-oracle",
+    "gate:single-vm-fingerprint",
+];
 
 /// Classifies why host-parallel work is deterministic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,20 +119,21 @@ pub fn canonical_host_parallelism_admissions() -> Vec<HostParallelismAdmission> 
 /// # Errors
 ///
 /// Returns [`PerfBenchError`] for a missing required mechanism, a duplicate or
-/// empty identifier, an empty class argument, or a record with no proving gate.
+/// empty identifier, an empty class argument, or a record with no unique,
+/// canonical proving gate.
 pub fn validate_host_parallelism_admissions(
     admissions: &[HostParallelismAdmission],
 ) -> Result<(), PerfBenchError> {
     let mut seen = BTreeSet::new();
     for admission in admissions {
+        let mut proving_gates = BTreeSet::new();
         if admission.mechanism.is_empty()
             || !seen.insert(admission.mechanism.clone())
             || admission.argument.trim().is_empty()
             || admission.proving_gates.is_empty()
-            || admission
-                .proving_gates
-                .iter()
-                .any(|gate| gate.trim().is_empty())
+            || admission.proving_gates.iter().any(|gate| {
+                !PROVING_GATES.contains(&gate.as_str()) || !proving_gates.insert(gate.as_str())
+            })
         {
             return Err(PerfBenchError::InvalidHostParallelismAdmission {
                 mechanism: admission.mechanism.clone(),
