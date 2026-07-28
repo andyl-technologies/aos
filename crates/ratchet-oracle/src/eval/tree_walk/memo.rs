@@ -385,7 +385,7 @@ pub(super) enum ReadyCellCapturePlan {
 }
 
 /// Cached static classification and direct-slot plan for one def-site.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) enum ReadyCellPlanDecision {
     /// The body is safe, reaches the cost floor, and has only direct captures.
     Eligible {
@@ -395,6 +395,8 @@ pub(super) enum ReadyCellPlanDecision {
         captures: ReadyCellCapturePlan,
         /// Static recomputation cost attributed to a Ready hit.
         static_cost_units: u32,
+        /// Direct capture-free result retained only by the guarded active mode.
+        empty_ready_value: Option<Value>,
     },
     /// The body is effectful or unsafe to reuse without observation replay.
     EffectOrUnsafe,
@@ -414,6 +416,8 @@ pub(super) enum ReadyCellPlanDecision {
 #[derive(Debug, Default)]
 pub(super) struct ReadyCellPlanCache {
     plans: HashMap<EvalNodeRef, ReadyCellPlanDecision>,
+    #[cfg(test)]
+    empty_served_hits: u64,
 }
 
 impl ReadyCellPlanCache {
@@ -427,11 +431,110 @@ impl ReadyCellPlanCache {
         self.plans.insert(def_site, decision);
     }
 
+    /// Probes one capture-free plan without constructing a recipe.
+    pub(super) fn probe_empty(
+        &mut self,
+        def_site: EvalNodeRef,
+        captured_frame_count: usize,
+    ) -> ReadyCellEmptyProbe {
+        let Some(decision) = self.plans.get_mut(&def_site) else {
+            return ReadyCellEmptyProbe::Unknown;
+        };
+        let ReadyCellPlanDecision::Eligible {
+            captured_frame_count: planned_frame_count,
+            captures: ReadyCellCapturePlan::Empty,
+            empty_ready_value,
+            ..
+        } = decision
+        else {
+            return ReadyCellEmptyProbe::Ineligible;
+        };
+        if *planned_frame_count != captured_frame_count {
+            return ReadyCellEmptyProbe::Ineligible;
+        }
+        let Some(value) = *empty_ready_value else {
+            return ReadyCellEmptyProbe::Miss;
+        };
+        #[cfg(test)]
+        {
+            self.empty_served_hits = self.empty_served_hits.saturating_add(1);
+        }
+        ReadyCellEmptyProbe::Hit(value)
+    }
+
+    /// Publishes one successfully completed capture-free result.
+    pub(super) fn publish_empty(
+        &mut self,
+        def_site: EvalNodeRef,
+        captured_frame_count: usize,
+        value: Value,
+    ) -> bool {
+        let Some(ReadyCellPlanDecision::Eligible {
+            captured_frame_count: planned_frame_count,
+            captures: ReadyCellCapturePlan::Empty,
+            empty_ready_value,
+            ..
+        }) = self.plans.get_mut(&def_site)
+        else {
+            return false;
+        };
+        if *planned_frame_count != captured_frame_count {
+            return false;
+        }
+        *empty_ready_value = Some(value);
+        true
+    }
+
+    /// Invalidates one capture-free result after a failed replay publication.
+    pub(super) fn clear_empty(&mut self, def_site: EvalNodeRef) {
+        if let Some(ReadyCellPlanDecision::Eligible {
+            captures: ReadyCellCapturePlan::Empty,
+            empty_ready_value,
+            ..
+        }) = self.plans.get_mut(&def_site)
+        {
+            *empty_ready_value = None;
+        }
+    }
+
     /// Returns the number of classified def-sites.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.plans.len()
     }
+
+    /// Returns resident capture-free results and served direct hits.
+    #[cfg(test)]
+    pub(super) fn empty_counts(&self) -> (usize, u64) {
+        let resident = self
+            .plans
+            .values()
+            .filter(|decision| {
+                matches!(
+                    decision,
+                    ReadyCellPlanDecision::Eligible {
+                        captures: ReadyCellCapturePlan::Empty,
+                        empty_ready_value: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        (resident, self.empty_served_hits)
+    }
+}
+
+/// Result of probing the capture-free per-def-site Ready specialization.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ReadyCellEmptyProbe {
+    /// The def-site has not received a static classification yet.
+    Unknown,
+    /// The def-site has a direct reusable result.
+    Hit(Value),
+    /// The def-site is eligible but has not completed successfully yet.
+    Miss,
+    /// The def-site is captured, unsafe, below the floor, or otherwise invalid.
+    Ineligible,
 }
 
 impl ReadyCellCaptures {
@@ -940,6 +1043,34 @@ mod tests {
             ReadyCellHitRepresentation::classify(2, true, true),
             ReadyCellHitRepresentation::LinkedOrHybrid
         );
+    }
+
+    #[test]
+    fn empty_ready_plan_rejects_a_different_captured_frame_count() {
+        let def_site = EvalNodeRef::new(
+            crate::eval::EvalModuleId::ROOT,
+            crate::compile::IrId::new(7),
+        );
+        let value = Value::int(42);
+        let mut plans = ReadyCellPlanCache::default();
+        plans.insert(
+            def_site,
+            ReadyCellPlanDecision::Eligible {
+                captured_frame_count: 2,
+                captures: ReadyCellCapturePlan::Empty,
+                static_cost_units: 8,
+                empty_ready_value: Some(value),
+            },
+        );
+
+        assert!(matches!(
+            plans.probe_empty(def_site, 1),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        let ReadyCellEmptyProbe::Hit(hit) = plans.probe_empty(def_site, 2) else {
+            panic!("the matching frame count should serve the direct result");
+        };
+        assert!(hit.raw_eq(value));
     }
 
     #[test]

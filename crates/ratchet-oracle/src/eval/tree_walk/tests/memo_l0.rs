@@ -26,6 +26,12 @@ const DUPLICATED_SUBTREE: &str = r#"
     in (f 1) + (f 2) + (f 3)
 "#;
 
+/// A repeated def-site whose body has no lexical captures.
+const EMPTY_CAPTURE_REPEAT: &str = r#"
+    let f = _: let answer = 10 + 20 + 12; in answer;
+    in (f 1) + (f 2) + (f 3)
+"#;
+
 #[test]
 fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {
     let ir = lower(DUPLICATED_SUBTREE);
@@ -78,6 +84,97 @@ fn local_ready_directory_serves_a_completed_exact_recipe() {
 }
 
 #[test]
+fn empty_only_ready_miss_publishes_a_direct_plan_result() {
+    const SINGLE_FORCE: &str = r#"
+        let f = _: let answer = 10 + 20 + 12; in answer;
+        in f 1
+    "#;
+    let ir = lower(SINGLE_FORCE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        local_ready_enabled: true,
+        local_ready_empty_only: true,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    assert_eq!(evaluator.test_empty_ready_cell_counts(), (0, 0));
+    let value = evaluator
+        .eval_root()
+        .expect("capture-free expression evaluates");
+    let (resident, served_hits) = evaluator.test_empty_ready_cell_counts();
+
+    assert_eq!(value.as_int(), Ok(42));
+    assert!(
+        resident >= 1,
+        "the completed miss publishes its direct value"
+    );
+    assert_eq!(served_hits, 0, "one instance cannot replay its own result");
+    assert_eq!(
+        evaluator.test_ready_cell_directory_counts(),
+        (0, 0),
+        "capture-free direct results never enter the general directory"
+    );
+}
+
+#[test]
+fn empty_only_ready_hit_bypasses_recipe_and_durable_memo_work() {
+    let ir = lower(EMPTY_CAPTURE_REPEAT);
+    let mut options = memo_options(1);
+    let mut memo = *options.memo_options();
+    memo.local_ready_enabled = true;
+    memo.local_ready_empty_only = true;
+    memo.local_ready_min_cost = 1;
+    options.set_memo_options(memo);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("capture-free expression evaluates");
+    let (resident, served_hits) = evaluator.test_empty_ready_cell_counts();
+
+    assert_eq!(value.as_int(), Ok(126));
+    assert!(
+        resident >= 1,
+        "the first instance publishes a direct result"
+    );
+    assert!(served_hits >= 1, "later instances hit the per-plan result");
+    assert_eq!(evaluator.test_ready_cell_directory_counts(), (0, 0));
+    assert_eq!(evaluator.stats.memo_l0_hits(), 0);
+    assert_eq!(evaluator.stats.memo_l0_misses(), 0);
+    assert_eq!(evaluator.stats.memo_l0_admissions(), 0);
+}
+
+#[test]
+fn empty_only_ready_declines_per_instance_dynamic_scopes() {
+    const DYNAMIC_SCOPE: &str = r#"
+        let f = with { ignored = 1; }; (_: 42);
+        in (f 1) + (f 2)
+    "#;
+    let ir = lower(DYNAMIC_SCOPE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        local_ready_enabled: true,
+        local_ready_empty_only: true,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("dynamic-scope expression evaluates");
+
+    assert_eq!(value.as_int(), Ok(84));
+    assert_eq!(
+        evaluator.test_empty_ready_cell_counts(),
+        (0, 0),
+        "capture-free plans must not serve through a per-instance dynamic scope"
+    );
+}
+
+#[test]
 fn local_ready_census_declines_trace_revalidated_impure_nodes() {
     const READS_ENV: &str = r#"
         let f = n:
@@ -118,6 +215,7 @@ fn local_ready_directory_fails_closed_when_gc_is_enabled() {
         enabled: false,
         min_cost: 1,
         local_ready_enabled: true,
+        local_ready_empty_only: true,
         local_ready_min_cost: 1,
         ..MemoOptions::default()
     });
@@ -128,11 +226,17 @@ fn local_ready_directory_fails_closed_when_gc_is_enabled() {
         (0, 0),
         "weak thunk identities must not survive in a reclaiming heap"
     );
+    assert_eq!(
+        evaluator.test_empty_ready_cell_counts(),
+        (0, 0),
+        "direct Ready values must share the same GC-off activation guard"
+    );
 }
 
 #[test]
 fn local_ready_uses_independent_floor_and_leaves_impure_memo_enabled() {
     assert_eq!(MemoOptions::default().local_ready_min_cost, 64);
+    assert!(!MemoOptions::default().local_ready_empty_only);
     let ir = lower(DUPLICATED_SUBTREE);
     let mut options = memo_options(1);
     let mut memo = *options.memo_options();
@@ -171,6 +275,7 @@ fn local_ready_uses_independent_floor_and_leaves_impure_memo_enabled() {
     );
     let mut memo = *options.memo_options();
     memo.local_ready_enabled = true;
+    memo.local_ready_empty_only = true;
     options.set_memo_options(memo);
     let outcome = eval_whnf_owned_with_options(&ir, options).expect("impure expression evaluates");
 
@@ -178,6 +283,10 @@ fn local_ready_uses_independent_floor_and_leaves_impure_memo_enabled() {
         outcome.stats.memo_l0_hits() >= 1,
         "a raw-ineligible impure site must retain durable memo behavior: {:?}",
         outcome.stats
+    );
+    assert!(
+        outcome.stats.memo_l0_admissions() > 0,
+        "impure fallback should retain durable memo admission"
     );
 }
 

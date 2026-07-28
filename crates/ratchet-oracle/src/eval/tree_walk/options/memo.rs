@@ -56,6 +56,13 @@ pub struct MemoOptions {
     pub stats_enabled: bool,
     /// Enables the GC-off worker-local Ready-cell directory (`AOS_NIX_LOCAL_READY`).
     pub local_ready_enabled: bool,
+    /// Restricts local Ready serving to capture-free def-sites.
+    ///
+    /// `AOS_NIX_LOCAL_READY_EMPTY_ONLY=1` enables the direct per-plan result
+    /// specialization while declining captured candidates from the local
+    /// directory. The switch has no effect unless [`Self::local_ready_enabled`]
+    /// is also true.
+    pub local_ready_empty_only: bool,
     /// Ready-cell static recompute-estimate floor (`AOS_NIX_LOCAL_READY_MIN_COST`).
     ///
     /// This is independent of [`Self::min_cost`] so the cheap raw-identity
@@ -81,6 +88,7 @@ impl Default for MemoOptions {
             check_l3: false,
             stats_enabled: false,
             local_ready_enabled: false,
+            local_ready_empty_only: false,
             local_ready_min_cost: 64,
         }
     }

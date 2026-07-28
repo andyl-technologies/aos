@@ -35,6 +35,11 @@
 //! evaluation and asserts canonical-hash identity, mirroring
 //! `AOS_NIX_ROOT_CUTOFF_CHECK`.
 //!
+//! The independent GC-off local Ready mode normally keys a weak source-thunk
+//! directory by exact raw capture recipes. Its `EMPTY_ONLY` specialization
+//! retains capture-free results directly in the cached def-site plan, so a
+//! warm hit needs neither recipe construction nor a source-cell load.
+//!
 //! [`CacheExprIdentity`]: crate::cache::CacheExprIdentity
 //! [`ValueHash`]: crate::cache::ValueHash
 
@@ -45,8 +50,8 @@ use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
-    ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellHitRepresentation,
-    ReadyCellPlanDecision, ReadyCellRecipe, SharedMemoTable,
+    ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellEmptyProbe,
+    ReadyCellHitRepresentation, ReadyCellPlanDecision, ReadyCellRecipe, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -140,11 +145,55 @@ impl TreeWalk {
         let tiers_active = self.memo_l0.is_some() || self.shared_memo_table().is_some();
         let stats_enabled = self.options.memo_options().stats_enabled;
         let local_ready_active = self.ready_cell_directory.is_some();
+        let empty_ready_only =
+            local_ready_active && self.options.memo_options().local_ready_empty_only;
         if !tiers_active && !stats_enabled && !local_ready_active {
             return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
-        let ready_cell_candidate = self.ready_cell_candidate_for_thunk(thunk);
-        if let Some(candidate) = ready_cell_candidate.as_ref()
+        if empty_ready_only
+            && let Some((def_site, captured_frame_count, probe)) =
+                self.probe_empty_ready_cell_plan(thunk)
+        {
+            match probe {
+                ReadyCellEmptyProbe::Hit(value) => {
+                    return match self.finish_forced_value(id, span, source_thunk, guard, value) {
+                        Ok(value) => Ok(value),
+                        Err(error) => {
+                            if let Some(plans) = self.ready_cell_plans.as_mut() {
+                                plans.clear_empty(def_site);
+                            }
+                            Err(error)
+                        }
+                    };
+                }
+                ReadyCellEmptyProbe::Miss => {
+                    return match self.force_memoized_claimed_thunk(
+                        id,
+                        span,
+                        source_thunk,
+                        thunk,
+                        guard,
+                    ) {
+                        Ok(value) => {
+                            if let Some(plans) = self.ready_cell_plans.as_mut() {
+                                plans.publish_empty(def_site, captured_frame_count, value);
+                            }
+                            Ok(value)
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
+                ReadyCellEmptyProbe::Unknown => {}
+                ReadyCellEmptyProbe::Ineligible => {}
+            }
+        }
+        let ready_cell_candidate = if empty_ready_only && !stats_enabled {
+            None
+        } else {
+            self.ready_cell_candidate_for_thunk(thunk)
+        };
+        if !empty_ready_only
+            && let Some(candidate) = ready_cell_candidate.as_ref()
             && let Some(value) = self.probe_ready_cell_directory(candidate)
         {
             return match self.finish_forced_value(id, span, source_thunk, guard, value) {
@@ -158,7 +207,7 @@ impl TreeWalk {
                 }
             };
         }
-        if local_ready_active && ready_cell_candidate.is_some() {
+        if local_ready_active && !empty_ready_only && ready_cell_candidate.is_some() {
             return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
                 Ok(value) => {
                     self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
@@ -252,6 +301,37 @@ impl TreeWalk {
         Ok(value)
     }
 
+    /// Probes the direct capture-free Ready plan without constructing a recipe.
+    fn probe_empty_ready_cell_plan(
+        &mut self,
+        thunk: &EvalThunk,
+    ) -> Option<(EvalNodeRef, usize, ReadyCellEmptyProbe)> {
+        let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
+            return None;
+        };
+        if !thunk.with_scope_env()?.scopes().is_empty()
+            || !thunk.scoped_global_env()?.scopes().is_empty()
+        {
+            return None;
+        }
+        let captured_frame_count = self.captured_env_ref(env).frame_count();
+        let probe = self
+            .ready_cell_plans
+            .as_mut()?
+            .probe_empty(*body, captured_frame_count);
+        if !matches!(probe, ReadyCellEmptyProbe::Unknown) {
+            return Some((*body, captured_frame_count, probe));
+        }
+        let plan = self.compute_ready_cell_plan(*body, captured_frame_count);
+        let plans = self.ready_cell_plans.as_mut()?;
+        plans.insert(*body, plan);
+        Some((
+            *body,
+            captured_frame_count,
+            plans.probe_empty(*body, captured_frame_count),
+        ))
+    }
+
     /// Derives a cheap worker-local recipe from direct static slot captures.
     ///
     /// The recipe intentionally uses relocation-sensitive raw words. It
@@ -292,6 +372,7 @@ impl TreeWalk {
                 captured_frame_count,
                 captures,
                 static_cost_units,
+                ..
             } if *captured_frame_count == env.frame_count() => (captures, *static_cost_units),
             ReadyCellPlanDecision::Eligible { .. } | ReadyCellPlanDecision::Unavailable => {
                 return None;
@@ -429,6 +510,7 @@ impl TreeWalk {
             captured_frame_count,
             captures,
             static_cost_units,
+            empty_ready_value: None,
         }
     }
 
@@ -1386,6 +1468,14 @@ impl TreeWalk {
         self.ready_cell_plans
             .as_ref()
             .map_or(0, super::super::memo::ReadyCellPlanCache::len)
+    }
+
+    /// Returns resident capture-free direct results and served hits.
+    #[cfg(test)]
+    pub(crate) fn test_empty_ready_cell_counts(&self) -> (usize, u64) {
+        self.ready_cell_plans
+            .as_ref()
+            .map_or((0, 0), super::super::memo::ReadyCellPlanCache::empty_counts)
     }
 
     /// Poisons a resident L0 entry's payload under `key`, for CHECK tests.
