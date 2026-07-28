@@ -201,6 +201,33 @@ a one-entry-per-def-site weak Ready-cell directory: it avoids a global recipe
 map and all durable key/payload work while retaining most of the measured
 bounded-cache benefit.
 
+The first active one-way implementation initially remained 2.92 percent
+instruction-negative at floor zero even after caching each def-site's static
+capture plan: two clean samples retired 150,578,553,711--150,585,398,418
+instructions, versus 146,299,839,083--146,316,446,373 with the directory
+disabled. The cause was duplicated cache policy. Every raw-eligible miss still
+derived, probed, and admitted the durable content key after missing the local
+directory. Making the raw directory exclusive for eligible sites reduced
+durable confirmations from 768,251 to 86,465 and recovered almost the entire
+loss. The clean paired samples were:
+
+```text
+mode                 instructions       cycles          max RSS
+Ready disabled      146,322,523,787   59,505,177,706   4,252,000 KiB
+Ready exclusive     146,393,611,199   58,173,102,474   4,229,768 KiB
+```
+
+Both produced the exact expected derivation. The exclusive path is effectively
+instruction-neutral at floor zero (+0.049 percent), while this clean pair
+showed 2.24 percent fewer cycles and 0.52 percent lower peak RSS. A second,
+load-contaminated pair likewise differed by only +0.023 percent instructions,
+so exclusivity is a retained improvement over the stacked design. It is not
+yet a default win: floor zero as a whole remains materially worse than the
+accepted floor-64 configuration, while the floor-64 raw census found almost no
+reuse. The next experiment must separate the policies: retain floor 64 for
+durable content memoization while allowing the lower-overhead local Ready
+directory to use its own floor.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
