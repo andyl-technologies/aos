@@ -15,7 +15,9 @@
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
   blockModule = builtins.readFile ../../crates/crucible-device/src/block.rs;
   overlay = builtins.readFile ../../crates/crucible-device/src/block/overlay.rs;
-  device = builtins.readFile ../../crates/crucible-device/src/block/device.rs;
+  device =
+    builtins.readFile ../../crates/crucible-device/src/block/device.rs
+    + builtins.readFile ../../crates/crucible-device/src/block/device/snapshot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let

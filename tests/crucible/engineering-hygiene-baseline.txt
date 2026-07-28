@@ -45,7 +45,6 @@ shape-line|crates/crucible-device/src/ninep/server.rs|641
 shape-line|crates/crucible-device/src/ninep/tree.rs|903
 shape-line|crates/crucible-device/src/subnode.rs|618
 shape-line|crates/crucible-device/tests/device_harness.rs|644
-shape-line|crates/crucible-device/tests/io_subnode_lifecycle.rs|604
 shape-line|crates/crucible-guest/src/lib.rs|645
 shape-line|crates/crucible-harness/src/adversarial.rs|1265
 shape-line|crates/crucible-harness/src/e2e.rs|1343
