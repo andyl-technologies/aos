@@ -1036,6 +1036,10 @@ impl TreeWalk {
             .ok()
             .flatten()
             .map_or(0, ProcessResidentMemorySample::resident_bytes);
+        let peak_rss = peak_resident_memory_bytes(PeakResidentMemoryScope::SelfProcess)
+            .ok()
+            .flatten()
+            .unwrap_or(rss as u64);
         let result = self
             .mutator_root_set()
             .map_err(|error| error.to_string())
@@ -1044,8 +1048,10 @@ impl TreeWalk {
                     .nonmoving_reclaim_projection(
                         &roots,
                         rss as u64,
+                        peak_rss,
                         modules,
                         selected_module.is_some(),
+                        &[],
                     )
                     .map_err(|error| error.to_string())
             });

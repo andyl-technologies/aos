@@ -139,6 +139,8 @@ use crate::heap::{
     RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedEdge,
     RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
 };
+#[cfg(feature = "nonmoving_reclaim_probe")]
+use crate::heap::{PeakResidentMemoryScope, peak_resident_memory_bytes};
 use crate::list::{NixList, NixListError};
 #[cfg(test)]
 use crate::runtime::alloc::RuntimeAllocationEntryPoint;

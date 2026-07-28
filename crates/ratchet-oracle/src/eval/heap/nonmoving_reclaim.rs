@@ -5,20 +5,25 @@
 //! shrinking weak metadata, and advising pages containing no live arena
 //! object. It never mutates the heap or root set.
 //!
-//! Reservation residency is currently aggregate. Consequently, physical page
-//! credit is granted only when every used reservation page was resident at the
-//! sample; otherwise logical dead pages are reported with zero RSS credit.
+//! Candidate-C ambiguous words are admitted only when their domain, allocation
+//! start, and semantic kind match the live traceable-allocation directory.
+//! Physical credit is based on one `mincore` query per dead reservation page
+//! and fails closed if any query is unavailable.
 
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::ptr::NonNull;
 
 use super::arena::any_value_heap_ptr;
 use super::*;
+use crate::value::compressed::CompressedValueWord;
 
 const DEFAULT_PAGE_BYTES: usize = 4096;
-const TARGET_RSS_BYTES: u64 = 233_972 * 1024;
+const TARGET_RSS_BYTES: u64 = 239_054_848;
 const SAFETY_RSS_BYTES: u64 = 216 * 1024 * 1024;
+const ALLOCATION_GRANULE_BYTES: u64 = 8;
+const IMMIX_LINE_BYTES: u64 = 128;
+const ALLOCATION_DIRECTORY_TABLE: &str = "nonmoving traceable allocation directory";
 const FLAT_REGISTRY_ENTRY_BYTES: usize = std::mem::size_of::<usize>() * 2
     + if cfg!(target_pointer_width = "32") {
         std::mem::size_of::<u32>()
@@ -38,7 +43,7 @@ struct DeadPageProjection {
     largest_run: u64,
     resident_dead: u64,
     page_bytes: u64,
-    full_residency: bool,
+    residency_exact: bool,
 }
 
 impl DeadPageProjection {
@@ -90,6 +95,43 @@ struct HashProjection {
     metadata: MetadataProjection,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TraceableAllocation {
+    address: usize,
+    index: u32,
+    bytes: usize,
+    tag: ValueTag,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AmbiguousWordProjection {
+    words: u64,
+    codec_valid: u64,
+    indexed: u64,
+    same_domain: u64,
+    exact_start: u64,
+    kind_match: u64,
+    unique_roots: u64,
+    already_precise_reachable: u64,
+    newly_reachable_objects: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SideMetadataProjection {
+    allocation_start_bytes: u64,
+    mark_bytes: u64,
+    line_bytes: u64,
+    page_bytes: u64,
+    total_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ChronologicalPeakProjection {
+    post_reclaim_rss_bytes: u64,
+    collection_peak_bytes: u64,
+    chronological_peak_bytes: u64,
+}
+
 /// Read-only accounting for one hypothetical nonmoving collection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NonmovingReclaimProjection {
@@ -100,9 +142,12 @@ pub(crate) struct NonmovingReclaimProjection {
     dead_list_spine_bytes: u64,
     registries: RegistryProjection,
     hashes: HashProjection,
+    ambiguous_words: AmbiguousWordProjection,
+    side_metadata: SideMetadataProjection,
     mark_scratch_bytes: u64,
     rss_bytes: u64,
     adjusted_rss_bytes: u64,
+    collection_peak_bytes: u64,
     adjusted_peak_bytes: u64,
     raw_peak_bytes: u64,
     samples: u64,
@@ -117,15 +162,20 @@ impl fmt::Display for NonmovingReclaimProjection {
             "{{\"roots\":{},\"reachable_objects\":{},\"allocated_objects\":{},\
              \"pages\":{{\"total\":{},\"live\":{},\"dead\":{},\"dead_runs\":{},\
              \"largest_dead_run_pages\":{},\"resident_dead\":{},\"page_bytes\":{},\
-             \"full_used_reservation_resident\":{}}},\
+             \"dead_page_residency_exact\":{}}},\
+             \"ambiguous_words\":{{\"words\":{},\"codec_valid\":{},\"indexed\":{},\
+             \"same_domain\":{},\"exact_allocation_start\":{},\"kind_match\":{},\
+             \"unique_roots\":{},\"already_precise_reachable\":{},\
+             \"newly_reachable_objects\":{}}},\
              \"dead_owned_external\":{{\"list_spine_bytes\":{},\
-             \"coverage\":\"list_capacity_only\"}},\
+             \"coverage\":\"list_capacity_only\",\
+             \"credited_to_chronological_peak\":false}},\
              \"registries\":{{\
-             \"strings_paths\":[{},{},{},true],\"lists\":[{},{},{},true],\
-             \"attrs\":[{},{},{},true],\"closures\":[{},{},{},false],\
+             \"strings_paths\":[{},{},{},false],\"lists\":[{},{},{},false],\
+             \"attrs\":[{},{},{},false],\"closures\":[{},{},{},false],\
              \"tuple\":\"current_structural_bytes,live_sized_structural_bytes,\
-             reclaimable_bytes,credited_to_strict_schedule\",\
-             \"strict_reclaimable_bytes\":{},\
+             reclaimable_bytes,credited_to_chronological_peak\",\
+             \"logical_reclaimable_bytes_uncredited\":{},\
              \"closure_exclusion\":\"tail handles embed store_index; shrinking requires \
              re-signing live handles and roots\"}},\
              \"hash_indexes\":{{\"current_buckets\":{},\"current_candidates\":{},\
@@ -134,10 +184,17 @@ impl fmt::Display for NonmovingReclaimProjection {
              \"reclaimable_bytes\":{},\"credited_to_strict_schedule\":false}},\
              \"mark\":{{\"projected_scratch_bytes\":{},\
              \"layout\":\"u32 object starts + object bits + u32 worklist + page bits\"}},\
+             \"side_metadata\":{{\"allocation_start_bytes\":{},\"mark_bytes\":{},\
+             \"line_bytes\":{},\"page_bytes\":{},\"total_bytes\":{},\
+             \"layout\":\"one start bit and one mark bit per 8-byte used-lane \
+             granule, one bit per 128-byte line, one bit per used page\"}},\
              \"schedule\":{{\"rss_bytes\":{},\"adjusted_rss_bytes\":{},\
-             \"adjusted_peak_bytes\":{},\"raw_peak_bytes\":{},\"samples\":{},\
+             \"collection_peak_bytes\":{},\"adjusted_peak_bytes\":{},\
+             \"raw_peak_bytes\":{},\"samples\":{},\
              \"dead_page_count_monotonic\":{},\"target_bytes\":{},\"target_pass\":{},\
-             \"safety_bytes\":{},\"safety_pass\":{},\"capture_mode\":\"{}\"}},\
+             \"safety_bytes\":{},\"safety_pass\":{},\
+             \"chronology\":\"first collection at this checkpoint\",\
+             \"capture_mode\":\"{}\"}},\
              \"measurement_scratch\":{{\"projected_collector_scratch_is_not_probe_scratch\":true,\
              \"probe_hash_sets_and_vectors_excluded_from_adjustment\":true,\
              \"multi_milestone_raw_rss_may_include_prior_probe_scratch\":{}}},\
@@ -157,7 +214,16 @@ impl fmt::Display for NonmovingReclaimProjection {
             self.pages.largest_run,
             self.pages.resident_dead,
             self.pages.page_bytes,
-            self.pages.full_residency,
+            self.pages.residency_exact,
+            self.ambiguous_words.words,
+            self.ambiguous_words.codec_valid,
+            self.ambiguous_words.indexed,
+            self.ambiguous_words.same_domain,
+            self.ambiguous_words.exact_start,
+            self.ambiguous_words.kind_match,
+            self.ambiguous_words.unique_roots,
+            self.ambiguous_words.already_precise_reachable,
+            self.ambiguous_words.newly_reachable_objects,
             self.dead_list_spine_bytes,
             self.registries.strings_paths.current,
             self.registries.strings_paths.live_sized,
@@ -180,8 +246,14 @@ impl fmt::Display for NonmovingReclaimProjection {
             self.hashes.metadata.live_sized,
             self.hashes.metadata.reclaimable(),
             self.mark_scratch_bytes,
+            self.side_metadata.allocation_start_bytes,
+            self.side_metadata.mark_bytes,
+            self.side_metadata.line_bytes,
+            self.side_metadata.page_bytes,
+            self.side_metadata.total_bytes,
             self.rss_bytes,
             self.adjusted_rss_bytes,
+            self.collection_peak_bytes,
             self.adjusted_peak_bytes,
             self.raw_peak_bytes,
             self.samples,
@@ -200,50 +272,8 @@ impl fmt::Display for NonmovingReclaimProjection {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ReclaimSchedule {
-    last_modules: usize,
-    last_dead_pages: u64,
-    adjusted_peak: u64,
-    raw_peak: u64,
-    samples: u64,
-    monotonic: bool,
-}
-
-impl ReclaimSchedule {
-    fn observe(
-        &mut self,
-        modules: usize,
-        rss: u64,
-        reclaimable: u64,
-        scratch: u64,
-        dead_pages: u64,
-    ) -> (u64, u64, u64, u64, bool) {
-        if self.samples != 0 && modules <= self.last_modules {
-            *self = Self::default();
-        }
-        let adjusted = rss.saturating_sub(reclaimable).saturating_add(scratch);
-        let current_monotonic = self.samples == 0 || dead_pages >= self.last_dead_pages;
-        self.monotonic = (self.samples == 0 || self.monotonic) && current_monotonic;
-        self.adjusted_peak = self.adjusted_peak.max(adjusted);
-        self.raw_peak = self.raw_peak.max(rss);
-        self.samples = self.samples.saturating_add(1);
-        self.last_modules = modules;
-        self.last_dead_pages = dead_pages;
-        (
-            adjusted,
-            self.adjusted_peak,
-            self.raw_peak,
-            self.samples,
-            self.monotonic,
-        )
-    }
-}
-
-static SCHEDULE: OnceLock<Mutex<ReclaimSchedule>> = OnceLock::new();
-
 impl EvalHeap {
-    /// Projects nonmoving reclamation and its carried adjusted-RSS schedule.
+    /// Projects nonmoving reclamation and a first-collection chronological peak.
     ///
     /// Hash-cons tables do not seed reachability. Reported external and
     /// metadata savings are conservative structural lower bounds.
@@ -251,85 +281,120 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if weak traversal finds a stale root, malformed
-    /// edge, invalid thunk state, or cannot grow scanner storage.
+    /// edge, or invalid thunk state; if allocation-directory, ambiguous-root,
+    /// or scanner storage cannot grow; or if one traceable allocation cannot be
+    /// represented by the Candidate-C reservation directory.
     pub(crate) fn nonmoving_reclaim_projection(
         &self,
         roots: &EvalRootSet,
         rss_bytes: u64,
-        modules: usize,
+        peak_rss_bytes: u64,
+        _modules: usize,
         independent_capture: bool,
+        ambiguous_words: &[u64],
     ) -> Result<NonmovingReclaimProjection, EvalHeapError> {
-        let reachable = self.weak_reachable_addresses(roots)?;
+        let precise_reachable = self.weak_reachable_addresses(roots)?;
+        let allocations = self.traceable_allocation_directory()?;
+        let domain = self.flat_arena.arena_domain_id();
+        let (ambiguous_roots, mut ambiguous_projection) =
+            filter_ambiguous_words(ambiguous_words, domain, &allocations)?;
+        ambiguous_projection.already_precise_reachable = ambiguous_roots
+            .iter()
+            .filter(|value| {
+                value
+                    .as_heap_ptr()
+                    .is_ok_and(|ptr| precise_reachable.contains(&(ptr.as_ptr() as usize)))
+            })
+            .count() as u64;
+        let mut augmented_roots = roots.clone();
+        let mut root_slot = roots.len();
+        for value in ambiguous_roots {
+            augmented_roots
+                .try_push_value_stack(root_slot, value)
+                .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                    table: "nonmoving ambiguous roots",
+                    entries: root_slot.saturating_add(1),
+                })?;
+            root_slot = root_slot
+                .checked_add(1)
+                .ok_or(EvalHeapError::RootScanLengthOverflow {
+                    table: "nonmoving ambiguous roots",
+                })?;
+        }
+        let reachable = self.weak_reachable_addresses(&augmented_roots)?;
+        ambiguous_projection.newly_reachable_objects =
+            reachable.len().saturating_sub(precise_reachable.len()) as u64;
         let residency = self.flat_reservation_residency();
         let page_bytes = residency
             .as_ref()
             .and_then(|result| result.as_ref().ok())
             .map_or(DEFAULT_PAGE_BYTES, |sample| sample.page_size);
-        let full_residency = residency
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .is_some_and(|sample| sample.total_pages == sample.total_resident_pages);
         let mut total_pages = HashSet::new();
         let mut live_pages = HashSet::new();
-        let mut objects = 0usize;
         let mut dead_list_spine_bytes = 0u64;
 
-        let mut extent = |address: usize, bytes: usize, live: bool| {
-            objects = objects.saturating_add(1);
-            mark_pages(&mut total_pages, address, bytes, page_bytes);
-            if live {
-                mark_pages(&mut live_pages, address, bytes, page_bytes);
+        for allocation in &allocations {
+            mark_pages(
+                &mut total_pages,
+                allocation.index as usize,
+                allocation.bytes,
+                page_bytes,
+            );
+            if reachable.contains(&allocation.address) {
+                mark_pages(
+                    &mut live_pages,
+                    allocation.index as usize,
+                    allocation.bytes,
+                    page_bytes,
+                );
             }
-        };
-        for object in self.flat.iter() {
-            let address = object.ptr().as_ptr() as usize;
-            extent(address, object.size_bytes(), reachable.contains(&address));
         }
         for object in self.flat_lists.iter() {
             let address = object.ptr().as_ptr() as usize;
-            let live = reachable.contains(&address);
-            extent(address, object.size_bytes(), live);
-            if !live {
+            if !reachable.contains(&address) {
                 dead_list_spine_bytes = dead_list_spine_bytes.saturating_add(
                     (object.object().payload().capacity() as u64)
                         .saturating_mul(std::mem::size_of::<Value>() as u64),
                 );
             }
         }
-        for object in self.flat_attrs.iter() {
-            let address = object.ptr().as_ptr() as usize;
-            extent(address, object.size_bytes(), reachable.contains(&address));
-        }
-        for object in self.flat_closures.iter() {
-            let address = object.ptr().as_ptr() as usize;
-            extent(address, object.size_bytes(), reachable.contains(&address));
-        }
-        for (address, bytes) in self.typed_thunk_heads.initialized_regions() {
-            extent(address, bytes, reachable.contains(&address));
-        }
         let mut scalar_regions = Vec::new();
         self.compressed_scalars
             .append_cell_regions(0, &mut scalar_regions);
         for (address, bytes) in scalar_regions {
-            extent(address, bytes, true);
+            let ptr = NonNull::new(address as *mut HeapObject).ok_or(
+                EvalHeapError::RootScanLengthOverflow {
+                    table: ALLOCATION_DIRECTORY_TABLE,
+                },
+            )?;
+            let index = self.flat_arena.index_for_pointer(ptr).ok_or(
+                EvalHeapError::RootScanLengthOverflow {
+                    table: ALLOCATION_DIRECTORY_TABLE,
+                },
+            )?;
+            mark_pages(&mut total_pages, index.raw() as usize, bytes, page_bytes);
+            mark_pages(&mut live_pages, index.raw() as usize, bytes, page_bytes);
         }
 
         let mut dead_pages: Vec<_> = total_pages.difference(&live_pages).copied().collect();
         dead_pages.sort_unstable();
         let (runs, largest_run) = coalesced_page_runs(&dead_pages);
+        let (resident_dead, residency_exact) = exact_resident_dead_pages(&dead_pages, |page| {
+            let byte_offset = page.checked_mul(page_bytes)?;
+            let raw = u32::try_from(byte_offset).ok()?;
+            self.flat_arena
+                .page_is_resident_at_index(crate::heap::ArenaIndex::new(raw))
+                .and_then(Result::ok)
+        });
         let pages = DeadPageProjection {
             total: total_pages.len() as u64,
             live: live_pages.len() as u64,
             dead: dead_pages.len() as u64,
             runs,
             largest_run,
-            resident_dead: if full_residency {
-                dead_pages.len() as u64
-            } else {
-                0
-            },
+            resident_dead,
             page_bytes: page_bytes as u64,
-            full_residency,
+            residency_exact,
         };
         let registries = self.registry_projection(&reachable);
         let mut hashes = HashProjection::default();
@@ -349,7 +414,7 @@ impl EvalHeap {
                 next.metadata.live_sized as usize,
             );
         }
-        objects = objects.saturating_add(
+        let objects = allocations.len().saturating_add(
             self.records
                 .iter()
                 .filter(|record| !record.is_retired())
@@ -357,39 +422,25 @@ impl EvalHeap {
         );
         let mark_scratch_bytes =
             projected_mark_scratch(objects, reachable.len(), total_pages.len());
-        let reclaimable = pages
-            .resident_dead_bytes()
-            .saturating_add(dead_list_spine_bytes)
-            .saturating_add(registries.strict_reclaimable());
-        let schedule = SCHEDULE.get_or_init(|| Mutex::new(ReclaimSchedule::default()));
-        let (adjusted_rss_bytes, adjusted_peak_bytes, raw_peak_bytes, samples, count_monotonic) =
-            match schedule.lock() {
-                Ok(mut state) => {
-                    if independent_capture {
-                        *state = ReclaimSchedule::default();
-                    }
-                    state.observe(
-                        modules,
-                        rss_bytes,
-                        reclaimable,
-                        mark_scratch_bytes,
-                        pages.dead,
-                    )
-                }
-                Err(poisoned) => {
-                    let mut state = poisoned.into_inner();
-                    if independent_capture {
-                        *state = ReclaimSchedule::default();
-                    }
-                    state.observe(
-                        modules,
-                        rss_bytes,
-                        reclaimable,
-                        mark_scratch_bytes,
-                        pages.dead,
-                    )
-                }
-            };
+        let stats =
+            self.flat_arena
+                .reservation_stats()
+                .unwrap_or(crate::heap::ReservedArenaStats {
+                    virtual_reserved_bytes: 0,
+                    used_bytes: 0,
+                    low_used_bytes: 0,
+                    high_used_bytes: 0,
+                    available_bytes: 0,
+                });
+        let side_metadata =
+            side_metadata_projection(stats.low_used_bytes, stats.high_used_bytes, page_bytes);
+        let chronology = chronological_peak_projection(
+            rss_bytes,
+            peak_rss_bytes,
+            pages.resident_dead_bytes(),
+            side_metadata.total_bytes,
+            mark_scratch_bytes,
+        );
         Ok(NonmovingReclaimProjection {
             roots: roots.len() as u64,
             reachable_objects: reachable.len() as u64,
@@ -398,15 +449,91 @@ impl EvalHeap {
             dead_list_spine_bytes,
             registries,
             hashes,
+            ambiguous_words: ambiguous_projection,
+            side_metadata,
             mark_scratch_bytes,
             rss_bytes,
-            adjusted_rss_bytes,
-            adjusted_peak_bytes,
-            raw_peak_bytes,
-            samples,
-            count_monotonic,
+            adjusted_rss_bytes: chronology.post_reclaim_rss_bytes,
+            collection_peak_bytes: chronology.collection_peak_bytes,
+            adjusted_peak_bytes: chronology.chronological_peak_bytes,
+            raw_peak_bytes: peak_rss_bytes,
+            samples: 1,
+            count_monotonic: true,
             independent_capture,
         })
+    }
+
+    fn traceable_allocation_directory(&self) -> Result<Vec<TraceableAllocation>, EvalHeapError> {
+        let capacity = self
+            .flat
+            .len()
+            .saturating_add(self.flat_lists.len())
+            .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.flat_closures.len())
+            .saturating_add(self.typed_thunk_heads.len());
+        let mut allocations = Vec::new();
+        allocations.try_reserve_exact(capacity).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: ALLOCATION_DIRECTORY_TABLE,
+                entries: capacity,
+            }
+        })?;
+        let mut push = |ptr: NonNull<HeapObject>, bytes: usize, tag: ValueTag| {
+            let index = self.flat_arena.index_for_pointer(ptr).ok_or(
+                EvalHeapError::RootScanLengthOverflow {
+                    table: ALLOCATION_DIRECTORY_TABLE,
+                },
+            )?;
+            allocations.push(TraceableAllocation {
+                address: ptr.as_ptr() as usize,
+                index: index.raw(),
+                bytes,
+                tag,
+            });
+            Ok::<(), EvalHeapError>(())
+        };
+        for object in self.flat.iter() {
+            let tag = match object.object().kind() {
+                FlatObjectKind::String => ValueTag::String,
+                FlatObjectKind::Path => ValueTag::Path,
+                _ => {
+                    return Err(EvalHeapError::RootScanLengthOverflow {
+                        table: ALLOCATION_DIRECTORY_TABLE,
+                    });
+                }
+            };
+            push(object.ptr(), object.size_bytes(), tag)?;
+        }
+        for object in self.flat_lists.iter() {
+            push(object.ptr(), object.size_bytes(), ValueTag::List)?;
+        }
+        for object in self.flat_attrs.iter() {
+            push(object.ptr(), object.size_bytes(), ValueTag::Attrs)?;
+        }
+        for object in self.flat_closures.iter() {
+            let payload = object.object().payload();
+            if !payload.is_retired() {
+                push(object.ptr(), object.size_bytes(), payload.tag())?;
+            }
+        }
+        for (address, bytes) in self.typed_thunk_heads.initialized_regions() {
+            let ptr = NonNull::new(address as *mut HeapObject).ok_or(
+                EvalHeapError::RootScanLengthOverflow {
+                    table: ALLOCATION_DIRECTORY_TABLE,
+                },
+            )?;
+            push(ptr, bytes, ValueTag::Thunk)?;
+        }
+        allocations.sort_unstable_by_key(|allocation| allocation.index);
+        if allocations
+            .windows(2)
+            .any(|pair| pair[0].index == pair[1].index)
+        {
+            return Err(EvalHeapError::RootScanLengthOverflow {
+                table: ALLOCATION_DIRECTORY_TABLE,
+            });
+        }
+        Ok(allocations)
     }
 
     fn registry_projection(&self, reachable: &HashSet<usize>) -> RegistryProjection {
@@ -480,6 +607,134 @@ fn hash_projection(
     })
 }
 
+fn filter_ambiguous_words(
+    words: &[u64],
+    domain: Option<crate::heap::ArenaDomainId>,
+    allocations: &[TraceableAllocation],
+) -> Result<(Vec<Value>, AmbiguousWordProjection), EvalHeapError> {
+    let mut projection = AmbiguousWordProjection {
+        words: words.len() as u64,
+        ..AmbiguousWordProjection::default()
+    };
+    let Some(domain) = domain else {
+        return Ok((Vec::new(), projection));
+    };
+    let mut unique = HashSet::new();
+    unique
+        .try_reserve(words.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: "nonmoving ambiguous root uniqueness",
+            entries: words.len(),
+        })?;
+    let mut roots = Vec::new();
+    roots
+        .try_reserve(words.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: "nonmoving ambiguous root values",
+            entries: words.len(),
+        })?;
+    for raw in words {
+        let Ok(word) = CompressedValueWord::from_raw(*raw) else {
+            continue;
+        };
+        projection.codec_valid = projection.codec_valid.saturating_add(1);
+        let (Some(candidate_domain), Some(index)) = (word.arena_domain(), word.arena_index())
+        else {
+            continue;
+        };
+        projection.indexed = projection.indexed.saturating_add(1);
+        if candidate_domain != domain {
+            continue;
+        }
+        projection.same_domain = projection.same_domain.saturating_add(1);
+        let Ok(position) =
+            allocations.binary_search_by_key(&index.raw(), |allocation| allocation.index)
+        else {
+            continue;
+        };
+        projection.exact_start = projection.exact_start.saturating_add(1);
+        if allocations[position].tag != word.semantic_tag() {
+            continue;
+        }
+        projection.kind_match = projection.kind_match.saturating_add(1);
+        if unique.insert(word.raw()) {
+            roots.push(Value::from_word(word));
+        }
+    }
+    projection.unique_roots = roots.len() as u64;
+    Ok((roots, projection))
+}
+
+fn exact_resident_dead_pages(
+    pages: &[usize],
+    mut page_is_resident: impl FnMut(usize) -> Option<bool>,
+) -> (u64, bool) {
+    let mut resident = 0u64;
+    for page in pages {
+        match page_is_resident(*page) {
+            Some(true) => resident = resident.saturating_add(1),
+            Some(false) => {}
+            None => return (0, false),
+        }
+    }
+    (resident, true)
+}
+
+fn side_metadata_projection(
+    low_used_bytes: usize,
+    high_used_bytes: usize,
+    page_size: usize,
+) -> SideMetadataProjection {
+    let lane_bits = |bytes: usize, unit: u64| {
+        let bytes = bytes as u64;
+        let units = bytes.div_ceil(unit);
+        units.div_ceil(8)
+    };
+    let allocation_start_bytes = lane_bits(low_used_bytes, ALLOCATION_GRANULE_BYTES)
+        .saturating_add(lane_bits(high_used_bytes, ALLOCATION_GRANULE_BYTES));
+    let mark_bytes = allocation_start_bytes;
+    let line_bytes = lane_bits(low_used_bytes, IMMIX_LINE_BYTES)
+        .saturating_add(lane_bits(high_used_bytes, IMMIX_LINE_BYTES));
+    let page_bytes = if page_size == 0 {
+        0
+    } else {
+        lane_bits(low_used_bytes, page_size as u64)
+            .saturating_add(lane_bits(high_used_bytes, page_size as u64))
+    };
+    SideMetadataProjection {
+        allocation_start_bytes,
+        mark_bytes,
+        line_bytes,
+        page_bytes,
+        total_bytes: allocation_start_bytes
+            .saturating_add(mark_bytes)
+            .saturating_add(line_bytes)
+            .saturating_add(page_bytes),
+    }
+}
+
+fn chronological_peak_projection(
+    current_rss_bytes: u64,
+    pre_probe_peak_rss_bytes: u64,
+    resident_reclaimable_bytes: u64,
+    persistent_side_metadata_bytes: u64,
+    collection_scratch_bytes: u64,
+) -> ChronologicalPeakProjection {
+    let post_reclaim_rss_bytes = current_rss_bytes
+        .saturating_sub(resident_reclaimable_bytes)
+        .saturating_add(persistent_side_metadata_bytes);
+    let collection_peak_bytes = current_rss_bytes
+        .saturating_add(persistent_side_metadata_bytes)
+        .saturating_add(collection_scratch_bytes);
+    ChronologicalPeakProjection {
+        post_reclaim_rss_bytes,
+        collection_peak_bytes,
+        chronological_peak_bytes: pre_probe_peak_rss_bytes
+            .max(collection_peak_bytes)
+            .max(post_reclaim_rss_bytes),
+    }
+}
+
 fn mark_pages(pages: &mut HashSet<usize>, address: usize, bytes: usize, page_bytes: usize) {
     if bytes == 0 || page_bytes == 0 {
         return;
@@ -529,23 +784,102 @@ mod tests {
     }
 
     #[test]
-    fn schedule_carries_peak_and_resets_for_a_new_evaluator() {
-        let mut schedule = ReclaimSchedule::default();
-        assert_eq!(
-            schedule.observe(512, 300, 100, 10, 20),
-            (210, 210, 300, 1, true)
-        );
-        assert_eq!(
-            schedule.observe(768, 400, 250, 10, 25),
-            (160, 210, 400, 2, true)
-        );
-        assert_eq!(schedule.observe(64, 90, 30, 5, 2), (65, 65, 90, 1, true));
+    fn exact_dead_page_residency_credits_only_resident_pages() {
+        let (resident, exact) = exact_resident_dead_pages(&[2, 4, 6], |page| Some(page != 4));
+        assert_eq!(resident, 2);
+        assert!(exact);
     }
 
     #[test]
-    fn adjusted_rss_saturates_before_adding_mark_scratch() {
-        let mut schedule = ReclaimSchedule::default();
-        assert_eq!(schedule.observe(512, 10, 100, 7, 1).0, 7);
+    fn dead_page_residency_fails_closed_on_one_missing_query() {
+        assert_eq!(
+            exact_resident_dead_pages(&[2, 4, 6], |page| (page != 4).then_some(true)),
+            (0, false)
+        );
+    }
+
+    #[test]
+    fn side_metadata_rounds_each_used_lane_independently() {
+        let projection = side_metadata_projection(9, 8, 4096);
+        assert_eq!(projection.allocation_start_bytes, 2);
+        assert_eq!(projection.mark_bytes, 2);
+        assert_eq!(projection.line_bytes, 2);
+        assert_eq!(projection.page_bytes, 2);
+        assert_eq!(projection.total_bytes, 8);
+    }
+
+    #[test]
+    fn chronology_never_repairs_an_existing_peak() {
+        let projection = chronological_peak_projection(200, 300, 100, 10, 20);
+        assert_eq!(projection.post_reclaim_rss_bytes, 110);
+        assert_eq!(projection.collection_peak_bytes, 230);
+        assert_eq!(projection.chronological_peak_bytes, 300);
+    }
+
+    #[test]
+    fn chronology_charges_collection_overlap_before_reclamation() {
+        let projection = chronological_peak_projection(200, 180, 500, 10, 20);
+        assert_eq!(projection.post_reclaim_rss_bytes, 10);
+        assert_eq!(projection.collection_peak_bytes, 230);
+        assert_eq!(projection.chronological_peak_bytes, 230);
+    }
+
+    #[test]
+    fn ambiguous_words_require_domain_start_and_kind() {
+        let domain = crate::heap::ArenaDomainId::allocate_logical().expect("test domain allocates");
+        let other = crate::heap::ArenaDomainId::allocate_logical().expect("other domain allocates");
+        let allocation = TraceableAllocation {
+            address: 0x1000,
+            index: 64,
+            bytes: 32,
+            tag: ValueTag::String,
+        };
+        let accepted =
+            CompressedValueWord::heap(domain, ValueTag::String, crate::heap::ArenaIndex::new(64))
+                .expect("string word encodes");
+        let wrong_domain =
+            CompressedValueWord::heap(other, ValueTag::String, crate::heap::ArenaIndex::new(64))
+                .expect("other-domain word encodes");
+        let interior =
+            CompressedValueWord::heap(domain, ValueTag::String, crate::heap::ArenaIndex::new(72))
+                .expect("interior word encodes");
+        let wrong_kind =
+            CompressedValueWord::heap(domain, ValueTag::List, crate::heap::ArenaIndex::new(64))
+                .expect("wrong-kind word encodes");
+        let invalid = u64::MAX;
+        let inline = CompressedValueWord::null();
+        let words = [
+            accepted.raw(),
+            accepted.raw(),
+            wrong_domain.raw(),
+            interior.raw(),
+            wrong_kind.raw(),
+            invalid,
+            inline.raw(),
+        ];
+
+        let (roots, projection) = filter_ambiguous_words(&words, Some(domain), &[allocation])
+            .expect("filtering succeeds");
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].word(), accepted);
+        assert_eq!(projection.words, 7);
+        assert_eq!(projection.codec_valid, 6);
+        assert_eq!(projection.indexed, 5);
+        assert_eq!(projection.same_domain, 4);
+        assert_eq!(projection.exact_start, 3);
+        assert_eq!(projection.kind_match, 2);
+        assert_eq!(projection.unique_roots, 1);
+    }
+
+    #[test]
+    fn ambiguous_words_decline_without_a_reservation_domain() {
+        let (roots, projection) =
+            filter_ambiguous_words(&[CompressedValueWord::null().raw()], None, &[])
+                .expect("missing domain declines");
+        assert!(roots.is_empty());
+        assert_eq!(projection.words, 1);
+        assert_eq!(projection.codec_valid, 0);
     }
 
     #[test]
@@ -561,7 +895,7 @@ mod tests {
             .try_push_value_stack(0, live)
             .expect("live root records");
         let result = heap
-            .nonmoving_reclaim_projection(&roots, 1024 * 1024, 512, true)
+            .nonmoving_reclaim_projection(&roots, 1024 * 1024, 1024 * 1024, 512, true, &[])
             .expect("projection succeeds");
         assert_eq!(result.reachable_objects, 1);
         assert!(result.allocated_objects >= 2);
@@ -570,6 +904,29 @@ mod tests {
             result.registries.strings_paths.current >= result.registries.strings_paths.live_sized
         );
         assert!(result.pages.dead <= result.pages.total);
+    }
+
+    #[test]
+    fn heap_projection_traces_an_exact_ambiguous_root() {
+        let mut heap = EvalHeap::new();
+        let ambiguous = heap
+            .alloc_string(NixString::from_bytes(b"ambiguous".to_vec()))
+            .expect("ambiguous string allocates");
+        let result = heap
+            .nonmoving_reclaim_projection(
+                &EvalRootSet::new(),
+                1024 * 1024,
+                1024 * 1024,
+                512,
+                true,
+                &[ambiguous.payload_bits()],
+            )
+            .expect("projection succeeds");
+
+        assert_eq!(result.ambiguous_words.unique_roots, 1);
+        assert_eq!(result.ambiguous_words.already_precise_reachable, 0);
+        assert_eq!(result.ambiguous_words.newly_reachable_objects, 1);
+        assert_eq!(result.reachable_objects, 1);
     }
 
     #[test]
