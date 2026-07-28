@@ -228,6 +228,30 @@ reuse. The next experiment must separate the policies: retain floor 64 for
 durable content memoization while allowing the lower-overhead local Ready
 directory to use its own floor.
 
+That mixed policy was also negative. With the durable floor fixed at 64 and
+the local Ready floor at zero, two clean pairs produced:
+
+```text
+mode                         instructions       cycles          max RSS       native wall
+durable 64, Ready off       136,593,721,752   53,228,248,278   4,242,884 KiB   18.468 s
+durable 64, Ready floor 0   141,938,328,204   55,727,209,850   4,221,522 KiB   19.799 s
+delta                                 +3.91%            +4.70%          -0.50%       +7.21%
+```
+
+Every sample was byte-identical. Demand-key confirmations fell from 49 to 4,
+but that did not compensate for candidate construction, two general-purpose
+def-site table probes, captured-slot resolution, source-thunk lookup, and the
+Ready-cell load on every eligible force. The small RSS movement is not a cache
+retention win: lookup happens after the duplicate thunk and captured
+environment were allocated, so this design cannot avoid their dominant memory
+cost. The separate floor remains useful opt-in experimental infrastructure,
+but the directory stays disabled by default. The next local-cache experiment
+must first classify retained hits by empty/flat/linked capture representation,
+then test a dense module-local direct-result slot for only the shapes that can
+avoid both hash tables and source-cell resolution. Allocation-time
+canonicalization is the stronger follow-on because it can avoid the duplicate
+thunk rather than merely skip its body.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
