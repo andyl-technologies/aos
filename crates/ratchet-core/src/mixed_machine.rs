@@ -892,7 +892,47 @@ impl MixedModulePlan {
             }
         }
         self.validate_reachability(&owners)?;
-        self.validate_executable_contract(&owners)
+        self.validate_executable_contract(&owners)?;
+        self.validate_statepoint_live_set_completeness(&owners)
+    }
+
+    /// Proves that every locally resumed continuation can reconstruct its
+    /// pre-existing SSA inputs from the statepoint's declared root set.
+    fn validate_statepoint_live_set_completeness(
+        &self,
+        owners: &[usize],
+    ) -> Result<(), MixedPlanError> {
+        let mut live_in_by_function = Vec::with_capacity(self.functions.len());
+        for function_index in 0..self.functions.len() {
+            live_in_by_function.push(compute_function_live_in(self, function_index));
+        }
+        for (statepoint_index, statepoint) in self.statepoints.iter().enumerate() {
+            if !matches!(statepoint.mode, MixedStatepointMode::Resume) {
+                continue;
+            }
+            let resume_index = statepoint.resume.index();
+            let function_index = owners[resume_index];
+            let function = self.functions[function_index];
+            let block_offset = resume_index - function.blocks.start() as usize;
+            let live_in = &live_in_by_function[function_index][block_offset];
+            for (slot, required) in live_in.iter().copied().enumerate() {
+                if !required {
+                    continue;
+                }
+                let value = MixedValueId::new(slot as u32);
+                if statepoint.result == Some(value) {
+                    continue;
+                }
+                if statepoint.live_values.binary_search(&value).is_err() {
+                    return Err(MixedPlanError::IncompleteStatepointLiveSet {
+                        statepoint: statepoint_index,
+                        resume: statepoint.resume,
+                        missing: value,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_operation(&self, index: usize, operation: MixedOp) -> Result<(), MixedPlanError> {
@@ -2090,6 +2130,16 @@ pub enum MixedPlanError {
         /// Live-set name.
         set: &'static str,
     },
+    /// A locally resumed continuation needs a value absent from its root set.
+    #[error("mixed statepoint {statepoint} resuming at {resume:?} omits live value {missing:?}")]
+    IncompleteStatepointLiveSet {
+        /// Statepoint with an incomplete spill/root contract.
+        statepoint: usize,
+        /// Local continuation entered after the oracle result is installed.
+        resume: MixedBlockId,
+        /// First continuation-live value absent from `live_values`.
+        missing: MixedValueId,
+    },
     /// A statepoint virtual set contains a value absent from its root set.
     #[error("mixed statepoint {statepoint} virtual live set is not a subset of live values")]
     VirtualLiveSetNotSubset {
@@ -2528,6 +2578,161 @@ fn validate_live_set(
         validate_value(*value, bounds, statepoint)?;
     }
     Ok(())
+}
+
+/// Computes exact block live-in sets for one function by monotone reverse dataflow.
+fn compute_function_live_in(plan: &MixedModulePlan, function_index: usize) -> Vec<Vec<bool>> {
+    let function = plan.functions[function_index];
+    let block_start = function.blocks.start() as usize;
+    let block_end = block_start + function.blocks.len() as usize;
+    let slot_count = plan.bounds.value_slots as usize;
+    let mut live_in = vec![vec![false; slot_count]; block_end - block_start];
+
+    loop {
+        let mut changed = false;
+        for block_index in (block_start..block_end).rev() {
+            let block = &plan.blocks[block_index];
+            let mut live = vec![false; slot_count];
+            for (successor, edge_definition) in liveness_successors(&block.terminator, plan) {
+                let successor_live = &live_in[successor.index() - block_start];
+                for (slot, required) in successor_live.iter().copied().enumerate() {
+                    if required
+                        && edge_definition.is_none_or(|defined| defined.as_u32() as usize != slot)
+                    {
+                        live[slot] = true;
+                    }
+                }
+            }
+            add_terminator_uses(&mut live, &block.terminator, plan);
+            let operation_start = block.operations.start() as usize;
+            let operation_end = operation_start + block.operations.len() as usize;
+            for operation in plan.operations[operation_start..operation_end].iter().rev() {
+                live[operation_destination(*operation).as_u32() as usize] = false;
+                for value in operation_uses(*operation).into_iter().flatten() {
+                    live[value.as_u32() as usize] = true;
+                }
+            }
+            let block_live = &mut live_in[block_index - block_start];
+            if *block_live != live {
+                *block_live = live;
+                changed = true;
+            }
+        }
+        if !changed {
+            return live_in;
+        }
+    }
+}
+
+/// Returns local successors and the value defined while taking each edge.
+fn liveness_successors(
+    terminator: &MixedTerminator,
+    plan: &MixedModulePlan,
+) -> Vec<(MixedBlockId, Option<MixedValueId>)> {
+    match terminator {
+        MixedTerminator::Jump { target } => vec![(*target, None)],
+        MixedTerminator::Branch {
+            when_true,
+            when_false,
+            ..
+        } => vec![(*when_true, None), (*when_false, None)],
+        MixedTerminator::Force {
+            result,
+            ready,
+            node,
+            apply,
+            gen_list,
+            fallback,
+            ..
+        } => {
+            let mut successors = vec![
+                (*ready, Some(*result)),
+                (*node, None),
+                (*apply, None),
+                (*gen_list, None),
+            ];
+            let statepoint = &plan.statepoints[fallback.index()];
+            if matches!(statepoint.mode, MixedStatepointMode::Resume) {
+                successors.push((statepoint.resume, statepoint.result));
+            }
+            successors
+        }
+        MixedTerminator::ApplyGuarded {
+            result,
+            continuation,
+            fallback,
+            ..
+        } => {
+            let mut successors = vec![(*continuation, Some(*result))];
+            let statepoint = &plan.statepoints[fallback.index()];
+            if matches!(statepoint.mode, MixedStatepointMode::Resume) {
+                successors.push((statepoint.resume, statepoint.result));
+            }
+            successors
+        }
+        MixedTerminator::Update { result, next, .. } => vec![(*next, Some(*result))],
+        MixedTerminator::Return { .. } => Vec::new(),
+        MixedTerminator::Materialize { statepoint } => {
+            let statepoint = &plan.statepoints[statepoint.index()];
+            if matches!(statepoint.mode, MixedStatepointMode::Resume) {
+                vec![(statepoint.resume, statepoint.result)]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Adds values consumed by a block terminator or its oracle boundary.
+fn add_terminator_uses(live: &mut [bool], terminator: &MixedTerminator, plan: &MixedModulePlan) {
+    let mut add = |value: MixedValueId| live[value.as_u32() as usize] = true;
+    match terminator {
+        MixedTerminator::Jump { .. } => {}
+        MixedTerminator::Branch { condition, .. } => add(*condition),
+        MixedTerminator::Force {
+            subject, fallback, ..
+        } => {
+            add(*subject);
+            for value in &plan.statepoints[fallback.index()].live_values {
+                add(*value);
+            }
+        }
+        MixedTerminator::ApplyGuarded {
+            function,
+            argument,
+            fallback,
+            ..
+        } => {
+            add(*function);
+            add(*argument);
+            for value in &plan.statepoints[fallback.index()].live_values {
+                add(*value);
+            }
+        }
+        MixedTerminator::Update { value, .. } | MixedTerminator::Return { value } => add(*value),
+        MixedTerminator::Materialize { statepoint } => {
+            for value in &plan.statepoints[statepoint.index()].live_values {
+                add(*value);
+            }
+        }
+    }
+}
+
+/// Returns the at-most-two SSA operands consumed by one pure operation.
+const fn operation_uses(operation: MixedOp) -> [Option<MixedValueId>; 2] {
+    match operation {
+        MixedOp::Move { source, .. } => [Some(source), None],
+        MixedOp::AddInt { left, right, .. } | MixedOp::LessThanInt { left, right, .. } => {
+            [Some(left), Some(right)]
+        }
+        MixedOp::ConstInt { .. }
+        | MixedOp::ConstBool { .. }
+        | MixedOp::ConstNull { .. }
+        | MixedOp::LoadLocal { .. }
+        | MixedOp::LoadUpvalue { .. }
+        | MixedOp::VirtualThunk { .. }
+        | MixedOp::VirtualClosure { .. } => [None, None],
+    }
 }
 
 fn local_successors(terminator: &MixedTerminator) -> Vec<MixedBlockId> {
@@ -3015,6 +3220,71 @@ mod tests {
             plan.validate(),
             Err(MixedPlanError::VirtualLiveSetNotSubset { statepoint: 0 })
         );
+    }
+
+    #[test]
+    fn resume_statepoint_rejects_an_omitted_continuation_live_value() {
+        let mut plan = connected_plan(1).expect("sample validates");
+        let MixedTerminator::Force { subject, .. } = &mut plan.blocks[1].terminator else {
+            panic!("sample continuation must force");
+        };
+        *subject = MixedValueId::new(1);
+        plan.statepoints[0].live_values = Box::new([MixedValueId::new(0)]);
+
+        assert_eq!(
+            plan.validate(),
+            Err(MixedPlanError::IncompleteStatepointLiveSet {
+                statepoint: 0,
+                resume: MixedBlockId::new(1),
+                missing: MixedValueId::new(1),
+            })
+        );
+    }
+
+    #[test]
+    fn reverse_liveness_unions_branched_continuation_inputs() {
+        let mut plan = connected_plan(1).expect("sample validates");
+        plan.blocks[1].terminator = MixedTerminator::Branch {
+            condition: MixedValueId::new(1),
+            when_true: MixedBlockId::new(2),
+            when_false: MixedBlockId::new(3),
+        };
+        plan.blocks[2].terminator = MixedTerminator::Return {
+            value: MixedValueId::new(0),
+        };
+        plan.blocks[3].operations = MixedTableRange::new(1, 0);
+        plan.blocks[3].terminator = MixedTerminator::Return {
+            value: MixedValueId::new(1),
+        };
+
+        let live_in = compute_function_live_in(&plan, 0);
+        assert!(live_in[1][0]);
+        assert!(live_in[1][1]);
+        assert_eq!(live_in[1].iter().filter(|live| **live).count(), 2);
+    }
+
+    #[test]
+    fn reverse_liveness_reaches_a_fixed_point_across_a_local_loop() {
+        let mut plan = connected_plan(1).expect("sample validates");
+        plan.blocks[1].terminator = MixedTerminator::Jump {
+            target: MixedBlockId::new(2),
+        };
+        plan.blocks[2].terminator = MixedTerminator::Branch {
+            condition: MixedValueId::new(0),
+            when_true: MixedBlockId::new(1),
+            when_false: MixedBlockId::new(3),
+        };
+        plan.blocks[3].operations = MixedTableRange::new(1, 0);
+        plan.blocks[3].terminator = MixedTerminator::Return {
+            value: MixedValueId::new(1),
+        };
+
+        let live_in = compute_function_live_in(&plan, 0);
+        for block in [1, 2] {
+            assert!(live_in[block][0]);
+            assert!(live_in[block][1]);
+            assert_eq!(live_in[block].iter().filter(|live| **live).count(), 2);
+        }
     }
 
     #[test]
