@@ -185,6 +185,7 @@ fn eval_whnf_owned_with_evaluator(
     evaluator.emit_ready_exclusive_window_report();
     emit_terminal_reservation_residency(&evaluator);
     emit_weak_liveness_census(&evaluator, value);
+    emit_permanent_retention_census(&evaluator, value);
     emit_stg_apply_census(&evaluator);
     #[cfg(feature = "active_packed_thunk_probe")]
     emit_active_packed_thunk_accounting(&evaluator);
@@ -509,6 +510,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     evaluator.emit_ready_exclusive_window_report();
     emit_terminal_reservation_residency(&evaluator);
     emit_weak_liveness_census(&evaluator, value);
+    emit_permanent_retention_census(&evaluator, value);
     emit_stg_apply_census(&evaluator);
     #[cfg(feature = "active_packed_thunk_probe")]
     emit_active_packed_thunk_accounting(&evaluator);
@@ -611,6 +613,39 @@ fn emit_weak_liveness_census(evaluator: &TreeWalk, value: Value) {
     match result {
         Ok(census) => eprintln!("{census}"),
         Err(error) => eprintln!("aos_nix_weak_liveness_census_error {error:?}"),
+    }
+}
+
+/// Emits terminal suspended-thunk retention by permanent lists and attrsets.
+fn emit_permanent_retention_census(evaluator: &TreeWalk, value: Value) {
+    if std::env::var_os("AOS_NIX_PERMANENT_RETENTION_CENSUS").is_none() {
+        return;
+    }
+    if !evaluator.has_complete_terminal_root_set() {
+        eprintln!(
+            "aos_nix_permanent_retention_census_error \
+             \"terminal evaluator continuations are not fully quiescent\""
+        );
+        return;
+    }
+    let result = evaluator
+        .mutator_root_set()
+        .and_then(|mut roots| {
+            roots
+                .try_push_value_stack(0, value)
+                .map_err(TreeWalkSafepointRootError::RootSet)?;
+            Ok(roots)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|roots| {
+            evaluator
+                .heap
+                .permanent_composite_retention_census(&roots)
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(census) => eprintln!("{census}"),
+        Err(error) => eprintln!("aos_nix_permanent_retention_census_error {error:?}"),
     }
 }
 

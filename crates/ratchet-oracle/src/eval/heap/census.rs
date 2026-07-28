@@ -332,6 +332,90 @@ pub(crate) struct WeakLivenessCensus {
     reservation_live_pages: u64,
 }
 
+/// Terminal attribution of suspended thunks retained by permanent composites.
+///
+/// "Dead" means unreachable from the evaluator's explicit terminal roots. Flat
+/// lists and attrsets are currently permanent, so this is a report-only
+/// projection of what collectible permanent storage could release.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PermanentCompositeRetentionCensus {
+    lists: KindTally,
+    reachable_lists: KindTally,
+    attrs: KindTally,
+    reachable_attrs: KindTally,
+    outgoing_suspended_edges: u64,
+    reachable_outgoing_suspended_edges: u64,
+    dead_outgoing_suspended_edges: u64,
+    suspended_thunks: KindTally,
+    true_root_suspended_thunks: KindTally,
+    dead_composite_only_suspended_thunks: KindTally,
+    reservation_total_pages: u64,
+    reservation_live_pages: u64,
+}
+
+impl fmt::Display for PermanentCompositeRetentionCensus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tally =
+            |f: &mut fmt::Formatter<'_>, name: &str, total: KindTally, reachable: KindTally| {
+                write!(
+                    f,
+                    "\"{name}\":[{},{},{},{}]",
+                    total.count, reachable.count, total.inline_bytes, reachable.inline_bytes
+                )
+            };
+        write!(
+            f,
+            "aos_nix_permanent_retention_census \
+             {{\"tally_order\":[\"total_count\",\"true_root_count\",\
+             \"total_inline_bytes\",\"true_root_inline_bytes\"],"
+        )?;
+        tally(f, "lists", self.lists, self.reachable_lists)?;
+        write!(f, ",")?;
+        tally(f, "attrs", self.attrs, self.reachable_attrs)?;
+        write!(
+            f,
+            ",\"outgoing_suspended_thunk_edges\":[{},{},{}],\
+             \"outgoing_edge_order\":[\"total\",\"from_true_root_composites\",\
+             \"from_dead_composites\"],\
+             \"suspended_thunks\":[{},{},{},{},{},{},{},{}],\
+             \"suspended_order\":[\"total_count\",\"true_root_count\",\
+             \"dead_composite_only_count\",\"unattached_count\",\
+             \"total_inline_bytes\",\"true_root_inline_bytes\",\
+             \"dead_composite_only_inline_bytes\",\"unattached_inline_bytes\"],\
+             \"reservation_pages\":[{},{},{},{}],\
+             \"reservation_order\":[\"total\",\"true_root_live\",\"zero_live\",\
+             \"zero_live_bytes\"],\
+             \"semantics\":{{\"dead_means_unreachable_from_true_roots\":true,\
+             \"permanent_composites_are_not_reclaimed\":true,\
+             \"bytes_are_inline_only\":true,\"terminal_only\":true}}}}",
+            self.outgoing_suspended_edges,
+            self.reachable_outgoing_suspended_edges,
+            self.dead_outgoing_suspended_edges,
+            self.suspended_thunks.count,
+            self.true_root_suspended_thunks.count,
+            self.dead_composite_only_suspended_thunks.count,
+            self.suspended_thunks
+                .count
+                .saturating_sub(self.true_root_suspended_thunks.count)
+                .saturating_sub(self.dead_composite_only_suspended_thunks.count),
+            self.suspended_thunks.inline_bytes,
+            self.true_root_suspended_thunks.inline_bytes,
+            self.dead_composite_only_suspended_thunks.inline_bytes,
+            self.suspended_thunks
+                .inline_bytes
+                .saturating_sub(self.true_root_suspended_thunks.inline_bytes)
+                .saturating_sub(self.dead_composite_only_suspended_thunks.inline_bytes),
+            self.reservation_total_pages,
+            self.reservation_live_pages,
+            self.reservation_total_pages
+                .saturating_sub(self.reservation_live_pages),
+            self.reservation_total_pages
+                .saturating_sub(self.reservation_live_pages)
+                .saturating_mul(4096),
+        )
+    }
+}
+
 impl fmt::Display for WeakLivenessCensus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind =
@@ -1191,6 +1275,179 @@ impl EvalHeap {
         Ok(census)
     }
 
+    /// Attributes suspended thunks retained by weak-unreachable flat composites.
+    ///
+    /// The first traversal uses only `roots`. A second traversal is seeded by
+    /// flat lists and attrsets absent from that true-root closure. A suspended
+    /// thunk in both closures is attributed to the true roots, never to the
+    /// dead-composite-only bucket.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if a root or edge is stale, a value tag
+    /// disagrees with its object, a thunk state is invalid, or diagnostic work
+    /// storage cannot grow.
+    pub(crate) fn permanent_composite_retention_census(
+        &self,
+        roots: &EvalRootSet,
+    ) -> Result<PermanentCompositeRetentionCensus, EvalHeapError> {
+        let true_reachable = self.weak_reachable_addresses(roots)?;
+        let mut suspended = Vec::new();
+        let mut suspended_addresses = HashSet::new();
+        for object in self.flat_closures.iter() {
+            let is_suspended = match object.object().payload() {
+                FlatClosurePayload::Thunk(thunk) => thunk.cell().state()? == ThunkState::Suspended,
+                FlatClosurePayload::SharedThunk(thunk) => {
+                    thunk.cell().state()? == ThunkState::Suspended
+                }
+                FlatClosurePayload::Lambda(_)
+                | FlatClosurePayload::Primop(_)
+                | FlatClosurePayload::Retired(_) => false,
+            };
+            if is_suspended {
+                let address = object.ptr().as_ptr() as usize;
+                suspended.push((address, object.size_bytes()));
+                suspended_addresses.insert(address);
+            }
+        }
+        for (address, bytes) in self.typed_thunk_heads.initialized_regions() {
+            let state = NonNull::new(address as *mut HeapObject)
+                .and_then(|ptr| self.typed_thunk_heads.resolve(ptr).ok())
+                .and_then(StableThunkHead::state);
+            if state == Some(ThunkState::Suspended) {
+                suspended.push((address, bytes));
+                suspended_addresses.insert(address);
+            }
+        }
+        for record in self.records.iter() {
+            if record.is_retired() {
+                continue;
+            }
+            let HeapObjectValue::Thunk(thunk) = &record.object else {
+                continue;
+            };
+            if thunk.cell().state()? == ThunkState::Suspended {
+                let address = record.ptr.as_ptr() as usize;
+                suspended.push((address, record.layout.size_bytes));
+                suspended_addresses.insert(address);
+            }
+        }
+
+        let mut census = PermanentCompositeRetentionCensus::default();
+        let mut dead_composite_seeds = Vec::new();
+
+        for object in self.flat_lists.iter() {
+            let address = object.ptr().as_ptr() as usize;
+            let reachable = true_reachable.contains(&address);
+            census.lists.add(object.size_bytes());
+            if reachable {
+                census.reachable_lists.add(object.size_bytes());
+            }
+            let edges = self.scan_flat_list_edges(object.object().payload())?;
+            let direct = edges
+                .iter()
+                .filter_map(|edge| edge.value().as_heap_ptr().ok())
+                .filter(|ptr| suspended_addresses.contains(&(ptr.as_ptr() as usize)))
+                .count() as u64;
+            census.outgoing_suspended_edges += direct;
+            if reachable {
+                census.reachable_outgoing_suspended_edges += direct;
+            } else {
+                census.dead_outgoing_suspended_edges += direct;
+                dead_composite_seeds.extend(edges.into_iter().map(|edge| edge.value()).filter(
+                    |value| {
+                        matches!(
+                            value.tag(),
+                            ValueTag::Thunk | ValueTag::Lambda | ValueTag::Primop
+                        )
+                    },
+                ));
+            }
+        }
+        for record in self.records.iter() {
+            if record.is_retired()
+                || record.allocation_domain != HeapAllocationDomain::PermanentShared
+                || !matches!(&record.object, HeapObjectValue::List(_))
+            {
+                continue;
+            }
+            let address = record.ptr.as_ptr() as usize;
+            let reachable = true_reachable.contains(&address);
+            census.lists.add(record.layout.size_bytes);
+            if !reachable {
+                let edges = self.scan_record_edges(record)?;
+                let direct = edges
+                    .iter()
+                    .filter_map(|edge| edge.value().as_heap_ptr().ok())
+                    .filter(|ptr| suspended_addresses.contains(&(ptr.as_ptr() as usize)))
+                    .count() as u64;
+                census.outgoing_suspended_edges += direct;
+                census.dead_outgoing_suspended_edges += direct;
+                dead_composite_seeds.extend(edges.into_iter().map(|edge| edge.value()).filter(
+                    |value| {
+                        matches!(
+                            value.tag(),
+                            ValueTag::Thunk | ValueTag::Lambda | ValueTag::Primop
+                        )
+                    },
+                ));
+            } else {
+                census.reachable_lists.add(record.layout.size_bytes);
+                let direct = self
+                    .scan_record_edges(record)?
+                    .iter()
+                    .filter_map(|edge| edge.value().as_heap_ptr().ok())
+                    .filter(|ptr| suspended_addresses.contains(&(ptr.as_ptr() as usize)))
+                    .count() as u64;
+                census.outgoing_suspended_edges += direct;
+                census.reachable_outgoing_suspended_edges += direct;
+            }
+        }
+        for object in self.flat_attrs.iter() {
+            let address = object.ptr().as_ptr() as usize;
+            let reachable = true_reachable.contains(&address);
+            census.attrs.add(object.size_bytes());
+            if reachable {
+                census.reachable_attrs.add(object.size_bytes());
+            }
+            let edges = self.scan_flat_attrs_edges(object.object().payload())?;
+            let direct = edges
+                .iter()
+                .filter_map(|edge| edge.value().as_heap_ptr().ok())
+                .filter(|ptr| suspended_addresses.contains(&(ptr.as_ptr() as usize)))
+                .count() as u64;
+            census.outgoing_suspended_edges += direct;
+            if reachable {
+                census.reachable_outgoing_suspended_edges += direct;
+            } else {
+                census.dead_outgoing_suspended_edges += direct;
+                dead_composite_seeds.extend(edges.into_iter().map(|edge| edge.value()).filter(
+                    |value| {
+                        matches!(
+                            value.tag(),
+                            ValueTag::Thunk | ValueTag::Lambda | ValueTag::Primop
+                        )
+                    },
+                ));
+            }
+        }
+
+        let dead_composite_reachable =
+            self.weak_reachable_addresses_from_values(dead_composite_seeds)?;
+        for (address, bytes) in suspended {
+            census.suspended_thunks.add(bytes);
+            if true_reachable.contains(&address) {
+                census.true_root_suspended_thunks.add(bytes);
+            } else if dead_composite_reachable.contains(&address) {
+                census.dead_composite_only_suspended_thunks.add(bytes);
+            }
+        }
+        let (total_pages, live_pages) = self.weak_liveness_reservation_pages(&true_reachable);
+        census.reservation_total_pages = total_pages;
+        census.reservation_live_pages = live_pages;
+        Ok(census)
+    }
+
     /// Returns addresses transitively reached from explicit non-intern roots.
     pub(in crate::eval::heap) fn weak_reachable_addresses(
         &self,
@@ -1238,6 +1495,9 @@ impl EvalHeap {
             if !include(root.source()) {
                 continue;
             }
+            if !super::root_scan::is_scannable_eval_heap_value(root.value()) {
+                continue;
+            }
             if matches!(root.source(), EvalRootSource::DetachedTypedThunkHead { .. }) {
                 let ptr = self.validate_detached_typed_thunk_head_root(root.value())?;
                 let address = ptr.as_ptr() as usize;
@@ -1249,7 +1509,52 @@ impl EvalHeap {
             }
         }
 
+        self.weak_reachable_addresses_from_worklist(worklist, visited, &mut observe)
+    }
+
+    /// Returns addresses reached from arbitrary heap-value seeds.
+    fn weak_reachable_addresses_from_values(
+        &self,
+        seeds: Vec<Value>,
+    ) -> Result<HashSet<usize>, EvalHeapError> {
+        let worklist = seeds
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| (value, index))
+            .collect();
+        self.weak_reachable_addresses_from_worklist(worklist, HashSet::new(), &mut |_, _| {})
+    }
+
+    /// Runs the common weak graph traversal from a prepared worklist.
+    fn weak_reachable_addresses_from_worklist(
+        &self,
+        mut worklist: Vec<(Value, usize)>,
+        mut visited: HashSet<usize>,
+        observe: &mut impl FnMut(usize, usize),
+    ) -> Result<HashSet<usize>, EvalHeapError> {
         while let Some((value, root_index)) = worklist.pop() {
+            if !super::root_scan::is_scannable_eval_heap_value(value) {
+                continue;
+            }
+            #[cfg(feature = "candidate_c_value")]
+            if matches!(
+                value.word().kind(),
+                crate::value::compressed::CompressedValueKind::BoxedInt
+                    | crate::value::compressed::CompressedValueKind::BoxedFloat
+            ) {
+                match value.word().kind() {
+                    crate::value::compressed::CompressedValueKind::BoxedInt => {
+                        self.decode_int_value(value)?;
+                    }
+                    crate::value::compressed::CompressedValueKind::BoxedFloat => {
+                        self.decode_float_value(value)?;
+                    }
+                    _ => {}
+                }
+                // Candidate-C scalar cells are pinned by the reservation-page
+                // projection and cannot contain outgoing heap edges.
+                continue;
+            }
             let (tag, ptr) = super::root_scan::heap_ptr(value)?;
             let address = ptr.as_ptr() as usize;
             if !visited.insert(address) {
@@ -1490,6 +1795,89 @@ fn mark_extent_pages(pages: &mut HashSet<usize>, address: usize, bytes: usize, p
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attrs::AttrEntry;
+    use crate::syntax::SymbolTable;
+
+    #[test]
+    fn permanent_retention_splits_true_dead_and_unattached_suspended_thunks() {
+        let mut heap = EvalHeap::new();
+        let true_root_thunk = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(1)))
+            .expect("true-root thunk allocates");
+        let dead_thunk = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(2)))
+            .expect("dead-composite thunk allocates");
+        let unattached_thunk = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(3)))
+            .expect("unattached thunk allocates");
+        let mut rooted_values = vec![Value::int(19), true_root_thunk];
+        #[cfg(feature = "candidate_c_value")]
+        rooted_values.push(
+            heap.alloc_int_value(i64::MAX)
+                .expect("boxed scalar allocates"),
+        );
+        let rooted_list = heap
+            .alloc_list(NixList::new(rooted_values))
+            .expect("rooted list allocates");
+        let _dead_list = heap
+            .alloc_list(NixList::new(vec![
+                Value::int(17),
+                dead_thunk,
+                true_root_thunk,
+            ]))
+            .expect("dead list allocates");
+        let mut symbols = SymbolTable::new();
+        let key = symbols.intern(b"held").expect("attribute key interns");
+        let attrs = FlatAttrs::new(vec![AttrEntry::new(key, dead_thunk)], &symbols)
+            .expect("attrs construct");
+        let _dead_attrs = heap.alloc_attrs(0, attrs).expect("dead attrs allocate");
+        let mut roots = EvalRootSet::new();
+        roots
+            .try_push_value_stack(0, rooted_list)
+            .expect("root records");
+        roots
+            .try_push_value_stack(1, Value::int(23))
+            .expect("immediate root records");
+
+        let before_len = heap.len();
+        let census = heap
+            .permanent_composite_retention_census(&roots)
+            .expect("retention census succeeds");
+
+        assert_eq!(census.lists.count, 2);
+        assert_eq!(census.reachable_lists.count, 1);
+        assert_eq!(census.attrs.count, 1);
+        assert_eq!(census.reachable_attrs.count, 0);
+        assert_eq!(census.outgoing_suspended_edges, 4);
+        assert_eq!(census.reachable_outgoing_suspended_edges, 1);
+        assert_eq!(census.dead_outgoing_suspended_edges, 3);
+        assert_eq!(census.suspended_thunks.count, 3);
+        assert_eq!(census.true_root_suspended_thunks.count, 1);
+        assert_eq!(census.dead_composite_only_suspended_thunks.count, 1);
+        assert_eq!(
+            census
+                .suspended_thunks
+                .count
+                .saturating_sub(census.true_root_suspended_thunks.count)
+                .saturating_sub(census.dead_composite_only_suspended_thunks.count),
+            1
+        );
+        assert_eq!(heap.len(), before_len, "the census does not reclaim");
+        assert_eq!(
+            heap.get_thunk(dead_thunk)
+                .expect("dead thunk resolves")
+                .cell()
+                .state(),
+            Ok(ThunkState::Suspended)
+        );
+        assert_eq!(
+            heap.get_thunk(unattached_thunk)
+                .expect("unattached thunk resolves")
+                .cell()
+                .state(),
+            Ok(ThunkState::Suspended)
+        );
+    }
 
     #[cfg(feature = "lifetime_cohort_probe")]
     #[test]
