@@ -273,6 +273,24 @@ fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
         economics.ready_cell_two_way_hits() >= economics.ready_cell_one_way_hits(),
         "{economics:?}"
     );
+    assert_eq!(
+        economics.ready_cell_ready_hits_empty()
+            + economics.ready_cell_ready_hits_flat_one()
+            + economics.ready_cell_ready_hits_flat_two()
+            + economics.ready_cell_ready_hits_flat_many()
+            + economics.ready_cell_ready_hits_linked_or_hybrid(),
+        economics.ready_cell_ready_hits(),
+        "exact Ready-hit representations must be mutually exclusive and exhaustive"
+    );
+    assert_eq!(
+        economics.ready_cell_one_way_hits_empty()
+            + economics.ready_cell_one_way_hits_flat_one()
+            + economics.ready_cell_one_way_hits_flat_two()
+            + economics.ready_cell_one_way_hits_flat_many()
+            + economics.ready_cell_one_way_hits_linked_or_hybrid(),
+        economics.ready_cell_one_way_hits(),
+        "one-way hit representations must be mutually exclusive and exhaustive"
+    );
     assert!(
         economics.ready_cell_ready_static_cost_units() >= 1,
         "{economics:?}"

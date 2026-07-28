@@ -45,8 +45,8 @@ use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
-    ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellPlanDecision,
-    ReadyCellRecipe, SharedMemoTable,
+    ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellHitRepresentation,
+    ReadyCellPlanDecision, ReadyCellRecipe, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -144,9 +144,6 @@ impl TreeWalk {
             return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         let ready_cell_candidate = self.ready_cell_candidate_for_thunk(thunk);
-        if let Some(candidate) = ready_cell_candidate.as_ref() {
-            self.observe_ready_cell_candidate(candidate);
-        }
         if let Some(candidate) = ready_cell_candidate.as_ref()
             && let Some(value) = self.probe_ready_cell_directory(candidate)
         {
@@ -342,10 +339,19 @@ impl TreeWalk {
                 ReadyCellCaptures::Many(captures.into_boxed_slice())
             }
         };
-        Some(ReadyCellCandidate {
+        let candidate = ReadyCellCandidate {
             recipe: ReadyCellRecipe::new(*body, captures),
             static_cost_units,
-        })
+        };
+        if self.ready_cell_census.is_some() {
+            let representation = ReadyCellHitRepresentation::classify(
+                candidate.recipe.arity(),
+                env.flat_base.is_some(),
+                !env.frames.is_empty(),
+            );
+            self.observe_ready_cell_candidate(&candidate, representation);
+        }
+        Some(candidate)
     }
 
     /// Classifies one Ready-cell def-site and validates its direct-slot plan.
@@ -470,7 +476,11 @@ impl TreeWalk {
     }
 
     /// Records one exact recipe observation and bounded-directory projections.
-    fn observe_ready_cell_candidate(&mut self, candidate: &ReadyCellCandidate) {
+    fn observe_ready_cell_candidate(
+        &mut self,
+        candidate: &ReadyCellCandidate,
+        representation: ReadyCellHitRepresentation,
+    ) {
         let Some(census) = self.ready_cell_census.as_mut() else {
             return;
         };
@@ -500,6 +510,32 @@ impl TreeWalk {
         stats.ready_cell_two_way_hits = stats
             .ready_cell_two_way_hits
             .saturating_add(u64::from(observation.two_way_hit));
+        if observation.ready_hit {
+            let counter = match representation {
+                ReadyCellHitRepresentation::Empty => &mut stats.ready_cell_ready_hits_empty,
+                ReadyCellHitRepresentation::FlatOne => &mut stats.ready_cell_ready_hits_flat_one,
+                ReadyCellHitRepresentation::FlatTwo => &mut stats.ready_cell_ready_hits_flat_two,
+                ReadyCellHitRepresentation::FlatMany => &mut stats.ready_cell_ready_hits_flat_many,
+                ReadyCellHitRepresentation::LinkedOrHybrid => {
+                    &mut stats.ready_cell_ready_hits_linked_or_hybrid
+                }
+            };
+            *counter = counter.saturating_add(1);
+        }
+        if observation.one_way_hit {
+            let counter = match representation {
+                ReadyCellHitRepresentation::Empty => &mut stats.ready_cell_one_way_hits_empty,
+                ReadyCellHitRepresentation::FlatOne => &mut stats.ready_cell_one_way_hits_flat_one,
+                ReadyCellHitRepresentation::FlatTwo => &mut stats.ready_cell_one_way_hits_flat_two,
+                ReadyCellHitRepresentation::FlatMany => {
+                    &mut stats.ready_cell_one_way_hits_flat_many
+                }
+                ReadyCellHitRepresentation::LinkedOrHybrid => {
+                    &mut stats.ready_cell_one_way_hits_linked_or_hybrid
+                }
+            };
+            *counter = counter.saturating_add(1);
+        }
         if observation.ready_hit {
             stats.ready_cell_ready_static_cost_units = stats
                 .ready_cell_ready_static_cost_units

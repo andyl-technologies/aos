@@ -62,6 +62,16 @@ pub struct MemoEconomicsStats {
     pub(crate) ready_cell_max_recipe_arity: u64,
     pub(crate) ready_cell_one_way_hits: u64,
     pub(crate) ready_cell_two_way_hits: u64,
+    pub(crate) ready_cell_ready_hits_empty: u64,
+    pub(crate) ready_cell_ready_hits_flat_one: u64,
+    pub(crate) ready_cell_ready_hits_flat_two: u64,
+    pub(crate) ready_cell_ready_hits_flat_many: u64,
+    pub(crate) ready_cell_ready_hits_linked_or_hybrid: u64,
+    pub(crate) ready_cell_one_way_hits_empty: u64,
+    pub(crate) ready_cell_one_way_hits_flat_one: u64,
+    pub(crate) ready_cell_one_way_hits_flat_two: u64,
+    pub(crate) ready_cell_one_way_hits_flat_many: u64,
+    pub(crate) ready_cell_one_way_hits_linked_or_hybrid: u64,
     pub(crate) ready_cell_ready_static_cost_units: u64,
     pub(crate) ready_cell_one_way_static_cost_units: u64,
     pub(crate) ready_cell_two_way_static_cost_units: u64,
@@ -181,6 +191,56 @@ impl MemoEconomicsStats {
     /// Returns hits in a two-entry per-def-site Ready-directory simulation.
     pub const fn ready_cell_two_way_hits(&self) -> u64 {
         self.ready_cell_two_way_hits
+    }
+
+    /// Returns exact Ready hits with no planned lexical captures.
+    pub const fn ready_cell_ready_hits_empty(&self) -> u64 {
+        self.ready_cell_ready_hits_empty
+    }
+
+    /// Returns exact Ready hits with one exclusively flat planned capture.
+    pub const fn ready_cell_ready_hits_flat_one(&self) -> u64 {
+        self.ready_cell_ready_hits_flat_one
+    }
+
+    /// Returns exact Ready hits with two exclusively flat planned captures.
+    pub const fn ready_cell_ready_hits_flat_two(&self) -> u64 {
+        self.ready_cell_ready_hits_flat_two
+    }
+
+    /// Returns exact Ready hits with more than two exclusively flat planned captures.
+    pub const fn ready_cell_ready_hits_flat_many(&self) -> u64 {
+        self.ready_cell_ready_hits_flat_many
+    }
+
+    /// Returns exact Ready hits whose captures include linked frames.
+    pub const fn ready_cell_ready_hits_linked_or_hybrid(&self) -> u64 {
+        self.ready_cell_ready_hits_linked_or_hybrid
+    }
+
+    /// Returns one-way retained hits with no planned lexical captures.
+    pub const fn ready_cell_one_way_hits_empty(&self) -> u64 {
+        self.ready_cell_one_way_hits_empty
+    }
+
+    /// Returns one-way retained hits with one exclusively flat planned capture.
+    pub const fn ready_cell_one_way_hits_flat_one(&self) -> u64 {
+        self.ready_cell_one_way_hits_flat_one
+    }
+
+    /// Returns one-way retained hits with two exclusively flat planned captures.
+    pub const fn ready_cell_one_way_hits_flat_two(&self) -> u64 {
+        self.ready_cell_one_way_hits_flat_two
+    }
+
+    /// Returns one-way retained hits with more than two exclusively flat captures.
+    pub const fn ready_cell_one_way_hits_flat_many(&self) -> u64 {
+        self.ready_cell_one_way_hits_flat_many
+    }
+
+    /// Returns one-way retained hits whose captures include linked frames.
+    pub const fn ready_cell_one_way_hits_linked_or_hybrid(&self) -> u64 {
+        self.ready_cell_one_way_hits_linked_or_hybrid
     }
 
     /// Returns static cost units avoided by the unbounded Ready simulation.
@@ -318,6 +378,36 @@ impl MemoEconomicsStats {
             ready_cell_two_way_hits: self
                 .ready_cell_two_way_hits
                 .saturating_add(other.ready_cell_two_way_hits),
+            ready_cell_ready_hits_empty: self
+                .ready_cell_ready_hits_empty
+                .saturating_add(other.ready_cell_ready_hits_empty),
+            ready_cell_ready_hits_flat_one: self
+                .ready_cell_ready_hits_flat_one
+                .saturating_add(other.ready_cell_ready_hits_flat_one),
+            ready_cell_ready_hits_flat_two: self
+                .ready_cell_ready_hits_flat_two
+                .saturating_add(other.ready_cell_ready_hits_flat_two),
+            ready_cell_ready_hits_flat_many: self
+                .ready_cell_ready_hits_flat_many
+                .saturating_add(other.ready_cell_ready_hits_flat_many),
+            ready_cell_ready_hits_linked_or_hybrid: self
+                .ready_cell_ready_hits_linked_or_hybrid
+                .saturating_add(other.ready_cell_ready_hits_linked_or_hybrid),
+            ready_cell_one_way_hits_empty: self
+                .ready_cell_one_way_hits_empty
+                .saturating_add(other.ready_cell_one_way_hits_empty),
+            ready_cell_one_way_hits_flat_one: self
+                .ready_cell_one_way_hits_flat_one
+                .saturating_add(other.ready_cell_one_way_hits_flat_one),
+            ready_cell_one_way_hits_flat_two: self
+                .ready_cell_one_way_hits_flat_two
+                .saturating_add(other.ready_cell_one_way_hits_flat_two),
+            ready_cell_one_way_hits_flat_many: self
+                .ready_cell_one_way_hits_flat_many
+                .saturating_add(other.ready_cell_one_way_hits_flat_many),
+            ready_cell_one_way_hits_linked_or_hybrid: self
+                .ready_cell_one_way_hits_linked_or_hybrid
+                .saturating_add(other.ready_cell_one_way_hits_linked_or_hybrid),
             ready_cell_ready_static_cost_units: self
                 .ready_cell_ready_static_cost_units
                 .saturating_add(other.ready_cell_ready_static_cost_units),
@@ -345,5 +435,43 @@ impl MemoEconomicsStats {
             record_samples: self.record_samples.saturating_add(other.record_samples),
             record_nanos: self.record_nanos.saturating_add(other.record_nanos),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoEconomicsStats;
+
+    #[test]
+    fn merged_preserves_ready_hit_representation_counters() {
+        let left = MemoEconomicsStats {
+            ready_cell_ready_hits_empty: 1,
+            ready_cell_ready_hits_flat_one: 2,
+            ready_cell_ready_hits_flat_two: 3,
+            ready_cell_ready_hits_flat_many: 4,
+            ready_cell_ready_hits_linked_or_hybrid: 5,
+            ..MemoEconomicsStats::default()
+        };
+        let right = MemoEconomicsStats {
+            ready_cell_one_way_hits_empty: 6,
+            ready_cell_one_way_hits_flat_one: 7,
+            ready_cell_one_way_hits_flat_two: 8,
+            ready_cell_one_way_hits_flat_many: 9,
+            ready_cell_one_way_hits_linked_or_hybrid: 10,
+            ..MemoEconomicsStats::default()
+        };
+
+        let merged = left.merged(right);
+
+        assert_eq!(merged.ready_cell_ready_hits_empty(), 1);
+        assert_eq!(merged.ready_cell_ready_hits_flat_one(), 2);
+        assert_eq!(merged.ready_cell_ready_hits_flat_two(), 3);
+        assert_eq!(merged.ready_cell_ready_hits_flat_many(), 4);
+        assert_eq!(merged.ready_cell_ready_hits_linked_or_hybrid(), 5);
+        assert_eq!(merged.ready_cell_one_way_hits_empty(), 6);
+        assert_eq!(merged.ready_cell_one_way_hits_flat_one(), 7);
+        assert_eq!(merged.ready_cell_one_way_hits_flat_two(), 8);
+        assert_eq!(merged.ready_cell_one_way_hits_flat_many(), 9);
+        assert_eq!(merged.ready_cell_one_way_hits_linked_or_hybrid(), 10);
     }
 }

@@ -318,6 +318,16 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
 \"ready_cell_max_recipe_arity\":{},\
 \"ready_cell_one_way_hits\":{},\
 \"ready_cell_two_way_hits\":{},\
+\"ready_cell_ready_hits_empty\":{},\
+\"ready_cell_ready_hits_flat_one\":{},\
+\"ready_cell_ready_hits_flat_two\":{},\
+\"ready_cell_ready_hits_flat_many\":{},\
+\"ready_cell_ready_hits_linked_or_hybrid\":{},\
+\"ready_cell_one_way_hits_empty\":{},\
+\"ready_cell_one_way_hits_flat_one\":{},\
+\"ready_cell_one_way_hits_flat_two\":{},\
+\"ready_cell_one_way_hits_flat_many\":{},\
+\"ready_cell_one_way_hits_linked_or_hybrid\":{},\
 \"ready_cell_ready_static_cost_units\":{},\
 \"ready_cell_one_way_static_cost_units\":{},\
 \"ready_cell_two_way_static_cost_units\":{},\
@@ -349,6 +359,16 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
         memo.ready_cell_max_recipe_arity(),
         memo.ready_cell_one_way_hits(),
         memo.ready_cell_two_way_hits(),
+        memo.ready_cell_ready_hits_empty(),
+        memo.ready_cell_ready_hits_flat_one(),
+        memo.ready_cell_ready_hits_flat_two(),
+        memo.ready_cell_ready_hits_flat_many(),
+        memo.ready_cell_ready_hits_linked_or_hybrid(),
+        memo.ready_cell_one_way_hits_empty(),
+        memo.ready_cell_one_way_hits_flat_one(),
+        memo.ready_cell_one_way_hits_flat_two(),
+        memo.ready_cell_one_way_hits_flat_many(),
+        memo.ready_cell_one_way_hits_linked_or_hybrid(),
         memo.ready_cell_ready_static_cost_units(),
         memo.ready_cell_one_way_static_cost_units(),
         memo.ready_cell_two_way_static_cost_units(),
@@ -380,7 +400,7 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("standalone memo statistics object exists");
 
-        assert_eq!(memo.len(), 34);
+        assert_eq!(memo.len(), 44);
         assert!(memo.values().all(|value| value.as_u64() == Some(0)));
         assert!(memo.contains_key("potential_hit_static_cost_units"));
         assert!(memo.contains_key("ready_structural_hits"));
@@ -394,6 +414,16 @@ mod tests {
         assert!(memo.contains_key("ready_cell_pending_overlaps"));
         assert!(memo.contains_key("ready_cell_one_way_hits"));
         assert!(memo.contains_key("ready_cell_two_way_hits"));
+        assert!(memo.contains_key("ready_cell_ready_hits_empty"));
+        assert!(memo.contains_key("ready_cell_ready_hits_flat_one"));
+        assert!(memo.contains_key("ready_cell_ready_hits_flat_two"));
+        assert!(memo.contains_key("ready_cell_ready_hits_flat_many"));
+        assert!(memo.contains_key("ready_cell_ready_hits_linked_or_hybrid"));
+        assert!(memo.contains_key("ready_cell_one_way_hits_empty"));
+        assert!(memo.contains_key("ready_cell_one_way_hits_flat_one"));
+        assert!(memo.contains_key("ready_cell_one_way_hits_flat_two"));
+        assert!(memo.contains_key("ready_cell_one_way_hits_flat_many"));
+        assert!(memo.contains_key("ready_cell_one_way_hits_linked_or_hybrid"));
         assert!(memo.contains_key("ready_cell_non_slot_declines"));
         assert!(memo.contains_key("key_nanos"));
         assert!(memo.contains_key("probe_nanos"));

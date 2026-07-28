@@ -480,6 +480,46 @@ pub(super) struct ReadyCellCandidate {
     pub(super) static_cost_units: u32,
 }
 
+/// Actual lexical representation of one stats-only Ready-cell candidate.
+///
+/// Flat categories require a capture plan with the named arity and an
+/// exclusively flat captured environment. Any linked frame, including a
+/// linked suffix beside a flat prefix, is classified as linked or hybrid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReadyCellHitRepresentation {
+    /// The capture plan references no lexical slots.
+    Empty,
+    /// One planned slot is stored in an exclusively flat environment.
+    FlatOne,
+    /// Two planned slots are stored in an exclusively flat environment.
+    FlatTwo,
+    /// More than two planned slots are stored in an exclusively flat environment.
+    FlatMany,
+    /// At least one planned slot resolves through a linked or hybrid environment.
+    LinkedOrHybrid,
+}
+
+impl ReadyCellHitRepresentation {
+    /// Classifies one candidate from its planned arity and actual environment shape.
+    pub(super) const fn classify(
+        capture_arity: usize,
+        has_flat_base: bool,
+        has_linked_frames: bool,
+    ) -> Self {
+        if capture_arity == 0 {
+            return Self::Empty;
+        }
+        if !has_flat_base || has_linked_frames {
+            return Self::LinkedOrHybrid;
+        }
+        match capture_arity {
+            1 => Self::FlatOne,
+            2 => Self::FlatTwo,
+            _ => Self::FlatMany,
+        }
+    }
+}
+
 /// One weak, worker-local Ready-cell directory entry.
 ///
 /// `source_thunk` is intentionally not a GC root. The active directory exists
@@ -872,6 +912,34 @@ mod tests {
             ),
             captures,
         )
+    }
+
+    #[test]
+    fn ready_cell_hit_representations_partition_capture_layouts() {
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(0, false, false),
+            ReadyCellHitRepresentation::Empty
+        );
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(1, true, false),
+            ReadyCellHitRepresentation::FlatOne
+        );
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(2, true, false),
+            ReadyCellHitRepresentation::FlatTwo
+        );
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(3, true, false),
+            ReadyCellHitRepresentation::FlatMany
+        );
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(1, false, true),
+            ReadyCellHitRepresentation::LinkedOrHybrid
+        );
+        assert_eq!(
+            ReadyCellHitRepresentation::classify(2, true, true),
+            ReadyCellHitRepresentation::LinkedOrHybrid
+        );
     }
 
     #[test]
