@@ -208,6 +208,7 @@ pub use config_types::*;
 mod module_types;
 pub(crate) use module_types::*;
 mod fetch_types;
+mod module_ir_source_census;
 pub(crate) use fetch_types::*;
 mod env_types;
 pub(crate) use env_types::*;

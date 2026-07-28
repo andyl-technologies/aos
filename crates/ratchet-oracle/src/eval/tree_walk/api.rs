@@ -227,6 +227,7 @@ fn eval_whnf_owned_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     emit_heap_refusal_census(&evaluator);
     emit_heap_storage_census(&evaluator);
+    super::module_ir_source_census::emit_module_ir_source_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
     evaluator.emit_peak_ordinal_report();
     emit_direct_island_probe_report(&evaluator);
@@ -560,6 +561,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     emit_heap_refusal_census(&evaluator);
     emit_heap_storage_census(&evaluator);
+    super::module_ir_source_census::emit_module_ir_source_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
     evaluator.emit_peak_ordinal_report();
     emit_direct_island_probe_report(&evaluator);

@@ -39,8 +39,8 @@ pub use const_fold::ConstFold;
 pub use dead_binding_elim::DeadBindingElim;
 pub use facts::{
     BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,
-    LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand, LambdaFormalSummary,
-    SharedChainReason, Strictness, ThunkSharing,
+    IrFactsStorage, LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand,
+    LambdaFormalSummary, SharedChainReason, Strictness, ThunkSharing,
 };
 pub use inline::InlineSingleUse;
 pub use render::render_ir;

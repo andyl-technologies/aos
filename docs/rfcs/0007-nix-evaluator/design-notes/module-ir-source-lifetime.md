@@ -139,6 +139,74 @@ Before implementation, add a report-only component and hotness census:
 - module node-read counts and last-read epochs; and
 - precise code-live and provenance-live module sets at collector checkpoints.
 
+### Terminal component census
+
+The first bounded measurement step is implemented behind
+`AOS_NIX_MODULE_IR_SOURCE_CENSUS=1`. At either owned evaluator terminal it
+emits one `aos_nix_module_ir_source_census` line followed by strict JSON. The
+default path does not inspect modules or compute source digests, and the opt-in
+path is compatible with typed thunk heads because it reads only immutable
+module metadata after evaluation.
+
+The report reconciles the existing aggregate `Ir::resident_bytes` estimate with
+exact component totals for:
+
+- module table length, capacity, and allocated bytes;
+- IR node and child lane lengths, capacities, and bytes;
+- every dense fact lane, flat capture slots, lambda formal/value summary
+  arrays, and nested summary key arrays;
+- symbols, frame lanes and captures, `with` chains and scopes, attribute path
+  lanes and segments, bindings, and shape lanes and keys; and
+- source name/raw lengths and capacities, initialized line-start indices, and
+  module path-literal bases.
+
+The terminal walk also reports duplicate groups and entries beyond the first
+for raw-source BLAKE3 digests, path-literal bases, and exact
+`(source digest, path base)` pairs. The digest is diagnostic-only and cannot
+reach an evaluator-observed identity. An uninitialized lazy line-start index
+stays uninitialized while it is measured.
+
+This step deliberately omits per-node read counters: adding a counter to every
+node lookup would perturb the main execution corridor and is unnecessary for
+choosing between packed facts, packed nodes, and source snapshot paging. Module
+hotness and collector code/provenance liveness remain later probes, to be added
+at already existing statepoints rather than on every node access.
+
+The exact typed-head system-toplevel run remained byte-identical at the pinned
+derivation and reported:
+
+```text
+modules                         8,432
+IR nodes                    2,827,420
+IR total bytes             326,351,246
+  node lane                175,407,000
+  facts total              123,398,004
+    capture-plan lane       67,858,080
+    flat-access lane        33,929,040
+    expression facts         8,482,260
+    capture slots            2,681,536
+  bindings                  12,756,744
+  child lane                 3,005,008
+module table                12,320,768
+source/provenance total     50,436,444
+  raw source                46,145,178
+  initialized line starts    3,583,592
+  names                        449,289
+  path bases                   258,385
+```
+
+Component accounting reconciled exactly with `Ir::resident_bytes`. The result
+confirms that packing dense facts is the first IR target: capture-plan and
+flat-access option lanes alone occupy 101.8 MB, even though their payloads are
+kind-disjoint. The 175.4 MB node lane is the next target. Source snapshot
+paging has a measured 46.1 MB raw-byte ceiling, while line-index storage is a
+separate 3.6 MB category that must remain available for provenance behavior.
+
+The duplicate census found one raw-source digest group containing 5,357 entries
+and many repeated path bases. It does not yet report duplicate byte mass, so
+entry counts alone receive no deduplication credit; the next version should
+weight groups by source/path length before proposing content sharing.
+
 ## Parallel duplication
 
 `TreeWalkModule: Clone` is currently a deep clone. Parallel registry
@@ -150,7 +218,8 @@ speed results purchase approximately worker-count-proportional IR memory.
 
 ## Ordered implementation
 
-1. Component/hotness census to replace projections with exact counts.
+1. Component census to replace storage projections with exact counts
+   (implemented); statepoint-level hotness/liveness remains.
 2. File-backed exact source snapshot and eager identity/line-index freezing.
 3. Authoritative packed facts.
 4. Authoritative packed nodes plus resident span lane.

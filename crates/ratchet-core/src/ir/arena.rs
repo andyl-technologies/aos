@@ -21,9 +21,19 @@ impl IrArena {
         &self.nodes
     }
 
+    /// Returns the allocated capacity of the fixed-stride node lane.
+    pub fn node_capacity(&self) -> usize {
+        self.nodes.capacity()
+    }
+
     /// Returns all child-pool entries in allocation order.
     pub fn child_pool(&self) -> &[IrId] {
         &self.children
+    }
+
+    /// Returns the allocated capacity of the variable-arity child lane.
+    pub fn child_capacity(&self) -> usize {
+        self.children.capacity()
     }
 
     /// Returns bytes allocated for the fixed node and child vectors.

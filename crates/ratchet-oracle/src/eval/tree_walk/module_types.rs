@@ -237,6 +237,19 @@ impl ModuleSource {
         let column = offset.checked_sub(line_start)?.checked_add(1)?;
         Some((i64::try_from(line).ok()?, i64::from(column)))
     }
+
+    /// Returns the initialized line-index entry count and owned bytes.
+    ///
+    /// An unqueried source returns `None`; this diagnostic accessor never
+    /// initializes the lazy index.
+    pub(crate) fn initialized_line_starts_storage(&self) -> Option<(usize, usize)> {
+        self.line_starts.get().map(|starts| {
+            (
+                starts.len(),
+                std::mem::size_of_val::<[u32]>(starts.as_ref()),
+            )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +267,18 @@ mod module_source_tests {
         assert_eq!(source.line_column_at_offset(5), Some((3, 1)));
         assert_eq!(source.line_column_at_offset(6), None);
         assert_eq!(source.line_column_at_offset(2), Some((2, 1)));
+    }
+
+    #[test]
+    fn line_index_storage_observation_does_not_initialize_it() {
+        let source = ModuleSource::new(b"fixture.nix".to_vec(), b"a\nbc\n".to_vec());
+
+        assert_eq!(source.initialized_line_starts_storage(), None);
+        assert_eq!(source.line_column_at_offset(2), Some((2, 1)));
+        assert_eq!(
+            source.initialized_line_starts_storage(),
+            Some((3, 3 * std::mem::size_of::<u32>()))
+        );
     }
 }
 

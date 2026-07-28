@@ -353,6 +353,56 @@ pub struct IrFacts {
     lambda_call_summaries: Box<[LambdaCallSummary]>,
 }
 
+/// Exact owned-storage components for an [`IrFacts`] table.
+///
+/// Every byte count excludes the inline [`IrFacts`] value and allocator
+/// metadata. The lane fields measure their boxed allocations; the nested
+/// fields measure allocations reached from entries in those lanes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IrFactsStorage {
+    /// Number of per-node fact records.
+    pub node_count: usize,
+    /// Bytes occupied by the [`ExprFacts`] lane.
+    pub expr_facts_bytes: usize,
+    /// Bytes occupied by the `tryEval` barrier lane.
+    pub try_eval_barrier_bytes: usize,
+    /// Bytes occupied by the eager-assembly lane.
+    pub assembly_eager_bytes: usize,
+    /// Bytes occupied by the structural-totality lane.
+    pub structurally_total_bytes: usize,
+    /// Bytes occupied by the optional capture-plan lane.
+    pub capture_plan_lane_bytes: usize,
+    /// Bytes occupied by flat-capture slot arrays reached from capture plans.
+    pub capture_slot_bytes: usize,
+    /// Bytes occupied by the optional flat-capture-access lane.
+    pub flat_capture_access_lane_bytes: usize,
+    /// Bytes occupied by the lambda-call-summary lane.
+    pub lambda_call_summary_lane_bytes: usize,
+    /// Bytes occupied by formal-summary arrays reached from call summaries.
+    pub lambda_formal_summary_bytes: usize,
+    /// Bytes occupied by attribute-value-summary arrays reached from call summaries.
+    pub lambda_attr_value_summary_bytes: usize,
+    /// Bytes occupied by key arrays reached from attribute-value summaries.
+    pub lambda_attr_key_bytes: usize,
+}
+
+impl IrFactsStorage {
+    /// Returns the sum of all owned lane and nested allocations.
+    pub fn total_bytes(self) -> usize {
+        self.expr_facts_bytes
+            .saturating_add(self.try_eval_barrier_bytes)
+            .saturating_add(self.assembly_eager_bytes)
+            .saturating_add(self.structurally_total_bytes)
+            .saturating_add(self.capture_plan_lane_bytes)
+            .saturating_add(self.capture_slot_bytes)
+            .saturating_add(self.flat_capture_access_lane_bytes)
+            .saturating_add(self.lambda_call_summary_lane_bytes)
+            .saturating_add(self.lambda_formal_summary_bytes)
+            .saturating_add(self.lambda_attr_value_summary_bytes)
+            .saturating_add(self.lambda_attr_key_bytes)
+    }
+}
+
 impl IrFacts {
     /// Creates a conservative fact table with one entry per IR node.
     pub fn conservative(node_count: usize) -> Self {
@@ -384,14 +434,12 @@ impl IrFacts {
 
     /// Returns bytes allocated by the dense facts arrays and nested summaries.
     pub fn storage_bytes(&self) -> usize {
-        let dense = std::mem::size_of_val(&*self.nodes)
-            .saturating_add(std::mem::size_of_val(&*self.try_eval_barriers))
-            .saturating_add(std::mem::size_of_val(&*self.assembly_eager))
-            .saturating_add(std::mem::size_of_val(&*self.structurally_total))
-            .saturating_add(std::mem::size_of_val(&*self.capture_plans))
-            .saturating_add(std::mem::size_of_val(&*self.flat_capture_accesses))
-            .saturating_add(std::mem::size_of_val(&*self.lambda_call_summaries));
-        let capture_slots = self
+        self.storage_components().total_bytes()
+    }
+
+    /// Returns exact byte counts for every owned fact lane and nested array.
+    pub fn storage_components(&self) -> IrFactsStorage {
+        let capture_slot_bytes = self
             .capture_plans
             .iter()
             .filter_map(|plan| match plan {
@@ -399,17 +447,36 @@ impl IrFacts {
                 Some(CapturePlan::SharedChain(_)) | None => None,
             })
             .sum::<usize>();
-        let summary_arrays = self
+        let lambda_formal_summary_bytes = self
             .lambda_call_summaries
             .iter()
-            .map(|summary| {
-                std::mem::size_of_val(&*summary.formals)
-                    .saturating_add(std::mem::size_of_val(&*summary.attr_values))
-            })
+            .map(|summary| std::mem::size_of_val(&*summary.formals))
             .sum::<usize>();
-        dense
-            .saturating_add(capture_slots)
-            .saturating_add(summary_arrays)
+        let lambda_attr_value_summary_bytes = self
+            .lambda_call_summaries
+            .iter()
+            .map(|summary| std::mem::size_of_val(&*summary.attr_values))
+            .sum::<usize>();
+        let lambda_attr_key_bytes = self
+            .lambda_call_summaries
+            .iter()
+            .flat_map(|summary| summary.attr_values.iter())
+            .map(|summary| std::mem::size_of_val(summary.keys.symbols()))
+            .sum::<usize>();
+        IrFactsStorage {
+            node_count: self.nodes.len(),
+            expr_facts_bytes: std::mem::size_of_val(&*self.nodes),
+            try_eval_barrier_bytes: std::mem::size_of_val(&*self.try_eval_barriers),
+            assembly_eager_bytes: std::mem::size_of_val(&*self.assembly_eager),
+            structurally_total_bytes: std::mem::size_of_val(&*self.structurally_total),
+            capture_plan_lane_bytes: std::mem::size_of_val(&*self.capture_plans),
+            capture_slot_bytes,
+            flat_capture_access_lane_bytes: std::mem::size_of_val(&*self.flat_capture_accesses),
+            lambda_call_summary_lane_bytes: std::mem::size_of_val(&*self.lambda_call_summaries),
+            lambda_formal_summary_bytes,
+            lambda_attr_value_summary_bytes,
+            lambda_attr_key_bytes,
+        }
     }
 
     /// Returns one fact record by node id.
@@ -595,5 +662,54 @@ impl IrFacts {
     /// Returns mutable access to persisted lambda call summaries.
     pub fn lambda_call_summaries_mut(&mut self) -> &mut [LambdaCallSummary] {
         &mut self.lambda_call_summaries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_components_include_nested_capture_and_summary_arrays() {
+        let mut facts = IrFacts::conservative(1);
+        facts.set_capture_plan(
+            IrId::new(0),
+            Some(CapturePlan::Flat(
+                vec![Upvalue { depth: 0, slot: 1 }].into_boxed_slice(),
+            )),
+        );
+        facts.set_lambda_call_summaries(vec![LambdaCallSummary {
+            pattern: IrId::new(0),
+            argument_demand: LambdaDemand::Unconditional(Strictness::Demanded),
+            argument_escape: Escape::NoEscape,
+            formals: vec![LambdaFormalSummary {
+                demand: LambdaDemand::IfResultForced(Strictness::Demanded),
+                cardinality: Cardinality::Once,
+                escape: Escape::NoEscape,
+            }]
+            .into_boxed_slice(),
+            attr_values: vec![LambdaAttrValueSummary {
+                keys: LambdaAttrKeys::Only(vec![Symbol::new(0), Symbol::new(1)].into_boxed_slice()),
+                demand: LambdaDemand::Unconditional(Strictness::Demanded),
+                escape: Escape::NoEscape,
+            }]
+            .into_boxed_slice(),
+        }]);
+
+        let storage = facts.storage_components();
+        assert_eq!(storage.capture_slot_bytes, std::mem::size_of::<Upvalue>());
+        assert_eq!(
+            storage.lambda_formal_summary_bytes,
+            std::mem::size_of::<LambdaFormalSummary>()
+        );
+        assert_eq!(
+            storage.lambda_attr_value_summary_bytes,
+            std::mem::size_of::<LambdaAttrValueSummary>()
+        );
+        assert_eq!(
+            storage.lambda_attr_key_bytes,
+            2 * std::mem::size_of::<Symbol>()
+        );
+        assert_eq!(facts.storage_bytes(), storage.total_bytes());
     }
 }
