@@ -439,15 +439,28 @@ mod tests {
 
     #[test]
     #[ignore = "manual pinned-builder microbenchmark"]
-    fn stable_reserved_read_overhead_probe() {
+    fn stable_movable_handle_read_overhead_probe() {
         const ELEMENTS: usize = 1 << 20;
         const READS: usize = 1 << 24;
 
         let direct = (0..ELEMENTS as u64).collect::<Vec<_>>();
-        let mut stable =
-            StableReservedLane::<u64>::with_capacity(ELEMENTS).expect("lane reservation");
-        for value in 0..ELEMENTS as u64 {
-            stable.try_push(value).expect("stable payload");
+        let mut route4 =
+            StableReservedLane::<u32>::with_capacity(ELEMENTS).expect("four-byte route lane");
+        let mut payload4 = vec![0u64; ELEMENTS];
+        let mut route8 = StableReservedLane::<(u32, u32)>::with_capacity(ELEMENTS)
+            .expect("eight-byte route lane");
+        let mut payload8 = [vec![0u64; ELEMENTS / 2], vec![0u64; ELEMENTS / 2]];
+        for logical in 0..ELEMENTS {
+            let physical =
+                logical.wrapping_mul(0x9e37_79b1).wrapping_add(0x7f4a_7c15) & (ELEMENTS - 1);
+            route4.try_push(physical as u32).expect("four-byte route");
+            payload4[physical] = logical as u64;
+            let lane = physical & 1;
+            let offset = physical >> 1;
+            route8
+                .try_push((lane as u32, offset as u32))
+                .expect("eight-byte route");
+            payload8[lane][offset] = logical as u64;
         }
         let element_mask = black_box(ELEMENTS - 1);
 
@@ -465,29 +478,56 @@ mod tests {
         black_box(direct_sum);
         let direct_elapsed = direct_start.elapsed();
 
-        let stable_start = Instant::now();
-        let mut stable_state = 1u32;
-        let mut stable_sum = 0u64;
+        let route4_start = Instant::now();
+        let mut route4_state = 1u32;
+        let mut route4_sum = 0u64;
         for _ in 0..READS {
-            stable_state = stable_state
+            route4_state = route4_state
                 .wrapping_mul(1_664_525)
                 .wrapping_add(1_013_904_223);
-            let index = stable_state as usize & element_mask;
-            stable_sum = stable_sum.wrapping_add(
-                *stable
-                    .get(StableLaneCoordinate::from_u32(index as u32))
-                    .expect("generated coordinate resolves"),
+            let index = route4_state as usize & element_mask;
+            let physical = *route4
+                .get(StableLaneCoordinate::from_u32(index as u32))
+                .expect("generated four-byte handle resolves") as usize;
+            route4_sum = route4_sum.wrapping_add(
+                *payload4
+                    .get(physical)
+                    .expect("routed four-byte payload resolves"),
             );
         }
-        black_box(stable_sum);
-        let stable_elapsed = stable_start.elapsed();
+        black_box(route4_sum);
+        let route4_elapsed = route4_start.elapsed();
 
-        assert_eq!(direct_sum, stable_sum);
+        let route8_start = Instant::now();
+        let mut route8_state = 1u32;
+        let mut route8_sum = 0u64;
+        for _ in 0..READS {
+            route8_state = route8_state
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
+            let index = route8_state as usize & element_mask;
+            let &(lane, offset) = route8
+                .get(StableLaneCoordinate::from_u32(index as u32))
+                .expect("generated eight-byte handle resolves");
+            route8_sum = route8_sum.wrapping_add(
+                *payload8[lane as usize]
+                    .get(offset as usize)
+                    .expect("routed eight-byte payload resolves"),
+            );
+        }
+        black_box(route8_sum);
+        let route8_elapsed = route8_start.elapsed();
+
+        assert_eq!(direct_sum, route4_sum);
+        assert_eq!(direct_sum, route8_sum);
         eprintln!(
-            "stable-reserved-read-probe direct_ns={} stable_ns={} ratio={:.4}",
+            "stable-movable-handle-read-probe direct_ns={} route4_ns={} route4_ratio={:.4} \
+             route8_ns={} route8_ratio={:.4}",
             direct_elapsed.as_nanos(),
-            stable_elapsed.as_nanos(),
-            stable_elapsed.as_secs_f64() / direct_elapsed.as_secs_f64()
+            route4_elapsed.as_nanos(),
+            route4_elapsed.as_secs_f64() / direct_elapsed.as_secs_f64(),
+            route8_elapsed.as_nanos(),
+            route8_elapsed.as_secs_f64() / direct_elapsed.as_secs_f64(),
         );
     }
 

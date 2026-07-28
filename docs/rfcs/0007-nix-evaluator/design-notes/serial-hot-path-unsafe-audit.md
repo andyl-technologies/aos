@@ -7279,6 +7279,19 @@ and the complete single-threaded `ratchet-value` suite are green (432 passed,
 3 ignored). The alternative segmented lane takes 2.547x direct-read time and
 is rejected for the hot resolver.
 
+That 1.034x result is valid only for a nonmoving direct-payload lane. It does
+not validate stable handles whose referents can move: the old probe compared
+`Vec<u64>[index]` with `StableReservedLane<u64>[index]`, so both paths performed
+one payload load. The corrected optimized probe stores a stable handle in a
+reserved routing lane, then performs the required dependent payload load. Seven
+fresh runs give a median 1.6267x ratio for a four-byte routing entry and 3.7845x
+for an honest eight-byte `{ lane, offset }` entry (ranges 1.5567--1.7886x and
+2.7912--4.2134x respectively). Both exceed the 1.05x focused admission gate by
+a wide margin. Stable movable handles from birth are therefore rejected as the
+ordinal-160 collection route; the direct reserved lane remains admissible only
+where the `Value` coordinate names the payload itself and no routing load is
+required.
+
 An active packed thunk lane now provides fixed-capacity, direct-`u32`
 references and transactional claim, abort, publish, and stale-reference
 semantics. Its work pools use the real Rust layouts: 16-byte Node, 48-byte
