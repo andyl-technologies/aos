@@ -32,7 +32,14 @@ impl TreeWalk {
                 {
                     return None;
                 }
-                let memoization_admission = if free_var_value_hashes.is_empty() {
+                // In durable-cache mode a hashable captured environment does
+                // not by itself justify first-demand payload capture. The
+                // static body test still admits genuinely closed composite
+                // substrate. Preserve the legacy in-memory force-cache policy,
+                // whose callers intentionally use first-demand captured replay.
+                let memoization_admission = if free_var_value_hashes.is_empty()
+                    || self.options.persist_cache_root().is_some()
+                {
                     self.force_cache_memoization_admission_for_node(*body)
                 } else {
                     ForceCacheMemoizationAdmission::SelectedSubstrate

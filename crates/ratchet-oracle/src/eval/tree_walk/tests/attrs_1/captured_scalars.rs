@@ -72,6 +72,42 @@ fn repeated_captured_slot_contributes_one_free_variable_hash() {
         1,
         "repeated reads of one captured slot must not duplicate key material"
     );
+    assert_eq!(
+        subject.memoization_admission,
+        ForceCacheMemoizationAdmission::SelectedSubstrate,
+        "the in-memory force cache retains first-demand captured admission"
+    );
+}
+
+#[test]
+fn persistent_cache_gates_captured_thunks_on_demand() {
+    let source = r#"let f = x: { a = x == "s"; }; in f "s""#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let root = unique_temp_dir("persistent-captured-admission");
+    let mut options = TreeWalkOptions::new();
+    options.set_persist_cache_root(root);
+    let mut evaluator = TreeWalk::with_options_and_source(&ir, options, "expr.nix", source);
+    let value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("attrset is heap-owned")
+        .get(a)
+        .expect("a exists");
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_value)
+        .expect("a remains a suspended thunk");
+    let subject = evaluator
+        .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+        .expect("captured persistent subject builds");
+
+    assert_eq!(
+        subject.memoization_admission,
+        ForceCacheMemoizationAdmission::ConditionalThunk,
+        "persistent capture must wait for demand evidence"
+    );
 }
 
 #[test]
