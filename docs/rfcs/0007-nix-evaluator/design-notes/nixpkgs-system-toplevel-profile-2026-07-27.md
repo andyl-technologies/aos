@@ -533,6 +533,27 @@ repeat-body wall and a projection based on the first successful body.
       specialization removes about 374 million instructions (0.27%) while
       preserving every observed hit; RSS remains effectively at the prior
       ~4.27 GiB level.
+- [x] The next content-cache experiment is measurement-only. Under
+      `AOS_NIX_MEMO_STATS=1`, an ordinary MEMO-1 candidate decline now runs a
+      bounded recursive suspended-`Node` key census without altering the
+      one-decline production gate. Direct captures reuse their existing
+      `ValueHash`; otherwise a suspended `Node` contributes its stable body
+      identity and recursively keyed direct captures. The stderr JSON report
+      separates candidates, later direct-hash recoveries, unique/Ready/Pending
+      recipes, visited Nodes and depth, plus cycle, bound, dynamic-scope,
+      non-`Node`, projected-dependency, and residual-unhashable declines.
+      Cycles and traversal beyond depth 32 or 4,096 Nodes decline. No result is
+      served, no evaluator `Value` is retained or forced, and L0/L1 stay absent
+      in a stats-only run.
+- [x] The exact pinned system census kills the narrow recursive-key serving
+      experiment. It observed 8,221 post-gate attempts, but zero recursively
+      keyable candidates, zero later direct-hash recoveries, and zero
+      Ready/Pending repeats. Declines were 5,683 residual-unhashable captures,
+      1,626 dynamic scopes, and 912 projected/non-slot dependencies; none
+      terminated at the cycle or traversal bound. The exact expected system
+      derivation was preserved. The content-memo table is healthy, but
+      its safe admitted language subset exposes no additional reuse here; the
+      factor campaign moves to retained-object lifetime.
 
 ## Exact absent-formal allocation census
 

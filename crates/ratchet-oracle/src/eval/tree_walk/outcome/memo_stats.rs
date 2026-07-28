@@ -53,6 +53,20 @@ pub struct MemoEconomicsStats {
     pub(crate) effect_or_unsafe_declines: u64,
     pub(crate) dynamic_scope_declines: u64,
     pub(crate) unknown_capture_declines: u64,
+    pub(crate) recursive_key_attempts: u64,
+    pub(crate) recursive_key_candidates: u64,
+    pub(crate) recursive_key_direct_recoveries: u64,
+    pub(crate) recursive_key_unique_keys: u64,
+    pub(crate) recursive_key_ready_hits: u64,
+    pub(crate) recursive_key_pending_overlaps: u64,
+    pub(crate) recursive_key_nodes: u64,
+    pub(crate) recursive_key_max_depth: u64,
+    pub(crate) recursive_key_cycle_declines: u64,
+    pub(crate) recursive_key_bound_declines: u64,
+    pub(crate) recursive_key_dynamic_scope_declines: u64,
+    pub(crate) recursive_key_non_node_declines: u64,
+    pub(crate) recursive_key_non_slot_declines: u64,
+    pub(crate) recursive_key_unhashable_declines: u64,
     pub(crate) ready_cell_candidates: u64,
     pub(crate) ready_cell_unique_recipes: u64,
     pub(crate) ready_cell_ready_hits: u64,
@@ -146,6 +160,76 @@ impl MemoEconomicsStats {
     /// Returns candidates declined because a captured value has no stable hash.
     pub const fn unknown_capture_declines(&self) -> u64 {
         self.unknown_capture_declines
+    }
+
+    /// Returns report-only recursive suspended-Node key derivation attempts.
+    pub const fn recursive_key_attempts(&self) -> u64 {
+        self.recursive_key_attempts
+    }
+
+    /// Returns attempts that produced an exact recursive content key.
+    pub const fn recursive_key_candidates(&self) -> u64 {
+        self.recursive_key_candidates
+    }
+
+    /// Returns candidates recovered without recursion after production gated the site.
+    pub const fn recursive_key_direct_recoveries(&self) -> u64 {
+        self.recursive_key_direct_recoveries
+    }
+
+    /// Returns distinct recursive keys observed by the shared census.
+    pub const fn recursive_key_unique_keys(&self) -> u64 {
+        self.recursive_key_unique_keys
+    }
+
+    /// Returns recursive-key repeats whose earlier computation was Ready.
+    pub const fn recursive_key_ready_hits(&self) -> u64 {
+        self.recursive_key_ready_hits
+    }
+
+    /// Returns recursive-key repeats overlapping an incomplete computation.
+    pub const fn recursive_key_pending_overlaps(&self) -> u64 {
+        self.recursive_key_pending_overlaps
+    }
+
+    /// Returns suspended Node records traversed while deriving recursive keys.
+    pub const fn recursive_key_nodes(&self) -> u64 {
+        self.recursive_key_nodes
+    }
+
+    /// Returns the deepest suspended Node nesting admitted by the census.
+    pub const fn recursive_key_max_depth(&self) -> u64 {
+        self.recursive_key_max_depth
+    }
+
+    /// Returns recursive-key attempts declined because the thunk graph cycles.
+    pub const fn recursive_key_cycle_declines(&self) -> u64 {
+        self.recursive_key_cycle_declines
+    }
+
+    /// Returns recursive-key attempts declined by the depth or node budget.
+    pub const fn recursive_key_bound_declines(&self) -> u64 {
+        self.recursive_key_bound_declines
+    }
+
+    /// Returns recursive-key attempts declined for dynamic scope capture.
+    pub const fn recursive_key_dynamic_scope_declines(&self) -> u64 {
+        self.recursive_key_dynamic_scope_declines
+    }
+
+    /// Returns recursive-key attempts declined for a non-Node suspended thunk.
+    pub const fn recursive_key_non_node_declines(&self) -> u64 {
+        self.recursive_key_non_node_declines
+    }
+
+    /// Returns recursive-key attempts declined for projected capture dependencies.
+    pub const fn recursive_key_non_slot_declines(&self) -> u64 {
+        self.recursive_key_non_slot_declines
+    }
+
+    /// Returns recursive-key attempts declined for a residual unhashable capture.
+    pub const fn recursive_key_unhashable_declines(&self) -> u64 {
+        self.recursive_key_unhashable_declines
     }
 
     /// Returns exact raw-identity recipes observed by the Ready-cell census.
@@ -347,6 +431,51 @@ impl MemoEconomicsStats {
             unknown_capture_declines: self
                 .unknown_capture_declines
                 .saturating_add(other.unknown_capture_declines),
+            recursive_key_attempts: self
+                .recursive_key_attempts
+                .saturating_add(other.recursive_key_attempts),
+            recursive_key_candidates: self
+                .recursive_key_candidates
+                .saturating_add(other.recursive_key_candidates),
+            recursive_key_direct_recoveries: self
+                .recursive_key_direct_recoveries
+                .saturating_add(other.recursive_key_direct_recoveries),
+            recursive_key_unique_keys: self
+                .recursive_key_unique_keys
+                .saturating_add(other.recursive_key_unique_keys),
+            recursive_key_ready_hits: self
+                .recursive_key_ready_hits
+                .saturating_add(other.recursive_key_ready_hits),
+            recursive_key_pending_overlaps: self
+                .recursive_key_pending_overlaps
+                .saturating_add(other.recursive_key_pending_overlaps),
+            recursive_key_nodes: self
+                .recursive_key_nodes
+                .saturating_add(other.recursive_key_nodes),
+            recursive_key_max_depth: if self.recursive_key_max_depth > other.recursive_key_max_depth
+            {
+                self.recursive_key_max_depth
+            } else {
+                other.recursive_key_max_depth
+            },
+            recursive_key_cycle_declines: self
+                .recursive_key_cycle_declines
+                .saturating_add(other.recursive_key_cycle_declines),
+            recursive_key_bound_declines: self
+                .recursive_key_bound_declines
+                .saturating_add(other.recursive_key_bound_declines),
+            recursive_key_dynamic_scope_declines: self
+                .recursive_key_dynamic_scope_declines
+                .saturating_add(other.recursive_key_dynamic_scope_declines),
+            recursive_key_non_node_declines: self
+                .recursive_key_non_node_declines
+                .saturating_add(other.recursive_key_non_node_declines),
+            recursive_key_non_slot_declines: self
+                .recursive_key_non_slot_declines
+                .saturating_add(other.recursive_key_non_slot_declines),
+            recursive_key_unhashable_declines: self
+                .recursive_key_unhashable_declines
+                .saturating_add(other.recursive_key_unhashable_declines),
             ready_cell_candidates: self
                 .ready_cell_candidates
                 .saturating_add(other.ready_cell_candidates),

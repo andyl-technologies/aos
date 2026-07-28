@@ -331,6 +331,20 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
 \"effect_or_unsafe_declines\":{},\
 \"dynamic_scope_declines\":{},\
 \"unknown_capture_declines\":{},\
+\"recursive_key_attempts\":{},\
+\"recursive_key_candidates\":{},\
+\"recursive_key_direct_recoveries\":{},\
+\"recursive_key_unique_keys\":{},\
+\"recursive_key_ready_hits\":{},\
+\"recursive_key_pending_overlaps\":{},\
+\"recursive_key_nodes\":{},\
+\"recursive_key_max_depth\":{},\
+\"recursive_key_cycle_declines\":{},\
+\"recursive_key_bound_declines\":{},\
+\"recursive_key_dynamic_scope_declines\":{},\
+\"recursive_key_non_node_declines\":{},\
+\"recursive_key_non_slot_declines\":{},\
+\"recursive_key_unhashable_declines\":{},\
 \"ready_cell_candidates\":{},\
 \"ready_cell_unique_recipes\":{},\
 \"ready_cell_ready_hits\":{},\
@@ -372,6 +386,20 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
         memo.effect_or_unsafe_declines(),
         memo.dynamic_scope_declines(),
         memo.unknown_capture_declines(),
+        memo.recursive_key_attempts(),
+        memo.recursive_key_candidates(),
+        memo.recursive_key_direct_recoveries(),
+        memo.recursive_key_unique_keys(),
+        memo.recursive_key_ready_hits(),
+        memo.recursive_key_pending_overlaps(),
+        memo.recursive_key_nodes(),
+        memo.recursive_key_max_depth(),
+        memo.recursive_key_cycle_declines(),
+        memo.recursive_key_bound_declines(),
+        memo.recursive_key_dynamic_scope_declines(),
+        memo.recursive_key_non_node_declines(),
+        memo.recursive_key_non_slot_declines(),
+        memo.recursive_key_unhashable_declines(),
         memo.ready_cell_candidates(),
         memo.ready_cell_unique_recipes(),
         memo.ready_cell_ready_hits(),
@@ -422,7 +450,7 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("standalone memo statistics object exists");
 
-        assert_eq!(memo.len(), 44);
+        assert_eq!(memo.len(), 58);
         assert!(memo.values().all(|value| value.as_u64() == Some(0)));
         assert!(memo.contains_key("potential_hit_static_cost_units"));
         assert!(memo.contains_key("ready_structural_hits"));
@@ -431,6 +459,9 @@ mod tests {
         assert!(memo.contains_key("effect_or_unsafe_declines"));
         assert!(memo.contains_key("dynamic_scope_declines"));
         assert!(memo.contains_key("unknown_capture_declines"));
+        assert!(memo.contains_key("recursive_key_candidates"));
+        assert!(memo.contains_key("recursive_key_cycle_declines"));
+        assert!(memo.contains_key("recursive_key_unhashable_declines"));
         assert!(memo.contains_key("ready_cell_candidates"));
         assert!(memo.contains_key("ready_cell_ready_hits"));
         assert!(memo.contains_key("ready_cell_pending_overlaps"));

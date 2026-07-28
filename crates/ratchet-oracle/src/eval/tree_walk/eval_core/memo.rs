@@ -47,6 +47,7 @@ use std::time::Instant;
 
 use super::force_identity::CapturedFreeVariableDependency;
 use super::*;
+use crate::cache::hashing::CacheDigestHasher;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
@@ -66,6 +67,39 @@ use crate::eval::tree_walk::memo::{
 /// instance captures an unhashable environment loses later hit
 /// opportunities; the serial non-regression gate is what this buys.
 const MEMO_DECLINE_GATE: u32 = 1;
+
+/// Maximum suspended-Node nesting visited by the report-only recursive census.
+const RECURSIVE_KEY_MAX_DEPTH: usize = 32;
+
+/// Maximum suspended Node records visited by one report-only derivation.
+const RECURSIVE_KEY_MAX_NODES: usize = 4_096;
+
+/// Domain for a suspended Node's report-only recursive capture fingerprint.
+const RECURSIVE_KEY_NODE_DOMAIN: &[u8] = b"aos-nix-recursive-memo-node-census-v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecursiveKeyDecline {
+    Cycle,
+    Bound,
+    DynamicScope,
+    NonNode,
+    NonSlot,
+    Unhashable,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RecursiveKeyCandidate {
+    key: DemandCacheKey,
+    recursive_nodes: usize,
+    max_depth: usize,
+}
+
+#[derive(Debug, Default)]
+struct RecursiveKeyTraversal {
+    active_thunks: BTreeSet<u64>,
+    recursive_nodes: usize,
+    max_depth: usize,
+}
 
 /// A fully derived memo candidate for one claimed thunk force.
 ///
@@ -224,13 +258,19 @@ impl TreeWalk {
         let candidate = self.memo_candidate_for_thunk(thunk);
         self.record_memo_key_timing(key_started);
         let Some(candidate) = candidate else {
+            let recursive_candidate = stats_enabled
+                .then(|| self.recursive_key_candidate_for_thunk(thunk))
+                .flatten();
+            self.observe_recursive_key_candidate(recursive_candidate.as_ref());
             return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
                 Ok(value) => {
+                    self.finish_recursive_key_candidate(recursive_candidate.as_ref(), true);
                     self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
                     self.publish_ready_cell_candidate(ready_cell_candidate.as_ref(), source_thunk);
                     Ok(value)
                 }
                 Err(error) => {
+                    self.finish_recursive_key_candidate(recursive_candidate.as_ref(), false);
                     self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
                     Err(error)
                 }
@@ -932,6 +972,249 @@ impl TreeWalk {
             hashes.push(hash);
         }
         Some(hashes)
+    }
+
+    /// Derives a report-only key that recursively fingerprints suspended Node captures.
+    ///
+    /// This path runs only under `AOS_NIX_MEMO_STATS` after ordinary MEMO-1
+    /// derivation declined. It neither changes the production def-site gate
+    /// nor inserts or probes a replay table. Traversal is deliberately narrow:
+    /// direct lexical slots and suspended [`EvalThunkKind::Node`] records only;
+    /// cycles, dynamic scopes, projections, and other thunk kinds decline.
+    fn recursive_key_candidate_for_thunk(
+        &mut self,
+        thunk: &EvalThunk,
+    ) -> Option<RecursiveKeyCandidate> {
+        let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
+            return None;
+        };
+        let static_cost = self.memo_static_cost(*body)?;
+        if static_cost < self.options.memo_options().min_cost {
+            return None;
+        }
+        let identity = self.cache_lookup_identity_for_node(*body)?;
+        self.stats.memo_economics.recursive_key_attempts = self
+            .stats
+            .memo_economics
+            .recursive_key_attempts
+            .saturating_add(1);
+        if !thunk.with_scope_env()?.scopes().is_empty()
+            || !thunk.scoped_global_env()?.scopes().is_empty()
+            || thunk.dynamic_env().is_some()
+        {
+            self.note_recursive_key_decline(RecursiveKeyDecline::DynamicScope);
+            return None;
+        }
+        let env = self.captured_env_ref(env);
+        let dependencies = {
+            let Some(module) = self.modules.get(body.module().index()) else {
+                self.note_recursive_key_decline(RecursiveKeyDecline::Unhashable);
+                return None;
+            };
+            let Some(dependencies) =
+                Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())
+            else {
+                self.note_recursive_key_decline(RecursiveKeyDecline::Unhashable);
+                return None;
+            };
+            dependencies
+        };
+        let mut traversal = RecursiveKeyTraversal::default();
+        let hashes =
+            match self.recursive_key_hash_dependencies(env, &dependencies, &mut traversal, 0) {
+                Ok(hashes) => hashes,
+                Err(decline) => {
+                    self.note_recursive_key_decline(decline);
+                    return None;
+                }
+            };
+        let key = match DemandCacheKey::for_free_vars(identity, hashes) {
+            Ok(key) => key,
+            Err(_) => {
+                self.note_recursive_key_decline(RecursiveKeyDecline::Bound);
+                return None;
+            }
+        };
+        Some(RecursiveKeyCandidate {
+            key,
+            recursive_nodes: traversal.recursive_nodes,
+            max_depth: traversal.max_depth,
+        })
+    }
+
+    fn recursive_key_hash_dependencies(
+        &self,
+        env: EvalEnvRef<'_>,
+        dependencies: &BTreeSet<CapturedFreeVariableDependency>,
+        traversal: &mut RecursiveKeyTraversal,
+        depth: usize,
+    ) -> Result<Vec<ValueHash>, RecursiveKeyDecline> {
+        let mut hashes = Vec::new();
+        hashes
+            .try_reserve_exact(dependencies.len())
+            .map_err(|_| RecursiveKeyDecline::Bound)?;
+        for dependency in dependencies {
+            let CapturedFreeVariableDependency::Slot { frame_index, slot } = dependency else {
+                return Err(RecursiveKeyDecline::NonSlot);
+            };
+            let value = self
+                .env_ref_value_at_index(env, *frame_index, *slot)
+                .ok_or(RecursiveKeyDecline::Unhashable)?;
+            hashes.push(self.recursive_key_hash_value(value, traversal, depth)?);
+        }
+        Ok(hashes)
+    }
+
+    fn recursive_key_hash_value(
+        &self,
+        value: Value,
+        traversal: &mut RecursiveKeyTraversal,
+        depth: usize,
+    ) -> Result<ValueHash, RecursiveKeyDecline> {
+        if let Some(hash) = self.force_cache_free_var_value_hash(value) {
+            return Ok(hash);
+        }
+        if depth >= RECURSIVE_KEY_MAX_DEPTH || traversal.recursive_nodes >= RECURSIVE_KEY_MAX_NODES
+        {
+            return Err(RecursiveKeyDecline::Bound);
+        }
+        if value.tag() != ValueTag::Thunk {
+            return Err(RecursiveKeyDecline::Unhashable);
+        }
+        let address = value.address_identity_bits();
+        if !traversal.active_thunks.insert(address) {
+            return Err(RecursiveKeyDecline::Cycle);
+        }
+        let result = (|| {
+            let thunk = self
+                .heap
+                .get_thunk(value)
+                .map_err(|_| RecursiveKeyDecline::Unhashable)?;
+            if let Some(cached) = thunk
+                .cell()
+                .cached_value()
+                .map_err(|_| RecursiveKeyDecline::Unhashable)?
+            {
+                return self.recursive_key_hash_value(cached, traversal, depth);
+            }
+            if !thunk
+                .with_scope_env()
+                .ok_or(RecursiveKeyDecline::DynamicScope)?
+                .scopes()
+                .is_empty()
+                || !thunk
+                    .scoped_global_env()
+                    .ok_or(RecursiveKeyDecline::DynamicScope)?
+                    .scopes()
+                    .is_empty()
+                || thunk.dynamic_env().is_some()
+            {
+                return Err(RecursiveKeyDecline::DynamicScope);
+            }
+            let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
+                return Err(RecursiveKeyDecline::NonNode);
+            };
+            let identity = self
+                .cache_lookup_identity_for_node(*body)
+                .ok_or(RecursiveKeyDecline::Unhashable)?;
+            let env = self.captured_env_ref(env);
+            let module = self
+                .modules
+                .get(body.module().index())
+                .ok_or(RecursiveKeyDecline::Unhashable)?;
+            let dependencies =
+                Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())
+                    .ok_or(RecursiveKeyDecline::Unhashable)?;
+            traversal.recursive_nodes = traversal.recursive_nodes.saturating_add(1);
+            let child_depth = depth.saturating_add(1);
+            traversal.max_depth = traversal.max_depth.max(child_depth);
+            let hashes =
+                self.recursive_key_hash_dependencies(env, &dependencies, traversal, child_depth)?;
+            let mut hasher = CacheDigestHasher::new();
+            hasher.update(RECURSIVE_KEY_NODE_DOMAIN);
+            hasher.update(&identity.source_hash().as_durable_hash().as_bytes());
+            hasher.update(&identity.node().as_u32().to_le_bytes());
+            let len = u64::try_from(hashes.len()).map_err(|_| RecursiveKeyDecline::Bound)?;
+            hasher.update(&len.to_le_bytes());
+            for hash in hashes {
+                hasher.update(&hash.as_durable_hash().as_bytes());
+            }
+            Ok(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ))
+        })();
+        traversal.active_thunks.remove(&address);
+        result
+    }
+
+    fn note_recursive_key_decline(&mut self, decline: RecursiveKeyDecline) {
+        let counter = match decline {
+            RecursiveKeyDecline::Cycle => {
+                &mut self.stats.memo_economics.recursive_key_cycle_declines
+            }
+            RecursiveKeyDecline::Bound => {
+                &mut self.stats.memo_economics.recursive_key_bound_declines
+            }
+            RecursiveKeyDecline::DynamicScope => {
+                &mut self
+                    .stats
+                    .memo_economics
+                    .recursive_key_dynamic_scope_declines
+            }
+            RecursiveKeyDecline::NonNode => {
+                &mut self.stats.memo_economics.recursive_key_non_node_declines
+            }
+            RecursiveKeyDecline::NonSlot => {
+                &mut self.stats.memo_economics.recursive_key_non_slot_declines
+            }
+            RecursiveKeyDecline::Unhashable => {
+                &mut self.stats.memo_economics.recursive_key_unhashable_declines
+            }
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    fn observe_recursive_key_candidate(&mut self, candidate: Option<&RecursiveKeyCandidate>) {
+        let Some(candidate) = candidate else { return };
+        let Some(census) = self.memo_economics.as_ref() else {
+            return;
+        };
+        let observation = census.observe(candidate.key);
+        let stats = &mut self.stats.memo_economics;
+        stats.recursive_key_candidates = stats.recursive_key_candidates.saturating_add(1);
+        stats.recursive_key_direct_recoveries = stats
+            .recursive_key_direct_recoveries
+            .saturating_add(u64::from(candidate.recursive_nodes == 0));
+        stats.recursive_key_unique_keys = stats
+            .recursive_key_unique_keys
+            .saturating_add(u64::from(observation.unique_key));
+        stats.recursive_key_ready_hits = stats
+            .recursive_key_ready_hits
+            .saturating_add(u64::from(observation.earlier_ready));
+        stats.recursive_key_pending_overlaps = stats
+            .recursive_key_pending_overlaps
+            .saturating_add(u64::from(observation.earlier_pending));
+        stats.recursive_key_nodes = stats
+            .recursive_key_nodes
+            .saturating_add(u64::try_from(candidate.recursive_nodes).unwrap_or(u64::MAX));
+        stats.recursive_key_max_depth = stats
+            .recursive_key_max_depth
+            .max(u64::try_from(candidate.max_depth).unwrap_or(u64::MAX));
+    }
+
+    fn finish_recursive_key_candidate(
+        &self,
+        candidate: Option<&RecursiveKeyCandidate>,
+        ready: bool,
+    ) {
+        let (Some(candidate), Some(census)) = (candidate, self.memo_economics.as_ref()) else {
+            return;
+        };
+        if ready {
+            census.mark_ready(candidate.key);
+        } else {
+            census.mark_failed(candidate.key);
+        }
     }
 
     /// Hashes one captured value, consulting and feeding the per-eval

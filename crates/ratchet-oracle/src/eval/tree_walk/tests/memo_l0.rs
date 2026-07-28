@@ -605,6 +605,74 @@ fn lambda_capturing_environments_decline_admission() {
 }
 
 #[test]
+fn recursive_key_census_finds_equivalent_suspended_node_captures() {
+    const SOURCE: &str = r#"
+        let
+          mk = n:
+            let
+              lazy = n + 1;
+              value = if n == 1 then [ lazy 3 4 ] else [];
+            in builtins.length value;
+        in mk 1 + mk 1
+    "#;
+    let ir = lower(SOURCE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("evaluates");
+    let economics = outcome.stats.memo_economics();
+    assert_eq!(outcome.value.as_int(), Ok(6));
+    assert!(economics.recursive_key_candidates() >= 2, "{economics:?}");
+    assert!(economics.recursive_key_nodes() >= 2, "{economics:?}");
+    assert!(economics.recursive_key_ready_hits() >= 1, "{economics:?}");
+    assert_eq!(economics.recursive_key_direct_recoveries(), 0);
+    assert_eq!(outcome.stats.memo_l0_hits(), 0, "the census never serves");
+}
+
+#[test]
+fn recursive_key_census_reports_later_direct_hashability_after_gate() {
+    const SOURCE: &str = r#"
+        let
+          mk = v:
+            let value = if true then [ v 1 2 ] else [];
+            in builtins.length value;
+          first = mk (x: x);
+          second = mk 7;
+        in first + second
+    "#;
+    let ir = lower(SOURCE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("evaluates");
+    let economics = outcome.stats.memo_economics();
+    assert_eq!(outcome.value.as_int(), Ok(6));
+    assert!(
+        economics.recursive_key_unhashable_declines() >= 1,
+        "{economics:?}"
+    );
+    assert!(
+        economics.recursive_key_direct_recoveries() >= 1,
+        "{economics:?}"
+    );
+    assert_eq!(
+        outcome.stats.memo_l0_admissions(),
+        0,
+        "the census never records"
+    );
+}
+
+#[test]
 fn memo_keys_are_stable_across_evaluator_instances_and_env_sensitive() {
     const SOURCE: &str = r#"let mk = v: { big = [ v 7 8 9 ]; }; in { one = mk 1; two = mk 2; }"#;
     let ir = lower(SOURCE);

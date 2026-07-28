@@ -1088,6 +1088,32 @@ nanosecond totals for key derivation, table probe, resident-hit replay, and
 record construction. Normal parity/performance runs allocate no census and
 read no clock.
 
+The same stats mode also carries a report-only census for the recursive-thunk
+follow-up in §3.2. After ordinary MEMO-1 key derivation declines, but only for a
+body that still clears the static cost and lookup-safety gates, the census
+tries a bounded Merkle fingerprint of direct lexical captures. A materialized
+capture keeps its existing `ValueHash`; a suspended `Node` capture contributes
+its expression identity plus recursively fingerprinted direct captures.
+Traversal declines dynamic scopes, projected dependencies, non-`Node` thunks,
+cycles, residual unhashable values, depth above 32, or more than 4,096 visited
+Nodes. It records exact shared Absent/Pending/Ready reuse and separately counts
+later ordinary-hashable instances hidden by MEMO-1's one-decline def-site gate.
+It never forces or retains a `Value`, probes or records an L0/L1 entry, or
+changes `MEMO_DECLINE_GATE`; the measurement must clear §8's economics gate
+before any serving implementation is considered.
+
+**Measured recursive-key decision (2026-07-28).** The exact pinned nixpkgs
+system census produced 8,221 post-gate attempts and **zero** candidates, direct
+recoveries, Ready hits, or Pending overlaps. The attempts declined as 5,683
+residual-unhashable captures, 1,626 dynamic scopes, and 912 projected/non-slot
+dependencies; none terminated at the cycle or traversal bound. The output
+remained the exact expected system derivation. This kills
+the narrow suspended-`Node` recursive-key serving experiment: the table and
+xxhash/confirmation machinery are working, but the admitted language subset
+does not expose any extra same-run reuse on the acceptance workload. Retain the
+census as evidence and move the factor campaign to object lifetime rather than
+widening this key recursively.
+
 **Measured MEMO-1 decision (2026-07-10).** The pre-table census found no repeat
 at the shipped floor of 64: zlib reported 2 candidates / 2 unique keys and
 `bench.wide` 4 / 4. Lowering the floor to 1 exposed 1,290 potential hits over
