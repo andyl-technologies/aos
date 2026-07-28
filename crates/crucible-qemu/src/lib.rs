@@ -47,6 +47,7 @@ mod determinism_boundary;
 mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
+mod host_worker_pool;
 mod inertness;
 mod launch;
 #[cfg(target_os = "linux")]
@@ -111,6 +112,10 @@ pub use gdbstub_proxy::{
 #[cfg(target_os = "linux")]
 pub use host_setup::{
     QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
+};
+pub use host_worker_pool::{
+    QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,
+    QemuHostWorkerPoolReport, QemuHostWorkerRun,
 };
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
