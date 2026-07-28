@@ -217,7 +217,11 @@ impl TreeWalk {
             && options.parallel_workers().is_none()
             && !options.parallel_thunk_payloads_enabled()
             && options.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
-            && !options.record_worker_closures_for_gc_scaffolding())
+            && !options.record_worker_closures_for_gc_scaffolding()
+            && options.heap_memory_budget().is_none()
+            && !options.heap_tier_b_transition_admission_enabled()
+            && !options.typed_apply_thunk_heads_enabled()
+            && !options.stg_session_enabled())
         .then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
