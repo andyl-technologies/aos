@@ -668,6 +668,10 @@ fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
     if let Some(max_rss) = cli.max_rss {
         eval_config.set_heap_memory_budget_bytes(max_rss)?;
     }
+    if let Some(profile) = cli.nix_compat {
+        eval_config.set_nix_compat_profile(profile);
+        eval_config.reset_reported_nix_version();
+    }
     for path in &cli.eval_allowed_paths {
         eval_config.add_allowed_path(path.clone())?;
     }
@@ -782,6 +786,23 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_from_cli_selects_profile_and_resets_reported_version() -> Result<()> {
+        let cli = Cli {
+            nix_compat: Some(aos_core::nix::NixCompatProfile::Nix2_34_8),
+            ..base_nix_diff_cli()
+        };
+
+        let config = eval_config_from_cli(&cli)?;
+
+        assert_eq!(
+            config.nix_compat_profile(),
+            aos_core::nix::NixCompatProfile::Nix2_34_8
+        );
+        assert_eq!(config.reported_nix_version(), "2.34.8");
+        Ok(())
+    }
+
+    #[test]
     fn eval_config_from_cli_rejects_zero_max_rss() {
         let cli = Cli {
             max_rss: Some(0),
@@ -826,6 +847,7 @@ mod tests {
             trace_verbose: false,
             eval_system: None,
             max_rss: None,
+            nix_compat: None,
             impure_eval: false,
             pure_eval: false,
             restrict_eval: false,

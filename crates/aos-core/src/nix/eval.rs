@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use aos_nix_compat::NixCompatProfile;
+pub use aos_nix_compat::NixCompatProfile;
 
 use super::env::aos_nix_env;
 #[cfg(feature = "native-eval")]
@@ -1528,6 +1528,9 @@ impl NixEvalConfig {
         if let Ok(value) = std::env::var("NIX_PATH") {
             config.set_cli_env_var("NIX_PATH", value);
         }
+        if let Ok(value) = std::env::var("AOS_NIX_COMPAT") {
+            config.set_aos_nix_compat_env_var(&value);
+        }
         if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
             config.set_aos_nix_cache_env_var(value);
         }
@@ -1589,6 +1592,24 @@ impl NixEvalConfig {
         config.set_home_dir_from_env_snapshot();
 
         config
+    }
+
+    fn set_aos_nix_compat_env_var(&mut self, value: &str) {
+        match value.parse::<NixCompatProfile>() {
+            Ok(profile) => {
+                self.set_nix_compat_profile(profile);
+                self.reset_reported_nix_version();
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_COMPAT value; using the default compatibility profile"
+                );
+                self.set_nix_compat_profile(NixCompatProfile::default());
+                self.reset_reported_nix_version();
+            }
+        }
     }
 
     fn set_aos_nix_cache_env_var(&mut self, value: String) {
@@ -2004,7 +2025,7 @@ fn eval_env_vars_from_process() -> BTreeMap<Vec<u8>, Vec<u8>> {
 fn is_evaluator_control_env_var(name: &[u8]) -> bool {
     matches!(
         name,
-        b"AOS_NIX_NATIVE" | b"AOS_NIX_NATIVE_VERIFY" | b"AOS_NIX_MAX_RSS"
+        b"AOS_NIX_COMPAT" | b"AOS_NIX_NATIVE" | b"AOS_NIX_NATIVE_VERIFY" | b"AOS_NIX_MAX_RSS"
     )
 }
 
@@ -3448,6 +3469,21 @@ mod tests {
         assert!(config.native_jit());
     }
 
+    #[test]
+    fn nix_compat_env_selection_resets_reported_version_and_invalid_values_default() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_reported_nix_version("independent-test-version")?;
+
+        config.set_aos_nix_compat_env_var("2.34.8");
+        assert_eq!(config.nix_compat_profile(), NixCompatProfile::Nix2_34_8);
+        assert_eq!(config.reported_nix_version(), "2.34.8");
+
+        config.set_aos_nix_compat_env_var("2.34");
+        assert_eq!(config.nix_compat_profile(), NixCompatProfile::Nix2_24_12);
+        assert_eq!(config.reported_nix_version(), "2.24.12");
+        Ok(())
+    }
+
     #[cfg(unix)]
     fn command_env_bytes(command: &Command, name: &[u8]) -> Option<Vec<u8>> {
         command.get_envs().find_map(|(key, value)| {
@@ -4123,6 +4159,7 @@ mod tests {
         let mut config = NixEvalConfig::new();
         config.eval_env_vars.clear();
         config.set_eval_env_var_bytes(b"AOS_ARBITRARY_ENV".to_vec(), b"present".to_vec());
+        config.set_eval_env_var_bytes(b"AOS_NIX_COMPAT".to_vec(), b"2.34.8".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE".to_vec(), b"1".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE_VERIFY".to_vec(), b"1".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_MAX_RSS".to_vec(), b"4096".to_vec());
@@ -4142,9 +4179,11 @@ mod tests {
             Some(b"nixpkgs=/aos/nixpkgs".as_slice())
         );
         assert!(!is_evaluator_control_env_var(b"AOS_ARBITRARY_ENV"));
+        assert!(is_evaluator_control_env_var(b"AOS_NIX_COMPAT"));
         assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE"));
         assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE_VERIFY"));
         assert!(is_evaluator_control_env_var(b"AOS_NIX_MAX_RSS"));
+        assert_eq!(config.eval_env_vars.get(b"AOS_NIX_COMPAT".as_slice()), None);
         assert_eq!(config.eval_env_vars.get(b"AOS_NIX_NATIVE".as_slice()), None);
         assert_eq!(
             config
@@ -4156,6 +4195,7 @@ mod tests {
             config.eval_env_vars.get(b"AOS_NIX_MAX_RSS".as_slice()),
             None
         );
+        assert_eq!(command_env_bytes(&command, b"AOS_NIX_COMPAT"), None);
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE"), None);
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE_VERIFY"), None);
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_MAX_RSS"), None);

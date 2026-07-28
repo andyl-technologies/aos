@@ -33,6 +33,7 @@ pub use test::*;
 
 use std::path::PathBuf;
 
+use aos_core::nix::NixCompatProfile;
 use clap::{ArgAction, Parser, Subcommand};
 pub use nix_diff::NixDiffMode;
 
@@ -65,6 +66,10 @@ pub struct Cli {
     /// Set native evaluator max resident bytes
     #[arg(long, value_name = "BYTES", global = true)]
     pub max_rss: Option<usize>,
+
+    /// Match an exact supported stock-Nix evaluator version
+    #[arg(long, value_name = "VERSION", global = true)]
+    pub nix_compat: Option<NixCompatProfile>,
 
     /// Evaluate with normal impure Nix semantics
     #[arg(long, global = true, conflicts_with_all = ["pure_eval", "restrict_eval"])]
@@ -1345,6 +1350,30 @@ mod tests {
         let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.bc", "--max-rss", "4096"]);
 
         assert_eq!(cli.max_rss, Some(4096));
+    }
+
+    #[test]
+    fn global_nix_compat_accepts_only_exact_supported_versions() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--nix-compat",
+            "2.34.8",
+        ]);
+        assert_eq!(cli.nix_compat, Some(NixCompatProfile::Nix2_34_8));
+
+        let error = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--nix-compat",
+            "2.34",
+        ]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("expected 2.24.12 or 2.34.8"));
     }
 
     #[test]

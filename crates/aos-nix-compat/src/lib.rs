@@ -10,6 +10,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::fmt;
+use std::str::FromStr;
+
 pub mod drv;
 pub mod drv_materialize;
 
@@ -61,6 +64,50 @@ impl NixCompatProfile {
     }
 }
 
+impl fmt::Display for NixCompatProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.stock_version_str())
+    }
+}
+
+impl FromStr for NixCompatProfile {
+    type Err = ParseNixCompatProfileError;
+
+    /// Parses an exact supported stock-Nix version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseNixCompatProfileError`] when the input is not exactly
+    /// `2.24.12` or `2.34.8`.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "2.24.12" => Ok(Self::Nix2_24_12),
+            "2.34.8" => Ok(Self::Nix2_34_8),
+            _ => Err(ParseNixCompatProfileError {
+                value: value.to_owned(),
+            }),
+        }
+    }
+}
+
+/// Reports an unsupported exact stock-Nix compatibility version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseNixCompatProfileError {
+    value: String,
+}
+
+impl fmt::Display for ParseNixCompatProfileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported Nix compatibility version {:?}; expected 2.24.12 or 2.34.8",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for ParseNixCompatProfileError {}
+
 #[cfg(test)]
 mod tests {
     use super::NixCompatProfile;
@@ -69,5 +116,28 @@ mod tests {
     fn profiles_own_their_reported_language_version() {
         assert_eq!(NixCompatProfile::Nix2_24_12.lang_version(), 6);
         assert_eq!(NixCompatProfile::Nix2_34_8.lang_version(), 6);
+    }
+
+    #[test]
+    fn profiles_parse_and_display_only_exact_supported_versions() {
+        for profile in [NixCompatProfile::Nix2_24_12, NixCompatProfile::Nix2_34_8] {
+            assert_eq!(
+                profile
+                    .to_string()
+                    .parse::<NixCompatProfile>()
+                    .expect("displayed profile parses"),
+                profile
+            );
+        }
+
+        let error = " 2.24.12"
+            .parse::<NixCompatProfile>()
+            .expect_err("parser rejects surrounding whitespace");
+        assert_eq!(
+            error.to_string(),
+            "unsupported Nix compatibility version \" 2.24.12\"; expected 2.24.12 or 2.34.8"
+        );
+        assert!("2.34".parse::<NixCompatProfile>().is_err());
+        assert!("latest".parse::<NixCompatProfile>().is_err());
     }
 }

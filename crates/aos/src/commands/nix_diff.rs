@@ -11,8 +11,9 @@ use anyhow::{Context, Result};
 
 use aos_core::error::AosError;
 use aos_core::nix::{
-    DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, NixEvalStrictJsonStats,
-    NixInstantiateStats, NixRunner, select_native_diff_candidate_with_config,
+    DrvClosure, NixCli, NixCompatProfile, NixEval, NixEvalConfig, NixEvalMode,
+    NixEvalStrictJsonStats, NixInstantiateStats, NixRunner,
+    select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
 use aos_nix_harness::diff::{
@@ -3100,6 +3101,9 @@ fn eval_json_reproduction_command(eval_config: &NixEvalConfig, expr: &str) -> St
 
 fn eval_json_reproduction_args(eval_config: &NixEvalConfig, expr: &str) -> Vec<String> {
     let mut args = vec!["aos".to_string()];
+    if eval_config.nix_compat_profile() != NixCompatProfile::default() {
+        args.push(format!("--nix-compat={}", eval_config.nix_compat_profile()));
+    }
     if eval_config.trace_verbose() {
         args.push("--trace-verbose".to_string());
     }
@@ -3135,6 +3139,9 @@ fn reproduction_args(
     mode: DiffMode,
 ) -> Vec<String> {
     let mut args = vec!["aos".to_string()];
+    if eval_config.nix_compat_profile() != NixCompatProfile::default() {
+        args.push(format!("--nix-compat={}", eval_config.nix_compat_profile()));
+    }
     if eval_config.trace_verbose() {
         args.push("--trace-verbose".to_string());
     }
@@ -5129,6 +5136,8 @@ mod tests {
         config.add_allowed_path("/aos/src")?;
         config.add_allowed_uri("https://cache.example/")?;
         config.set_trace_verbose(true);
+        config.set_nix_compat_profile(NixCompatProfile::Nix2_34_8);
+        config.reset_reported_nix_version();
 
         let args = reproduction_args(
             &config,
@@ -5141,6 +5150,7 @@ mod tests {
             args_as_str,
             [
                 "aos",
+                "--nix-compat=2.34.8",
                 "--trace-verbose",
                 "--eval-system=aos-test-target",
                 "--restrict-eval",
@@ -5161,7 +5171,7 @@ mod tests {
                 "pkgs.o'clock",
                 DiffMode::Structural,
             ),
-            "aos --trace-verbose --eval-system=aos-test-target --restrict-eval --eval-allow-path=/aos/src --eval-allow-uri=https://cache.example/ nix-diff '--attr=pkgs.o'\\''clock' --mode=structural -- 'path with spaces/default.nix'"
+            "aos --nix-compat=2.34.8 --trace-verbose --eval-system=aos-test-target --restrict-eval --eval-allow-path=/aos/src --eval-allow-uri=https://cache.example/ nix-diff '--attr=pkgs.o'\\''clock' --mode=structural -- 'path with spaces/default.nix'"
         );
 
         let node_args = node_reproduction_args(
