@@ -17,7 +17,7 @@ impl TreeWalk {
 
         let string_span = self.node(string_id)?.span;
         let string = self.eval_node(string_id)?;
-        let string = self.context_free_string_bytes(string_id, string_span, string, "match")?;
+        let string = self.regex_subject_bytes(string_id, string_span, string)?;
 
         self.eval_match_bytes(id, span, &regex, &string)
     }
@@ -35,8 +35,7 @@ impl TreeWalk {
         let regex = self.compile_match_regex(pattern.id(), pattern.span(), &pattern_bytes)?;
 
         let string_value = self.force_value(string.id(), string.span(), string.value())?;
-        let string_bytes =
-            self.context_free_string_bytes(string.id(), string.span(), string_value, "match")?;
+        let string_bytes = self.regex_subject_bytes(string.id(), string.span(), string_value)?;
 
         self.eval_match_bytes(id, span, &regex, &string_bytes)
     }
@@ -55,7 +54,7 @@ impl TreeWalk {
 
         let string_span = self.node(string_id)?.span;
         let string = self.eval_node(string_id)?;
-        let string = self.context_free_string_bytes(string_id, string_span, string, "split")?;
+        let string = self.regex_subject_bytes(string_id, string_span, string)?;
 
         self.eval_split_bytes(
             id,
@@ -81,8 +80,7 @@ impl TreeWalk {
         let regex = self.compile_split_regex(pattern.id(), pattern.span(), &pattern_bytes)?;
 
         let string_value = self.force_value(string.id(), string.span(), string.value())?;
-        let string_bytes =
-            self.context_free_string_bytes(string.id(), string.span(), string_value, "split")?;
+        let string_bytes = self.regex_subject_bytes(string.id(), string.span(), string_value)?;
 
         self.eval_split_bytes(
             id,
@@ -93,6 +91,30 @@ impl TreeWalk {
             &regex,
             &string_bytes,
         )
+    }
+
+    /// Copies a regex subject's bytes while intentionally discarding its context.
+    fn regex_subject_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let string = self
+            .heap
+            .get_string_view(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Self::copy_bytes_for_node(id, span, string.bytes())
     }
 
     pub(super) fn eval_split_bytes(

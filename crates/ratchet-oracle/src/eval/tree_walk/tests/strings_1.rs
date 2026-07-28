@@ -407,7 +407,7 @@ fn match_primop_checks_arguments_and_regexes() {
 }
 
 #[test]
-fn match_primop_rejects_string_context() {
+fn match_primop_rejects_pattern_context_but_discards_subject_context() {
     let ir = lower(r#"builtins.match "a" "a""#);
     let root = *ir.arena.node(ir.root).expect("root exists");
     let IrData::PrimOp { args, .. } = root.data else {
@@ -451,38 +451,20 @@ fn match_primop_rejects_string_context() {
     );
     assert_eq!(error.span(), pattern_span);
 
-    let mut evaluator = TreeWalk::new(&ir);
-    let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
-        .expect("source context is valid");
-    let context_free_pattern = evaluator
-        .heap
-        .alloc_string(NixString::from_bytes(b"a".to_vec()))
-        .expect("context-free string allocates");
-    let context_string = evaluator
-        .heap
-        .alloc_string(NixString::new(
-            b"a".to_vec(),
-            StringContext::singleton(source).expect("source context allocates"),
-        ))
-        .expect("context-bearing string allocates");
-
-    let error = evaluator
-        .eval_match_primop_value(
-            ir.root,
-            root.span,
-            EvalPrimOpArg::new(pattern, pattern_span, context_free_pattern),
-            EvalPrimOpArg::new(string, string_span, context_string),
-        )
-        .expect_err("match rejects string argument context");
-
     assert_eq!(
-        error.kind(),
-        TreeWalkErrorKind::StringContextNotAllowed {
-            id: string,
-            op: "match",
-        }
+        eval_json_bytes(
+            r#"let
+              subject = builtins.appendContext "a" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+              };
+              captures = builtins.match "(a)" subject;
+            in {
+              inherit captures;
+              context = builtins.getContext (builtins.head captures);
+            }"#,
+        ),
+        br#"{"captures":["a"],"context":{}}"#.to_vec()
     );
-    assert_eq!(error.span(), string_span);
 }
 
 #[test]
@@ -667,7 +649,7 @@ fn split_primop_checks_arguments_and_regexes() {
 }
 
 #[test]
-fn split_primop_rejects_string_context() {
+fn split_primop_rejects_pattern_context_but_discards_subject_context() {
     let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
 
     let error = eval_whnf_owned(&lower(&format!(
@@ -681,16 +663,22 @@ fn split_primop_rejects_string_context() {
         TreeWalkErrorKind::StringContextNotAllowed { op: "split", .. }
     ));
 
-    let error = eval_whnf_owned(&lower(&format!(
-        r#"builtins.split
-                "a"
-                (builtins.appendContext "a" {{ "{path}" = {{ path = true; }}; }})"#
-    )))
-    .expect_err("split rejects string context");
-    assert!(matches!(
-        error.kind(),
-        TreeWalkErrorKind::StringContextNotAllowed { op: "split", .. }
-    ));
+    assert_eq!(
+        eval_json_bytes(&format!(
+            r#"let
+              parts = builtins.split "(-)"
+                (builtins.appendContext "a-b" {{ "{path}" = {{ path = true; }}; }});
+            in {{
+              inherit parts;
+              firstContext = builtins.getContext (builtins.elemAt parts 0);
+              captureContext =
+                builtins.getContext (builtins.head (builtins.elemAt parts 1));
+              lastContext = builtins.getContext (builtins.elemAt parts 2);
+            }}"#
+        )),
+        br#"{"captureContext":{},"firstContext":{},"lastContext":{},"parts":["a",["-"],"b"]}"#
+            .to_vec()
+    );
 }
 
 #[test]
