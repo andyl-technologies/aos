@@ -428,6 +428,19 @@ roughly 18--21 seconds and 4,270,216 KiB for the retained configuration. Capture
 shedding and the current quiescent sweep cadence therefore do not reclaim the
 historical arena pages before this workload's peak.
 
+The narrower callback-free final-config sweep has already isolated the physical
+fragmentation limit. At ordinal 160 it retired 221,940 unreachable worker
+objects, but live/dead interleaving exposed only 267 complete 4-KiB pages
+(1,093,632 bytes) to `MADV_DONTNEED`. Matched peak RSS fell only 3,196 KiB while
+instructions rose 3.0 percent and cycles 4.2 percent. A broader ordinal-192
+projection found only 31,162,368 bytes on wholly dead pages and still faced
+weak-index, writeback, and incoming-edge blockers. Import-boundary sweeping
+cannot turn the terminal 2.09-GiB logical-dead estimate into physical recovery
+without first changing allocation placement. The next factor-level memory
+implementation must segregate chronological/lifetime cohorts or rotate the
+whole domain; another non-moving decommit hook would repeat an already rejected
+experiment.
+
 This rejects the assumption that a compact `Value` alone is sufficient. The
 next memory experiment should segregate import/demand-scoped immutable cohorts,
 weakly retain interning candidates, and decommit complete dead regions before
