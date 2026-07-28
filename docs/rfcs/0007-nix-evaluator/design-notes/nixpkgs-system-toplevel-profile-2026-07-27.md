@@ -275,6 +275,36 @@ second directory lookup, source-thunk resolution, and its Ready-cell load.
 Flat-one adds only 8.8 percent of retained hits and should wait until the empty
 path proves that one cheap lookup can repay these low-cost bodies.
 
+The direct empty-capture specialization retained the completed `Value` in the
+cached def-site plan. A hit therefore preserved a distinct outer thunk but
+needed only the per-thunk scope/frame validation, one plan-table lookup, and
+normal force completion. Adversarial Candidate-C tests compared cache-off and
+replay behavior for lambda, primop, NaN, list-with-lambda, and
+attrs-with-lambda results, both directly and after `builtins.seq`. The only
+statically eligible adversarial shape, NaN, genuinely served Ready hits without
+changing equality; the other non-reflexive bodies were declined by the existing
+speculability predicate.
+
+Two clean acceptance pairs nevertheless rejected the specialization as a
+default:
+
+```text
+mode                       instructions       cycles          max RSS       native wall
+durable 64, Ready off     136,945,805,153   55,355,356,224   4,251,470 KiB   19.294 s
+empty Ready floor 0       138,727,428,706   55,027,319,523   4,226,720 KiB   20.128 s
+delta                               +1.30%            -0.59%          -0.58%       +4.32%
+```
+
+All four samples produced the exact pinned derivation. Cycle and RSS movement
+was mixed across the individual pairs, while instructions were a stable
+1.28--1.32 percent regression. This still recovers roughly two thirds of the
+general captured directory's 3.91-percent instruction loss, proving that
+recipe/source-cell elimination is material, but the per-force plan-table
+probe/classification remains more expensive than the small bodies avoided.
+The specialization remains opt-in. A subsequent active version needs a
+module-local preclassification or compact indexed site state so ineligible
+forces do not pay a general hash-table lookup.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
