@@ -30,8 +30,8 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use std::sync::Arc;
 
@@ -39,9 +39,9 @@ use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
 use crate::eval::EvalNodeRef;
-use crate::value::Value;
 #[cfg(feature = "candidate_c_value")]
 use crate::value::compressed::CompressedValueKind;
+use crate::value::Value;
 
 /// Shard count for the L1 shared table.
 ///
@@ -415,31 +415,22 @@ pub(super) enum ReadyCellPlanDecision {
 /// later forces perform one indexed lookup and read their planned slots.
 #[derive(Debug, Default)]
 pub(super) struct ReadyCellPlanCache {
-    modules: Vec<Option<ReadyCellPlanModuleState>>,
+    modules: Vec<Option<ReadyCellPlanModuleTable>>,
     #[cfg(test)]
     empty_served_hits: u64,
-    #[cfg(test)]
-    hot_empty_hits: u64,
 }
 
 impl ReadyCellPlanCache {
     /// Returns the cached decision for one exact def-site.
     pub(super) fn get(&self, def_site: EvalNodeRef) -> Option<&ReadyCellPlanDecision> {
         let module = self.modules.get(def_site.module().index())?.as_ref()?;
-        module.plans.get(&def_site.id().as_u32())
+        module.get(&def_site.id().as_u32())
     }
 
     /// Returns the mutable cached decision for one exact def-site.
     fn get_mut(&mut self, def_site: EvalNodeRef) -> Option<&mut ReadyCellPlanDecision> {
         let module = self.modules.get_mut(def_site.module().index())?.as_mut()?;
-        let local_id = def_site.id().as_u32();
-        if module
-            .hot_empty
-            .is_some_and(|entry| entry.local_id == local_id)
-        {
-            module.hot_empty = None;
-        }
-        module.plans.get_mut(&local_id)
+        module.get_mut(&def_site.id().as_u32())
     }
 
     /// Records a validated decision for one exact def-site.
@@ -449,15 +440,8 @@ impl ReadyCellPlanCache {
             self.modules.resize_with(module_index + 1, || None);
         }
         let module =
-            self.modules[module_index].get_or_insert_with(ReadyCellPlanModuleState::default);
-        let local_id = def_site.id().as_u32();
-        if module
-            .hot_empty
-            .is_some_and(|entry| entry.local_id == local_id)
-        {
-            module.hot_empty = None;
-        }
-        module.plans.insert(local_id, decision);
+            self.modules[module_index].get_or_insert_with(ReadyCellPlanModuleTable::default);
+        module.insert(def_site.id().as_u32(), decision);
     }
 
     /// Probes one capture-free plan without constructing a recipe.
@@ -466,46 +450,29 @@ impl ReadyCellPlanCache {
         def_site: EvalNodeRef,
         captured_frame_count: usize,
     ) -> ReadyCellEmptyProbe {
-        let Some(module) = self
-            .modules
-            .get_mut(def_site.module().index())
-            .and_then(Option::as_mut)
-        else {
+        let Some(decision) = self.get_mut(def_site) else {
             return ReadyCellEmptyProbe::Unknown;
         };
-        let local_id = def_site.id().as_u32();
-        let (probe, _hot_hit) = match module.hot_empty {
-            Some(entry)
-                if entry.local_id == local_id
-                    && entry.captured_frame_count == captured_frame_count =>
-            {
-                (entry.probe, true)
-            }
-            _ => {
-                let probe = module
-                    .plans
-                    .get(&local_id)
-                    .map_or(ReadyCellEmptyProbe::Unknown, |decision| {
-                        ready_cell_empty_probe(decision, captured_frame_count)
-                    });
-                module.hot_empty = Some(ReadyCellEmptyPicEntry {
-                    local_id,
-                    captured_frame_count,
-                    probe,
-                });
-                (probe, false)
-            }
+        let ReadyCellPlanDecision::Eligible {
+            captured_frame_count: planned_frame_count,
+            captures: ReadyCellCapturePlan::Empty,
+            empty_ready_value,
+            ..
+        } = decision
+        else {
+            return ReadyCellEmptyProbe::Ineligible;
+        };
+        if *planned_frame_count != captured_frame_count {
+            return ReadyCellEmptyProbe::Ineligible;
+        }
+        let Some(value) = *empty_ready_value else {
+            return ReadyCellEmptyProbe::Miss;
         };
         #[cfg(test)]
         {
-            if _hot_hit {
-                self.hot_empty_hits = self.hot_empty_hits.saturating_add(1);
-            }
-            if matches!(probe, ReadyCellEmptyProbe::Hit(_)) {
-                self.empty_served_hits = self.empty_served_hits.saturating_add(1);
-            }
+            self.empty_served_hits = self.empty_served_hits.saturating_add(1);
         }
-        probe
+        ReadyCellEmptyProbe::Hit(value)
     }
 
     /// Publishes one successfully completed capture-free result.
@@ -549,7 +516,7 @@ impl ReadyCellPlanCache {
         self.modules
             .iter()
             .filter_map(Option::as_ref)
-            .map(|module| module.plans.len())
+            .map(HashMap::len)
             .sum()
     }
 
@@ -560,7 +527,7 @@ impl ReadyCellPlanCache {
             .modules
             .iter()
             .filter_map(Option::as_ref)
-            .flat_map(|module| module.plans.values())
+            .flat_map(HashMap::values)
             .filter(|decision| {
                 matches!(
                     decision,
@@ -574,32 +541,11 @@ impl ReadyCellPlanCache {
             .count();
         (resident, self.empty_served_hits)
     }
-
-    /// Returns the number of exact empty-plan PIC hits.
-    #[cfg(test)]
-    pub(super) const fn hot_empty_hits(&self) -> u64 {
-        self.hot_empty_hits
-    }
 }
 
 /// One module's Ready plans keyed sparsely by its local IR node id.
 type ReadyCellPlanModuleTable =
     HashMap<u32, ReadyCellPlanDecision, BuildHasherDefault<MemoNodeIdHasher>>;
-
-/// Sparse Ready plans plus one exact empty-plan inline-cache entry.
-#[derive(Debug, Default)]
-struct ReadyCellPlanModuleState {
-    plans: ReadyCellPlanModuleTable,
-    hot_empty: Option<ReadyCellEmptyPicEntry>,
-}
-
-/// One module-local empty-plan probe cached ahead of the sparse map.
-#[derive(Clone, Copy, Debug)]
-struct ReadyCellEmptyPicEntry {
-    local_id: u32,
-    captured_frame_count: usize,
-    probe: ReadyCellEmptyProbe,
-}
 
 /// Result of probing the capture-free per-def-site Ready specialization.
 #[derive(Clone, Copy, Debug)]
@@ -612,29 +558,6 @@ pub(super) enum ReadyCellEmptyProbe {
     Miss,
     /// The def-site is captured, unsafe, below the floor, or otherwise invalid.
     Ineligible,
-}
-
-/// Classifies one cached plan for an exact captured frame count.
-fn ready_cell_empty_probe(
-    decision: &ReadyCellPlanDecision,
-    captured_frame_count: usize,
-) -> ReadyCellEmptyProbe {
-    let ReadyCellPlanDecision::Eligible {
-        captured_frame_count: planned_frame_count,
-        captures: ReadyCellCapturePlan::Empty,
-        empty_ready_value,
-        ..
-    } = decision
-    else {
-        return ReadyCellEmptyProbe::Ineligible;
-    };
-    if *planned_frame_count != captured_frame_count {
-        return ReadyCellEmptyProbe::Ineligible;
-    }
-    match *empty_ready_value {
-        Some(value) => ReadyCellEmptyProbe::Hit(value),
-        None => ReadyCellEmptyProbe::Miss,
-    }
 }
 
 impl ReadyCellCaptures {
@@ -1204,14 +1127,11 @@ mod tests {
         assert_eq!(plans.len(), 2);
         assert_eq!(plans.modules.len(), 10);
         assert_eq!(
-            plans.modules[3].as_ref().map(|module| module.plans.len()),
+            plans.modules[3].as_ref().map(HashMap::len),
             Some(1),
             "the maximum local id occupies one sparse map entry"
         );
-        assert_eq!(
-            plans.modules[9].as_ref().map(|module| module.plans.len()),
-            Some(1)
-        );
+        assert_eq!(plans.modules[9].as_ref().map(HashMap::len), Some(1));
         let ReadyCellEmptyProbe::Hit(first_hit) = plans.probe_empty(first, 1) else {
             panic!("the first module-local plan should remain resident");
         };
@@ -1220,20 +1140,6 @@ mod tests {
         };
         assert!(first_hit.raw_eq(first_value));
         assert!(second_hit.raw_eq(second_value));
-        assert_eq!(plans.hot_empty_hits(), 0);
-        assert!(matches!(
-            plans.probe_empty(first, 1),
-            ReadyCellEmptyProbe::Hit(_)
-        ));
-        assert!(matches!(
-            plans.probe_empty(second, 2),
-            ReadyCellEmptyProbe::Hit(_)
-        ));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            2,
-            "each sparse module retains an independent hot entry"
-        );
 
         plans.clear_empty(first);
         assert!(matches!(
@@ -1244,92 +1150,6 @@ mod tests {
             panic!("clearing one module must not alias the same local id in another");
         };
         assert!(second_hit.raw_eq(second_value));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            3,
-            "the unaffected module keeps its hot entry"
-        );
-    }
-
-    #[test]
-    fn ready_plan_empty_pic_keys_frame_count_and_tracks_publish_clear() {
-        let def_site = EvalNodeRef::new(
-            crate::eval::EvalModuleId::new(4),
-            crate::compile::IrId::new(27),
-        );
-        let value = Value::int(42);
-        let mut plans = ReadyCellPlanCache::default();
-        plans.insert(
-            def_site,
-            ReadyCellPlanDecision::Eligible {
-                captured_frame_count: 3,
-                captures: ReadyCellCapturePlan::Empty,
-                static_cost_units: 8,
-                empty_ready_value: None,
-            },
-        );
-
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Miss
-        ));
-        assert_eq!(plans.hot_empty_hits(), 0);
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Miss
-        ));
-        assert_eq!(plans.hot_empty_hits(), 1, "the exact miss hits the PIC");
-
-        assert!(matches!(
-            plans.probe_empty(def_site, 2),
-            ReadyCellEmptyProbe::Ineligible
-        ));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            1,
-            "a frame-count mismatch must fall back to the sparse map"
-        );
-        assert!(matches!(
-            plans.probe_empty(def_site, 2),
-            ReadyCellEmptyProbe::Ineligible
-        ));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            2,
-            "the mismatched frame-count decision is cached exactly"
-        );
-
-        assert!(plans.publish_empty(def_site, 3, value));
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Hit(hit) if hit.raw_eq(value)
-        ));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            2,
-            "publication invalidates the prior frame-count PIC entry"
-        );
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Hit(hit) if hit.raw_eq(value)
-        ));
-        assert_eq!(plans.hot_empty_hits(), 3);
-
-        plans.clear_empty(def_site);
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Miss
-        ));
-        assert_eq!(
-            plans.hot_empty_hits(),
-            3,
-            "clear invalidates the cached Ready value"
-        );
-        assert!(matches!(
-            plans.probe_empty(def_site, 3),
-            ReadyCellEmptyProbe::Miss
-        ));
-        assert_eq!(plans.hot_empty_hits(), 4);
     }
 
     #[test]

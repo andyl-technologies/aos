@@ -158,10 +158,6 @@ fn empty_only_ready_hit_bypasses_recipe_and_durable_memo_work() {
         "the first instance publishes a direct result"
     );
     assert!(served_hits >= 1, "later instances hit the per-plan result");
-    assert!(
-        evaluator.test_empty_ready_pic_hits() >= 1,
-        "the third instance should reuse the module-local hot plan"
-    );
     assert_eq!(evaluator.test_ready_cell_directory_counts(), (0, 0));
     assert_eq!(evaluator.stats.memo_l0_hits(), 0);
     assert_eq!(evaluator.stats.memo_l0_misses(), 0);

@@ -1478,14 +1478,6 @@ impl TreeWalk {
             .map_or((0, 0), super::super::memo::ReadyCellPlanCache::empty_counts)
     }
 
-    /// Returns exact empty-plan PIC hits, for tests.
-    #[cfg(test)]
-    pub(crate) fn test_empty_ready_pic_hits(&self) -> u64 {
-        self.ready_cell_plans
-            .as_ref()
-            .map_or(0, super::super::memo::ReadyCellPlanCache::hot_empty_hits)
-    }
-
     /// Poisons a resident L0 entry's payload under `key`, for CHECK tests.
     #[cfg(test)]
     pub(crate) fn test_memo_poison_l0_payload(
