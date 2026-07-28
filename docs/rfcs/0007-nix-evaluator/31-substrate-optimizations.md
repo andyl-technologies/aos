@@ -292,6 +292,16 @@ every other section.
 **Gate.** `nix-bench` before/after on the same commit; byte-parity is
 unaffected by construction but runs anyway.
 
+**Measured status.** Fat LTO is retained. Three alternating same-source
+primary-workload pairs reduce median retired instructions from 14,517,882,582
+to 14,406,730,378 (-0.766%), median cycles from 5,704,537,577 to 5,670,323,051
+(-0.600%), and stripped binary size from 66,927,664 to 60,135,552 bytes
+(-10.15%). Median RSS fell by 5,928 KiB, but the three-run ranges overlap. The
+clean release build grew from about 4m26s to 8m11s. These small execution and
+size improvements compose with later work and justify the build-time cost for
+the performance release profile. Rustc instrumentation PGO remains to be
+measured on top of fat LTO.
+
 ## 8. Trace-driven prewarming
 
 **Technique.** Persist the previous eval's *demand trace* (the order

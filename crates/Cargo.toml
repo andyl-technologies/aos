@@ -221,5 +221,5 @@ aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1

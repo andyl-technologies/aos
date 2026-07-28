@@ -13123,6 +13123,15 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       regions; do not broaden the current per-thunk promotion grammar as the
       factor-level plan
       ([unsafe audit](design-notes/serial-hot-path-unsafe-audit.md)).
+- [x] **Retain fat LTO as a small composable release improvement:** three
+      alternating same-source primary pairs reduce median retired instructions
+      from 14,517,882,582 to 14,406,730,378 (-0.766%), median cycles from
+      5,704,537,577 to 5,670,323,051 (-0.600%), and stripped binary size from
+      66,927,664 to 60,135,552 bytes (-10.15%). Median RSS falls by 5,928KiB
+      but the ranges overlap. The clean release build grows from about 4m26s to
+      8m11s. Keep this verified additive and measure instrumentation PGO on top
+      rather than requiring each compiler-level lever to be factor-sized
+      ([substrate optimizations](31-substrate-optimizations.md#7-binary-level-tuning-pgo-bolt-lto-allocator)).
 - [x] **Explain and remove the excess native thunk population:** the
       stats-only force-shape census now records allocations and the subset
       created during order-sensitive assembly. It found 698,638 lexical alias

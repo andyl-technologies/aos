@@ -7971,6 +7971,18 @@ instructions, another 27.4% reduction from the lean median. Crossing half of
 this C++ run's RSS requires less than 232,730 KiB, another 49.6% reduction from
 the lower lean observation.
 
+Fat LTO is the first retained compiler-level additive. Three alternating
+same-source pairs on derivation
+`/nix/store/w5h8li5hvk9cqf8nawvgbmrrfnc5sx3v-aos-system-toplevel.drv`
+measured 14,406,730,378 median instructions for fat LTO versus 14,517,882,582
+for thin LTO, a 111,152,204-instruction (0.766%) reduction. Median cycles fell
+from 5,704,537,577 to 5,670,323,051 (0.600%); median peak RSS fell from 469,436
+to 463,508 KiB, although the three-run ranges overlap. The stripped binary
+shrunk from 66,927,664 to 60,135,552 bytes (10.15%). The initial clean build
+took 8m11s versus about 4m26s for thin LTO. The execution and binary-size gains
+are small but repeatable and composable, so `[profile.release]` now retains
+`lto = "fat"`.
+
 Cycle readings during this battery varied with builder contention and are not
 used to revise the cycle gate. Broad probe compositions can still be used for
 falsification evidence, but they are not admissible lean controls. Every future
