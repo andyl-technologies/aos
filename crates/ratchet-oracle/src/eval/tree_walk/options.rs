@@ -817,6 +817,15 @@ impl TreeWalkOptions {
         self.jit_tier1_publish_enabled = enabled;
     }
 
+    /// Enables or disables the statically-ready mixed-call executor.
+    ///
+    /// The executor is off by default. Enabling it has no effect unless a
+    /// [`Tier1Engine`] is installed and a call passes the complete pre-claim
+    /// source, capture, target, and one-word-result admission checks.
+    pub fn set_mixed_ready_call_enabled(&mut self, enabled: bool) {
+        self.mixed_ready_call_enabled = enabled;
+    }
+
     /// Replaces the active worker id used for parallel thunk sidecar claims.
     ///
     /// The id is observable only through the parallel thunk protocol. The

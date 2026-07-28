@@ -1,5 +1,6 @@
 //! Primop application: arity-checked direct/strict builtin dispatch.
 
+use super::mixed_apply_machine::PreparedMixedReadyCall;
 use super::*;
 
 /// Immutable lambda metadata retained across a repeated higher-order loop.
@@ -529,11 +530,31 @@ impl TreeWalk {
         argument_span: Span,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
+        let direct_function_id = self.node(id).ok().and_then(|node| {
+            if node.kind != IrKind::Apply {
+                return None;
+            }
+            let IrData::Pair { first, second } = node.data else {
+                return None;
+            };
+            (second == argument_id).then_some(first)
+        });
+        let prepared_mixed = direct_function_id.and_then(|function_id| {
+            self.prepare_direct_mixed_ready_call(
+                EvalNodeRef::new(self.current_module, id),
+                EvalNodeRef::new(self.current_module, function_id),
+                function,
+                EvalNodeRef::new(self.current_module, argument_id),
+                argument,
+                lambda,
+            )
+        });
         // Tier-2 apply seam: with an engine installed, an undecided lambda
         // def-site is consulted once here; a published compiled body replaces
         // the interpreted call entirely. `None` (no engine, skipped def-site,
         // deopt, or no dispatch) falls through byte-for-byte unchanged.
-        if self.tier1_engine.is_some()
+        if prepared_mixed.is_none()
+            && self.tier1_engine.is_some()
             && let Some(value) = self.try_tier2_lambda_apply(id, span, function, &lambda, argument)
         {
             return Ok(value);
@@ -561,6 +582,7 @@ impl TreeWalk {
                         argument_span,
                         argument,
                         Some(slots.start),
+                        None,
                     )
                 },
             );
@@ -573,6 +595,7 @@ impl TreeWalk {
             argument_span,
             argument,
             None,
+            prepared_mixed.as_ref(),
         )
     }
 
@@ -586,6 +609,7 @@ impl TreeWalk {
         argument_span: Span,
         argument: Value,
         argument_slot: Option<usize>,
+        prepared_mixed: Option<&PreparedMixedReadyCall>,
     ) -> Result<Value, TreeWalkError> {
         let caller_module = self.current_module;
         self.with_current_module(lambda.module(), |eval| {
@@ -654,6 +678,11 @@ impl TreeWalk {
                 );
                 eval.end_order_sensitive_binding_assembly(bind_result.is_ok());
                 bind_result?;
+                if let Some(prepared) = prepared_mixed.as_ref()
+                    && let MixedReadyCallHook::Completed(value) = prepared.run()
+                {
+                    return Ok(value);
+                }
                 #[cfg(feature = "dedup_string_list_canary")]
                 if let Some(result) = eval.try_dedup_string_list_canary(lambda, argument) {
                     return result;

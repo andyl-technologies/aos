@@ -7899,9 +7899,9 @@ computes the selected scalar result without a callback, and continues through
 the force/update CFG. Entry callable and argument operands may likewise come
 from the parameter, a frame local, or an integer literal. Consequently a real
 source-backed `f: f 1`/`x: 42` pair now passes the complete packed-STG,
-mixed-plan, Cranelift, and execution pipeline. This is still a bounded grammar
-and has no primary runtime adapter, so it earns correctness progress but no
-factor-speed credit.
+mixed-plan, Cranelift, and execution pipeline. At this stage it was still a
+bounded grammar with no primary runtime adapter, so it earned correctness
+progress but no factor-speed credit.
 
 Candidate-C native constants now use the actual compressed carrier bits.
 Out-of-range integers decline during admission instead of silently entering a
@@ -7917,15 +7917,28 @@ force transitions. This is the required first runtime shape because existing
 Node/Apply/GenList thunk metadata cannot yet provide the allocation-site and
 capture-layout identities demanded by claimed mixed-force guards.
 
+A default-off primary runtime adapter now admits that exact source-backed
+corridor with `AOS_NIX_JIT=1` and `AOS_NIX_MIXED_READY_CALL=1`. It fingerprints
+the complete lowered module, verifies the exact Apply and unique lambda
+definition, requires empty lexical and dynamic captures, lowers the complete
+packed target before execution, and binds the ordinary lambda environment
+before entering native code. Native completion is accepted only when its raw
+one-word result exactly matches the safe evaluator-owned expected `Value`;
+invalid or side-exit results fall through to the already-bound tree walk.
+Candidate-C tests prove one native completion for `(f: f 1) (x: 42)`, zero
+completions with the option off, and an unchanged interpreted result for a
+captured target. This establishes a real execution seam, but the admitted
+grammar remains too narrow for factor-speed credit until corpus counts and
+matched instruction measurements demonstrate material coverage.
+
 A separate memory-source audit rejects frontend duplication, structural caches,
-and allocator purging as hundred-megabyte explanations. Stable handles from
-birth remain a materially different collector design: direct-index handles can
-stay unchanged in all 426 native frames while a dead-first ordinal-160 rotation
-moves their referents. The current projection is about 192.7MiB peak, but the
-carrier route proceeds only if a reserved direct table reproduces its measured
-1.034x lookup factor at <=1% whole-process cycles and external `smaps` plus
-storage-owner accounting reconcile RSS. The 2.547x segmented resolver remains
-rejected.
+and allocator purging as hundred-megabyte explanations. The corrected movable
+handle probe rejects the stable-handle route: the required routing load plus
+dependent payload load costs 1.6267x with a four-byte route and 3.7845x with an
+honest eight-byte `{ lane, offset }` route. The earlier 1.034x measurement
+applies only to direct nonmoving payload storage. Dead-first rotation therefore
+still requires generated statepoints that own rewritable coordinates rather
+than a permanent indirection on every hot resolution.
 
 ### Matched lean-control recovery
 

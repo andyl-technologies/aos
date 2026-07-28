@@ -6,7 +6,7 @@
 //! Native entries read the tree walk's captured innermost `Rc<EvalFrame>`, so
 //! both tiers observe identical `LocalVar { slot }` values.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -107,6 +107,8 @@ pub struct NixJitTier1Engine {
     tier2_filter: RefCell<tier2_filter::Tier2FilterState>,
     /// Prepared direct mixed ready-call executables (see [`mixed_superblock`]).
     mixed_ready: RefCell<Vec<Rc<JitMixedSuperblockExecutable>>>,
+    /// Number of prepared mixed native activations entered.
+    mixed_ready_runs: Cell<u64>,
 }
 
 mod dispatch_policy;
@@ -253,6 +255,7 @@ impl NixJitTier1Engine {
             tier2_fold_gen: RefCell::new(tier2_fold_gen::Tier2FoldGenState::default()),
             tier2_filter: RefCell::new(tier2_filter::Tier2FilterState::default()),
             mixed_ready: RefCell::new(Vec::new()),
+            mixed_ready_runs: Cell::new(0),
         })
     }
 
@@ -267,6 +270,11 @@ impl NixJitTier1Engine {
     pub fn force_promote(mut self) -> Self {
         self.force_promote = true;
         self
+    }
+
+    /// Returns the number of mixed ready-call native activations entered.
+    pub fn mixed_ready_run_count(&self) -> u64 {
+        self.mixed_ready_runs.get()
     }
 
     /// Enables gated-cost recording without the process-global stats env var.

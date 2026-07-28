@@ -18,8 +18,9 @@ impl TreeWalk {
     ///
     /// Primops, functors, formal-set lambdas, tiered execution, force/content
     /// memoization, and package-boundary memo mode decline before call counters,
-    /// call depth, module state, or environments are mutated. No production
-    /// apply path calls this method yet.
+    /// call depth, module state, or environments are mutated. The default-off
+    /// mixed ready-call corridor may retain an installed tier-1 engine because
+    /// it prepares the exact native target before requesting this lease.
     ///
     /// # Errors
     ///
@@ -44,9 +45,11 @@ impl TreeWalk {
         argument_span: Span,
         argument: Value,
     ) -> Result<BeginLambdaCallLease, TreeWalkError> {
+        let mixed_ready_call =
+            self.options.mixed_ready_call_enabled() && self.tier1_engine.is_some();
         if function.tag() != ValueTag::Lambda
-            || self.tier1_engine.is_some()
-            || self.options.jit_tier1_publish_enabled()
+            || (self.tier1_engine.is_some() && !mixed_ready_call)
+            || (self.options.jit_tier1_publish_enabled() && !mixed_ready_call)
             || self.force_cache_active
             || self.options.memo_active()
             || self.options.boundary_memo_active()
