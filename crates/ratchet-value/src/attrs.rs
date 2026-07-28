@@ -4,9 +4,8 @@
 //! sorted by interned [`Symbol`] id for binary-search selection, while separate
 //! source-order and raw-byte lexicographic permutations drive primop traversal
 //! and observable iteration order for `attrNames`, `attrValues`, and
-//! `derivationStrict`. Lexicographic permutations are sorted through the
-//! [`SymbolTable`]'s cached rank view so construction does not repeatedly
-//! compare raw byte strings after interning.
+//! `derivationStrict`. Lexicographic permutations use a compact local prefix
+//! token and compare complete raw byte strings only when prefixes collide.
 //!
 //! A [`FlatAttrs`] value stores symbols, not names, and does not retain the
 //! [`SymbolTable`] used to validate them. Callers must construct and query an
@@ -29,6 +28,23 @@ pub mod select;
 pub mod shape;
 pub mod telemetry;
 mod update;
+
+/// Returns an order-preserving token for the first seven bytes of `bytes`.
+///
+/// Each byte maps to the 9-bit digit `byte + 1`, while an absent byte maps to
+/// zero. Packing seven digits most-significant first preserves byte-slice
+/// lexicographic order whenever the tokens differ. Equal tokens require a
+/// full comparison because strings can share a seven-byte prefix.
+pub(crate) fn lexicographic_prefix(bytes: &[u8]) -> u64 {
+    let mut prefix = 0_u64;
+    for index in 0..7 {
+        prefix <<= 9;
+        prefix |= bytes
+            .get(index)
+            .map_or(0, |byte| u64::from(*byte) + 1);
+    }
+    prefix
+}
 
 /// Source provenance for one attribute binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,19 +524,25 @@ impl FlatAttrs {
         }
         let entries = sorted;
 
-        // Symbol-id order and raw-byte lexicographic order differ in general, so
-        // the observable iteration order needs its own permutation. Validate
-        // every key before sorting, then compare the interned bytes directly.
+        // Symbol-id order and raw-byte lexicographic order differ in general,
+        // so the observable iteration order needs its own permutation. Build
+        // an order-preserving local prefix token for the common comparator
+        // path, falling back to complete interned bytes only on collisions.
         //
         // Do not ask the process-wide symbol table for dense lexicographic
         // ranks here. Interning one new name invalidates that O(symbols) view;
         // nixpkgs commonly interns between construction of modest attrsets, so
         // rebuilding the global view here turns an otherwise local operation
         // into repeated whole-table work.
+        let mut lexicographic_prefixes = Vec::new();
+        lexicographic_prefixes
+            .try_reserve_exact(len)
+            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
         for entry in &entries {
-            if symbols.resolve(entry.key).is_none() {
-                return Err(AttrError::UnknownSymbol { key: entry.key });
-            }
+            let bytes = symbols
+                .resolve(entry.key)
+                .ok_or(AttrError::UnknownSymbol { key: entry.key })?;
+            lexicographic_prefixes.push(lexicographic_prefix(bytes));
         }
 
         // Reuse the scratch permutation buffer for the lexicographic order.
@@ -531,9 +553,13 @@ impl FlatAttrs {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            symbols
-                .resolve(entries[left].key)
-                .cmp(&symbols.resolve(entries[right].key))
+            lexicographic_prefixes[left]
+                .cmp(&lexicographic_prefixes[right])
+                .then_with(|| {
+                    symbols
+                        .resolve(entries[left].key)
+                        .cmp(&symbols.resolve(entries[right].key))
+                })
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 

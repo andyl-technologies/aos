@@ -16,6 +16,35 @@ fn keys(entries: &[AttrEntry]) -> Vec<Symbol> {
 }
 
 #[test]
+fn lexicographic_prefix_never_contradicts_raw_byte_order() {
+    let values: &[&[u8]] = &[
+        b"",
+        b"\0",
+        b"\0\0",
+        b"a",
+        b"abcdefg",
+        b"abcdefgh",
+        b"abcdefh",
+        b"same-prefix-left",
+        b"same-prefix-right",
+        b"\x7f",
+        b"\x80",
+        b"\xff",
+        b"\xff\0",
+    ];
+
+    for left in values {
+        for right in values {
+            let token_order = lexicographic_prefix(left).cmp(&lexicographic_prefix(right));
+            let byte_order = left.cmp(right);
+            if token_order != std::cmp::Ordering::Equal {
+                assert_eq!(token_order, byte_order, "{left:?} versus {right:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn empty_attrset_has_no_entries() {
     let attrs = FlatAttrs::empty();
     assert!(attrs.is_empty());

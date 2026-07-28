@@ -836,8 +836,8 @@ fn lexicographic_order(
     keys_by_symbol: &[Symbol],
     symbols: &SymbolTable,
 ) -> Result<Box<[Symbol]>, HamtError> {
-    let mut key_bytes = Vec::new();
-    key_bytes
+    let mut key_prefixes = Vec::new();
+    key_prefixes
         .try_reserve_exact(keys_by_symbol.len())
         .map_err(|_| HamtError::AllocationFailed {
             entries: keys_by_symbol.len(),
@@ -846,7 +846,7 @@ fn lexicographic_order(
         let bytes = symbols
             .resolve(*key)
             .ok_or(HamtError::UnknownSymbol { key: *key })?;
-        key_bytes.push(bytes);
+        key_prefixes.push(super::lexicographic_prefix(bytes));
     }
 
     let mut slots = Vec::new();
@@ -859,8 +859,13 @@ fn lexicographic_order(
         slots.push(slot);
     }
     slots.sort_unstable_by(|left, right| {
-        key_bytes[*left]
-            .cmp(key_bytes[*right])
+        key_prefixes[*left]
+            .cmp(&key_prefixes[*right])
+            .then_with(|| {
+                symbols
+                    .resolve(keys_by_symbol[*left])
+                    .cmp(&symbols.resolve(keys_by_symbol[*right]))
+            })
             .then_with(|| keys_by_symbol[*left].cmp(&keys_by_symbol[*right]))
     });
 
@@ -902,6 +907,7 @@ fn insert_lexicographic(
     let key_bytes = symbols
         .resolve(key)
         .ok_or(HamtError::UnknownSymbol { key })?;
+    let key_prefix = super::lexicographic_prefix(key_bytes);
 
     // Binary search for the insertion point under the (rank, symbol) order.
     let mut lo = 0;
@@ -912,7 +918,8 @@ fn insert_lexicographic(
         let probe_bytes = symbols
             .resolve(probe)
             .ok_or(HamtError::UnknownSymbol { key: probe })?;
-        if (probe_bytes, probe) < (key_bytes, key) {
+        let probe_prefix = super::lexicographic_prefix(probe_bytes);
+        if (probe_prefix, probe_bytes, probe) < (key_prefix, key_bytes, key) {
             lo = mid + 1;
         } else {
             hi = mid;

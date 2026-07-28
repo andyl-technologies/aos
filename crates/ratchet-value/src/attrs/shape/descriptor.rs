@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::attrs::lexicographic_prefix;
 use crate::syntax::{Symbol, SymbolTable};
 
 use super::ids::{ShapeFingerprint, ShapeId};
@@ -88,15 +89,15 @@ impl AttrShape {
             source_order.push(slot as u32);
         }
 
-        let mut key_bytes = Vec::new();
-        key_bytes
+        let mut key_prefixes = Vec::new();
+        key_prefixes
             .try_reserve_exact(len)
             .map_err(|_| ShapeError::AllocationFailed { keys: len })?;
         for key in &sorted_keys {
             let bytes = symbols
                 .resolve(*key)
                 .ok_or(ShapeError::UnknownSymbol { key: *key })?;
-            key_bytes.push(bytes);
+            key_prefixes.push(lexicographic_prefix(bytes));
         }
 
         let mut iteration_order = Vec::new();
@@ -109,8 +110,13 @@ impl AttrShape {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            key_bytes[left]
-                .cmp(key_bytes[right])
+            key_prefixes[left]
+                .cmp(&key_prefixes[right])
+                .then_with(|| {
+                    symbols
+                        .resolve(sorted_keys[left])
+                        .cmp(&symbols.resolve(sorted_keys[right]))
+                })
                 .then_with(|| sorted_keys[left].cmp(&sorted_keys[right]))
         });
 
