@@ -504,15 +504,35 @@ Absent/Pending/Ready lifecycle removes a failed first application, distinguishes
 recursive Pending overlap from a strict Ready repeat, and reports both measured
 repeat-body wall and a projection based on the first successful body.
 
-- [ ] Run the exact pinned nixpkgs system-toplevel benchmark with this census
-      and record the Absent, recursive-Pending, strict-Ready, distinct-Ready,
-      measured repeat-wall, projected saved-wall, instructions, cycles, RSS,
-      wall, and derivation-parity result here.
-- [ ] Do not build a serving application cache unless strict Ready repeats have
-      enough body wall to repay an integer-key lookup and the exact key remains
-      valid across every runtime override/callable construction shape. Any
-      serving implementation must separately preserve impure-slice semantics;
-      this report-only census intentionally does not model them.
+- [x] The exact pinned Nix-2.24-compatible system run observed 151,264 Absent
+      keys, zero recursive-Pending overlaps, 254 strict-Ready repeats, 151,264
+      distinct Ready keys, and no failed or residual Pending entries. Strict
+      repeats were only 0.168% of 151,518 formal-set applications and consumed
+      32,663,140 ns of measured repeat-body wall; projecting each repeat from
+      its first successful body gives an upper estimate of 430,021,955 ns.
+      The measurement run retired 138,766,959,312 instructions and
+      54,616,929,162 cycles, peaked at 4,317,368 KiB RSS, and returned the exact
+      expected
+      `g3lcf1mzgvi8k1gpynbalc6gn130qaxp-nixos-system-aos-evaluator-bench-25.11.19700101.dirty.drv`.
+- [x] Do not build the serving raw-identity application cache from this route:
+      its measured reusable work is about 0.17% of clean wall, below the 1%
+      go/no-go floor and unlikely to repay an integer-key lookup on every
+      formal-set application. Retain the probe and lifecycle tests for future
+      workloads. A durable source-Merkle record remains a separate avenue, but
+      must include or prove away runtime overrides/captures and preserve the
+      canonical impure-input slice.
+- [x] The corrected strict-cold baseline uses capture-free local-Ready
+      specialization. The full local-Ready census found only 12 Ready hits,
+      all capture-free, with zero captured-recipe hits; strict-cold therefore
+      keeps the cache enabled but uses its direct empty-capture admission path.
+      Two clean runs retired 137,979,947,847 / 137,966,989,822 instructions,
+      consumed 54,603,117,964 / 54,196,076,390 cycles, peaked at
+      4,290,544 / 4,241,600 KiB RSS, and took 18.138 / 19.128 seconds of
+      evaluator wall. Both returned the exact expected derivation. Relative to
+      the full captured-recipe Ready run (138,347,167,443 instructions), the
+      specialization removes about 374 million instructions (0.27%) while
+      preserving every observed hit; RSS remains effectively at the prior
+      ~4.27 GiB level.
 
 ## Cycle profile
 
