@@ -120,6 +120,32 @@ roughly 149 MiB RSS spike. Repeating floor 16 on this build produced
 154,662,318,493 instructions and 61,859,913,110 cycles, so the default floor 64
 remains the acceptance setting until a direct-value L0 lowers hit replay cost.
 
+Two subsequent lookup changes preserve the same cache policy. A seven-byte
+order-preserving symbol prefix is retained only by the shape and HAMT ordering
+paths, where its eight-byte token replaces a sixteen-byte borrowed slice;
+materializing one token for every flat attr entry was faster but raised peak
+RSS, while recomputing it in every comparator was slower. Separately,
+`unsafeGetAttrPos` now builds one lazy line-start index per queried module
+instead of rescanning the source prefix for every position. The combined build
+produced the exact derivation in two samples spanning
+142,170,804,681--142,213,216,721 instructions and
+58,123,737,914--58,152,581,521 cycles. The corresponding RSS samples were
+4,255,704 and 4,436,600 KiB, inside the campaign's substantial allocator noise
+but without a repeatable factor-level regression. The instruction reduction
+from the 153.41-billion sparse-index baseline is 7.3 percent. In the following
+profile, `attr_position_fields`, previously 3.71 percent self cycles, no longer
+appeared above the 0.5-percent reporting threshold.
+
+That profile also showed 5.09 percent self cycles in `memmove`, mostly below
+`defer_flat_capture_if_assembling`. The pending-capture queue called
+`try_reserve_exact(1)` before every push, which repeatedly copied the entire
+queue during large recursive binding assemblies. Normal fallible geometric
+growth reduced two exact samples to 140,480,775,215--140,513,611,122
+instructions and 55,656,013,936--56,000,465,376 cycles. The separate RSS run
+peaked at 4,270,216 KiB. This is a further 1.2-percent instruction reduction
+without changing capture publication, early-force, or recursive-binding
+semantics.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
@@ -135,8 +161,14 @@ track; it is not part of the in-process cold acceptance result.
 ## Cache-off diagnostic measurements
 
 The native leg was the fat-LTO release build with `candidate_c_value`,
-`AOS_NIX_BENCH_COLD_ONLY=1`, and `--nix-compat=2.24.12`. The exactly matched
-stock leg was:
+`AOS_NIX_BENCH_COLD_ONLY=1`, `--nix-compat=2.24.12`, and an explicit pinned
+search path:
+
+```text
+--nix-path nixpkgs=/nix/store/h804a5w2y4cqmzkrcgp37m8804ialqi4-source:nix=/tmp/aos-pr104-corepkgs-224
+```
+
+The exactly matched stock leg was:
 
 ```text
 nix-instantiate flake-adapter.nix -A system
@@ -152,14 +184,14 @@ semantic attribution but is not the acceptance baseline.
 Nix 2.24.12                       24,254,636,565     12,420,737,095  828,652 KiB
 AOS Candidate C, cache off       273,110,398,403    111,755,985,336  4,270,764 KiB
 AOS Candidate C, L0/L1           197,103,073,775     76,675,241,073  4,288,420 KiB
-AOS Candidate C, current L0      153,408,986,114     61,180,145,695  4,294,228 KiB
+AOS Candidate C, current L0      140,497,193,168     55,828,239,656  4,270,216 KiB
 target                            <12,127,318,283     <6,210,368,548  <414,326 KiB
 ```
 
-The current L0 result is approximately 6.32 times stock instructions, 4.93
-times stock cycles, and 5.18 times stock peak RSS. Reaching the acceptance gates
-still requires about a 12.65-fold instruction reduction, 9.85-fold cycle
-reduction, and 10.36-fold peak-RSS reduction from this native result. More
+The current L0 result is approximately 5.79 times stock instructions, 4.50
+times stock cycles, and 5.15 times stock peak RSS. Reaching the acceptance gates
+still requires about an 11.59-fold instruction reduction, 8.99-fold cycle
+reduction, and 10.31-fold peak-RSS reduction from this native result. More
 averaging cannot turn this architecture into a pass; attribution and
 architectural changes come first.
 
