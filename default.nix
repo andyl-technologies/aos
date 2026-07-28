@@ -412,7 +412,7 @@
               --seed 31 \
               --store "$FLEET_STORE" \
               --artifact-dir "$FLEET_ARTIFACTS" \
-              verify "$scenario" --runs 1 \
+              verify "$scenario" --runs 2 \
               > "$1" 2>&1
           }
 
