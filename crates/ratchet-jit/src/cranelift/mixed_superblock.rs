@@ -43,7 +43,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 3;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 4;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -506,8 +506,16 @@ enum AdmittedCallResult {
     Constant(u64),
 }
 
+#[derive(Clone, Copy)]
+enum AdmittedEntryOperand {
+    Parameter,
+    FrameLocal(u32),
+    Constant(u64),
+}
+
 struct AdmittedCorridor {
-    entry_local: u32,
+    entry_callable: AdmittedEntryOperand,
+    entry_argument: AdmittedEntryOperand,
     call_results: Vec<AdmittedCallResult>,
     call_fallback: MixedStatepointId,
     force_fallback: MixedStatepointId,
@@ -554,7 +562,7 @@ fn lower_mixed_superblock(
     function.layout.append_block(call_ready);
     {
         let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(call_ready);
-        let callable = load_i64(
+        let parameter = load_i64(
             &mut cursor,
             activation,
             field_offset!(RawActivation, argument),
@@ -564,15 +572,27 @@ fn lower_mixed_superblock(
             activation,
             field_offset!(RawActivation, entry_frame),
         );
-        let argument = emit_frame_load(
+        let callable = emit_entry_operand(
             &mut cursor,
             activation,
+            parameter,
             entry_frame,
-            corridor.entry_local,
+            corridor.entry_callable,
+            invalid,
+        );
+        let Some(callable) = callable else {
+            unreachable!("admitted entry operand always emits a continuation");
+        };
+        let argument = emit_entry_operand(
+            &mut cursor,
+            activation,
+            parameter,
+            entry_frame,
+            corridor.entry_argument,
             invalid,
         );
         let Some(argument) = argument else {
-            unreachable!("frame load always emits a continuation");
+            unreachable!("admitted entry operand always emits a continuation");
         };
         let decision = emit_next_call_decision(&mut cursor, activation, invalid);
         let Some(decision) = decision else {
@@ -825,15 +845,6 @@ fn admit_corridor(
     let entry_function = function(plan, entry.function)?;
     let apply_block = block(plan, entry_function.entry)?;
     let apply_operations = operations(plan, apply_block)?;
-    let [
-        MixedOp::LoadLocal {
-            destination: argument,
-            slot: entry_local,
-        },
-    ] = apply_operations
-    else {
-        return unsupported("entry block is not one direct local load");
-    };
     let MixedTerminator::ApplyGuarded {
         function: callable,
         argument: apply_argument,
@@ -845,8 +856,25 @@ fn admit_corridor(
     else {
         return unsupported("entry block does not end in ApplyGuarded");
     };
-    if *callable != entry_function.parameter || apply_argument != argument || targets.len() == 0 {
+    if targets.len() == 0 {
         return unsupported("guarded application is not the direct entry shape");
+    }
+    let Some((entry_callable, callable_operation)) =
+        admit_entry_operand(apply_operations, *callable, entry_function.parameter)
+    else {
+        return unsupported("guarded callable is not a direct scalar operand");
+    };
+    let Some((entry_argument, argument_operation)) =
+        admit_entry_operand(apply_operations, *apply_argument, entry_function.parameter)
+    else {
+        return unsupported("guarded argument is not a direct scalar operand");
+    };
+    if callable_operation == argument_operation
+        || usize::from(callable_operation.is_some())
+            .saturating_add(usize::from(argument_operation.is_some()))
+            != apply_operations.len()
+    {
+        return unsupported("guarded entry operations are not one-use scalar operands");
     }
     let target_start = targets.start() as usize;
     let target_end = target_start
@@ -912,7 +940,8 @@ fn admit_corridor(
         return unsupported("ready force edge does not return its result");
     }
     Ok(AdmittedCorridor {
-        entry_local: *entry_local,
+        entry_callable,
+        entry_argument,
         call_results,
         call_fallback: *call_fallback,
         force_fallback: *force_fallback,
@@ -920,6 +949,31 @@ fn admit_corridor(
         apply: admit_claimed_result(plan, *apply, *force_result, *ready)?,
         gen_list: admit_claimed_result(plan, *gen_list, *force_result, *ready)?,
     })
+}
+
+fn admit_entry_operand(
+    operations: &[MixedOp],
+    value: MixedValueId,
+    parameter: MixedValueId,
+) -> Option<(AdmittedEntryOperand, Option<usize>)> {
+    if value == parameter {
+        return Some((AdmittedEntryOperand::Parameter, None));
+    }
+    operations
+        .iter()
+        .enumerate()
+        .find_map(|(index, operation)| match *operation {
+            MixedOp::LoadLocal { destination, slot } if destination == value => {
+                Some((AdmittedEntryOperand::FrameLocal(slot), Some(index)))
+            }
+            MixedOp::ConstInt {
+                destination,
+                value: constant,
+            } if destination == value => {
+                Some((AdmittedEntryOperand::Constant(constant as u64), Some(index)))
+            }
+            _ => None,
+        })
 }
 
 fn admit_claimed_result(
@@ -989,6 +1043,25 @@ fn unsupported<T>(reason: &'static str) -> Result<T, JitMixedSuperblockCompileEr
 
 const fn unsupported_error(reason: &'static str) -> JitMixedSuperblockCompileError {
     JitMixedSuperblockCompileError::UnsupportedPlan { reason }
+}
+
+fn emit_entry_operand(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    parameter: Value,
+    frame: Value,
+    operand: AdmittedEntryOperand,
+    invalid: Block,
+) -> Option<Value> {
+    match operand {
+        AdmittedEntryOperand::Parameter => Some(parameter),
+        AdmittedEntryOperand::FrameLocal(slot) => {
+            emit_frame_load(cursor, activation, frame, slot, invalid)
+        }
+        AdmittedEntryOperand::Constant(value) => {
+            Some(cursor.ins().iconst(types::I64, value as i64))
+        }
+    }
 }
 
 fn emit_frame_load(
@@ -1303,15 +1376,19 @@ mod tests {
 
     use cranelift_codegen::ir::Opcode;
     use ratchet_core::{
-        FrameId, IrId,
+        FrameId, Ir, IrData, IrId, lower,
         mixed_machine::{
             MixedBlock, MixedCallTarget, MixedCallable, MixedCodeIdentity, MixedEntry,
             MixedExecutablePlan, MixedExecutionOutcome, MixedExecutionRunner, MixedForceAction,
-            MixedForceGuards, MixedForceShape, MixedFunction, MixedMachineRuntime, MixedPlanBounds,
-            MixedSource, MixedStatepoint, MixedStatepointMode, MixedStatepointReason,
-            MixedTableRange, MixedValueType,
+            MixedForceGuards, MixedForceShape, MixedFunction, MixedMachineRuntime,
+            MixedOracleCallTargetBlock, MixedOracleNodeLowerOutcome, MixedOraclePlanLowerOutcome,
+            MixedPlanBounds, MixedSource, MixedStatepoint, MixedStatepointMode,
+            MixedStatepointReason, MixedTableRange, MixedValueType,
+            lower_mixed_oracle_apply_force_plan, lower_mixed_oracle_node,
         },
-        syntax::Span,
+        resolve,
+        stg::{StgCodeKey, StgLowerOutcome, StgModuleId, lower_stg_code_block},
+        syntax::{Span, parse_str},
     };
 
     use super::*;
@@ -1512,6 +1589,26 @@ mod tests {
     }
 
     #[test]
+    fn source_backed_literal_target_runs_through_the_native_corridor() {
+        let plan = real_literal_corridor_plan();
+        let native = compile_mixed_superblock(&plan, 0).expect("real scalar corridor compiles");
+        let frames = [8];
+        let calls = [JitMixedSuperblockCallDecision::target(8, 0, 0)];
+        let forces = [JitMixedSuperblockForceDecision::ready(42, 42)];
+        let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
+        let mut activation =
+            JitMixedSuperblockActivation::new(777, 0, &frames, 1, &calls, &forces, &mut updates)
+                .expect("activation validates");
+
+        assert_eq!(
+            native.run(&mut activation),
+            JitMixedSuperblockOutcome::Complete(42)
+        );
+        assert_eq!(activation.consumed_calls(), 1);
+        assert_eq!(activation.consumed_forces(), 1);
+    }
+
+    #[test]
     fn artifact_contains_no_calls_or_interpreter_dispatch() {
         let artifact =
             lower_mixed_superblock(&corridor_plan(41), 0).expect("direct corridor lowers");
@@ -1647,6 +1744,66 @@ mod tests {
             Some(FrameId::new(id)),
             [id as u8; 32],
         )
+    }
+
+    fn lowered(source: &str) -> Ir {
+        lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("IR lowers")
+    }
+
+    fn real_literal_corridor_plan() -> MixedModulePlan {
+        let entry_ir = lowered("f: f 1");
+        let entry_lambda = *entry_ir.arena.node(entry_ir.root).expect("lambda exists");
+        let IrData::Lambda {
+            body: entry_body, ..
+        } = entry_lambda.data
+        else {
+            panic!("lambda payload expected");
+        };
+        let MixedOracleNodeLowerOutcome::Lowered(entry) = lower_mixed_oracle_node(
+            &entry_ir,
+            StgModuleId::new(7),
+            [7; 32],
+            entry_ir.root,
+            entry_body,
+            [9; 32],
+        )
+        .expect("entry lowering succeeds") else {
+            panic!("real application entry must lower");
+        };
+
+        let target_ir = lowered("x: 42");
+        let target_lambda = *target_ir.arena.node(target_ir.root).expect("lambda exists");
+        let IrData::Lambda {
+            body: target_body,
+            frame: target_frame,
+            ..
+        } = target_lambda.data
+        else {
+            panic!("lambda payload expected");
+        };
+        let target_key = StgCodeKey::new(StgModuleId::new(8), target_body, target_frame);
+        let StgLowerOutcome::Lowered(target_code) =
+            lower_stg_code_block(&target_ir, target_key).expect("target lowering succeeds")
+        else {
+            panic!("literal target must lower");
+        };
+        let target = MixedOracleCallTargetBlock::new(
+            MixedCodeIdentity::new([8; 32], target_ir.root, target_body, target_frame, [5; 32]),
+            target_code,
+        );
+        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_apply_force_plan(
+            MixedModuleKey::new([7; 32], [6; 32], 1),
+            MixedPlanBounds::new(16, 2, 2),
+            &entry,
+            &[target],
+            MixedForceGuards::new(code(30), code(31), code(32)),
+            0,
+        )
+        .expect("real corridor translation succeeds") else {
+            panic!("real corridor must lower");
+        };
+        plan
     }
 
     fn corridor_plan(apply_value: i64) -> MixedModulePlan {

@@ -13511,12 +13511,17 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       The direct path now accepts polymorphic exact call-target sets and does
       target work. Real one-word target bodies returning the call parameter, a
       target-frame local, or an integer literal lower atomically into mixed
-      functions. Backend v3 validates every guarded target, dispatches the
+      functions. Backend v4 validates every guarded target, dispatches the
       prevalidated ordinal without callbacks, computes the selected local or
-      literal result, and carries it into the force/update corridor. Eight core
-      translator tests and five native-backend tests pass (two PMU probes stay
-      ignored). This expands the real-plan grammar but is not yet connected to
-      primary runtime admission and receives no whole-process speed credit.
+      literal result, and carries it into the force/update corridor. Its entry
+      now also admits parameter, frame-local, and integer-literal operands,
+      closing the mismatch between the source-backed core translator and the
+      earlier synthetic backend fixture. A real `f: f 1` entry plus real
+      `x: 42` target now lowers through packed STG and the mixed plan, compiles
+      to the callback-free artifact, and returns 42. Eight core translator
+      tests and six native-backend tests pass (two PMU probes stay ignored).
+      This expands the real-plan grammar but is not yet connected to primary
+      runtime admission and receives no whole-process speed credit.
       Independent memory-source exploration finds no hidden easy pool:
       frontend IR/modules/source/paths/symbols total 21,818,125 bytes,
       structural caches are about 1.44MiB, and the prior eager-purge delta is

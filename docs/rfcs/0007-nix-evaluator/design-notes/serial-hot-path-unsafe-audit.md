@@ -7878,13 +7878,17 @@ but an alternating same-binary comparison regresses retired instructions by
 as a statepoint model; its per-node dispatch must not be promoted as the
 production executor.
 
-Backend v3 removes the next synthetic restriction. Guarded calls may now carry
+Backend v4 removes the next synthetic restriction. Guarded calls may now carry
 multiple exact targets, and real target blocks may directly return their
 parameter, load a target-frame local, or produce an integer literal. The native
 artifact validates the whole target range, dispatches the prevalidated ordinal,
 computes the selected scalar result without a callback, and continues through
-the force/update CFG. This is still a bounded grammar and has no primary
-runtime adapter, so it earns correctness progress but no factor-speed credit.
+the force/update CFG. Entry callable and argument operands may likewise come
+from the parameter, a frame local, or an integer literal. Consequently a real
+source-backed `f: f 1`/`x: 42` pair now passes the complete packed-STG,
+mixed-plan, Cranelift, and execution pipeline. This is still a bounded grammar
+and has no primary runtime adapter, so it earns correctness progress but no
+factor-speed credit.
 
 A separate memory-source audit rejects frontend duplication, structural caches,
 and allocator purging as hundred-megabyte explanations. Stable handles from
