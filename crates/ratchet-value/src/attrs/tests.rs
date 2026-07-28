@@ -309,7 +309,7 @@ fn small_construction_matches_general_ordering_semantics() {
 }
 
 #[test]
-fn lexicographic_order_uses_current_symbol_rank_snapshot() {
+fn lexicographic_order_uses_current_symbol_bytes_after_more_interning() {
     let mut symbols = SymbolTable::new();
     let b = symbols.intern(b"b").expect("b interns");
     let a_ff = symbols.intern(b"a\xff").expect("a-ff interns");

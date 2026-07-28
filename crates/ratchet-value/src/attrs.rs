@@ -509,17 +509,18 @@ impl FlatAttrs {
         let entries = sorted;
 
         // Symbol-id order and raw-byte lexicographic order differ in general, so
-        // the observable iteration order needs its own permutation sorted by the
-        // symbol table's cached lexicographic ranks.
-        let mut sort_ranks = Vec::new();
-        sort_ranks
-            .try_reserve_exact(len)
-            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
+        // the observable iteration order needs its own permutation. Validate
+        // every key before sorting, then compare the interned bytes directly.
+        //
+        // Do not ask the process-wide symbol table for dense lexicographic
+        // ranks here. Interning one new name invalidates that O(symbols) view;
+        // nixpkgs commonly interns between construction of modest attrsets, so
+        // rebuilding the global view here turns an otherwise local operation
+        // into repeated whole-table work.
         for entry in &entries {
-            let rank = symbols
-                .lexicographic_rank(entry.key)
-                .ok_or(AttrError::UnknownSymbol { key: entry.key })?;
-            sort_ranks.push(rank);
+            if symbols.resolve(entry.key).is_none() {
+                return Err(AttrError::UnknownSymbol { key: entry.key });
+            }
         }
 
         // Reuse the scratch permutation buffer for the lexicographic order.
@@ -530,8 +531,9 @@ impl FlatAttrs {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            sort_ranks[left]
-                .cmp(&sort_ranks[right])
+            symbols
+                .resolve(entries[left].key)
+                .cmp(&symbols.resolve(entries[right].key))
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 

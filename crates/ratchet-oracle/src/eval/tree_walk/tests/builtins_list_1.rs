@@ -39,6 +39,27 @@ fn map_attrs_primop_preserves_names_and_maps_values_lazily() {
 }
 
 #[test]
+fn map_attrs_constructs_a_large_batch_without_changing_names_or_values() {
+    let bindings = (0..128)
+        .map(|index| format!("k{index:03} = {index};"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!(
+        r#"
+        let
+          mapped = builtins.mapAttrs
+            (name: value: name + ":" + builtins.toString value)
+            {{ {bindings} }};
+        in mapped.k000 == "k000:0"
+           && mapped.k127 == "k127:127"
+           && builtins.length (builtins.attrNames mapped) == 128
+        "#
+    );
+
+    assert_eq!(eval(&source).as_bool(), Ok(true));
+}
+
+#[test]
 fn map_attrs_primop_checks_set_before_function_and_defers_function_errors() {
     let ir = lower("builtins.mapAttrs (1 / 0) 1");
     let root = ir.arena.node(ir.root).expect("root exists");

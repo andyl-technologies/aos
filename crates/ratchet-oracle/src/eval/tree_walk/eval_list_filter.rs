@@ -33,78 +33,43 @@ impl TreeWalk {
         span: Span,
         function_id: IrId,
         function_span: Span,
-        mut function: Value,
+        function: Value,
         attrs_id: IrId,
-        mut entries: Vec<AttrEntry>,
+        entries: Vec<AttrEntry>,
     ) -> Result<Value, TreeWalkError> {
+        let len = entries.len();
         let mut mapped = Vec::new();
-        mapped.try_reserve_exact(entries.len()).map_err(|_| {
+        mapped.try_reserve_exact(len).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::Attr {
                     id,
-                    source: AttrError::AllocationFailed {
-                        entries: entries.len(),
-                    },
+                    source: AttrError::AllocationFailed { entries: len },
                 },
                 span,
             )
         })?;
         if self.options.eval_stats_dump() {
-            super::force_shape_census::record_synthetic_apply_origin("mapAttrs", entries.len());
+            super::force_shape_census::record_synthetic_apply_origin("mapAttrs", len);
         }
-        for entry_index in 0..entries.len() {
-            let key = entries[entry_index].key;
-            let name = self.alloc_mapped_attr_name(
-                id,
+        // Keep the function, one slot per entry, and one name scratch slot
+        // registered for the whole loop. Each entry slot starts with its
+        // source value and is replaced by its mapped thunk after capture. The
+        // former per-name helper rebuilt and copied an O(len) root vector on
+        // every iteration, making mapAttrs construction O(len²) even though
+        // every live value already has a stable slot in this batch.
+        let entry_start = 1usize;
+        let scratch_slot = entry_start.checked_add(len).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
                 span,
-                &mut function,
-                &mut mapped,
-                &mut entries[entry_index..],
-                key,
-            )?;
-            let entry_value = entries[entry_index].value;
-            let value = self.alloc_apply2_thunk(
-                id,
+            )
+        })?;
+        let root_count = scratch_slot.checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
                 span,
-                function_id,
-                function_span,
-                function,
-                id,
-                span,
-                name,
-                attrs_id,
-                self.node(attrs_id)?.span,
-                entry_value,
-            )?;
-            mapped.push(AttrEntry::new(key, value));
-        }
-
-        let attrs = FlatAttrs::new(mapped, &self.symbols)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
-    }
-
-    fn alloc_mapped_attr_name(
-        &mut self,
-        id: IrId,
-        span: Span,
-        function: &mut Value,
-        mapped: &mut [AttrEntry],
-        remaining_entries: &mut [AttrEntry],
-        key: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        let root_count = 1usize
-            .checked_add(mapped.len())
-            .and_then(|count| count.checked_add(remaining_entries.len()))
-            .ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed {
-                        id,
-                        len: mapped.len(),
-                    },
-                    span,
-                )
-            })?;
+            )
+        })?;
         let mut roots = Vec::new();
         roots.try_reserve_exact(root_count).map_err(|_| {
             TreeWalkError::new(
@@ -115,29 +80,98 @@ impl TreeWalk {
                 span,
             )
         })?;
-        roots.push(*function);
-        roots.extend(mapped.iter().map(|entry| entry.value));
-        roots.extend(remaining_entries.iter().map(|entry| entry.value));
+        roots.push(function);
+        roots.extend(entries.iter().map(|entry| entry.value));
+        roots.resize(root_count, Value::null());
 
-        let name = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
-            eval.with_gc_stress_primop_arg_root_admission(|eval| {
-                eval.alloc_symbol_string(id, span, key)
-            })
+        let attrs_span = self.node(attrs_id)?.span;
+        self.with_indexed_transient_value_stack_roots(id, span, &mut roots, |eval, slots| {
+            for (entry_index, entry) in entries.iter().enumerate() {
+                let name = eval.with_gc_stress_primop_arg_root_admission(|eval| {
+                    eval.alloc_symbol_string(id, span, entry.key)
+                })?;
+                let name_slot = slots.start.checked_add(scratch_slot).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    )
+                })?;
+                if !eval.set_current_transient_value_stack_root(name_slot, name) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    ));
+                }
+
+                // Reload all operands after the string allocation: a
+                // moving stress collection may have rewritten their root
+                // slots.
+                let function = eval
+                    .current_transient_value_stack_root(slots.start)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                let source_slot = slots
+                    .start
+                    .checked_add(entry_start)
+                    .and_then(|slot| slot.checked_add(entry_index))
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                let entry_value = eval
+                    .current_transient_value_stack_root(source_slot)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                let name = eval
+                    .current_transient_value_stack_root(name_slot)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                            span,
+                        )
+                    })?;
+                let value = eval.alloc_apply2_thunk(
+                    id,
+                    span,
+                    function_id,
+                    function_span,
+                    function,
+                    id,
+                    span,
+                    name,
+                    attrs_id,
+                    attrs_span,
+                    entry_value,
+                )?;
+                if !eval.set_current_transient_value_stack_root(source_slot, value) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    ));
+                }
+            }
+            Ok(())
         })?;
-        if let Some(root) = roots.first().copied() {
-            *function = root;
-        }
-        for (entry, root) in mapped.iter_mut().zip(roots.iter().copied().skip(1)) {
-            entry.value = root;
-        }
-        let remaining_start = 1usize.saturating_add(mapped.len());
-        for (entry, root) in remaining_entries
-            .iter_mut()
-            .zip(roots.iter().copied().skip(remaining_start))
-        {
-            entry.value = root;
-        }
-        Ok(name)
+        mapped.extend(
+            entries
+                .iter()
+                .zip(roots[entry_start..scratch_slot].iter().copied())
+                .map(|(entry, value)| AttrEntry::new(entry.key, value)),
+        );
+
+        let attrs = FlatAttrs::new(mapped, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
     }
 
     pub(super) fn eval_zip_attrs_with_primop(
