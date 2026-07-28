@@ -1775,6 +1775,9 @@ impl TreeWalk {
             super::super::whole_demand_corridor_census::SpeedOpportunityPhase::Update,
         );
         let result = self.finish_forced_value_inner(id, span, source_thunk, guard, value);
+        if let Ok(value) = result.as_ref() {
+            self.observe_ready_factory_force(source_thunk, *value);
+        }
         #[cfg(feature = "collection_poll_probe")]
         self.finish_speed_opportunity_phase(token, &result);
         result

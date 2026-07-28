@@ -30,8 +30,8 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::sync::Arc;
 
@@ -39,9 +39,9 @@ use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
 use crate::eval::EvalNodeRef;
+use crate::value::Value;
 #[cfg(feature = "candidate_c_value")]
 use crate::value::compressed::CompressedValueKind;
-use crate::value::Value;
 
 /// Shard count for the L1 shared table.
 ///
@@ -475,6 +475,22 @@ impl ReadyCellPlanCache {
         ReadyCellEmptyProbe::Hit(value)
     }
 
+    /// Returns whether `def_site` has a matching capture-free eligible plan.
+    pub(super) fn is_empty_eligible(
+        &self,
+        def_site: EvalNodeRef,
+        captured_frame_count: usize,
+    ) -> bool {
+        matches!(
+            self.get(def_site),
+            Some(ReadyCellPlanDecision::Eligible {
+                captured_frame_count: planned_frame_count,
+                captures: ReadyCellCapturePlan::Empty,
+                ..
+            }) if *planned_frame_count == captured_frame_count
+        )
+    }
+
     /// Publishes one successfully completed capture-free result.
     pub(super) fn publish_empty(
         &mut self,
@@ -604,6 +620,178 @@ pub(super) struct ReadyCellCandidate {
     pub(super) recipe: ReadyCellRecipe,
     /// Static cost units avoided by a hypothetical hit.
     pub(super) static_cost_units: u32,
+}
+
+/// Allocation-time state of a weak source retained by the Ready-factory census.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ReadyFactorySourceState {
+    /// No earlier successfully forced allocation exists for the def-site.
+    Empty,
+    /// The retained source has not started forcing.
+    Suspended,
+    /// The retained source is currently being forced.
+    Blackhole,
+    /// The retained source has a published result.
+    Ready(Value),
+    /// The retained weak identity no longer resolves to a thunk.
+    Stale,
+}
+
+/// Report-only allocation census for a capture-free Ready-thunk factory.
+///
+/// The census never serves a value and never mutates a thunk. Source words are
+/// weak identities valid only under the evaluator's serial monotonic-heap gate.
+#[derive(Debug, Default)]
+pub(super) struct ReadyFactoryAllocationCensus {
+    sources: HashMap<EvalNodeRef, Value>,
+    allocations: HashMap<u64, EvalNodeRef>,
+    eligible_sites: std::collections::HashSet<EvalNodeRef>,
+    eligible_allocations: u64,
+    source_empty: u64,
+    source_suspended: u64,
+    source_blackhole: u64,
+    source_ready: u64,
+    source_stale: u64,
+    ready_safe: u64,
+    ready_unsafe: u64,
+    successful_forces: u64,
+    eventual_safe: u64,
+    eventual_unsafe: u64,
+}
+
+impl ReadyFactoryAllocationCensus {
+    /// Returns the weak source retained for `def_site`.
+    pub(super) fn source(&self, def_site: EvalNodeRef) -> Option<Value> {
+        self.sources.get(&def_site).copied()
+    }
+
+    /// Records one eligible allocation and its source state before allocation.
+    pub(super) fn observe_allocation(
+        &mut self,
+        def_site: EvalNodeRef,
+        allocated: Value,
+        source_state: ReadyFactorySourceState,
+    ) {
+        self.eligible_allocations = self.eligible_allocations.saturating_add(1);
+        self.eligible_sites.insert(def_site);
+        self.allocations
+            .insert(allocated.relocation_sensitive_identity_bits(), def_site);
+        match source_state {
+            ReadyFactorySourceState::Empty => {
+                self.source_empty = self.source_empty.saturating_add(1);
+            }
+            ReadyFactorySourceState::Suspended => {
+                self.source_suspended = self.source_suspended.saturating_add(1);
+            }
+            ReadyFactorySourceState::Blackhole => {
+                self.source_blackhole = self.source_blackhole.saturating_add(1);
+            }
+            ReadyFactorySourceState::Ready(value) => {
+                self.source_ready = self.source_ready.saturating_add(1);
+                if Self::result_is_identity_safe(value) {
+                    self.ready_safe = self.ready_safe.saturating_add(1);
+                } else {
+                    self.ready_unsafe = self.ready_unsafe.saturating_add(1);
+                }
+            }
+            ReadyFactorySourceState::Stale => {
+                self.source_stale = self.source_stale.saturating_add(1);
+            }
+        }
+    }
+
+    /// Records successful force publication and installs the weak site source.
+    pub(super) fn observe_successful_force(&mut self, source: Value, result: Value) {
+        let Some(def_site) = self
+            .allocations
+            .get(&source.relocation_sensitive_identity_bits())
+            .copied()
+        else {
+            return;
+        };
+        self.successful_forces = self.successful_forces.saturating_add(1);
+        if Self::result_is_identity_safe(result) {
+            self.eventual_safe = self.eventual_safe.saturating_add(1);
+        } else {
+            self.eventual_unsafe = self.eventual_unsafe.saturating_add(1);
+        }
+        self.sources.insert(def_site, source);
+    }
+
+    /// Returns whether replacing a fresh forced head preserves result identity.
+    const fn result_is_identity_safe(value: Value) -> bool {
+        matches!(
+            value.tag(),
+            crate::value::ValueTag::Int
+                | crate::value::ValueTag::Float
+                | crate::value::ValueTag::Bool
+                | crate::value::ValueTag::Null
+                | crate::value::ValueTag::String
+                | crate::value::ValueTag::Path
+        )
+    }
+
+    /// Emits the allocation projection as one machine-readable stderr record.
+    pub(super) fn emit_report(&self, total_ir_nodes: usize) {
+        const CURRENT_INLINE_BYTES: u64 = (3 * std::mem::size_of::<u64>()
+            + std::mem::size_of::<crate::eval::heap::EvalThunk>())
+            as u64;
+        const REGISTRY_ENTRY_BYTES: u64 = (2 * std::mem::size_of::<usize>()) as u64;
+        // `StableThunkHead` is private to the heap, whose layout test asserts
+        // this one-word representation.
+        const FORCED_HEAD_BYTES: u64 = 8;
+        let safe_current_bytes = self
+            .ready_safe
+            .saturating_mul(CURRENT_INLINE_BYTES + REGISTRY_ENTRY_BYTES);
+        let safe_replaceable_bytes = self
+            .ready_safe
+            .saturating_mul(CURRENT_INLINE_BYTES + REGISTRY_ENTRY_BYTES - FORCED_HEAD_BYTES);
+        let dense_site_map_bytes = u64::try_from(total_ir_nodes)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(4);
+        let weak_slot_bytes = u64::try_from(self.eligible_sites.len())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(8);
+        eprintln!(
+            "aos_nix_ready_factory_census {{\"eligible_allocations\":{},\
+             \"eligible_sites\":{},\"source_empty\":{},\"source_suspended\":{},\
+             \"source_blackhole\":{},\"source_ready\":{},\"source_stale\":{},\
+             \"ready_identity_safe\":{},\"ready_identity_unsafe\":{},\
+             \"successfully_forced\":{},\"eventual_identity_safe\":{},\
+             \"eventual_identity_unsafe\":{},\"current_inline_bytes_per_thunk\":{},\
+             \"registry_bytes_per_thunk\":{},\"forced_head_bytes\":{},\
+             \"safe_current_allocation_bytes\":{},\"safe_replaceable_bytes\":{},\
+             \"dense_site_map_bytes\":{},\"weak_slot_bytes\":{},\"sidecar_bytes\":{},\
+             \"served_hits\":false,\"semantic_mutation\":false,\
+             \"pre_peak_rss_evidence\":false}}",
+            self.eligible_allocations,
+            self.eligible_sites.len(),
+            self.source_empty,
+            self.source_suspended,
+            self.source_blackhole,
+            self.source_ready,
+            self.source_stale,
+            self.ready_safe,
+            self.ready_unsafe,
+            self.successful_forces,
+            self.eventual_safe,
+            self.eventual_unsafe,
+            CURRENT_INLINE_BYTES,
+            REGISTRY_ENTRY_BYTES,
+            FORCED_HEAD_BYTES,
+            safe_current_bytes,
+            safe_replaceable_bytes,
+            dense_site_map_bytes,
+            weak_slot_bytes,
+            dense_site_map_bytes.saturating_add(weak_slot_bytes),
+        );
+    }
+
+    /// Returns eligible allocations and Ready-before-allocation observations.
+    #[cfg(test)]
+    pub(super) const fn test_allocation_counts(&self) -> (u64, u64) {
+        (self.eligible_allocations, self.source_ready)
+    }
 }
 
 /// Actual lexical representation of one stats-only Ready-cell candidate.
@@ -1038,6 +1226,54 @@ mod tests {
             ),
             captures,
         )
+    }
+
+    #[test]
+    fn ready_factory_census_tracks_source_states_and_safe_results_without_serving() {
+        let def_site = EvalNodeRef::new(
+            crate::eval::EvalModuleId::ROOT,
+            crate::compile::IrId::new(19),
+        );
+        let first = Value::int(101);
+        let second = Value::int(102);
+        let mut census = ReadyFactoryAllocationCensus::default();
+
+        census.observe_allocation(def_site, first, ReadyFactorySourceState::Empty);
+        census.observe_successful_force(first, Value::bool(true));
+        assert!(
+            census
+                .source(def_site)
+                .is_some_and(|value| value.raw_eq(first))
+        );
+        census.observe_allocation(
+            def_site,
+            second,
+            ReadyFactorySourceState::Ready(Value::bool(true)),
+        );
+        census.observe_allocation(
+            def_site,
+            Value::int(103),
+            ReadyFactorySourceState::Suspended,
+        );
+        census.observe_allocation(
+            def_site,
+            Value::int(104),
+            ReadyFactorySourceState::Blackhole,
+        );
+        census.observe_allocation(def_site, Value::int(105), ReadyFactorySourceState::Stale);
+
+        assert_eq!(census.eligible_allocations, 5);
+        assert_eq!(census.eligible_sites.len(), 1);
+        assert_eq!(census.source_empty, 1);
+        assert_eq!(census.source_suspended, 1);
+        assert_eq!(census.source_blackhole, 1);
+        assert_eq!(census.source_ready, 1);
+        assert_eq!(census.source_stale, 1);
+        assert_eq!(census.ready_safe, 1);
+        assert_eq!(census.ready_unsafe, 0);
+        assert_eq!(census.successful_forces, 1);
+        assert_eq!(census.eventual_safe, 1);
+        assert_eq!(census.eventual_unsafe, 0);
     }
 
     #[test]

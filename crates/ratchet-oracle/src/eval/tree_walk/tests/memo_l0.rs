@@ -16,6 +16,29 @@ fn memo_options(min_cost: u32) -> TreeWalkOptions {
     options
 }
 
+#[test]
+fn ready_factory_census_is_absent_normally_and_fails_closed_for_parallel_stats() {
+    let ir = lower("1");
+    let ordinary = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+    assert!(!ordinary.test_ready_factory_census_enabled());
+
+    let mut stats_options = TreeWalkOptions::default();
+    stats_options.set_memo_options(MemoOptions {
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+    let stats = TreeWalk::with_options(&ir, stats_options);
+    assert!(stats.test_ready_factory_census_enabled());
+
+    let mut parallel_options = TreeWalkOptions::with_parallel_workers(NonZeroUsize::new(2));
+    parallel_options.set_memo_options(MemoOptions {
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+    let parallel = TreeWalk::with_options(&ir, parallel_options);
+    assert!(!parallel.test_ready_factory_census_enabled());
+}
+
 /// Evaluates one boolean with capture-free Ready replay either enabled or off.
 fn eval_empty_ready_bool(source: &str, enabled: bool) -> (Result<bool, String>, (usize, u64)) {
     let ir = lower(source);
@@ -49,6 +72,25 @@ const EMPTY_CAPTURE_REPEAT: &str = r#"
     let f = _: let answer = 10 + 20 + 12; in answer;
     in (f 1) + (f 2) + (f 3)
 "#;
+
+#[test]
+fn ready_factory_census_observes_repeated_capture_free_allocations() {
+    let ir = lower(EMPTY_CAPTURE_REPEAT);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        stats_enabled: true,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("census expression evaluates");
+
+    assert_eq!(value.as_int(), Ok(126));
+    let (eligible_allocations, ready_before_allocation) =
+        evaluator.test_ready_factory_census_counts();
+    assert!(eligible_allocations >= 3);
+    assert!(ready_before_allocation >= 2);
+}
 
 #[test]
 fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {

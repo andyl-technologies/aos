@@ -223,8 +223,22 @@ impl TreeWalk {
             && !options.typed_apply_thunk_heads_enabled()
             && !options.stg_session_enabled())
         .then(Default::default);
-        let ready_cell_plans =
-            (ready_cell_census.is_some() || ready_cell_directory.is_some()).then(Default::default);
+        let ready_factory_census = (options.memo_options().stats_enabled
+            && gc_mode == EvalGcMode::Off
+            && options.gc_stress_policy() == GcStressPolicy::disabled()
+            && options.parallel_workers().is_none()
+            && !options.parallel_thunk_payloads_enabled()
+            && options.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
+            && !options.record_worker_closures_for_gc_scaffolding()
+            && options.heap_memory_budget().is_none()
+            && !options.heap_tier_b_transition_admission_enabled()
+            && !options.typed_apply_thunk_heads_enabled()
+            && !options.stg_session_enabled())
+        .then(Default::default);
+        let ready_cell_plans = (ready_cell_census.is_some()
+            || ready_factory_census.is_some()
+            || ready_cell_directory.is_some())
+        .then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(
@@ -405,6 +419,7 @@ impl TreeWalk {
             memo_l0,
             memo_economics,
             ready_cell_census,
+            ready_factory_census,
             ready_cell_directory,
             ready_cell_plans,
             memo_def_sites: super::memo::MemoDefSiteTable::default(),

@@ -1,6 +1,7 @@
 //! Heap allocation, value interning, and attrset/path materialization helpers.
 
 use super::*;
+use crate::eval::tree_walk::memo::ReadyFactorySourceState;
 use crate::eval::{
     TreeWalkParallelThunkForceOutcome, TreeWalkThunkAllocationContext, TreeWalkThunkAllocationPlan,
     tree_walk_thunk_allocation_plan,
@@ -369,7 +370,8 @@ impl TreeWalk {
         // entirely (S7): the C-8 frame-local proof keeps the thunk off every
         // cross-thread path, so it gets a plain cell with no CAS protocol and
         // skips the admission's per-allocation claim-error construction.
-        let value = self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk, capture)?;
+        let value =
+            self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk, capture, None)?;
         self.increment_single_entry_thunks_allocated();
         let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
         self.record_source_thunk_region_plan_decision(region_plan);
@@ -637,7 +639,14 @@ impl TreeWalk {
         capture: Option<EvalFlatCaptureBuffer>,
     ) -> Result<Value, TreeWalkError> {
         let thunk = self.admit_parallel_thunk_payload_cell(id, span, thunk);
-        self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk, capture)
+        let ready_factory_snapshot = self.ready_factory_allocation_snapshot(&thunk);
+        self.alloc_tree_walk_thunk_without_parallel_cell(
+            id,
+            span,
+            thunk,
+            capture,
+            ready_factory_snapshot,
+        )
     }
 
     /// Allocates a thunk record without consulting the parallel payload-cell
@@ -653,6 +662,7 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
         capture: Option<EvalFlatCaptureBuffer>,
+        ready_factory_snapshot: Option<(EvalNodeRef, ReadyFactorySourceState)>,
     ) -> Result<Value, TreeWalkError> {
         #[cfg(feature = "demand_region_shadow_probe")]
         let demand_region_before = self.demand_region_allocation_cursor();
@@ -685,6 +695,7 @@ impl TreeWalk {
         );
         #[cfg(test)]
         self.capture_validation_record_alloc(id, allocated_value, kind_is_node);
+        self.observe_ready_factory_allocation(ready_factory_snapshot, allocated_value);
         self.increment_thunks_allocated();
         let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(

@@ -51,7 +51,8 @@ use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
     ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellEmptyProbe,
-    ReadyCellHitRepresentation, ReadyCellPlanDecision, ReadyCellRecipe, SharedMemoTable,
+    ReadyCellHitRepresentation, ReadyCellPlanDecision, ReadyCellRecipe, ReadyFactorySourceState,
+    SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -330,6 +331,116 @@ impl TreeWalk {
             captured_frame_count,
             plans.probe_empty(*body, captured_frame_count),
         ))
+    }
+
+    /// Classifies one allocation for the report-only capture-free census.
+    pub(in crate::eval::tree_walk) fn ready_factory_allocation_snapshot(
+        &mut self,
+        thunk: &EvalThunk,
+    ) -> Option<(EvalNodeRef, ReadyFactorySourceState)> {
+        self.ready_factory_census.as_ref()?;
+        let EvalThunkKind::Node {
+            body: def_site,
+            env,
+            ..
+        } = thunk.kind()
+        else {
+            return None;
+        };
+        if !thunk.with_scope_env()?.scopes().is_empty()
+            || !thunk.scoped_global_env()?.scopes().is_empty()
+        {
+            return None;
+        }
+        let captured_frame_count = self.captured_env_ref(env).frame_count();
+        if self
+            .ready_cell_plans
+            .as_ref()
+            .and_then(|plans| plans.get(*def_site))
+            .is_none()
+        {
+            let plan = self.compute_ready_cell_plan(*def_site, captured_frame_count);
+            self.ready_cell_plans.as_mut()?.insert(*def_site, plan);
+        }
+        if !self
+            .ready_cell_plans
+            .as_ref()?
+            .is_empty_eligible(*def_site, captured_frame_count)
+        {
+            return None;
+        }
+        let Some(source) = self
+            .ready_factory_census
+            .as_ref()
+            .and_then(|census| census.source(*def_site))
+        else {
+            return Some((*def_site, ReadyFactorySourceState::Empty));
+        };
+        let state = match self.heap.get_thunk(source) {
+            Ok(source_thunk) => match source_thunk.cell().state() {
+                Ok(ThunkState::Suspended) => ReadyFactorySourceState::Suspended,
+                Ok(ThunkState::Blackhole) => ReadyFactorySourceState::Blackhole,
+                Ok(ThunkState::Forced) => source_thunk.cell().cached_value().ok().flatten().map_or(
+                    ReadyFactorySourceState::Stale,
+                    ReadyFactorySourceState::Ready,
+                ),
+                Err(_) => ReadyFactorySourceState::Stale,
+            },
+            Err(_) => ReadyFactorySourceState::Stale,
+        };
+        Some((*def_site, state))
+    }
+
+    /// Records the real allocation after its observational classification.
+    pub(in crate::eval::tree_walk) fn observe_ready_factory_allocation(
+        &mut self,
+        snapshot: Option<(EvalNodeRef, ReadyFactorySourceState)>,
+        allocated: Value,
+    ) {
+        let (Some(census), Some((def_site, state))) =
+            (self.ready_factory_census.as_mut(), snapshot)
+        else {
+            return;
+        };
+        census.observe_allocation(def_site, allocated, state);
+    }
+
+    /// Records a successful normal force without changing publication.
+    pub(in crate::eval::tree_walk) fn observe_ready_factory_force(
+        &mut self,
+        source: Value,
+        result: Value,
+    ) {
+        if let Some(census) = self.ready_factory_census.as_mut() {
+            census.observe_successful_force(source, result);
+        }
+    }
+
+    /// Emits the report-only allocation projection when explicitly enabled.
+    pub(in crate::eval::tree_walk) fn emit_ready_factory_census_report(&self) {
+        let Some(census) = self.ready_factory_census.as_ref() else {
+            return;
+        };
+        let total_ir_nodes = self
+            .modules
+            .iter()
+            .map(|module| module.ir.arena.nodes().len())
+            .sum();
+        census.emit_report(total_ir_nodes);
+    }
+
+    /// Reports whether allocation-time Ready-factory instrumentation exists.
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) const fn test_ready_factory_census_enabled(&self) -> bool {
+        self.ready_factory_census.is_some()
+    }
+
+    /// Returns eligible allocations and Ready-before-allocation observations.
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) fn test_ready_factory_census_counts(&self) -> (u64, u64) {
+        self.ready_factory_census
+            .as_ref()
+            .map_or((0, 0), |census| census.test_allocation_counts())
     }
 
     /// Derives a cheap worker-local recipe from direct static slot captures.
