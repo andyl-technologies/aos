@@ -38,6 +38,7 @@
   fingerprintOffload ? null,
   deviceWorkOverlap ? null,
   translationPrefetch ? null,
+  segmentReplay ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -573,6 +574,25 @@ in
               if translationPrefetch == null
               then "/dev/null"
               else "${translationPrefetch}/result"
+            }" \
+                >> "$out/result"
+            fi
+            if [ -n "${
+              if segmentReplay == null
+              then ""
+              else builtins.toString segmentReplay
+            }" ]; then
+              sed -n \
+                -e 's/^admission_class=/metric_segment_replay_class=/p' \
+                -e 's/^worker_model=/metric_segment_replay_worker_model=/p' \
+                -e 's/^tested_segment_counts=/metric_segment_replay_counts=/p' \
+                -e 's/^serial_parallel_final_state_identical=/metric_segment_replay_state_identity=/p' \
+                -e 's/^serial_parallel_canonical_log_identical=/metric_segment_replay_log_identity=/p' \
+                -e 's/^divergence_coordinate_segment_count_invariant=/metric_segment_replay_divergence_invariant=/p' \
+                "${
+              if segmentReplay == null
+              then "/dev/null"
+              else "${segmentReplay}/result"
             }" \
                 >> "$out/result"
             fi

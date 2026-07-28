@@ -1100,6 +1100,25 @@ request; the certifying run generated and completed 2,163 translation requests.
 The gate uses an exact comparison with blocking divergence policy, and the
 perf-bench result imports its Class-A admission and neutrality evidence.
 
+T-PERF-33 is additionally completed by
+`checks.crucible.phase7.segmentParallelReplay`. The replay coordinator selects
+an ordered subset of realizable checkpoints while retaining the original
+ancestor, constructs one suffix segment per selected checkpoint, and launches
+every segment on its own scoped host worker. Each worker starts from the exact
+checkpoint state and returns its end state plus coordinate-tagged canonical-log
+entries. The join rejects a worker failure or panic, an out-of-interval or
+backwards log coordinate, and any state that does not exactly reproduce the next
+checkpoint; successful logs are concatenated in checkpoint-coordinate order,
+never host-completion order. The certifying replay-oracle case synchronizes four
+workers at a barrier and requires its final state and full canonical log to equal
+the one-segment replay from the same ancestor. The divergence-bisect entry point
+uses that coordinator for every left/right match probe, repeats the complete
+bisection with requested segment counts 1, 2, and 4, and fails if any count moves
+the first differing icount. The seeded gate locates icount 17 for all three
+counts. The perf-bench result imports the Class-A admission and the state, log,
+worker, and coordinate-invariance evidence from `gate:replay-oracle` and
+`gate:divergence-bisect`.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1227,7 +1246,7 @@ constant-factor trim on a serial run.
   and canonical logs as the precondition for enabling it; treat any divergence as
   a blocking failure and keep the mechanism off by default until the evidence
   exists. — satisfies [PERF-32]; spec §25.12.5.
-- [ ] **T-PERF-33** Implement segment-parallel replay: split a replay suffix at
+- [x] **T-PERF-33** Implement segment-parallel replay: split a replay suffix at
   checkpoint coordinates, replay the segments concurrently, and join them.
   Assert equality with serial replay in state and canonical log, wire it into the
   divergence-bisect path, and assert the located divergence coordinate is
