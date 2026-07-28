@@ -210,6 +210,21 @@ pub(super) struct MemoPotentialObservation {
     pub(super) first_hit_for_key: bool,
     /// Whether an already-built table could have answered this occurrence.
     pub(super) potential_hit: bool,
+    /// Whether an earlier congruent force had completed before this occurrence.
+    pub(super) earlier_ready: bool,
+    /// Whether this occurrence overlaps an earlier incomplete congruent force.
+    pub(super) earlier_pending: bool,
+}
+
+/// Shadow lifecycle state for one exact structural memo recipe.
+#[derive(Clone, Copy, Debug, Default)]
+struct MemoEconomicsRecipeState {
+    /// Number of forces that have started with this recipe.
+    occurrences: u64,
+    /// Forces with this recipe that have not completed.
+    pending: u64,
+    /// Whether at least one force completed successfully.
+    ready: bool,
 }
 
 /// Shared admitted-key census used only by `AOS_NIX_MEMO_STATS`.
@@ -220,24 +235,48 @@ pub(super) struct MemoPotentialObservation {
 /// only because the explicit stats knob already opts into instrumentation tax.
 #[derive(Debug, Default)]
 pub(super) struct MemoEconomicsCensus {
-    occurrences: Mutex<HashMap<DemandCacheKey, u64>>,
+    recipes: Mutex<HashMap<DemandCacheKey, MemoEconomicsRecipeState>>,
 }
 
 impl MemoEconomicsCensus {
-    /// Records one successfully derived admitted key.
+    /// Records the start of one force with a successfully derived exact recipe.
     pub(super) fn observe(&self, key: DemandCacheKey) -> MemoPotentialObservation {
-        let mut occurrences = match self.occurrences.lock() {
-            Ok(occurrences) => occurrences,
+        let mut recipes = match self.recipes.lock() {
+            Ok(recipes) => recipes,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let seen = occurrences.entry(key).or_insert(0);
+        let state = recipes.entry(key).or_default();
         let observation = MemoPotentialObservation {
-            unique_key: *seen == 0,
-            first_hit_for_key: *seen == 1,
-            potential_hit: *seen > 0,
+            unique_key: state.occurrences == 0,
+            first_hit_for_key: state.occurrences == 1,
+            potential_hit: state.occurrences > 0,
+            earlier_ready: state.occurrences > 0 && state.ready,
+            earlier_pending: state.pending > 0 && !state.ready,
         };
-        *seen = seen.saturating_add(1);
+        state.occurrences = state.occurrences.saturating_add(1);
+        state.pending = state.pending.saturating_add(1);
         observation
+    }
+
+    /// Marks one exact recipe Ready after its force completes successfully.
+    pub(super) fn mark_ready(&self, key: DemandCacheKey) {
+        self.finish(key, true);
+    }
+
+    /// Closes an unsuccessful force without making its recipe reusable.
+    pub(super) fn mark_failed(&self, key: DemandCacheKey) {
+        self.finish(key, false);
+    }
+
+    /// Closes one recipe force and optionally makes the recipe Ready.
+    fn finish(&self, key: DemandCacheKey, ready: bool) {
+        let mut recipes = match self.recipes.lock() {
+            Ok(recipes) => recipes,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let state = recipes.entry(key).or_default();
+        state.pending = state.pending.saturating_sub(1);
+        state.ready |= ready;
     }
 }
 
@@ -515,6 +554,8 @@ mod tests {
                 unique_key: true,
                 first_hit_for_key: false,
                 potential_hit: false,
+                earlier_ready: false,
+                earlier_pending: false,
             }
         );
         assert_eq!(
@@ -523,9 +564,20 @@ mod tests {
                 unique_key: false,
                 first_hit_for_key: true,
                 potential_hit: true,
+                earlier_ready: false,
+                earlier_pending: true,
             }
         );
+        census.mark_ready(key(1));
+        assert!(census.observe(key(1)).earlier_ready);
+        assert!(!census.observe(key(1)).earlier_pending);
+        census.mark_ready(key(1));
         assert!(census.observe(key(1)).potential_hit);
+        census.mark_ready(key(1));
         assert!(census.observe(key(2)).unique_key);
+        census.mark_failed(key(2));
+        let failed_repeat = census.observe(key(2));
+        assert!(!failed_repeat.earlier_ready);
+        assert!(!failed_repeat.earlier_pending);
     }
 }

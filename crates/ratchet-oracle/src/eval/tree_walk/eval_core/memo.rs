@@ -147,14 +147,55 @@ impl TreeWalk {
         };
         self.observe_memo_potential_hit(&candidate);
         if !tiers_active {
-            return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
+            return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
+                Ok(value) => {
+                    self.mark_memo_recipe_ready(&candidate);
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.mark_memo_recipe_failed(&candidate);
+                    Err(error)
+                }
+            };
         }
-        if let Some(value) = self.memo_probe(id, span, thunk, &candidate)? {
-            let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
+        let probe = match self.memo_probe(id, span, thunk, &candidate) {
+            Ok(probe) => probe,
+            Err(error) => {
+                if stats_enabled {
+                    self.mark_memo_recipe_failed(&candidate);
+                }
+                return Err(error);
+            }
+        };
+        if let Some(value) = probe {
+            let value = match self.finish_forced_value(id, span, source_thunk, guard, value) {
+                Ok(value) => value,
+                Err(error) => {
+                    if stats_enabled {
+                        self.mark_memo_recipe_failed(&candidate);
+                    }
+                    return Err(error);
+                }
+            };
+            if stats_enabled {
+                self.mark_memo_recipe_ready(&candidate);
+            }
             return Ok(value);
         }
         let cursor = self.impure_input_trace_cursor();
-        let value = self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard)?;
+        let value =
+            match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
+                Ok(value) => value,
+                Err(error) => {
+                    if stats_enabled {
+                        self.mark_memo_recipe_failed(&candidate);
+                    }
+                    return Err(error);
+                }
+            };
+        if stats_enabled {
+            self.mark_memo_recipe_ready(&candidate);
+        }
         let record_started = stats_enabled.then(Instant::now);
         self.memo_admit(&candidate, value, cursor);
         self.record_memo_record_timing(record_started);
@@ -185,6 +226,32 @@ impl TreeWalk {
             stats.potential_hit_static_cost_units = stats
                 .potential_hit_static_cost_units
                 .saturating_add(u64::from(candidate.static_cost_units));
+        }
+        stats.ready_structural_hits = stats
+            .ready_structural_hits
+            .saturating_add(u64::from(observation.earlier_ready));
+        stats.recursive_structural_repeats = stats
+            .recursive_structural_repeats
+            .saturating_add(u64::from(observation.earlier_pending));
+        if observation.earlier_ready {
+            let work_bytes =
+                u64::try_from(std::mem::size_of::<EvalThunk>()).map_or(u64::MAX, |bytes| bytes);
+            stats.ready_structural_work_bytes =
+                stats.ready_structural_work_bytes.saturating_add(work_bytes);
+        }
+    }
+
+    /// Marks a shadow structural recipe Ready after successful publication.
+    fn mark_memo_recipe_ready(&self, candidate: &MemoCandidate) {
+        if let Some(census) = self.memo_economics.as_ref() {
+            census.mark_ready(candidate.key);
+        }
+    }
+
+    /// Closes a failed shadow force without making its recipe reusable.
+    fn mark_memo_recipe_failed(&self, candidate: &MemoCandidate) {
+        if let Some(census) = self.memo_economics.as_ref() {
+            census.mark_failed(candidate.key);
         }
     }
 
@@ -226,6 +293,7 @@ impl TreeWalk {
         let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
             return None;
         };
+        let stats_enabled = self.options.memo_options().stats_enabled;
         let decision = self.memo_def_site_decision(*body);
         if decision == MemoDefSiteDecision::Skipped {
             return None;
@@ -240,10 +308,24 @@ impl TreeWalk {
         if !thunk.with_scope_env()?.scopes().is_empty()
             || !thunk.scoped_global_env()?.scopes().is_empty()
         {
+            if stats_enabled {
+                self.stats.memo_economics.dynamic_scope_declines = self
+                    .stats
+                    .memo_economics
+                    .dynamic_scope_declines
+                    .saturating_add(1);
+            }
             self.memo_decline_def_site_derivation(*body);
             return None;
         }
         let Some(hashes) = self.memo_free_var_hashes(*body, env) else {
+            if stats_enabled {
+                self.stats.memo_economics.unknown_capture_declines = self
+                    .stats
+                    .memo_economics
+                    .unknown_capture_declines
+                    .saturating_add(1);
+            }
             self.memo_decline_def_site_derivation(*body);
             return None;
         };
@@ -258,6 +340,13 @@ impl TreeWalk {
                         identity
                     }
                     None => {
+                        if stats_enabled {
+                            self.stats.memo_economics.effect_or_unsafe_declines = self
+                                .stats
+                                .memo_economics
+                                .effect_or_unsafe_declines
+                                .saturating_add(1);
+                        }
                         // Not lookup-safe: permanently skip the def-site.
                         if let Some(state) = self.memo_def_sites.get_mut(*body) {
                             state.decision = MemoDefSiteDecision::Skipped;

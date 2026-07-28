@@ -35,8 +35,11 @@ pub struct MemoTierEvents {
 /// Potential-hit counters are collected even when the L0/L1 tables are off:
 /// every successfully derived admitted key enters a census, and each repeated
 /// key contributes one potential hit plus the def-site's static recompute cost.
-/// Timing counters decompose key derivation, table probes, resident-hit replay,
-/// and record construction. All durations are saturating nanosecond totals.
+/// The same census shadows Pending-to-Ready recipe transitions, conservative
+/// avoidable work bytes, and derivation decline classes without changing force
+/// semantics. Timing counters decompose key derivation, table probes,
+/// resident-hit replay, and record construction. All durations are saturating
+/// nanosecond totals.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemoEconomicsStats {
     pub(crate) potential_candidates: u64,
@@ -44,6 +47,12 @@ pub struct MemoEconomicsStats {
     pub(crate) potential_hit_keys: u64,
     pub(crate) potential_hits: u64,
     pub(crate) potential_hit_static_cost_units: u64,
+    pub(crate) ready_structural_hits: u64,
+    pub(crate) recursive_structural_repeats: u64,
+    pub(crate) ready_structural_work_bytes: u64,
+    pub(crate) effect_or_unsafe_declines: u64,
+    pub(crate) dynamic_scope_declines: u64,
+    pub(crate) unknown_capture_declines: u64,
     pub(crate) key_samples: u64,
     pub(crate) key_nanos: u64,
     pub(crate) probe_samples: u64,
@@ -78,6 +87,40 @@ impl MemoEconomicsStats {
     /// Returns static recompute-cost units represented by potential hits.
     pub const fn potential_hit_static_cost_units(&self) -> u64 {
         self.potential_hit_static_cost_units
+    }
+
+    /// Returns repeats whose earlier exact structural recipe was already Ready.
+    pub const fn ready_structural_hits(&self) -> u64 {
+        self.ready_structural_hits
+    }
+
+    /// Returns repeats overlapping an earlier incomplete congruent force.
+    pub const fn recursive_structural_repeats(&self) -> u64 {
+        self.recursive_structural_repeats
+    }
+
+    /// Returns the approximate suspended-work bytes avoidable by Ready hits.
+    ///
+    /// This is a deliberately conservative record-only estimate: one
+    /// [`EvalThunk`](crate::eval::EvalThunk) payload per Ready repeat. It does
+    /// not claim captured environment or result-payload savings.
+    pub const fn ready_structural_work_bytes(&self) -> u64 {
+        self.ready_structural_work_bytes
+    }
+
+    /// Returns sites declined because code is effectful or not lookup-safe.
+    pub const fn effect_or_unsafe_declines(&self) -> u64 {
+        self.effect_or_unsafe_declines
+    }
+
+    /// Returns candidates declined because they capture dynamic scopes.
+    pub const fn dynamic_scope_declines(&self) -> u64 {
+        self.dynamic_scope_declines
+    }
+
+    /// Returns candidates declined because a captured value has no stable hash.
+    pub const fn unknown_capture_declines(&self) -> u64 {
+        self.unknown_capture_declines
     }
 
     /// Returns timed key-derivation attempts.
@@ -136,6 +179,24 @@ impl MemoEconomicsStats {
             potential_hit_static_cost_units: self
                 .potential_hit_static_cost_units
                 .saturating_add(other.potential_hit_static_cost_units),
+            ready_structural_hits: self
+                .ready_structural_hits
+                .saturating_add(other.ready_structural_hits),
+            recursive_structural_repeats: self
+                .recursive_structural_repeats
+                .saturating_add(other.recursive_structural_repeats),
+            ready_structural_work_bytes: self
+                .ready_structural_work_bytes
+                .saturating_add(other.ready_structural_work_bytes),
+            effect_or_unsafe_declines: self
+                .effect_or_unsafe_declines
+                .saturating_add(other.effect_or_unsafe_declines),
+            dynamic_scope_declines: self
+                .dynamic_scope_declines
+                .saturating_add(other.dynamic_scope_declines),
+            unknown_capture_declines: self
+                .unknown_capture_declines
+                .saturating_add(other.unknown_capture_declines),
             key_samples: self.key_samples.saturating_add(other.key_samples),
             key_nanos: self.key_nanos.saturating_add(other.key_nanos),
             probe_samples: self.probe_samples.saturating_add(other.probe_samples),

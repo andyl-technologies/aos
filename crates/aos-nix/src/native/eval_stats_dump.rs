@@ -303,6 +303,12 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
 \"potential_hit_keys\":{},\
 \"potential_hits\":{},\
 \"potential_hit_static_cost_units\":{},\
+\"ready_structural_hits\":{},\
+\"recursive_structural_repeats\":{},\
+\"ready_structural_work_bytes\":{},\
+\"effect_or_unsafe_declines\":{},\
+\"dynamic_scope_declines\":{},\
+\"unknown_capture_declines\":{},\
 \"key_samples\":{},\"key_nanos\":{},\
 \"probe_samples\":{},\"probe_nanos\":{},\
 \"hit_samples\":{},\"hit_nanos\":{},\
@@ -313,6 +319,12 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
         memo.potential_hit_keys(),
         memo.potential_hits(),
         memo.potential_hit_static_cost_units(),
+        memo.ready_structural_hits(),
+        memo.recursive_structural_repeats(),
+        memo.ready_structural_work_bytes(),
+        memo.effect_or_unsafe_declines(),
+        memo.dynamic_scope_declines(),
+        memo.unknown_capture_declines(),
         memo.key_samples(),
         memo.key_nanos(),
         memo.probe_samples(),
@@ -338,9 +350,15 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("standalone memo statistics object exists");
 
-        assert_eq!(memo.len(), 13);
+        assert_eq!(memo.len(), 19);
         assert!(memo.values().all(|value| value.as_u64() == Some(0)));
         assert!(memo.contains_key("potential_hit_static_cost_units"));
+        assert!(memo.contains_key("ready_structural_hits"));
+        assert!(memo.contains_key("recursive_structural_repeats"));
+        assert!(memo.contains_key("ready_structural_work_bytes"));
+        assert!(memo.contains_key("effect_or_unsafe_declines"));
+        assert!(memo.contains_key("dynamic_scope_declines"));
+        assert!(memo.contains_key("unknown_capture_declines"));
         assert!(memo.contains_key("key_nanos"));
         assert!(memo.contains_key("probe_nanos"));
         assert!(memo.contains_key("hit_nanos"));

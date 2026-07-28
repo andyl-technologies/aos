@@ -67,6 +67,13 @@ fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
     assert!(economics.potential_hit_keys() >= 1, "{economics:?}");
     assert!(economics.potential_hits() >= 1, "{economics:?}");
     assert!(economics.potential_hit_static_cost_units() >= 1);
+    assert!(economics.ready_structural_hits() >= 1, "{economics:?}");
+    assert_eq!(economics.recursive_structural_repeats(), 0);
+    assert!(
+        economics.ready_structural_work_bytes()
+            >= u64::try_from(std::mem::size_of::<crate::eval::EvalThunk>())
+                .expect("EvalThunk size fits u64")
+    );
     assert!(economics.key_samples() >= economics.potential_candidates());
     assert_eq!(economics.probe_samples(), 0, "L0/L1 stayed absent");
     assert_eq!(economics.hit_samples(), 0);
@@ -119,12 +126,21 @@ fn lambda_capturing_environments_decline_admission() {
         in (h 1) + (h 2)
     "#;
     let ir = lower(CAPTURES_CLOSURE);
-    let outcome = eval_whnf_owned_with_options(&ir, memo_options(1)).expect("evaluates");
+    let mut options = memo_options(1);
+    let mut memo = *options.memo_options();
+    memo.stats_enabled = true;
+    options.set_memo_options(memo);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("evaluates");
     assert_eq!(outcome.value.as_int(), Ok(8));
     assert_eq!(
         outcome.stats.memo_l0_hits(),
         0,
         "closure-capturing subtrees never hit: {:?}",
+        outcome.stats
+    );
+    assert!(
+        outcome.stats.memo_economics().unknown_capture_declines() >= 1,
+        "the stats-only census classifies the captured closure: {:?}",
         outcome.stats
     );
 }
