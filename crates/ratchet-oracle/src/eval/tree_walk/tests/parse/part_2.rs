@@ -71,6 +71,57 @@ fn parse_cached_import_remap_preserves_analysis_facts() {
 }
 
 #[test]
+fn parse_cached_import_remaps_search_path_literal_symbol() {
+    let imported = lower("let __nixPath = []; in <nix/fetchurl.nix>");
+    let mut evaluator =
+        TreeWalk::new(&lower("{ getFlake = 1; currentSystem = 2; shifted = 3; }"));
+    let remapped = evaluator
+        .remap_cached_import_ir(IrId::new(0), Span::new(0, 1), b"/dep.nix", imported)
+        .expect("cached import IR remaps");
+
+    let literal = remapped
+        .arena
+        .nodes()
+        .iter()
+        .find_map(|node| match node.data {
+            IrData::SearchPath { literal, .. } => Some(literal),
+            _ => None,
+        })
+        .expect("cached import contains a search-path literal");
+    assert_eq!(
+        evaluator.symbols.resolve(literal),
+        Some(b"<nix/fetchurl.nix>".as_slice())
+    );
+}
+
+#[test]
+fn parse_cached_import_evaluates_search_path_literal_after_symbol_shift() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-search-path"))
+        .expect("temp directory canonicalizes");
+    let package = root.join("package");
+    fs::create_dir(&package).expect("search-path package creates");
+    fs::write(package.join("target"), b"target").expect("search-path target writes");
+    fs::write(root.join("dep.nix"), b"<pkg/target>").expect("dep writes");
+
+    let mut options = search_path_options(b"pkg", &package);
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(root.join("cache"));
+    let ir = lower("let getFlake = 1; in import ./dep.nix");
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("cached import evaluates");
+    assert_eq!(
+        path_value_bytes(&evaluator, value),
+        package.join("target").as_os_str().as_bytes()
+    );
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 1));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn try_eval_caught_import_failure_keeps_symbol_table_intact() {
     // The live symbol table must survive a failed import that `builtins.tryEval`
     // catches: the imported file parses (its symbols are adopted into the live

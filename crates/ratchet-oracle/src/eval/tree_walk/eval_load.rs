@@ -763,6 +763,19 @@ impl TreeWalk {
                     symbol,
                 )?,
             }),
+            IrData::SearchPath {
+                literal,
+                search_path,
+            } => Ok(IrData::SearchPath {
+                literal: Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    symbol_map,
+                    literal,
+                )?,
+                search_path,
+            }),
             IrData::PrimOp { symbol, args } => Ok(IrData::PrimOp {
                 symbol: Self::remap_cached_symbol(
                     argument,
