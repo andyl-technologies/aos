@@ -115,6 +115,13 @@ with **no C++ subprocess** polluting the count. It prints one greppable line per
 attr: `aos_nix_cold_only {"attr":…,"drv":…,"wall_ns":…}`. `-A` is required (this
 path builds no oracle, so it cannot discover attributes).
 
+Here **cold** means that no cache data enters from an earlier run. The isolated
+candidate clears persistent roots and disables disk/network tiers, but enables
+every applicable same-run tier: serial evaluation gets the content-memo L0 and
+the GC-off worker-local Ready directory, while a shared parallel-demand context
+also gets L1. An earlier helper enabled L0/L1 but accidentally left the Ready
+directory off; benchmarks before that fix understate legal intra-run reuse.
+
 `--eval-system` and `--impure-eval` are **global** flags — put them before the
 subcommand. All commands assume `x86_64-linux`.
 
