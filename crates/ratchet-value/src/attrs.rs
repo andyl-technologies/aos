@@ -528,21 +528,20 @@ impl FlatAttrs {
         // so the observable iteration order needs its own permutation. Build
         // an order-preserving local prefix token for the common comparator
         // path, falling back to complete interned bytes only on collisions.
+        // Compute tokens from the already-interned bytes inside the comparator:
+        // retaining one scratch `u64` per entry raised peak RSS on nixpkgs
+        // because the allocator kept pages from millions of short-lived
+        // attrsets.
         //
         // Do not ask the process-wide symbol table for dense lexicographic
         // ranks here. Interning one new name invalidates that O(symbols) view;
         // nixpkgs commonly interns between construction of modest attrsets, so
         // rebuilding the global view here turns an otherwise local operation
         // into repeated whole-table work.
-        let mut lexicographic_prefixes = Vec::new();
-        lexicographic_prefixes
-            .try_reserve_exact(len)
-            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
         for entry in &entries {
-            let bytes = symbols
-                .resolve(entry.key)
-                .ok_or(AttrError::UnknownSymbol { key: entry.key })?;
-            lexicographic_prefixes.push(lexicographic_prefix(bytes));
+            if symbols.resolve(entry.key).is_none() {
+                return Err(AttrError::UnknownSymbol { key: entry.key });
+            }
         }
 
         // Reuse the scratch permutation buffer for the lexicographic order.
@@ -553,13 +552,12 @@ impl FlatAttrs {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            lexicographic_prefixes[left]
-                .cmp(&lexicographic_prefixes[right])
-                .then_with(|| {
-                    symbols
-                        .resolve(entries[left].key)
-                        .cmp(&symbols.resolve(entries[right].key))
-                })
+            let left_bytes = symbols.resolve(entries[left].key);
+            let right_bytes = symbols.resolve(entries[right].key);
+            left_bytes
+                .map(lexicographic_prefix)
+                .cmp(&right_bytes.map(lexicographic_prefix))
+                .then_with(|| left_bytes.cmp(&right_bytes))
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 
