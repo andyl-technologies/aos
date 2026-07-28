@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:945c0e1c2110798b`
+Checklist sync digest: `rfc0010-checklist-v1:da484abf6b94213e`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -767,7 +767,7 @@ acceptance gate.
 **Tasks.**
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
-- Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28`): `T-PERF-1 … T-PERF-28` ([`25`](25-performance-targets.md)).
+- Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
 - Completed decision spikes: `T-D-1 … T-D-4` ([`31`](31-decision-register.md)).
@@ -795,7 +795,7 @@ maintained two ways:
 
    ```text
    area   reqs  tasks    area   reqs  tasks    area   reqs  tasks
-   PLUG    52    27      OBS    37    14       PERF   28    28
+   PLUG    52    27      OBS    37    14       PERF   34    34
    SCHED   47    30      GHC    38    17       CLI    27    18
    QEMU    43    16      IO     34    16       RISK   28    20
    PATCH   47    24      HARN   34    26       PROTO  24    11

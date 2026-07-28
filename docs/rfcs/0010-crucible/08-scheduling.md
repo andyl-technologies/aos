@@ -788,6 +788,15 @@ total order of §8.6 is computed from the keys, not from which node's host threa
 happened to finish first. The lookahead budget tells you how *fast* a scenario
 can run, not *what* it computes.
 
+[SCHED-40] is written as a MAY because the run set is a scheduling *permission*,
+not a scheduling obligation: this file's job ends once it has named the nodes that
+may run concurrently and the key that orders their outcomes. Whether the runtime
+actually spends host workers on that permission is a performance obligation, and
+it is discharged by [PERF-29]
+([`25-performance-targets.md`](25-performance-targets.md) §25.12.2) — along with
+the admission rule (§25.12.1) that any *other* proposed use of host threads must
+satisfy before it may touch this path.
+
 ## 8.13 Worked example: two VMs across a 1 ms link
 
 A concrete trace makes the horizon rule and the frequency/exactness decoupling
