@@ -1369,3 +1369,43 @@ branch on the verdict without parsing output:
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
   and the at-failure footer shared with failure artifact emission.
+- [ ] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
+  symbol table, not by scanning the file for symbol-name bytes, so a file that
+  merely contains the string cannot impersonate a plugin.
+  — satisfies [CLI-13], [CLI-14]; spec §7.
+  - Defect (audit 2026-07-28): `crucible-cli/src/cli/backend.rs` accepts any
+    candidate whose bytes contain `qemu_plugin_install` / `qemu_plugin_version`
+    anywhere — including a comment, a string literal, or `.strtab`. The CLI's own
+    test fixture passes validation by writing exactly those byte sequences into a
+    file that is not a plugin.
+  - Plan: parse the ELF64 `.dynsym` / `.dynstr` sections already located by
+    `validate_elf64_header`, require both symbols to be defined (not `SHN_UNDEF`)
+    and globally visible, and reject on absence with the existing discovery-help
+    error. Keep the byte scan only as a fast pre-filter, never as the decision.
+  - Gate: `checks.crucible.phase5.cliBackendSelection` gains negative controls —
+    an ELF with the names only in `.strtab`, an ELF with both symbols undefined,
+    and a non-ELF file containing the names — each of which MUST be rejected.
+
+- [ ] **T-CLI-20** Make the backend-selection evidence falsifiable: derive the
+  local/remote proof predicates from observed execution rather than from literals
+  set on the same construction path, and remove the environment escape hatches
+  that disable the live probe in the tests that certify it.
+  — satisfies [CLI-5], [CLI-7]; spec §3.
+  - Defect (audit 2026-07-28): `proves_t_cli_3` inspects only fields written as
+    constants in the arm of `plan_backend_selection` that builds the plan, so it
+    cannot return false and both of its guard sites are dead. Separately,
+    `crucible-cli/tests/machine_readable.rs` sets
+    `CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE=1`, and the verify probe helper returns an
+    empty vector under `#[cfg(test)]`, so the divergence check over probe reports
+    iterates nothing — the tests that certify `--backend qemu` are the ones that
+    switch it off.
+  - Plan: (1) replace the literal-comparison predicate with an assertion over the
+    executed backend's recorded identity (the discovered QEMU build id and plugin
+    ABI actually used by the run); (2) delete the `#[cfg(test)]` empty-vector
+    return and the skip variable, replacing them with an injected fake backend
+    that still exercises the divergence comparison; (3) keep `--backend double`
+    as the only sanctioned way to run without QEMU, so degradation is explicit
+    ([CLI-7]).
+  - Gate: `checks.crucible.phase5.cliBackendSelection` and
+    `.cliVerifyWorkflow` MUST fail when two probe reports differ and when the
+    recorded build identity does not match the discovered binary.

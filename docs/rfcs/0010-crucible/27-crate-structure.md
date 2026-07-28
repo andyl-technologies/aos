@@ -690,3 +690,23 @@ primitives.
 - [x] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
   `aos-nix-*`, and locate the content-addressing primitives in `crucible-sim`
   marked as the future-ratchet-integration seam. — satisfies [CRATE-18]; spec §7.
+- [ ] **T-CRATE-16** Remove the test-only surface from the production dependency
+  graph: no shipped crate may depend on `crucible` with the `test-double`
+  feature, and no feature may be declared without a `cfg` that consumes it.
+  — satisfies [CRATE-11], [CRATE-12]; spec §5.
+  - Defect (audit 2026-07-28): `crucible-api`, `crucible-daemon`, and
+    `crucible-qemu` each depend on `crucible` with `features = ["test-double"]`
+    outside `[dev-dependencies]`, so the in-process double is compiled into the
+    shipped closure and is reachable from production code paths. Separately
+    `crates/crucible/Cargo.toml` declares `qemu-backend = []` and no
+    `#[cfg(feature = "qemu-backend")]` exists anywhere in the workspace — the
+    feature is a label that suggests a compile-time backend split that does not
+    exist.
+  - Plan: (1) move the `test-double` feature edges into `[dev-dependencies]`,
+    splitting any production type that currently sits behind the feature into a
+    non-test module; (2) either implement the `qemu-backend` split behind real
+    `cfg` gates or delete the feature; (3) add a workspace lint asserting that
+    every declared feature is referenced by at least one `cfg`.
+  - Gate: extend `checks.crucible.phase1.crateFeaturePowerset` to build the
+    shipped feature set with `test-double` disabled and fail if any production
+    crate requires it.

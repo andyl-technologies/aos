@@ -30,20 +30,20 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **566 tasks** across 36 areas, satisfying **1079 numbered
+The plan covers **582 tasks** across 36 areas, satisfying **1079 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
 Task counts by area:
 
 ```text
-SCHED 30  DET 31  PERF 28  PLUG 27  PATCH 24  PKG 23  HARN 26  SPAT 21  ADV 21
-EXEC 20  TRIG 20  RISK 20  ASRT 18  CLI 18  GHC 17  FAULT 16  IO 16  QEMU 16
-SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
-TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
+PERF 34  DET 31  SCHED 30  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
+CLI 20  EXEC 20  RISK 20  TRIG 20  SHM 19  ASRT 18  GHC 17  CRATE 16  FAULT 16
+IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
+PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:33289ce7a94423d5`
+Checklist sync digest: `rfc0010-checklist-v1:df2316d7c624bdd8`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -120,15 +120,15 @@ in-process test double, the content-addressed store, and the decision/time model
 all land and are gated. Everything later is built on this.
 
 **Tasks.**
-- Workspace + layer skeleton: `T-ARCH-1 … T-ARCH-5` ([`03`](03-architecture-overview.md)), `T-CRATE-1 … T-CRATE-15` ([`27`](27-crate-structure.md)).
-- Engineering standards + harness-lint: `T-STD-1 … T-STD-13` ([`28`](28-engineering-standards.md)).
+- Workspace + layer skeleton: `T-ARCH-1 … T-ARCH-5` ([`03`](03-architecture-overview.md)), `T-CRATE-1 … T-CRATE-16` ([`27`](27-crate-structure.md)).
+- Engineering standards + harness-lint: `T-STD-1 … T-STD-14` ([`28`](28-engineering-standards.md)).
 - Determinism contract mechanisms (incl. the pure multi-vCPU and app-random
   determinism tasks `T-DET-29 … T-DET-31`): `T-DET-1 … T-DET-31` ([`04`](04-determinism-contract.md)).
 - Time / icount model: `T-TIME-1 … T-TIME-9` ([`09`](09-virtual-time-icount.md)).
 - Execution model (Configuration/step/instantiate, decision RNG; the `Decision`
   taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` `AppRandom`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
-- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-26` ([`24`](24-determinism-harness-testing.md)).
+- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-28` ([`24`](24-determinism-harness-testing.md)).
 - Patterns tracked here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9`;
   the backend pattern is completed by the phase-5 backend and SimDouble suite
   ([`29`](29-patterns-and-sketches.md)).
@@ -218,7 +218,7 @@ long-held locks.
 
 **Tasks.**
 - Session actor + backend trait + breakpoints (incl. the debug/time-travel
-  control commands `T-SESS-13`): `T-SESS-1 … T-SESS-13` ([`20`](20-session-control-plane.md)).
+  control commands `T-SESS-13`): `T-SESS-1 … T-SESS-14` ([`20`](20-session-control-plane.md)).
   `T-SESS-1` is green through `checks.crucible.phase5.sessionActor`, which
   proves the live actor owns `Engine<L>` by value, keeps the actor mailbox as
   the only live-session mutation path, owns the event-log writer, carries the
@@ -373,7 +373,7 @@ long-held locks.
   a non-empty replayed causal event payload projection under quiet/noisy
   streaming observer load, and forbids wall-clock reads in the production API
   paths.
-- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
+- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-20` ([`23`](23-cli.md)).
   `T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`, which
   enforces a pre-dispatch thin-wrapper plan for every closed subcommand, records
   the emitted session/API/driver operations, limits routed control capabilities

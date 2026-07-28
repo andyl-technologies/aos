@@ -581,3 +581,28 @@ the conditions under which feature code can be trusted to stay deterministic
   require it on any engine/scheduler/transport PR, and codify the
   root-cause-not-workaround rule for surfaced leaks. — satisfies [STD-32],
   [STD-33]; spec §6.
+- [ ] **T-STD-14** Reconcile the concurrency-oracle standard with what the
+  workspace can hermetically build: either vendor `loom` and `proptest` as AOS
+  packages and use them on the SPSC ring, or narrow [STD-22]/[STD-23] to the
+  bespoke exhaustive model checker actually in use — and make the emitted gate
+  marker name the mechanism truthfully either way.
+  — satisfies [STD-22], [STD-23]; spec §4.
+  - Defect (audit 2026-07-28): [T-STD-9] requires "loom + proptest on the SPSC
+    ring", but neither crate appears in any `Cargo.toml` in the workspace and
+    `crucible-shmem` declares no `[dev-dependencies]` at all. The actual
+    implementation, `assert_spsc_ring_loom_model` in
+    `crucible-shmem/tests/gate_layer1_injection.rs`, is a hand-rolled exhaustive
+    checker over the RFC 13.6 orderings with genuine negative controls proving
+    that relaxed orderings admit torn frames — substantive work, but not loom and
+    not property-based. `checks.crucible.phase1.concurrencyAbiOracleStandards`
+    nonetheless emits `spsc=loom,proptest`.
+  - Plan: prefer narrowing. The hermetic-build rule (no upstream nixpkgs, all
+    dependencies built from source) makes vendoring two proc-macro-heavy crates a
+    disproportionate cost against a checker that already enumerates the ordering
+    space exhaustively. Restate [STD-22]/[STD-23] in terms of "an exhaustive
+    ordering model with negative controls", rename the marker to
+    `spsc=exhaustive-ordering-model`, and record the decision in
+    [`31-decision-register.md`](31-decision-register.md). If vendoring is chosen
+    instead, the marker and this task's text move with it.
+  - Gate: `checks.crucible.phase1.concurrencyAbiOracleStandards` MUST assert the
+    marker matches the mechanism actually linked into the test binary.

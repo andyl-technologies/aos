@@ -1143,3 +1143,51 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   verifies HARN-3 lower-layer-before-higher-layer gate precedences, and carries
   synthetic negative controls for missing terminal e2e, invalid terminal
   placement, early SimDouble dependency, unknown gates, and layer-order drift.
+- [ ] **T-HARN-27** Remove the self-referential checklist assertion from gate
+  checks: a check MUST NOT prove its task by asserting that the task's own
+  checkbox is ticked. Checkbox state is bookkeeping and MUST NOT appear in a
+  check's evidence set.
+  — satisfies [HARN-24], [HARN-25]; spec §7.
+  - Defect (audit 2026-07-28): roughly 350 check files under `tests/crucible/`
+    assert `- [x] **T-<AREA>-n**` against the RFC for the very task they certify.
+    The assertion passes because the task is marked done, so it enforces the
+    conclusion rather than the evidence, and it can only fail when someone
+    corrects the checklist. This is the mechanism by which a 569/569 checklist
+    coexisted with a check tree that did not evaluate.
+  - Plan: (1) delete the `- [x] **T-...**` needle from every check that certifies
+    that task, keeping needles that assert a *different* task's state only where
+    a real ordering dependency exists; (2) replace each with an assertion over
+    the artifact the task produces (a symbol, a result line, a gate output);
+    (3) add a harness-lint rule rejecting any needle matching `- [x] **T-` in a
+    check whose `taskIds` contains that id.
+  - Note: the inverse needle (`- [ ] **T-...**`, asserting a task is still open)
+    is equally self-referential and is removed by the same rule; the
+    `openTaskIds` ledger already records that state.
+  - Gate: `gate:harness-lint` fails on any surviving self-referential needle.
+
+- [ ] **T-HARN-28** Add a reference-integrity lint over the harness and the RFC:
+  every source needle MUST resolve in the file it names, every
+  `checks.crucible.*` attribute named in prose MUST exist, and every count
+  asserted in prose MUST match its source of truth.
+  — satisfies [HARN-24], [HARN-26]; spec §7.
+  - Defect (audit 2026-07-28): needles silently rot when code moves. After the
+    white-box doorbell tests moved from
+    `crucible-qemu-plugin/src/whitebox_doorbell.rs` to
+    `whitebox_doorbell/tests.rs`, eighteen needles in
+    `phase4-guest-host-channel-determinism.nix` and
+    `phase4-guest-host-app-random-doorbell.nix` kept naming the parent file;
+    both checks now throw at evaluation for that reason alone, while their own
+    shell scripts already address the tests at the new path. Separately,
+    [`11-qemu-patches.md`](11-qemu-patches.md) cites
+    `checks.crucible.phase2.qemuAarch64DetIpiAdapter`, which does not exist (the
+    check is an anonymous inline import), and describes "the 40-patch series"
+    while `pkgs/emulation/qemu-patches/_series.nix` carries 42.
+  - Plan: (1) a lint that, for every `failuresFor "<path>"` block, asserts
+    `<path>` exists and that each needle occurs in it — turning a silent
+    false-negative into a build failure; (2) a lint resolving every
+    `checks.crucible.*` / `checks.fleet.*` attribute path named in the RFC against
+    the evaluated check set; (3) a lint comparing patch-series counts in prose
+    against `_series.nix`. Fix the eighteen needles and the two prose defects as
+    part of landing it.
+  - Gate: `gate:harness-lint` fails on an unresolvable needle, attribute path, or
+    count.
