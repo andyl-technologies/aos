@@ -7983,6 +7983,20 @@ took 8m11s versus about 4m26s for thin LTO. The execution and binary-size gains
 are small but repeatable and composable, so `[profile.release]` now retains
 `lto = "fat"`.
 
+Instrumentation PGO composes with that retained setting. A profile generated
+from the primary toplevel plus lambda-interp, qsort, hash-loop, attr-fixpoint,
+and all-any was merged to 76,193,152 bytes and applied to the fat-LTO build.
+Three alternating same-source pairs on derivation
+`/nix/store/0i57s475b5y52dry1skcglkivdd9g1s7-aos-system-toplevel.drv`
+measured 14,235,827,397 median instructions for PGO versus 14,407,652,389 for
+fat LTO alone, a 171,824,992-instruction (1.193%) reduction. Median cycles fell
+from 5,841,566,178 to 5,746,725,666 (1.623%); median peak RSS was effectively
+flat at 447,652 versus 447,400 KiB. The exact derivation path was preserved.
+This is a retained positive measurement, not yet a production build input:
+the opaque profile is source-sensitive and too large to check in. Production
+adoption requires a hermetic two-stage source build or smaller independently
+verified source-level layout changes extracted from the profile.
+
 Cycle readings during this battery varied with builder contention and are not
 used to revise the cycle gate. Broad probe compositions can still be used for
 falsification evidence, but they are not admissible lean controls. Every future

@@ -299,8 +299,22 @@ to 14,406,730,378 (-0.766%), median cycles from 5,704,537,577 to 5,670,323,051
 (-10.15%). Median RSS fell by 5,928 KiB, but the three-run ranges overlap. The
 clean release build grew from about 4m26s to 8m11s. These small execution and
 size improvements compose with later work and justify the build-time cost for
-the performance release profile. Rustc instrumentation PGO remains to be
-measured on top of fat LTO.
+the performance release profile.
+
+Instrumentation PGO on top of fat LTO is also positive. The merged 76,193,152
+byte profile was trained on the primary toplevel and five evaluator compute
+workloads. Three alternating same-source pairs reduced median retired
+instructions from 14,407,652,389 to 14,235,827,397 (-1.193%) and median cycles
+from 5,841,566,178 to 5,746,725,666 (-1.623%). Median peak RSS changed from
+447,400 KiB to 447,652 KiB, inside run noise. The experiment used rustc's
+instrumentation runtime from the repository's Nix development environment and
+preserved the exact derivation path.
+
+The profile is source-sensitive and 76 MiB, so it is evidence rather than a
+checked-in binary input. Retaining the execution win requires either a
+hermetic two-stage package that generates its profile from a source corpus or
+smaller independently measured source-level layout changes derived from it.
+The production package must not import a host profile or tool.
 
 ## 8. Trace-driven prewarming
 
