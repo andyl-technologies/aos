@@ -548,8 +548,13 @@ impl FlatAttrs {
             let left = *left as usize;
             let right = *right as usize;
             symbols
-                .resolve(entries[left].key)
-                .cmp(&symbols.resolve(entries[right].key))
+                .lexicographic_prefix(entries[left].key)
+                .cmp(&symbols.lexicographic_prefix(entries[right].key))
+                .then_with(|| {
+                    symbols
+                        .resolve(entries[left].key)
+                        .cmp(&symbols.resolve(entries[right].key))
+                })
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 

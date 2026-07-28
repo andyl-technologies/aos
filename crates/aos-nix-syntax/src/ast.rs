@@ -62,6 +62,7 @@ impl Symbol {
 pub struct SymbolTable {
     by_text: BTreeMap<Vec<u8>, Symbol>,
     text: Vec<Vec<u8>>,
+    lexicographic_prefixes: Vec<u64>,
     lexicographic_ranks: RefCell<LexicographicRanks>,
 }
 
@@ -82,6 +83,7 @@ impl SymbolTable {
         Self {
             by_text: BTreeMap::new(),
             text: Vec::new(),
+            lexicographic_prefixes: Vec::new(),
             lexicographic_ranks: RefCell::new(LexicographicRanks {
                 rank_by_symbol: Vec::new(),
                 dirty: false,
@@ -117,7 +119,8 @@ impl SymbolTable {
                 * (vec_of_bytes + std::mem::size_of::<Symbol>() + BTREE_ENTRY_OVERHEAD);
         let rank_bytes = self.lexicographic_ranks.borrow().rank_by_symbol.capacity()
             * std::mem::size_of::<u32>();
-        text_bytes + key_bytes + rank_bytes
+        let prefix_bytes = self.lexicographic_prefixes.capacity() * std::mem::size_of::<u64>();
+        text_bytes + key_bytes + rank_bytes + prefix_bytes
     }
 
     /// Interns a byte string and returns its dense symbol id.
@@ -137,6 +140,8 @@ impl SymbolTable {
         let symbol = Symbol::new(raw);
         let owned = bytes.to_vec();
         self.text.push(owned.clone());
+        self.lexicographic_prefixes
+            .push(symbol_lexicographic_prefix(bytes));
         self.by_text.insert(owned, symbol);
         self.lexicographic_ranks.get_mut().dirty = true;
         Ok(symbol)
@@ -150,6 +155,17 @@ impl SymbolTable {
     /// Returns the bytes for an interned symbol.
     pub fn resolve(&self, symbol: Symbol) -> Option<&[u8]> {
         self.text.get(symbol.as_u32() as usize).map(Vec::as_slice)
+    }
+
+    /// Returns an order-preserving prefix token for an interned symbol.
+    ///
+    /// Different tokens establish the complete raw-byte ordering. Equal tokens
+    /// require comparing the resolved bytes because names can share their first
+    /// seven bytes.
+    pub fn lexicographic_prefix(&self, symbol: Symbol) -> Option<u64> {
+        self.lexicographic_prefixes
+            .get(symbol.as_u32() as usize)
+            .copied()
     }
 
     /// Returns this symbol's raw-byte lexicographic rank in the current table.
@@ -175,6 +191,18 @@ impl SymbolTable {
     pub fn symbols(&self) -> &[Vec<u8>] {
         &self.text
     }
+}
+
+/// Packs the first seven bytes into an order-preserving 63-bit token.
+fn symbol_lexicographic_prefix(bytes: &[u8]) -> u64 {
+    let mut prefix = 0_u64;
+    for index in 0..7 {
+        prefix <<= 9;
+        prefix |= bytes
+            .get(index)
+            .map_or(0, |byte| u64::from(*byte) + 1);
+    }
+    prefix
 }
 
 /// A same-process shared symbol table with idempotent insert-or-get admission.

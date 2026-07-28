@@ -52,6 +52,39 @@ fn symbol_table_tracks_current_lexicographic_ranks() {
 }
 
 #[test]
+fn symbol_table_prefixes_preserve_raw_byte_order() {
+    let mut symbols = SymbolTable::new();
+    let inputs: &[&[u8]] = &[
+        b"",
+        b"a",
+        b"a\0",
+        b"abcdefg",
+        b"abcdefg-left",
+        b"abcdefg-right",
+        b"b",
+        &[0xff],
+    ];
+    let interned = inputs
+        .iter()
+        .map(|bytes| symbols.intern(bytes).expect("symbol interns"))
+        .collect::<Vec<_>>();
+
+    for (left_index, left) in inputs.iter().enumerate() {
+        for (right_index, right) in inputs.iter().enumerate() {
+            let prefix_order = symbols
+                .lexicographic_prefix(interned[left_index])
+                .cmp(&symbols.lexicographic_prefix(interned[right_index]));
+            let byte_order = left.cmp(right);
+            assert!(
+                prefix_order == std::cmp::Ordering::Equal || prefix_order == byte_order,
+                "prefix order must never contradict raw bytes"
+            );
+        }
+    }
+    assert_eq!(symbols.lexicographic_prefix(Symbol::new(99)), None);
+}
+
+#[test]
 fn shared_symbol_table_reports_inserted_and_existing_admissions() {
     let symbols = SharedSymbolTable::new();
     let first = symbols.intern(b"name").expect("first symbol interns");
