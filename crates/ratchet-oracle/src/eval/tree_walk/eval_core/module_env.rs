@@ -8,13 +8,15 @@ mod active_install;
 
 impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
-        let mut hasher = CacheDigestHasher::new();
-        hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
-        Self::update_cache_module_source_identity(&mut hasher, module, true)?;
-        module
-            .force_cache_options
-            .update_cache_identity(&mut hasher)?;
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        *module.cache_identity_hash.get_or_init(|| {
+            let mut hasher = CacheDigestHasher::new();
+            hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+            Self::update_cache_module_source_identity(&mut hasher, module, true)?;
+            module
+                .force_cache_options
+                .update_cache_identity(&mut hasher)?;
+            Some(DurableBlake3Hash::from_hasher(hasher))
+        })
     }
 
     pub(super) fn cache_synthetic_builtin_module_identity_hash(

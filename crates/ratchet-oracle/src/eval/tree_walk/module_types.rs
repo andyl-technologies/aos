@@ -67,6 +67,11 @@ pub(crate) struct TreeWalkModule {
     pub(crate) path_literal_base: Option<Vec<u8>>,
     pub(crate) force_cache_options: ForceCacheOptionsIdentity,
     pub(crate) source: Option<ModuleSource>,
+    /// Lazily computed ordinary module identity shared by node and derivation
+    /// cache keys. A module is immutable after registration, so the digest
+    /// remains valid for its lifetime.
+    pub(crate) cache_identity_hash:
+        std::cell::OnceCell<Option<crate::cache::DurableBlake3Hash>>,
     pub(crate) dead_binding_eliminations: TreeWalkDeadBindingEliminations,
     /// Whether this module's source file is prelude scaffolding (`lib`/`stdenv`),
     /// classified once at construction from [`ModuleSource::name`]. Read per force
@@ -91,6 +96,7 @@ impl TreeWalkModule {
             path_literal_base,
             force_cache_options,
             source,
+            cache_identity_hash: std::cell::OnceCell::new(),
             dead_binding_eliminations,
             is_prelude,
         }
