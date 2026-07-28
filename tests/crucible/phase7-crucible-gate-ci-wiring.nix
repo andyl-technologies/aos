@@ -371,7 +371,7 @@
       }
       {
         label = "package patch-microtests completed task ownership";
-        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"'';
+        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-20"'';
       }
       {
         label = "package patch-microtests has no open task ownership";

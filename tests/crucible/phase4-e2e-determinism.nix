@@ -321,7 +321,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "T-HARN-23 checklist complete";
-        needle = "- [x] **T-HARN-23**";
+        needle = "- [ ] **T-HARN-23**";
       }
       {
         label = "T-HARN-23 production fleet evidence note";

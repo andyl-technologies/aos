@@ -902,7 +902,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: all modeled probabilistic device choices are drawn from deterministic
   device streams and have an engine-side decision-recording path; the relevant
   reduction-path lint bans unordered/default-hasher response nondeterminism.
-- [x] **T-IO-11** Wire device RNG state and active I/O faults into the device half
+- [ ] **T-IO-11** Wire device RNG state and active I/O faults into the device half
   of `MaterializedState`, proving a snapshot that omits RNG position or active
   faults fails the replay oracle. — satisfies [IO-23], [IO-26]; spec §15.5,
   §15.6; cross-ref 07 §3, §6.

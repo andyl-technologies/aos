@@ -1049,7 +1049,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     management, transfer, and restore compatibility. Only unordered QMP
     collections and QMP transport metadata are normalized; a marker-projection
     negative control proves raw serial comparison remains authoritative.
-- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
+- [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
   satisfies [HARN-11]; spec §7.
@@ -1065,7 +1065,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   `checks.fleet.crucible-e2e-determinism`, which executes each independent
   reduction through the packaged QEMU/plugin probe before comparing the
   session-level canonical evidence.
-- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
   Completed by `checks.crucible.phase7.gates.e2eDeterminism` and

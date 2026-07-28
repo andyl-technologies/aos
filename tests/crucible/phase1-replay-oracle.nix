@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-9" "T-TEMP-11"],
+  openTaskIds ? ["T-EXEC-11" "T-TEMP-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -948,7 +949,7 @@
       }
       {
         label = "T-EXEC-11 checklist complete";
-        needle = "- [x] **T-EXEC-11**";
+        needle = "- [ ] **T-EXEC-11**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" (builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md) [
@@ -986,7 +987,7 @@
       }
       {
         label = "T-TEMP-7 checklist complete";
-        needle = "- [x] **T-TEMP-7**";
+        needle = "- [ ] **T-TEMP-7**";
       }
       {
         label = "T-TEMP-7 names cached snapshot admission";
