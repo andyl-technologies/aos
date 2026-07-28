@@ -211,18 +211,14 @@ impl TreeWalk {
         // monotonic worker arena. Fail closed for every moving, sweeping,
         // parallel, or GC-stress configuration rather than attempting to heal
         // an advisory directory across relocation/address reuse.
+        let local_ready_monotonic_identity_eligible =
+            options.local_ready_monotonic_identity_eligible();
         let ready_cell_directory = (options.memo_options().local_ready_enabled
-            && gc_mode == EvalGcMode::Off
-            && options.gc_stress_policy() == GcStressPolicy::disabled()
-            && options.parallel_workers().is_none()
-            && !options.parallel_thunk_payloads_enabled()
-            && options.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
-            && !options.record_worker_closures_for_gc_scaffolding()
-            && options.heap_memory_budget().is_none()
-            && !options.heap_tier_b_transition_admission_enabled()
-            && !options.typed_apply_thunk_heads_enabled()
-            && !options.stg_session_enabled())
-        .then(Default::default);
+            && local_ready_monotonic_identity_eligible)
+            .then(Default::default);
+        let formal_set_ready_census = (options.memo_options().formal_set_ready_census_enabled
+            && local_ready_monotonic_identity_eligible)
+            .then(super::formal_set_ready_census::FormalSetReadyCensus::new);
         let ready_cell_plans =
             (ready_cell_census.is_some() || ready_cell_directory.is_some()).then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
@@ -406,6 +402,7 @@ impl TreeWalk {
             memo_economics,
             ready_cell_census,
             ready_cell_directory,
+            formal_set_ready_census,
             ready_cell_plans,
             memo_def_sites: super::memo::MemoDefSiteTable::default(),
             memo_unhashable_values: HashSet::new(),

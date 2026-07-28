@@ -658,6 +658,9 @@ pub struct TreeWalk {
     // so construction is restricted to the monotonic serial GC-off heap.
     // Every hit rechecks that the source cell still has a cached value.
     ready_cell_directory: Option<memo::ReadyCellDirectory>,
+    // Default-off, report-only exact-identity formal-set Pending/Ready census.
+    // It retains integer keys and timing metadata only, never evaluator values.
+    formal_set_ready_census: Option<formal_set_ready_census::FormalSetReadyCensus>,
     // Static direct-slot plans shared by the Ready-cell census and active
     // directory. Absent unless one of those opt-in modes is actually active.
     ready_cell_plans: Option<memo::ReadyCellPlanCache>,
@@ -748,6 +751,7 @@ mod flake_ref;
 mod flat_capture;
 mod force_shape_census;
 mod formal_set_layout_cache;
+mod formal_set_ready_census;
 mod gc_sweep;
 mod genlist_elem_at;
 #[cfg(feature = "immutable_cohort_projection_probe")]

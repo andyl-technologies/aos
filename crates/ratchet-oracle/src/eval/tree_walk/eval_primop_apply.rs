@@ -556,6 +556,7 @@ impl TreeWalk {
                     eval.apply_reused_lambda_value_with_rooted_argument(
                         id,
                         span,
+                        function,
                         lambda,
                         argument_id,
                         argument_span,
@@ -568,6 +569,7 @@ impl TreeWalk {
         self.apply_reused_lambda_value_with_rooted_argument(
             id,
             span,
+            function,
             lambda,
             argument_id,
             argument_span,
@@ -581,6 +583,7 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         span: Span,
+        function: Value,
         lambda: &EvalLambda,
         argument_id: IrId,
         argument_span: Span,
@@ -637,6 +640,11 @@ impl TreeWalk {
             let probe_boundary = is_formal_set && eval.options.eval_stats_dump();
             let boundary_wall =
                 probe_boundary.then(super::pkg_boundary_probe::BoundaryWallGuard::enter);
+            let ready_census_application = is_formal_set
+                .then(|| {
+                    eval.begin_formal_set_ready_census_application(function, lambda, argument)
+                })
+                .flatten();
             let result = (|| {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
@@ -670,6 +678,11 @@ impl TreeWalk {
                 eval.leave_promise_region_entry();
                 result
             })();
+            if result.is_ok()
+                && let Some(application) = ready_census_application
+            {
+                application.complete();
+            }
             // Close the wall window on the body before the (untimed) env
             // restore and decline classification.
             drop(boundary_wall);

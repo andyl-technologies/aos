@@ -176,6 +176,14 @@ cost dwarfs a probe. Two gates:
    estimated body cost over floor. The apply choke point is
    `clone_env_frames` (`eval_core/module_env.rs:560`) /
    `eval_primop_apply.rs:350`.
+   The current source-Merkle recognizer is not sufficient evidence for this
+   gate on modern nixpkgs: the pinned system benchmark found only five
+   def-sites in four modules. Runtime override attrsets and closure captures
+   construct semantically distinct applications outside that static source
+   map. A broader report-only census must therefore key the exact callable and
+   argument identities as well as the def-site; a serving durable record still
+   needs content identities for those runtime values and cannot substitute raw
+   process identities.
 2. **Economic: estimated recompute ≥ floor.** A static cost estimate on the
    package body (the `est_recompute` field, doc 29 §2.1/§5.7) must clear
    `AOS_NIX_MEMO_MIN_COST`. Package `mkDerivation` bodies are large and

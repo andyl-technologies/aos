@@ -69,6 +69,13 @@ pub struct MemoOptions {
     /// directory can use a stricter policy without changing durable memo
     /// admission, or vice versa.
     pub local_ready_min_cost: u32,
+    /// Enables the report-only formal-set Pending/Ready census.
+    ///
+    /// `AOS_NIX_FORMAL_SET_READY_CENSUS=1` records exact evaluator-local
+    /// function/argument identity repeats without retaining values or serving
+    /// results. The census activates only under
+    /// [`TreeWalkOptions::local_ready_monotonic_identity_eligible`].
+    pub formal_set_ready_census_enabled: bool,
 }
 
 impl Default for MemoOptions {
@@ -90,6 +97,7 @@ impl Default for MemoOptions {
             local_ready_enabled: false,
             local_ready_empty_only: false,
             local_ready_min_cost: 64,
+            formal_set_ready_census_enabled: false,
         }
     }
 }
@@ -155,6 +163,26 @@ impl TreeWalkOptions {
     /// Returns whether any content-memo tier is active.
     pub const fn memo_active(&self) -> bool {
         self.memo_l0_active() || self.memo_l1_active()
+    }
+
+    /// Returns whether raw value identities are stable for local Ready state.
+    ///
+    /// This is the shared safety gate for evaluator-local identity-keyed
+    /// Ready directories and report-only experiments. It admits only the
+    /// serial, monotonic, non-reclaiming worker arena and fails closed for
+    /// relocation, address reuse, parallel mutation, and alternate thunk-head
+    /// representations.
+    pub fn local_ready_monotonic_identity_eligible(&self) -> bool {
+        self.gc_mode() == EvalGcMode::Off
+            && self.gc_stress_policy() == GcStressPolicy::disabled()
+            && self.parallel_workers().is_none()
+            && !self.parallel_thunk_payloads_enabled()
+            && self.thunk_resolve_barrier_tier() == GenerationalGcTier::OneShotArena
+            && !self.record_worker_closures_for_gc_scaffolding()
+            && self.heap_memory_budget().is_none()
+            && !self.heap_tier_b_transition_admission_enabled()
+            && !self.typed_apply_thunk_heads_enabled()
+            && !self.stg_session_enabled()
     }
 
     /// Replaces the secondary L2 disk locations (`AOS_NIX_MEMO_DISK`).

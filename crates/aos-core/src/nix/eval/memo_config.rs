@@ -46,6 +46,8 @@ pub struct NativeMemoSettings {
     pub local_ready_empty_only: bool,
     /// Ready-cell static recompute-estimate floor (`AOS_NIX_LOCAL_READY_MIN_COST`).
     pub local_ready_min_cost: u32,
+    /// Whether the report-only exact formal-set Pending/Ready census is enabled.
+    pub formal_set_ready_census_enabled: bool,
 }
 
 impl Default for NativeMemoSettings {
@@ -67,6 +69,7 @@ impl Default for NativeMemoSettings {
             local_ready_enabled: false,
             local_ready_empty_only: false,
             local_ready_min_cost: 64,
+            formal_set_ready_census_enabled: false,
         }
     }
 }
@@ -103,6 +106,7 @@ pub(super) struct EnvMemoKnobs {
     pub(super) local_ready: Option<String>,
     pub(super) local_ready_empty_only: Option<String>,
     pub(super) local_ready_min_cost: Option<String>,
+    pub(super) formal_set_ready_census: Option<String>,
     pub(super) disk: Option<String>,
     pub(super) net: Option<String>,
     pub(super) net_mode: Option<String>,
@@ -126,6 +130,7 @@ impl EnvMemoKnobs {
             local_ready: std::env::var("AOS_NIX_LOCAL_READY").ok(),
             local_ready_empty_only: std::env::var("AOS_NIX_LOCAL_READY_EMPTY_ONLY").ok(),
             local_ready_min_cost: std::env::var("AOS_NIX_LOCAL_READY_MIN_COST").ok(),
+            formal_set_ready_census: std::env::var("AOS_NIX_FORMAL_SET_READY_CENSUS").ok(),
             disk: std::env::var("AOS_NIX_MEMO_DISK").ok(),
             net: std::env::var("AOS_NIX_MEMO_NET").ok(),
             net_mode: std::env::var("AOS_NIX_MEMO_NET_MODE").ok(),

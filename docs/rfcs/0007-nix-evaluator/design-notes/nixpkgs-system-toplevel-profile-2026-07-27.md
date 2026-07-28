@@ -485,6 +485,35 @@ gate. The exact output remained `g3lcf1mzgvi8k1gpynbalc6gn130qaxp`; the
 measurement-only implementation was reverted so normal allocation and force
 paths retain no census checks.
 
+## Exact formal-set application Ready census
+
+The generic formal-set boundary probe covers modern nixpkgs broadly, but the
+source-Merkle boundary recognizer does not: the pinned system evaluation
+recognized only 3,851 applications at five def-sites in four modules. That
+recognizer therefore cannot establish the economics of an in-process
+application cache for the current nixpkgs `callPackage` graph.
+
+A default-off `AOS_NIX_FORMAL_SET_READY_CENSUS` probe now measures the broader
+alternative without serving results. It is admitted by the exact same
+serial, GC-off, non-relocating, non-reusing local-Ready safety predicate as the
+existing raw-identity directory. Each integer-only key contains the
+module-qualified lambda body plus the function and argument value tags and
+their transient representation identities. The probe never retains a `Value`,
+walks or forces an argument attrset, or changes evaluation. Its drop-based
+Absent/Pending/Ready lifecycle removes a failed first application, distinguishes
+recursive Pending overlap from a strict Ready repeat, and reports both measured
+repeat-body wall and a projection based on the first successful body.
+
+- [ ] Run the exact pinned nixpkgs system-toplevel benchmark with this census
+      and record the Absent, recursive-Pending, strict-Ready, distinct-Ready,
+      measured repeat-wall, projected saved-wall, instructions, cycles, RSS,
+      wall, and derivation-parity result here.
+- [ ] Do not build a serving application cache unless strict Ready repeats have
+      enough body wall to repay an integer-key lookup and the exact key remains
+      valid across every runtime override/callable construction shape. Any
+      serving implementation must separately preserve impure-slice semantics;
+      this report-only census intentionally does not model them.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self

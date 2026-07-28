@@ -179,6 +179,7 @@ fn eval_whnf_owned_with_evaluator(
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
+    evaluator.emit_formal_set_ready_census_report();
     let mut value = value?;
     #[cfg(feature = "ready_exclusive_probe")]
     evaluator.emit_ready_exclusive_window_report();
@@ -477,6 +478,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
+    evaluator.emit_formal_set_ready_census_report();
     #[cfg(feature = "root_continuation_probe")]
     evaluator.finish_root_continuation_probe(value.is_ok());
     let mut value = value?;
@@ -1487,6 +1489,7 @@ pub(in crate::eval) fn eval_raw_bytes_with_evaluator_owned(
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
+    evaluator.emit_formal_set_ready_census_report();
     let out = out?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);

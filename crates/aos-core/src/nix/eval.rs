@@ -1816,6 +1816,18 @@ impl NixEvalConfig {
                 ),
             }
         }
+        if let Some(value) = knobs.formal_set_ready_census.as_deref() {
+            memo.formal_set_ready_census_enabled = env_flag_is_truthy(value);
+            if !memo.formal_set_ready_census_enabled
+                && !value.trim().is_empty()
+                && !env_flag_is_falsy(value)
+            {
+                tracing::warn!(
+                    value,
+                    "invalid AOS_NIX_FORMAL_SET_READY_CENSUS value; disabling the census"
+                );
+            }
+        }
         if let Some(value) = knobs.check.as_deref() {
             memo.check_l0 = false;
             memo.check_l1 = false;
@@ -3451,6 +3463,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         local_ready_enabled: memo.local_ready_enabled,
         local_ready_empty_only: memo.local_ready_empty_only,
         local_ready_min_cost: memo.local_ready_min_cost,
+        formal_set_ready_census_enabled: memo.formal_set_ready_census_enabled,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     if config.native_gc_sweep() {
@@ -3858,6 +3871,10 @@ mod tests {
             64,
             "the Ready-cell floor defaults independently of durable memo"
         );
+        assert!(
+            !config.native_memo().formal_set_ready_census_enabled,
+            "the formal-set Ready census must remain opt-in"
+        );
         config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
             master: Some("1".to_owned()),
             l0: Some("off".to_owned()),
@@ -3871,6 +3888,7 @@ mod tests {
             local_ready: Some("1".to_owned()),
             local_ready_empty_only: Some("true".to_owned()),
             local_ready_min_cost: Some("7".to_owned()),
+            formal_set_ready_census: Some("1".to_owned()),
             l2: Some("off".to_owned()),
             disk: Some("hdd:/bulk/cache".to_owned()),
             net: Some("http://memo.example/base/".to_owned()),
@@ -3894,6 +3912,7 @@ mod tests {
         assert!(memo.local_ready_enabled);
         assert!(memo.local_ready_empty_only);
         assert_eq!(memo.local_ready_min_cost, 7);
+        assert!(memo.formal_set_ready_census_enabled);
         assert_eq!(config.native_memo_disk_spec(), Some("hdd:/bulk/cache"));
         let net = config.native_memo_net().expect("net settings parse");
         assert_eq!(net.endpoint, "http://memo.example/base");

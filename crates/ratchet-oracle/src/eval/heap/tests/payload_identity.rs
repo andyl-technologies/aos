@@ -150,6 +150,13 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         relocation_sensitive: 0,
         b2_disposition: "inline numeric and boolean decoding only; no repair",
     },
+    PayloadIdentityAuditRow {
+        path: "ratchet-oracle/src/eval/tree_walk/formal_set_ready_census.rs",
+        raw_representation: 0,
+        address_identity_only: 2,
+        relocation_sensitive: 0,
+        b2_disposition: "report-only keys admitted by the shared serial monotonic local-Ready gate",
+    },
     // The four former `outcome.rs` diagnostic reads re-homed to these two
     // children in the §2 file-size split; every call site is
     // verbatim-unchanged.
