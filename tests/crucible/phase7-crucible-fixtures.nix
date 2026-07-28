@@ -289,7 +289,7 @@
       }
       {
         label = "phase7 crucible-fixtures check depends on any-guest proof";
-        needle = "anyGuestGate = phase2.gates.anyGuest;";
+        needle = "anyGuestGate = phase2.gates.anyGuest.rawGate;";
       }
       {
         label = "phase7 e2e determinism consumes fixture proof";

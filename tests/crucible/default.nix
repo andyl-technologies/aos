@@ -2531,7 +2531,7 @@ in rec {
       attrPath = "checks.crucible.phase7.crucibleFixtures";
       taskIds = ["T-PKG-13"];
       crucibleFixtures = pkgs.crucible-fixtures;
-      anyGuestGate = phase2.gates.anyGuest;
+      anyGuestGate = phase2.gates.anyGuest.rawGate;
     };
     crucibleGateCiWiring = import ./phase7-crucible-gate-ci-wiring.nix {
       inherit pkgs lib;
