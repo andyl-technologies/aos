@@ -24,6 +24,9 @@ use crucible_shmem::{
     SpscRingError,
 };
 
+#[path = "io_subnode_lifecycle/tail_cases.rs"]
+mod tail_cases;
+
 use crucible_device::ninep::codec;
 
 /// Unwraps a result in tests, panicking with the error on failure.
@@ -584,48 +587,4 @@ fn full_outbox_backpressures_delivery_without_reorder() {
         3,
         "no response may be dropped under backpressure"
     );
-}
-
-#[test]
-fn stale_request_delivering_in_the_past_fails_loudly() {
-    // Advance the clock well past where a stale request would complete, then
-    // submit that stale request. Its computed delivery icount lands in the
-    // consumer's past, so process_inbox MUST fail loudly ([IO-31], [IO-34])
-    // rather than enqueue an out-of-order response.
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
-    let mut device = EchoDevice::new(1000, 4);
-
-    // base_ns=1000, shift=8 => a request at icount 0 completes at icount 4.
-    let stale = Request::new(0, 0, b"alpha".to_vec());
-    let probe = ok(IoCore::new(SHIFT, NODE, 16, 16));
-    let stale_delivery = ok(probe.compute_delivery_icount(&stale, device.latency_model()));
-    assert_eq!(stale_delivery, 4);
-
-    // Move the clock past the stale completion.
-    ok(core.advance_to(1000));
-    ok(core.enqueue_request(stale));
-
-    let result = core.process_inbox(&mut device);
-    assert!(
-        matches!(
-            result,
-            Err(DeviceError::DeliveryInPast {
-                delivery_icount: 4,
-                current_icount: 1000
-            })
-        ),
-        "expected DeliveryInPast, got {result:?}"
-    );
-    // Nothing was enqueued in flight: the guard rejected before insertion.
-    assert!(core.next_exact_local_event().is_none());
-}
-
-#[test]
-fn clock_never_moves_backward() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
-    ok(core.advance_to(100));
-    assert!(matches!(
-        core.advance_to(99),
-        Err(DeviceError::ClockRegression { .. })
-    ));
 }

@@ -3,7 +3,6 @@
 //! This module owns the shared abstraction behind every request/response I/O
 //! sub-node — disk and 9p, with network links reusing the in-flight ordering
 //! pieces for frame delivery. It defines:
-//!
 //! - [`IoSubNode`]: the trait a concrete device implements. It supplies a
 //!   per-request `compute` (the COMPUTE step: status + payload, may touch the
 //!   host filesystem/overlay at any wall-clock instant) and inherits the
@@ -21,7 +20,6 @@
 //! is fixed; the response then sits in the in-flight queue, *invisible* until
 //! [`IoCore::advance_to`] moves the clock to its delivery icount. Host COMPUTE
 //! wall-clock never enters the delivery icount or any payload byte.
-//!
 //! ```text
 //! enqueue_request(t) -> inbox                         (ARRIVE)
 //! process_inbox(device):                              (COMPUTE)
@@ -34,7 +32,6 @@
 //!   clock.advance_to(limit)
 //!   outbox <- inflight.drain_due(limit)                (visible at exact icount)
 //! ```
-//!
 //! The shmem-backed methods [`IoCore::process_shmem_inbox`] and
 //! [`IoCore::advance_to_shmem`] perform the same lifecycle against real SPSC ring
 //! storage: freeing VM-to-device slots wakes the producer, publishing
@@ -52,6 +49,7 @@ use crate::inflight::{InflightQueue, PendingResponse};
 use crate::request::{LatencyModel, Request, Response};
 
 mod frame;
+mod io_core_private;
 
 use frame::{frame_from_pending_response, request_from_frame};
 
@@ -615,45 +613,5 @@ impl IoCore {
             src_node: snapshot.src_node,
             next_seq: snapshot.next_seq,
         })
-    }
-
-    /// COMPUTEs one request and inserts its response in delivery order.
-    fn compute_request<D>(&mut self, device: &mut D, request: Request) -> Result<(), DeviceError>
-    where
-        D: IoSubNode,
-    {
-        let delivery_icount = self.compute_delivery_icount(&request, device.latency_model())?;
-        // Fail-loud guard ([IO-31], [IO-34]): a response whose delivery is
-        // already in the consumer's past can never be made visible at its exact
-        // icount, and enqueueing it would corrupt the global delivery order.
-        let current_icount = self.clock.current_icount();
-        if delivery_icount < current_icount {
-            return Err(DeviceError::DeliveryInPast {
-                delivery_icount,
-                current_icount,
-            });
-        }
-        let response = device.compute(&request)?;
-        let seq = self.next_seq;
-        self.next_seq = self.next_seq.wrapping_add(1);
-        let key = FrameDeliveryKey {
-            delivery_icount,
-            src_node: self.src_node,
-            seq,
-        };
-        self.inflight.insert(PendingResponse::new(key, response));
-        Ok(())
-    }
-
-    /// Re-inserts a pending response and the remaining due responses in order.
-    fn requeue_pending(
-        &mut self,
-        pending: PendingResponse,
-        remaining: impl IntoIterator<Item = PendingResponse>,
-    ) {
-        self.inflight.insert(pending);
-        for pending in remaining {
-            self.inflight.insert(pending);
-        }
     }
 }
