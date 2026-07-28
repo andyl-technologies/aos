@@ -446,6 +446,30 @@ next memory experiment should segregate import/demand-scoped immutable cohorts,
 weakly retain interning candidates, and decommit complete dead regions before
 the peak. It must avoid a global stable-handle load on every access.
 
+## Capture-free Ready sidecar
+
+A direct module-local bitmap/rank index removed the sparse hash-table lookup
+from the capture-free Ready experiment. Its lazy classification cost was fully
+charged to the cold run, and the result remained the exact
+`g3lcf1mzgvi8k1gpynbalc6gn130qaxp` derivation. The sidecar nevertheless
+regressed from 136,825,285,708 to 139,084,517,515 instructions (+1.65 percent),
+from 53,702,870,931 to 54,310,264,785 cycles (+1.13 percent), and from
+4,272,436 to 4,296,256 KiB peak RSS (+23,820 KiB). Demand-key confirmations
+fell from 49 to 9, but the saved capture-free bodies were too cheap to repay
+whole-module subtree classification and sidecar storage. The prototype was
+reverted; the earlier sparse per-module plan index remains retained.
+
+A substantially different follow-up is an allocation-time weak Ready factory:
+preclassify eligible allocation sites once, publish a weak successfully forced
+source, and allocate a fresh small forced thunk head on a later safe hit. This
+moves the probe off the general force path and preserves distinct outer thunk
+identity. The measured empty-capture ceiling is 297,471 hits and roughly
+22--28 MiB net RSS, so it is additive rather than factor-level. Before an active
+implementation, a report-only census must find at least 200,000
+identity-insensitive Ready-before-allocation hits and 16 MiB of net pre-peak
+bytes; active retention additionally requires at least a 0.25-percent
+instruction reduction without a cycle or wall regression above one percent.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self
