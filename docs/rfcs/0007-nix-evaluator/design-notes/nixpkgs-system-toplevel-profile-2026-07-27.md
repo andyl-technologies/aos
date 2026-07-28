@@ -146,6 +146,15 @@ peaked at 4,270,216 KiB. This is a further 1.2-percent instruction reduction
 without changing capture publication, early-force, or recursive-binding
 semantics.
 
+Caching the same seven-byte ordering prefix once per interned symbol, rather
+than once per flat attr entry, restored the comparator shortcut without the
+rejected flat scratch allocation. Three exact samples retired
+136,154,922,262--136,216,044,543 instructions and peaked at
+4,191,048--4,205,456 KiB RSS. The least-contended sample retired
+57,878,684,648 cycles. This is a further 3.1-percent instruction reduction and
+about 1.7-percent peak-RSS reduction from the geometric-capture baseline; the
+first two cycle samples were distorted upward by builder contention.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
@@ -184,14 +193,14 @@ semantic attribution but is not the acceptance baseline.
 Nix 2.24.12                       24,254,636,565     12,420,737,095  828,652 KiB
 AOS Candidate C, cache off       273,110,398,403    111,755,985,336  4,270,764 KiB
 AOS Candidate C, L0/L1           197,103,073,775     76,675,241,073  4,288,420 KiB
-AOS Candidate C, current L0      140,497,193,168     55,828,239,656  4,270,216 KiB
+AOS Candidate C, current L0      136,154,922,262     57,878,684,648  4,196,852 KiB
 target                            <12,127,318,283     <6,210,368,548  <414,326 KiB
 ```
 
-The current L0 result is approximately 5.79 times stock instructions, 4.50
-times stock cycles, and 5.15 times stock peak RSS. Reaching the acceptance gates
-still requires about an 11.59-fold instruction reduction, 8.99-fold cycle
-reduction, and 10.31-fold peak-RSS reduction from this native result. More
+The current L0 result is approximately 5.61 times stock instructions, 4.66
+times stock cycles, and 5.06 times stock peak RSS. Reaching the acceptance gates
+still requires about an 11.23-fold instruction reduction, 9.32-fold cycle
+reduction, and 10.13-fold peak-RSS reduction from this native result. More
 averaging cannot turn this architecture into a pass; attribution and
 architectural changes come first.
 
