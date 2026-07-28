@@ -339,7 +339,7 @@ fn ambient_search_path_uses_hidden_corepkgs_without_reflecting_it() {
 }
 
 #[test]
-fn reject_ambient_search_path_rejects_lexical_angle_bracket_lookup() {
+fn reject_ambient_search_path_allows_lexical_angle_bracket_lookup() {
     let root = unique_temp_dir("reject-lexical-nix-path");
     let dir = root.join("dir");
     fs::create_dir(&dir).expect("search-path fixture creates");
@@ -349,15 +349,13 @@ fn reject_ambient_search_path_rejects_lexical_angle_bracket_lookup() {
         .expect("path literal base configures");
     options.set_reject_ambient_search_path(true);
 
-    let error = eval_whnf_owned_with_options(
-        &lower("let __nixPath = [ { path = ./dir; } ]; in <a.nix>"),
-        options,
-    )
-    .expect_err("reject mode rejects angle-bracket lookup even with lexical __nixPath");
-    assert!(matches!(
-        error.kind(),
-        TreeWalkErrorKind::UnsupportedAmbientSearchPath { .. }
-    ));
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "let __nixPath = [ { path = ./dir; } ]; in import <a.nix>",
+            options,
+        ),
+        b"a".to_vec()
+    );
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }
@@ -559,6 +557,29 @@ fn pure_eval_hides_configured_search_path_from_nix_path_and_angle_lookup() {
         TreeWalkErrorKind::PathAccessDenied { path, mode: EvalMode::Pure, .. }
             if path.as_slice() == default_nix_bytes.as_slice()
     ));
+}
+
+#[test]
+fn pure_eval_ignores_ambient_search_path_rejection_after_hiding_the_path() {
+    let (_root, nixpkgs, _subdir) = search_path_fixture();
+    let mut options = search_path_options(b"nixpkgs", &nixpkgs);
+    options.set_eval_mode(EvalMode::Pure);
+    options.set_reject_ambient_search_path(true);
+
+    assert_eq!(
+        eval_string_bytes_with_options("builtins.toJSON builtins.nixPath", options.clone()),
+        b"[]".to_vec()
+    );
+    assert_eq!(
+        eval_whnf_owned_with_options(
+            &lower("(builtins.tryEval <nixpkgs-overlays>).success"),
+            options,
+        )
+        .expect("pure missing angle lookup stays catchable")
+        .value
+        .as_bool(),
+        Ok(false)
+    );
 }
 
 #[test]

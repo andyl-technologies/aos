@@ -590,10 +590,12 @@ impl TreeWalkOptions {
 
     /// Enables or disables ambient Nix search-path lookup.
     ///
-    /// When enabled, evaluating `<...>` or `builtins.nixPath` fails before
-    /// observing configured search-path entries. Explicit `builtins.findFile`
-    /// lists remain evaluable because they do not read the ambient Nix search
-    /// path.
+    /// When enabled outside pure evaluation, ambient `<...>` lookup and
+    /// `builtins.nixPath` fail before observing configured search-path entries.
+    /// A lexical `__nixPath` and explicit `builtins.findFile` lists remain
+    /// evaluable because they do not read the ambient Nix search path. Pure
+    /// evaluation already hides the ambient path, so it exposes an empty
+    /// `builtins.nixPath` and ordinary missing `<...>` lookups.
     pub fn set_reject_ambient_search_path(&mut self, reject: bool) {
         self.reject_ambient_search_path = reject;
     }

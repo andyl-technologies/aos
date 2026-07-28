@@ -90,6 +90,36 @@ fn native_instantiation_search_path_stays_fallback_eligible() -> Result<()> {
 }
 
 #[test]
+fn pure_native_instantiation_catches_missing_ambient_search_path() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-pure-missing-search-path");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_eval_mode(ratchet_oracle::eval::EvalMode::Pure);
+    let pure = NixNative::with_options(0, options)?;
+    let drv = pure.instantiate_expr(
+        r#"derivationStrict {
+          name = "pure-missing-search-path";
+          system = "x86_64-linux";
+          builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          args = [
+            (if (builtins.tryEval <nixpkgs-overlays>).success
+             then "unexpected"
+             else "missing")
+          ];
+        }"#,
+    )?;
+
+    assert!(
+        drv.to_string_lossy()
+            .ends_with("-pure-missing-search-path.drv")
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_impure_builtin_constants_stay_fallback_eligible() -> Result<()> {
     let native = NixNative::new(0)?;
 

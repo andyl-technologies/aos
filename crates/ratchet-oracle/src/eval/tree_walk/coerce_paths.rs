@@ -290,7 +290,17 @@ impl TreeWalk {
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
-        if self.options.reject_ambient_search_path() {
+        let IrData::SearchPath {
+            literal,
+            search_path,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "search-path symbol payload"));
+        };
+        if self.options.reject_ambient_search_path()
+            && self.options.eval_mode() != EvalMode::Pure
+            && search_path.is_none()
+        {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAmbientSearchPath {
                     id,
@@ -299,13 +309,6 @@ impl TreeWalk {
                 node.span,
             ));
         }
-        let IrData::SearchPath {
-            literal,
-            search_path,
-        } = node.data
-        else {
-            return Err(self.invalid_payload(id, node, "search-path symbol payload"));
-        };
         let lookup = self.symbols.resolve(literal).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::InvalidSymbol {
@@ -343,7 +346,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
-        if self.options.reject_ambient_search_path() {
+        if self.options.reject_ambient_search_path() && self.options.eval_mode() != EvalMode::Pure {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAmbientSearchPath {
                     id,
