@@ -34,6 +34,7 @@
   ],
   openTaskIds ? [],
   dependencies ? [],
+  hostParallelism ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -404,7 +405,8 @@ in
           pkgs.rust
           pkgs.sed
         ]
-        ++ dependencies;
+        ++ dependencies
+        ++ lib.optionals (hostParallelism != null) [hostParallelism];
 
       phases = [
         {
@@ -492,6 +494,23 @@ in
             host_profile=pinned
             corpus_baseline=content-addressed
             RESULT
+            if [ -n "${
+              if hostParallelism == null
+              then ""
+              else builtins.toString hostParallelism
+            }" ]; then
+              sed -n \
+                -e 's/^parallel_realized_parallelism=/metric_parallelism_P_real_qemu=/p' \
+                -e 's/^parallel_dispatch_wall_us=/metric_parallel_dispatch_wall_us=/p' \
+                -e 's/^serial_dispatch_wall_us=/metric_serial_dispatch_wall_us=/p' \
+                -e 's/^serial_evidence_hash=/metric_parallelism_worker_neutral_hash=/p' \
+                "${
+              if hostParallelism == null
+              then "/dev/null"
+              else "${hostParallelism}/result"
+            }" \
+                >> "$out/result"
+            fi
           '';
         }
       ];

@@ -1035,6 +1035,17 @@ enforces the 70% floor, and preserves retired-instruction/TB counts ([PERF-14]).
 The deterministic gate holds the contract's shape and regression ratchets while
 the fleet and phase-0 checks supply the live reference-host measurements.
 
+T-PERF-29 is additionally completed by
+`checks.crucible.phase7.qemuHostParallel`. That gate boots two production
+`QemuNode` backends for a one-worker reference and two more for a two-worker
+dispatch, feeds both runs the same scheduler-authored concurrent RUN set, and
+commits results by the precomputed completion-order key. It requires exact
+equality of state fingerprints, virtual-time outcomes, causal decisions, and
+observable events; hashes only that worker-neutral evidence; and reports the
+peak overlap and wall time measured around the real owner-thread dispatch. The
+perf-bench result imports that live `P` and timing evidence rather than treating
+the modeled cost projection as the implementation proof.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1138,7 +1149,7 @@ falsify it ([PERF-24], [PERF-34]). T-PERF-29 is the primary lever — until the 
 set is executed on real workers, `P` is a projection and every other axis is a
 constant-factor trim on a serial run.
 
-- [ ] **T-PERF-29** Execute the scheduler's concurrent run set on a host worker
+- [x] **T-PERF-29** Execute the scheduler's concurrent run set on a host worker
   pool: advance each selected node to its own ceiling on its own worker, bounded
   by `max_host_workers`, and commit outcomes strictly in completion-order-key
   order. Assert worker count is absent from every content hash and that

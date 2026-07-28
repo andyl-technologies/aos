@@ -2670,6 +2670,16 @@ in rec {
         phase7.crucibleGateCiWiring
       ];
     };
+    qemuHostParallel = import ./phase7-qemu-host-parallel.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.qemuHostParallel";
+      taskIds = ["T-PERF-29"];
+      dependencies = [
+        phase1.gates.singleVmFingerprint.rawGate
+        phase2.qemuLiveNodeStep
+        phase3.gates.adversarialDeterminism.rawGate
+      ];
+    };
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
@@ -2706,18 +2716,19 @@ in rec {
             "T-PERF-26"
             "T-PERF-27"
             "T-PERF-28"
+            "T-PERF-29"
           ];
           openTaskIds = [
-            "T-PERF-29"
             "T-PERF-30"
             "T-PERF-31"
             "T-PERF-32"
             "T-PERF-33"
             "T-PERF-34"
           ];
-          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate];
+          hostParallelism = phase7.qemuHostParallel;
+          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel];
         };
-        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage];
+        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel];
       };
       e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";

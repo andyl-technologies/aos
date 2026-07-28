@@ -9,6 +9,7 @@ mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
 mod host_io_runtime;
+mod host_parallel_gate;
 mod network_io_gate;
 mod network_io_servicer;
 mod ninep_io_gate;
@@ -28,6 +29,9 @@ pub use block_node_gate::{
     QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
 };
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
+pub use host_parallel_gate::{
+    QemuLiveHostParallelGateError, QemuLiveHostParallelReport, run_qemu_live_host_parallel_gate,
+};
 pub use network_io_gate::{
     QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
     run_qemu_live_network_io_gate,
