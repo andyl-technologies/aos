@@ -192,10 +192,7 @@ impl TreeWalk {
             ir,
             Some(path_literal_base),
             ForceCacheOptionsIdentity::new(&self.options),
-            Some(ModuleSource {
-                name: source_name,
-                bytes: source,
-            }),
+            Some(ModuleSource::new(source_name, source)),
         );
         let raw = if self.shared.is_some() {
             // Parallel mode: module ids are allocated from the shared

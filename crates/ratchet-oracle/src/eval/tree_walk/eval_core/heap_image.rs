@@ -318,10 +318,10 @@ impl TreeWalk {
             ir,
             module.path_literal_base.clone(),
             ForceCacheOptionsIdentity::new(&self.options),
-            Some(ModuleSource {
-                name: module.name.clone(),
-                bytes: module.source.clone(),
-            }),
+            Some(ModuleSource::new(
+                module.name.clone(),
+                module.source.clone(),
+            )),
         ));
         Ok(())
     }

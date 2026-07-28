@@ -575,7 +575,7 @@ impl TreeWalk {
             return Ok(None);
         }
 
-        let Some((line, column)) = line_column_at_offset(&source.bytes, start) else {
+        let Some((line, column)) = source.line_column_at_offset(start) else {
             return Ok(None);
         };
         Ok(Some((source.name.clone(), line, column)))
@@ -942,22 +942,4 @@ impl TreeWalk {
             entries,
         )
     }
-}
-
-fn line_column_at_offset(source: &[u8], offset: usize) -> Option<(i64, i64)> {
-    if offset > source.len() {
-        return None;
-    }
-    let prefix = &source[..offset];
-    let line = prefix
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
-        .checked_add(1)?;
-    let line_start = prefix
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index.saturating_add(1));
-    let column = offset.checked_sub(line_start)?.checked_add(1)?;
-    Some((i64::try_from(line).ok()?, i64::try_from(column).ok()?))
 }

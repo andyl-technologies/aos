@@ -193,6 +193,68 @@ impl ActiveMemoReadNode {
 pub(crate) struct ModuleSource {
     pub(crate) name: Vec<u8>,
     pub(crate) bytes: Vec<u8>,
+    line_starts: std::cell::OnceCell<Box<[u32]>>,
+}
+
+impl ModuleSource {
+    /// Creates source provenance with a lazily built line-start index.
+    pub(crate) fn new(name: Vec<u8>, bytes: Vec<u8>) -> Self {
+        Self {
+            name,
+            bytes,
+            line_starts: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Returns the one-based line and column at `offset`.
+    ///
+    /// The first query builds a compact newline index. Later queries binary
+    /// search it instead of rescanning the source prefix, which matters for
+    /// `unsafeGetAttrPos`-heavy nixpkgs evaluation.
+    pub(crate) fn line_column_at_offset(&self, offset: usize) -> Option<(i64, i64)> {
+        if offset > self.bytes.len() {
+            return None;
+        }
+        let offset = u32::try_from(offset).ok()?;
+        let line_starts = self.line_starts.get_or_init(|| {
+            let mut starts = vec![0_u32];
+            for (index, byte) in self.bytes.iter().copied().enumerate() {
+                if byte != b'\n' {
+                    continue;
+                }
+                let Some(next) = index.checked_add(1) else {
+                    continue;
+                };
+                let Ok(next) = u32::try_from(next) else {
+                    continue;
+                };
+                starts.push(next);
+            }
+            starts.into_boxed_slice()
+        });
+        let line = line_starts.partition_point(|start| *start <= offset);
+        let line_start = *line_starts.get(line.checked_sub(1)?)?;
+        let column = offset.checked_sub(line_start)?.checked_add(1)?;
+        Some((i64::try_from(line).ok()?, i64::from(column)))
+    }
+}
+
+#[cfg(test)]
+mod module_source_tests {
+    use super::ModuleSource;
+
+    #[test]
+    fn line_index_preserves_offsets_at_newlines_and_end_of_source() {
+        let source = ModuleSource::new(b"fixture.nix".to_vec(), b"a\nbc\n".to_vec());
+
+        assert_eq!(source.line_column_at_offset(0), Some((1, 1)));
+        assert_eq!(source.line_column_at_offset(1), Some((1, 2)));
+        assert_eq!(source.line_column_at_offset(2), Some((2, 1)));
+        assert_eq!(source.line_column_at_offset(4), Some((2, 3)));
+        assert_eq!(source.line_column_at_offset(5), Some((3, 1)));
+        assert_eq!(source.line_column_at_offset(6), None);
+        assert_eq!(source.line_column_at_offset(2), Some((2, 1)));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

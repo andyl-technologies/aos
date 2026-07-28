@@ -413,10 +413,8 @@ impl TreeWalk {
         source: impl Into<Vec<u8>>,
     ) -> Self {
         let mut eval = Self::with_options(ir, options);
-        eval.modules[EvalModuleId::ROOT.index()].source = Some(ModuleSource {
-            name: source_name.into(),
-            bytes: source.into(),
-        });
+        eval.modules[EvalModuleId::ROOT.index()].source =
+            Some(ModuleSource::new(source_name.into(), source.into()));
         eval
     }
 
@@ -434,10 +432,8 @@ impl TreeWalk {
         eval_cache: Arc<Mutex<EvalCacheRuntime>>,
     ) -> Self {
         let mut eval = Self::with_options_and_eval_cache(ir, options, eval_cache);
-        eval.modules[EvalModuleId::ROOT.index()].source = Some(ModuleSource {
-            name: source_name.into(),
-            bytes: source.into(),
-        });
+        eval.modules[EvalModuleId::ROOT.index()].source =
+            Some(ModuleSource::new(source_name.into(), source.into()));
         eval
     }
 
