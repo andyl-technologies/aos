@@ -385,7 +385,7 @@ impl TreeWalk {
             parallel_force_registry,
             memo_l0,
             memo_economics,
-            memo_def_sites: HashMap::new(),
+            memo_def_sites: super::memo::MemoDefSiteTable::default(),
             memo_unhashable_values: HashSet::new(),
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,

@@ -38,6 +38,7 @@ use std::sync::Arc;
 use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
+use crate::eval::EvalNodeRef;
 
 /// Shard count for the L1 shared table.
 ///
@@ -101,6 +102,85 @@ impl MemoDefSiteState {
             consecutive_declines: 0,
         }
     }
+}
+
+/// Module/node-indexed storage for content-memo admission decisions.
+///
+/// The claimed-force path consults this table for every node thunk while the
+/// memo is active. A two-level index avoids hashing [`EvalNodeRef`] millions
+/// of times while keeping the comparatively large [`MemoDefSiteState`] values
+/// sparse: each module owns a compact node-to-state index and a state slab.
+#[derive(Debug, Default)]
+pub(super) struct MemoDefSiteTable {
+    modules: Vec<Option<MemoDefSiteModuleTable>>,
+}
+
+impl MemoDefSiteTable {
+    /// Sentinel for a node that has no sparse state-slab entry.
+    const UNDECIDED: u32 = u32::MAX;
+
+    /// Returns the state for `def_site`, when the site has been decided.
+    pub(super) fn get(&self, def_site: EvalNodeRef) -> Option<&MemoDefSiteState> {
+        let module = self.modules.get(def_site.module().index())?.as_ref()?;
+        let state = *module.by_node.get(def_site.id().index())?;
+        if state == Self::UNDECIDED {
+            return None;
+        }
+        module.states.get(state as usize)
+    }
+
+    /// Returns mutable state for `def_site`, when the site has been decided.
+    pub(super) fn get_mut(&mut self, def_site: EvalNodeRef) -> Option<&mut MemoDefSiteState> {
+        let module = self
+            .modules
+            .get_mut(def_site.module().index())?
+            .as_mut()?;
+        let state = *module.by_node.get(def_site.id().index())?;
+        if state == Self::UNDECIDED {
+            return None;
+        }
+        module.states.get_mut(state as usize)
+    }
+
+    /// Installs or replaces the decision for `def_site`.
+    ///
+    /// Returns `false` only if the sparse state slab can no longer be
+    /// addressed by its compact `u32` node index.
+    pub(super) fn insert(&mut self, def_site: EvalNodeRef, state: MemoDefSiteState) -> bool {
+        let module_index = def_site.module().index();
+        if self.modules.len() <= module_index {
+            self.modules.resize_with(module_index + 1, || None);
+        }
+        let module = self.modules[module_index].get_or_insert_with(MemoDefSiteModuleTable::default);
+        let node_index = def_site.id().index();
+        if module.by_node.len() <= node_index {
+            module.by_node.resize(node_index + 1, Self::UNDECIDED);
+        }
+        let existing = module.by_node[node_index];
+        if existing != Self::UNDECIDED {
+            if let Some(slot) = module.states.get_mut(existing as usize) {
+                *slot = state;
+                return true;
+            }
+            return false;
+        }
+        let Ok(state_index) = u32::try_from(module.states.len()) else {
+            return false;
+        };
+        if state_index == Self::UNDECIDED {
+            return false;
+        }
+        module.states.push(state);
+        module.by_node[node_index] = state_index;
+        true
+    }
+}
+
+/// One module's compact node index and sparse admission-state slab.
+#[derive(Debug, Default)]
+struct MemoDefSiteModuleTable {
+    by_node: Vec<u32>,
+    states: Vec<MemoDefSiteState>,
 }
 
 /// One memoized forced-subtree record shared by the L0 and L1 tiers.
@@ -362,6 +442,47 @@ mod tests {
             payload: Arc::new(CachedExpressionValue::context_free_string(b"x".to_vec())),
             slice: Arc::from(Vec::new()),
         }
+    }
+
+    #[test]
+    fn def_site_table_indexes_sparse_modules_and_replaces_states() {
+        let mut table = MemoDefSiteTable::default();
+        let first = EvalNodeRef::new(
+            crate::eval::EvalModuleId::new(3),
+            crate::compile::IrId::new(17),
+        );
+        let second = EvalNodeRef::new(
+            crate::eval::EvalModuleId::new(9),
+            crate::compile::IrId::new(2),
+        );
+
+        assert!(table.get(first).is_none());
+        assert!(table.insert(
+            first,
+            MemoDefSiteState::new(MemoDefSiteDecision::Skipped, 0)
+        ));
+        assert!(table.insert(
+            second,
+            MemoDefSiteState::new(MemoDefSiteDecision::CostAdmitted, 64)
+        ));
+        assert_eq!(
+            table.get(first).map(|state| state.decision),
+            Some(MemoDefSiteDecision::Skipped)
+        );
+        assert_eq!(
+            table.get(second).map(|state| state.static_cost_units),
+            Some(64)
+        );
+
+        assert!(table.insert(
+            first,
+            MemoDefSiteState::new(MemoDefSiteDecision::CostAdmitted, 16)
+        ));
+        assert_eq!(
+            table.get(first).map(|state| state.decision),
+            Some(MemoDefSiteDecision::CostAdmitted)
+        );
+        assert_eq!(table.get(first).map(|state| state.static_cost_units), Some(16));
     }
 
     #[test]

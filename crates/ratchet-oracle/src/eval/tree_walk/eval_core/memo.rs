@@ -16,7 +16,7 @@
 //! def-site from a static lowered-IR cost estimate (an early-exiting subtree
 //! walk in the `ratchet-jit` cost-model mold) against the
 //! `AOS_NIX_MEMO_MIN_COST` floor, cached in `TreeWalk::memo_def_sites` so a
-//! non-admitted def-site pays exactly one hash-map probe per force. Per-force
+//! non-admitted def-site pays only an indexed lookup per force. Per-force
 //! (environment-dependent) eligibility additionally requires every captured
 //! free variable to have a durable value hash: environments capturing
 //! unforced thunks decline admission in MEMO-1 (the recursive thunk-keying
@@ -232,7 +232,7 @@ impl TreeWalk {
         }
         let static_cost_units = self
             .memo_def_sites
-            .get(&*body)
+            .get(*body)
             .map_or(0, |state| state.static_cost_units);
         // Environment component first: def-sites whose captured environments
         // never hash never pay identity derivation (the expensive safety walk
@@ -252,14 +252,14 @@ impl TreeWalk {
             MemoDefSiteDecision::CostAdmitted => {
                 match self.cache_lookup_identity_for_node(*body) {
                     Some(identity) => {
-                        if let Some(state) = self.memo_def_sites.get_mut(&*body) {
+                        if let Some(state) = self.memo_def_sites.get_mut(*body) {
                             state.decision = MemoDefSiteDecision::Admitted { identity };
                         }
                         identity
                     }
                     None => {
                         // Not lookup-safe: permanently skip the def-site.
-                        if let Some(state) = self.memo_def_sites.get_mut(&*body) {
+                        if let Some(state) = self.memo_def_sites.get_mut(*body) {
                             state.decision = MemoDefSiteDecision::Skipped;
                         }
                         self.increment_memo_declines();
@@ -269,7 +269,7 @@ impl TreeWalk {
             }
             MemoDefSiteDecision::Skipped => return None,
         };
-        if let Some(state) = self.memo_def_sites.get_mut(&*body) {
+        if let Some(state) = self.memo_def_sites.get_mut(*body) {
             state.consecutive_declines = 0;
         }
         let key = match DemandCacheKey::for_free_vars(identity, hashes.iter().copied()) {
@@ -301,7 +301,7 @@ impl TreeWalk {
     /// gate (see [`MEMO_DECLINE_GATE`]) and counts the decline.
     fn memo_decline_def_site_derivation(&mut self, def_site: EvalNodeRef) {
         self.increment_memo_declines();
-        let Some(state) = self.memo_def_sites.get_mut(&def_site) else {
+        let Some(state) = self.memo_def_sites.get_mut(def_site) else {
             return;
         };
         state.consecutive_declines = state.consecutive_declines.saturating_add(1);
@@ -422,11 +422,12 @@ impl TreeWalk {
 
     /// Returns (computing and caching on first demand) the def-site decision.
     fn memo_def_site_decision(&mut self, def_site: EvalNodeRef) -> MemoDefSiteDecision {
-        if let Some(state) = self.memo_def_sites.get(&def_site) {
+        if let Some(state) = self.memo_def_sites.get(def_site) {
             return state.decision;
         }
         let (decision, static_cost_units) = self.compute_memo_def_site_decision(def_site);
-        self.memo_def_sites
+        let _ = self
+            .memo_def_sites
             .insert(def_site, MemoDefSiteState::new(decision, static_cost_units));
         decision
     }
