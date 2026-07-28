@@ -132,6 +132,18 @@ fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
     assert!(economics.potential_hit_static_cost_units() >= 1);
     assert!(economics.ready_structural_hits() >= 1, "{economics:?}");
     assert_eq!(economics.recursive_structural_repeats(), 0);
+    assert!(economics.ready_cell_candidates() >= 2, "{economics:?}");
+    assert!(economics.ready_cell_unique_recipes() >= 1, "{economics:?}");
+    assert!(economics.ready_cell_ready_hits() >= 1, "{economics:?}");
+    assert_eq!(economics.ready_cell_pending_overlaps(), 0);
+    assert!(
+        economics.ready_cell_two_way_hits() >= economics.ready_cell_one_way_hits(),
+        "{economics:?}"
+    );
+    assert!(
+        economics.ready_cell_ready_static_cost_units() >= 1,
+        "{economics:?}"
+    );
     assert!(
         economics.ready_structural_work_bytes()
             >= u64::try_from(std::mem::size_of::<crate::eval::EvalThunk>())

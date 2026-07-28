@@ -206,6 +206,7 @@ impl TreeWalk {
             .memo_l0_active()
             .then(|| super::memo::MemoL0Table::new(options.memo_options().l0_entries));
         let memo_economics = options.memo_options().stats_enabled.then(Default::default);
+        let ready_cell_census = options.memo_options().stats_enabled.then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(
@@ -385,6 +386,7 @@ impl TreeWalk {
             parallel_force_registry,
             memo_l0,
             memo_economics,
+            ready_cell_census,
             memo_def_sites: super::memo::MemoDefSiteTable::default(),
             memo_unhashable_values: HashSet::new(),
             #[cfg(test)]

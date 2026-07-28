@@ -309,6 +309,21 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
 \"effect_or_unsafe_declines\":{},\
 \"dynamic_scope_declines\":{},\
 \"unknown_capture_declines\":{},\
+\"ready_cell_candidates\":{},\
+\"ready_cell_unique_recipes\":{},\
+\"ready_cell_ready_hits\":{},\
+\"ready_cell_pending_overlaps\":{},\
+\"ready_cell_recipe_slots\":{},\
+\"ready_cell_unique_recipe_slots\":{},\
+\"ready_cell_max_recipe_arity\":{},\
+\"ready_cell_one_way_hits\":{},\
+\"ready_cell_two_way_hits\":{},\
+\"ready_cell_ready_static_cost_units\":{},\
+\"ready_cell_one_way_static_cost_units\":{},\
+\"ready_cell_two_way_static_cost_units\":{},\
+\"ready_cell_effect_or_unsafe_declines\":{},\
+\"ready_cell_dynamic_scope_declines\":{},\
+\"ready_cell_non_slot_declines\":{},\
 \"key_samples\":{},\"key_nanos\":{},\
 \"probe_samples\":{},\"probe_nanos\":{},\
 \"hit_samples\":{},\"hit_nanos\":{},\
@@ -325,6 +340,21 @@ fn memo_economics_stats_json(stats: &EvalStats) -> String {
         memo.effect_or_unsafe_declines(),
         memo.dynamic_scope_declines(),
         memo.unknown_capture_declines(),
+        memo.ready_cell_candidates(),
+        memo.ready_cell_unique_recipes(),
+        memo.ready_cell_ready_hits(),
+        memo.ready_cell_pending_overlaps(),
+        memo.ready_cell_recipe_slots(),
+        memo.ready_cell_unique_recipe_slots(),
+        memo.ready_cell_max_recipe_arity(),
+        memo.ready_cell_one_way_hits(),
+        memo.ready_cell_two_way_hits(),
+        memo.ready_cell_ready_static_cost_units(),
+        memo.ready_cell_one_way_static_cost_units(),
+        memo.ready_cell_two_way_static_cost_units(),
+        memo.ready_cell_effect_or_unsafe_declines(),
+        memo.ready_cell_dynamic_scope_declines(),
+        memo.ready_cell_non_slot_declines(),
         memo.key_samples(),
         memo.key_nanos(),
         memo.probe_samples(),
@@ -350,7 +380,7 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("standalone memo statistics object exists");
 
-        assert_eq!(memo.len(), 19);
+        assert_eq!(memo.len(), 34);
         assert!(memo.values().all(|value| value.as_u64() == Some(0)));
         assert!(memo.contains_key("potential_hit_static_cost_units"));
         assert!(memo.contains_key("ready_structural_hits"));
@@ -359,6 +389,12 @@ mod tests {
         assert!(memo.contains_key("effect_or_unsafe_declines"));
         assert!(memo.contains_key("dynamic_scope_declines"));
         assert!(memo.contains_key("unknown_capture_declines"));
+        assert!(memo.contains_key("ready_cell_candidates"));
+        assert!(memo.contains_key("ready_cell_ready_hits"));
+        assert!(memo.contains_key("ready_cell_pending_overlaps"));
+        assert!(memo.contains_key("ready_cell_one_way_hits"));
+        assert!(memo.contains_key("ready_cell_two_way_hits"));
+        assert!(memo.contains_key("ready_cell_non_slot_declines"));
         assert!(memo.contains_key("key_nanos"));
         assert!(memo.contains_key("probe_nanos"));
         assert!(memo.contains_key("hit_nanos"));

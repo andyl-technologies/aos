@@ -350,6 +350,139 @@ impl MemoEconomicsCensus {
     }
 }
 
+/// An exact worker-local recipe for a potentially reusable Ready cell.
+///
+/// Captures contain raw relocation-sensitive value words for only the lexical
+/// slots statically referenced by `def_site`. The census deliberately keeps
+/// neither values nor durable hashes. Moving collection can turn a semantic
+/// repeat into a miss, while later address reuse can overstate matches; both
+/// are instrumentation error only because the census never serves a force.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ReadyCellRecipe {
+    def_site: EvalNodeRef,
+    captures: Box<[u64]>,
+}
+
+impl ReadyCellRecipe {
+    /// Creates one exact recipe in canonical captured-slot order.
+    pub(super) fn new(def_site: EvalNodeRef, captures: Box<[u64]>) -> Self {
+        Self { def_site, captures }
+    }
+
+    /// Returns the number of statically referenced captured slots.
+    pub(super) fn arity(&self) -> usize {
+        self.captures.len()
+    }
+}
+
+/// One force's Ready-cell census recipe and static recompute estimate.
+#[derive(Clone, Debug)]
+pub(super) struct ReadyCellCandidate {
+    /// Exact worker-local recipe observed for the force.
+    pub(super) recipe: ReadyCellRecipe,
+    /// Static cost units avoided by a hypothetical hit.
+    pub(super) static_cost_units: u32,
+}
+
+/// Lifecycle state for one exact worker-local Ready-cell recipe.
+#[derive(Clone, Copy, Debug, Default)]
+struct ReadyCellRecipeState {
+    occurrences: u64,
+    pending: u64,
+    ready: bool,
+}
+
+/// Ready recipes retained by bounded per-def-site simulations.
+#[derive(Clone, Debug, Default)]
+struct ReadyCellDefSiteWays {
+    one_way: Option<ReadyCellRecipe>,
+    two_way: Vec<ReadyCellRecipe>,
+}
+
+/// Observation returned when a Ready-cell recipe begins forcing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ReadyCellObservation {
+    /// Whether the exact recipe has not previously appeared on this worker.
+    pub(super) unique_recipe: bool,
+    /// Whether an earlier force of the exact recipe is already Ready.
+    pub(super) ready_hit: bool,
+    /// Whether this force overlaps an earlier unfinished exact recipe.
+    pub(super) pending_overlap: bool,
+    /// Whether a one-entry per-def-site Ready directory would hit.
+    pub(super) one_way_hit: bool,
+    /// Whether a two-entry per-def-site Ready directory would hit.
+    pub(super) two_way_hit: bool,
+}
+
+/// Stats-only worker-local Ready-cell directory census.
+///
+/// The unbounded recipe map measures the upper bound while one- and two-way
+/// per-def-site directories estimate bounded implementations. Entries become
+/// reusable only after successful force publication. Failed forces are closed
+/// without publishing; their zero-pending tombstones preserve exact distinct
+/// recipe counts without a second copy of every recipe key.
+///
+/// This table is instantiated only for `AOS_NIX_MEMO_STATS`; it never stores a
+/// runtime [`Value`] and is never consulted to answer a force.
+#[derive(Debug, Default)]
+pub(super) struct ReadyCellCensus {
+    recipes: HashMap<ReadyCellRecipe, ReadyCellRecipeState>,
+    def_sites: HashMap<EvalNodeRef, ReadyCellDefSiteWays>,
+    static_costs: HashMap<EvalNodeRef, Option<u32>>,
+}
+
+impl ReadyCellCensus {
+    /// Returns a cached safe static cost classification for `def_site`.
+    pub(super) fn static_cost(&self, def_site: EvalNodeRef) -> Option<Option<u32>> {
+        self.static_costs.get(&def_site).copied()
+    }
+
+    /// Records the safe static cost classification for `def_site`.
+    pub(super) fn remember_static_cost(&mut self, def_site: EvalNodeRef, cost: Option<u32>) {
+        self.static_costs.insert(def_site, cost);
+    }
+
+    /// Records the start of one exact recipe force.
+    pub(super) fn observe(&mut self, recipe: &ReadyCellRecipe) -> ReadyCellObservation {
+        let ways = self.def_sites.entry(recipe.def_site).or_default();
+        let one_way_hit = ways.one_way.as_ref() == Some(recipe);
+        let two_way_hit = ways.two_way.iter().any(|resident| resident == recipe);
+        let state = self.recipes.entry(recipe.clone()).or_default();
+        let observation = ReadyCellObservation {
+            unique_recipe: state.occurrences == 0,
+            ready_hit: state.ready,
+            pending_overlap: state.pending > 0 && !state.ready,
+            one_way_hit,
+            two_way_hit,
+        };
+        state.occurrences = state.occurrences.saturating_add(1);
+        state.pending = state.pending.saturating_add(1);
+        observation
+    }
+
+    /// Publishes one successful recipe as Ready in all shadow directories.
+    pub(super) fn mark_ready(&mut self, recipe: &ReadyCellRecipe) {
+        let state = self.recipes.entry(recipe.clone()).or_default();
+        state.pending = state.pending.saturating_sub(1);
+        state.ready = true;
+
+        let ways = self.def_sites.entry(recipe.def_site).or_default();
+        ways.one_way = Some(recipe.clone());
+        if let Some(index) = ways.two_way.iter().position(|resident| resident == recipe) {
+            ways.two_way.remove(index);
+        }
+        ways.two_way.insert(0, recipe.clone());
+        ways.two_way.truncate(2);
+    }
+
+    /// Closes one failed recipe without publishing it to a Ready directory.
+    pub(super) fn mark_failed(&mut self, recipe: &ReadyCellRecipe) {
+        if let Some(state) = self.recipes.get_mut(recipe) {
+            state.pending = state.pending.saturating_sub(1);
+        }
+    }
+}
+
 /// The per-worker in-thread memo tier (L0).
 ///
 /// A plain hash map probed by the key's hot xxh3 component and confirmed by
@@ -565,6 +698,73 @@ mod tests {
 
     fn l0_entry() -> MemoL0Entry {
         MemoL0Entry::Payload(entry())
+    }
+
+    fn ready_recipe(node: u32, captures: &[u64]) -> ReadyCellRecipe {
+        ReadyCellRecipe::new(
+            EvalNodeRef::new(
+                crate::eval::EvalModuleId::ROOT,
+                crate::compile::IrId::new(node),
+            ),
+            captures.to_vec().into_boxed_slice(),
+        )
+    }
+
+    #[test]
+    fn ready_cell_census_distinguishes_pending_ready_and_failed_recipes() {
+        let mut census = ReadyCellCensus::default();
+        let recipe = ready_recipe(7, &[11, 13]);
+
+        let first = census.observe(&recipe);
+        assert!(first.unique_recipe);
+        assert!(!first.ready_hit);
+        assert!(!first.pending_overlap);
+
+        let overlap = census.observe(&recipe);
+        assert!(!overlap.unique_recipe);
+        assert!(!overlap.ready_hit);
+        assert!(overlap.pending_overlap);
+
+        census.mark_failed(&recipe);
+        census.mark_ready(&recipe);
+        let repeat = census.observe(&recipe);
+        assert!(repeat.ready_hit);
+        assert!(!repeat.pending_overlap);
+        assert!(repeat.one_way_hit);
+        assert!(repeat.two_way_hit);
+    }
+
+    #[test]
+    fn ready_cell_bounded_simulations_model_one_and_two_ways() {
+        let mut census = ReadyCellCensus::default();
+        let first = ready_recipe(9, &[1]);
+        let second = ready_recipe(9, &[2]);
+
+        let _ = census.observe(&first);
+        census.mark_ready(&first);
+        let _ = census.observe(&second);
+        census.mark_ready(&second);
+
+        let first_again = census.observe(&first);
+        assert!(first_again.ready_hit);
+        assert!(!first_again.one_way_hit);
+        assert!(first_again.two_way_hit);
+    }
+
+    #[test]
+    fn failed_ready_cell_recipe_never_enters_bounded_directories() {
+        let mut census = ReadyCellCensus::default();
+        let recipe = ready_recipe(11, &[]);
+        let first = census.observe(&recipe);
+        assert!(first.unique_recipe);
+        census.mark_failed(&recipe);
+
+        let retried = census.observe(&recipe);
+        assert!(!retried.unique_recipe);
+        assert!(!retried.ready_hit);
+        assert!(!retried.pending_overlap);
+        assert!(!retried.one_way_hit);
+        assert!(!retried.two_way_hit);
     }
 
     #[test]

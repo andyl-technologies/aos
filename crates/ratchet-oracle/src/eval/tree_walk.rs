@@ -651,6 +651,9 @@ pub struct TreeWalk {
     // Global admitted-key census under `AOS_NIX_MEMO_STATS`; shared by all
     // parallel workers and absent from ordinary parity/performance runs.
     memo_economics: Option<Arc<memo::MemoEconomicsCensus>>,
+    // Worker-local raw-identity Ready-cell census under `AOS_NIX_MEMO_STATS`.
+    // This shadow directory never serves hits or retains evaluator values.
+    ready_cell_census: Option<memo::ReadyCellCensus>,
     // Per-def-site static admission decisions for the content memo, computed
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the

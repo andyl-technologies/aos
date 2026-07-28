@@ -44,7 +44,8 @@ use super::force_identity::CapturedFreeVariableDependency;
 use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
-    MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry, SharedMemoTable,
+    MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
+    ReadyCellCandidate, ReadyCellRecipe, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -140,21 +141,36 @@ impl TreeWalk {
         if !tiers_active && !stats_enabled {
             return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
+        let ready_cell_candidate = self.ready_cell_candidate_for_thunk(thunk);
+        if let Some(candidate) = ready_cell_candidate.as_ref() {
+            self.observe_ready_cell_candidate(candidate);
+        }
         let key_started = stats_enabled.then(Instant::now);
         let candidate = self.memo_candidate_for_thunk(thunk);
         self.record_memo_key_timing(key_started);
         let Some(candidate) = candidate else {
-            return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
+            return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
+                Ok(value) => {
+                    self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
+                    Err(error)
+                }
+            };
         };
         self.observe_memo_potential_hit(&candidate);
         if !tiers_active {
             return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
                 Ok(value) => {
                     self.mark_memo_recipe_ready(&candidate);
+                    self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
                     Ok(value)
                 }
                 Err(error) => {
                     self.mark_memo_recipe_failed(&candidate);
+                    self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
                     Err(error)
                 }
             };
@@ -165,6 +181,7 @@ impl TreeWalk {
                 if stats_enabled {
                     self.mark_memo_recipe_failed(&candidate);
                 }
+                self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
                 return Err(error);
             }
         };
@@ -175,12 +192,14 @@ impl TreeWalk {
                     if stats_enabled {
                         self.mark_memo_recipe_failed(&candidate);
                     }
+                    self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
                     return Err(error);
                 }
             };
             if stats_enabled {
                 self.mark_memo_recipe_ready(&candidate);
             }
+            self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
             return Ok(value);
         }
         let cursor = self.impure_input_trace_cursor();
@@ -190,16 +209,159 @@ impl TreeWalk {
                 if stats_enabled {
                     self.mark_memo_recipe_failed(&candidate);
                 }
+                self.mark_ready_cell_candidate_failed(ready_cell_candidate.as_ref());
                 return Err(error);
             }
         };
         if stats_enabled {
             self.mark_memo_recipe_ready(&candidate);
         }
+        self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
         let record_started = stats_enabled.then(Instant::now);
         self.memo_admit(&candidate, value, cursor);
         self.record_memo_record_timing(record_started);
         Ok(value)
+    }
+
+    /// Derives a cheap worker-local recipe from direct static slot captures.
+    ///
+    /// The recipe intentionally uses relocation-sensitive raw words. It
+    /// declines dynamic scopes, effectful or lookup-unsafe bodies, and static
+    /// select/has-attr projections: those cases need a stronger equivalence
+    /// proof than pointer identity of the projection receiver.
+    fn ready_cell_candidate_for_thunk(&mut self, thunk: &EvalThunk) -> Option<ReadyCellCandidate> {
+        let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
+            return None;
+        };
+        if self.ready_cell_census.is_none() {
+            return None;
+        }
+        if !thunk.with_scope_env()?.scopes().is_empty()
+            || !thunk.scoped_global_env()?.scopes().is_empty()
+        {
+            self.stats.memo_economics.ready_cell_dynamic_scope_declines = self
+                .stats
+                .memo_economics
+                .ready_cell_dynamic_scope_declines
+                .saturating_add(1);
+            return None;
+        }
+
+        let cached_cost = self
+            .ready_cell_census
+            .as_ref()
+            .and_then(|census| census.static_cost(*body));
+        let static_cost_units = match cached_cost {
+            Some(cost) => cost,
+            None => {
+                let cost = self.memo_static_cost(*body);
+                if let Some(census) = self.ready_cell_census.as_mut() {
+                    census.remember_static_cost(*body, cost);
+                }
+                cost
+            }
+        };
+        let Some(static_cost_units) = static_cost_units else {
+            self.stats
+                .memo_economics
+                .ready_cell_effect_or_unsafe_declines = self
+                .stats
+                .memo_economics
+                .ready_cell_effect_or_unsafe_declines
+                .saturating_add(1);
+            return None;
+        };
+        if static_cost_units < self.options.memo_options().min_cost {
+            return None;
+        }
+
+        let env = self.captured_env_ref(env);
+        let dependencies = {
+            let module = self.modules.get(body.module().index())?;
+            Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())?
+        };
+        let mut captures = Vec::new();
+        captures.try_reserve_exact(dependencies.len()).ok()?;
+        for dependency in dependencies {
+            let CapturedFreeVariableDependency::Slot { frame_index, slot } = dependency else {
+                self.stats.memo_economics.ready_cell_non_slot_declines = self
+                    .stats
+                    .memo_economics
+                    .ready_cell_non_slot_declines
+                    .saturating_add(1);
+                return None;
+            };
+            let value = self.env_ref_value_at_index(env, frame_index, slot)?;
+            captures.push(value.relocation_sensitive_identity_bits());
+        }
+        Some(ReadyCellCandidate {
+            recipe: ReadyCellRecipe::new(*body, captures.into_boxed_slice()),
+            static_cost_units,
+        })
+    }
+
+    /// Records one exact recipe observation and bounded-directory projections.
+    fn observe_ready_cell_candidate(&mut self, candidate: &ReadyCellCandidate) {
+        let Some(census) = self.ready_cell_census.as_mut() else {
+            return;
+        };
+        let observation = census.observe(&candidate.recipe);
+        let arity = u64::try_from(candidate.recipe.arity()).unwrap_or(u64::MAX);
+        let cost = u64::from(candidate.static_cost_units);
+        let stats = &mut self.stats.memo_economics;
+        stats.ready_cell_candidates = stats.ready_cell_candidates.saturating_add(1);
+        stats.ready_cell_unique_recipes = stats
+            .ready_cell_unique_recipes
+            .saturating_add(u64::from(observation.unique_recipe));
+        stats.ready_cell_ready_hits = stats
+            .ready_cell_ready_hits
+            .saturating_add(u64::from(observation.ready_hit));
+        stats.ready_cell_pending_overlaps = stats
+            .ready_cell_pending_overlaps
+            .saturating_add(u64::from(observation.pending_overlap));
+        stats.ready_cell_recipe_slots = stats.ready_cell_recipe_slots.saturating_add(arity);
+        if observation.unique_recipe {
+            stats.ready_cell_unique_recipe_slots =
+                stats.ready_cell_unique_recipe_slots.saturating_add(arity);
+        }
+        stats.ready_cell_max_recipe_arity = stats.ready_cell_max_recipe_arity.max(arity);
+        stats.ready_cell_one_way_hits = stats
+            .ready_cell_one_way_hits
+            .saturating_add(u64::from(observation.one_way_hit));
+        stats.ready_cell_two_way_hits = stats
+            .ready_cell_two_way_hits
+            .saturating_add(u64::from(observation.two_way_hit));
+        if observation.ready_hit {
+            stats.ready_cell_ready_static_cost_units = stats
+                .ready_cell_ready_static_cost_units
+                .saturating_add(cost);
+        }
+        if observation.one_way_hit {
+            stats.ready_cell_one_way_static_cost_units = stats
+                .ready_cell_one_way_static_cost_units
+                .saturating_add(cost);
+        }
+        if observation.two_way_hit {
+            stats.ready_cell_two_way_static_cost_units = stats
+                .ready_cell_two_way_static_cost_units
+                .saturating_add(cost);
+        }
+    }
+
+    /// Marks a shadow Ready-cell candidate reusable after successful force publication.
+    fn mark_ready_cell_candidate_ready(&mut self, candidate: Option<&ReadyCellCandidate>) {
+        let (Some(census), Some(candidate)) = (self.ready_cell_census.as_mut(), candidate) else {
+            return;
+        };
+        census.mark_ready(&candidate.recipe);
+    }
+
+    /// Closes a failed shadow Ready-cell force without publishing a result.
+    fn mark_ready_cell_candidate_failed(&mut self, candidate: Option<&ReadyCellCandidate>) {
+        let (Some(census), Some(candidate)) = (self.ready_cell_census.as_mut(), candidate) else {
+            return;
+        };
+        census.mark_failed(&candidate.recipe);
     }
 
     /// Returns the shared L1 table when this evaluation carries one.

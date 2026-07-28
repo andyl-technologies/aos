@@ -53,6 +53,21 @@ pub struct MemoEconomicsStats {
     pub(crate) effect_or_unsafe_declines: u64,
     pub(crate) dynamic_scope_declines: u64,
     pub(crate) unknown_capture_declines: u64,
+    pub(crate) ready_cell_candidates: u64,
+    pub(crate) ready_cell_unique_recipes: u64,
+    pub(crate) ready_cell_ready_hits: u64,
+    pub(crate) ready_cell_pending_overlaps: u64,
+    pub(crate) ready_cell_recipe_slots: u64,
+    pub(crate) ready_cell_unique_recipe_slots: u64,
+    pub(crate) ready_cell_max_recipe_arity: u64,
+    pub(crate) ready_cell_one_way_hits: u64,
+    pub(crate) ready_cell_two_way_hits: u64,
+    pub(crate) ready_cell_ready_static_cost_units: u64,
+    pub(crate) ready_cell_one_way_static_cost_units: u64,
+    pub(crate) ready_cell_two_way_static_cost_units: u64,
+    pub(crate) ready_cell_effect_or_unsafe_declines: u64,
+    pub(crate) ready_cell_dynamic_scope_declines: u64,
+    pub(crate) ready_cell_non_slot_declines: u64,
     pub(crate) key_samples: u64,
     pub(crate) key_nanos: u64,
     pub(crate) probe_samples: u64,
@@ -121,6 +136,81 @@ impl MemoEconomicsStats {
     /// Returns candidates declined because a captured value has no stable hash.
     pub const fn unknown_capture_declines(&self) -> u64 {
         self.unknown_capture_declines
+    }
+
+    /// Returns exact raw-identity recipes observed by the Ready-cell census.
+    pub const fn ready_cell_candidates(&self) -> u64 {
+        self.ready_cell_candidates
+    }
+
+    /// Returns distinct exact raw-identity recipes observed by each worker.
+    pub const fn ready_cell_unique_recipes(&self) -> u64 {
+        self.ready_cell_unique_recipes
+    }
+
+    /// Returns repeats whose exact worker-local recipe was already Ready.
+    pub const fn ready_cell_ready_hits(&self) -> u64 {
+        self.ready_cell_ready_hits
+    }
+
+    /// Returns repeats overlapping an unfinished exact worker-local recipe.
+    pub const fn ready_cell_pending_overlaps(&self) -> u64 {
+        self.ready_cell_pending_overlaps
+    }
+
+    /// Returns captured-slot arity summed across all observed recipes.
+    pub const fn ready_cell_recipe_slots(&self) -> u64 {
+        self.ready_cell_recipe_slots
+    }
+
+    /// Returns captured-slot arity summed across distinct recipes.
+    pub const fn ready_cell_unique_recipe_slots(&self) -> u64 {
+        self.ready_cell_unique_recipe_slots
+    }
+
+    /// Returns the largest captured-slot arity observed by any worker.
+    pub const fn ready_cell_max_recipe_arity(&self) -> u64 {
+        self.ready_cell_max_recipe_arity
+    }
+
+    /// Returns hits in a one-entry per-def-site Ready-directory simulation.
+    pub const fn ready_cell_one_way_hits(&self) -> u64 {
+        self.ready_cell_one_way_hits
+    }
+
+    /// Returns hits in a two-entry per-def-site Ready-directory simulation.
+    pub const fn ready_cell_two_way_hits(&self) -> u64 {
+        self.ready_cell_two_way_hits
+    }
+
+    /// Returns static cost units avoided by the unbounded Ready simulation.
+    pub const fn ready_cell_ready_static_cost_units(&self) -> u64 {
+        self.ready_cell_ready_static_cost_units
+    }
+
+    /// Returns static cost units avoided by the one-way simulation.
+    pub const fn ready_cell_one_way_static_cost_units(&self) -> u64 {
+        self.ready_cell_one_way_static_cost_units
+    }
+
+    /// Returns static cost units avoided by the two-way simulation.
+    pub const fn ready_cell_two_way_static_cost_units(&self) -> u64 {
+        self.ready_cell_two_way_static_cost_units
+    }
+
+    /// Returns Ready-cell candidates declined as effectful or lookup-unsafe.
+    pub const fn ready_cell_effect_or_unsafe_declines(&self) -> u64 {
+        self.ready_cell_effect_or_unsafe_declines
+    }
+
+    /// Returns Ready-cell candidates declined for dynamic scope capture.
+    pub const fn ready_cell_dynamic_scope_declines(&self) -> u64 {
+        self.ready_cell_dynamic_scope_declines
+    }
+
+    /// Returns candidates requiring projections rather than direct slots.
+    pub const fn ready_cell_non_slot_declines(&self) -> u64 {
+        self.ready_cell_non_slot_declines
     }
 
     /// Returns timed key-derivation attempts.
@@ -197,6 +287,55 @@ impl MemoEconomicsStats {
             unknown_capture_declines: self
                 .unknown_capture_declines
                 .saturating_add(other.unknown_capture_declines),
+            ready_cell_candidates: self
+                .ready_cell_candidates
+                .saturating_add(other.ready_cell_candidates),
+            ready_cell_unique_recipes: self
+                .ready_cell_unique_recipes
+                .saturating_add(other.ready_cell_unique_recipes),
+            ready_cell_ready_hits: self
+                .ready_cell_ready_hits
+                .saturating_add(other.ready_cell_ready_hits),
+            ready_cell_pending_overlaps: self
+                .ready_cell_pending_overlaps
+                .saturating_add(other.ready_cell_pending_overlaps),
+            ready_cell_recipe_slots: self
+                .ready_cell_recipe_slots
+                .saturating_add(other.ready_cell_recipe_slots),
+            ready_cell_unique_recipe_slots: self
+                .ready_cell_unique_recipe_slots
+                .saturating_add(other.ready_cell_unique_recipe_slots),
+            ready_cell_max_recipe_arity: if self.ready_cell_max_recipe_arity
+                > other.ready_cell_max_recipe_arity
+            {
+                self.ready_cell_max_recipe_arity
+            } else {
+                other.ready_cell_max_recipe_arity
+            },
+            ready_cell_one_way_hits: self
+                .ready_cell_one_way_hits
+                .saturating_add(other.ready_cell_one_way_hits),
+            ready_cell_two_way_hits: self
+                .ready_cell_two_way_hits
+                .saturating_add(other.ready_cell_two_way_hits),
+            ready_cell_ready_static_cost_units: self
+                .ready_cell_ready_static_cost_units
+                .saturating_add(other.ready_cell_ready_static_cost_units),
+            ready_cell_one_way_static_cost_units: self
+                .ready_cell_one_way_static_cost_units
+                .saturating_add(other.ready_cell_one_way_static_cost_units),
+            ready_cell_two_way_static_cost_units: self
+                .ready_cell_two_way_static_cost_units
+                .saturating_add(other.ready_cell_two_way_static_cost_units),
+            ready_cell_effect_or_unsafe_declines: self
+                .ready_cell_effect_or_unsafe_declines
+                .saturating_add(other.ready_cell_effect_or_unsafe_declines),
+            ready_cell_dynamic_scope_declines: self
+                .ready_cell_dynamic_scope_declines
+                .saturating_add(other.ready_cell_dynamic_scope_declines),
+            ready_cell_non_slot_declines: self
+                .ready_cell_non_slot_declines
+                .saturating_add(other.ready_cell_non_slot_declines),
             key_samples: self.key_samples.saturating_add(other.key_samples),
             key_nanos: self.key_nanos.saturating_add(other.key_nanos),
             probe_samples: self.probe_samples.saturating_add(other.probe_samples),
