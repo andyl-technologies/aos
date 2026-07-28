@@ -252,6 +252,29 @@ avoid both hash tables and source-cell resolution. Allocation-time
 canonicalization is the stronger follow-on because it can avoid the duplicate
 thunk rather than merely skip its body.
 
+A stats-only representation census then partitioned the exact and one-way
+Ready hits by the actual captured environment:
+
+```text
+capture representation   exact Ready hits   one-way hits
+empty                               297,471        297,471
+flat, one slot                      101,829         43,020
+flat, two slots                      36,726          3,422
+flat, more than two slots                 0              0
+linked or hybrid                    267,506        145,632
+total                               703,532        489,545
+```
+
+The run remained byte-identical and the bucket sums exactly matched their
+parent counters. Empty captures supply 60.8 percent of retained one-way hits,
+and their exact and one-way counts are identical because the recipe is only the
+module-qualified def-site. This is the narrowest credible active specialization:
+fuse cached plan state and a direct Ready result for empty-capture sites so one
+module-local lookup replaces capture resolution, recipe construction, the
+second directory lookup, source-thunk resolution, and its Ready-cell load.
+Flat-one adds only 8.8 percent of retained hits and should wait until the empty
+path proves that one cheap lookup can repay these low-cost bodies.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
