@@ -105,6 +105,7 @@ pub struct PluginFingerprintRunnerConfig {
     completion_timeout: Duration,
     second_run_host_load: bool,
     second_run_divergence_control: bool,
+    synchronous_oracle: bool,
     qemu_build_digest: String,
     rust_plugin_build_digest: String,
     rr_switch_quantum: u64,
@@ -144,6 +145,7 @@ impl PluginFingerprintRunnerConfig {
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
             second_run_divergence_control: false,
+            synchronous_oracle: false,
             qemu_build_digest,
             rust_plugin_build_digest,
             rr_switch_quantum: 0,
@@ -218,6 +220,22 @@ impl PluginFingerprintRunnerConfig {
     pub const fn with_second_run_divergence_control(mut self, enabled: bool) -> Self {
         self.second_run_divergence_control = enabled;
         self
+    }
+
+    /// Enables gate-only comparison against the synchronous digest path.
+    ///
+    /// Production callers leave this disabled so all large component digests
+    /// remain off the vCPU thread.
+    #[must_use]
+    pub const fn with_synchronous_oracle(mut self, enabled: bool) -> Self {
+        self.synchronous_oracle = enabled;
+        self
+    }
+
+    /// Returns whether the gate-only synchronous digest oracle is enabled.
+    #[must_use]
+    pub const fn synchronous_oracle(&self) -> bool {
+        self.synchronous_oracle
     }
 
     /// Returns the content digest of the pinned QEMU build.
@@ -370,6 +388,9 @@ impl PluginFingerprintRunner {
         // the Rust plugin is the sole time authority and the fingerprint author.
         let mut plugin = QemuLaunchPluginConfig::new(path_text(&self.config.plugin), RUNNER_SLOT)
             .with_fingerprint(QemuLaunchPluginSwitch::On);
+        if self.config.synchronous_oracle {
+            plugin = plugin.with_fingerprint_oracle(QemuLaunchPluginSwitch::On);
+        }
         let state_dump_path =
             state_dump_target.map(|target| run_directory.join(format!("state-dump-{target}.bin")));
         if let Some(path) = &state_dump_path {
@@ -479,12 +500,8 @@ impl PluginFingerprintRunner {
                     });
                 }
             }
-            let sample = hot_path
-                .fingerprint_sample()
-                .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?
-                .ok_or(PluginFingerprintRunnerError::MissingFingerprintSample {
-                    target_icount: target,
-                })?;
+            let sample =
+                self.wait_for_fingerprint_sample(&hot_path, &mut child, target, reached)?;
             if sample.sample_icount != reached {
                 return Err(
                     PluginFingerprintRunnerError::FingerprintSampleIcountMismatch {
@@ -593,6 +610,52 @@ impl PluginFingerprintRunner {
                 reached_icount: reached,
                 outcome: format!("{outcome:?}"),
             }),
+        }
+    }
+
+    // crucible-lint: allow clippy-disallowed-method -- host timeout bounds digest-worker liveness only.
+    #[allow(clippy::disallowed_methods)]
+    fn wait_for_fingerprint_sample(
+        &self,
+        hot_path: &QemuMappedQuantumShmemHotPath,
+        child: &mut QemuNodeChild,
+        target: u64,
+        reached: u64,
+    ) -> Result<FingerprintSample, PluginFingerprintRunnerError> {
+        let started = Instant::now();
+        loop {
+            if let Some(sample) = hot_path
+                .fingerprint_sample()
+                .map_err(|source| PluginFingerprintRunnerError::MappedHotPath { source })?
+            {
+                if sample.sample_icount == reached {
+                    return Ok(sample);
+                }
+                if sample.sample_icount > reached {
+                    return Err(
+                        PluginFingerprintRunnerError::FingerprintSampleIcountMismatch {
+                            target_icount: target,
+                            reached_icount: reached,
+                            sample_icount: sample.sample_icount,
+                        },
+                    );
+                }
+            }
+            if let Some(status) = child
+                .try_wait_natural_exit()
+                .map_err(|source| PluginFingerprintRunnerError::ChildWait { source })?
+            {
+                return Err(PluginFingerprintRunnerError::ChildExitBeforeBoundary {
+                    target_icount: target,
+                    status: status.to_string(),
+                });
+            }
+            if started.elapsed() >= self.config.completion_timeout {
+                return Err(PluginFingerprintRunnerError::MissingFingerprintSample {
+                    target_icount: target,
+                });
+            }
+            thread::sleep(POLL_INTERVAL);
         }
     }
 

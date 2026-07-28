@@ -89,6 +89,7 @@ const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1: &str = "aarch64-hlt-04c1-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
 const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
@@ -1018,6 +1019,7 @@ pub struct QemuLaunchPluginConfig {
     app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    fingerprint_oracle: QemuLaunchPluginSwitch,
     state_dump: Option<(u64, String)>,
 }
 
@@ -1033,6 +1035,7 @@ impl QemuLaunchPluginConfig {
             app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            fingerprint_oracle: QemuLaunchPluginSwitch::Off,
             state_dump: None,
         }
     }
@@ -1073,6 +1076,16 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
+        self
+    }
+
+    /// Returns a config with gate-only synchronous fingerprint comparison set.
+    ///
+    /// This switch deliberately retains the old vCPU-thread digest only as an
+    /// acceptance oracle. Production launches leave it off.
+    #[must_use]
+    pub fn with_fingerprint_oracle(mut self, oracle: QemuLaunchPluginSwitch) -> Self {
+        self.fingerprint_oracle = oracle;
         self
     }
 
@@ -1123,6 +1136,12 @@ impl QemuLaunchPluginConfig {
         self.fingerprint
     }
 
+    /// Returns the gate-only synchronous fingerprint-oracle switch.
+    #[must_use]
+    pub const fn fingerprint_oracle(&self) -> QemuLaunchPluginSwitch {
+        self.fingerprint_oracle
+    }
+
     /// Returns the fixed inherited setup descriptors.
     #[must_use]
     pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {
@@ -1170,6 +1189,12 @@ impl QemuLaunchPluginConfig {
         // treats an absent fingerprint key as off).
         if self.fingerprint == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
+        }
+        if self.fingerprint_oracle == QemuLaunchPluginSwitch::On {
+            args.push(format!(
+                "{PLUGIN_ARG_FINGERPRINT_ORACLE}={}",
+                self.fingerprint_oracle
+            ));
         }
         if let Some((target_icount, output_path)) = &self.state_dump {
             args.push(format!("{PLUGIN_ARG_STATE_DUMP_TARGET}={target_icount}"));

@@ -11,15 +11,16 @@ use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
+use std::thread::{self, JoinHandle};
 
 use crucible_shmem::{
-    DirectedRing, FingerprintSampleError, FingerprintSampleSlot, FrameEntry, FutexWaitOutcome,
-    MappedDirectedRingMut, MappedSetupRegionAccessError, NodeSlot, NodeSlotError,
-    PreemptionMailboxError, RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER,
-    SchedulerPreemptionKind,
+    DirectedRing, FingerprintSampleSlot, FrameEntry, FutexWaitOutcome, MappedDirectedRingMut,
+    MappedSetupRegionAccessError, NodeSlot, NodeSlotError, PreemptionMailboxError,
+    RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER, SchedulerPreemptionKind,
 };
 use thiserror::Error;
 
+use crate::fingerprint_sampler::CapturedFingerprintSample;
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, FingerprintSamplerError, IdleHotLoopError,
     IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
@@ -230,6 +231,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
                 fingerprint,
+                args.fingerprint_oracle().is_on(),
                 state_dump,
             )
             .map_err(live_callback_registration_error)?;
@@ -382,9 +384,15 @@ impl StableNodeSlotHandle {
 }
 
 /// Stable fingerprint-slot address retained by the setup mapping owner.
+#[derive(Clone, Copy)]
 struct StableFingerprintSlotHandle {
     slot: NonNull<FingerprintSampleSlot>,
 }
+
+// SAFETY: the handle points into the process-lifetime shared mapping retained by
+// `OwnedCallbackRuntimeState`. The worker uses only `FingerprintSampleSlot`'s
+// atomic publication API, whose shared reference is safe across threads.
+unsafe impl Send for StableFingerprintSlotHandle {}
 
 impl StableFingerprintSlotHandle {
     fn new(slot: &FingerprintSampleSlot) -> Self {
@@ -409,7 +417,82 @@ impl StableFingerprintSlotHandle {
 /// per-node [`FingerprintSampleSlot`].
 struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
-    slot: StableFingerprintSlotHandle,
+    worker: LiveFingerprintDigestWorker,
+    last_capture_icount: AtomicU64,
+    capture_submitted: AtomicBool,
+    synchronous_oracle: bool,
+}
+
+/// Bounded owner thread that digests detached captures and publishes samples.
+struct LiveFingerprintDigestWorker {
+    sender: Option<mpsc::SyncSender<CapturedFingerprintSample>>,
+    failed: Arc<Mutex<Option<String>>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl LiveFingerprintDigestWorker {
+    fn spawn(slot: StableFingerprintSlotHandle) -> Result<Self, LiveVcpuTimeCallbackError> {
+        let (sender, receiver) = mpsc::sync_channel::<CapturedFingerprintSample>(1);
+        let failed = Arc::new(Mutex::new(None));
+        let worker_failed = Arc::clone(&failed);
+        let join = thread::Builder::new()
+            .name("crucible-fingerprint-digest".to_owned())
+            .spawn(move || {
+                while let Ok(captured) = receiver.recv() {
+                    let sample = captured.digest();
+                    if let Err(error) = slot.get().publish(&sample) {
+                        let mut failure = match worker_failed.lock() {
+                            Ok(failure) => failure,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        *failure = Some(error.to_string());
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| LiveVcpuTimeCallbackError::FingerprintWorkerSpawn {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            sender: Some(sender),
+            failed,
+            join: Some(join),
+        })
+    }
+
+    fn submit(&self, captured: CapturedFingerprintSample) -> Result<(), LiveVcpuTimeCallbackError> {
+        let failure = match self.failed.lock() {
+            Ok(failure) => failure,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(message) = failure.as_ref() {
+            return Err(LiveVcpuTimeCallbackError::FingerprintWorkerFailed {
+                message: message.clone(),
+            });
+        }
+        drop(failure);
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
+        sender.try_send(captured).map_err(|error| match error {
+            mpsc::TrySendError::Full(_captured) => {
+                LiveVcpuTimeCallbackError::FingerprintWorkerQueueFull
+            }
+            mpsc::TrySendError::Disconnected(_captured) => {
+                LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable
+            }
+        })
+    }
+}
+
+impl Drop for LiveFingerprintDigestWorker {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        if let Some(join) = self.join.take() {
+            let _worker_result = join.join();
+        }
+    }
 }
 
 /// Stable raw view of one directed ring retained by the mapping owner.
@@ -708,20 +791,25 @@ impl LiveVcpuTimeCallbackState {
     /// Binds the resolved fingerprint sampler and this VM's shared-memory slot.
     ///
     /// Called only when the launch enabled `fingerprint=on`; afterwards each
-    /// reached-icount publish first captures and publishes a black-box
-    /// fingerprint sample. `slot` is the per-node
+    /// reached-icount publish captures a black-box fingerprint sample and queues
+    /// its detached preimages to a dedicated digest worker. `slot` is the per-node
     /// [`FingerprintSampleSlot`] retained by the same setup mapping owner as the
     /// node slot and directed rings.
     pub(super) fn attach_fingerprint(
         mut self,
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
-    ) -> Self {
+        synchronous_oracle: bool,
+    ) -> Result<Self, LiveVcpuTimeCallbackError> {
+        let worker = LiveFingerprintDigestWorker::spawn(StableFingerprintSlotHandle::new(slot))?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
-            slot: StableFingerprintSlotHandle::new(slot),
+            worker,
+            last_capture_icount: AtomicU64::new(0),
+            capture_submitted: AtomicBool::new(false),
+            synchronous_oracle,
         });
-        self
+        Ok(self)
     }
 
     /// Binds the optional terminal raw-state exporter to this pinned callback state.
@@ -730,16 +818,16 @@ impl LiveVcpuTimeCallbackState {
         self
     }
 
-    /// Captures and publishes a black-box fingerprint sample stamped at `icount`.
+    /// Captures and queues a black-box fingerprint sample stamped at `icount`.
     ///
     /// A no-op unless the launch enabled `fingerprint=on`. Callers invoke it only
     /// when the published icount equals the host-set scheduler ceiling — the
-    /// host's ceiling is the sample request, so the guest-RAM SHA-256 runs once
-    /// per host-driven quantum boundary rather than on every intermediate
-    /// progress publish (which would make the boundary hash dominate wall time).
-    /// It runs immediately before the reached-icount publish so the host's
-    /// post-`finish_quantum` read observes an already-published, quiescent
-    /// sample. The vCPU count is `self.vcpu_count` — the install-time
+    /// host's ceiling is the sample request, so the dirty-tracked immutable copy
+    /// runs once per host-driven quantum boundary rather than on every
+    /// intermediate progress publish. SHA-256 runs on the worker after this
+    /// callback returns, allowing the guest to resume; the host waits
+    /// independently for the matching sample coordinate. The vCPU count is
+    /// `self.vcpu_count` — the install-time
     /// `smp_vcpus` QEMU reported to the plugin (`execution_model.smp_vcpus()`),
     /// bound into this callback state at construction — so the sample covers
     /// every configured vCPU. Multi-vCPU aggregation of the sampled material is
@@ -748,22 +836,26 @@ impl LiveVcpuTimeCallbackState {
     /// # Errors
     ///
     /// Returns [`LiveVcpuTimeCallbackError::FingerprintSample`] when boundary
-    /// introspection or assembly fails, or
-    /// [`LiveVcpuTimeCallbackError::FingerprintPublish`] when the assembled
-    /// sample fails shared-memory slot publication.
+    /// introspection or capture fails, or a worker error when the bounded digest
+    /// worker cannot accept the exact-boundary capture.
     fn publish_fingerprint_sample(&self, icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
             return Ok(());
         };
-        let sample = fingerprint
+        if fingerprint.capture_submitted.load(Ordering::Acquire)
+            && fingerprint.last_capture_icount.load(Ordering::Acquire) == icount
+        {
+            return Ok(());
+        }
+        let captured = fingerprint
             .sampling
-            .sample(icount, self.vcpu_count)
+            .capture(icount, self.vcpu_count, fingerprint.synchronous_oracle)
             .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { source })?;
+        fingerprint.worker.submit(captured)?;
         fingerprint
-            .slot
-            .get()
-            .publish(&sample)
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintPublish { source })?;
+            .last_capture_icount
+            .store(icount, Ordering::Release);
+        fingerprint.capture_submitted.store(true, Ordering::Release);
         if let Some(state_dump) = self.state_dump.as_ref() {
             state_dump.request_if_target(icount).map_err(|source| {
                 LiveVcpuTimeCallbackError::RawStateDump {
@@ -1735,11 +1827,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying plugin fingerprint sampler error.
         source: FingerprintSamplerError,
     },
-    /// Publishing the boundary fingerprint sample into shared memory failed.
-    #[error("boundary fingerprint publish failed: {source}")]
-    FingerprintPublish {
-        /// Underlying shared-memory fingerprint slot error.
-        source: FingerprintSampleError,
+    /// The dedicated fingerprint digest worker could not be created.
+    #[error("fingerprint digest worker could not start: {message}")]
+    FingerprintWorkerSpawn {
+        /// Host thread-spawn diagnostic.
+        message: String,
+    },
+    /// The bounded fingerprint digest queue still contains the prior boundary.
+    #[error("fingerprint digest worker queue is full at a new sample boundary")]
+    FingerprintWorkerQueueFull,
+    /// The fingerprint digest worker is no longer accepting captures.
+    #[error("fingerprint digest worker is unavailable")]
+    FingerprintWorkerUnavailable,
+    /// The fingerprint digest worker failed while publishing a prior sample.
+    #[error("fingerprint digest worker failed: {message}")]
+    FingerprintWorkerFailed {
+        /// Stable publication failure diagnostic.
+        message: String,
     },
     /// Terminal raw-state export setup or boundary activation failed.
     #[error("terminal raw-state dump failed: {message}")]

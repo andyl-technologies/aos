@@ -172,7 +172,7 @@ diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -931,6 +931,124 @@ QEMU_PLUGIN_API
+@@ -931,6 +931,146 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
  
@@ -199,6 +199,28 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_device_state_schema_sha256(
 +    uint8_t digest_out[32], uint64_t *sections_out);
++
++/**
++ * Capture length-framed RAM and device-state fingerprint material.
++ *
++ * The caller must release each non-NULL output with
++ * qemu_plugin_crucible_fingerprint_capture_free().
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_capture(
++    uint8_t **ram_material_out, uint64_t *ram_material_length_out,
++    uint64_t *ram_bytes_out, uint8_t **device_material_out,
++    uint64_t *device_material_length_out, uint64_t *device_bytes_out);
++
++/** Digest one immutable capture buffer with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
++                                      uint64_t material_length,
++                                      uint8_t digest_out[32]);
++
++/** Release one buffer returned by the fingerprint capture export. */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_fingerprint_capture_free(void *material);
 +
 +/** Return the observed aggregate instruction count, or zero if unavailable. */
 +QEMU_PLUGIN_API
@@ -456,10 +478,11 @@ diff --git a/migration/savevm.h b/migration/savevm.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -39,8 +39,17 @@
+@@ -39,8 +39,18 @@
  #include "qemu/main-loop.h"
  #include "qemu/plugin.h"
  #include "qemu/log.h"
++#include "qapi/error.h"
 +#include "io/channel-buffer.h"
 +#include "migration/qemu-file.h"
 +#include "migration/savevm.h"
@@ -474,7 +497,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -462,6 +471,321 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -462,6 +472,509 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -654,6 +677,11 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    uint64_t bytes;
 +};
 +
++struct CrucibleCapturedRam {
++    GByteArray *material;
++    uint64_t bytes;
++};
++
 +static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
 +{
 +    uint8_t encoded[8];
@@ -672,6 +700,44 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    if (length != 0) {
 +        g_checksum_update(checksum, bytes, length);
 +    }
++}
++
++static void crucible_byte_array_u64(GByteArray *material, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_byte_array_append(material, encoded, sizeof(encoded));
++}
++
++static void crucible_byte_array_bytes(GByteArray *material,
++                                      const void *bytes, size_t length)
++{
++    crucible_byte_array_u64(material, length);
++    if (length != 0) {
++        g_byte_array_append(material, bytes, length);
++    }
++}
++
++static int crucible_capture_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleCapturedRam *state = opaque;
++
++    if (!block->host || !block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++    crucible_byte_array_bytes(state->material, block->idstr,
++                              strlen(block->idstr));
++    crucible_byte_array_u64(state->material, block->used_length);
++    crucible_byte_array_bytes(state->material, block->host,
++                              block->used_length);
++    state->bytes += block->used_length;
++    return 0;
 +}
 +
 +static int crucible_sha256_guest_ram_block(RAMBlock *block, void *opaque)
@@ -780,6 +846,151 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    uint8_t digest_out[32], uint64_t *sections_out)
 +{
 +    return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
++}
++
++int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
++                                      uint64_t material_length,
++                                      uint8_t digest_out[32])
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    gsize digest_length = 32;
++
++    if (!digest_out || (material_length != 0 && !material) ||
++        material_length > G_MAXSIZE) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    if (material_length != 0) {
++        g_checksum_update(checksum, material, material_length);
++    }
++    g_checksum_get_digest(checksum, digest_out, &digest_length);
++    if (digest_length != 32) {
++        memset(digest_out, 0, 32);
++        return -EIO;
++    }
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_capture(
++    uint8_t **ram_material_out, uint64_t *ram_material_length_out,
++    uint64_t *ram_bytes_out, uint8_t **device_material_out,
++    uint64_t *device_material_length_out, uint64_t *device_bytes_out)
++{
++    g_autoptr(GByteArray) ram_material = NULL;
++    g_autoptr(GByteArray) device_material = NULL;
++    QIOChannelBuffer *buffer = NULL;
++    QEMUFile *file = NULL;
++    Error *local_err = NULL;
++    struct CrucibleCapturedRam ram;
++    bool acquired_bql = false;
++    bool started_dirty_tracking = false;
++    int close_status;
++    int status = 0;
++
++    if (!ram_material_out || !ram_material_length_out || !ram_bytes_out ||
++        !device_material_out || !device_material_length_out ||
++        !device_bytes_out) {
++        return -EINVAL;
++    }
++    *ram_material_out = NULL;
++    *ram_material_length_out = 0;
++    *ram_bytes_out = 0;
++    *device_material_out = NULL;
++    *device_material_length_out = 0;
++    *device_bytes_out = 0;
++
++    /*
++     * The safe fingerprint observer invokes this export at the exact scheduler
++     * ceiling on the single-threaded RR vCPU owner. Acquire the BQL explicitly
++     * before changing dirty-log state or serializing VMState. Dirty tracking
++     * supplies the write-protected capture epoch; the immutable copies remain
++     * valid after tracking ends, the BQL is released, and the guest resumes.
++     */
++    if (!bql_locked()) {
++        bql_lock();
++        acquired_bql = true;
++    }
++    if (!(global_dirty_tracking & GLOBAL_DIRTY_MIGRATION)) {
++        if (!memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION,
++                                           &local_err)) {
++            error_free(local_err);
++            status = -EIO;
++            goto out;
++        }
++        started_dirty_tracking = true;
++    }
++
++    ram_material = g_byte_array_new();
++    device_material = g_byte_array_new();
++    if (!ram_material || !device_material) {
++        status = -ENOMEM;
++        goto out;
++    }
++    ram.material = ram_material;
++    ram.bytes = 0;
++    crucible_byte_array_bytes(ram_material, "crucible.qemu.guest-ram.v1",
++                              strlen("crucible.qemu.guest-ram.v1"));
++    qemu_ram_foreach_block(crucible_capture_guest_ram_block, &ram);
++
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0) {
++        crucible_byte_array_bytes(device_material,
++                                  "crucible.qemu.device-vmstate.v1",
++                                  strlen("crucible.qemu.device-vmstate.v1"));
++        crucible_byte_array_bytes(device_material, buffer->data,
++                                  buffer->usage);
++        *ram_material_length_out = ram_material->len;
++        *ram_bytes_out = ram.bytes;
++        *device_material_length_out = device_material->len;
++        *device_bytes_out = buffer->usage;
++        *ram_material_out = g_byte_array_free(g_steal_pointer(&ram_material),
++                                              false);
++        *device_material_out =
++            g_byte_array_free(g_steal_pointer(&device_material), false);
++    }
++
++out:
++    if (file) {
++        close_status = qemu_fclose(file);
++        if (status == 0 && close_status != 0) {
++            status = close_status;
++        }
++    }
++    if (buffer) {
++        object_unref(OBJECT(buffer));
++    }
++    if (started_dirty_tracking) {
++        memory_global_dirty_log_stop(GLOBAL_DIRTY_MIGRATION);
++    }
++    if (acquired_bql) {
++        bql_unlock();
++    }
++    if (status != 0) {
++        g_clear_pointer(ram_material_out, g_free);
++        g_clear_pointer(device_material_out, g_free);
++        *ram_material_length_out = 0;
++        *ram_bytes_out = 0;
++        *device_material_length_out = 0;
++        *device_bytes_out = 0;
++    }
++    return status;
++}
++
++void qemu_plugin_crucible_fingerprint_capture_free(void *material)
++{
++    g_free(material);
 +}
 +
 +uint64_t qemu_plugin_crucible_icount(void)

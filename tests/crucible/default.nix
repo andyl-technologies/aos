@@ -2680,6 +2680,17 @@ in rec {
         phase3.gates.adversarialDeterminism.rawGate
       ];
     };
+    fingerprintDigestOffload = import ./phase7-fingerprint-digest-offload.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.fingerprintDigestOffload";
+      taskIds = ["T-PERF-30"];
+      liveFingerprint = phase2.qemuLivePluginFingerprint;
+      fingerprintHelpers = phase1.rrFingerprintHelpers;
+      dependencies = [
+        phase1.gates.singleVmFingerprint.rawGate
+        phase2.qemuLivePluginFingerprint
+      ];
+    };
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
@@ -2717,18 +2728,19 @@ in rec {
             "T-PERF-27"
             "T-PERF-28"
             "T-PERF-29"
+            "T-PERF-30"
           ];
           openTaskIds = [
-            "T-PERF-30"
             "T-PERF-31"
             "T-PERF-32"
             "T-PERF-33"
             "T-PERF-34"
           ];
           hostParallelism = phase7.qemuHostParallel;
-          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel];
+          fingerprintOffload = phase7.fingerprintDigestOffload;
+          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel phase7.fingerprintDigestOffload];
         };
-        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel];
+        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload];
       };
       e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";

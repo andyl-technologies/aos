@@ -128,6 +128,22 @@
       needle = "qemu_plugin_crucible_device_state_sha256";
     }
     {
+      label = "dirty-tracked immutable fingerprint capture export";
+      needle = "qemu_plugin_crucible_fingerprint_capture";
+    }
+    {
+      label = "fingerprint capture dirty tracking";
+      needle = "memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION";
+    }
+    {
+      label = "fingerprint capture explicit BQL ownership";
+      needle = "bql_lock();";
+    }
+    {
+      label = "worker-safe immutable-buffer SHA-256 export";
+      needle = "qemu_plugin_crucible_sha256_bytes";
+    }
+    {
       label = "recursive device VMState schema digest";
       needle = "qemu_savevm_crucible_schema_sha256";
     }
@@ -257,6 +273,22 @@
     {
       label = "SHA-256 component assertion";
       needle = "crypto_component_digests_are_32_bytes=true";
+    }
+    {
+      label = "dirty-tracked capture assertion";
+      needle = "fingerprint_capture_uses_dirty_tracking=true";
+    }
+    {
+      label = "BQL-held capture assertion";
+      needle = "fingerprint_capture_acquires_bql=true";
+    }
+    {
+      label = "existing dirty owner preservation assertion";
+      needle = "fingerprint_capture_preserves_existing_dirty_owner=true";
+    }
+    {
+      label = "captured and synchronous digest equality assertion";
+      needle = "captured_component_digests_match_synchronous=true";
     }
     {
       label = "schema digest/count assertion";

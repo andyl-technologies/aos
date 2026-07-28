@@ -162,8 +162,11 @@ pub use fingerprint_sampler::{
     FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA,
     FINGERPRINT_FAILURE_RAM, FingerprintSamplerError, PluginFingerprintDigester,
     PluginFingerprintSampling, QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
-    QemuDigestFn, assemble_fingerprint_sample,
+    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_FREE_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_SHA256_BYTES_SYMBOL, QemuDigestFn, QemuFingerprintCaptureFn,
+    QemuFingerprintCaptureFreeFn, QemuSha256BytesFn, assemble_fingerprint_sample,
 };
 pub use handshake::{
     PluginControlHandshake, PluginHandshakeError, perform_plugin_handshake,

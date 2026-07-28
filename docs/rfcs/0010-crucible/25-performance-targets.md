@@ -1046,6 +1046,22 @@ peak overlap and wall time measured around the real owner-thread dispatch. The
 perf-bench result imports that live `P` and timing evidence rather than treating
 the modeled cost projection as the implementation proof.
 
+T-PERF-30 is additionally completed by
+`checks.crucible.phase7.fingerprintDigestOffload`. QEMU captures the exact
+length-framed writable-RAM and non-RAM VMState preimages while holding the BQL
+and a migration dirty-log owner, preserving any pre-existing owner, then returns
+detached immutable allocations. The vCPU callback submits those allocations to
+a bounded dedicated worker and publishes reached icount without running their
+SHA-256 computations; duplicate callback visits to the same ceiling do not
+resubmit the boundary. The production live-QEMU corpus runs with the synchronous
+oracle disabled under adversarial host load. A separate acceptance-only run
+enables the former synchronous component digests at every boundary and fails
+unless all five offloaded samples are byte-identical. The corpus retains the
+periodic, frame-delivery, fault-activation, and terminal coordinates at
+`4000000, 4000001, 8000000, 8000001, 12000000`. The perf-bench result imports
+the Class-A admission, exact-capture, corpus-identity, cadence, coordinate, and
+forced-boundary evidence from this real-backend gate.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1156,7 +1172,7 @@ constant-factor trim on a serial run.
   `max_host_workers = 1` and `= N` are bit-identical in `S`, `T`, and the
   canonical log; report realized `P` measured from this path. — satisfies
   [PERF-29]; spec §25.12.2.
-- [ ] **T-PERF-30** Move execution-fingerprint digestion off the vCPU thread:
+- [x] **T-PERF-30** Move execution-fingerprint digestion off the vCPU thread:
   capture the sample at its exact icount coordinate under write-protection or
   dirty-page tracking, resume the guest, and digest on a worker. Assert
   byte-identical digests versus the synchronous path over the fingerprint corpus,

@@ -227,9 +227,9 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +void qemu_plugin_crucible_vmstate_snapshot_free(
 +    struct qemu_plugin_crucible_vmstate_snapshot *snapshot);
 +
- /** Original raw Unix process argc/argv identity captured at process entry. */
- struct qemu_plugin_crucible_process_argv_attestation {
-     uint32_t version;
+ /**
+  * Capture length-framed RAM and device-state fingerprint material.
+  *
 diff --git a/migration/migration.c b/migration/migration.c
 --- a/migration/migration.c
 +++ b/migration/migration.c
@@ -414,7 +414,7 @@ diff --git a/migration/savevm.c b/migration/savevm.c
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -36,15 +36,18 @@
+@@ -36,6 +36,7 @@
   */
  
  #include "qemu/osdep.h"
@@ -422,6 +422,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "qemu/main-loop.h"
  #include "qemu/plugin.h"
  #include "qemu/log.h"
+@@ -43,9 +44,11 @@
  #include "io/channel-buffer.h"
  #include "migration/qemu-file.h"
  #include "migration/savevm.h"
@@ -433,7 +434,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
-@@ -932,6 +935,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -976,6 +979,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
      return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
  }
  
@@ -790,9 +791,9 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    }
 +}
 +
- int qemu_plugin_crucible_process_argv_attestation(
-     struct qemu_plugin_crucible_process_argv_attestation *out)
- {
+ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
+                                       uint64_t material_length,
+                                       uint8_t digest_out[32])
 diff --git a/system/cpus.c b/system/cpus.c
 --- a/system/cpus.c
 +++ b/system/cpus.c

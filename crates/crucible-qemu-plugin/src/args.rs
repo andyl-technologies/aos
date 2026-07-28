@@ -40,6 +40,8 @@ pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
+/// The optional gate-only synchronous fingerprint-oracle switch argument key.
+pub const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 /// The optional terminal raw-state dump target-icount argument key.
 pub const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
 /// The optional terminal raw-state dump output-path argument key.
@@ -77,6 +79,7 @@ pub struct PluginArgs {
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
+    fingerprint_oracle: PluginSwitch,
     state_dump: Option<PluginStateDumpConfig>,
 }
 
@@ -99,6 +102,10 @@ impl PluginArgs {
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
+        let fingerprint_oracle = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT_ORACLE)?;
+        if fingerprint_oracle.is_on() && !fingerprint.is_on() {
+            return Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint);
+        }
         let state_dump = parse_state_dump(&parsed, fingerprint)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
@@ -111,6 +118,7 @@ impl PluginArgs {
             app_random,
             coverage,
             fingerprint,
+            fingerprint_oracle,
             state_dump,
         })
     }
@@ -161,6 +169,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn fingerprint(&self) -> PluginSwitch {
         self.fingerprint
+    }
+
+    /// Returns whether gate-only synchronous fingerprint comparison is enabled.
+    #[must_use]
+    pub const fn fingerprint_oracle(&self) -> PluginSwitch {
+        self.fingerprint_oracle
     }
 
     /// Returns the optional exact-boundary terminal raw-state dump request.
@@ -300,6 +314,9 @@ pub enum PluginArgsParseError {
     /// A terminal state dump was requested without fingerprint boundary sampling.
     #[error("plugin terminal state dump requires `fingerprint=on`")]
     StateDumpWithoutFingerprint,
+    /// The synchronous oracle was requested without fingerprint boundary sampling.
+    #[error("plugin fingerprint oracle requires `fingerprint=on`")]
+    FingerprintOracleWithoutFingerprint,
     /// The terminal state-dump target was not a nonzero instruction count.
     #[error("plugin state-dump target is invalid: `{value}`")]
     InvalidStateDumpTarget {
@@ -488,6 +505,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WHITEBOX_SETUP
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
+            | PLUGIN_ARG_FINGERPRINT_ORACLE
             | PLUGIN_ARG_STATE_DUMP_TARGET
             | PLUGIN_ARG_STATE_DUMP_PATH
     ) || app_random::is_key(key)

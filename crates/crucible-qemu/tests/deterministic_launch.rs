@@ -1337,9 +1337,16 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
     );
     // Enabled appends the fingerprint key after coverage.
     assert_eq!(
-        base.with_fingerprint(QemuLaunchPluginSwitch::On)
+        base.clone()
+            .with_fingerprint(QemuLaunchPluginSwitch::On)
             .plugin_args_raw(),
         "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
+    );
+    assert_eq!(
+        base.with_fingerprint(QemuLaunchPluginSwitch::On)
+            .with_fingerprint_oracle(QemuLaunchPluginSwitch::On)
+            .plugin_args_raw(),
+        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on,fingerprint_oracle=on"
     );
 }
 

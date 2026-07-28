@@ -369,7 +369,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
   * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
-@@ -1417,6 +1435,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
+@@ -1439,6 +1457,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
  

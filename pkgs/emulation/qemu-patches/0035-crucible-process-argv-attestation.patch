@@ -16,9 +16,9 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1413,6 +1413,19 @@ QEMU_PLUGIN_API
- int qemu_plugin_crucible_device_state_schema_sha256(
-     uint8_t digest_out[32], uint64_t *sections_out);
+@@ -1435,6 +1435,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
+ QEMU_PLUGIN_API
+ void qemu_plugin_crucible_fingerprint_capture_free(void *material);
  
 +/** Original raw Unix process argc/argv identity captured at process entry. */
 +struct qemu_plugin_crucible_process_argv_attestation {
@@ -39,8 +39,8 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -932,6 +932,17 @@ int qemu_plugin_crucible_device_state_schema_sha256(
-     return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
+@@ -1121,6 +1121,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
+     g_free(material);
  }
  
 +int qemu_plugin_crucible_process_argv_attestation(

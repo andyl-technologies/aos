@@ -15,6 +15,7 @@
 //! CRUCIBLE_FP_TIMEOUT_SECS     per-quantum host wait bound (default 240)
 //! CRUCIBLE_FP_PROBE_ICOUNT     interior probe icount (default 6000000)
 //! CRUCIBLE_FP_DIVERGENCE_DUMP  "1" enables the live mismatch/dump negative control
+//! CRUCIBLE_FP_SYNC_ORACLE      "1" compares every offloaded digest synchronously
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -83,6 +84,7 @@ mod linux {
         let probe_icount = env_u64("CRUCIBLE_FP_PROBE_ICOUNT", 6_000_000)?;
         let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
         let divergence_dump = env_flag("CRUCIBLE_FP_DIVERGENCE_DUMP", false)?;
+        let synchronous_oracle = env_flag("CRUCIBLE_FP_SYNC_ORACLE", false)?;
         let memory_mib = u32::try_from(env_u64(
             "CRUCIBLE_FP_MEMORY_MIB",
             u64::from(DEFAULT_MEMORY_MIB),
@@ -95,6 +97,7 @@ mod linux {
                 .with_completion_timeout(Duration::from_secs(timeout_secs))
                 .with_second_run_host_load(second_run_host_load)
                 .with_second_run_divergence_control(divergence_dump)
+                .with_synchronous_oracle(synchronous_oracle)
                 .with_smp_vcpus(vcpu_count)
                 .with_memory_mib(memory_mib);
         let kernel_cmdline_text = match &kernel_cmdline {
@@ -171,6 +174,8 @@ mod linux {
         );
         println!("deterministic_run_twice=true");
         println!("second_run_host_load={second_run_host_load}");
+        println!("synchronous_oracle_enabled={synchronous_oracle}");
+        println!("synchronous_oracle_matches_all_samples={synchronous_oracle}");
         println!("probe_prefix_equal_at_{probe_icount}={probe_equal}");
         println!("probe_count={}", runner.probe_count());
         for line in &evidence.per_sample_lines {
