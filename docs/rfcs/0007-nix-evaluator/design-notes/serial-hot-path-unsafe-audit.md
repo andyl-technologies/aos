@@ -8016,14 +8016,13 @@ and a lexical-variable body. It inspects lowered node metadata only and does
 not read a slot, force a value, allocate, or change cache/evaluation behavior.
 All three counters remain zero when stats collection is disabled.
 
-Next profile checklist:
-
-- run the primary toplevel with force-cache observation and
-  `AOS_NIX_EVAL_STATS=1`;
-- record
-  `force_cache_suppressed_lexical_alias_thunks` and its `local_var`/`upval_var`
-  split from the evaluator JSON;
-- compare the count with total lexical-alias allocations and force-cache child
-  observation volume before designing an observation-preserving elision; and
-- retain the current conservative path unless that measured ceiling is
-  material and byte/observation parity can be proved.
+The exact pinned Nix-2.24-compatible system run returned the expected
+`g3lcf1mzgvi8k1gpynbalc6gn130qaxp` derivation and reported zero total, zero
+`LocalVar`, and zero `UpvalVar` suppressed aliases. The earlier 524,896-alias
+win was real on its measured workload, but the current system workload has no
+demand-position alias that passes the non-cache gates; its lexical-variable
+thunk allocations occur under the conservative assembly context. Therefore no
+cache-graph redirect or force-cache flag split is justified for this benchmark.
+Retain the counters as a cheap stats-only regression/opportunity signal and
+move the factor-level investigation to static demand/cardinality/escape proofs
+for allocated-but-never-forced thunks.
