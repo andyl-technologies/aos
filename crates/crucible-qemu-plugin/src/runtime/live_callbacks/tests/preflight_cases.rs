@@ -17,6 +17,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
         crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
             inject_preemption: None,
             clock_deadline_ns: Some(test_clock_deadline_ns),
             advance_time_ns: Some(test_queue_idle_advance),
@@ -50,6 +51,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
         crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
             inject_preemption: Some(super::super::test_support::accept_preemption),
             clock_deadline_ns: Some(test_clock_deadline_ns),
             advance_time_ns: Some(test_queue_idle_advance),
@@ -81,6 +83,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
         crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
             inject_preemption: Some(super::super::test_support::accept_preemption),
             clock_deadline_ns: Some(test_clock_deadline_ns),
             advance_time_ns: Some(test_queue_idle_advance),
@@ -112,6 +115,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
         crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
             inject_preemption: Some(super::super::test_support::accept_preemption),
             clock_deadline_ns: Some(test_clock_deadline_ns),
             advance_time_ns: Some(test_queue_idle_advance),
@@ -143,6 +147,7 @@ fn live_registrar_preflight_names_each_missing_capability() {
         crate::QemuPluginTargetArchitecture::X86_64,
         LiveVcpuTimeCallbackCapabilities {
             icount_raw: test_icount_raw,
+            force_vcpu_exit: test_force_vcpu_exit,
             inject_preemption: Some(super::super::test_support::accept_preemption),
             clock_deadline_ns: Some(test_clock_deadline_ns),
             advance_time_ns: Some(test_queue_idle_advance),

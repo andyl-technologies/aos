@@ -1,0 +1,13 @@
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -252,6 +252,9 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+     qatomic_set(&qemu_plugin_time_advance_target, new_time);
+     aio_bh_schedule_oneshot(qemu_get_aio_context(),
+                             qemu_plugin_advance_time_bh, NULL);
++    if (first_cpu) {
++        qemu_cpu_kick(first_cpu);
++    }
+     return 0;
+ }
+ 

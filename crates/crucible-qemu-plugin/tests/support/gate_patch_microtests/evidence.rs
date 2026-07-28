@@ -66,6 +66,21 @@ pub(super) fn assert_per_patch_evidence() -> Result<(), Box<dyn Error>> {
             "0010-crucible-plugin-time-advance.patch",
         ),
         (
+            "tests/crucible/phase1-plugin-time-advance.nix",
+            "tests/crucible/phase1-plugin-time-advance.c",
+            "0043-crucible-time-advance-commit-barrier.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-time-advance.nix",
+            "tests/crucible/phase1-plugin-time-advance.c",
+            "0044-crucible-time-advance-enqueue-kick.patch",
+        ),
+        (
+            "tests/crucible/phase1-plugin-time-advance.nix",
+            "tests/crucible/phase1-plugin-time-advance.c",
+            "0045-crucible-time-advance-arm-at-vcpu-boundary.patch",
+        ),
+        (
             "tests/crucible/phase1-plugin-runtime-apis.nix",
             "tests/crucible/phase1-plugin-runtime-apis.c",
             "0011-crucible-plugin-icount-raw.patch",

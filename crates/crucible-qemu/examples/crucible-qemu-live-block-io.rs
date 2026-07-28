@@ -152,6 +152,16 @@ fn run() -> Result<(), String> {
         "delayed_response_applied={}",
         report.delayed_response_applied
     );
+    println!("host_wins_race_proven={}", report.host_wins_race_proven);
+    println!("guest_wins_race_proven={}", report.guest_wins_race_proven);
+    println!(
+        "completion_pinned_before_dispatch={}",
+        report.completion_pinned_before_dispatch
+    );
+    println!(
+        "canonical_logs_identical={}",
+        report.canonical_logs_identical
+    );
     Ok(())
 }
 

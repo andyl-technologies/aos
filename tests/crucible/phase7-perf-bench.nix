@@ -36,6 +36,7 @@
   dependencies ? [],
   hostParallelism ? null,
   fingerprintOffload ? null,
+  deviceWorkOverlap ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -408,7 +409,8 @@ in
         ]
         ++ dependencies
         ++ lib.optionals (hostParallelism != null) [hostParallelism]
-        ++ lib.optionals (fingerprintOffload != null) [fingerprintOffload];
+        ++ lib.optionals (fingerprintOffload != null) [fingerprintOffload]
+        ++ lib.optionals (deviceWorkOverlap != null) [deviceWorkOverlap];
 
       phases = [
         {
@@ -510,6 +512,26 @@ in
               if hostParallelism == null
               then "/dev/null"
               else "${hostParallelism}/result"
+            }" \
+                >> "$out/result"
+            fi
+            if [ -n "${
+              if deviceWorkOverlap == null
+              then ""
+              else builtins.toString deviceWorkOverlap
+            }" ]; then
+              sed -n \
+                -e 's/^admission_class=/metric_device_work_class=/p' \
+                -e 's/^dispatch=/metric_device_work_dispatch=/p' \
+                -e 's/^completion_coordinate=/metric_device_work_completion_coordinate=/p' \
+                -e 's/^requester_behavior=/metric_device_work_requester_behavior=/p' \
+                -e 's/^host_wins_race_proven=/metric_device_work_host_wins=/p' \
+                -e 's/^guest_wins_race_proven=/metric_device_work_guest_wins=/p' \
+                -e 's/^synchronous_async_canonical_logs_identical=/metric_device_work_log_identity=/p' \
+                "${
+              if deviceWorkOverlap == null
+              then "/dev/null"
+              else "${deviceWorkOverlap}/result"
             }" \
                 >> "$out/result"
             fi

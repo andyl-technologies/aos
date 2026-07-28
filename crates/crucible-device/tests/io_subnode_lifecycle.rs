@@ -395,6 +395,33 @@ fn block_shmem_lifecycle_uses_real_rings_and_wakes() {
 }
 
 #[test]
+fn block_shmem_single_request_compute_preserves_next_head_for_dispatch() {
+    let vm_slot = NodeSlot::new(KIND_VM);
+    let inbox = RingHeader::new();
+    let mut inbox_entries = vec![FrameEntry::default(); 4];
+    let mut device = block_device(4, 4);
+    let first = frame(10, 0, 0, &ok(BlockRequest::read(1, 0, 4).encode()));
+    let second = frame(20, 0, 1, &ok(BlockRequest::read(2, 4, 4).encode()));
+    ok(inbox.enqueue(&mut inbox_entries, &first));
+    ok(inbox.enqueue(&mut inbox_entries, &second));
+
+    let processed = ok(device.process_one_shmem_request(&inbox, &inbox_entries, &vm_slot));
+    assert_eq!(processed.processed, 1);
+    assert_eq!(processed.first_request_icount, Some(10));
+    assert_eq!(
+        ok(inbox.peek(&inbox_entries)).map(|frame| frame.delivery_icount),
+        Some(20),
+        "the next request must remain observable for its own pre-dispatch pin"
+    );
+
+    let processed = ok(device.process_one_shmem_request(&inbox, &inbox_entries, &vm_slot));
+    assert_eq!(processed.processed, 1);
+    assert_eq!(processed.first_request_icount, Some(20));
+    assert_eq!(ok(inbox.peek(&inbox_entries)), None);
+    assert_eq!(vm_slot.snapshot().wake_signal, 2);
+}
+
+#[test]
 fn block_shmem_full_response_ring_preserves_inflight_order() {
     let vm_slot = NodeSlot::new(KIND_VM);
     let block_slot = NodeSlot::new(KIND_BLK);

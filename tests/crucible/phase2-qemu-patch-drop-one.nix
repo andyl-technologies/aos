@@ -89,6 +89,9 @@
       "qemu_plugin_crucible_write_memory_vaddr"
     ];
     "0042-crucible-aarch64-det-ipi-adapter.patch" = [];
+    "0043-crucible-time-advance-commit-barrier.patch" = [];
+    "0044-crucible-time-advance-enqueue-kick.patch" = [];
+    "0045-crucible-time-advance-arm-at-vcpu-boundary.patch" = [];
   };
 
   dropOnes =

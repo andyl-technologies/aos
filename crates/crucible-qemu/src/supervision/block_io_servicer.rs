@@ -58,7 +58,9 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crucible_device::{BaseImage, BlockDevice, BlockLatency, DeviceError, IoCore};
+use crucible_device::{
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, IoCore, Request,
+};
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
     NodeSlotSnapshot, SLOT_BLK_IO, SetupRegionMapError, mmap_setup_region,
@@ -167,7 +169,7 @@ impl QemuLiveBlockIoServicer {
         } = second;
 
         let inbox = device
-            .process_shmem_inbox(request_header, request_entries, node_slot)
+            .process_one_shmem_request(request_header, request_entries, node_slot)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let write_frames_processed = inbox
             .request_kinds
@@ -175,6 +177,9 @@ impl QemuLiveBlockIoServicer {
             .filter(|kind| **kind == Some(1))
             .count();
         *frames_processed += inbox.processed;
+        let computed_completion_icount = (inbox.processed > 0)
+            .then(|| device.core().next_exact_local_event())
+            .flatten();
 
         let delivery = device
             .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
@@ -192,6 +197,81 @@ impl QemuLiveBlockIoServicer {
             processed: inbox.processed,
             write_frames_processed,
             delivered: delivery.delivered,
+            first_request_icount: inbox.first_request_icount,
+            computed_completion_icount,
+            next_completion_icount,
+        })
+    }
+
+    /// Pins the head request's completion coordinate without COMPUTE or dequeue.
+    ///
+    /// The method observes at most the SPSC head, computes its completion icount
+    /// from the in-band request icount and the device latency model, and
+    /// publishes the earliest pending completion to the VM slot before any host
+    /// worker receives the request. Repeated calls for the same head are
+    /// idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLiveBlockIoServicerError::RegionAccess`] when the mapped
+    /// rings cannot be borrowed, or [`QemuLiveBlockIoServicerError::Device`] for
+    /// malformed frame payloads, completion arithmetic failure, or a completion
+    /// coordinate already in the device core's past.
+    pub fn pin_next_request_completion(
+        &mut self,
+    ) -> Result<QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServicerError> {
+        let Self {
+            region,
+            device,
+            vm_slot,
+            ..
+        } = self;
+        let vm_slot = *vm_slot;
+        let blk_slot = SLOT_BLK_IO as u32;
+        let pair = region
+            .node_directed_ring_pair_mut(vm_slot, vm_slot, blk_slot, blk_slot, vm_slot)
+            .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
+        let node_slot = pair.node_slot;
+        let request = pair
+            .first
+            .header
+            .peek(pair.first.entries)
+            .map_err(DeviceError::from)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+
+        let observed = request
+            .map(|frame| {
+                let payload = frame.payload().map_err(DeviceError::from)?;
+                let request_id = BlockRequest::decode(payload)
+                    .map(|decoded| decoded.request_id)
+                    .unwrap_or(0);
+                let request = Request::new(frame.delivery_icount, request_id, payload.to_vec());
+                let completion_icount = device
+                    .core()
+                    .compute_delivery_icount(&request, device.latency_model())?;
+                if completion_icount < device.core().current_icount() {
+                    return Err(DeviceError::DeliveryInPast {
+                        delivery_icount: completion_icount,
+                        current_icount: device.core().current_icount(),
+                    });
+                }
+                Ok(QemuLiveBlockIoObservedRequest {
+                    request_icount: frame.delivery_icount,
+                    completion_icount,
+                })
+            })
+            .transpose()
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+
+        let next_completion_icount = device
+            .core()
+            .next_exact_local_event()
+            .into_iter()
+            .chain(observed.map(|request| request.completion_icount))
+            .min();
+        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        Ok(QemuLiveBlockIoHostWorkPin {
+            observed,
             next_completion_icount,
         })
     }
@@ -246,7 +326,29 @@ pub struct QemuLiveBlockIoServiceStep {
     pub write_frames_processed: usize,
     /// Response frames published to the response ring this call.
     pub delivered: usize,
+    /// Submit icount carried by the request COMPUTEd this call.
+    pub first_request_icount: Option<u64>,
+    /// Completion icount pinned for the request COMPUTEd this call.
+    pub computed_completion_icount: Option<u64>,
     /// The device's next completion icount after this call, when one is pending.
+    pub next_completion_icount: Option<u64>,
+}
+
+/// A request observed before its device-side host work is dispatched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockIoObservedRequest {
+    /// Icount carried by the request at observation time.
+    pub request_icount: u64,
+    /// Completion icount computed and pinned before host dispatch.
+    pub completion_icount: u64,
+}
+
+/// The pinned state returned before one block host-work dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLiveBlockIoHostWorkPin {
+    /// Newly observed head request, when the inbound ring was nonempty.
+    pub observed: Option<QemuLiveBlockIoObservedRequest>,
+    /// Earliest pinned completion across observed and already-computed work.
     pub next_completion_icount: Option<u64>,
 }
 
@@ -297,10 +399,12 @@ impl BlockIoDiagnostics {
             self.frames_processed
                 .fetch_add(serviced.processed, Ordering::Relaxed);
             if !self.first_request_seen.swap(true, Ordering::Relaxed) {
-                self.first_request_icount
-                    .store(current_icount, Ordering::Relaxed);
+                self.first_request_icount.store(
+                    serviced.first_request_icount.unwrap_or(current_icount),
+                    Ordering::Relaxed,
+                );
                 self.first_completion_horizon.store(
-                    serviced.next_completion_icount.unwrap_or(0),
+                    serviced.computed_completion_icount.unwrap_or(0),
                     Ordering::Relaxed,
                 );
             }
@@ -313,6 +417,23 @@ impl BlockIoDiagnostics {
             self.frames_delivered
                 .fetch_add(serviced.delivered, Ordering::Relaxed);
         }
+        self.observe_slot(current_icount, device_io_active, idle_wake_icount);
+    }
+
+    /// Records the latest guest-slot state independently of a servicing call.
+    ///
+    /// A response delivery can be the final operation the host servicer needs
+    /// to perform. The guest clears `device_io_active` only after consuming
+    /// that response, so sampling slot state solely when servicing would retain
+    /// the pre-consumption value forever. The drive loop calls this on every
+    /// poll so terminal progress evidence describes the guest after delivery,
+    /// without adding no-op device service calls.
+    pub(crate) fn observe_slot(
+        &self,
+        current_icount: u64,
+        device_io_active: bool,
+        idle_wake_icount: u64,
+    ) {
         self.last_current_icount
             .store(current_icount, Ordering::Relaxed);
         self.max_current_icount
@@ -448,5 +569,32 @@ mod tests {
 
         assert_ne!(first, second);
         assert!(first.deterministic_observation_eq(&second));
+    }
+
+    #[test]
+    fn terminal_slot_observation_replaces_pre_consumption_device_state() {
+        let diagnostics = BlockIoDiagnostics::default();
+        diagnostics.record(
+            10,
+            true,
+            20,
+            &QemuLiveBlockIoServiceStep {
+                processed: 1,
+                write_frames_processed: 1,
+                delivered: 1,
+                first_request_icount: Some(10),
+                computed_completion_icount: Some(20),
+                next_completion_icount: None,
+            },
+        );
+
+        diagnostics.observe_slot(30, false, 30);
+
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.service_calls, 1);
+        assert_eq!(snapshot.last_current_icount, 30);
+        assert_eq!(snapshot.max_current_icount, 30);
+        assert!(!snapshot.last_device_io_active);
+        assert_eq!(snapshot.last_idle_wake_icount, 30);
     }
 }

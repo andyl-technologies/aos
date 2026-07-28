@@ -27,8 +27,9 @@ This is deliberately narrower than globally disabling ioeventfd:
 - virtio-rng keeps the synchronous rule introduced by patch 0032;
 - virtio-9p gains synchronous *initial dispatch*, while its completion remains
   an exact event owned by the deterministic 9p sub-node;
-- virtio-blk retains asynchronous dispatch because patch 0039 supplies its
-  coroutine/device-wait completion barrier;
+- each launched `crucible-shmem` virtio-blk device independently sets
+  `ioeventfd=off`, making request observation synchronous while patch 0039
+  supplies its coroutine/device-wait completion barrier;
 - plain TCG, sim without icount, and every other virtio device retain the
   upstream predicate.
 

@@ -17,8 +17,13 @@
 //!
 //! ```text
 //! -drive driver=crucible-shmem,if=none,id=<drive_id>,size=<size_bytes>
-//! -device virtio-blk-pci,drive=<drive_id>,id=<device_id>
+//! -device virtio-blk-pci,drive=<drive_id>,id=<device_id>,ioeventfd=off
 //! ```
+//!
+//! The per-device `ioeventfd=off` is determinism-load-bearing: it makes the
+//! virtqueue kick enter the patched shmem backend synchronously at the guest's
+//! request boundary. Completion remains asynchronous and pinned by the device
+//! latency model, but host main-loop timing cannot move the request icount.
 
 use super::QemuLaunchCommandError;
 
@@ -101,7 +106,7 @@ impl CrucibleShmemBlockDevice {
         ));
         args.push("-device".to_owned());
         args.push(format!(
-            "virtio-blk-pci,drive={},id={}",
+            "virtio-blk-pci,drive={},id={},ioeventfd=off",
             self.drive_id, self.device_id
         ));
     }
@@ -115,6 +120,7 @@ impl CrucibleShmemBlockDevice {
             "crucible_shmem_block_size_bytes={}",
             self.size_bytes
         ));
+        lines.push("crucible_shmem_block_ioeventfd=off".to_owned());
     }
 
     /// Validates the identifiers and length of this device.
@@ -183,7 +189,8 @@ mod tests {
                 "-drive".to_owned(),
                 "driver=crucible-shmem,if=none,id=crucible-blk0,size=1048576".to_owned(),
                 "-device".to_owned(),
-                "virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0".to_owned(),
+                "virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off"
+                    .to_owned(),
             ]
         );
     }
@@ -200,6 +207,7 @@ mod tests {
                 "crucible_shmem_block_drive_id=blk-a".to_owned(),
                 "crucible_shmem_block_device_id=blk-a-device".to_owned(),
                 "crucible_shmem_block_size_bytes=1048576".to_owned(),
+                "crucible_shmem_block_ioeventfd=off".to_owned(),
             ]
         );
     }

@@ -8,6 +8,7 @@
 mod block_io_gate;
 mod block_io_servicer;
 mod block_node_gate;
+mod device_host_work;
 mod host_io_runtime;
 mod host_parallel_gate;
 mod network_io_gate;
@@ -21,12 +22,16 @@ pub use block_io_gate::{
     QemuLiveBlockIoReport, run_qemu_live_block_io_gate,
 };
 pub use block_io_servicer::{
-    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
-    QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
+    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoHostWorkPin,
+    QemuLiveBlockIoObservedRequest, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
+    QemuLiveBlockIoServicerError,
 };
 pub use block_node_gate::{
     BlockNodeOutcome, QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError,
     QemuLiveBlockNodeReport, run_qemu_live_block_node_gate,
+};
+pub use device_host_work::{
+    QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
 };
 pub use host_io_runtime::{QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError};
 pub use host_parallel_gate::{

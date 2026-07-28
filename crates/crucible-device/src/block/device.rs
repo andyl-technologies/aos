@@ -198,6 +198,12 @@ impl BlockDevice {
         &mut self.core
     }
 
+    /// Returns the deterministic completion-latency model.
+    #[must_use]
+    pub const fn latency_model(&self) -> &BlockLatency {
+        &self.latency
+    }
+
     /// Returns a read-only view of the copy-on-write overlay.
     #[must_use]
     pub fn overlay(&self) -> &CowOverlay {
@@ -331,6 +337,31 @@ impl BlockDevice {
         };
         self.core
             .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+    }
+
+    /// Drains and COMPUTEs at most one raw shared-memory block request.
+    ///
+    /// This is the worker-dispatch counterpart to
+    /// [`BlockDevice::process_shmem_inbox`]: callers can pin the head request's
+    /// completion coordinate before dispatch, then consume precisely that
+    /// request on the worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`BlockDevice::process_shmem_inbox`].
+    pub fn process_one_shmem_request(
+        &mut self,
+        inbox: &RingHeader,
+        inbox_entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemInboxProcess, DeviceError> {
+        let mut node = BlockServer {
+            base: &self.base,
+            overlay: &mut self.overlay,
+            latency: &self.latency,
+        };
+        self.core
+            .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
     }
 
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).

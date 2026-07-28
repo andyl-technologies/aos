@@ -1,6 +1,7 @@
 //! Live block and 9p callback adapter tests.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::runtime::callback_quiescence::LiveCallbackQuiescence;
 
@@ -10,6 +11,8 @@ use crucible_shmem::{
     DirectedRing, KIND_VM, MappedDirectedRingMut, RegionConfig, RegionHeader, RegionLayout,
     SLOT_9P_IO, SLOT_BLK_IO, authorize_advance_ceiling,
 };
+
+static FORCE_VCPU_EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
@@ -133,6 +136,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     let state = LiveVcpuTimeCallbackState::new(
         61,
         test_icount_raw,
+        super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_preemption_injector(),
         1,
         0,
@@ -187,6 +191,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
     let state = LiveVcpuTimeCallbackState::new(
         62,
         test_icount_raw,
+        super::super::test_support::test_force_vcpu_exit,
         super::super::test_support::test_preemption_injector(),
         1,
         0,
@@ -226,6 +231,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
 
 #[test]
 fn live_device_submits_during_idle_completion_use_the_advance_target() {
+    FORCE_VCPU_EXIT_CALLS.store(0, Ordering::SeqCst);
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
@@ -246,6 +252,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
     let state = LiveVcpuTimeCallbackState::new(
         63,
         test_icount_raw,
+        capture_force_vcpu_exit,
         super::super::test_support::test_preemption_injector(),
         1,
         0,
@@ -279,6 +286,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
     assert_eq!(storage.block_out_entries[0].delivery_icount, 10);
     assert_eq!(storage.ninep_out_entries[0].delivery_icount, 10);
     assert_eq!(slot.snapshot().device_io_active, 1);
+    assert_eq!(FORCE_VCPU_EXIT_CALLS.load(Ordering::SeqCst), 1);
 }
 
 extern "C" fn test_deadline() -> i64 {
@@ -291,6 +299,10 @@ extern "C" fn test_advance(_target: i64) -> c_int {
 
 extern "C" fn test_icount_raw() -> u64 {
     0
+}
+
+extern "C" fn capture_force_vcpu_exit() {
+    FORCE_VCPU_EXIT_CALLS.fetch_add(1, Ordering::SeqCst);
 }
 
 struct DeviceRingStorage {

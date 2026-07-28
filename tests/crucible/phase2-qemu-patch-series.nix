@@ -314,6 +314,27 @@
       enforces = "DET-4,PLUG-14,GHC-4";
       capability = "AArch64 deterministic IPI adapter for the shared RR and commanded-preemption paths";
     }
+    {
+      file = "0043-crucible-time-advance-commit-barrier.patch";
+      catalogName = "crucible-time-advance-commit-barrier";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "RR and plugin logical-time commits remain fenced until both owners release";
+    }
+    {
+      file = "0044-crucible-time-advance-enqueue-kick.patch";
+      catalogName = "crucible-time-advance-enqueue-kick";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "queued time advance kicks the active sim vCPU into the pending barrier";
+    }
+    {
+      file = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
+      catalogName = "crucible-time-advance-arm-at-vcpu-boundary";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "pending time advance arms synchronously at a stopped-vCPU work boundary";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

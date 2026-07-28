@@ -242,6 +242,18 @@
       kind = "recorded";
       symbols = [];
     };
+    "0043-crucible-time-advance-commit-barrier.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0044-crucible-time-advance-enqueue-kick.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0045-crucible-time-advance-arm-at-vcpu-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

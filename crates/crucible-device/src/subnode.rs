@@ -302,19 +302,62 @@ impl IoCore {
     where
         D: IoSubNode,
     {
-        let mut processed = 0;
+        let mut result = ShmemInboxProcess {
+            processed: 0,
+            request_kinds: Vec::new(),
+            first_request_icount: None,
+            producer_wakes: Vec::new(),
+        };
+        loop {
+            let one =
+                self.process_one_shmem_request(device, inbox, inbox_entries, producer_slot)?;
+            if one.processed == 0 {
+                break;
+            }
+            result.processed += one.processed;
+            result.request_kinds.extend(one.request_kinds);
+            if result.first_request_icount.is_none() {
+                result.first_request_icount = one.first_request_icount;
+            }
+            result.producer_wakes.extend(one.producer_wakes);
+        }
+        Ok(result)
+    }
+
+    /// Dequeues and COMPUTEs at most one shared-memory request.
+    ///
+    /// This single-request form lets a host dispatcher pin the head request's
+    /// completion coordinate before dispatching exactly that request to a
+    /// worker. It preserves the same SPSC dequeue, producer wake, and COMPUTE
+    /// semantics as [`Self::process_shmem_inbox`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::process_shmem_inbox`].
+    pub fn process_one_shmem_request<D>(
+        &mut self,
+        device: &mut D,
+        inbox: &RingHeader,
+        inbox_entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemInboxProcess, DeviceError>
+    where
+        D: IoSubNode,
+    {
         let mut request_kinds = Vec::new();
         let mut first_request_icount = None;
         let mut producer_wakes = Vec::new();
-        while let Some(frame) = inbox.dequeue(inbox_entries)? {
+        let processed = if let Some(frame) = inbox.dequeue(inbox_entries)? {
             first_request_icount.get_or_insert(frame.delivery_icount);
             let wake = producer_slot.wake_for_device_io_release()?;
             producer_wakes.push(wake);
             let request = request_from_frame(&frame)?;
             request_kinds.push(request.payload.first().copied());
             self.compute_request(device, request)?;
-            processed += 1;
-        }
+            1
+        } else {
+            0
+        };
         Ok(ShmemInboxProcess {
             processed,
             request_kinds,

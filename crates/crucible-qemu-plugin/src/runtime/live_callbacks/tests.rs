@@ -19,6 +19,7 @@ extern "C" fn test_icount_raw() -> u64 {
 thread_local! {
     static TEST_CLOCK_DEADLINE_NS: Cell<i64> = const { Cell::new(-1) };
     static LAST_QUEUED_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+    static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
 }
 static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +71,7 @@ fn test_live_state_with_teardown(
     LiveVcpuTimeCallbackState::new(
         plugin_id,
         test_icount_raw,
+        test_force_vcpu_exit,
         test_support::test_preemption_injector(),
         vcpu_count,
         icount_shift,
@@ -82,6 +84,8 @@ fn test_live_state_with_teardown(
         teardown_sender,
     )
 }
+
+extern "C" fn test_force_vcpu_exit() {}
 
 #[test]
 fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
@@ -387,6 +391,43 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
 }
 
 #[test]
+fn device_io_without_a_pinned_deadline_freezes_at_the_current_icount() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 100, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(52, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .publish_current_icount(30)
+        .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
+
+    slot.mark_device_io_active();
+    assert_eq!(slot.device_completion_deadline_icount(), 0);
+    assert_eq!(state.max_advance_icount(), Ok(30));
+}
+
+#[test]
+fn device_io_advances_to_the_deadline_only_after_it_is_pinned() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 100, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(53, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .publish_current_icount(30)
+        .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
+
+    slot.mark_device_io_active();
+    assert_eq!(state.max_advance_icount(), Ok(30));
+    slot.store_device_completion_deadline_icount(45);
+    assert_eq!(state.max_advance_icount(), Ok(45));
+}
+
+#[test]
 fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)
@@ -416,6 +457,33 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
         .on_vcpu_resume(0, 0)
         .unwrap_or_else(|error| panic!("resume should preserve logical time: {error}"));
     assert_eq!(slot.snapshot().current_icount, 10);
+}
+
+#[test]
+fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 10, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(54, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(54, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
+
+    let result = state.on_vcpu_idle(0, 0);
+    TEST_QUEUED_ADVANCE_STATUS.set(0);
+
+    result.unwrap_or_else(|error| panic!("busy QEMU barrier should defer the idle vCPU: {error}"));
+    assert!(
+        state
+            .try_pending_idle_advance()
+            .unwrap_or_else(|error| panic!("pending state should remain readable: {error}"))
+            .is_none()
+    );
 }
 
 #[test]
@@ -497,6 +565,33 @@ fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
         .on_block_wait(1)
         .unwrap_or_else(|error| panic!("unpublished device deadline should defer: {error}"));
     assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+}
+
+#[test]
+fn live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.store_device_completion_deadline_icount(12);
+    let state = test_live_state(48, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+    TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
+
+    let result = state.on_block_wait(1);
+    TEST_QUEUED_ADVANCE_STATUS.set(0);
+
+    result.unwrap_or_else(|error| panic!("busy QEMU barrier should defer the waiter: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+    assert!(
+        state
+            .try_pending_idle_advance()
+            .unwrap_or_else(|error| panic!("pending state should remain readable: {error}"))
+            .is_none()
+    );
 }
 
 #[test]
@@ -871,5 +966,5 @@ extern "C" fn test_net_flush() -> std::os::raw::c_int {
 
 extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
     LAST_QUEUED_ADVANCE_NS.set(target_virtual_ns);
-    0
+    TEST_QUEUED_ADVANCE_STATUS.get()
 }

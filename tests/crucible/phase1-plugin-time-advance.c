@@ -57,6 +57,7 @@ static uint64_t current_icount;
 static uint64_t timer_callback_icount;
 static uint64_t bh_callback_icount;
 static unsigned int async_queue_calls;
+static unsigned int run_on_cpu_calls;
 static unsigned int clock_advance_calls;
 static unsigned int run_timers_calls;
 static unsigned int completion_bh_schedules;
@@ -65,6 +66,7 @@ static unsigned int cpu_kick_calls;
 static int completion_status;
 static int64_t completion_target;
 static bool completion_observed_timer_bh;
+static bool completion_observed_pending;
 
 enum {
   TIMER_IRQ_BIT = 1u << 0,
@@ -133,6 +135,16 @@ async_run_on_cpu(CPUState *cpu, void (*fn)(CPUState *, run_on_cpu_data),
     async_queue_calls++;
     queued_cpu_work = fn;
     queued_cpu_data = data;
+  }
+}
+
+static void
+run_on_cpu(CPUState *cpu, void (*fn)(CPUState *, run_on_cpu_data),
+           run_on_cpu_data data)
+{
+  if (cpu == first_cpu) {
+    run_on_cpu_calls++;
+    fn(cpu, data);
   }
 }
 
@@ -316,6 +328,7 @@ reset_observable_state(void)
   retired_icount = 0;
   notify_calls = 0;
   async_queue_calls = 0;
+  run_on_cpu_calls = 0;
   clock_advance_calls = 0;
   run_timers_calls = 0;
   completion_bh_schedules = 0;
@@ -324,6 +337,7 @@ reset_observable_state(void)
   completion_status = INT_MIN;
   completion_target = -1;
   completion_observed_timer_bh = false;
+  completion_observed_pending = false;
   fake_cpu.interrupt_request = 0;
 }
 
@@ -337,6 +351,7 @@ record_completion(int status, int64_t target, void *userdata)
   completion_status = status;
   completion_target = target;
   completion_observed_timer_bh = timer_bh_visible;
+  completion_observed_pending = qemu_plugin_time_advance_is_pending();
 }
 
 static bool
@@ -408,8 +423,10 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
   run_normal_main_loop_bottom_halves();
   return callbacks == 1 && completion_calls == 1 && completion_status == 0 &&
          completion_target == 5000 && completion_observed_timer_bh &&
+         completion_observed_pending &&
          bh_callback_icount == 5000 &&
-         fake_cpu.interrupt_request == TIMER_IRQ_BIT && cpu_kick_calls == 1 &&
+         fake_cpu.interrupt_request == TIMER_IRQ_BIT && cpu_kick_calls == 2 &&
+         run_on_cpu_calls == 1 &&
          !qemu_plugin_time_advance_is_pending();
 }
 
@@ -530,6 +547,8 @@ main(void)
   puts("completion_uses_two_stage_bh_barrier=true");
   puts("timer_bh_precedes_plugin_completion=true");
   puts("completion_kicks_first_vcpu=true");
+  puts("advance_enqueue_kicks_first_vcpu=true");
+  puts("advance_arms_at_vcpu_boundary=true");
   puts("callback_path_main_loop_reentry_absent=true");
   return 0;
 }

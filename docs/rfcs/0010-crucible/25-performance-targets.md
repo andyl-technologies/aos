@@ -1062,6 +1062,28 @@ periodic, frame-delivery, fault-activation, and terminal coordinates at
 the Class-A admission, exact-capture, corpus-identity, cadence, coordinate, and
 forced-boundary evidence from this real-backend gate.
 
+T-PERF-31 is additionally completed by
+`checks.crucible.phase7.deviceHostWorkOverlap`. The live block-device path
+observes one `SLOT_BLK_IO` request at a time, computes and publishes its
+completion icount before placing the request on a bounded device worker queue,
+then performs the backing read/write COMPUTE on that worker. If the guest reaches
+the coordinate first, the device-wait path leaves it parked at that exact icount
+until the response is ready; host wall time is never added to the modeled
+completion. The certifying gate boots the real patched QEMU, production Rust
+plugin, AOS kernel, and write workload three times: a fully synchronous
+reference, an asynchronous leg that withholds the guest wake until host work
+finishes, and an asynchronous leg that delays host work while allowing the guest
+to reach its pinned horizon. The `crucible-shmem` virtio-blk launch disables
+ioeventfd for that device, the submit callback exits the current TCG reservation,
+and the max-advance callback freezes the guest at the request boundary until the
+host publishes the pinned deadline. QEMU's queued-advance barrier then remains
+armed until the plugin commits the corresponding logical-time offset; an
+overlapping waiter retries after that barrier releases rather than making
+`-EBUSY` guest-visible. The gate requires every request/completion coordinate
+and the unified canonical I/O log bytes to match across all three legs. The
+perf-bench result imports the Class-B pin, dispatch, stall, and race evidence
+from that live-backend gate.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1178,7 +1200,7 @@ constant-factor trim on a serial run.
   byte-identical digests versus the synchronous path over the fingerprint corpus,
   and unchanged cadence, coordinates, and forced-sample event boundaries. —
   satisfies [PERF-30]; spec §25.12.3.
-- [ ] **T-PERF-31** Dispatch device-side host work at request-observation time
+- [x] **T-PERF-31** Dispatch device-side host work at request-observation time
   behind the pinned completion icount, with a requester stall that cannot move
   the delivered coordinate. Assert identical completion icounts and canonical
   logs across a forced guest-wins-the-race run, a forced host-wins-the-race run,
