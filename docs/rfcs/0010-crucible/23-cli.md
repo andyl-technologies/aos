@@ -956,7 +956,7 @@ branch on the verdict without parsing output:
   registration are session-owned APIs. The gate scans the production command
   modules and rejects direct checkpoint materialization in addition to checking
   the plan model.
-- [x] **T-CLI-3** Implement backend selection and the local/remote split
+- [ ] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
   [CLI-8]; spec §3.
@@ -1023,7 +1023,7 @@ branch on the verdict without parsing output:
   process query, and the plugin must be an ELF shared object exposing
   `qemu_plugin_install` and `qemu_plugin_version`. Adversarial tests prove text
   files carrying plausible marker strings cannot impersonate either artifact.
-- [x] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
+- [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.
   Completed under `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
@@ -1036,7 +1036,7 @@ branch on the verdict without parsing output:
   status, materializes real terminal savepoint handles for `--save-on`, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
-- [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.
   Completed by `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
@@ -1173,7 +1173,7 @@ branch on the verdict without parsing output:
   backend-agnostic prefix, independently materialized child session, and
   standalone child artifact prove the child does not depend on the parent
   process.
-- [x] **T-CLI-12** Implement `replay` (resolve components, verify pinned
+- [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
   satisfies [CLI-22]; spec §12.

@@ -1169,10 +1169,10 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-11** Implement the boot-amortization check: cold boots over an
   M-scenario campaign sharing one World is independent of M (≈1 per VM per World).
   — satisfies [PERF-11]; spec §25.4.
-- [x] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
+- [ ] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
   the replay fallback), tracked against the sub-second target. — satisfies
   [PERF-12]; spec §25.4.
-- [x] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
+- [ ] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
   and the no-regression ratchet. — satisfies [PERF-13]; spec §25.5.1.
 - [x] **T-PERF-14** Implement coverage-on-vs-off guest-IPS measurement and assert
   off-cost ≈ no-hook and on-cost within budget (≥ ~70% of off-IPS). — satisfies
@@ -1219,7 +1219,7 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-26** Add `gate:perf-bench` to the canonical gate catalog (24 §1.1)
   verbatim and wire it into the phase plan after the same-phase determinism gates;
   satisfy the referenced-gate doc-lint. — satisfies [PERF-26]; spec §25.11.
-- [x] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
+- [ ] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
   report aggregate scenarios/core/hour and per-host store-I/O overhead, assert
   near-linear scaling to shared-store-bandwidth saturation (total parallelism ≈
   hosts × per-host P), binding `gate:perf-bench` + `gate:campaign-continuity`. —

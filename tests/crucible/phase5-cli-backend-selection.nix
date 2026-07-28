@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? ["T-CLI-3"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -58,7 +58,7 @@
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
         label = "T-CLI-3 is complete";
-        needle = "- [x] **T-CLI-3**";
+        needle = "- [ ] **T-CLI-3**";
       }
       {
         label = "T-CLI-3 completion note";

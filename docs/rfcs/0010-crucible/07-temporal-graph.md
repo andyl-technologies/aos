@@ -823,7 +823,7 @@ command.
     fat cache entries; and `marginal_fork_cow_delta_objects` proves a sibling
     fork with identical VM, overlay, and log deltas only adds its new schedule
     delta instead of copying full state.
-- [x] **T-TEMP-7** Implement the replay oracle as a structural invariant and
+- [ ] **T-TEMP-7** Implement the replay oracle as a structural invariant and
   CI gate: `hash(loadvm(fat)) == hash(replay-from-fat-ancestor)`, reject
   failing fat checkpoints to thin, localize failures via divergence bisection,
   and use it as the snapshot-completeness check. — satisfies [TEMP-18],

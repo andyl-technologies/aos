@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliVerifyWorkflow",
-  taskIds ? ["T-CLI-7"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -55,7 +55,7 @@
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
         label = "T-CLI-7 is complete";
-        needle = "- [x] **T-CLI-7** Implement `verify`";
+        needle = "- [ ] **T-CLI-7** Implement `verify`";
       }
       {
         label = "T-CLI-7 completion note";

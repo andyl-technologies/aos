@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
-  taskIds ? ["T-HARN-23"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-HARN-23"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -60,7 +60,7 @@
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "T-HARN-23 checklist complete";
-        needle = "- [x] **T-HARN-23**";
+        needle = "- [ ] **T-HARN-23**";
       }
       {
         label = "T-HARN-23 production fleet evidence";

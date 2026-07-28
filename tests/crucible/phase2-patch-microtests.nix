@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
-  openTaskIds ? [],
+  taskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
+  openTaskIds ? ["T-PATCH-2"],
   qemuPackage ? pkgs.qemu-crucible,
   dependencies ? [],
 }: let

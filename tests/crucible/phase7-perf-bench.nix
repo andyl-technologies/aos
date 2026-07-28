@@ -14,8 +14,6 @@
     "T-PERF-9"
     "T-PERF-10"
     "T-PERF-11"
-    "T-PERF-12"
-    "T-PERF-13"
     "T-PERF-14"
     "T-PERF-15"
     "T-PERF-16"
@@ -29,10 +27,9 @@
     "T-PERF-24"
     "T-PERF-25"
     "T-PERF-26"
-    "T-PERF-27"
     "T-PERF-28"
   ],
-  openTaskIds ? [],
+  openTaskIds ? ["T-PERF-12" "T-PERF-13" "T-PERF-27"],
   dependencies ? [],
   hostParallelism ? null,
   fingerprintOffload ? null,

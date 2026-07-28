@@ -1423,7 +1423,7 @@ time-control primitives the whole design rests on.
     pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
-- [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
   spec §11.1.2, §11.9.
