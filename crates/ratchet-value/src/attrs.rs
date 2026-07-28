@@ -4,7 +4,7 @@
 //! sorted by interned [`Symbol`] id for binary-search selection, while separate
 //! source-order and raw-byte lexicographic permutations drive primop traversal
 //! and observable iteration order for `attrNames`, `attrValues`, and
-//! `derivationStrict`. Lexicographic permutations use a compact local prefix
+//! `derivationStrict`. Shape and HAMT permutations use a compact local prefix
 //! token and compare complete raw byte strings only when prefixes collide.
 //!
 //! A [`FlatAttrs`] value stores symbols, not names, and does not retain the
@@ -524,14 +524,9 @@ impl FlatAttrs {
         }
         let entries = sorted;
 
-        // Symbol-id order and raw-byte lexicographic order differ in general,
-        // so the observable iteration order needs its own permutation. Build
-        // an order-preserving local prefix token for the common comparator
-        // path, falling back to complete interned bytes only on collisions.
-        // Compute tokens from the already-interned bytes inside the comparator:
-        // retaining one scratch `u64` per entry raised peak RSS on nixpkgs
-        // because the allocator kept pages from millions of short-lived
-        // attrsets.
+        // Symbol-id order and raw-byte lexicographic order differ in general, so
+        // the observable iteration order needs its own permutation. Validate
+        // every key before sorting, then compare the interned bytes directly.
         //
         // Do not ask the process-wide symbol table for dense lexicographic
         // ranks here. Interning one new name invalidates that O(symbols) view;
@@ -552,12 +547,9 @@ impl FlatAttrs {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            let left_bytes = symbols.resolve(entries[left].key);
-            let right_bytes = symbols.resolve(entries[right].key);
-            left_bytes
-                .map(lexicographic_prefix)
-                .cmp(&right_bytes.map(lexicographic_prefix))
-                .then_with(|| left_bytes.cmp(&right_bytes))
+            symbols
+                .resolve(entries[left].key)
+                .cmp(&symbols.resolve(entries[right].key))
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 
