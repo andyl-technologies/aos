@@ -364,7 +364,7 @@ impl TreeWalk {
         else {
             return ReadyCellPlanDecision::EffectOrUnsafe;
         };
-        if static_cost_units < self.options.memo_options().min_cost {
+        if static_cost_units < self.options.memo_options().local_ready_min_cost {
             return ReadyCellPlanDecision::BelowFloor;
         }
         let Some(dependencies) =

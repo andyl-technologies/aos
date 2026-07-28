@@ -1796,6 +1796,16 @@ impl NixEvalConfig {
                 );
             }
         }
+        if let Some(value) = knobs.local_ready_min_cost.as_deref() {
+            match value.trim().parse::<u32>() {
+                Ok(min_cost) => memo.local_ready_min_cost = min_cost,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_LOCAL_READY_MIN_COST value; keeping the default admission floor"
+                ),
+            }
+        }
         if let Some(value) = knobs.check.as_deref() {
             memo.check_l0 = false;
             memo.check_l1 = false;
@@ -3429,6 +3439,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         check_l3: memo.check_l3,
         stats_enabled: memo.stats_enabled,
         local_ready_enabled: memo.local_ready_enabled,
+        local_ready_min_cost: memo.local_ready_min_cost,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     if config.native_gc_sweep() {
@@ -3827,6 +3838,11 @@ mod tests {
             !config.native_memo().local_ready_enabled,
             "the active Ready-cell directory must remain opt-in"
         );
+        assert_eq!(
+            config.native_memo().local_ready_min_cost,
+            64,
+            "the Ready-cell floor defaults independently of durable memo"
+        );
         config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
             master: Some("1".to_owned()),
             l0: Some("off".to_owned()),
@@ -3838,6 +3854,7 @@ mod tests {
             check: Some("l0,l1".to_owned()),
             stats: Some("yes".to_owned()),
             local_ready: Some("1".to_owned()),
+            local_ready_min_cost: Some("7".to_owned()),
             l2: Some("off".to_owned()),
             disk: Some("hdd:/bulk/cache".to_owned()),
             net: Some("http://memo.example/base/".to_owned()),
@@ -3859,6 +3876,7 @@ mod tests {
         assert!(!memo.check_l3);
         assert!(memo.stats_enabled);
         assert!(memo.local_ready_enabled);
+        assert_eq!(memo.local_ready_min_cost, 7);
         assert_eq!(config.native_memo_disk_spec(), Some("hdd:/bulk/cache"));
         let net = config.native_memo_net().expect("net settings parse");
         assert_eq!(net.endpoint, "http://memo.example/base");
@@ -3882,6 +3900,17 @@ mod tests {
         assert!(memo.check_l2);
         assert!(memo.check_l3);
         assert!(!memo.stats_enabled);
+
+        let mut invalid_config = NixEvalConfig::new();
+        invalid_config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
+            local_ready_min_cost: Some("not-a-number".to_owned()),
+            ..EnvMemoKnobs::default()
+        });
+        assert_eq!(
+            invalid_config.native_memo().local_ready_min_cost,
+            64,
+            "an invalid Ready-cell floor keeps its independent default"
+        );
     }
 
     #[test]

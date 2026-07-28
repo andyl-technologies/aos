@@ -56,6 +56,12 @@ pub struct MemoOptions {
     pub stats_enabled: bool,
     /// Enables the GC-off worker-local Ready-cell directory (`AOS_NIX_LOCAL_READY`).
     pub local_ready_enabled: bool,
+    /// Ready-cell static recompute-estimate floor (`AOS_NIX_LOCAL_READY_MIN_COST`).
+    ///
+    /// This is independent of [`Self::min_cost`] so the cheap raw-identity
+    /// directory can use a stricter policy without changing durable memo
+    /// admission, or vice versa.
+    pub local_ready_min_cost: u32,
 }
 
 impl Default for MemoOptions {
@@ -75,6 +81,7 @@ impl Default for MemoOptions {
             check_l3: false,
             stats_enabled: false,
             local_ready_enabled: false,
+            local_ready_min_cost: 64,
         }
     }
 }

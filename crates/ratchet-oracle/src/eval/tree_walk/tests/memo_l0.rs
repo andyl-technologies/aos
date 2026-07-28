@@ -57,6 +57,7 @@ fn local_ready_directory_serves_a_completed_exact_recipe() {
         enabled: false,
         min_cost: 1,
         local_ready_enabled: true,
+        local_ready_min_cost: 1,
         ..MemoOptions::default()
     });
     let mut evaluator = TreeWalk::with_options(&ir, options);
@@ -92,6 +93,7 @@ fn local_ready_census_declines_trace_revalidated_impure_nodes() {
         min_cost: 1,
         stats_enabled: true,
         local_ready_enabled: true,
+        local_ready_min_cost: 1,
         ..MemoOptions::default()
     });
 
@@ -116,6 +118,7 @@ fn local_ready_directory_fails_closed_when_gc_is_enabled() {
         enabled: false,
         min_cost: 1,
         local_ready_enabled: true,
+        local_ready_min_cost: 1,
         ..MemoOptions::default()
     });
     let evaluator = TreeWalk::with_options(&ir, options);
@@ -128,11 +131,14 @@ fn local_ready_directory_fails_closed_when_gc_is_enabled() {
 }
 
 #[test]
-fn local_ready_exclusively_handles_raw_candidates_but_leaves_impure_memo_enabled() {
+fn local_ready_uses_independent_floor_and_leaves_impure_memo_enabled() {
+    assert_eq!(MemoOptions::default().local_ready_min_cost, 64);
     let ir = lower(DUPLICATED_SUBTREE);
     let mut options = memo_options(1);
     let mut memo = *options.memo_options();
     memo.local_ready_enabled = true;
+    memo.min_cost = u32::MAX;
+    memo.local_ready_min_cost = 1;
     options.set_memo_options(memo);
     let mut evaluator = TreeWalk::with_options(&ir, options);
 
@@ -245,6 +251,7 @@ fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
     options.set_memo_options(MemoOptions {
         enabled: false,
         min_cost: 1,
+        local_ready_min_cost: 1,
         stats_enabled: true,
         ..MemoOptions::default()
     });
