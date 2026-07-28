@@ -48,8 +48,9 @@ After the linear mapped-attribute ordering changes, the corrected L0/L1-only
 cold configuration produces the identical root derivation in 197,103,073,775
 instructions, 76,675,241,073 cycles, 25.57 seconds, and 4,288,420 KiB peak RSS.
 It still confirms only 49 demand-key hashes. This is the current acceptance
-baseline: it retains every in-process cache opportunity without importing data
-or paying cross-run persistence costs.
+configuration: it retains every in-process cache opportunity without importing
+data or paying cross-run persistence costs. Later parser, module-identity, and
+memo-index improvements below supersede its performance numbers.
 
 The serial evaluator constructs only the per-evaluator L0 table; L1 is a
 shared table created with a parallel-demand context. An opt-in memo-economics
@@ -75,6 +76,49 @@ evaluator-local stable identities, with explicit invalidation at relocation,
 instead of requiring every capture to have a cross-run hash. Independently,
 the terminal liveness evidence below still makes reclamation of historical
 arena state the factor-level memory path.
+
+An admission-floor sweep showed that the durable-key path can find substantial
+same-run reuse when it considers cheaper def-sites. Every row remained
+byte-identical and retained the 65,536-entry L0 cap:
+
+```text
+minimum cost   key confirmations   instructions       cycles          wall       max RSS
+64 (default)                  49   154,871,249,470   69,807,244,581   22.66 s   4,258,984 KiB
+16                         35,576   156,125,008,884   62,190,463,492   20.80 s   4,267,108 KiB
+4                         470,405   161,617,370,159   65,181,187,318   21.53 s   4,304,576 KiB
+0                         768,251   165,374,701,893   66,926,057,797   21.10 s   4,293,032 KiB
+```
+
+The cycle and wall figures are noisy, but retired instructions make the
+tradeoff clear: breadth alone is not a win. At floor 0 the cache recorded
+576,389 L0 hits, filled all 65,536 entries, and still executed 6.8 percent more
+instructions than the default. Most avoided computations were too cheap to
+repay key derivation, payload serialization, and replay. Floor 16 was much more
+selective: 2,338 admissions produced 26,681 hits, while the economics census
+assigned about 21 static cost units to each potential repeated occurrence.
+
+This changes the immediate cache priorities:
+
+1. remove the admission-decision hash from every claimed force;
+2. keep static cost selection rather than admitting every hashable def-site;
+3. give same-worker L0 a direct, GC-rooted value representation so it does not
+   serialize and rehydrate values solely to remain shareable with L1; and
+4. treat evaluator-local identity keys as an opt-in experiment until their
+   measured high-cost repeat population exceeds the existing raw-identity
+   census.
+
+The first implementation of item 1 replaced the global
+`HashMap<EvalNodeRef, ...>` with a module/node index. It reduced the default
+sample from 154.87 to 153.24 billion instructions, confirming that the lookup
+was material, but a dense node vector increased RSS for sparse high node ids.
+The retained design indexes modules directly and uses a sparse module-local
+`u32` table with a cheap integer mixer. It produced the identical derivation in
+153,408,986,114 instructions, 61,180,145,695 cycles, 22.48 seconds of native
+wall time, and 4,294,228 KiB RSS. This retains a 0.94-percent instruction
+reduction versus the preceding sparse global table without the dense index's
+roughly 149 MiB RSS spike. Repeating floor 16 on this build produced
+154,662,318,493 instructions and 61,859,913,110 cycles, so the default floor 64
+remains the acceptance setting until a direct-value L0 lowers hit replay cost.
 
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
@@ -108,14 +152,16 @@ semantic attribution but is not the acceptance baseline.
 Nix 2.24.12                       24,254,636,565     12,420,737,095  828,652 KiB
 AOS Candidate C, cache off       273,110,398,403    111,755,985,336  4,270,764 KiB
 AOS Candidate C, L0/L1           197,103,073,775     76,675,241,073  4,288,420 KiB
+AOS Candidate C, current L0      153,408,986,114     61,180,145,695  4,294,228 KiB
 target                            <12,127,318,283     <6,210,368,548  <414,326 KiB
 ```
 
-The current L0/L1 result is approximately 8.13 times stock instructions, 6.17
+The current L0 result is approximately 6.32 times stock instructions, 4.93
 times stock cycles, and 5.18 times stock peak RSS. Reaching the acceptance gates
-still requires about a 12.35-fold cycle reduction and a 10.35-fold peak-RSS
-reduction from this native result. More averaging cannot turn this architecture
-into a pass; attribution and architectural changes come first.
+still requires about a 12.65-fold instruction reduction, 9.85-fold cycle
+reduction, and 10.36-fold peak-RSS reduction from this native result. More
+averaging cannot turn this architecture into a pass; attribution and
+architectural changes come first.
 
 ## Allocation and liveness attribution
 
