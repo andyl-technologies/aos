@@ -26,28 +26,70 @@ The same pinned source and configuration also produced the identical root
 cross-version oracle fixture, but not yet full transitive `.drv` byte parity
 for the 2.34 compatibility profile.
 
-## Clean cold measurements
+## Cold-run definition
+
+A cold run starts with no cache records from outside that run. It does not
+disable caching: all in-process memo tiers remain enabled and may hit records
+produced earlier in the same run. Persistent cache population is measured as a
+separate axis because its purpose and dominant costs are cross-run reuse.
+Additive disk locations and network tiers are excluded because they import
+external records.
+
+The first profile below predated this correction and ran with the in-process
+content memo and persistent cache disabled. It remains useful as a cache-off
+diagnostic, but it is not the final cold acceptance result.
+
+An isolated in-process-memo rerun remained byte-correct but regressed from
+273,110,398,403 to 275,776,820,655 instructions and from 4,270,764 to
+4,526,540 KiB RSS. It confirmed only 49 demand-key hashes, so the current
+admission population did not repay the tier on that build.
+
+After the linear mapped-attribute ordering changes, the corrected L0/L1-only
+cold configuration produces the identical root derivation in 197,103,073,775
+instructions, 76,675,241,073 cycles, 25.57 seconds, and 4,288,420 KiB peak RSS.
+It still confirms only 49 demand-key hashes. This is the current acceptance
+baseline: it retains every in-process cache opportunity without importing data
+or paying cross-run persistence costs.
+
+Enabling a fresh persistent cache independently exposed a correctness defect:
+cached-import hydration did not remap the symbol carried by an
+`IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
+live symbol as `getFlake`. Commit `2ed97b959` fixes the remap. The corrected run
+is byte-identical, but persistent observation increases the result from
+273,110,398,403 to 883,156,805,561 instructions (106.4 seconds wall time) and
+records 2,297,608 persistent-expression key hashes. Write-behind produces an
+indistinguishable 883,209,114,173 instructions, proving the dominant cost is
+per-force identity/observation and payload work before writeback, not synchronous
+pack writes. Persistent caching therefore remains a separate optimization
+track; it is not part of the in-process cold acceptance result.
+
+## Cache-off diagnostic measurements
 
 The native leg was the fat-LTO release build with `candidate_c_value`,
-`AOS_NIX_BENCH_COLD_ONLY=1`, and `--nix-compat=2.24.12`. The stock leg was:
+`AOS_NIX_BENCH_COLD_ONLY=1`, and `--nix-compat=2.24.12`. The exactly matched
+stock leg was:
 
 ```text
-nix-instantiate --eval --strict flake-adapter.nix -A system.drvPath
+nix-instantiate flake-adapter.nix -A system
 ```
 
-Both demand the same selected `drvPath`; the native path additionally installs
-the already-computed in-memory derivation closure, matching normal Nix
-derivation materialization.
+Both instantiate and materialize the selected derivation. A separate
+`--eval --strict -A system.drvPath` stock leg produced identical evaluator
+counters but retired 1.8 percent fewer instructions, so it is useful for
+semantic attribution but is not the acceptance baseline.
 
 ```text
                          instructions       cycles          max RSS
-Nix 2.24.12              23,812,328,735     11,495,560,746  829,200 KiB
-AOS Candidate C         273,110,398,403    111,755,985,336  4,270,764 KiB
-target                   <11,906,164,368     <5,747,780,373  <414,600 KiB
+Nix 2.24.12                       24,254,636,565     12,420,737,095  828,652 KiB
+AOS Candidate C, cache off       273,110,398,403    111,755,985,336  4,270,764 KiB
+AOS Candidate C, L0/L1           197,103,073,775     76,675,241,073  4,288,420 KiB
+target                            <12,127,318,283     <6,210,368,548  <414,326 KiB
 ```
 
-The first native result is approximately 11.47 times the stock instruction
-count and 5.15 times its peak RSS. More averaging cannot turn this architecture
+The current L0/L1 result is approximately 8.13 times stock instructions, 6.17
+times stock cycles, and 5.18 times stock peak RSS. Reaching the acceptance gates
+still requires about a 12.35-fold cycle reduction and a 10.35-fold peak-RSS
+reduction from this native result. More averaging cannot turn this architecture
 into a pass; attribution and architectural changes come first.
 
 ## Allocation and liveness attribution
@@ -68,13 +110,16 @@ module IR                           326,130,731 bytes
 module source                        46,594,467 bytes
 ```
 
-Pinned C++ Nix reported 7,480,248 thunks, so native thunk-allocation traffic is
-about 64 percent greater before object-size and lifetime overhead is
-considered. The apparent 64-percent function-call difference is not directly
-comparable: the native counter increments before callable dispatch and includes
-primop and functor applications, while C++ Nix records those separately.
-Additional apply-tag attribution is required before claiming duplicate semantic
-execution.
+Pinned C++ Nix reported 7,480,248 allocated thunks and 6,229,845 avoided thunk
+sites. Native's 12,297,448 allocations are below stock's 13,710,093 potential
+sites, but its 4,335,752 allocated-and-unforced records expose substantially
+weaker thunk elision. This is an allocation-planning and lifetime target, not
+evidence of duplicate demand. Likewise, the apparent 64-percent function-call
+difference is not directly comparable: the native counter increments before
+callable dispatch and includes primop and functor applications, while C++ Nix
+records those separately. Subtracting native primop-resolution traffic leaves
+the counters within 0.4 percent, although a true apply-tag census is required
+for an exact comparison.
 
 The terminal weak-liveness census is more decisive:
 

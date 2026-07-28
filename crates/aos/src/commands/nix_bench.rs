@@ -399,9 +399,9 @@ fn run_one_benchmark(
     let mut cold_samples = Vec::with_capacity(samples);
     let mut warm_samples = Vec::with_capacity(samples);
     for _ in 0..samples {
-        // Fresh instance + fresh durable caches: the first run is a true cold
-        // eval, the second run reuses the now-warm instance. Both drop at the
-        // end of the iteration, so no state carries into the next cycle.
+        // A fresh evaluator makes the first run cold; the second run reuses only
+        // memo state populated by that evaluator. The instance drops at the end
+        // of the iteration, so no state carries into the next cycle.
         let (candidate, _cache_dir) = fresh_isolated_candidate(verbose, eval_config, spec)?;
         cold_samples.push(capture_native_sample(candidate.as_ref(), spec)?);
         warm_samples.push(capture_native_sample(candidate.as_ref(), spec)?);
@@ -527,8 +527,7 @@ fn capture_native_sample(
 ///
 /// # Errors
 ///
-/// Returns an error if the temp dir cannot be created, the cache root cannot be
-/// configured, or the evaluator cannot be built.
+/// Returns an error if the evaluator cannot be built.
 pub(super) fn fresh_isolated_candidate(
     verbose: u8,
     base_config: &NixEvalConfig,
