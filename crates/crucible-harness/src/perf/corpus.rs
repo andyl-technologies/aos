@@ -5,6 +5,7 @@
 //! scenario and the [`PerfBaseline`] the regression gate compares against. Their
 //! identities travel together  --  [`canonical_perf_bench_input`] pairs them.
 
+use super::canonical_host_parallelism_admissions;
 use super::model::{BenchLink, BenchNode, BenchScenario, CoverageMode};
 use super::report::{PerfBaseline, PerfBenchInput};
 
@@ -74,5 +75,6 @@ pub fn canonical_perf_bench_input() -> PerfBenchInput {
         corpus: canonical_bench_corpus(),
         cumulative_coverage: baseline.cumulative_coverage,
         baseline,
+        host_parallelism_admissions: canonical_host_parallelism_admissions(),
     }
 }

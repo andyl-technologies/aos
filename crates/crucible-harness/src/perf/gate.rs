@@ -8,6 +8,7 @@
 //! measure against  --  [`fork_cost_bytes`] ([PERF-16]), [`replay_cost_units`]
 //! ([PERF-18]), and [`peak_rss_units`] ([PERF-23]).
 
+use super::admission::validate_host_parallelism_admissions;
 use super::model::{
     BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode, RealizationConfig, SYNC_OVERHEAD_FAIL_PCT,
     THROUGHPUT_REGRESSION_MAX_PCT, evaluate_cost_model, realized_parallelism,
@@ -57,6 +58,8 @@ const PEAK_RSS_UNITS: u64 = 64;
 /// - **[PERF-23]** peak RSS scales with active state, not fork count.
 /// - **[PERF-27]** fleet throughput scales near-linearly to saturation.
 /// - **[PERF-28]** cumulative campaign coverage is monotone non-decreasing.
+/// - **[PERF-34]** every host-parallel mechanism has one admission class,
+///   argument, and proving gate.
 ///
 /// # Errors
 ///
@@ -66,6 +69,7 @@ pub fn run_perf_bench_gate(input: &PerfBenchInput) -> Result<PerfBenchReport, Pe
     let Some(scenario) = input.corpus.first() else {
         return Err(PerfBenchError::EmptyCorpus);
     };
+    validate_host_parallelism_admissions(&input.host_parallelism_admissions)?;
 
     assert_idle_compression(scenario)?;
     let latency_points = assert_latency_is_the_budget(scenario)?;

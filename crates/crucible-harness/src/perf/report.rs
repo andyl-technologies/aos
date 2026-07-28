@@ -11,6 +11,7 @@
 use std::error::Error;
 use std::fmt;
 
+use super::admission::HostParallelismAdmission;
 use super::model::{
     BenchScenario, COVERAGE_ON_MIN_PCT, SYNC_OVERHEAD_FAIL_PCT, THROUGHPUT_REGRESSION_MAX_PCT,
 };
@@ -182,6 +183,16 @@ pub enum PerfBenchError {
         /// The changed-page count whose capture cost fell out of order.
         changed_pages: u64,
     },
+    /// A required host-parallel mechanism has no admission record ([PERF-34]).
+    MissingHostParallelismAdmission {
+        /// Stable identifier of the missing mechanism.
+        mechanism: String,
+    },
+    /// A host-parallel admission is duplicate, empty, or lacks proof ([PERF-34]).
+    InvalidHostParallelismAdmission {
+        /// Stable identifier of the invalid mechanism.
+        mechanism: String,
+    },
 }
 
 impl fmt::Display for PerfBenchError {
@@ -278,6 +289,14 @@ impl fmt::Display for PerfBenchError {
                 formatter,
                 "snapshot capture must scale with changed state; regressed at {changed_pages} pages"
             ),
+            Self::MissingHostParallelismAdmission { mechanism } => write!(
+                formatter,
+                "host-parallel mechanism {mechanism} has no admission record"
+            ),
+            Self::InvalidHostParallelismAdmission { mechanism } => write!(
+                formatter,
+                "host-parallel mechanism {mechanism} has no unique class argument and proving gate"
+            ),
         }
     }
 }
@@ -309,4 +328,6 @@ pub struct PerfBenchInput {
     pub baseline: PerfBaseline,
     /// This run's cumulative campaign coverage ([PERF-28]).
     pub cumulative_coverage: u64,
+    /// Admission records for every enabled or experimentally gated host-parallel mechanism.
+    pub host_parallelism_admissions: Vec<HostParallelismAdmission>,
 }

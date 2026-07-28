@@ -40,6 +40,8 @@
 //!
 //! # Module map
 //!
+//! - [`admission`]  --  the Class A/Class B host-parallelism register and its
+//!   fail-closed validator ([PERF-34]).
 //! - [`model`]  --  the [`BenchScenario`] inputs, the [`CostModelBreakdown`], and
 //!   [`evaluate_cost_model`]/[`realized_parallelism`] (the SS25.1 evaluator).
 //! - [`sweeps`]  --  the SS25 parameter sweeps ([`latency_parallelism_sweep`],
@@ -56,12 +58,18 @@
 //!
 //! [`25-performance-targets.md`]: ../../../docs/rfcs/0010-crucible/25-performance-targets.md
 
+pub mod admission;
 pub mod corpus;
 pub mod gate;
 pub mod model;
 pub mod report;
 pub mod sweeps;
 
+pub use admission::{
+    DEVICE_WORK_OVERLAP, FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismAdmission,
+    HostParallelismClass, SEGMENT_PARALLEL_REPLAY, TRANSLATION_PREFETCH,
+    canonical_host_parallelism_admissions, validate_host_parallelism_admissions,
+};
 pub use corpus::{canonical_bench_corpus, canonical_perf_baseline, canonical_perf_bench_input};
 pub use gate::{fork_cost_bytes, peak_rss_units, replay_cost_units, run_perf_bench_gate};
 pub use model::{

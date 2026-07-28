@@ -23,11 +23,12 @@
 use std::time::Instant;
 
 use crucible_harness::perf::{
-    BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode, PerfBenchError,
+    BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode,
+    FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismClass, PerfBenchError,
     RealizationConfig, SYNC_OVERHEAD_FAIL_PCT, advance_syscall_count, canonical_bench_corpus,
-    canonical_host_profile, canonical_perf_bench_input, core_count_speedup_sweep,
-    evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep, perf_corpus_digest,
-    realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
+    canonical_host_parallelism_admissions, canonical_host_profile, canonical_perf_bench_input,
+    core_count_speedup_sweep, evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep,
+    perf_corpus_digest, realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
     scenario_result_fingerprint, snapshot_latency_series,
 };
 
@@ -464,4 +465,56 @@ fn gate_perf_bench_accepts_single_node_scenario() {
         run_perf_bench_gate(&input).is_ok(),
         "a single-node scenario must pass the gate"
     );
+}
+
+/// [PERF-34] — every host-parallel mechanism records exactly one admission
+/// class, a non-empty class argument, and at least one proving gate.
+#[test]
+fn gate_perf_bench_requires_complete_host_parallelism_admission_register() {
+    let admissions = canonical_host_parallelism_admissions();
+    assert!(
+        admissions.iter().any(|admission| {
+            admission.mechanism == HOST_WORKER_POOL
+                && admission.class == HostParallelismClass::CommitPinnedToVirtualTime
+        }),
+        "the scheduler worker pool must be admitted as Class B"
+    );
+    assert!(
+        admissions.iter().any(|admission| {
+            admission.mechanism == FINGERPRINT_DIGEST_OFFLOAD
+                && admission.class == HostParallelismClass::OutsideObservableBoundary
+        }),
+        "fingerprint digestion must be admitted as Class A"
+    );
+
+    let mut missing = canonical_perf_bench_input();
+    missing
+        .host_parallelism_admissions
+        .retain(|admission| admission.mechanism != HOST_WORKER_POOL);
+    let error = run_perf_bench_gate(&missing).expect_err("missing admission must fail");
+    assert!(matches!(
+        error,
+        PerfBenchError::MissingHostParallelismAdmission { mechanism }
+            if mechanism == HOST_WORKER_POOL
+    ));
+}
+
+/// [PERF-34] — an admitted mechanism without a class argument or proving gate
+/// fails closed instead of being tolerance-banded.
+#[test]
+fn gate_perf_bench_rejects_unproved_host_parallelism_admission() {
+    let mut input = canonical_perf_bench_input();
+    let admission = input
+        .host_parallelism_admissions
+        .iter_mut()
+        .find(|admission| admission.mechanism == FINGERPRINT_DIGEST_OFFLOAD)
+        .expect("canonical fingerprint admission");
+    admission.proving_gates.clear();
+
+    let error = run_perf_bench_gate(&input).expect_err("unproved admission must fail");
+    assert!(matches!(
+        error,
+        PerfBenchError::InvalidHostParallelismAdmission { mechanism }
+            if mechanism == FINGERPRINT_DIGEST_OFFLOAD
+    ));
 }
