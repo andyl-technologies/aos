@@ -367,6 +367,73 @@ pub(super) enum ReadyCellCaptures {
     Many(Box<[u64]>),
 }
 
+/// Direct captured-environment coordinates for one Ready-cell def-site.
+///
+/// Coordinates use the same canonical order as force-cache dependencies.
+/// Zero, one, and two-slot plans stay inline because those shapes dominate
+/// the nixpkgs census.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReadyCellCapturePlan {
+    /// The expression has no captured slots.
+    Empty,
+    /// The expression directly captures one slot.
+    One((usize, u32)),
+    /// The expression directly captures two slots.
+    Two([(usize, u32); 2]),
+    /// The expression directly captures more than two slots.
+    Many(Box<[(usize, u32)]>),
+}
+
+/// Cached static classification and direct-slot plan for one def-site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReadyCellPlanDecision {
+    /// The body is safe, reaches the cost floor, and has only direct captures.
+    Eligible {
+        /// Captured frame count against which the coordinates were validated.
+        captured_frame_count: usize,
+        /// Direct captured-environment coordinates in canonical order.
+        captures: ReadyCellCapturePlan,
+        /// Static recomputation cost attributed to a Ready hit.
+        static_cost_units: u32,
+    },
+    /// The body is effectful or unsafe to reuse without observation replay.
+    EffectOrUnsafe,
+    /// The body requires a projection rather than direct slot identity.
+    NonSlot,
+    /// The body is safe but does not reach the configured admission floor.
+    BelowFloor,
+    /// Static dependency analysis could not validate this body.
+    Unavailable,
+}
+
+/// Per-evaluator Ready-cell plan cache shared by census and active lookup.
+///
+/// The cache is absent unless either opt-in Ready-cell mode is active. Each
+/// exact module-qualified def-site pays dependency analysis at most once;
+/// later forces perform one indexed lookup and read their planned slots.
+#[derive(Debug, Default)]
+pub(super) struct ReadyCellPlanCache {
+    plans: HashMap<EvalNodeRef, ReadyCellPlanDecision>,
+}
+
+impl ReadyCellPlanCache {
+    /// Returns the cached decision for one exact def-site.
+    pub(super) fn get(&self, def_site: EvalNodeRef) -> Option<&ReadyCellPlanDecision> {
+        self.plans.get(&def_site)
+    }
+
+    /// Records a validated decision for one exact def-site.
+    pub(super) fn insert(&mut self, def_site: EvalNodeRef, decision: ReadyCellPlanDecision) {
+        self.plans.insert(def_site, decision);
+    }
+
+    /// Returns the number of classified def-sites.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.plans.len()
+    }
+}
+
 impl ReadyCellCaptures {
     /// Returns the number of captured identities.
     pub(super) fn len(&self) -> usize {
@@ -433,21 +500,10 @@ struct ReadyCellDirectoryEntry {
 #[derive(Debug, Default)]
 pub(super) struct ReadyCellDirectory {
     entries: HashMap<EvalNodeRef, ReadyCellDirectoryEntry>,
-    static_costs: HashMap<EvalNodeRef, Option<u32>>,
     served_hits: u64,
 }
 
 impl ReadyCellDirectory {
-    /// Returns a cached strictly speculable static cost classification.
-    pub(super) fn static_cost(&self, def_site: EvalNodeRef) -> Option<Option<u32>> {
-        self.static_costs.get(&def_site).copied()
-    }
-
-    /// Records a strictly speculable static cost classification.
-    pub(super) fn remember_static_cost(&mut self, def_site: EvalNodeRef, cost: Option<u32>) {
-        self.static_costs.insert(def_site, cost);
-    }
-
     /// Returns the weak source thunk when the resident recipe matches exactly.
     pub(super) fn probe_source(&self, recipe: &ReadyCellRecipe) -> Option<Value> {
         let entry = self.entries.get(&recipe.def_site)?;
@@ -482,7 +538,6 @@ impl ReadyCellDirectory {
     /// Clears all weak identities before their backing heap can be invalidated.
     pub(super) fn clear(&mut self) {
         self.entries.clear();
-        self.static_costs.clear();
     }
 
     /// Returns the number of resident def-sites.
@@ -542,20 +597,9 @@ pub(super) struct ReadyCellObservation {
 pub(super) struct ReadyCellCensus {
     recipes: HashMap<ReadyCellRecipe, ReadyCellRecipeState>,
     def_sites: HashMap<EvalNodeRef, ReadyCellDefSiteWays>,
-    static_costs: HashMap<EvalNodeRef, Option<u32>>,
 }
 
 impl ReadyCellCensus {
-    /// Returns a cached safe static cost classification for `def_site`.
-    pub(super) fn static_cost(&self, def_site: EvalNodeRef) -> Option<Option<u32>> {
-        self.static_costs.get(&def_site).copied()
-    }
-
-    /// Records the safe static cost classification for `def_site`.
-    pub(super) fn remember_static_cost(&mut self, def_site: EvalNodeRef, cost: Option<u32>) {
-        self.static_costs.insert(def_site, cost);
-    }
-
     /// Records the start of one exact recipe force.
     pub(super) fn observe(&mut self, recipe: &ReadyCellRecipe) -> ReadyCellObservation {
         let ways = self.def_sites.entry(recipe.def_site).or_default();

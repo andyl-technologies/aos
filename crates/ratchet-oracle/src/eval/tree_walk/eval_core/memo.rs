@@ -45,7 +45,8 @@ use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
-    ReadyCellCandidate, ReadyCellCaptures, ReadyCellRecipe, SharedMemoTable,
+    ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellPlanDecision,
+    ReadyCellRecipe, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -265,83 +266,65 @@ impl TreeWalk {
             return None;
         }
 
-        let cached_cost = self
-            .ready_cell_census
+        let env = self.captured_env_ref(env);
+        if self
+            .ready_cell_plans
             .as_ref()
-            .and_then(|census| census.static_cost(*body))
-            .or_else(|| {
-                self.ready_cell_directory
-                    .as_ref()
-                    .and_then(|directory| directory.static_cost(*body))
-            });
-        let static_cost_units = match cached_cost {
-            Some(cost) => cost,
-            None => {
-                let module = self.modules.get(body.module().index())?;
-                let cost = Self::subtree_is_speculable(&module.ir, &self.symbols, body.id())
-                    .then(|| self.memo_static_cost(*body))
-                    .flatten();
-                if let Some(census) = self.ready_cell_census.as_mut() {
-                    census.remember_static_cost(*body, cost);
-                }
-                if let Some(directory) = self.ready_cell_directory.as_mut() {
-                    directory.remember_static_cost(*body, cost);
-                }
-                cost
+            .and_then(|plans| plans.get(*body))
+            .is_none()
+        {
+            let plan = self.compute_ready_cell_plan(*body, env.frame_count());
+            self.ready_cell_plans.as_mut()?.insert(*body, plan);
+        }
+        let plan = self.ready_cell_plans.as_ref()?.get(*body)?;
+        let (capture_plan, static_cost_units) = match plan {
+            ReadyCellPlanDecision::Eligible {
+                captured_frame_count,
+                captures,
+                static_cost_units,
+            } if *captured_frame_count == env.frame_count() => (captures, *static_cost_units),
+            ReadyCellPlanDecision::Eligible { .. } | ReadyCellPlanDecision::Unavailable => {
+                return None;
+            }
+            ReadyCellPlanDecision::BelowFloor => return None,
+            ReadyCellPlanDecision::EffectOrUnsafe => {
+                self.stats
+                    .memo_economics
+                    .ready_cell_effect_or_unsafe_declines = self
+                    .stats
+                    .memo_economics
+                    .ready_cell_effect_or_unsafe_declines
+                    .saturating_add(1);
+                return None;
+            }
+            ReadyCellPlanDecision::NonSlot => {
+                self.stats.memo_economics.ready_cell_non_slot_declines = self
+                    .stats
+                    .memo_economics
+                    .ready_cell_non_slot_declines
+                    .saturating_add(1);
+                return None;
             }
         };
-        let Some(static_cost_units) = static_cost_units else {
-            self.stats
-                .memo_economics
-                .ready_cell_effect_or_unsafe_declines = self
-                .stats
-                .memo_economics
-                .ready_cell_effect_or_unsafe_declines
-                .saturating_add(1);
-            return None;
-        };
-        if static_cost_units < self.options.memo_options().min_cost {
-            return None;
-        }
 
-        let env = self.captured_env_ref(env);
-        let dependencies = {
-            let module = self.modules.get(body.module().index())?;
-            Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())?
-        };
-        if dependencies
-            .iter()
-            .any(|dependency| !matches!(dependency, CapturedFreeVariableDependency::Slot { .. }))
-        {
-            self.stats.memo_economics.ready_cell_non_slot_declines = self
-                .stats
-                .memo_economics
-                .ready_cell_non_slot_declines
-                .saturating_add(1);
-            return None;
-        }
-        let capture_identity = |dependency: &CapturedFreeVariableDependency| {
-            let CapturedFreeVariableDependency::Slot { frame_index, slot } = dependency else {
-                return None;
-            };
-            self.env_ref_value_at_index(env, *frame_index, *slot)
+        let capture_identity = |(frame_index, slot): (usize, u32)| {
+            self.env_ref_value_at_index(env, frame_index, slot)
                 .map(Value::relocation_sensitive_identity_bits)
         };
-        let captures = match dependencies.len() {
-            0 => ReadyCellCaptures::Empty,
-            1 => ReadyCellCaptures::One(capture_identity(dependencies.iter().next()?)?),
-            2 => {
-                let mut dependencies = dependencies.iter();
-                ReadyCellCaptures::Two([
-                    capture_identity(dependencies.next()?)?,
-                    capture_identity(dependencies.next()?)?,
-                ])
+        let captures = match capture_plan {
+            ReadyCellCapturePlan::Empty => ReadyCellCaptures::Empty,
+            ReadyCellCapturePlan::One(capture) => {
+                ReadyCellCaptures::One(capture_identity(*capture)?)
             }
-            _ => {
+            ReadyCellCapturePlan::Two(captures) => ReadyCellCaptures::Two([
+                capture_identity(captures[0])?,
+                capture_identity(captures[1])?,
+            ]),
+            ReadyCellCapturePlan::Many(plan) => {
                 let mut captures = Vec::new();
-                captures.try_reserve_exact(dependencies.len()).ok()?;
-                for dependency in &dependencies {
-                    captures.push(capture_identity(dependency)?);
+                captures.try_reserve_exact(plan.len()).ok()?;
+                for capture in plan.iter().copied() {
+                    captures.push(capture_identity(capture)?);
                 }
                 ReadyCellCaptures::Many(captures.into_boxed_slice())
             }
@@ -350,6 +333,84 @@ impl TreeWalk {
             recipe: ReadyCellRecipe::new(*body, captures),
             static_cost_units,
         })
+    }
+
+    /// Classifies one Ready-cell def-site and validates its direct-slot plan.
+    fn compute_ready_cell_plan(
+        &self,
+        body: EvalNodeRef,
+        captured_frame_count: usize,
+    ) -> ReadyCellPlanDecision {
+        let Some(module) = self.modules.get(body.module().index()) else {
+            return ReadyCellPlanDecision::Unavailable;
+        };
+        let Some(static_cost_units) =
+            Self::subtree_is_speculable(&module.ir, &self.symbols, body.id())
+                .then(|| self.memo_static_cost(body))
+                .flatten()
+        else {
+            return ReadyCellPlanDecision::EffectOrUnsafe;
+        };
+        if static_cost_units < self.options.memo_options().min_cost {
+            return ReadyCellPlanDecision::BelowFloor;
+        }
+        let Some(dependencies) =
+            Self::captured_free_variable_dependencies(&module.ir, body.id(), captured_frame_count)
+        else {
+            return ReadyCellPlanDecision::Unavailable;
+        };
+        if dependencies
+            .iter()
+            .any(|dependency| !matches!(dependency, CapturedFreeVariableDependency::Slot { .. }))
+        {
+            return ReadyCellPlanDecision::NonSlot;
+        }
+        let coordinate = |dependency: &CapturedFreeVariableDependency| {
+            let CapturedFreeVariableDependency::Slot { frame_index, slot } = dependency else {
+                return None;
+            };
+            Some((*frame_index, *slot))
+        };
+        let captures = match dependencies.len() {
+            0 => ReadyCellCapturePlan::Empty,
+            1 => {
+                let Some(dependency) = dependencies.iter().next() else {
+                    return ReadyCellPlanDecision::Unavailable;
+                };
+                let Some(capture) = coordinate(dependency) else {
+                    return ReadyCellPlanDecision::NonSlot;
+                };
+                ReadyCellCapturePlan::One(capture)
+            }
+            2 => {
+                let mut dependencies = dependencies.iter();
+                let Some(first) = dependencies.next().and_then(coordinate) else {
+                    return ReadyCellPlanDecision::NonSlot;
+                };
+                let Some(second) = dependencies.next().and_then(coordinate) else {
+                    return ReadyCellPlanDecision::NonSlot;
+                };
+                ReadyCellCapturePlan::Two([first, second])
+            }
+            _ => {
+                let mut captures = Vec::new();
+                if captures.try_reserve_exact(dependencies.len()).is_err() {
+                    return ReadyCellPlanDecision::Unavailable;
+                }
+                for dependency in &dependencies {
+                    let Some(capture) = coordinate(dependency) else {
+                        return ReadyCellPlanDecision::NonSlot;
+                    };
+                    captures.push(capture);
+                }
+                ReadyCellCapturePlan::Many(captures.into_boxed_slice())
+            }
+        };
+        ReadyCellPlanDecision::Eligible {
+            captured_frame_count,
+            captures,
+            static_cost_units,
+        }
     }
 
     /// Serves an exact local recipe only from a still-Ready source thunk.
@@ -1268,6 +1329,14 @@ impl TreeWalk {
             .map_or((0, 0), |directory| {
                 (directory.len(), directory.served_hits())
             })
+    }
+
+    /// Returns the number of cached Ready-cell def-site plans, for tests.
+    #[cfg(test)]
+    pub(crate) fn test_ready_cell_plan_count(&self) -> usize {
+        self.ready_cell_plans
+            .as_ref()
+            .map_or(0, super::super::memo::ReadyCellPlanCache::len)
     }
 
     /// Poisons a resident L0 entry's payload under `key`, for CHECK tests.

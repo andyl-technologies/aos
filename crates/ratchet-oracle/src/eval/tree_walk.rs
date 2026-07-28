@@ -658,6 +658,9 @@ pub struct TreeWalk {
     // so construction is restricted to the monotonic serial GC-off heap.
     // Every hit rechecks that the source cell still has a cached value.
     ready_cell_directory: Option<memo::ReadyCellDirectory>,
+    // Static direct-slot plans shared by the Ready-cell census and active
+    // directory. Absent unless one of those opt-in modes is actually active.
+    ready_cell_plans: Option<memo::ReadyCellPlanCache>,
     // Per-def-site static admission decisions for the content memo, computed
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the

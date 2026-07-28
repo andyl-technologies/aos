@@ -70,6 +70,10 @@ fn local_ready_directory_serves_a_completed_exact_recipe() {
         served_hits >= 1,
         "a later exact recipe should reuse a still-Ready source cell"
     );
+    assert!(
+        evaluator.test_ready_cell_plan_count() >= entries,
+        "each resident directory def-site should reuse one cached slot plan"
+    );
 }
 
 #[test]
