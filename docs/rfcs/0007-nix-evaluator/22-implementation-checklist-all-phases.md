@@ -13511,7 +13511,7 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       The direct path now accepts polymorphic exact call-target sets and does
       target work. Real one-word target bodies returning the call parameter, a
       target-frame local, or an integer literal lower atomically into mixed
-      functions. Backend v4 validates every guarded target, dispatches the
+      functions. Backend v5 validates every guarded target, dispatches the
       prevalidated ordinal without callbacks, computes the selected local or
       literal result, and carries it into the force/update corridor. Its entry
       now also admits parameter, frame-local, and integer-literal operands,
@@ -13520,6 +13520,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `x: 42` target now lowers through packed STG and the mixed plan, compiles
       to the callback-free artifact, and returns 42. Eight core translator
       tests and six native-backend tests pass (two PMU probes stay ignored).
+      Candidate-C builds now encode every admitted integer operation as the
+      real compressed `Value` word rather than a synthetic raw `i64`; values
+      outside the inline `i32` range decline before compilation. The same six
+      backend tests pass under both baseline and Candidate-C carrier features.
       This expands the real-plan grammar but is not yet connected to primary
       runtime admission and receives no whole-process speed credit.
       Independent memory-source exploration finds no hidden easy pool:

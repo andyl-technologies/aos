@@ -43,7 +43,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 4;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 5;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -905,7 +905,12 @@ fn admit_corridor(
                 MixedTerminator::Return {
                     value: return_value,
                 },
-            ) if destination == return_value => AdmittedCallResult::Constant(*value as u64),
+            ) if destination == return_value => {
+                let Some(value) = encode_integer_constant(*value) else {
+                    return unsupported("guarded callee integer is not inline-representable");
+                };
+                AdmittedCallResult::Constant(value)
+            }
             _ => return unsupported("guarded callee is not a direct scalar return"),
         };
         call_results.push(result);
@@ -969,9 +974,8 @@ fn admit_entry_operand(
             MixedOp::ConstInt {
                 destination,
                 value: constant,
-            } if destination == value => {
-                Some((AdmittedEntryOperand::Constant(constant as u64), Some(index)))
-            }
+            } if destination == value => encode_integer_constant(constant)
+                .map(|constant| (AdmittedEntryOperand::Constant(constant), Some(index))),
             _ => None,
         })
 }
@@ -983,15 +987,19 @@ fn admit_claimed_result(
     ready: MixedBlockId,
 ) -> Result<ClaimedResult, JitMixedSuperblockCompileError> {
     let block = block(plan, block_id)?;
-    let value = match operations(plan, block)? {
-        [MixedOp::LoadLocal { destination, slot }] => {
-            (*destination, ClaimedResult::FrameLocal(*slot))
-        }
-        [MixedOp::ConstInt { destination, value }] => {
-            (*destination, ClaimedResult::Constant(*value as u64))
-        }
-        _ => return unsupported("claimed force edge has unsupported operations"),
-    };
+    let value =
+        match operations(plan, block)? {
+            [MixedOp::LoadLocal { destination, slot }] => {
+                (*destination, ClaimedResult::FrameLocal(*slot))
+            }
+            [MixedOp::ConstInt { destination, value }] => (
+                *destination,
+                ClaimedResult::Constant(encode_integer_constant(*value).ok_or_else(|| {
+                    unsupported_error("claimed integer is not inline-representable")
+                })?),
+            ),
+            _ => return unsupported("claimed force edge has unsupported operations"),
+        };
     let MixedTerminator::Update {
         value: update_value,
         result,
@@ -1043,6 +1051,18 @@ fn unsupported<T>(reason: &'static str) -> Result<T, JitMixedSuperblockCompileEr
 
 const fn unsupported_error(reason: &'static str) -> JitMixedSuperblockCompileError {
     JitMixedSuperblockCompileError::UnsupportedPlan { reason }
+}
+
+fn encode_integer_constant(value: i64) -> Option<u64> {
+    #[cfg(feature = "candidate_c_value")]
+    {
+        let value = i32::try_from(value).ok()?;
+        Some(ratchet_value::value::Value::int(i64::from(value)).transient_identity_bits())
+    }
+    #[cfg(not(feature = "candidate_c_value"))]
+    {
+        Some(value as u64)
+    }
 }
 
 fn emit_entry_operand(
@@ -1574,7 +1594,8 @@ mod tests {
         let native = compile_mixed_superblock(&plan, 0).expect("polymorphic corridor compiles");
         let frames = [9, 40];
         let calls = [JitMixedSuperblockCallDecision::target(8, 1, 0)];
-        let forces = [JitMixedSuperblockForceDecision::ready(55, 55)];
+        let value = encode_integer_constant(55).expect("fixture integer is representable");
+        let forces = [JitMixedSuperblockForceDecision::ready(value, value)];
         let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
         let mut activation =
             JitMixedSuperblockActivation::new(8, 0, &frames, 1, &calls, &forces, &mut updates)
@@ -1582,7 +1603,7 @@ mod tests {
 
         assert_eq!(
             native.run(&mut activation),
-            JitMixedSuperblockOutcome::Complete(55)
+            JitMixedSuperblockOutcome::Complete(value)
         );
         assert_eq!(activation.consumed_calls(), 1);
         assert_eq!(activation.consumed_forces(), 1);
@@ -1594,7 +1615,8 @@ mod tests {
         let native = compile_mixed_superblock(&plan, 0).expect("real scalar corridor compiles");
         let frames = [8];
         let calls = [JitMixedSuperblockCallDecision::target(8, 0, 0)];
-        let forces = [JitMixedSuperblockForceDecision::ready(42, 42)];
+        let value = encode_integer_constant(42).expect("fixture integer is representable");
+        let forces = [JitMixedSuperblockForceDecision::ready(value, value)];
         let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
         let mut activation =
             JitMixedSuperblockActivation::new(777, 0, &frames, 1, &calls, &forces, &mut updates)
@@ -1602,7 +1624,7 @@ mod tests {
 
         assert_eq!(
             native.run(&mut activation),
-            JitMixedSuperblockOutcome::Complete(42)
+            JitMixedSuperblockOutcome::Complete(value)
         );
         assert_eq!(activation.consumed_calls(), 1);
         assert_eq!(activation.consumed_forces(), 1);
