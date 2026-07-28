@@ -305,6 +305,19 @@ The specialization remains opt-in. A subsequent active version needs a
 module-local preclassification or compact indexed site state so ineligible
 forces do not pay a general hash-table lookup.
 
+Replacing the global `HashMap<EvalNodeRef, ...>` plan table with sparse
+module-indexed `HashMap<u32, ...>` tables and the existing specialized integer
+mixer recovered most of that loss. Two exact pairs measured +0.167 and +0.207
+percent instructions, for a +0.187-percent mean, while demand confirmations
+remained 49 versus 9. Cycle, RSS, and wall directions disagreed between pairs.
+A low-overhead profile of the preceding build had attributed 0.81 percent self
+cycles directly to `ReadyCellPlanCache::probe_empty`, with generic
+`BuildHasher::hash_one` sites contributing additional aggregate cost; normal
+force completion was only 0.07 percent. Module indexing is therefore retained,
+but empty replay remains opt-in. A small module-local hot-plan PIC is the next
+bounded experiment: it can bypass even the specialized sparse-map hash for
+temporally repeated def-sites without allocating a dense max-IR-id table.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
