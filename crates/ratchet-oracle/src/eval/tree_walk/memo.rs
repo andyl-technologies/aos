@@ -50,6 +50,9 @@ use crate::value::compressed::CompressedValueKind;
 /// fixed cost; probes hash the key's hot component to pick a shard.
 const SHARED_MEMO_SHARDS: usize = 16;
 
+/// Number of slots in the active stable-negative Ready-plan filter.
+const READY_STABLE_NEGATIVE_FILTER_SLOTS: usize = 1_024;
+
 /// A per-def-site static admission decision for the content memo.
 ///
 /// Computed once per `(module, node)` def-site and cached on the evaluator so
@@ -430,14 +433,41 @@ pub(super) enum TypedLocalReadyProbe {
 /// The cache is absent unless either opt-in Ready-cell mode is active. Each
 /// exact module-qualified def-site pays dependency analysis at most once;
 /// later forces perform one indexed lookup and read their planned slots.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct ReadyCellPlanCache {
     modules: Vec<Option<ReadyCellPlanModuleTable>>,
+    /// Bounded exact stable-negative front filter for EMPTY_ONLY probes.
+    stable_negative_filter: ReadyStableNegativeFilter,
     #[cfg(test)]
     empty_served_hits: u64,
+    #[cfg(test)]
+    empty_authoritative_probes: u64,
+}
+
+impl Default for ReadyCellPlanCache {
+    fn default() -> Self {
+        Self {
+            modules: Vec::new(),
+            stable_negative_filter: ReadyStableNegativeFilter::new(false),
+            #[cfg(test)]
+            empty_served_hits: 0,
+            #[cfg(test)]
+            empty_authoritative_probes: 0,
+        }
+    }
 }
 
 impl ReadyCellPlanCache {
+    /// Creates an empty active plan cache with optional terminal diagnostics.
+    pub(super) fn from_env() -> Self {
+        let report_enabled = std::env::var("AOS_NIX_READY_STABLE_NEGATIVE_FILTER_CENSUS")
+            .is_ok_and(|value| value == "1");
+        Self {
+            stable_negative_filter: ReadyStableNegativeFilter::new(report_enabled),
+            ..Self::default()
+        }
+    }
+
     /// Returns the cached decision for one exact def-site.
     pub(super) fn get(&self, def_site: EvalNodeRef) -> Option<&ReadyCellPlanDecision> {
         let module = self.modules.get(def_site.module().index())?.as_ref()?;
@@ -452,6 +482,7 @@ impl ReadyCellPlanCache {
 
     /// Records a validated decision for one exact def-site.
     pub(super) fn insert(&mut self, def_site: EvalNodeRef, decision: ReadyCellPlanDecision) {
+        self.stable_negative_filter.invalidate(def_site);
         let module_index = def_site.module().index();
         if self.modules.len() <= module_index {
             self.modules.resize_with(module_index + 1, || None);
@@ -467,6 +498,21 @@ impl ReadyCellPlanCache {
         def_site: EvalNodeRef,
         captured_frame_count: usize,
     ) -> ReadyCellEmptyProbe {
+        if self.stable_negative_filter.probe(def_site) {
+            return ReadyCellEmptyProbe::Ineligible;
+        }
+        #[cfg(test)]
+        {
+            self.empty_authoritative_probes = self.empty_authoritative_probes.saturating_add(1);
+        }
+        let Some(stable_negative) = self.get(def_site).map(Self::is_stable_negative) else {
+            return ReadyCellEmptyProbe::Unknown;
+        };
+        if stable_negative {
+            self.stable_negative_filter
+                .observe_stable_negative(def_site);
+            return ReadyCellEmptyProbe::Ineligible;
+        }
         let Some(decision) = self.get_mut(def_site) else {
             return ReadyCellEmptyProbe::Unknown;
         };
@@ -490,6 +536,26 @@ impl ReadyCellPlanCache {
             self.empty_served_hits = self.empty_served_hits.saturating_add(1);
         }
         ReadyCellEmptyProbe::Hit(value)
+    }
+
+    /// Returns whether a resident plan can never satisfy an EMPTY_ONLY probe.
+    fn is_stable_negative(decision: &ReadyCellPlanDecision) -> bool {
+        match decision {
+            ReadyCellPlanDecision::Eligible {
+                captures: ReadyCellCapturePlan::Empty,
+                ..
+            } => false,
+            ReadyCellPlanDecision::Eligible { .. }
+            | ReadyCellPlanDecision::EffectOrUnsafe
+            | ReadyCellPlanDecision::NonSlot
+            | ReadyCellPlanDecision::BelowFloor
+            | ReadyCellPlanDecision::Unavailable => true,
+        }
+    }
+
+    /// Emits active-filter economics when explicitly requested.
+    pub(super) fn emit_stable_negative_filter_report(&self) {
+        self.stable_negative_filter.emit_report();
     }
 
     /// Publishes one successfully completed capture-free result.
@@ -557,6 +623,145 @@ impl ReadyCellPlanCache {
             })
             .count();
         (resident, self.empty_served_hits)
+    }
+
+    /// Returns EMPTY_ONLY probes that reached the authoritative sparse map.
+    #[cfg(test)]
+    pub(super) const fn empty_authoritative_probes(&self) -> u64 {
+        self.empty_authoritative_probes
+    }
+}
+
+/// Optional counters for the active 1,024-slot stable-negative filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReadyStableNegativeFilterReport {
+    probes: u64,
+    stable_negative_observations: u64,
+    stable_negative_inserts: u64,
+    exact_filter_hits: u64,
+    collisions: u64,
+    fallbacks: u64,
+    invalidations: u64,
+}
+
+/// Direct-mapped active filter for intrinsically non-empty Ready plans.
+///
+/// An exact slot hit answers `Ineligible` before the sparse
+/// [`ReadyCellPlanCache`] lookup. Empty slots and complete-key mismatches always
+/// fall through to that authoritative map. Slots retain only exact
+/// module-qualified def-sites whose resident classifications cannot satisfy
+/// EMPTY_ONLY: unsafe, non-slot, below-floor, unavailable, or eligible with a
+/// non-empty capture plan. An eligible empty plan with a mismatched frame count
+/// is deliberately not stable-negative because another instance can carry the
+/// planned frame count.
+///
+/// Inserting any authoritative plan invalidates a matching slot before the
+/// sparse map is changed. Publication and clearing need no coherence action:
+/// those operations apply only to eligible empty plans, which are never stored
+/// in this filter.
+#[derive(Debug)]
+struct ReadyStableNegativeFilter {
+    slots: Box<[Option<EvalNodeRef>]>,
+    report: Option<ReadyStableNegativeFilterReport>,
+}
+
+impl ReadyStableNegativeFilter {
+    /// Creates an empty active filter with optional economics counters.
+    fn new(report_enabled: bool) -> Self {
+        Self {
+            slots: vec![None; READY_STABLE_NEGATIVE_FILTER_SLOTS].into_boxed_slice(),
+            report: report_enabled.then(ReadyStableNegativeFilterReport::default),
+        }
+    }
+
+    /// Returns the direct-mapped slot for an exact module-qualified def-site.
+    fn slot_index(def_site: EvalNodeRef) -> usize {
+        let module = u64::try_from(def_site.module().index()).unwrap_or(u64::MAX);
+        let key = (module << 32) ^ u64::from(def_site.id().as_u32());
+        let mixed = key.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let folded = mixed ^ (mixed >> 33);
+        usize::try_from(folded & ((READY_STABLE_NEGATIVE_FILTER_SLOTS as u64) - 1))
+            .unwrap_or_default()
+    }
+
+    /// Returns whether the exact stable negative answered this probe.
+    fn probe(&mut self, def_site: EvalNodeRef) -> bool {
+        if let Some(report) = self.report.as_mut() {
+            report.probes = report.probes.saturating_add(1);
+        }
+        match self.slots[Self::slot_index(def_site)] {
+            Some(resident) if resident == def_site => {
+                if let Some(report) = self.report.as_mut() {
+                    report.exact_filter_hits = report.exact_filter_hits.saturating_add(1);
+                    report.stable_negative_observations =
+                        report.stable_negative_observations.saturating_add(1);
+                }
+                true
+            }
+            Some(_) => {
+                if let Some(report) = self.report.as_mut() {
+                    report.collisions = report.collisions.saturating_add(1);
+                    report.fallbacks = report.fallbacks.saturating_add(1);
+                }
+                false
+            }
+            None => {
+                if let Some(report) = self.report.as_mut() {
+                    report.fallbacks = report.fallbacks.saturating_add(1);
+                }
+                false
+            }
+        }
+    }
+
+    /// Observes and, when necessary, installs one authoritative negative.
+    fn observe_stable_negative(&mut self, def_site: EvalNodeRef) {
+        if let Some(report) = self.report.as_mut() {
+            report.stable_negative_observations =
+                report.stable_negative_observations.saturating_add(1);
+        }
+        let slot = &mut self.slots[Self::slot_index(def_site)];
+        if *slot == Some(def_site) {
+            return;
+        }
+        *slot = Some(def_site);
+        if let Some(report) = self.report.as_mut() {
+            report.stable_negative_inserts = report.stable_negative_inserts.saturating_add(1);
+        }
+    }
+
+    /// Invalidates a matching negative before its authoritative plan changes.
+    fn invalidate(&mut self, def_site: EvalNodeRef) {
+        let slot = &mut self.slots[Self::slot_index(def_site)];
+        if *slot != Some(def_site) {
+            return;
+        }
+        *slot = None;
+        if let Some(report) = self.report.as_mut() {
+            report.invalidations = report.invalidations.saturating_add(1);
+        }
+    }
+
+    /// Emits one greppable strict-JSON terminal report.
+    fn emit_report(&self) {
+        let Some(report) = self.report.as_ref() else {
+            return;
+        };
+        eprintln!(
+            "aos_nix_ready_stable_negative_filter_census \
+             {{\"version\":2,\"slots\":{},\"active\":true,\
+             \"probes\":{},\"stable_negative_observations\":{},\
+             \"stable_negative_inserts\":{},\"exact_filter_hits\":{},\
+            \"collisions\":{},\"fallbacks\":{},\"invalidations\":{}}}",
+            READY_STABLE_NEGATIVE_FILTER_SLOTS,
+            report.probes,
+            report.stable_negative_observations,
+            report.stable_negative_inserts,
+            report.exact_filter_hits,
+            report.collisions,
+            report.fallbacks,
+            report.invalidations,
+        );
     }
 }
 
@@ -1057,6 +1262,31 @@ mod tests {
         )
     }
 
+    fn stable_negative_filter_cache() -> ReadyCellPlanCache {
+        ReadyCellPlanCache {
+            stable_negative_filter: ReadyStableNegativeFilter::new(true),
+            ..ReadyCellPlanCache::default()
+        }
+    }
+
+    fn colliding_ready_def_sites() -> (EvalNodeRef, EvalNodeRef) {
+        let first = EvalNodeRef::new(
+            crate::eval::EvalModuleId::ROOT,
+            crate::compile::IrId::new(0),
+        );
+        let first_slot = ReadyStableNegativeFilter::slot_index(first);
+        let second = (1..=u32::MAX)
+            .map(|id| {
+                EvalNodeRef::new(
+                    crate::eval::EvalModuleId::ROOT,
+                    crate::compile::IrId::new(id),
+                )
+            })
+            .find(|candidate| ReadyStableNegativeFilter::slot_index(*candidate) == first_slot)
+            .expect("the 1024-slot filter has a colliding node id");
+        (first, second)
+    }
+
     #[test]
     fn ready_cell_hit_representations_partition_capture_layouts() {
         assert_eq!(
@@ -1111,6 +1341,121 @@ mod tests {
             panic!("the matching frame count should serve the direct result");
         };
         assert!(hit.raw_eq(value));
+    }
+
+    #[test]
+    fn stable_negative_filter_hits_bypass_the_map_and_collisions_fall_back() {
+        let (first, second) = colliding_ready_def_sites();
+        let mut plans = stable_negative_filter_cache();
+        plans.insert(first, ReadyCellPlanDecision::EffectOrUnsafe);
+        plans.insert(second, ReadyCellPlanDecision::NonSlot);
+
+        assert!(matches!(
+            plans.probe_empty(first, 0),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(
+            plans.probe_empty(first, 0),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(
+            plans.probe_empty(second, 0),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(
+            plans.probe_empty(first, 0),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+
+        let report = plans
+            .stable_negative_filter
+            .report
+            .expect("the test counters are enabled");
+        assert_eq!(report.probes, 4);
+        assert_eq!(report.exact_filter_hits, 1);
+        assert_eq!(report.collisions, 2);
+        assert_eq!(report.fallbacks, 3);
+        assert_eq!(report.stable_negative_observations, 4);
+        assert_eq!(report.stable_negative_inserts, 3);
+        assert_eq!(
+            plans.empty_authoritative_probes(),
+            3,
+            "the exact filter hit must bypass the sparse map"
+        );
+    }
+
+    #[test]
+    fn eligible_empty_frame_mismatch_is_not_a_stable_negative() {
+        let def_site = EvalNodeRef::new(
+            crate::eval::EvalModuleId::ROOT,
+            crate::compile::IrId::new(17),
+        );
+        let mut plans = stable_negative_filter_cache();
+        plans.insert(
+            def_site,
+            ReadyCellPlanDecision::Eligible {
+                captured_frame_count: 2,
+                captures: ReadyCellCapturePlan::Empty,
+                static_cost_units: 8,
+                empty_ready_value: None,
+            },
+        );
+
+        assert!(matches!(
+            plans.probe_empty(def_site, 1),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(
+            plans.probe_empty(def_site, 2),
+            ReadyCellEmptyProbe::Miss
+        ));
+
+        let report = plans
+            .stable_negative_filter
+            .report
+            .expect("the test counters are enabled");
+        assert_eq!(report.probes, 2);
+        assert_eq!(report.stable_negative_observations, 0);
+        assert_eq!(report.stable_negative_inserts, 0);
+        assert_eq!(report.exact_filter_hits, 0);
+        assert_eq!(report.fallbacks, 2);
+    }
+
+    #[test]
+    fn replacing_a_negative_plan_invalidates_its_filter_slot() {
+        let def_site = EvalNodeRef::new(
+            crate::eval::EvalModuleId::ROOT,
+            crate::compile::IrId::new(23),
+        );
+        let mut plans = stable_negative_filter_cache();
+        plans.insert(def_site, ReadyCellPlanDecision::BelowFloor);
+        assert!(matches!(
+            plans.probe_empty(def_site, 0),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+
+        plans.insert(
+            def_site,
+            ReadyCellPlanDecision::Eligible {
+                captured_frame_count: 0,
+                captures: ReadyCellCapturePlan::Empty,
+                static_cost_units: 8,
+                empty_ready_value: None,
+            },
+        );
+        assert!(matches!(
+            plans.probe_empty(def_site, 0),
+            ReadyCellEmptyProbe::Miss
+        ));
+
+        let report = plans
+            .stable_negative_filter
+            .report
+            .expect("the test counters are enabled");
+        assert_eq!(report.probes, 2);
+        assert_eq!(report.exact_filter_hits, 0);
+        assert_eq!(report.fallbacks, 2);
+        assert_eq!(report.invalidations, 1);
     }
 
     #[test]

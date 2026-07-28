@@ -219,8 +219,8 @@ impl TreeWalk {
         let formal_set_ready_census = (options.memo_options().formal_set_ready_census_enabled
             && local_ready_monotonic_identity_eligible)
             .then(super::formal_set_ready_census::FormalSetReadyCensus::new);
-        let ready_cell_plans =
-            (ready_cell_census.is_some() || ready_cell_directory.is_some()).then(Default::default);
+        let ready_cell_plans = (ready_cell_census.is_some() || ready_cell_directory.is_some())
+            .then(super::memo::ReadyCellPlanCache::from_env);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(

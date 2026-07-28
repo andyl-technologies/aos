@@ -225,6 +225,16 @@ impl TreeWalk {
 
     /// Emits the report or an explicit safety-gate refusal.
     pub(super) fn emit_formal_set_ready_census_report(&self) {
+        if let Some(plans) = self.ready_cell_plans.as_ref() {
+            plans.emit_stable_negative_filter_report();
+        } else if std::env::var("AOS_NIX_READY_STABLE_NEGATIVE_FILTER_CENSUS")
+            .is_ok_and(|value| value == "1")
+        {
+            eprintln!(
+                "aos_nix_ready_stable_negative_filter_census_refusal \
+                 {{\"reason\":\"requires an active local-Ready plan cache\"}}"
+            );
+        }
         if !self.options.memo_options().formal_set_ready_census_enabled {
             return;
         }
