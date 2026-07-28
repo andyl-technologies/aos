@@ -22,6 +22,14 @@ pub struct EvalStats {
     /// Upvalue-variable subset of
     /// [`Self::force_cache_suppressed_lexical_alias_thunks`].
     pub(crate) force_cache_suppressed_upval_var_alias_thunks: u64,
+    /// Missing default thunks that an exact no-alias absent-formal proof could omit.
+    pub(crate) absent_formal_missing_default_candidates: u64,
+    /// Supplied values matched to exact no-alias absent formals.
+    pub(crate) absent_formal_selected_value_candidates: u64,
+    /// Missing required values matched to exact no-alias absent formals.
+    pub(crate) absent_formal_missing_required: u64,
+    /// Otherwise eligible absent-formal sites declined because the pattern has an alias.
+    pub(crate) absent_formal_alias_declines: u64,
     /// Thunks allocated with single-entry storage (no update, no blackhole,
     /// no parallel payload cell) under the C-8 frame-local proof.
     pub(crate) single_entry_thunks_allocated: u64,
@@ -202,6 +210,26 @@ impl EvalStats {
     /// Returns the upvalue-variable subset of force-cache-suppressed alias thunks.
     pub const fn force_cache_suppressed_upval_var_alias_thunks(&self) -> u64 {
         self.force_cache_suppressed_upval_var_alias_thunks
+    }
+
+    /// Returns missing-default thunk allocations eligible for formal-slot omission.
+    pub const fn absent_formal_missing_default_candidates(&self) -> u64 {
+        self.absent_formal_missing_default_candidates
+    }
+
+    /// Returns supplied values matched to proven-absent no-alias formals.
+    pub const fn absent_formal_selected_value_candidates(&self) -> u64 {
+        self.absent_formal_selected_value_candidates
+    }
+
+    /// Returns missing required values matched to proven-absent no-alias formals.
+    pub const fn absent_formal_missing_required(&self) -> u64 {
+        self.absent_formal_missing_required
+    }
+
+    /// Returns absent-formal opportunities declined because an `@` alias exists.
+    pub const fn absent_formal_alias_declines(&self) -> u64 {
+        self.absent_formal_alias_declines
     }
 
     /// Returns the number of thunks allocated with single-entry storage.
@@ -478,6 +506,10 @@ impl EvalStats {
             force_cache_suppressed_lexical_alias_thunks,
             force_cache_suppressed_local_var_alias_thunks,
             force_cache_suppressed_upval_var_alias_thunks,
+            absent_formal_missing_default_candidates,
+            absent_formal_selected_value_candidates,
+            absent_formal_missing_required,
+            absent_formal_alias_declines,
             single_entry_thunks_allocated,
             single_entry_thunks_forced,
             thunk_cache_hits,
@@ -584,6 +616,18 @@ impl EvalStats {
         self.force_cache_suppressed_upval_var_alias_thunks = self
             .force_cache_suppressed_upval_var_alias_thunks
             .saturating_add(force_cache_suppressed_upval_var_alias_thunks);
+        self.absent_formal_missing_default_candidates = self
+            .absent_formal_missing_default_candidates
+            .saturating_add(absent_formal_missing_default_candidates);
+        self.absent_formal_selected_value_candidates = self
+            .absent_formal_selected_value_candidates
+            .saturating_add(absent_formal_selected_value_candidates);
+        self.absent_formal_missing_required = self
+            .absent_formal_missing_required
+            .saturating_add(absent_formal_missing_required);
+        self.absent_formal_alias_declines = self
+            .absent_formal_alias_declines
+            .saturating_add(absent_formal_alias_declines);
         self.single_entry_thunks_allocated = self
             .single_entry_thunks_allocated
             .saturating_add(single_entry_thunks_allocated);

@@ -119,9 +119,9 @@ use crate::cache::{
 #[cfg(test)]
 use crate::compile::Strictness;
 use crate::compile::{
-    CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
-    IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrShapeId, PromiseRegionOptions,
+    CapturePlan, Cardinality, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena,
+    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,
+    IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, PromiseRegionOptions,
     PromiseRegionSymbolValidation, PromiseStatepointKind, ResolverOptions, ScopeResolver,
     analyze_call_target_candidates, analyze_known_call_targets, annotate_import_ir,
     dead_binding_elimination_plan, plan_promise_region, resolve,

@@ -140,6 +140,12 @@ impl LambdaAttrKeys {
 pub struct LambdaFormalSummary {
     /// The value demand transferred to the caller's matching attribute.
     pub demand: LambdaDemand,
+    /// The conservative lexical reference count for this formal slot.
+    ///
+    /// [`Cardinality::Absent`] is an exact proof that neither the formal-set
+    /// defaults nor the lambda body reference the slot. Other slots currently
+    /// remain [`Cardinality::Many`].
+    pub cardinality: Cardinality,
     /// Whether references through this formal slot can publish the value.
     pub escape: Escape,
 }

@@ -46,6 +46,8 @@ pub(super) struct LambdaFrameEscapeSummary {
     pub(super) argument: crate::ir::Escape,
     /// Escape facts for formal slots in frame order.
     pub(super) slots: Vec<crate::ir::Escape>,
+    /// Exact lexical absence facts for formal slots in frame order.
+    pub(super) cardinalities: Vec<crate::ir::Cardinality>,
 }
 
 /// Classifies references to every lambda formal slot.
@@ -95,11 +97,21 @@ pub(super) fn lambda_frame_escapes(
                 }
             })
             .collect();
+        let cardinalities = (0..slots.len())
+            .map(|slot| {
+                if scan.referenced(slot) {
+                    crate::ir::Cardinality::Many
+                } else {
+                    crate::ir::Cardinality::Absent
+                }
+            })
+            .collect();
         let argument = lambda_argument_escape(ir, pattern, &slots)?;
         summaries.push(LambdaFrameEscapeSummary {
             pattern,
             argument,
             slots,
+            cardinalities,
         });
     }
     Ok(summaries)
@@ -416,6 +428,7 @@ impl Position {
 struct FrameEscapeScan<'a> {
     ir: &'a Ir,
     escaped: Vec<bool>,
+    referenced: Vec<bool>,
 }
 
 impl<'a> FrameEscapeScan<'a> {
@@ -423,6 +436,7 @@ impl<'a> FrameEscapeScan<'a> {
         Self {
             ir,
             escaped: vec![false; slots],
+            referenced: vec![false; slots],
         }
     }
 
@@ -430,7 +444,14 @@ impl<'a> FrameEscapeScan<'a> {
         self.escaped.get(slot).copied().unwrap_or(true)
     }
 
+    fn referenced(&self, slot: usize) -> bool {
+        self.referenced.get(slot).copied().unwrap_or(true)
+    }
+
     fn record(&mut self, slot: u32, position: Position) {
+        if let Some(flag) = self.referenced.get_mut(slot as usize) {
+            *flag = true;
+        }
         if !position.escapes() {
             return;
         }

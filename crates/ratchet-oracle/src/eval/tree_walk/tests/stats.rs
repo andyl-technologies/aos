@@ -163,6 +163,10 @@ fn eval_outcome_reports_mirrored_stats() {
     assert_eq!(stats.force_cache_suppressed_lexical_alias_thunks(), 0);
     assert_eq!(stats.force_cache_suppressed_local_var_alias_thunks(), 0);
     assert_eq!(stats.force_cache_suppressed_upval_var_alias_thunks(), 0);
+    assert_eq!(stats.absent_formal_missing_default_candidates(), 0);
+    assert_eq!(stats.absent_formal_selected_value_candidates(), 0);
+    assert_eq!(stats.absent_formal_missing_required(), 0);
+    assert_eq!(stats.absent_formal_alias_declines(), 0);
     assert_eq!(stats.inline_cache_hits(), 0);
     assert_eq!(stats.inline_cache_misses(), 0);
     assert_eq!(stats.shape_transitions(), 0);
@@ -220,6 +224,10 @@ fn eval_stats_are_emitted_through_tracing() {
     assert_trace_field(stats_event, "force_cache_suppressed_lexical_alias_thunks");
     assert_trace_field(stats_event, "force_cache_suppressed_local_var_alias_thunks");
     assert_trace_field(stats_event, "force_cache_suppressed_upval_var_alias_thunks");
+    assert_trace_field(stats_event, "absent_formal_missing_default_candidates");
+    assert_trace_field(stats_event, "absent_formal_selected_value_candidates");
+    assert_trace_field(stats_event, "absent_formal_missing_required");
+    assert_trace_field(stats_event, "absent_formal_alias_declines");
     assert_trace_field(stats_event, "force_cache_hits");
     assert_trace_field(stats_event, "force_cache_misses");
     assert_trace_field(stats_event, "force_cache_probes");

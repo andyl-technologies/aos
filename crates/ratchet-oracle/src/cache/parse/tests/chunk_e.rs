@@ -14,10 +14,12 @@ fn chunk_e_fact_artifact_roundtrips_totality_and_lambda_summaries() {
         formals: vec![
             LambdaFormalSummary {
                 demand: LambdaDemand::IfResultForced(Strictness::Demanded),
+                cardinality: Cardinality::Absent,
                 escape: Escape::Escapes,
             },
             LambdaFormalSummary {
                 demand: LambdaDemand::Unconditional(Strictness::DemandedBeforeEffect),
+                cardinality: Cardinality::Many,
                 escape: Escape::NoEscape,
             },
         ]

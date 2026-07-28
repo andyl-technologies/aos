@@ -59,6 +59,14 @@ impl TreeWalk {
             force_cache_suppressed_upval_var_alias_thunks: self
                 .stats
                 .force_cache_suppressed_upval_var_alias_thunks,
+            absent_formal_missing_default_candidates: self
+                .stats
+                .absent_formal_missing_default_candidates,
+            absent_formal_selected_value_candidates: self
+                .stats
+                .absent_formal_selected_value_candidates,
+            absent_formal_missing_required: self.stats.absent_formal_missing_required,
+            absent_formal_alias_declines: self.stats.absent_formal_alias_declines,
             single_entry_thunks_allocated: self.stats.single_entry_thunks_allocated,
             single_entry_thunks_forced: self.stats.single_entry_thunks_forced,
             thunk_cache_hits: self.stats.thunk_cache_hits,
@@ -275,6 +283,12 @@ impl TreeWalk {
                 .force_cache_suppressed_local_var_alias_thunks(),
             force_cache_suppressed_upval_var_alias_thunks = stats
                 .force_cache_suppressed_upval_var_alias_thunks(),
+            absent_formal_missing_default_candidates = stats
+                .absent_formal_missing_default_candidates(),
+            absent_formal_selected_value_candidates = stats
+                .absent_formal_selected_value_candidates(),
+            absent_formal_missing_required = stats.absent_formal_missing_required(),
+            absent_formal_alias_declines = stats.absent_formal_alias_declines(),
             single_entry_thunks_allocated = stats.single_entry_thunks_allocated(),
             single_entry_thunks_forced = stats.single_entry_thunks_forced(),
             thunk_cache_hits = stats.thunk_cache_hits(),

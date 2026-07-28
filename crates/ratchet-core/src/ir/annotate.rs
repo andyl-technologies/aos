@@ -53,7 +53,9 @@ use super::{Ir, IrFacts, IrId};
 ///   shadowing.
 /// - `7` — Phase 4 Chunk E persists structural totality and cross-module
 ///   lambda demand/escape summaries, including derivation attribute-key flow.
-pub const IR_ANALYSIS_VERSION: u32 = 7;
+/// - `8` — formal-set summaries persist exact lexical absence for slots not
+///   referenced by either defaults or the lambda body.
+pub const IR_ANALYSIS_VERSION: u32 = 8;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

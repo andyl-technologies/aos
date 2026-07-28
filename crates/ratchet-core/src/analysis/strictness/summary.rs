@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 
 use crate::builtins::{ArgDemand, demand_signature, lookup_builtin};
 use crate::ir::{
-    Escape, IrAttrPathSegment, IrData, IrId, IrKind, LambdaAttrKeys, LambdaAttrValueSummary,
-    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, Strictness,
+    Cardinality, Escape, IrAttrPathSegment, IrData, IrId, IrKind, LambdaAttrKeys,
+    LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand, LambdaFormalSummary, Strictness,
 };
 use crate::syntax::{BinOpKind, Symbol};
 
@@ -96,6 +96,7 @@ fn compute_lambda(
         };
         formals.push(LambdaFormalSummary {
             demand,
+            cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         });
     }

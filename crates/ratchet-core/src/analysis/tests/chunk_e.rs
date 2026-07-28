@@ -314,3 +314,36 @@ fn chunk_e_recursive_summary_aliases_fail_closed() {
         LambdaDemand::IfResultForced(Strictness::Unknown)
     );
 }
+
+#[test]
+fn chunk_e_formal_cardinality_proves_only_exact_lexical_absence() {
+    let absent = annotate_all("{ x ? 1 }: 0");
+    let absent_summary = absent
+        .facts
+        .lambda_call_summary(root_lambda_pattern(&absent))
+        .expect("absent formal summary exists");
+    assert_eq!(absent_summary.formals[0].cardinality, Cardinality::Absent);
+
+    let default_reference = annotate_all("{ x ? 1, y ? x }: y");
+    let default_summary = default_reference
+        .facts
+        .lambda_call_summary(root_lambda_pattern(&default_reference))
+        .expect("default-reference summary exists");
+    assert_eq!(
+        default_summary.formals[0].cardinality,
+        Cardinality::Many,
+        "a sibling default reference keeps the formal present"
+    );
+    assert_eq!(default_summary.formals[1].cardinality, Cardinality::Many);
+
+    let nested_capture = annotate_all("{ x ? 1 }: (y: x)");
+    let capture_summary = nested_capture
+        .facts
+        .lambda_call_summary(root_lambda_pattern(&nested_capture))
+        .expect("capture summary exists");
+    assert_eq!(
+        capture_summary.formals[0].cardinality,
+        Cardinality::Many,
+        "a nested closure capture keeps the formal present"
+    );
+}

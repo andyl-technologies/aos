@@ -534,6 +534,40 @@ repeat-body wall and a projection based on the first successful body.
       preserving every observed hit; RSS remains effectively at the prior
       ~4.27 GiB level.
 
+## Exact absent-formal allocation census
+
+Generic `TreeWalkThunkAllocationPlan::Omit` cannot by itself remove storage:
+`eval_thunk_alloc` is an expression-valued boundary and must return a valid
+`Value`. Storage omission belongs to the owning container or frame, which can
+preserve layout with a semantically unreachable dummy slot. The existing
+dead-`let` consumer already follows that rule.
+
+Formal-set summaries now persist a separate conservative cardinality field.
+The producer reuses the frame-aware escape traversal, but records every lexical
+slot reference regardless of value-flow position. A formal is
+`Cardinality::Absent` only when neither the lambda body, any nested closure, nor
+any formal default references its slot; all referenced or malformed cases stay
+`Many`. This is intentionally distinct from `LambdaDemand::Unknown`, which
+does not prove absence. The facts artifact version is bumped so a warm parse
+cache cannot silently load the older summary shape.
+
+Under `AOS_NIX_EVAL_STATS=1`, the binder remains observational and splits exact
+runtime outcomes into:
+
+- missing values with defaults, the narrow first-slice thunk-omission class;
+- supplied values, the broader caller-side omission ceiling;
+- missing required values, whose error must remain;
+- otherwise absent slots declined because an `@` alias can expose the argument
+  aggregate.
+
+The census preserves argument forcing, unexpected/missing-key validation,
+default thunk allocation, slot population, cache observation, and output. The
+first active slice is gated on at least 217,000 eligible missing-default
+allocations (5% of the measured 4.335 million allocated-but-unforced
+population), a projected 32 MiB of pre-peak storage, or at least 1% retired
+instructions. Below those floors, retain the proof/counters and measure the
+supplied-value class before adding a semantic rewrite.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self

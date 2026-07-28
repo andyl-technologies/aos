@@ -454,6 +454,34 @@ impl TreeWalk {
             .saturating_add(1);
     }
 
+    /// Records one missing default thunk eligible for absent-formal omission.
+    pub(super) fn increment_absent_formal_missing_default_candidates(&mut self) {
+        self.stats.absent_formal_missing_default_candidates = self
+            .stats
+            .absent_formal_missing_default_candidates
+            .saturating_add(1);
+    }
+
+    /// Records one supplied value matched to a proven-absent formal.
+    pub(super) fn increment_absent_formal_selected_value_candidates(&mut self) {
+        self.stats.absent_formal_selected_value_candidates = self
+            .stats
+            .absent_formal_selected_value_candidates
+            .saturating_add(1);
+    }
+
+    /// Records one missing required value matched to a proven-absent formal.
+    pub(super) fn increment_absent_formal_missing_required(&mut self) {
+        self.stats.absent_formal_missing_required =
+            self.stats.absent_formal_missing_required.saturating_add(1);
+    }
+
+    /// Records one absent-formal opportunity declined by an `@` alias.
+    pub(super) fn increment_absent_formal_alias_declines(&mut self) {
+        self.stats.absent_formal_alias_declines =
+            self.stats.absent_formal_alias_declines.saturating_add(1);
+    }
+
     pub(super) fn increment_thunks_forced(&mut self) {
         self.stats.thunks_forced = self.stats.thunks_forced.saturating_add(1);
     }

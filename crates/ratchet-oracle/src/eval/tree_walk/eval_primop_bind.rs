@@ -716,6 +716,8 @@ impl TreeWalk {
             }
         }
 
+        let pattern_has_alias =
+            matches!(pattern_node.data, IrData::FormalSet { alias: Some(_), .. });
         for (slot, formal) in layout.entries().iter().enumerate() {
             let selected = {
                 let attrs = self.heap.get_attrs_view(attrs_value).map_err(|source| {
@@ -723,6 +725,29 @@ impl TreeWalk {
                 })?;
                 attrs.get(formal.name)
             };
+            if self.options.eval_stats_dump() {
+                let absent = self
+                    .current_ir()
+                    .facts
+                    .lambda_call_summary(pattern)
+                    .and_then(|summary| summary.formals.get(slot))
+                    .is_some_and(|summary| summary.cardinality == Cardinality::Absent);
+                if absent {
+                    if pattern_has_alias {
+                        self.increment_absent_formal_alias_declines();
+                    } else {
+                        match (selected, formal.default) {
+                            (Some(_), _) => {
+                                self.increment_absent_formal_selected_value_candidates();
+                            }
+                            (None, Some(_)) => {
+                                self.increment_absent_formal_missing_default_candidates();
+                            }
+                            (None, None) => self.increment_absent_formal_missing_required(),
+                        }
+                    }
+                }
+            }
             let value = match (selected, formal.default) {
                 (Some(value), _) => value,
                 (None, Some(default)) => self.eval_lazy_node(default)?,

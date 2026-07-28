@@ -266,8 +266,14 @@ pub fn annotate_lambda_call_summary_escape(ir: &mut Ir) -> Result<(), EscapeAnal
             continue;
         };
         summary.argument_escape = lambda.argument;
-        for (formal, escape) in summary.formals.iter_mut().zip(lambda.slots) {
+        for ((formal, escape), cardinality) in summary
+            .formals
+            .iter_mut()
+            .zip(lambda.slots)
+            .zip(lambda.cardinalities)
+        {
             formal.escape = escape;
+            formal.cardinality = cardinality;
         }
     }
     Ok(())

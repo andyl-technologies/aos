@@ -544,6 +544,61 @@ fn force_cache_alias_census_requires_every_non_cache_elision_gate() {
 }
 
 #[test]
+fn absent_formal_census_splits_runtime_outcomes_and_alias_declines() {
+    fn run(source: &str) -> (Result<Value, TreeWalkError>, EvalStats) {
+        let mut ir = lower(source);
+        crate::compile::annotate_ir(&mut ir).expect("formal usage analysis succeeds");
+        let mut options = TreeWalkOptions::default();
+        options.set_eval_stats_dump(true);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let result = evaluator.eval_root();
+        (result, evaluator.stats_snapshot())
+    }
+
+    let (missing_default, stats) = run("({ x ? 1 }: 0) {}");
+    assert_eq!(
+        missing_default
+            .expect("unused default expression evaluates")
+            .as_int(),
+        Ok(0)
+    );
+    assert_eq!(stats.absent_formal_missing_default_candidates(), 1);
+    assert_eq!(stats.absent_formal_selected_value_candidates(), 0);
+
+    let (selected, stats) = run("({ x ? 1 }: 0) { x = builtins.throw \"unused\"; }");
+    assert_eq!(
+        selected
+            .expect("unused supplied value remains lazy")
+            .as_int(),
+        Ok(0)
+    );
+    assert_eq!(stats.absent_formal_selected_value_candidates(), 1);
+    assert_eq!(stats.absent_formal_missing_default_candidates(), 0);
+
+    let (required, stats) = run("({ x }: 0) {}");
+    assert!(required.is_err(), "an unused required formal still errors");
+    assert_eq!(stats.absent_formal_missing_required(), 1);
+
+    let (aliased, stats) = run("(args @ { x ? 1 }: 0) {}");
+    assert_eq!(
+        aliased.expect("aliased expression evaluates").as_int(),
+        Ok(0)
+    );
+    assert_eq!(stats.absent_formal_alias_declines(), 1);
+    assert_eq!(stats.absent_formal_missing_default_candidates(), 0);
+
+    let (transitive_default, stats) = run("({ x ? 1, y ? x }: y) {}");
+    assert_eq!(
+        transitive_default
+            .expect("transitive default evaluates")
+            .as_int(),
+        Ok(1)
+    );
+    assert_eq!(stats.absent_formal_missing_default_candidates(), 0);
+    assert_eq!(stats.absent_formal_selected_value_candidates(), 0);
+}
+
+#[test]
 fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
     let mut ir = lower(r#"builtins.foldl' (acc: x: acc + x) (builtins.throw "initial") []"#);
     crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");

@@ -564,6 +564,7 @@ fn encode_lambda_call_summaries(out: &mut Vec<u8>, facts: &IrFacts) -> Result<()
         write_len(out, summary.formals.len(), "lambda formal summary count")?;
         for formal in &summary.formals {
             encode_lambda_demand(out, formal.demand);
+            out.push(cardinality_tag(formal.cardinality));
             out.push(escape_tag(formal.escape));
         }
         write_len(
@@ -623,6 +624,7 @@ fn decode_lambda_call_summaries(
         for _ in 0..formal_count {
             formals.push(LambdaFormalSummary {
                 demand: decode_lambda_demand(reader)?,
+                cardinality: decode_cardinality(reader.read_u8()?)?,
                 escape: decode_escape(reader.read_u8()?)?,
             });
         }
