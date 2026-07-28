@@ -82,14 +82,6 @@ impl TreeWalkError {
         self.inner.kind.clone()
     }
 
-    /// Returns whether this is the private FinalForce suspension channel.
-    pub(crate) fn is_final_force_portal_suspend(&self) -> bool {
-        matches!(
-            self.inner.kind,
-            TreeWalkErrorKind::FinalForcePortalSuspend { .. }
-        )
-    }
-
     /// Returns the source span associated with this error.
     pub fn span(&self) -> Span {
         self.inner.span
@@ -141,9 +133,6 @@ impl TreeWalkError {
         span: Span,
         context: EvalErrorContext,
     ) -> Result<Self, Self> {
-        if self.is_final_force_portal_suspend() {
-            return Ok(self);
-        }
         self.inner.contexts.try_reserve_exact(1).map_err(|_| {
             Self::new(
                 TreeWalkErrorKind::ListAllocationFailed {

@@ -68,25 +68,6 @@ pub enum TreeWalkErrorKind {
         /// The force site that needed another active lease.
         id: IrId,
     },
-    /// The default-off FinalForce portal requested an internal unwind.
-    ///
-    /// This category is consumed by the owning outer dispatcher and must
-    /// never escape as a user-visible evaluation error.
-    #[error("internal FinalForce portal suspension {ordinal} at node {id:?}")]
-    FinalForcePortalSuspend {
-        /// The outer FinalForce source node.
-        id: IrId,
-        /// The selected successful final-config completion ordinal.
-        ordinal: u64,
-    },
-    /// A selected FinalForce unwind did not restore the declared loop head.
-    #[error("FinalForce portal invariant failed after suspension {ordinal} at node {id:?}")]
-    FinalForcePortalInvariant {
-        /// The outer FinalForce source node.
-        id: IrId,
-        /// The selected successful final-config completion ordinal.
-        ordinal: u64,
-    },
     /// Detached typed-work lease nesting disagreed with the active force.
     #[error("typed thunk work lease invariant failed at node {id:?}")]
     TypedThunkWorkLeaseInvariant {

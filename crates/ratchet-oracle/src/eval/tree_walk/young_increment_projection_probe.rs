@@ -2,7 +2,7 @@
 //!
 //! Every successful final-config completion records only an allocation fence.
 //! Internal milestones remain fail-closed because their recursive native
-//! continuations are not yet completely portalized. Terminal ordinal 357 is
+//! continuations are not yet completely modeled. Terminal ordinal 357 is
 //! sampled only after its semantic leaf has returned to the rooted outer
 //! dispatcher loop head. At that boundary the existing rooted collection-poll
 //! preflight supplies the stable result/root inventory; no force census is
@@ -34,7 +34,6 @@ struct YoungIncrementProjectionSnapshot {
     runtime_blockers: usize,
     internal_boundary_refusal: bool,
     terminal_outer_boundary: bool,
-    portal_boundary: bool,
     terminal_outer_proven: bool,
     root_error: bool,
     projection_error: bool,
@@ -94,12 +93,6 @@ impl TreeWalk {
 
     /// Projects a selected ordinal only at its exact returned dispatcher loop head.
     pub(super) fn note_young_increment_returned_outer_loop_head(&mut self) {
-        if self
-            .whole_demand_dispatcher
-            .final_force_portal_unwind_requested()
-        {
-            return;
-        }
         let selected_ordinal = self
             .young_increment_projection_probe
             .as_ref()
@@ -134,7 +127,6 @@ impl TreeWalk {
                 )),
             internal_boundary_refusal: false,
             terminal_outer_boundary: true,
-            portal_boundary: false,
             terminal_outer_proven: false,
             root_error: false,
             projection_error: false,
@@ -175,84 +167,6 @@ impl TreeWalk {
                     }
                 }
                 Err(_) => snapshot.root_error = true,
-            }
-        }
-        if let Some(probe) = self.young_increment_projection_probe.as_mut() {
-            probe.snapshot = Some(snapshot);
-        }
-    }
-
-    /// Projects the exact roots already proven by a deferred FinalForce portal.
-    ///
-    /// This consumes neither another root inventory nor another outer-loop
-    /// completion. The caller's collection-poll guard is the sole root proof
-    /// for both portal admission and this read-only projection.
-    pub(super) fn note_young_increment_final_force_portal(
-        &mut self,
-        ordinal: u64,
-        guard: &super::collection_poll::CollectionPollGuard,
-    ) {
-        let selected = self
-            .young_increment_projection_probe
-            .as_ref()
-            .is_some_and(|probe| {
-                probe.selected_ordinal == ordinal
-                    && probe.completions == ordinal
-                    && probe.internal_selected_observed
-                    && probe.snapshot.is_none()
-            });
-        if !selected {
-            return;
-        }
-
-        let terminal_fence = self.heap.demand_region_allocation_fence();
-        if let Some(probe) = self.young_increment_projection_probe.as_mut() {
-            match terminal_fence {
-                Some(fence) => probe.fences.push(fence),
-                None => probe.fence_error = true,
-            }
-        }
-        let mut snapshot = YoungIncrementProjectionSnapshot {
-            ordinal,
-            runtime_blockers: self
-                .young_increment_terminal_runtime_blocker_count()
-                .saturating_add(usize::from(terminal_fence.is_none())),
-            internal_boundary_refusal: false,
-            terminal_outer_boundary: false,
-            portal_boundary: true,
-            terminal_outer_proven: true,
-            root_error: false,
-            projection_error: false,
-            rss_unavailable: false,
-            rss_error: false,
-            rss_bytes: 0,
-            reservation: self.heap.nested_nonmoving_runtime_reservation_snapshot(),
-            roots: super::nested_nonmoving_safepoint_probe::NestedNonmovingRootInventory::default(),
-            projection: None,
-        };
-        match ProcessResidentMemorySample::current() {
-            Ok(Some(sample)) => snapshot.rss_bytes = sample.resident_bytes() as u64,
-            Ok(None) => snapshot.rss_unavailable = true,
-            Err(_) => snapshot.rss_error = true,
-        }
-        if snapshot.runtime_blockers == 0 {
-            let roots = guard.roots();
-            let result_slot = self.whole_demand_dispatcher.value_slots.last().copied();
-            snapshot.roots.total_roots = roots.len();
-            snapshot.roots.result_roots = usize::from(result_slot.is_some_and(|slot| {
-                roots
-                    .roots()
-                    .iter()
-                    .any(|root| root.source() == &EvalRootSource::ValueStack { slot })
-            }));
-            let fences = self
-                .young_increment_projection_probe
-                .as_ref()
-                .map(|probe| probe.fences.as_slice())
-                .unwrap_or_default();
-            match self.heap.young_increment_projection(roots, fences) {
-                Ok(projection) => snapshot.projection = Some(projection),
-                Err(_) => snapshot.projection_error = true,
             }
         }
         if let Some(probe) = self.young_increment_projection_probe.as_mut() {
@@ -349,7 +263,7 @@ impl TreeWalk {
                      target_bytes={} target_pass={} zero_unclassified={} \
                      zero_blockers={} fences_reconciled={} \
                      internal_boundary_refusal={} terminal_outer_boundary={} \
-                     portal_boundary={} terminal_outer_proven={} force_census_required=false \
+                     terminal_outer_proven={} force_census_required=false \
                      same_layout_upper_bound=true packed_layout_exact=false \
                      registry_index_compaction_credited=false \
                      external_payload_reclamation_credited=false \
@@ -380,47 +294,15 @@ impl TreeWalk {
                     projection.fences_reconciled,
                     snapshot.internal_boundary_refusal,
                     snapshot.terminal_outer_boundary,
-                    snapshot.portal_boundary,
                     snapshot.terminal_outer_proven,
                 );
-                if snapshot.portal_boundary && variant.segment_bytes == 16 * 1024 {
-                    let projected_peak_rss = snapshot.rss_bytes.max(projected_steady_rss);
-                    let margin_bytes = RSS_CEILING_BYTES.saturating_sub(projected_peak_rss);
-                    eprintln!(
-                        "aos_nix_final_force_portal_young_increment_projection \
-                         ordinal={} rss_bytes={} roots={} reachable={} \
-                         classified_objects={} classified_reachable={} unclassified={} \
-                         fences={} fences_reconciled={} segment_bytes={} \
-                         retained_segment_bytes={} projected_post_rss={} \
-                         projected_seam_peak_rss={} target_bytes={} margin_bytes={} \
-                         target_pass={} exact_collection_poll_guard=true \
-                         future_allocation_peak_credited=false collection=false \
-                         mutation=false advice=false",
-                        snapshot.ordinal,
-                        snapshot.rss_bytes,
-                        projection.roots,
-                        projection.reachable,
-                        projection.classified_objects,
-                        projection.classified_reachable,
-                        projection.unclassified,
-                        probe.fences.len(),
-                        projection.fences_reconciled,
-                        variant.segment_bytes,
-                        variant.retained_segment_bytes,
-                        projected_steady_rss,
-                        projected_peak_rss,
-                        RSS_CEILING_BYTES,
-                        margin_bytes,
-                        target_pass,
-                    );
-                }
             }
         }
         eprintln!(
             "aos_nix_young_increment_projection_conservation \
              selected_ordinal={} completions={} selected_observed=true \
              runtime_blockers={} root_error={} projection_error={} \
-             internal_boundary_refusal={} terminal_outer_boundary={} portal_boundary={} \
+             internal_boundary_refusal={} terminal_outer_boundary={} \
              terminal_outer_proven={} force_census_required=false \
              rss_unavailable={} rss_error={} fence_error={} fences={} \
              single_traversal_per_process=true pre_scan_rss=true \
@@ -432,7 +314,6 @@ impl TreeWalk {
             snapshot.projection_error,
             snapshot.internal_boundary_refusal,
             snapshot.terminal_outer_boundary,
-            snapshot.portal_boundary,
             snapshot.terminal_outer_proven,
             snapshot.rss_unavailable,
             snapshot.rss_error,

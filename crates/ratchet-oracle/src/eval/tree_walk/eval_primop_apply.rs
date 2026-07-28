@@ -662,10 +662,6 @@ impl TreeWalk {
                 );
                 eval.end_order_sensitive_binding_assembly(bind_result.is_ok());
                 bind_result?;
-                #[cfg(feature = "dedup_string_list_canary")]
-                if let Some(result) = eval.try_dedup_string_list_canary(lambda, argument) {
-                    return result;
-                }
                 eval.note_promise_region_unknown_call(caller_module, id, lambda);
                 eval.enter_promise_region_lambda_entry(lambda);
                 let result = eval.with_nonmoving_native_continuation(

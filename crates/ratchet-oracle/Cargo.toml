@@ -34,28 +34,27 @@ demand_region_shadow_probe = ["candidate_c_value"]
 # reuses the demand-region observation hooks and never dispatches a plan.
 whole_demand_trace_shadow_probe = ["demand_region_shadow_probe"]
 # Compile-time-only checkpoint aggregate for chronological lifetime-cohort
-# experiments. Its execution schedule is keyed to the exact final-config
-# canary, while ordinary builds omit every field, scan, and branch.
-lifetime_cohort_probe = ["candidate_c_value", "final_config_trie_canary"]
+# experiments. Ordinary builds omit every field, scan, and branch.
+lifetime_cohort_probe = ["candidate_c_value"]
 # Compile-time-only root-session continuation coverage shadow. Successful
 # finalConfig canary completions are counted at their nested production site
 # and reconciled only after the root evaluator has fully unwound.
-root_continuation_probe = ["candidate_c_value", "final_config_trie_canary"]
+root_continuation_probe = ["candidate_c_value"]
 # Compile-time-only no-collection preflight and coverage-only outer dispatcher
 # skeleton. The runtime door leaves ordinary evaluation byte-for-byte inert.
-collection_poll_probe = ["candidate_c_value", "final_config_trie_canary"]
+collection_poll_probe = ["candidate_c_value"]
 # Compile-time-only read-only projection of a compact evacuation destination
 # at the final import peak-band root census.
 compact_destination_probe = ["candidate_c_value"]
 # Compile-time-only all-object immutable-cohort packing projection. The probe
 # observes final-config epochs but never moves, retires, or publishes values.
-immutable_cohort_projection_probe = ["candidate_c_value", "final_config_trie_canary"]
+immutable_cohort_projection_probe = ["candidate_c_value"]
 # Compile-time-only read-only planner for a same-layout moving evacuation.
 # The planner computes forwarding metadata and dense lane accounting but never
 # allocates a destination or mutates the evaluator heap. Its execution-count
 # checkpoint observes successful final-config canary folds, so the probe must
 # compile that otherwise default-off detection seam as well.
-evacuation_plan_probe = ["candidate_c_value", "final_config_trie_canary"]
+evacuation_plan_probe = ["candidate_c_value"]
 # Default-off replay of real Candidate-C allocation and GC-retirement events
 # through a bounded-search, address-neutral reusable-hole model.
 hole_reuse_shadow_probe = [
@@ -79,18 +78,8 @@ young_increment_projection_probe = [
   "demand_region_shadow_probe",
   "compact_destination_probe",
 ]
-# Default-off real immutable/scalar publication at the proven FinalForce
-# portal. This is intentionally separate from the read-only young-increment
-# projection contract.
-packed_portal_cutover = ["young_increment_projection_probe"]
 # Default-off read-only projection of address-preserving virtual-page meshing.
 mesh_projection_probe = ["candidate_c_value"]
-# Default-off no-callback canary for the exact `lib/modules.nix` string-list
-# deduplication loop.
-dedup_string_list_canary = ["candidate_c_value"]
-# Default-off exact-source census and callback-free projection experiment for
-# the `lib/modules.nix` finalConfig trie fold.
-final_config_trie_canary = ["candidate_c_value"]
 option_map_fold_probe = ["candidate_c_value"]
 
 [dependencies]

@@ -14,7 +14,6 @@ use super::*;
 const ENABLE_ENV: &str = "AOS_NIX_WHOLE_DEMAND_DISPATCHER_PROBE";
 const CENSUS_ENV: &str = "AOS_NIX_WHOLE_DEMAND_CORRIDOR_CENSUS";
 const PACKED_ROOT_CENSUS_ENV: &str = "AOS_NIX_PACKED_ROOT_CENSUS";
-const FINAL_FORCE_RESUME_ORDINAL_ENV: &str = "AOS_NIX_FINAL_FORCE_RESUME_ORDINAL";
 const STORAGE_CAP_BYTES: usize = 64 * 1024;
 static PACKED_ROOT_CENSUS_ORDINAL: AtomicU64 = AtomicU64::new(0);
 
@@ -66,65 +65,6 @@ struct HiddenCompletionAttribution {
     completions: u64,
 }
 
-/// Explicit state of the bounded FinalForce suspension experiment.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum FinalForceResumeState {
-    /// No selected completion is waiting to return to the dispatcher.
-    #[default]
-    Running,
-    /// The selected completion awaits the next successful thunk publication.
-    PublicationRequested { ordinal: u64 },
-    /// A committed thunk publication requested an error-channel unwind.
-    UnwindRequested { ordinal: u64 },
-    /// The unwind reached the rooted dispatcher loop head.
-    Suspended { ordinal: u64 },
-}
-
-/// Observable-effect cursor for one replayable FinalForce attempt.
-#[cfg(feature = "collection_poll_probe")]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct FinalForceEffectCursor {
-    ifd_realizations: u64,
-    trace_events: usize,
-    warning_events: usize,
-    impure_input_events: usize,
-    impure_input_complete: bool,
-    text_store_realizations: usize,
-    source_store_realizations: usize,
-    import_cache_entries: usize,
-    known_derivations: usize,
-    memo_events: u64,
-}
-
-#[cfg(feature = "collection_poll_probe")]
-impl FinalForceEffectCursor {
-    /// Returns the number of independently changed effect classes.
-    fn changed_classes(self, other: Self) -> usize {
-        usize::from(self.ifd_realizations != other.ifd_realizations)
-            .saturating_add(usize::from(self.trace_events != other.trace_events))
-            .saturating_add(usize::from(self.warning_events != other.warning_events))
-            .saturating_add(usize::from(
-                self.impure_input_events != other.impure_input_events,
-            ))
-            .saturating_add(usize::from(
-                self.impure_input_complete != other.impure_input_complete,
-            ))
-            .saturating_add(usize::from(
-                self.text_store_realizations != other.text_store_realizations,
-            ))
-            .saturating_add(usize::from(
-                self.source_store_realizations != other.source_store_realizations,
-            ))
-            .saturating_add(usize::from(
-                self.import_cache_entries != other.import_cache_entries,
-            ))
-            .saturating_add(usize::from(
-                self.known_derivations != other.known_derivations,
-            ))
-            .saturating_add(usize::from(self.memo_events != other.memo_events))
-    }
-}
-
 /// Default-off ownership and coverage state for one whole demand.
 #[derive(Debug, Default)]
 pub(super) struct WholeDemandDispatcherRuntime {
@@ -151,42 +91,11 @@ pub(super) struct WholeDemandDispatcherRuntime {
     pub(super) lambda_tokens: Vec<LambdaCallLeaseToken>,
     pub(super) import_tokens: Vec<ImportModuleLeaseToken>,
     hidden_attribution: Vec<HiddenCompletionAttribution>,
-    final_force_resume_ordinal: Option<u64>,
-    final_force_resume_state: FinalForceResumeState,
-    final_force_resume_suspensions: u64,
-    final_force_resume_resumptions: u64,
-    final_force_resume_declines: u64,
-    final_force_resume_publish_site: Option<IrId>,
-    final_force_resume_publish_depth: usize,
-    final_force_resume_publish_shape: Option<&'static str>,
-    final_force_resume_publish_lag: u64,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_epoch: Option<FinalForceEffectCursor>,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_checks: u64,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_clean: u64,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_dirty: u64,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_last_changed_classes: usize,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_last_start: Option<FinalForceEffectCursor>,
-    #[cfg(feature = "collection_poll_probe")]
-    final_force_effect_last_end: Option<FinalForceEffectCursor>,
     pub(super) corridor_census: super::whole_demand_corridor_census::WholeDemandCorridorCensus,
     speed_pmu_windows: Option<super::demand_epoch_probe::DemandWindowController>,
 }
 
 impl WholeDemandDispatcherRuntime {
-    /// Returns whether the selected portal is unwinding to its rooted loop head.
-    pub(super) const fn final_force_portal_unwind_requested(&self) -> bool {
-        matches!(
-            self.final_force_resume_state,
-            FinalForceResumeState::UnwindRequested { .. }
-        )
-    }
-
     fn enabled() -> bool {
         std::env::var(ENABLE_ENV).is_ok_and(|value| value == "1")
     }
@@ -324,11 +233,6 @@ impl TreeWalk {
             })?;
         runtime.active = true;
         runtime.suspended_loop_head = true;
-        runtime.final_force_resume_ordinal = std::env::var(FINAL_FORCE_RESUME_ORDINAL_ENV)
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|ordinal| *ordinal != 0);
-        runtime.final_force_resume_state = FinalForceResumeState::Running;
         runtime
             .corridor_census
             .begin_session(WholeDemandDispatcherRuntime::census_enabled());
@@ -339,10 +243,6 @@ impl TreeWalk {
 
     /// Marks entry into one synchronous attr-path semantic leaf.
     fn enter_whole_demand_oracle(&mut self, control: WholeDemandControl) {
-        #[cfg(feature = "collection_poll_probe")]
-        let final_force_effect_epoch = (self.whole_demand_dispatcher.active
-            && matches!(control, WholeDemandControl::FinalForce { segment: 5 }))
-        .then(|| self.final_force_effect_cursor());
         let census_enabled = self.whole_demand_dispatcher.corridor_census.is_enabled();
         let allocation_cursor = census_enabled.then(|| {
             (
@@ -358,10 +258,6 @@ impl TreeWalk {
         runtime.generic_oracle_depth = runtime.generic_oracle_depth.saturating_add(1);
         runtime.oracle_calls = runtime.oracle_calls.saturating_add(1);
         runtime.control.push(control);
-        #[cfg(feature = "collection_poll_probe")]
-        if final_force_effect_epoch.is_some() {
-            runtime.final_force_effect_epoch = final_force_effect_epoch;
-        }
         if census_enabled {
             runtime.corridor_census.enter_outer(control);
         }
@@ -420,130 +316,6 @@ impl TreeWalk {
             if let Some(control) = runtime.control.last().copied() {
                 runtime.record_hidden_completion(control);
             }
-        }
-        if runtime.final_force_resume_ordinal == Some(runtime.completions)
-            && runtime.control.last() == Some(&WholeDemandControl::FinalForce { segment: 5 })
-            && runtime.final_force_resume_state == FinalForceResumeState::Running
-        {
-            runtime.final_force_resume_state = FinalForceResumeState::PublicationRequested {
-                ordinal: runtime.completions,
-            };
-        }
-    }
-
-    /// Converts the next committed thunk publication into a private unwind.
-    ///
-    /// The thunk cell is already `Ready` when this hook runs. Therefore replay
-    /// observes the committed result instead of evaluating that body twice.
-    pub(super) fn suspend_final_force_after_published_thunk(
-        &mut self,
-        id: IrId,
-        span: Span,
-        shape: &'static str,
-    ) -> Result<(), TreeWalkError> {
-        let FinalForceResumeState::PublicationRequested { ordinal } =
-            self.whole_demand_dispatcher.final_force_resume_state
-        else {
-            return Ok(());
-        };
-        #[cfg(feature = "collection_poll_probe")]
-        {
-            let current = self.final_force_effect_cursor();
-            let epoch = self.whole_demand_dispatcher.final_force_effect_epoch;
-            let changed_classes = epoch.map_or(usize::MAX, |epoch| epoch.changed_classes(current));
-            let runtime = &mut self.whole_demand_dispatcher;
-            runtime.final_force_effect_checks = runtime.final_force_effect_checks.saturating_add(1);
-            runtime.final_force_effect_last_changed_classes = changed_classes;
-            runtime.final_force_effect_last_start = epoch;
-            runtime.final_force_effect_last_end = Some(current);
-            if changed_classes == 0 {
-                runtime.final_force_effect_clean =
-                    runtime.final_force_effect_clean.saturating_add(1);
-            } else {
-                runtime.final_force_effect_dirty =
-                    runtime.final_force_effect_dirty.saturating_add(1);
-            }
-        }
-        if !self.final_force_replay_is_effect_clean() {
-            self.whole_demand_dispatcher.final_force_resume_state = FinalForceResumeState::Running;
-            self.whole_demand_dispatcher.final_force_resume_declines = self
-                .whole_demand_dispatcher
-                .final_force_resume_declines
-                .saturating_add(1);
-            return Ok(());
-        }
-        self.whole_demand_dispatcher.final_force_resume_publish_site = Some(id);
-        self.whole_demand_dispatcher
-            .final_force_resume_publish_depth = self.active_force_leases.len();
-        self.whole_demand_dispatcher
-            .final_force_resume_publish_shape = Some(shape);
-        self.whole_demand_dispatcher.final_force_resume_publish_lag = self
-            .whole_demand_dispatcher
-            .completions
-            .saturating_sub(ordinal);
-        self.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::UnwindRequested { ordinal };
-        Err(TreeWalkError::new(
-            TreeWalkErrorKind::FinalForcePortalSuspend { id, ordinal },
-            span,
-        ))
-    }
-
-    /// Returns whether replay cannot duplicate any configured or observed effect.
-    fn final_force_replay_is_effect_clean(&self) -> bool {
-        let parallel_capable_or_active = self.options.parallel_workers().is_some()
-            || self.options.parallel_thunk_payloads_enabled()
-            || self.shared.is_some();
-        let memo_or_persist_capable_or_active = self.options.memo_active()
-            || !self.options.memo_disk_locations().is_empty()
-            || self.options.memo_net().is_some()
-            || self.options.persist_cache_root().is_some()
-            || self.force_cache_active
-            || self.persist_cache.is_some()
-            || !self.persist_secondary_caches.is_empty();
-        self.options.eval_mode() == EvalMode::Pure
-            && self.ifd_realizer.is_none()
-            && !parallel_capable_or_active
-            && !memo_or_persist_capable_or_active
-            && self.trace_output.is_empty()
-            && self.warning_output.is_empty()
-            && self.impure_input_trace.is_empty()
-            && self.text_store.is_empty()
-            && self.source_store_string_cache.is_empty()
-    }
-
-    /// Captures the observable effect classes owned by one FinalForce attempt.
-    #[cfg(feature = "collection_poll_probe")]
-    fn final_force_effect_cursor(&self) -> FinalForceEffectCursor {
-        let stats = &self.stats;
-        let memo_events = stats
-            .memo_l0_hits
-            .saturating_add(stats.memo_l0_misses)
-            .saturating_add(stats.memo_l0_admissions)
-            .saturating_add(stats.memo_l0_declines)
-            .saturating_add(stats.memo_l1_hits)
-            .saturating_add(stats.memo_l1_misses)
-            .saturating_add(stats.memo_l1_admissions)
-            .saturating_add(stats.memo_l1_declines)
-            .saturating_add(stats.memo_l2_secondary_hits)
-            .saturating_add(stats.memo_l2_secondary_misses)
-            .saturating_add(stats.memo_l2_promotions)
-            .saturating_add(stats.memo_l2_reval_failures)
-            .saturating_add(stats.memo_net_hits)
-            .saturating_add(stats.memo_net_misses)
-            .saturating_add(stats.memo_net_errors)
-            .saturating_add(stats.memo_net_reval_failures);
-        FinalForceEffectCursor {
-            ifd_realizations: self.final_force_ifd_realizations.get(),
-            trace_events: self.trace_output.len(),
-            warning_events: self.warning_output.len(),
-            impure_input_events: self.impure_input_trace.len(),
-            impure_input_complete: self.impure_input_trace_complete,
-            text_store_realizations: self.text_store.len(),
-            source_store_realizations: self.source_store_string_cache.len(),
-            import_cache_entries: self.import_cache.len(),
-            known_derivations: self.known_derivations.len(),
-            memo_events,
         }
     }
 
@@ -676,59 +448,12 @@ impl TreeWalk {
         self.force_node_result(id, span, subject)
     }
 
-    /// Restores and proves the explicit loop head after a private unwind.
-    fn establish_final_force_resume_portal(
-        &mut self,
-        id: IrId,
-        span: Span,
-        slot: usize,
-        ordinal: u64,
-    ) -> Result<(), TreeWalkError> {
-        let mut suspended = Ok(self.whole_demand_slot_value(id, span, slot)?);
-        self.finish_whole_demand_oracle_leaf(&mut suspended, Some(slot));
-        self.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::Suspended { ordinal };
-        self.whole_demand_dispatcher.final_force_resume_suspensions = self
-            .whole_demand_dispatcher
-            .final_force_resume_suspensions
-            .saturating_add(1);
-        let guard = match self.dispatcher_collection_poll_preflight() {
-            Ok(guard) => guard,
-            Err(_) => {
-                self.whole_demand_dispatcher.final_force_resume_declines = self
-                    .whole_demand_dispatcher
-                    .final_force_resume_declines
-                    .saturating_add(1);
-                // This is a default-off optimization probe. Failure to prove a
-                // collection seam must resume the already-published computation,
-                // not turn a valid Nix evaluation into an internal error.
-                return Ok(());
-            }
-        };
-        #[cfg(feature = "young_increment_projection_probe")]
-        self.note_young_increment_final_force_portal(ordinal, &guard);
-        #[cfg(feature = "packed_portal_cutover")]
-        {
-            self.maybe_publish_packed_final_force_portal(ordinal, guard);
-        }
-        Ok(())
-    }
-
     /// Closes the dispatcher after copying its terminal rooted value.
     fn finish_whole_demand_dispatcher(
         &mut self,
         result: &mut Result<Value, TreeWalkError>,
         base: usize,
     ) {
-        if matches!(
-            self.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::PublicationRequested { .. }
-        ) {
-            self.whole_demand_dispatcher.final_force_resume_declines = self
-                .whole_demand_dispatcher
-                .final_force_resume_declines
-                .saturating_add(1);
-        }
         if let (Ok(value), Some(slot)) = (
             result.as_mut(),
             self.whole_demand_dispatcher.value_slots.last().copied(),
@@ -739,7 +464,6 @@ impl TreeWalk {
         self.transient_value_stack_roots.truncate(base);
         self.whole_demand_dispatcher.value_slots.clear();
         self.whole_demand_dispatcher.control.clear();
-        self.whole_demand_dispatcher.final_force_resume_state = FinalForceResumeState::Running;
         if self.whole_demand_dispatcher.corridor_census.is_enabled() {
             self.whole_demand_dispatcher.corridor_census.end_session();
         }
@@ -830,39 +554,8 @@ impl TreeWalk {
         let final_force_control = WholeDemandControl::FinalForce {
             segment: attr_path.len(),
         };
-        #[cfg(feature = "packed_portal_cutover")]
-        self.maybe_publish_packed_prefinal_cutover();
         self.enter_whole_demand_oracle(final_force_control);
         let mut result = self.run_rooted_final_force_attempt(id, span, slot);
-        while let Err(error) = &result {
-            let TreeWalkErrorKind::FinalForcePortalSuspend { id: _, ordinal } = error.kind() else {
-                break;
-            };
-            if self.whole_demand_dispatcher.final_force_resume_state
-                != (FinalForceResumeState::UnwindRequested { ordinal })
-            {
-                break;
-            }
-
-            // The semantic leaf has unwound through its normal Result cleanup.
-            // Reinstall its rooted input as the loop-head value before proving
-            // that no recursive owner escaped the unwind.
-            if let Err(error) = self.establish_final_force_resume_portal(id, span, slot, ordinal) {
-                result = Err(error);
-                break;
-            }
-
-            // A future collector runs at this exact seam. Resume today by
-            // replaying the same rooted FinalForce input; already-published
-            // thunk results make the replay incremental.
-            self.whole_demand_dispatcher.final_force_resume_state = FinalForceResumeState::Running;
-            self.whole_demand_dispatcher.final_force_resume_resumptions = self
-                .whole_demand_dispatcher
-                .final_force_resume_resumptions
-                .saturating_add(1);
-            self.enter_whole_demand_oracle(final_force_control);
-            result = self.run_rooted_final_force_attempt(id, span, slot);
-        }
         self.finish_whole_demand_oracle_leaf(&mut result, Some(slot));
         self.finish_whole_demand_dispatcher(&mut result, base);
         result
@@ -986,33 +679,6 @@ impl TreeWalk {
                 evidence.cycles(kind),
                 evidence.authoritative(),
                 census_enabled,
-            );
-        }
-        if runtime.final_force_resume_ordinal.is_some() {
-            eprintln!(
-                "aos_nix_final_force_resume_portal selected={:?} suspensions={} \
-                 resumptions={} declines={} state={:?} publish_site={:?} \
-                 publish_depth={} publish_shape={} publish_lag={}",
-                runtime.final_force_resume_ordinal,
-                runtime.final_force_resume_suspensions,
-                runtime.final_force_resume_resumptions,
-                runtime.final_force_resume_declines,
-                runtime.final_force_resume_state,
-                runtime.final_force_resume_publish_site,
-                runtime.final_force_resume_publish_depth,
-                runtime.final_force_resume_publish_shape.unwrap_or("none"),
-                runtime.final_force_resume_publish_lag,
-            );
-            #[cfg(feature = "collection_poll_probe")]
-            eprintln!(
-                "aos_nix_final_force_effect_epoch checks={} clean={} dirty={} \
-                 last_changed_classes={} start={:?} end={:?} report_only=true",
-                runtime.final_force_effect_checks,
-                runtime.final_force_effect_clean,
-                runtime.final_force_effect_dirty,
-                runtime.final_force_effect_last_changed_classes,
-                runtime.final_force_effect_last_start,
-                runtime.final_force_effect_last_end,
             );
         }
         eprintln!(
@@ -1294,21 +960,6 @@ mod tests {
         assert!(runtime.modeled_storage_bytes() < STORAGE_CAP_BYTES);
     }
 
-    #[cfg(feature = "collection_poll_probe")]
-    #[test]
-    fn final_force_effect_cursor_counts_independent_changed_classes() {
-        let baseline = FinalForceEffectCursor::default();
-        let changed = FinalForceEffectCursor {
-            ifd_realizations: 1,
-            impure_input_events: 2,
-            import_cache_entries: 3,
-            ..baseline
-        };
-
-        assert_eq!(baseline.changed_classes(changed), 3);
-        assert_eq!(changed.changed_classes(changed), 0);
-    }
-
     #[test]
     fn active_corridor_and_dispatcher_storage_stay_below_the_shared_cap() {
         let mut runtime = WholeDemandDispatcherRuntime::default();
@@ -1447,165 +1098,6 @@ mod tests {
     }
 
     #[test]
-    fn final_force_portal_requests_only_the_exact_segment_five_ordinal() {
-        let ir = lower("1");
-        let mut evaluator =
-            TreeWalk::with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure));
-        evaluator.whole_demand_dispatcher.active = true;
-        evaluator.whole_demand_dispatcher.generic_oracle_depth = 1;
-        evaluator.whole_demand_dispatcher.final_force_resume_ordinal = Some(160);
-        evaluator
-            .whole_demand_dispatcher
-            .control
-            .push(WholeDemandControl::FinalForce { segment: 5 });
-        evaluator.whole_demand_dispatcher.completions = 159;
-
-        evaluator.note_whole_demand_final_config_completion();
-
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::PublicationRequested { ordinal: 160 }
-        );
-        let error = evaluator
-            .suspend_final_force_after_published_thunk(ir.root, Span::default(), "node")
-            .expect_err("next committed publication requests a private unwind");
-        assert!(matches!(
-            error.kind(),
-            TreeWalkErrorKind::FinalForcePortalSuspend { ordinal: 160, .. }
-        ));
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::UnwindRequested { ordinal: 160 }
-        );
-        assert_eq!(
-            evaluator
-                .whole_demand_dispatcher
-                .final_force_resume_publish_shape,
-            Some("node")
-        );
-
-        evaluator.whole_demand_dispatcher.final_force_resume_state = FinalForceResumeState::Running;
-        evaluator.whole_demand_dispatcher.completions = 159;
-        evaluator.whole_demand_dispatcher.control[0] =
-            WholeDemandControl::FinalForce { segment: 4 };
-        evaluator.note_whole_demand_final_config_completion();
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::Running
-        );
-    }
-
-    #[test]
-    fn final_force_portal_declines_replay_in_an_impure_session() {
-        let ir = lower("1");
-        let mut evaluator = TreeWalk::new(&ir);
-        evaluator.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::PublicationRequested { ordinal: 160 };
-
-        evaluator
-            .suspend_final_force_after_published_thunk(ir.root, Span::default(), "node")
-            .expect("an effect-capable session must continue without replay");
-
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::Running
-        );
-        assert_eq!(
-            evaluator
-                .whole_demand_dispatcher
-                .final_force_resume_declines,
-            1
-        );
-    }
-
-    #[test]
-    fn final_force_portal_reestablishes_a_bijective_rooted_loop_head() {
-        let ir = lower("1");
-        let mut evaluator = TreeWalk::new(&ir);
-        evaluator.whole_demand_dispatcher.active = true;
-        evaluator.whole_demand_dispatcher.generic_oracle_depth = 1;
-        evaluator.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::UnwindRequested { ordinal: 160 };
-        evaluator
-            .whole_demand_dispatcher
-            .control
-            .push(WholeDemandControl::FinalForce { segment: 5 });
-        evaluator.transient_value_stack_roots.push(Value::int(1));
-        evaluator.whole_demand_dispatcher.value_slots.push(0);
-
-        evaluator
-            .establish_final_force_resume_portal(ir.root, Span::default(), 0, 160)
-            .expect("normal Result cleanup reaches a bijective rooted loop head");
-
-        assert!(evaluator.whole_demand_dispatcher.suspended_loop_head);
-        assert_eq!(evaluator.whole_demand_dispatcher.generic_oracle_depth, 0);
-        assert!(evaluator.whole_demand_dispatcher.control.is_empty());
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::Suspended { ordinal: 160 }
-        );
-        assert_eq!(
-            evaluator
-                .whole_demand_dispatcher
-                .final_force_resume_suspensions,
-            1
-        );
-        assert!(evaluator.dispatcher_collection_poll_preflight().is_ok());
-    }
-
-    #[test]
-    fn final_force_portal_preflight_decline_resumes_without_semantic_error() {
-        let ir = lower("1");
-        let mut evaluator = TreeWalk::new(&ir);
-        evaluator.whole_demand_dispatcher.active = true;
-        evaluator.whole_demand_dispatcher.generic_oracle_depth = 1;
-        evaluator.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::UnwindRequested { ordinal: 160 };
-        evaluator
-            .whole_demand_dispatcher
-            .control
-            .push(WholeDemandControl::FinalForce { segment: 5 });
-        evaluator.transient_value_stack_roots.push(Value::int(1));
-        evaluator.whole_demand_dispatcher.value_slots.push(0);
-        evaluator.active_force_roots.push(Value::int(2));
-
-        evaluator
-            .establish_final_force_resume_portal(ir.root, Span::default(), 0, 160)
-            .expect("an optimization preflight decline must preserve evaluation");
-
-        assert_eq!(
-            evaluator
-                .whole_demand_dispatcher
-                .final_force_resume_declines,
-            1
-        );
-        assert_eq!(
-            evaluator.whole_demand_dispatcher.final_force_resume_state,
-            FinalForceResumeState::Suspended { ordinal: 160 }
-        );
-    }
-
-    #[test]
-    fn terminal_cleanup_counts_an_unconsumed_publication_request_as_declined() {
-        let ir = lower("1");
-        let mut evaluator = TreeWalk::new(&ir);
-        evaluator.whole_demand_dispatcher.active = true;
-        evaluator.whole_demand_dispatcher.final_force_resume_state =
-            FinalForceResumeState::PublicationRequested { ordinal: 160 };
-        let mut result = Ok(Value::int(1));
-
-        evaluator.finish_whole_demand_dispatcher(&mut result, 0);
-
-        assert_eq!(
-            evaluator
-                .whole_demand_dispatcher
-                .final_force_resume_declines,
-            1
-        );
-        assert!(!evaluator.whole_demand_dispatcher.active);
-    }
-
-    #[test]
     fn missing_dispatcher_slot_closes_the_active_session() {
         let ir = lower("1");
         let mut evaluator = TreeWalk::new(&ir);
@@ -1622,33 +1114,5 @@ mod tests {
         ));
         assert!(!evaluator.whole_demand_dispatcher.active);
         assert!(evaluator.whole_demand_dispatcher.value_slots.is_empty());
-    }
-
-    #[test]
-    fn final_force_portal_bypasses_error_context_and_try_eval_catches() {
-        let ir = lower(r#""context must not run""#);
-        let mut evaluator = TreeWalk::new(&ir);
-        let span = evaluator.node(ir.root).expect("root exists").span;
-        let portal = TreeWalkError::new(
-            TreeWalkErrorKind::FinalForcePortalSuspend {
-                id: ir.root,
-                ordinal: 160,
-            },
-            span,
-        );
-
-        let after_context = evaluator
-            .add_error_context_node_to_error(ir.root, span, ir.root, portal)
-            .expect_err("nonsemantic suspension bypasses addErrorContext");
-        assert!(after_context.contexts().is_empty());
-        let after_try_eval = evaluator
-            .handle_try_eval_error(ir.root, span, after_context)
-            .expect_err("nonsemantic suspension bypasses tryEval");
-
-        assert!(after_try_eval.contexts().is_empty());
-        assert!(matches!(
-            after_try_eval.kind(),
-            TreeWalkErrorKind::FinalForcePortalSuspend { ordinal: 160, .. }
-        ));
     }
 }

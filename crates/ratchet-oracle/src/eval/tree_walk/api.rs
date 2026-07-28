@@ -33,8 +33,6 @@ pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value
     evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
-    emit_direct_island_probe_report(&evaluator);
-    emit_direct_island_site_report(&evaluator);
     if value.tag().is_heap() {
         let span = ir
             .arena
@@ -232,8 +230,6 @@ fn eval_whnf_owned_with_evaluator(
     super::module_ir_source_census::emit_module_ir_source_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
     evaluator.emit_peak_ordinal_report();
-    emit_direct_island_probe_report(&evaluator);
-    emit_direct_island_site_report(&evaluator);
     let id = evaluator.current_ir().root;
     let span = evaluator
         .current_ir()
@@ -408,7 +404,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     let dispatcher_probe =
         evaluator.begin_whole_demand_dispatcher_probe(ir.root, attr_path.len())?;
     #[cfg(feature = "collection_poll_probe")]
-    let mut value = if dispatcher_probe {
+    let value = if dispatcher_probe {
         evaluator.eval_instantiation_attr_path_dispatcher(ir.root, attr_path)
     } else {
         (|| match evaluator.try_eval_demand_machine_instantiation(ir.root, attr_path) {
@@ -446,7 +442,7 @@ fn eval_instantiation_attr_path_with_evaluator(
         })()
     };
     #[cfg(not(feature = "collection_poll_probe"))]
-    let mut value = (|| match evaluator.try_eval_demand_machine_instantiation(ir.root, attr_path) {
+    let value = (|| match evaluator.try_eval_demand_machine_instantiation(ir.root, attr_path) {
         Some(result) => result,
         None => {
             let root = evaluator.eval_root()?;
@@ -488,10 +484,6 @@ fn eval_instantiation_attr_path_with_evaluator(
     let mut value = value?;
     #[cfg(feature = "demand_region_shadow_probe")]
     evaluator.emit_demand_region_shadow_report();
-    #[cfg(feature = "dedup_string_list_canary")]
-    evaluator.emit_dedup_string_list_canary_report();
-    #[cfg(feature = "final_config_trie_canary")]
-    evaluator.emit_final_config_trie_canary_report();
     #[cfg(feature = "option_map_fold_probe")]
     evaluator.emit_option_map_fold_probe_report();
     #[cfg(feature = "root_continuation_probe")]
@@ -568,8 +560,6 @@ fn eval_instantiation_attr_path_with_evaluator(
     super::module_ir_source_census::emit_module_ir_source_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
     evaluator.emit_peak_ordinal_report();
-    emit_direct_island_probe_report(&evaluator);
-    emit_direct_island_site_report(&evaluator);
     finish_owned_eval_outcome(
         evaluator,
         value,
@@ -1294,66 +1284,6 @@ fn emit_heap_storage_census(evaluator: &TreeWalk) {
             .modules
             .capacity()
             .saturating_mul(std::mem::size_of::<TreeWalkModule>()),
-    );
-}
-
-/// Emits candidate lowered nodes for the `lib/modules.nix` direct-island wall.
-fn emit_direct_island_site_report(evaluator: &TreeWalk) {
-    if std::env::var_os("AOS_NIX_DIRECT_ISLAND_SITES").is_none() {
-        return;
-    }
-    const START: &[u8] = b"if freeformType == null && !isStrict";
-    const END: &[u8] = b"in {\n      config = configWithFreeform;";
-    for (module_index, module) in evaluator.modules.iter().enumerate() {
-        let Some(source) = module.source.as_ref() else {
-            continue;
-        };
-        if !source.name.ends_with(b"/lib/modules.nix") {
-            continue;
-        }
-        let Some(start) = source
-            .bytes
-            .windows(START.len())
-            .position(|window| window == START)
-        else {
-            continue;
-        };
-        let Some(end_start) = source
-            .bytes
-            .windows(END.len())
-            .position(|window| window == END)
-        else {
-            continue;
-        };
-        let end = end_start.saturating_add(2);
-        for (node_index, node) in module.ir.arena.nodes().iter().enumerate() {
-            let node_start = node.span.start as usize;
-            let node_end = node.span.end as usize;
-            if node_start <= start && node_end >= start || node_start >= start && node_start < end {
-                eprintln!(
-                    "aos_nix_direct_island_site {{\"module\":{module_index},\
-                     \"node\":{node_index},\"kind\":\"{:?}\",\"span\":[{},{}],\
-                     \"target\":[{start},{end}]}}",
-                    node.kind, node.span.start, node.span.end
-                );
-            }
-        }
-    }
-}
-
-/// Emits the default-off inclusive wall and dynamic-force coverage probe.
-fn emit_direct_island_probe_report(evaluator: &TreeWalk) {
-    let Some(report) = evaluator.direct_island_probe_report() else {
-        return;
-    };
-    eprintln!(
-        "aos_nix_direct_island_probe {{\"entries\":{},\"total_ns\":{},\
-         \"island_ns\":{},\"total_forces\":{},\"island_forces\":{}}}",
-        report.entries,
-        report.total_ns,
-        report.island_ns,
-        report.total_forces,
-        report.island_forces
     );
 }
 

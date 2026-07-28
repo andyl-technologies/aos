@@ -205,7 +205,6 @@ impl TreeWalk {
             Err(error) => return Some(Err(error)),
         };
 
-        self.note_direct_island_force();
         self.increment_thunks_forced();
         self.stg_apply_runtime.counters.claims =
             self.stg_apply_runtime.counters.claims.saturating_add(1);

@@ -766,9 +766,6 @@ impl TreeWalk {
         context: IrId,
         error: TreeWalkError,
     ) -> Result<Value, TreeWalkError> {
-        if error.is_final_force_portal_suspend() {
-            return Err(error);
-        }
         let context_span = self.node(context)?.span;
         let context_value = self.eval_node(context)?;
         let message = self.coerce_add_error_context_message(
@@ -792,9 +789,6 @@ impl TreeWalk {
         context: EvalPrimOpArg,
         error: TreeWalkError,
     ) -> Result<Value, TreeWalkError> {
-        if error.is_final_force_portal_suspend() {
-            return Err(error);
-        }
         let context_value = self.force_value(context.id(), context.span(), context.value())?;
         let message = self.coerce_add_error_context_message(
             call_id,

@@ -71,9 +71,8 @@ use super::heap::{
 use super::heap::{DirectRootObservation, DirectRootRewriteError, DirectRootRewritePlan};
 #[cfg(feature = "lifetime_cohort_probe")]
 use super::heap::{
-    LifetimeCohortCandidate, LifetimeCohortCandidateKind, LifetimeCohortCandidateObservation,
-    LifetimeCohortCensus, LifetimeCohortMass, WeakHashConsPurgeReport,
-    WeakHashConsTablePurgeReport,
+    LifetimeCohortCandidate, LifetimeCohortCandidateObservation, LifetimeCohortCensus,
+    LifetimeCohortMass,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{DetachedForceClaim, ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -126,8 +125,6 @@ use crate::compile::{
     analyze_call_target_candidates, analyze_known_call_targets, annotate_import_ir,
     dead_binding_elimination_plan, plan_promise_region, resolve,
 };
-#[cfg(feature = "lifetime_cohort_probe")]
-use crate::heap::flat::FlatObjectKind;
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
     GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget, MinorGcCommitReport,
@@ -150,8 +147,6 @@ use crate::string::{
     ContextElement, ContextKind, NixString, NixStringError, StringContext, try_clone_bytes,
 };
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
-#[cfg(feature = "lifetime_cohort_probe")]
-use crate::value::HeapObject;
 use crate::value::{Value, ValueTag};
 use aos_nix_compat::drv_materialize::materialize_drv;
 use aos_nix_dialect::{nix_lower, nix_lower_with_options};
@@ -186,8 +181,6 @@ mod outcome;
     feature = "evacuation_plan_probe"
 ))]
 mod packed_mutator_root_stage;
-#[cfg(feature = "packed_portal_cutover")]
-mod packed_portal_cutover;
 #[cfg(feature = "peak_ordinal_probe")]
 mod peak_ordinal;
 #[cfg(feature = "collection_poll_probe")]
@@ -376,14 +369,6 @@ pub struct TreeWalk {
     /// Bounded proof-only roots and edge census for native continuations.
     #[cfg(feature = "collection_poll_probe")]
     native_continuation_shadow: Option<native_continuation_shadow::NativeContinuationShadow>,
-    /// Cached exact-body admissions for the string-list deduplication canary.
-    #[cfg(feature = "dedup_string_list_canary")]
-    dedup_string_list_plans:
-        HashMap<EvalNodeRef, Option<dedup_string_list_canary::DedupStringListPlan>>,
-    /// Cached exact-fold admissions for the final-config trie canary.
-    #[cfg(feature = "final_config_trie_canary")]
-    final_config_trie_plans:
-        HashMap<EvalNodeRef, Option<final_config_trie_canary::FinalConfigTriePlan>>,
     /// Cached source-independent admissions for the report-only option-map fold probe.
     #[cfg(feature = "option_map_fold_probe")]
     option_map_fold_probe_plans:
@@ -397,8 +382,6 @@ pub struct TreeWalk {
     peak_ordinal_contexts: Vec<peak_ordinal::PeakOrdinalContext>,
     /// Default-off imported-root machine coverage and oracle-boundary counts.
     demand_machine_import_counters: demand_machine::DemandMachineImportCounters,
-    /// Default-off inclusive coverage probe for the `lib/modules.nix` island.
-    direct_island_probe: Option<direct_island_probe::DirectIslandProbe>,
     /// Process-wide environment capture counters observed at construction;
     /// `stats_snapshot` reports the movement since this baseline (doc 30 FV-0).
     campaign_env_baseline: super::env::capture_stats::EnvCaptureStats,
@@ -703,15 +686,12 @@ mod boundary_admission;
 mod boundary_apply_hooks;
 mod call_summary;
 mod coerce_paths;
-#[cfg(feature = "dedup_string_list_canary")]
-mod dedup_string_list_canary;
 mod demand_epoch_probe;
 mod demand_machine;
 #[cfg(feature = "demand_region_shadow_probe")]
 mod demand_region_shadow_probe;
 mod derivation_build;
 mod derivation_serialize;
-mod direct_island_probe;
 mod eval_apply;
 mod eval_codec;
 mod eval_compare;
@@ -737,16 +717,12 @@ mod eval_sort;
 mod eval_source;
 mod eval_stats;
 mod eval_trace;
-#[cfg(feature = "lifetime_cohort_probe")]
-mod exec176_weak_purge;
 mod fetch_git_clone;
 mod fetch_git_store;
 mod fetch_git_tree;
 mod fetch_tree_access;
 mod fetch_tree_args;
 mod fetch_tree_forge;
-#[cfg(feature = "final_config_trie_canary")]
-mod final_config_trie_canary;
 mod flake_git;
 mod flake_ref;
 mod flat_capture;
@@ -774,8 +750,6 @@ mod pkg_boundary_probe;
 mod primop_builtin_cache;
 mod promise_region_census;
 mod region;
-#[cfg(test)]
-mod region_machine;
 mod relocation_identity;
 #[cfg(feature = "root_continuation_probe")]
 mod root_continuation_probe;

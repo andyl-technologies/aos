@@ -110,7 +110,6 @@ impl TreeWalk {
                     value = forced;
                 }
                 BeginMarkerUpdate::Claimed => {
-                    self.note_direct_island_force();
                     self.increment_thunks_forced();
                     match self.try_eval_genlist_elem_at_add_one_session_step(
                         id,

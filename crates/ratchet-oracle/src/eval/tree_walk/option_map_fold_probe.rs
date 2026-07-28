@@ -606,7 +606,14 @@ mod tests {
 
     #[test]
     fn admits_current_modules_nix_option_map_fold() {
-        let mut ir = lower(include_str!("../../../../../lib/modules.nix"));
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("lib")
+                .join("modules.nix"),
+        )
+        .expect("repository modules.nix is readable");
+        let mut ir = lower(&source);
         let reference = trusted_reference().expect("trusted reference builds");
         let symbols = std::mem::take(&mut ir.symbols);
         let mut structural_matches = 0_usize;

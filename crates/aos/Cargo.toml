@@ -38,10 +38,6 @@ nested_nonmoving_retirement_probe = [
   "candidate_c_value",
   "aos-nix/nested_nonmoving_retirement_probe",
 ]
-# Default-off exact string-list deduplication canary.
-dedup_string_list_canary = ["candidate_c_value", "aos-nix/dedup_string_list_canary"]
-# Default-off exact finalConfig trie-fold canary.
-final_config_trie_canary = ["candidate_c_value", "aos-nix/final_config_trie_canary"]
 option_map_fold_probe = ["candidate_c_value", "aos-nix/option_map_fold_probe"]
 # Compile-time-only read-only evacuation-plan and first-slice census.
 evacuation_plan_probe = ["candidate_c_value", "aos-nix/evacuation_plan_probe"]
@@ -54,11 +50,6 @@ immutable_cohort_projection_probe = [
 young_increment_projection_probe = [
   "candidate_c_value",
   "aos-nix/young_increment_projection_probe",
-]
-# Default-off mutating immutable/scalar publication at the rooted FinalForce portal.
-packed_portal_cutover = [
-  "young_increment_projection_probe",
-  "aos-nix/packed_portal_cutover",
 ]
 # Install mimalloc as the process-wide `#[global_allocator]` (on by default).
 # The declaration in `src/main.rs` is cfg-gated to the complement of alejandra's

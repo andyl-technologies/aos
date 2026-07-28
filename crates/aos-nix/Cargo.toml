@@ -40,10 +40,6 @@ nested_nonmoving_retirement_probe = [
   "candidate_c_value",
   "ratchet-oracle/nested_nonmoving_retirement_probe",
 ]
-# Default-off exact string-list deduplication canary.
-dedup_string_list_canary = ["candidate_c_value", "ratchet-oracle/dedup_string_list_canary"]
-# Default-off exact finalConfig trie-fold canary.
-final_config_trie_canary = ["candidate_c_value", "ratchet-oracle/final_config_trie_canary"]
 option_map_fold_probe = ["candidate_c_value", "ratchet-oracle/option_map_fold_probe"]
 # Compile-time-only read-only evacuation-plan and first-slice census.
 evacuation_plan_probe = ["candidate_c_value", "ratchet-oracle/evacuation_plan_probe"]
@@ -57,12 +53,6 @@ young_increment_projection_probe = [
   "candidate_c_value",
   "ratchet-oracle/young_increment_projection_probe",
 ]
-# Default-off mutating immutable/scalar publication at the rooted FinalForce portal.
-packed_portal_cutover = [
-  "young_increment_projection_probe",
-  "ratchet-oracle/packed_portal_cutover",
-]
-
 [dependencies]
 anyhow = { workspace = true }
 aos-nix-compat = { workspace = true }

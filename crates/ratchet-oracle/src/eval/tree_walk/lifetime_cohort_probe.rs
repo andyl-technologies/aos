@@ -11,7 +11,6 @@
 //! semantic observation.
 
 use super::*;
-use crate::eval::heap::LifetimeQuarantineInstallReport;
 use std::collections::HashSet;
 
 const DEFAULT_CHECKPOINTS: &[usize] = &[160, 176, 192, 224, 256, 288, 320, 352, 357];
@@ -175,27 +174,6 @@ impl TreeWalk {
             .fold(0_u64, |total, candidate| {
                 total.saturating_add(candidate.attributable_bytes())
             });
-        if kind == "final-config" && execution == 176 {
-            self.run_exec176_weak_purge(&snapshot.unreachable_candidates);
-            match self
-                .heap
-                .install_lifetime_quarantine(&snapshot.unreachable_candidates)
-            {
-                LifetimeQuarantineInstallReport::Installed {
-                    objects,
-                    bytes,
-                    typed_heads_excluded,
-                } => eprintln!(
-                    "aos_nix_lifetime_quarantine_installed \
-                     {{\"version\":1,\"execution\":176,\"objects\":{objects},\
-                     \"bytes\":{bytes},\"typed_heads_excluded\":{typed_heads_excluded}}}"
-                ),
-                LifetimeQuarantineInstallReport::Refused { reason } => eprintln!(
-                    "aos_nix_lifetime_quarantine_refused \
-                     {{\"version\":1,\"execution\":176,\"reason\":{reason:?}}}"
-                ),
-            }
-        }
         let Some(probe) = self.lifetime_cohort_probe.as_mut() else {
             return;
         };
@@ -475,7 +453,7 @@ fn subtract_mass(total: LifetimeCohortMass, part: LifetimeCohortMass) -> Lifetim
 mod tests {
     use super::*;
     use crate::compile::resolve as resolve_ast;
-    use crate::eval::heap::LifetimeCohortCandidateKind;
+    use crate::eval::heap::{LifetimeCohortCandidateKind, LifetimeQuarantineInstallReport};
     use crate::syntax::parse_str;
 
     fn lower(source: &str) -> Ir {

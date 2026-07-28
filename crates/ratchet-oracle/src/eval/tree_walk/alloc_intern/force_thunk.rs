@@ -750,7 +750,6 @@ impl TreeWalk {
         span: Span,
         work: crate::eval::heap::ActivePackedApplyWork,
     ) -> Result<Value, TreeWalkError> {
-        self.note_direct_island_force();
         if work.gen_list_elem_at_add_one
             && let Some(result) = self.try_force_genlist_elem_at_add_one(
                 id,
@@ -1614,7 +1613,6 @@ impl TreeWalk {
         span: Span,
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
-        self.note_direct_island_force();
         #[cfg(feature = "maximal_laziness_probe")]
         let maximal_laziness_token = self.begin_maximal_laziness_force(thunk);
         // Prelude-force-share accounting (RFC-0007 task #13): a no-op unless
@@ -1653,7 +1651,6 @@ impl TreeWalk {
                 self.reserve_suspended_env_root_frame(id, span)?;
                 self.push_env_scope(id, span, thunk_env, with_env, scoped_globals)?;
                 self.enter_promise_region_thunk_entry(thunk);
-                let direct_island = self.begin_direct_island_node(*body);
                 let result = self.with_current_module(body.module(), |eval| {
                     eval.with_nonmoving_native_continuation(
                         super::super::native_continuation_shadow::NativeContinuationKind::NodeThunkBody,
@@ -1665,7 +1662,6 @@ impl TreeWalk {
                         |eval| eval.eval_node(body.id()),
                     )
                 });
-                self.end_direct_island_node(direct_island);
                 self.leave_promise_region_entry();
                 self.pop_env_scope();
                 result
@@ -1803,11 +1799,6 @@ impl TreeWalk {
                 .get_thunk(source_thunk)
                 .map_or("unknown", |thunk| self.force_shape_class(thunk))
         });
-        #[cfg(feature = "collection_poll_probe")]
-        let portal_shape = self
-            .heap
-            .get_thunk(source_thunk)
-            .map_or("unknown", |thunk| self.force_shape_class(thunk));
         let tier = self.options.thunk_resolve_barrier_tier();
         if tier == GenerationalGcTier::OneShotArena {
             // Default tier: the one-shot arena barrier is `DisabledThunkResolveBarrier`,
@@ -1824,8 +1815,6 @@ impl TreeWalk {
             if self.gc_mode.is_enabled() {
                 self.shed_forced_thunk_captures(id, span, source_thunk)?;
             }
-            #[cfg(feature = "collection_poll_probe")]
-            self.suspend_final_force_after_published_thunk(id, span, portal_shape)?;
             return Ok(value);
         }
         let mut barrier = runtime_thunk_resolve_write_barrier_with_card_table(
@@ -1845,8 +1834,6 @@ impl TreeWalk {
         if self.gc_mode.is_enabled() {
             self.shed_forced_thunk_captures(id, span, source_thunk)?;
         }
-        #[cfg(feature = "collection_poll_probe")]
-        self.suspend_final_force_after_published_thunk(id, span, portal_shape)?;
         Ok(value)
     }
 

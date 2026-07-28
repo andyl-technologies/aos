@@ -278,10 +278,6 @@ impl TreeWalk {
             #[cfg(feature = "collection_poll_probe")]
             native_continuation_shadow:
                 super::native_continuation_shadow::NativeContinuationShadow::from_env(),
-            #[cfg(feature = "dedup_string_list_canary")]
-            dedup_string_list_plans: HashMap::new(),
-            #[cfg(feature = "final_config_trie_canary")]
-            final_config_trie_plans: HashMap::new(),
             #[cfg(feature = "option_map_fold_probe")]
             option_map_fold_probe_plans: HashMap::new(),
             #[cfg(feature = "ready_exclusive_probe")]
@@ -292,7 +288,6 @@ impl TreeWalk {
             peak_ordinal_contexts: Vec::new(),
             demand_machine_import_counters:
                 super::demand_machine::DemandMachineImportCounters::default(),
-            direct_island_probe: super::direct_island_probe::DirectIslandProbe::from_env(),
             campaign_env_baseline: crate::eval::env::capture_stats::snapshot(),
             attr_telemetry: AttrTelemetry::new(),
             // Hidden-class shape projection stores dense `ShapeId`s in shared

@@ -1,5 +1,13 @@
 # Serial evaluator hot-path and `unsafe` audit
 
+> **Benchmark-integrity correction (2026-07-28).** Historical results in this
+> note that enable the exact-source `final_config_trie_canary`, the
+> exact-coordinate `dedup_string_list_canary`, execution-selected cache
+> mutation, or ordinal-selected packed publication are invalid as evidence of
+> general evaluator performance. Those implementations have been removed.
+> They receive zero credit toward the RFC memory or speed targets. See
+> [benchmark-integrity.md](benchmark-integrity.md).
+
 **Status:** measured exploration plus first implementation, 2026-07-23. This
 note compares the Candidate-C tree walker with the pinned C++ Nix 2.24.12 tree
 walker. It does not propose bytecode.
