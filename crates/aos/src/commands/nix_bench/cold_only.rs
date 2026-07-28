@@ -38,9 +38,11 @@ pub(super) fn enabled() -> bool {
 /// Runs one isolated, native-only cold eval per requested attribute and prints a
 /// greppable JSON result line, doing nothing else.
 ///
-/// Each attribute uses a [`fresh_isolated_candidate`], so its caches start empty
-/// and the eval is genuinely cold. There is no C++ oracle, warm re-instantiate,
-/// parity gate, or history — see the [module docs](self).
+/// Each attribute uses a [`fresh_isolated_candidate`], so every in-process memo
+/// tier starts empty of data from earlier runs while remaining enabled for reuse
+/// within this evaluation. Persistent cache population is measured separately.
+/// There is no C++ oracle, warm re-instantiate, parity gate, or history — see
+/// the [module docs](self).
 ///
 /// # Errors
 ///

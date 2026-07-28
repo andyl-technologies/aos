@@ -535,34 +535,29 @@ pub(super) fn fresh_isolated_candidate(
     spec: &BenchmarkSpec,
 ) -> Result<(Box<dyn NixEval>, Option<TempDir>)> {
     let mut config = base_config.clone();
-    // Match the base (production) config's cache posture exactly, so cold
-    // measures what a real first eval pays -- no more, no less. A fresh
-    // evaluator instance is already cold: its in-memory caches are empty. We
-    // must NOT add a durable cache the base config lacks, because setting a
-    // cache root activates persist-cache / eval-cache write-through and
-    // root-cutoff (see `tree_walk_options_from_config` in aos-core), whose
-    // per-force durable writes a stock cache-less cold eval never pays -- that
-    // write amplification, not eval cost, is what an added temp cache would
-    // measure. When the base config DOES use a durable cache (AOS_NIX_CACHE
-    // set), redirect it to a fresh temp dir so this cycle starts with an empty
-    // cache rather than reading the shared populated one: the cold run then pays
-    // the genuine first-eval write cost, and the warm run reuses the cache it
-    // just wrote (including the root-cutoff record).
-    let cache_dir = if base_config.native_cache_root().is_some() {
-        let dir = tempfile::Builder::new()
-            .prefix("aos-nix-bench-cold-")
-            .tempdir()
-            .with_context(|| format!("creating cold cache dir for {}", spec.name))?;
-        config
-            .set_native_cache_root(dir.path())
-            .with_context(|| format!("configuring cold cache root for {}", spec.name))?;
-        Some(dir)
-    } else {
-        None
-    };
+    // "Cold" excludes cache data from earlier runs; it does not disable caches
+    // populated and reused within this run. Enable the complete in-process memo
+    // stack, but detach persistent and additive disk/network locations. Durable
+    // cache population is a separate benchmark axis: including it here measures
+    // cross-run serialization and writeback rather than the evaluator's legal
+    // same-run reuse.
+    enable_isolated_intra_run_caches(&mut config);
     let candidate = select_native_diff_candidate_with_config(verbose, config)
         .with_context(|| format!("building cold evaluator for {}", spec.name))?;
-    Ok((candidate, cache_dir))
+    Ok((candidate, None))
+}
+
+/// Enables every cache tier that can be populated without importing prior data.
+fn enable_isolated_intra_run_caches(config: &mut NixEvalConfig) {
+    config.clear_native_cache_root();
+    let mut memo = config.native_memo();
+    memo.enabled = true;
+    memo.l0_enabled = true;
+    memo.l1_enabled = Some(true);
+    memo.l2_enabled = true;
+    config.set_native_memo(memo);
+    config.set_native_memo_disk_spec(None);
+    config.set_native_memo_net(None);
 }
 
 /// Maximum `diff_closure` attempts before the parity gate reports an
