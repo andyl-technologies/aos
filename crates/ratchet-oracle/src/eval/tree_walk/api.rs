@@ -33,7 +33,6 @@ pub fn eval_whnf_with_options(ir: &Ir, options: TreeWalkOptions) -> Result<Value
     evaluator.derivation_snapshot()?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
-    evaluator.emit_ready_factory_census_report();
     emit_direct_island_probe_report(&evaluator);
     emit_direct_island_site_report(&evaluator);
     if value.tag().is_heap() {
@@ -224,7 +223,6 @@ fn eval_whnf_owned_with_evaluator(
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
-    evaluator.emit_ready_factory_census_report();
     emit_heap_refusal_census(&evaluator);
     emit_heap_storage_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
@@ -556,7 +554,6 @@ fn eval_instantiation_attr_path_with_evaluator(
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
-    evaluator.emit_ready_factory_census_report();
     emit_heap_refusal_census(&evaluator);
     emit_heap_storage_census(&evaluator);
     #[cfg(feature = "peak_ordinal_probe")]
