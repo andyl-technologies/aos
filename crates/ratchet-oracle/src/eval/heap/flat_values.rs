@@ -577,9 +577,9 @@ impl FlatColdHashStore {
         }
     }
 
-    /// Drops every cached hash for `address` (writeback commits).
-    pub(super) fn clear(&self, address: usize) {
-        self.map.borrow_mut().remove(&address);
+    /// Drops every cached hash for `address` and reports whether one existed.
+    pub(super) fn clear(&self, address: usize) -> bool {
+        self.map.borrow_mut().remove(&address).is_some()
     }
 }
 

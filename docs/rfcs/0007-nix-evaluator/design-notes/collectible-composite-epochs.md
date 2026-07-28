@@ -157,6 +157,29 @@ adding a read barrier to every `Value`.
 6. **Module/source lifecycle.** Compact cold IR and release or compress source
    text after lowering while preserving error/span behavior and compatibility.
 
+The first milestone now has a default-off terminal implementation behind
+`AOS_NIX_TERMINAL_COMPOSITE_RETIREMENT=1`. It traces from the complete terminal
+root set, validates and retires unreachable flat lists and attrsets, purges
+their weak hash-cons and side-hash identities, then runs the existing worker
+closure sweep after the composite payloads have dropped their edges. Its
+strict-JSON report explicitly records `"terminal_only":true` and
+`"peak_credit":false`; Candidate-C exact-system parity and full payload/page
+measurements remain required before promoting the experiment to milestone 2.
+
+The exact typed-head system-toplevel proof remained byte-identical and retired
+555,027 flat lists plus 1,566,298 flat attrsets. It dropped 539,269,456 inline
+bytes, 10,944,848 bytes of list-spine capacity, and an estimated 674,517,560
+bytes of attr-array storage. The shared reservation exposed and advised 116,063
+zero-live pages (475,394,048 bytes).
+
+The legacy post-retirement worker sweep failed closed and retired no worker
+closures because its marker assumes worker records/flat closures and cannot
+traverse stable typed heads. This result receives composite payload/page credit
+only, never worker or peak credit. The next semantic slice must rotate or
+retire unreachable typed heads and their generated work pools from the already
+computed true-root reachability set; rerunning the old permanent-seeded worker
+sweep is not a typed-compatible solution.
+
 The final acceptance test remains the pinned nixpkgs system toplevel under
 strict-cold external state with every intra-run cache enabled. Intermediate
 retirement and parity gates are evidence, not completion.

@@ -644,6 +644,27 @@ impl TypedThunkForceParts {
 }
 
 impl EvalHeap {
+    /// Forces one typed head into its blackhole sentinel for collector tests.
+    #[cfg(all(test, feature = "candidate_c_value"))]
+    pub(in crate::eval::heap) fn test_blackhole_typed_thunk(
+        &mut self,
+        value: Value,
+    ) -> Result<(), EvalHeapError> {
+        let ptr = self.thunk_ptr(value)?;
+        let head = self
+            .typed_thunk_heads
+            .resolve(ptr)
+            .map_err(|_| EvalHeapError::unknown(ValueTag::Thunk, ptr))?;
+        let Some(_work) = head.work() else {
+            return Err(EvalHeapError::ShedRejected {
+                address: ptr.as_ptr() as usize,
+                reason: "collector test requires a suspended typed thunk",
+            });
+        };
+        head.word.store(TYPED_BLACKHOLE, Ordering::Release);
+        Ok(())
+    }
+
     /// Allocates an unpublished suspended typed head for evacuation.
     #[cfg(feature = "evacuation_plan_probe")]
     pub(in crate::eval::heap) fn alloc_evacuation_suspended_typed_thunk(

@@ -192,6 +192,8 @@ fn eval_whnf_owned_with_evaluator(
     emit_promise_region_census(&evaluator);
     #[cfg(feature = "lifetime_cohort_probe")]
     evaluator.emit_lifetime_cohort_terminal(value);
+    #[cfg(feature = "candidate_c_value")]
+    emit_terminal_composite_retirement(&mut evaluator, value);
     // Tier-B quiescent point: the root force has fully unwound, so worker
     // garbage is reclaimable with the produced value as an extra root. A
     // no-op unless AOS_NIX_GC=sweep is enabled and the growth threshold has
@@ -518,6 +520,8 @@ fn eval_instantiation_attr_path_with_evaluator(
     emit_promise_region_census(&evaluator);
     #[cfg(feature = "lifetime_cohort_probe")]
     evaluator.emit_lifetime_cohort_terminal(value);
+    #[cfg(feature = "candidate_c_value")]
+    emit_terminal_composite_retirement(&mut evaluator, value);
     // Tier-B quiescent point: the instantiation force has fully unwound (see
     // `eval_whnf_owned_with_evaluator`).
     #[cfg(feature = "candidate_c_value")]
@@ -648,6 +652,49 @@ fn emit_permanent_retention_census(evaluator: &TreeWalk, value: Value) {
     match result {
         Ok(census) => eprintln!("{census}"),
         Err(error) => eprintln!("aos_nix_permanent_retention_census_error {error:?}"),
+    }
+}
+
+/// Runs the default-off terminal-only composite-retirement semantic proof.
+#[cfg(feature = "candidate_c_value")]
+fn emit_terminal_composite_retirement(evaluator: &mut TreeWalk, value: Value) {
+    if !std::env::var("AOS_NIX_TERMINAL_COMPOSITE_RETIREMENT").is_ok_and(|setting| setting == "1") {
+        return;
+    }
+    if !evaluator.has_complete_terminal_root_set() {
+        eprintln!(
+            "aos_nix_terminal_composite_retirement \
+             {{\"ok\":false,\"stage\":\"quiescence\",\
+             \"reason\":\"incomplete_terminal_root_set\"}}"
+        );
+        return;
+    }
+    let roots = evaluator.mutator_root_set().and_then(|mut roots| {
+        roots
+            .try_push_value_stack(0, value)
+            .map_err(TreeWalkSafepointRootError::RootSet)?;
+        Ok(roots)
+    });
+    let result = match roots {
+        Ok(roots) => evaluator
+            .heap
+            .retire_terminal_unreachable_composites(&roots),
+        Err(_) => {
+            eprintln!(
+                "aos_nix_terminal_composite_retirement \
+                 {{\"ok\":false,\"stage\":\"roots\",\
+                 \"reason\":\"root_set_preparation_failed\"}}"
+            );
+            return;
+        }
+    };
+    match result {
+        Ok(report) => eprintln!("aos_nix_terminal_composite_retirement {report}"),
+        Err(_) => eprintln!(
+            "aos_nix_terminal_composite_retirement \
+             {{\"ok\":false,\"stage\":\"retirement\",\
+             \"reason\":\"validation_or_commit_failed\"}}"
+        ),
     }
 }
 

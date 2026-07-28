@@ -197,8 +197,10 @@ mod shared_backend;
 #[cfg(feature = "candidate_c_value")]
 mod snapshot;
 mod structural_writeback;
+#[cfg(feature = "candidate_c_value")]
+mod terminal_composite_retirement;
 mod thunk;
-#[cfg(feature = "lifetime_cohort_probe")]
+#[cfg(any(feature = "candidate_c_value", feature = "lifetime_cohort_probe"))]
 mod weak_hash_cons_purge;
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 #[cfg(feature = "candidate_c_value")]
