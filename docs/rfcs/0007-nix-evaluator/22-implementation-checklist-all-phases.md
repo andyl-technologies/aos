@@ -13524,6 +13524,14 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       real compressed `Value` word rather than a synthetic raw `i64`; values
       outside the inline `i32` range decline before compilation. The same six
       backend tests pass under both baseline and Candidate-C carrier features.
+      Backend v6 and the core translator now also support the honest
+      statically-ready corridor: `ApplyGuarded` flows directly to `Return` with
+      one unknown-call statepoint and no `Force`, update arm, fabricated force
+      identity, or consumed force decision. The real `f: f 1` / `x: 42`
+      end-to-end fixture now completes through this route with one call
+      decision and zero force decisions. Nine core tests and the six backend
+      tests pass; this removes the contract blocker for the first default-off
+      Candidate-C runtime adapter.
       This expands the real-plan grammar but is not yet connected to primary
       runtime admission and receives no whole-process speed credit.
       Independent memory-source exploration finds no hidden easy pool:

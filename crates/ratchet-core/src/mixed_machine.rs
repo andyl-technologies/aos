@@ -43,7 +43,7 @@ pub use oracle_lower::{
     MixedOracleCallTargetBlock, MixedOracleNodeBlock, MixedOracleNodeDecline,
     MixedOracleNodeLowerError, MixedOracleNodeLowerOutcome, MixedOraclePlanDecline,
     MixedOraclePlanLowerError, MixedOraclePlanLowerOutcome, lower_mixed_oracle_apply_force_plan,
-    lower_mixed_oracle_node,
+    lower_mixed_oracle_node, lower_mixed_oracle_ready_call_plan,
 };
 
 /// Encoding and semantic-layout version of mixed-machine plans.

@@ -43,7 +43,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 5;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 6;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -518,6 +518,10 @@ struct AdmittedCorridor {
     entry_argument: AdmittedEntryOperand,
     call_results: Vec<AdmittedCallResult>,
     call_fallback: MixedStatepointId,
+    force: Option<AdmittedForceCorridor>,
+}
+
+struct AdmittedForceCorridor {
     force_fallback: MixedStatepointId,
     node: ClaimedResult,
     apply: ClaimedResult,
@@ -620,6 +624,11 @@ fn lower_mixed_superblock(
             decision,
             field_offset!(JitMixedSuperblockCallDecision, frame),
         );
+        let call_continuation = if corridor.force.is_some() {
+            force_ready
+        } else {
+            complete
+        };
         emit_call_target_dispatch(
             &mut cursor,
             activation,
@@ -627,15 +636,15 @@ fn lower_mixed_superblock(
             frame,
             argument,
             &corridor.call_results,
-            force_ready,
+            call_continuation,
             side_exit,
             invalid,
             corridor.call_fallback,
         );
     }
 
-    function.layout.append_block(force_ready);
-    {
+    if let Some(force) = corridor.force.as_ref() {
+        function.layout.append_block(force_ready);
         let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(force_ready);
         let call_result = cursor.func.dfg.block_params(force_ready)[0];
         let decision = emit_next_force_decision(&mut cursor, activation, invalid);
@@ -683,34 +692,34 @@ fn lower_mixed_superblock(
             force_gen_list,
             side_exit,
             invalid,
-            corridor.force_fallback,
+            force.force_fallback,
+        );
+
+        append_claimed_block(
+            &mut function,
+            force_node,
+            activation,
+            force.node,
+            complete,
+            invalid,
+        );
+        append_claimed_block(
+            &mut function,
+            force_apply,
+            activation,
+            force.apply,
+            complete,
+            invalid,
+        );
+        append_claimed_block(
+            &mut function,
+            force_gen_list,
+            activation,
+            force.gen_list,
+            complete,
+            invalid,
         );
     }
-
-    append_claimed_block(
-        &mut function,
-        force_node,
-        activation,
-        corridor.node,
-        complete,
-        invalid,
-    );
-    append_claimed_block(
-        &mut function,
-        force_apply,
-        activation,
-        corridor.apply,
-        complete,
-        invalid,
-    );
-    append_claimed_block(
-        &mut function,
-        force_gen_list,
-        activation,
-        corridor.gen_list,
-        complete,
-        invalid,
-    );
 
     function.layout.append_block(complete);
     {
@@ -824,9 +833,6 @@ fn admit_corridor(
     if entry.kind != MixedEntryKind::ForceWhnf {
         return unsupported("entry is not ForceWhnf");
     }
-    if plan.bounds().update_depth == 0 {
-        return unsupported("plan reserves no update record");
-    }
     if plan.operations().iter().any(|operation| {
         matches!(
             operation,
@@ -915,9 +921,33 @@ fn admit_corridor(
         };
         call_results.push(result);
     }
-    let force_block = block(plan, *continuation)?;
+    let force = admit_force_corridor(plan, *continuation, *call_result)?;
+    Ok(AdmittedCorridor {
+        entry_callable,
+        entry_argument,
+        call_results,
+        call_fallback: *call_fallback,
+        force,
+    })
+}
+
+fn admit_force_corridor(
+    plan: &MixedModulePlan,
+    continuation: MixedBlockId,
+    call_result: MixedValueId,
+) -> Result<Option<AdmittedForceCorridor>, JitMixedSuperblockCompileError> {
+    let force_block = block(plan, continuation)?;
     if !operations(plan, force_block)?.is_empty() {
-        return unsupported("force continuation contains pure operations");
+        return unsupported("guarded continuation contains pure operations");
+    }
+    if matches!(
+        force_block.terminator,
+        MixedTerminator::Return { value } if value == call_result
+    ) {
+        return Ok(None);
+    }
+    if plan.bounds().update_depth == 0 {
+        return unsupported("force corridor reserves no update record");
     }
     let MixedTerminator::Force {
         subject,
@@ -930,9 +960,9 @@ fn admit_corridor(
         ..
     } = &force_block.terminator
     else {
-        return unsupported("guarded continuation does not end in Force");
+        return unsupported("guarded continuation is not a direct return or Force");
     };
-    if subject != call_result {
+    if *subject != call_result {
         return unsupported("force subject is not the guarded-call result");
     }
     let ready_block = block(plan, *ready)?;
@@ -944,16 +974,12 @@ fn admit_corridor(
     {
         return unsupported("ready force edge does not return its result");
     }
-    Ok(AdmittedCorridor {
-        entry_callable,
-        entry_argument,
-        call_results,
-        call_fallback: *call_fallback,
+    Ok(Some(AdmittedForceCorridor {
         force_fallback: *force_fallback,
         node: admit_claimed_result(plan, *node, *force_result, *ready)?,
         apply: admit_claimed_result(plan, *apply, *force_result, *ready)?,
         gen_list: admit_claimed_result(plan, *gen_list, *force_result, *ready)?,
-    })
+    }))
 }
 
 fn admit_entry_operand(
@@ -1403,8 +1429,8 @@ mod tests {
             MixedForceGuards, MixedForceShape, MixedFunction, MixedMachineRuntime,
             MixedOracleCallTargetBlock, MixedOracleNodeLowerOutcome, MixedOraclePlanLowerOutcome,
             MixedPlanBounds, MixedSource, MixedStatepoint, MixedStatepointMode,
-            MixedStatepointReason, MixedTableRange, MixedValueType,
-            lower_mixed_oracle_apply_force_plan, lower_mixed_oracle_node,
+            MixedStatepointReason, MixedTableRange, MixedValueType, lower_mixed_oracle_node,
+            lower_mixed_oracle_ready_call_plan,
         },
         resolve,
         stg::{StgCodeKey, StgLowerOutcome, StgModuleId, lower_stg_code_block},
@@ -1616,10 +1642,9 @@ mod tests {
         let frames = [8];
         let calls = [JitMixedSuperblockCallDecision::target(8, 0, 0)];
         let value = encode_integer_constant(42).expect("fixture integer is representable");
-        let forces = [JitMixedSuperblockForceDecision::ready(value, value)];
         let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
         let mut activation =
-            JitMixedSuperblockActivation::new(777, 0, &frames, 1, &calls, &forces, &mut updates)
+            JitMixedSuperblockActivation::new(777, 0, &frames, 1, &calls, &[], &mut updates)
                 .expect("activation validates");
 
         assert_eq!(
@@ -1627,7 +1652,7 @@ mod tests {
             JitMixedSuperblockOutcome::Complete(value)
         );
         assert_eq!(activation.consumed_calls(), 1);
-        assert_eq!(activation.consumed_forces(), 1);
+        assert_eq!(activation.consumed_forces(), 0);
     }
 
     #[test]
@@ -1814,13 +1839,11 @@ mod tests {
             MixedCodeIdentity::new([8; 32], target_ir.root, target_body, target_frame, [5; 32]),
             target_code,
         );
-        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_apply_force_plan(
+        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_ready_call_plan(
             MixedModuleKey::new([7; 32], [6; 32], 1),
-            MixedPlanBounds::new(16, 2, 2),
+            MixedPlanBounds::new(16, 1, 1),
             &entry,
             &[target],
-            MixedForceGuards::new(code(30), code(31), code(32)),
-            0,
         )
         .expect("real corridor translation succeeds") else {
             panic!("real corridor must lower");

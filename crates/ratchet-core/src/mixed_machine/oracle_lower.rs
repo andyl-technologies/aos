@@ -161,6 +161,20 @@ pub enum MixedOraclePlanLowerError {
     Plan(#[from] MixedPlanError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MixedOraclePreparedEntry {
+    source: MixedSource,
+    callable: MixedOp,
+    argument: MixedOp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MixedOraclePreparedTarget {
+    identity: MixedCodeIdentity,
+    source: MixedSource,
+    returned: MixedOracleCallTargetReturn,
+}
+
 /// Atomically translates the smallest real STG application/force corridor.
 ///
 /// The admitted entry is exactly one `Apply1` whose callable is a lexical
@@ -190,76 +204,15 @@ pub fn lower_mixed_oracle_apply_force_plan(
     force_guards: MixedForceGuards,
     claimed_result_slot: u32,
 ) -> Result<MixedOraclePlanLowerOutcome, MixedOraclePlanLowerError> {
-    validate_block_identity("entry", entry.work, &entry.code)?;
-    if targets.is_empty() {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::NoCallTargets,
-        ));
-    }
-    if targets.len() > MIXED_CALL_TARGET_CAP as usize {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::TooManyCallTargets {
-                actual: targets.len(),
-                cap: MIXED_CALL_TARGET_CAP,
-            },
-        ));
-    }
-
-    let root_pc = entry.code.root_pc();
-    let Some(root) = entry.code.words().get(root_pc as usize).copied() else {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedEntryShape,
-        ));
+    let prepared_entry = match prepare_apply_entry(entry)? {
+        Ok(prepared) => prepared,
+        Err(decline) => return Ok(MixedOraclePlanLowerOutcome::Declined(decline)),
     };
-    if root.opcode() != StgOpcode::Apply1 || entry.apply_sites != 1 {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedEntryShape,
-        ));
-    }
-    let callable_pc = root.operand_a();
-    let argument_pc = root.operand_b();
-    let operands_share_source = entry
-        .code
-        .source_at(callable_pc)
-        .zip(entry.code.source_at(argument_pc))
-        .is_some_and(|(callable, argument)| callable.ir() == argument.ir());
-    if callable_pc == argument_pc || operands_share_source {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::MultiUseApplyOperand,
-        ));
-    }
-    if entry.code.words().len() != 3 {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedEntryShape,
-        ));
-    }
-    let Some(callable) = entry.code.words().get(callable_pc as usize).copied() else {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedCallable,
-        ));
+    let prepared_targets = match prepare_call_targets(targets)? {
+        Ok(prepared) => prepared,
+        Err(decline) => return Ok(MixedOraclePlanLowerOutcome::Declined(decline)),
     };
-    if !matches!(callable.opcode(), StgOpcode::Local | StgOpcode::Upval) {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedCallable,
-        ));
-    }
-    let Some(callable_op) = lower_lexical(callable, MixedValueId::new(1)) else {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedCallable,
-        ));
-    };
-    let Some(argument) = entry.code.words().get(argument_pc as usize).copied() else {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedArgument,
-        ));
-    };
-    let Some(argument_op) = lower_argument(&entry.code, argument, MixedValueId::new(2)) else {
-        return Ok(MixedOraclePlanLowerOutcome::Declined(
-            MixedOraclePlanDecline::UnsupportedArgument,
-        ));
-    };
-
-    let apply_source = packed_source(&entry.code, entry.work.module_digest, root_pc)?;
+    let apply_source = prepared_entry.source;
     let mut functions = Vec::with_capacity(1 + targets.len());
     let mut blocks = Vec::with_capacity(6 + targets.len());
     let mut call_targets = Vec::with_capacity(targets.len());
@@ -305,7 +258,7 @@ pub fn lower_mixed_oracle_apply_force_plan(
             value: MixedValueId::new(4),
         },
     });
-    let mut operations = vec![callable_op, argument_op];
+    let mut operations = vec![prepared_entry.callable, prepared_entry.argument];
     for branch in 0..3_u32 {
         let value = MixedValueId::new(5 + branch);
         let operation_start = operations.len() as u32;
@@ -324,60 +277,15 @@ pub fn lower_mixed_oracle_apply_force_plan(
         });
     }
 
-    for (target_index, target) in targets.iter().enumerate() {
-        validate_block_identity("call target", target.identity, &target.code)?;
-        let target_root = target.code.root_pc();
-        let Some(target_return) = lower_call_target_return(&target.code) else {
-            return Ok(MixedOraclePlanLowerOutcome::Declined(
-                MixedOraclePlanDecline::UnsupportedCallTarget {
-                    target: target_index,
-                },
-            ));
-        };
-        let source = packed_source(&target.code, target.identity.module_digest, target_root)?;
-        let function_id = MixedFunctionId::new((target_index + 1) as u32);
-        let block_id = MixedBlockId::new((target_index + 6) as u32);
-        let parameter = MixedValueId::new((target_index + 8) as u32);
-        let result = MixedValueId::new((targets.len() + target_index + 8) as u32);
-        let operation_start = operations.len() as u32;
-        let (operation_count, return_value) = match target_return {
-            MixedOracleCallTargetReturn::Parameter => (0, parameter),
-            MixedOracleCallTargetReturn::Local(slot) => {
-                operations.push(MixedOp::LoadLocal {
-                    destination: result,
-                    slot,
-                });
-                (1, result)
-            }
-            MixedOracleCallTargetReturn::LiteralInt(value) => {
-                operations.push(MixedOp::ConstInt {
-                    destination: result,
-                    value,
-                });
-                (1, result)
-            }
-        };
-        functions.push(MixedFunction {
-            source,
-            parameter,
-            parameter_type: MixedValueType::Value,
-            return_type: MixedValueType::Value,
-            entry: block_id,
-            blocks: MixedTableRange::new(block_id.as_u32(), 1),
-        });
-        blocks.push(MixedBlock {
-            source,
-            operations: MixedTableRange::new(operation_start, operation_count),
-            terminator: MixedTerminator::Return {
-                value: return_value,
-            },
-        });
-        call_targets.push(MixedCallTarget {
-            code: target.identity,
-            function: function_id,
-            argument_destination: parameter,
-        });
-    }
+    append_prepared_targets(
+        &prepared_targets,
+        6,
+        8,
+        &mut functions,
+        &mut blocks,
+        &mut operations,
+        &mut call_targets,
+    );
 
     let plan = MixedModulePlan::new(
         key,
@@ -419,6 +327,109 @@ pub fn lower_mixed_oracle_apply_force_plan(
     Ok(MixedOraclePlanLowerOutcome::Lowered(plan))
 }
 
+/// Atomically translates a real STG application whose exact targets return ready values.
+///
+/// The admitted entry and target grammar is identical to
+/// [`lower_mixed_oracle_apply_force_plan`]: one unary application with
+/// distinct lexical/literal operands, and one or more exact scalar targets
+/// returning `Local0`, `LocalN`, or `LiteralInt`. Unlike the force corridor,
+/// the successful guarded call flows directly to `Return`; no force guard,
+/// update arm, or force fallback is emitted. The sole statepoint resumes after
+/// an unknown call and preserves the exact application result.
+///
+/// No code identity is synthesized. Unsupported entry or target shapes decline
+/// before any plan is returned.
+///
+/// # Errors
+///
+/// Returns [`MixedOraclePlanLowerError`] when an explicit identity disagrees
+/// with its block, mandatory source information is absent, or the fully
+/// assembled plan fails validation.
+pub fn lower_mixed_oracle_ready_call_plan(
+    key: MixedModuleKey,
+    bounds: MixedPlanBounds,
+    entry: &MixedOracleNodeBlock,
+    targets: &[MixedOracleCallTargetBlock],
+) -> Result<MixedOraclePlanLowerOutcome, MixedOraclePlanLowerError> {
+    let prepared_entry = match prepare_apply_entry(entry)? {
+        Ok(prepared) => prepared,
+        Err(decline) => return Ok(MixedOraclePlanLowerOutcome::Declined(decline)),
+    };
+    let prepared_targets = match prepare_call_targets(targets)? {
+        Ok(prepared) => prepared,
+        Err(decline) => return Ok(MixedOraclePlanLowerOutcome::Declined(decline)),
+    };
+    let source = prepared_entry.source;
+    let mut functions = Vec::with_capacity(1 + prepared_targets.len());
+    let mut blocks = Vec::with_capacity(2 + prepared_targets.len());
+    let mut operations = vec![prepared_entry.callable, prepared_entry.argument];
+    let mut call_targets = Vec::with_capacity(prepared_targets.len());
+
+    functions.push(MixedFunction {
+        source,
+        parameter: MixedValueId::new(0),
+        parameter_type: MixedValueType::Value,
+        return_type: MixedValueType::Value,
+        entry: MixedBlockId::new(0),
+        blocks: MixedTableRange::new(0, 2),
+    });
+    blocks.push(MixedBlock {
+        source,
+        operations: MixedTableRange::new(0, 2),
+        terminator: MixedTerminator::ApplyGuarded {
+            function: MixedValueId::new(1),
+            argument: MixedValueId::new(2),
+            result: MixedValueId::new(3),
+            targets: MixedTableRange::new(0, prepared_targets.len() as u32),
+            continuation: MixedBlockId::new(1),
+            fallback: MixedStatepointId::new(0),
+        },
+    });
+    blocks.push(MixedBlock {
+        source,
+        operations: MixedTableRange::new(2, 0),
+        terminator: MixedTerminator::Return {
+            value: MixedValueId::new(3),
+        },
+    });
+    append_prepared_targets(
+        &prepared_targets,
+        2,
+        4,
+        &mut functions,
+        &mut blocks,
+        &mut operations,
+        &mut call_targets,
+    );
+
+    let plan = MixedModulePlan::new(
+        key,
+        bounds,
+        vec![MixedEntry {
+            kind: MixedEntryKind::ForceWhnf,
+            source,
+            function: MixedFunctionId::new(0),
+            frame: entry.work.frame,
+            capture_layout_digest: entry.work.capture_layout_digest,
+        }],
+        functions,
+        blocks,
+        operations,
+        call_targets,
+        vec![MixedStatepoint {
+            source,
+            resume: MixedBlockId::new(1),
+            live_values: Box::new([MixedValueId::new(1), MixedValueId::new(2)]),
+            live_virtuals: Box::new([]),
+            result: Some(MixedValueId::new(3)),
+            result_type: Some(MixedValueType::Value),
+            mode: MixedStatepointMode::Resume,
+            reason: MixedStatepointReason::UnknownCall,
+        }],
+    )?;
+    Ok(MixedOraclePlanLowerOutcome::Lowered(plan))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MixedOracleCallTargetReturn {
     Parameter,
@@ -440,6 +451,139 @@ fn lower_call_target_return(code: &StgCodeBlock) -> Option<MixedOracleCallTarget
             Some(MixedOracleCallTargetReturn::LiteralInt(value))
         }
         _ => None,
+    }
+}
+
+fn prepare_apply_entry(
+    entry: &MixedOracleNodeBlock,
+) -> Result<Result<MixedOraclePreparedEntry, MixedOraclePlanDecline>, MixedOraclePlanLowerError> {
+    validate_block_identity("entry", entry.work, &entry.code)?;
+    let root_pc = entry.code.root_pc();
+    let Some(root) = entry.code.words().get(root_pc as usize).copied() else {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedEntryShape));
+    };
+    if root.opcode() != StgOpcode::Apply1 || entry.apply_sites != 1 {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedEntryShape));
+    }
+    let callable_pc = root.operand_a();
+    let argument_pc = root.operand_b();
+    let operands_share_source = entry
+        .code
+        .source_at(callable_pc)
+        .zip(entry.code.source_at(argument_pc))
+        .is_some_and(|(callable, argument)| callable.ir() == argument.ir());
+    if callable_pc == argument_pc || operands_share_source {
+        return Ok(Err(MixedOraclePlanDecline::MultiUseApplyOperand));
+    }
+    if entry.code.words().len() != 3 {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedEntryShape));
+    }
+    let Some(callable) = entry.code.words().get(callable_pc as usize).copied() else {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedCallable));
+    };
+    let Some(callable) = lower_lexical(callable, MixedValueId::new(1)) else {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedCallable));
+    };
+    let Some(argument) = entry.code.words().get(argument_pc as usize).copied() else {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedArgument));
+    };
+    let Some(argument) = lower_argument(&entry.code, argument, MixedValueId::new(2)) else {
+        return Ok(Err(MixedOraclePlanDecline::UnsupportedArgument));
+    };
+    Ok(Ok(MixedOraclePreparedEntry {
+        source: packed_source(&entry.code, entry.work.module_digest, root_pc)?,
+        callable,
+        argument,
+    }))
+}
+
+fn prepare_call_targets(
+    targets: &[MixedOracleCallTargetBlock],
+) -> Result<Result<Vec<MixedOraclePreparedTarget>, MixedOraclePlanDecline>, MixedOraclePlanLowerError>
+{
+    if targets.is_empty() {
+        return Ok(Err(MixedOraclePlanDecline::NoCallTargets));
+    }
+    if targets.len() > MIXED_CALL_TARGET_CAP as usize {
+        return Ok(Err(MixedOraclePlanDecline::TooManyCallTargets {
+            actual: targets.len(),
+            cap: MIXED_CALL_TARGET_CAP,
+        }));
+    }
+    let mut prepared = Vec::with_capacity(targets.len());
+    for (target_index, target) in targets.iter().enumerate() {
+        validate_block_identity("call target", target.identity, &target.code)?;
+        let Some(returned) = lower_call_target_return(&target.code) else {
+            return Ok(Err(MixedOraclePlanDecline::UnsupportedCallTarget {
+                target: target_index,
+            }));
+        };
+        prepared.push(MixedOraclePreparedTarget {
+            identity: target.identity,
+            source: packed_source(
+                &target.code,
+                target.identity.module_digest,
+                target.code.root_pc(),
+            )?,
+            returned,
+        });
+    }
+    Ok(Ok(prepared))
+}
+
+fn append_prepared_targets(
+    targets: &[MixedOraclePreparedTarget],
+    block_base: u32,
+    value_base: u32,
+    functions: &mut Vec<MixedFunction>,
+    blocks: &mut Vec<MixedBlock>,
+    operations: &mut Vec<MixedOp>,
+    call_targets: &mut Vec<MixedCallTarget>,
+) {
+    for (target_index, target) in targets.iter().enumerate() {
+        let target_index = target_index as u32;
+        let function_id = MixedFunctionId::new(target_index + 1);
+        let block_id = MixedBlockId::new(block_base + target_index);
+        let parameter = MixedValueId::new(value_base + target_index);
+        let result = MixedValueId::new(value_base + targets.len() as u32 + target_index);
+        let operation_start = operations.len() as u32;
+        let (operation_count, return_value) = match target.returned {
+            MixedOracleCallTargetReturn::Parameter => (0, parameter),
+            MixedOracleCallTargetReturn::Local(slot) => {
+                operations.push(MixedOp::LoadLocal {
+                    destination: result,
+                    slot,
+                });
+                (1, result)
+            }
+            MixedOracleCallTargetReturn::LiteralInt(value) => {
+                operations.push(MixedOp::ConstInt {
+                    destination: result,
+                    value,
+                });
+                (1, result)
+            }
+        };
+        functions.push(MixedFunction {
+            source: target.source,
+            parameter,
+            parameter_type: MixedValueType::Value,
+            return_type: MixedValueType::Value,
+            entry: block_id,
+            blocks: MixedTableRange::new(block_id.as_u32(), 1),
+        });
+        blocks.push(MixedBlock {
+            source: target.source,
+            operations: MixedTableRange::new(operation_start, operation_count),
+            terminator: MixedTerminator::Return {
+                value: return_value,
+            },
+        });
+        call_targets.push(MixedCallTarget {
+            code: target.identity,
+            function: function_id,
+            argument_destination: parameter,
+        });
     }
 }
 
@@ -729,6 +873,7 @@ mod tests {
         let mut runtime = CorridorRuntime {
             target: target.identity(),
             frames: vec![vec![8]],
+            force_calls: 0,
         };
         assert_eq!(
             runner
@@ -736,6 +881,68 @@ mod tests {
                 .expect("translated corridor executes"),
             MixedExecutionOutcome::Complete(1)
         );
+    }
+
+    #[test]
+    fn ready_call_lowers_all_scalar_targets_and_returns_a_literal_without_forcing() {
+        let entry = apply_entry();
+        let parameter = direct_target("x: x", StgModuleId::new(8), [8; 32]);
+        let local = local_target(StgModuleId::new(9), [9; 32]);
+        let literal = direct_target("x: 42", StgModuleId::new(10), [10; 32]);
+
+        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_ready_call_plan(
+            MixedModuleKey::new([7; 32], [6; 32], 1),
+            MixedPlanBounds::new(16, 2, 2),
+            &entry,
+            &[parameter, local, literal.clone()],
+        )
+        .expect("ready-call translation succeeds") else {
+            panic!("ready scalar targets must lower");
+        };
+
+        assert_eq!(plan.statepoints().len(), 1);
+        assert_eq!(
+            plan.statepoints()[0].reason,
+            MixedStatepointReason::UnknownCall
+        );
+        assert!(
+            plan.blocks()
+                .iter()
+                .all(|block| !matches!(block.terminator, MixedTerminator::Force { .. }))
+        );
+        assert!(matches!(
+            plan.blocks()[2].terminator,
+            MixedTerminator::Return {
+                value
+            } if value == MixedValueId::new(4)
+        ));
+        assert_eq!(
+            plan.operations()[2..],
+            [
+                MixedOp::LoadLocal {
+                    destination: MixedValueId::new(8),
+                    slot: 1,
+                },
+                MixedOp::ConstInt {
+                    destination: MixedValueId::new(9),
+                    value: 42,
+                },
+            ]
+        );
+
+        let executable = MixedExecutablePlan::new(&plan).expect("ready plan is executable");
+        let mut runner = MixedExecutionRunner::<CorridorRuntime>::new(executable, 0, 777, 0, 2)
+            .expect("runner allocates");
+        let mut runtime = CorridorRuntime {
+            target: literal.identity(),
+            frames: vec![vec![8, 17]],
+            force_calls: 0,
+        };
+        assert_eq!(
+            runner.run(&mut runtime).expect("ready corridor executes"),
+            MixedExecutionOutcome::Complete(42)
+        );
+        assert_eq!(runtime.force_calls, 0);
     }
 
     #[test]
@@ -775,6 +982,7 @@ mod tests {
         let mut runtime = CorridorRuntime {
             target: target.identity(),
             frames: vec![vec![8]],
+            force_calls: 0,
         };
         assert_eq!(
             runner.run(&mut runtime).expect("literal corridor executes"),
@@ -988,6 +1196,7 @@ mod tests {
     struct CorridorRuntime {
         target: MixedCodeIdentity,
         frames: Vec<Vec<u64>>,
+        force_calls: usize,
     }
 
     impl MixedMachineRuntime for CorridorRuntime {
@@ -1054,6 +1263,7 @@ mod tests {
             MixedForceAction<Self::Value, Self::Frame, Self::ForceTarget, Self::UpdateToken>,
             Self::Error,
         > {
+            self.force_calls += 1;
             Ok(MixedForceAction::Ready(subject))
         }
 

@@ -7896,6 +7896,14 @@ synthetic `u64` ABI. The callback-free suite passes with and without the
 Candidate-C feature, closing the immediate value-ABI blocker for a default-off
 runtime adapter.
 
+Backend v6 removes the dishonest force placeholder for statically ready call
+targets. The core emits `ApplyGuarded -> Return` with only the exact unknown-call
+statepoint, and native execution consumes no force decision or update record.
+The source-backed literal fixture completes with one prevalidated call and zero
+force transitions. This is the required first runtime shape because existing
+Node/Apply/GenList thunk metadata cannot yet provide the allocation-site and
+capture-layout identities demanded by claimed mixed-force guards.
+
 A separate memory-source audit rejects frontend duplication, structural caches,
 and allocator purging as hundred-megabyte explanations. Stable handles from
 birth remain a materially different collector design: direct-index handles can
