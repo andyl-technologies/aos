@@ -15,10 +15,12 @@
   launchLib =
     builtins.readFile ../../crates/crucible-qemu/src/launch.rs
     + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs;
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
   launchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs
+    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/fingerprint_options.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 

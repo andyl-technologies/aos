@@ -31,7 +31,7 @@ in
           grep -Fq 'process_one_shmem_request' ${../../crates/crucible-device/src/subnode.rs}
           grep -Fq 'store_device_completion_deadline_icount' ${../../crates/crucible-qemu/src/supervision/block_io_servicer.rs}
           grep -Fq 'role.worker_delay()' ${../../crates/crucible-qemu/src/supervision/block_io_gate.rs}
-          grep -Fq 'canonical_block_io_log' ${../../crates/crucible-qemu/src/supervision/block_io_gate.rs}
+          grep -Fq 'canonical_block_io_log' ${../../crates/crucible-qemu/src/supervision/block_io_gate/evidence.rs}
 
           grep -Fxq PASS "${liveBlockIo}/result"
           grep -Fxq 'host_wins_race_proven=true' "${liveBlockIo}/result"
