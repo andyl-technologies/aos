@@ -242,6 +242,13 @@ thunks, 3,686 lambdas, and 786 primops. Reachable permanent objects were only
 live graphs, but the current evaluator performs no useful pre-peak sweep. Peak
 RSS therefore tracks historical allocation rather than the live result.
 
+Enabling the existing non-moving `AOS_NIX_GC=sweep` mode on the current exact
+build did not change that conclusion. It remained byte-identical but increased
+native wall time to 27.73 seconds and peaked at 4,425,636 KiB RSS, versus
+roughly 18--21 seconds and 4,270,216 KiB for the retained configuration. Capture
+shedding and the current quiescent sweep cadence therefore do not reclaim the
+historical arena pages before this workload's peak.
+
 This rejects the assumption that a compact `Value` alone is sufficient. The
 next memory experiment should segregate import/demand-scoped immutable cohorts,
 weakly retain interning candidates, and decommit complete dead regions before
@@ -249,22 +256,30 @@ the peak. It must avoid a global stable-handle load on every access.
 
 ## Cycle profile
 
-A low-overhead cycles profile attributed the largest self costs as:
+A low-overhead cycles profile of the current build attributed the largest self
+costs as:
 
 ```text
-17.01%  SymbolTable::lexicographic_rank
-15.22%  TreeWalk::alloc_mapped_attr_name
- 9.46%  libc memmove
- 4.16%  Parser::binding_target_symbol
- 3.15%  allocator free
- 2.18%  TreeWalk::attr_position_fields
+6.06%  libc memcmp
+3.59%  TreeWalk::capture_env
+2.66%  EvalHeap::alloc_attrs_with_projected_shape_metadata
+2.62%  TreeWalk::pop_env_scope
+2.34%  slice unstable quicksort
+2.26%  TreeWalk::force_serial_thunk_value
+2.25%  HAMT build_node
+2.15%  libc memmove
+2.04%  TreeWalk::eval_thunk_alloc
+1.80%  SHA-256 block compression
 ```
 
-The first two attr-name paths plus their copying account for more than a third
-of cycles. They are immediate bounded optimization candidates. Even eliminating
-them entirely would not reach the 2x gate, so the longer speed avenue remains a
-generated whole-demand state machine over high-coverage callback-free regions,
-with precise statepoints that can later support a nursery.
+The former `lexicographic_rank`, mapped-name allocation, binding-target lookup,
+and source-position scan hotspots are gone. Symbol-byte comparison and sorting
+remain the largest aggregate local family, while environment capture, scope
+management, and thunk allocation now expose the broader closure-representation
+cost. Even eliminating the listed local functions entirely would not reach the
+2x gate, so the longer speed avenue remains a generated whole-demand state
+machine over high-coverage callback-free regions, with precise statepoints that
+can later support a nursery.
 
 ## Research anchors
 
