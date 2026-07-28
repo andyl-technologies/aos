@@ -836,17 +836,17 @@ fn lexicographic_order(
     keys_by_symbol: &[Symbol],
     symbols: &SymbolTable,
 ) -> Result<Box<[Symbol]>, HamtError> {
-    let mut sort_ranks = Vec::new();
-    sort_ranks
+    let mut key_bytes = Vec::new();
+    key_bytes
         .try_reserve_exact(keys_by_symbol.len())
         .map_err(|_| HamtError::AllocationFailed {
             entries: keys_by_symbol.len(),
         })?;
     for key in keys_by_symbol {
-        let rank = symbols
-            .lexicographic_rank(*key)
+        let bytes = symbols
+            .resolve(*key)
             .ok_or(HamtError::UnknownSymbol { key: *key })?;
-        sort_ranks.push(rank);
+        key_bytes.push(bytes);
     }
 
     let mut slots = Vec::new();
@@ -859,8 +859,8 @@ fn lexicographic_order(
         slots.push(slot);
     }
     slots.sort_unstable_by(|left, right| {
-        sort_ranks[*left]
-            .cmp(&sort_ranks[*right])
+        key_bytes[*left]
+            .cmp(key_bytes[*right])
             .then_with(|| keys_by_symbol[*left].cmp(&keys_by_symbol[*right]))
     });
 
@@ -879,18 +879,16 @@ fn lexicographic_order(
 /// Splices one new key into an already lexicographically-ordered key list.
 ///
 /// `order` is a key list already sorted under [`lexicographic_order`]'s
-/// `(lexicographic_rank, symbol)` comparator, and `key` is a symbol not already
+/// `(resolved bytes, symbol)` comparator, and `key` is a symbol not already
 /// present. Returns `order` with `key` inserted at its sorted position, doing a
-/// binary search (O(log n) rank lookups) plus one O(n) copy instead of
-/// re-ranking and re-sorting every key on each insert.
+/// binary search (O(log n) byte comparisons) plus one O(n) copy instead of
+/// re-sorting every key on each insert.
 ///
 /// This is order-identical to recomputing [`lexicographic_order`] from scratch:
-/// a symbol's [`SymbolTable::lexicographic_rank`] is the position of its byte
-/// string in the byte-sorted interning table, so `rank(a) < rank(b)` iff
-/// `bytes(a) < bytes(b)` at *every* table snapshot. Later interning can
-/// renumber the absolute ranks but never the relative order, so `order` stays
-/// validly sorted under the current ranks and the spliced result matches a full
-/// re-sort exactly (the byte-identical iteration view every consumer depends on).
+/// interned symbols have unique byte strings, and raw byte-slice ordering is
+/// the observable Nix attribute order. Later interning cannot change the
+/// relative order of existing byte strings, so the spliced result matches a
+/// full re-sort exactly.
 ///
 /// # Errors
 ///
@@ -901,8 +899,8 @@ fn insert_lexicographic(
     key: Symbol,
     symbols: &SymbolTable,
 ) -> Result<Box<[Symbol]>, HamtError> {
-    let key_rank = symbols
-        .lexicographic_rank(key)
+    let key_bytes = symbols
+        .resolve(key)
         .ok_or(HamtError::UnknownSymbol { key })?;
 
     // Binary search for the insertion point under the (rank, symbol) order.
@@ -911,10 +909,10 @@ fn insert_lexicographic(
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
         let probe = order[mid];
-        let probe_rank = symbols
-            .lexicographic_rank(probe)
+        let probe_bytes = symbols
+            .resolve(probe)
             .ok_or(HamtError::UnknownSymbol { key: probe })?;
-        if (probe_rank, probe) < (key_rank, key) {
+        if (probe_bytes, probe) < (key_bytes, key) {
             lo = mid + 1;
         } else {
             hi = mid;

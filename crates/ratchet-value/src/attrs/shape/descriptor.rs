@@ -88,15 +88,15 @@ impl AttrShape {
             source_order.push(slot as u32);
         }
 
-        let mut sort_ranks = Vec::new();
-        sort_ranks
+        let mut key_bytes = Vec::new();
+        key_bytes
             .try_reserve_exact(len)
             .map_err(|_| ShapeError::AllocationFailed { keys: len })?;
         for key in &sorted_keys {
-            let rank = symbols
-                .lexicographic_rank(*key)
+            let bytes = symbols
+                .resolve(*key)
                 .ok_or(ShapeError::UnknownSymbol { key: *key })?;
-            sort_ranks.push(rank);
+            key_bytes.push(bytes);
         }
 
         let mut iteration_order = Vec::new();
@@ -109,8 +109,8 @@ impl AttrShape {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            sort_ranks[left]
-                .cmp(&sort_ranks[right])
+            key_bytes[left]
+                .cmp(key_bytes[right])
                 .then_with(|| sorted_keys[left].cmp(&sorted_keys[right]))
         });
 
