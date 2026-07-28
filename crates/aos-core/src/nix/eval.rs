@@ -744,7 +744,6 @@ pub struct NixEvalConfig {
     native_stg_session: bool,
     native_typed_apply_thunk_heads: bool,
     native_jit: bool,
-    native_mixed_ready_call: bool,
     native_gc_sweep: bool,
     native_gc_sweep_threshold: Option<u64>,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
@@ -925,16 +924,6 @@ impl NixEvalConfig {
     /// Enables or disables the native tier-1 JIT engine.
     pub fn set_native_jit(&mut self, native_jit: bool) {
         self.native_jit = native_jit;
-    }
-
-    /// Returns whether the default-off statically-ready mixed-call corridor is enabled.
-    pub const fn native_mixed_ready_call(&self) -> bool {
-        self.native_mixed_ready_call
-    }
-
-    /// Enables or disables the statically-ready mixed-call corridor.
-    pub fn set_native_mixed_ready_call(&mut self, enabled: bool) {
-        self.native_mixed_ready_call = enabled;
     }
 
     /// Returns whether Tier-B live reclamation (`AOS_NIX_GC=sweep`) is enabled.
@@ -1472,7 +1461,6 @@ impl NixEvalConfig {
             native_stg_session: false,
             native_typed_apply_thunk_heads: false,
             native_jit: false,
-            native_mixed_ready_call: false,
             native_gc_sweep: false,
             native_gc_sweep_threshold: None,
             native_parallel_workers: None,
@@ -1523,9 +1511,6 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_JIT") {
             config.set_aos_nix_jit_env_var(&value);
-        }
-        if let Ok(value) = std::env::var("AOS_NIX_MIXED_READY_CALL") {
-            config.set_native_mixed_ready_call(matches!(value.trim(), "1" | "true"));
         }
         if let Ok(value) = std::env::var("AOS_NIX_GC") {
             config.set_aos_nix_gc_env_var(&value);
@@ -3370,7 +3355,6 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         stats_enabled: memo.stats_enabled,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
-    options.set_mixed_ready_call_enabled(config.native_jit() && config.native_mixed_ready_call());
     if config.native_gc_sweep() {
         options.set_gc_mode(EvalGcMode::Sweep);
     }
@@ -3382,7 +3366,6 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     options.set_parallel_workers(config.native_parallel_workers());
     if config.native_parallel_workers().is_some() {
         options.set_jit_tier1_publish_enabled(false);
-        options.set_mixed_ready_call_enabled(false);
     }
     options.set_parallel_shape_projection(config.native_parallel_shape_projection());
     options.set_attr_shape_mode(match config.native_attr_shapes() {

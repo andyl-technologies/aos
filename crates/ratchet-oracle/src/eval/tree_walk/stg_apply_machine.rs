@@ -141,9 +141,7 @@ impl TreeWalk {
         argument: EvalNodeRef,
         argument_value: Value,
     ) -> Option<Result<Value, TreeWalkError>> {
-        let interpreted_admitted = self.stg_apply_admitted();
-        let mixed_admitted = self.options.mixed_ready_call_enabled();
-        if (!interpreted_admitted && !mixed_admitted) || function_value.tag() != ValueTag::Lambda {
+        if !self.stg_apply_admitted() || function_value.tag() != ValueTag::Lambda {
             return None;
         }
         self.stg_apply_runtime.counters.attempts =
@@ -192,19 +190,6 @@ impl TreeWalk {
             }
             Err(error) => return Some(Err(error)),
         };
-        let prepared_mixed = self.prepare_mixed_ready_call(
-            EvalNodeRef::new(self.current_module, id),
-            function,
-            function_value,
-            argument,
-            argument_value,
-            &lambda,
-            &block,
-        );
-        if !interpreted_admitted && prepared_mixed.is_none() {
-            self.stg_apply_decline();
-            return None;
-        }
         if !self.stg_apply_reserve(block.words().len()) {
             self.stg_apply_decline();
             return None;
@@ -258,14 +243,6 @@ impl TreeWalk {
             debug_assert_eq!(work.module, lambda.module());
             debug_assert_eq!(work.body, lambda.body());
             self.stg_apply_runtime.call_stack.push(work.token);
-            if let Some(prepared) = prepared_mixed.as_ref()
-                && let MixedReadyCallHook::Completed(value) = prepared.run()
-            {
-                let Some(call_token) = self.stg_apply_runtime.call_stack.pop() else {
-                    unreachable!("mixed ready-call stack is unbalanced");
-                };
-                return self.finish_lambda_call_lease(call_token, Ok(value));
-            }
             self.stg_apply_runtime
                 .control_stack
                 .push(StgControl::Eval(block.root_pc()));
@@ -342,7 +319,7 @@ impl TreeWalk {
             self.stg_apply_runtime.counters.declines.saturating_add(1);
     }
 
-    pub(super) fn stg_apply_cached_block(
+    fn stg_apply_cached_block(
         &mut self,
         module: EvalModuleId,
         key: StgCodeKey,

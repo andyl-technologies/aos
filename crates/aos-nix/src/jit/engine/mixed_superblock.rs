@@ -86,8 +86,6 @@ impl NixJitTier1Engine {
         ) else {
             return MixedReadyCallHook::Invalid;
         };
-        self.mixed_ready_runs
-            .set(self.mixed_ready_runs.get().saturating_add(1));
         match executable.run(&mut native) {
             JitMixedSuperblockOutcome::Complete(raw)
                 if raw == activation.expected_result.transient_identity_bits() =>

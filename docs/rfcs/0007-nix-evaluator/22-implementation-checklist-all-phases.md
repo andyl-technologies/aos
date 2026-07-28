@@ -13532,19 +13532,25 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       decision and zero force decisions. Nine core tests and the six backend
       tests pass; this removes the contract blocker for the first default-off
       Candidate-C runtime adapter.
-      This expands the real-plan grammar but is not yet connected to primary
-      runtime admission and receives no whole-process speed credit.
+      A default-off primary adapter was then implemented and rejected on the
+      exact toplevel workload. With the same source and binary, the JIT control
+      retired 44,436,929,983 instructions at 1,432,520KiB RSS; mixed-ready
+      admission retired 44,712,626,754 at 1,438,152KiB. Diagnostics found zero
+      prepared plans and zero native activations, so all 275,696,771 excess
+      instructions and 5,632KiB were failed-admission cost. The adapter was
+      removed. Keep the backend substrate, but do not reconnect per-call
+      admission without a report-only whole-module weighted-coverage proof.
       Independent memory-source exploration finds no hidden easy pool:
       frontend IR/modules/source/paths/symbols total 21,818,125 bytes,
       structural caches are about 1.44MiB, and the prior eager-purge delta is
-      only about 4.3MiB. A stable direct-index handle generation remains the
-      strongest route that avoids writable 426-frame continuations: ordinal
-      160 dead-first streaming projects about 192.7MiB peak with 46.8MiB
-      headroom because native frames retain stable IDs rather than moved
-      addresses. The segmented resolver's 2.547x lookup cost rejects it; the
-      reserved direct-index lane's 1.034x result merits a <=1% whole-process
-      cycle falsifier plus sibling-process `smaps` and owner-sum reconciliation
-      before changing the carrier.
+      only about 4.3MiB. Correcting the stable-handle probe rejects that route:
+      the earlier 1.034x result measured a direct nonmoving payload lane, not a
+      movable referent. The required route-plus-dependent-payload load costs
+      1.6267x with a four-byte route and 3.7845x with an honest eight-byte
+      `{lane, offset}` route. Preserve direct Candidate-C addresses and move
+      the memory campaign to nonmoving precise/conservative-root mark-region
+      reclamation, typed regions, or generated statepoints rather than adding
+      permanent resolution indirection.
       The residual factor-speed partition is now bounded. The measured sampled
       virtualizable families total 59.65% of instructions and 55.40% of
       cycles, approximately 8.37B/3.26B on the 14.027B/5.890B lean run.

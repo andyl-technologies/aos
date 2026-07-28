@@ -7899,9 +7899,9 @@ computes the selected scalar result without a callback, and continues through
 the force/update CFG. Entry callable and argument operands may likewise come
 from the parameter, a frame local, or an integer literal. Consequently a real
 source-backed `f: f 1`/`x: 42` pair now passes the complete packed-STG,
-mixed-plan, Cranelift, and execution pipeline. At this stage it was still a
-bounded grammar with no primary runtime adapter, so it earned correctness
-progress but no factor-speed credit.
+mixed-plan, Cranelift, and execution pipeline. This is still a bounded grammar
+and has no primary runtime adapter, so it earns correctness progress but no
+factor-speed credit.
 
 Candidate-C native constants now use the actual compressed carrier bits.
 Out-of-range integers decline during admission instead of silently entering a
@@ -7917,19 +7917,20 @@ force transitions. This is the required first runtime shape because existing
 Node/Apply/GenList thunk metadata cannot yet provide the allocation-site and
 capture-layout identities demanded by claimed mixed-force guards.
 
-A default-off primary runtime adapter now admits that exact source-backed
-corridor with `AOS_NIX_JIT=1` and `AOS_NIX_MIXED_READY_CALL=1`. It fingerprints
-the complete lowered module, verifies the exact Apply and unique lambda
-definition, requires empty lexical and dynamic captures, lowers the complete
-packed target before execution, and binds the ordinary lambda environment
-before entering native code. Native completion is accepted only when its raw
-one-word result exactly matches the safe evaluator-owned expected `Value`;
-invalid or side-exit results fall through to the already-bound tree walk.
-Candidate-C tests prove one native completion for `(f: f 1) (x: 42)`, zero
-completions with the option off, and an unchanged interpreted result for a
-captured target. This establishes a real execution seam, but the admitted
-grammar remains too narrow for factor-speed credit until corpus counts and
-matched instruction measurements demonstrate material coverage.
+A default-off primary adapter for that exact grammar was implemented and then
+rejected on the full workload. On derivation
+`/nix/store/8dgap71j6y5slpmw2bb9ffdbq37kc6fk-aos-system-toplevel.drv`, the
+matched JIT control retired 44,436,929,983 instructions at 1,432,520 KiB peak
+RSS; enabling mixed-ready admission retired 44,712,626,754 instructions at
+1,438,152 KiB. End-of-engine diagnostics reported zero prepared plans and zero
+native activations. The exact source-backed corridor therefore adds
+275,696,771 instructions (0.620%) and 5,632 KiB entirely in failed admission,
+while JIT mode itself remains roughly three times the lean composition by both
+instructions and RSS. The primary adapter was removed; the backend-neutral
+mixed executor remains as a proving substrate. Any renewed runtime admission
+must begin with report-only whole-module coverage and satisfy
+`f * (1 - 1/s) >= 0.30` from instruction-weighted primary measurements before
+performing per-call lowering or compilation.
 
 A separate memory-source audit rejects frontend duplication, structural caches,
 and allocator purging as hundred-megabyte explanations. The corrected movable

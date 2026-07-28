@@ -174,11 +174,6 @@ impl TreeWalkOptions {
         self.jit_tier1_publish_enabled
     }
 
-    /// Returns whether statically-ready mixed calls may enter native execution.
-    pub const fn mixed_ready_call_enabled(&self) -> bool {
-        self.mixed_ready_call_enabled
-    }
-
     /// Returns the active worker id for parallel thunk sidecar claims.
     pub const fn parallel_thunk_worker_id(&self) -> ParallelThunkWorkerId {
         self.parallel_thunk_worker_id

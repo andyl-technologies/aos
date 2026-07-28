@@ -742,7 +742,6 @@ mod lifetime_cohort_probe;
 #[cfg(feature = "maximal_laziness_probe")]
 mod maximal_laziness_census;
 mod memo;
-mod mixed_apply_machine;
 #[cfg(feature = "option_map_fold_probe")]
 mod option_map_fold_probe;
 mod parallel_demand;
