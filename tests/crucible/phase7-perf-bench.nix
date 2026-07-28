@@ -37,6 +37,7 @@
   hostParallelism ? null,
   fingerprintOffload ? null,
   deviceWorkOverlap ? null,
+  translationPrefetch ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -552,6 +553,26 @@ in
               if fingerprintOffload == null
               then "/dev/null"
               else "${fingerprintOffload}/result"
+            }" \
+                >> "$out/result"
+            fi
+            if [ -n "${
+              if translationPrefetch == null
+              then ""
+              else builtins.toString translationPrefetch
+            }" ]; then
+              sed -n \
+                -e 's/^admission_class=/metric_translation_prefetch_class=/p' \
+                -e 's/^corpus=/metric_translation_prefetch_corpus=/p' \
+                -e 's/^mechanism=/metric_translation_prefetch_mechanism=/p' \
+                -e 's/^translation_requests=/metric_translation_prefetch_requests=/p' \
+                -e 's/^fingerprints_bit_identical=/metric_translation_prefetch_fingerprint_identity=/p' \
+                -e 's/^canonical_logs_bit_identical=/metric_translation_prefetch_log_identity=/p' \
+                -e 's/^divergence_policy=/metric_translation_prefetch_divergence_policy=/p' \
+                "${
+              if translationPrefetch == null
+              then "/dev/null"
+              else "${translationPrefetch}/result"
             }" \
                 >> "$out/result"
             fi

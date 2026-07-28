@@ -38,10 +38,10 @@ use crate::single_vm_fingerprint::{
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, build_plugin_fingerprint_stream,
 };
 use crate::{
-    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuVmLaunchConfig,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    LaunchProfileCandidate, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuNodeChild,
+    QemuPluginIpcControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+    QemuVmLaunchConfig, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 use crucible::{
     AdvanceOutcome, BackendInput, ContentHash, ExecutionHorizon, Icount, SchedulerError,
@@ -70,6 +70,8 @@ const RUNNER_ROUTER: &str = "rust-plugin-fingerprint-router";
 const RUNNER_SLOT: u32 = 0;
 /// Fixed inbound/outbound ring capacity for the single-node run.
 const RUNNER_QUEUE_CAPACITY: u32 = 4;
+/// File emitted by gate-only translation-prefetch experiment launches.
+pub const TRANSLATION_PREFETCH_REPORT_FILE: &str = "translation-prefetch.report";
 /// Default guest memory size for the run.
 ///
 /// The diskless single-vCPU idle guest boots comfortably in 64 MiB. A busy
@@ -111,6 +113,7 @@ pub struct PluginFingerprintRunnerConfig {
     rr_switch_quantum: u64,
     smp_vcpus: u16,
     memory_mib: u32,
+    translation_prefetch_experiment: Option<bool>,
 }
 
 impl PluginFingerprintRunnerConfig {
@@ -151,6 +154,7 @@ impl PluginFingerprintRunnerConfig {
             rr_switch_quantum: 0,
             smp_vcpus: DEFAULT_RUNNER_SMP_VCPUS,
             memory_mib: DEFAULT_RUNNER_MEMORY_MIB,
+            translation_prefetch_experiment: None,
         })
     }
 
@@ -229,6 +233,17 @@ impl PluginFingerprintRunnerConfig {
     #[must_use]
     pub const fn with_synchronous_oracle(mut self, enabled: bool) -> Self {
         self.synchronous_oracle = enabled;
+        self
+    }
+
+    /// Returns this configuration with gate-only translation generation toggled.
+    ///
+    /// Ordinary launches leave this unset, which preserves byte-identical argv
+    /// and keeps the experimental mechanism off. PERF-32 sets it to both
+    /// `false` and `true` for otherwise identical cold-boot runs.
+    #[must_use]
+    pub const fn with_translation_prefetch_experiment(mut self, enabled: bool) -> Self {
+        self.translation_prefetch_experiment = Some(enabled);
         self
     }
 
@@ -407,12 +422,38 @@ impl PluginFingerprintRunner {
             plugin = plugin
                 .with_terminal_state_dump(state_dump_target.unwrap_or_default(), path_text(path));
         }
-        let command = profile
-            .qemu_launch_command(
-                self.vm_launch_config(),
-                path_text(&self.config.qemu_executable),
-                plugin,
-            )
+        let report_path = self
+            .config
+            .translation_prefetch_experiment
+            .map(|_| run_directory.join(TRANSLATION_PREFETCH_REPORT_FILE));
+        if let Some(path) = &report_path {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(
+                        PluginFingerprintRunnerError::PrepareTranslationPrefetchReport {
+                            path: path.clone(),
+                            source,
+                        },
+                    );
+                }
+            }
+        }
+        let mut command_builder = QemuLaunchCommandBuilder::new(
+            profile,
+            self.vm_launch_config(),
+            path_text(&self.config.qemu_executable),
+            plugin,
+        );
+        if let (Some(enabled), Some(path)) =
+            (self.config.translation_prefetch_experiment, &report_path)
+        {
+            command_builder =
+                command_builder.with_translation_prefetch_experiment(enabled, path_text(path));
+        }
+        let command = command_builder
+            .build()
             .map_err(|source| PluginFingerprintRunnerError::LaunchCommand { source })?;
 
         let region_config = RegionConfig::new(1, RUNNER_QUEUE_CAPACITY, 0);
@@ -533,6 +574,11 @@ impl PluginFingerprintRunner {
             return Err(PluginFingerprintRunnerError::ChildExitUnclean {
                 status: exit_status.to_string(),
             });
+        }
+        if let (Some(enabled), Some(path)) =
+            (self.config.translation_prefetch_experiment, &report_path)
+        {
+            validate_translation_prefetch_report(path, enabled)?;
         }
         drop(setup);
         drop(child);
@@ -793,6 +839,64 @@ impl PluginFingerprintRunner {
             path,
         )
     }
+}
+
+fn validate_translation_prefetch_report(
+    path: &Path,
+    expected_enabled: bool,
+) -> Result<(), PluginFingerprintRunnerError> {
+    let report = fs::read_to_string(path).map_err(|source| {
+        PluginFingerprintRunnerError::ReadTranslationPrefetchReport {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let expected = if expected_enabled {
+        "enabled=true"
+    } else {
+        "enabled=false"
+    };
+    if !report.lines().any(|line| line == expected) {
+        return Err(
+            PluginFingerprintRunnerError::InvalidTranslationPrefetchReport {
+                path: path.to_path_buf(),
+                reason: "enabled mode does not match the requested launch",
+            },
+        );
+    }
+    if !report
+        .lines()
+        .any(|line| line == "mode=dedicated-demand-tcg-helper")
+    {
+        return Err(
+            PluginFingerprintRunnerError::InvalidTranslationPrefetchReport {
+                path: path.to_path_buf(),
+                reason: "dedicated helper mode is absent",
+            },
+        );
+    }
+    if expected_enabled {
+        let started = report
+            .lines()
+            .any(|line| line == "helper_thread_started=true");
+        let requests = report
+            .lines()
+            .find_map(|line| line.strip_prefix("requests="))
+            .and_then(|value| value.parse::<u64>().ok());
+        let completions = report
+            .lines()
+            .find_map(|line| line.strip_prefix("completions="))
+            .and_then(|value| value.parse::<u64>().ok());
+        if !started || requests.is_none_or(|count| count == 0) || completions != requests {
+            return Err(
+                PluginFingerprintRunnerError::InvalidTranslationPrefetchReport {
+                    path: path.to_path_buf(),
+                    reason: "enabled helper did not complete every translation request",
+                },
+            );
+        }
+    }
+    Ok(())
 }
 
 fn trigger_for_icount(icount: u64) -> SingleVmFingerprintTrigger {

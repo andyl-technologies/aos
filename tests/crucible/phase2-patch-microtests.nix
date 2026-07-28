@@ -305,6 +305,12 @@
       patch = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
       check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
     }
+    {
+      patch = "0046-crucible-translation-prefetch-helper.patch";
+      check = import ./phase7-translation-prefetch-neutrality.nix {
+        inherit pkgs lib;
+      };
+    }
   ];
 
   microtestPatchNames =

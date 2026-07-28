@@ -16,6 +16,7 @@
 //! CRUCIBLE_FP_PROBE_ICOUNT     interior probe icount (default 6000000)
 //! CRUCIBLE_FP_DIVERGENCE_DUMP  "1" enables the live mismatch/dump negative control
 //! CRUCIBLE_FP_SYNC_ORACLE      "1" compares every offloaded digest synchronously
+//! CRUCIBLE_FP_TRANSLATION_PREFETCH  "0"/"1" selects the gate-only QEMU helper
 //! ```
 
 #[cfg(target_os = "linux")]
@@ -85,6 +86,7 @@ mod linux {
         let vcpu_count = env_u16("CRUCIBLE_FP_SMP_VCPUS", DEFAULT_VCPU_COUNT)?;
         let divergence_dump = env_flag("CRUCIBLE_FP_DIVERGENCE_DUMP", false)?;
         let synchronous_oracle = env_flag("CRUCIBLE_FP_SYNC_ORACLE", false)?;
+        let translation_prefetch = env_optional_flag("CRUCIBLE_FP_TRANSLATION_PREFETCH")?;
         let memory_mib = u32::try_from(env_u64(
             "CRUCIBLE_FP_MEMORY_MIB",
             u64::from(DEFAULT_MEMORY_MIB),
@@ -100,6 +102,9 @@ mod linux {
                 .with_synchronous_oracle(synchronous_oracle)
                 .with_smp_vcpus(vcpu_count)
                 .with_memory_mib(memory_mib);
+        if let Some(enabled) = translation_prefetch {
+            config = config.with_translation_prefetch_experiment(enabled);
+        }
         let kernel_cmdline_text = match &kernel_cmdline {
             Some(cmdline) => {
                 let cmdline = cmdline.to_string_lossy().into_owned();
@@ -156,6 +161,7 @@ mod linux {
         // folds in (per-vCPU registers, RR cursor, guest-RAM digest, device-state
         // digest) must be byte-identical across the two runs.
         let evidence = nvcpu_evidence(&report)?;
+        let canonical_log_digest = canonical_boundary_log_digest(&report);
 
         println!("PASS");
         println!("fingerprint_authority=rust-plugin");
@@ -176,6 +182,15 @@ mod linux {
         println!("second_run_host_load={second_run_host_load}");
         println!("synchronous_oracle_enabled={synchronous_oracle}");
         println!("synchronous_oracle_matches_all_samples={synchronous_oracle}");
+        println!(
+            "translation_prefetch_experiment={}",
+            match translation_prefetch {
+                Some(true) => "on",
+                Some(false) => "off",
+                None => "disabled",
+            }
+        );
+        println!("canonical_boundary_log_digest={canonical_log_digest}");
         println!("probe_prefix_equal_at_{probe_icount}={probe_equal}");
         println!("probe_count={}", runner.probe_count());
         for line in &evidence.per_sample_lines {
@@ -360,6 +375,50 @@ mod linux {
         })
     }
 
+    /// Digests every field in the canonical boundary log from the real run.
+    fn canonical_boundary_log_digest(report: &SingleVmFingerprintGateReport) -> String {
+        let mut lines = Vec::with_capacity(report.first_stream.samples.len() + 2);
+        lines.push(String::from(
+            "crucible.qemu.translation-prefetch-boundary-log.v1",
+        ));
+        for sample in &report.first_stream.samples {
+            let material = &sample.nvcpu_fingerprint;
+            let cursor = material.rr_cursor();
+            lines.push(format!(
+                "sample seq={} node={} icount={} trigger={:?} rr={}/{}/{} ram={} device={} rolling={}",
+                sample.seq,
+                sample.node,
+                sample.icount,
+                sample.trigger,
+                cursor.current_vcpu(),
+                cursor.position_in_quantum(),
+                cursor.rr_switch_quantum(),
+                hex(material.guest_memory_digest()),
+                hex(material.device_state_digest()),
+                hex(&sample.rolling_fingerprint),
+            ));
+            for register in material.vcpu_registers() {
+                lines.push(format!(
+                    "vcpu id={} bytes={} retired={} digest={}",
+                    register.vcpu_id(),
+                    register.register_file_bytes(),
+                    register.retired_instruction_count(),
+                    hex(register.register_digest()),
+                ));
+            }
+        }
+        lines.push(format!(
+            "final icount={} fingerprint={}",
+            report.first_stream.final_icount,
+            hex(&report.first_stream.final_fingerprint),
+        ));
+        hex(&ContentHash::from_canonical_material(
+            "crucible.qemu.translation-prefetch-boundary-log.v1",
+            &lines.join("\n"),
+        )
+        .bytes)
+    }
+
     /// Builds valid, content-addressed synthetic run inputs for the scenario.
     ///
     /// The fingerprint stream comparison is what certifies determinism; the run
@@ -411,6 +470,18 @@ mod linux {
                 other => Err(format!("{name} must be 0/1/true/false, got `{other}`")),
             },
             Err(env::VarError::NotPresent) => Ok(default),
+            Err(error) => Err(format!("cannot read {name}: {error}")),
+        }
+    }
+
+    fn env_optional_flag(name: &str) -> Result<Option<bool>, String> {
+        match env::var(name) {
+            Ok(value) => match value.as_str() {
+                "1" | "true" => Ok(Some(true)),
+                "0" | "false" => Ok(Some(false)),
+                other => Err(format!("{name} must be 0/1/true/false, got `{other}`")),
+            },
+            Err(env::VarError::NotPresent) => Ok(None),
             Err(error) => Err(format!("cannot read {name}: {error}")),
         }
     }

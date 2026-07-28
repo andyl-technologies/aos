@@ -1084,6 +1084,22 @@ and the unified canonical I/O log bytes to match across all three legs. The
 perf-bench result imports the Class-B pin, dispatch, stall, and race evidence
 from that live-backend gate.
 
+T-PERF-32 is additionally completed by
+`checks.crucible.phase7.translationPrefetchNeutrality`. Patch 0046 adds an
+experimental, sim-only TCG helper that is off by default. On a translation miss,
+the RR vCPU remains stopped while a separately registered TCG context generates
+the requested block on a dedicated host thread; the enabled path reserves its
+own code-generation region without changing the normal single-threaded RR
+configuration. The certifying gate runs the production QEMU and Rust plugin
+twice with the helper disabled and twice with it enabled over the
+translation-heavy Linux cold-boot fingerprint corpus. It requires exact equality
+of every normalized result line, including the final execution fingerprint,
+per-boundary architectural evidence, and canonical boundary-log digest. The
+enabled runs additionally prove that the helper started and completed every
+request; the certifying run generated and completed 2,163 translation requests.
+The gate uses an exact comparison with blocking divergence policy, and the
+perf-bench result imports its Class-A admission and neutrality evidence.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1205,7 +1221,7 @@ constant-factor trim on a serial run.
   the delivered coordinate. Assert identical completion icounts and canonical
   logs across a forced guest-wins-the-race run, a forced host-wins-the-race run,
   and a fully synchronous run. — satisfies [PERF-31]; spec §25.12.4.
-- [ ] **T-PERF-32** Add the translation-prefetch neutrality experiment: run the
+- [x] **T-PERF-32** Add the translation-prefetch neutrality experiment: run the
   perf corpus (including a translation-heavy cold boot) with concurrent
   translation-block generation on and off, and require bit-identical fingerprints
   and canonical logs as the precondition for enabling it; treat any divergence as

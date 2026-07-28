@@ -529,6 +529,13 @@ pub struct QemuLaunchCommandBuilder {
     plugin: QemuLaunchPluginConfig,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
+    translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QemuTranslationPrefetchExperiment {
+    enabled: bool,
+    report_path: String,
 }
 
 impl QemuLaunchCommandBuilder {
@@ -547,6 +554,7 @@ impl QemuLaunchCommandBuilder {
             plugin,
             gdbstub: None,
             qmp: None,
+            translation_prefetch: None,
         }
     }
 
@@ -561,6 +569,24 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub fn with_qmp(mut self, qmp: QemuQmpChannelConfig) -> Self {
         self.qmp = Some(qmp);
+        self
+    }
+
+    /// Returns a builder with the gate-only translation-prefetch experiment.
+    ///
+    /// This host-mechanism switch is intentionally absent from scenario hash
+    /// material. It exists only to run the same content-addressed scenario with
+    /// helper translation off and on for the PERF-32 neutrality proof.
+    #[must_use]
+    pub fn with_translation_prefetch_experiment(
+        mut self,
+        enabled: bool,
+        report_path: impl Into<String>,
+    ) -> Self {
+        self.translation_prefetch = Some(QemuTranslationPrefetchExperiment {
+            enabled,
+            report_path: report_path.into(),
+        });
         self
     }
 
@@ -582,9 +608,28 @@ impl QemuLaunchCommandBuilder {
         if let Some(qmp) = &self.qmp {
             qmp.validate()?;
         }
+        if let Some(experiment) = &self.translation_prefetch
+            && (!experiment.report_path.starts_with('/') || experiment.report_path.contains(','))
+        {
+            return Err(QemuLaunchCommandError::InvalidTranslationPrefetchReportPath);
+        }
 
         let vm_hash_material = self.vm.launch_hash_material();
         let mut args = self.profile.canonical_qemu_args();
+        if let Some(experiment) = &self.translation_prefetch {
+            let accelerator = args
+                .windows(2)
+                .position(|window| window[0] == "-accel")
+                .map(|index| index + 1)
+                .ok_or(QemuLaunchCommandError::InvalidLaunchText {
+                    field: "translation_prefetch_accelerator",
+                })?;
+            args[accelerator] = format!(
+                "{DEFAULT_ACCEL},crucible-translation-prefetch={},crucible-translation-prefetch-report={}",
+                if experiment.enabled { "on" } else { "off" },
+                experiment.report_path
+            );
+        }
         args.extend(self.vm.qemu_args());
         args.extend(["-plugin".to_owned(), self.plugin.qemu_plugin_argument()]);
         if let Some(qmp) = &self.qmp {

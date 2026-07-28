@@ -335,6 +335,13 @@
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
       capability = "pending time advance arms synchronously at a stopped-vCPU work boundary";
     }
+    {
+      file = "0046-crucible-translation-prefetch-helper.patch";
+      catalogName = "crucible-translation-prefetch-helper";
+      class = "F";
+      enforces = "PERF-32";
+      capability = "off-by-default sim translation generation on a dedicated registered TCG helper";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
