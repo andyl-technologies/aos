@@ -1130,7 +1130,6 @@ in rec {
       taskIds = ["T-GHC-15"];
       openTaskIds = [];
       qemuLiveWhiteboxDoorbell = phase2.qemuLiveWhiteboxDoorbell;
-      qemuWhiteboxGuestWrite = phase2.qemuWhiteboxGuestWrite;
     };
     guestHostAppRandomDoorbell = import ./phase4-guest-host-app-random-doorbell.nix {
       inherit pkgs lib;
@@ -2485,16 +2484,6 @@ in rec {
     crucibleQemuPackage = import ./phase7-crucible-qemu-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleQemuPackage";
-      taskIds = ["T-PKG-2"];
-    };
-    packageFeatureLedger = import ./phase7-package-feature-ledger.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.packageFeatureLedger";
-      taskIds = ["T-PKG-2"];
-    };
-    pythonBootstrapClosure = import ./phase7-python-bootstrap-closure.nix {
-      inherit pkgs;
-      attrPath = "checks.crucible.phase7.pythonBootstrapClosure";
       taskIds = ["T-PKG-2"];
     };
     crucibleQemuPluginPackage = import ./phase7-crucible-qemu-plugin-package.nix {

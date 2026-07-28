@@ -1369,5 +1369,3 @@ branch on the verdict without parsing output:
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
   and the at-failure footer shared with failure artifact emission.
-</content>
-</invoke>

@@ -527,5 +527,3 @@ reading order is in the [`README.md`](README.md).
   never on host timing. — satisfies [ARCH-5], [ARCH-7], [ARCH-9]; spec §5, §8,
   [`08-scheduling.md`](08-scheduling.md), [`15-io-subnodes.md`](15-io-subnodes.md),
   [`20-session-control-plane.md`](20-session-control-plane.md).
-</content>
-</invoke>
