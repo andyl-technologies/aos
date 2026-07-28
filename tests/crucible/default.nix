@@ -2707,6 +2707,15 @@ in rec {
         phase2.qemuLivePluginFingerprint
       ];
     };
+    segmentParallelReplay = import ./phase7-segment-parallel-replay.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.segmentParallelReplay";
+      taskIds = ["T-PERF-33"];
+      dependencies = [
+        phase1.gates.divergenceBisect.rawGate
+        phase1.gates.replayOracle.rawGate
+      ];
+    };
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
@@ -2747,18 +2756,17 @@ in rec {
             "T-PERF-30"
             "T-PERF-31"
             "T-PERF-32"
-          ];
-          openTaskIds = [
             "T-PERF-33"
-            "T-PERF-34"
           ];
+          openTaskIds = ["T-PERF-34"];
           hostParallelism = phase7.qemuHostParallel;
           fingerprintOffload = phase7.fingerprintDigestOffload;
           deviceWorkOverlap = phase7.deviceHostWorkOverlap;
           translationPrefetch = phase7.translationPrefetchNeutrality;
-          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap phase7.translationPrefetchNeutrality];
+          segmentReplay = phase7.segmentParallelReplay;
+          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap phase7.translationPrefetchNeutrality phase7.segmentParallelReplay];
         };
-        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap phase7.translationPrefetchNeutrality];
+        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap phase7.translationPrefetchNeutrality phase7.segmentParallelReplay];
       };
       e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";

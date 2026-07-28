@@ -1,11 +1,14 @@
 //! Implements `gate:divergence-bisect` over seeded harness artifacts.
-
 #![forbid(unsafe_code)]
+
+use std::convert::Infallible;
+use std::sync::{Arc, Barrier};
 
 use crucible_harness::divergence::{
     BisectionWindowErrorKind, DecisionTraceEntry, DivergenceBisectionError,
     DivergenceBisectionReport, DivergenceMemoryRegion, DivergenceRegister, DivergenceSide,
-    DivergenceStateDump, bisect_diverging_runs, locate_first_decision_mismatch,
+    DivergenceStateDump, bisect_diverging_runs, bisect_diverging_runs_with_segment_replay,
+    locate_first_decision_mismatch,
 };
 use crucible_harness::fingerprint::{
     FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
@@ -15,6 +18,10 @@ use crucible_harness::replay_oracle::{
     ReplayOracleMaterializedCase, ReplayOracleSamplingConfig, ReplayOracleSearchBisectionError,
     ReplayOracleSearchDivergenceMaterialization, ReplayOracleSearchMaterialization,
     check_sampled_search_replay_oracle_with_bisection,
+};
+use crucible_harness::segment_replay::{
+    ReplayCheckpoint, ReplayLogEntry, ReplaySegment, ReplaySegmentOutput,
+    replay_checkpoint_segments,
 };
 
 const SEEDED_DIVERGENCE_ICOUNT: u64 = 17;
@@ -59,6 +66,59 @@ fn gate_divergence_bisect_is_deterministic_for_same_artifacts() {
     let second = seeded_bisection_report();
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn gate_divergence_bisect_segment_replay_matches_serial_state_and_log() {
+    let checkpoints = replay_checkpoints(DivergenceSide::Left);
+    let serial = match replay_checkpoint_segments(&checkpoints, 20, 1, |segment| {
+        Ok::<_, Infallible>(replay_segment(DivergenceSide::Left, segment))
+    }) {
+        Ok(report) => report,
+        Err(error) => panic!("serial replay should succeed: {error}"),
+    };
+
+    let barrier = Arc::new(Barrier::new(4));
+    let parallel = match replay_checkpoint_segments(&checkpoints, 20, 4, {
+        let barrier = Arc::clone(&barrier);
+        move |segment| {
+            barrier.wait();
+            Ok::<_, Infallible>(replay_segment(DivergenceSide::Left, segment))
+        }
+    }) {
+        Ok(report) => report,
+        Err(error) => panic!("parallel replay should succeed: {error}"),
+    };
+
+    assert_eq!(serial.segment_count, 1);
+    assert_eq!(parallel.segment_count, 4);
+    assert_eq!(parallel.final_state, serial.final_state);
+    assert_eq!(parallel.canonical_log, serial.canonical_log);
+}
+
+#[test]
+fn gate_divergence_bisect_coordinate_is_independent_of_segment_count() {
+    let (left_stream, right_stream) = seeded_streams();
+    let report = match bisect_diverging_runs_with_segment_replay(
+        &left_stream,
+        &right_stream,
+        &left_decisions(),
+        &right_decisions(),
+        &replay_checkpoints(DivergenceSide::Left),
+        &replay_checkpoints(DivergenceSide::Right),
+        &[1, 2, 4],
+        |side, segment| Ok::<_, Infallible>(replay_segment(side, segment)),
+        state_dump,
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("segmented bisection should succeed: {error}"),
+    };
+
+    assert_eq!(report.segment_counts, [1, 2, 4]);
+    assert_eq!(
+        report.divergence.first_different_icount,
+        SEEDED_DIVERGENCE_ICOUNT
+    );
 }
 
 #[test]
@@ -331,16 +391,50 @@ fn gate_divergence_bisect_rejects_oracle_mismatch_without_divergent_streams() {
 
 fn seeded_bisection_report() -> DivergenceBisectionReport {
     let (left_stream, right_stream) = seeded_streams();
-    match bisect_diverging_runs(
+    match bisect_diverging_runs_with_segment_replay(
         &left_stream,
         &right_stream,
         &left_decisions(),
         &right_decisions(),
-        |icount| icount < SEEDED_DIVERGENCE_ICOUNT,
+        &replay_checkpoints(DivergenceSide::Left),
+        &replay_checkpoints(DivergenceSide::Right),
+        &[1, 2, 4],
+        |side, segment| Ok::<_, Infallible>(replay_segment(side, segment)),
         state_dump,
     ) {
-        Ok(report) => report,
-        Err(error) => panic!("seeded divergence should bisect cleanly: {error}"),
+        Ok(report) => report.divergence,
+        Err(error) => panic!("seeded segmented divergence should bisect cleanly: {error}"),
+    }
+}
+
+fn replay_checkpoints(side: DivergenceSide) -> Vec<ReplayCheckpoint<DivergenceStateDump>> {
+    [0, 5, 10, 15, 20]
+        .into_iter()
+        .map(|coordinate| ReplayCheckpoint {
+            coordinate,
+            state: state_dump(side, coordinate),
+        })
+        .collect()
+}
+
+fn replay_segment(
+    side: DivergenceSide,
+    segment: &ReplaySegment<DivergenceStateDump>,
+) -> ReplaySegmentOutput<DivergenceStateDump> {
+    ReplaySegmentOutput {
+        end_state: state_dump(side, segment.end_coordinate),
+        canonical_log: ((segment.start_coordinate + 1)..=segment.end_coordinate)
+            .map(|coordinate| ReplayLogEntry {
+                coordinate,
+                canonical_bytes: if side == DivergenceSide::Right
+                    && coordinate >= SEEDED_DIVERGENCE_ICOUNT
+                {
+                    format!("right:{coordinate}").into_bytes()
+                } else {
+                    format!("same:{coordinate}").into_bytes()
+                },
+            })
+            .collect(),
     }
 }
 

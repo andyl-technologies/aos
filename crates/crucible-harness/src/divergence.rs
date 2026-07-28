@@ -8,8 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::fingerprint::{FingerprintMismatchKind, FingerprintStream, compare_fingerprint_streams};
 
+mod segment;
 mod types;
 
+pub use segment::{
+    SegmentedDivergenceBisectionError, SegmentedDivergenceBisectionReport,
+    bisect_diverging_runs_with_segment_replay,
+};
 pub use types::{
     BisectionWindowError, BisectionWindowErrorKind, DecisionTraceEntry, DecisionTraceMismatch,
     DivergenceBisectionError, DivergenceBisectionReport, DivergenceMemoryRegion,

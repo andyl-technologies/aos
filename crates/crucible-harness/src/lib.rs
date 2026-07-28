@@ -18,8 +18,8 @@
 //! streams, [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
-//! the versioned reproduction artifact format, and [`spec_index`] owns the
-//! crate-to-RFC map.
+//! the versioned reproduction artifact format, [`segment_replay`] coordinates
+//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -35,6 +35,7 @@ pub mod perf;
 pub mod phase_plan;
 pub mod replay_oracle;
 pub mod reproduction;
+pub mod segment_replay;
 pub mod spec_index;
 
 /// A cross-crate harness component hosted by `crucible-harness`.
