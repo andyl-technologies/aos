@@ -170,8 +170,9 @@ impl TreeWalkOptions {
     /// This is the shared safety gate for evaluator-local identity-keyed
     /// Ready directories and report-only experiments. It admits only the
     /// serial, monotonic, non-reclaiming worker arena and fails closed for
-    /// relocation, address reuse, parallel mutation, and alternate thunk-head
-    /// representations.
+    /// relocation, address reuse, and parallel mutation. Typed thunk heads are
+    /// admitted because their head coordinate remains stable and is never
+    /// reused; only their separately generated suspended-work slots recycle.
     pub fn local_ready_monotonic_identity_eligible(&self) -> bool {
         self.gc_mode() == EvalGcMode::Off
             && self.gc_stress_policy() == GcStressPolicy::disabled()
@@ -181,7 +182,6 @@ impl TreeWalkOptions {
             && !self.record_worker_closures_for_gc_scaffolding()
             && self.heap_memory_budget().is_none()
             && !self.heap_tier_b_transition_admission_enabled()
-            && !self.typed_apply_thunk_heads_enabled()
             && !self.stg_session_enabled()
     }
 

@@ -8026,3 +8026,41 @@ cache-graph redirect or force-cache flag split is justified for this benchmark.
 Retain the counters as a cheap stats-only regression/opportunity signal and
 move the factor-level investigation to static demand/cardinality/escape proofs
 for allocated-but-never-forced thunks.
+
+### Broad typed-head/local-Ready compatibility
+
+The next bounded representation experiment composes broad stable typed heads
+with the mandatory same-run memo tiers. Local Ready previously failed closed
+for every alternate thunk-head representation, but that was stricter than its
+identity invariant requires. A typed head's direct coordinate is permanent and
+never reused; only the generated suspended-work coordinate stored behind that
+head is recycled after publication. The local-Ready monotonic-identity gate now
+admits typed heads while preserving all collection, region, parallel,
+address-reuse, memory-governance, and STG-session exclusions.
+
+Two focused tests cover the distinct mechanisms. Capture-free `EMPTY_ONLY`
+Ready stores a direct def-site result and retains no source-head identity.
+General local Ready stores an exact recipe and a weak typed source-head value,
+then observes its authoritative published result on a later match. Both tests
+require a real typed-head allocation and a served hit. This is a compatibility
+result independently of the performance experiment.
+
+The preceding representation-only system pair was byte-identical at the exact
+`g3lcf1mzgvi8k1gpynbalc6gn130qaxp` derivation. Its broad-typed runs measured
+136.549B/136.537B retired instructions, 53.093B/53.184B cycles, and
+3,863,404/3,872,952 KiB peak RSS. Against the approximately
+137.97B-instruction, 54.4B-cycle, 4,266,072-KiB median control, that is about a
+1.0% instruction reduction, 2.3% cycle reduction, and 397,894 KiB (9.3%)
+median RSS reduction. That pair had L0 configured but ran before typed claimed
+forces could use local Ready, so it measures the head/work representation
+rather than the fully cache-composed configuration.
+
+The follow-up strict-cold pair kept L0, L1, and `EMPTY_ONLY` local Ready active
+and remained byte-identical at the expected system derivation. It measured
+137.781B/137.830B instructions and 3,697,708/3,708,168 KiB peak RSS. Cycle
+readings were externally perturbed and are not comparable. Relative to the
+representation-only typed pair, the median changed by +1.268B instructions
+(+0.9%) and -165,240 KiB peak RSS (-4.3%). With only four known exact Ready
+repetitions, this does not establish useful-hit performance credit. It instead
+identifies the next bounded issue: preserve intra-run caching while avoiding
+expensive plan classification on millions of ineligible typed forces.

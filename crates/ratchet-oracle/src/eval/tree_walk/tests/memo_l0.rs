@@ -102,6 +102,35 @@ fn local_ready_directory_serves_a_completed_exact_recipe() {
 }
 
 #[test]
+fn typed_heads_preserve_general_local_ready_exact_recipe_hits() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = TreeWalkOptions::default();
+    options.set_typed_apply_thunk_heads_enabled(true);
+    options.set_memo_options(MemoOptions {
+        local_ready_enabled: true,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("typed-head expression evaluates");
+    let (entries, served_hits) = evaluator.test_ready_cell_directory_counts();
+
+    assert_eq!(value.as_int(), Ok(90));
+    assert!(
+        evaluator.heap.typed_thunk_head_counts().0 > 0,
+        "the compatibility check must exercise stable typed heads"
+    );
+    assert!(entries >= 1, "a completed exact recipe remains resident");
+    assert!(
+        served_hits >= 1,
+        "a later exact recipe reuses the typed source head"
+    );
+}
+
+#[test]
 fn empty_only_ready_miss_publishes_a_direct_plan_result() {
     const SINGLE_FORCE: &str = r#"
         let f = _: let answer = 10 + 20 + 12; in answer;
@@ -162,6 +191,39 @@ fn empty_only_ready_hit_bypasses_recipe_and_durable_memo_work() {
     assert_eq!(evaluator.stats.memo_l0_hits(), 0);
     assert_eq!(evaluator.stats.memo_l0_misses(), 0);
     assert_eq!(evaluator.stats.memo_l0_admissions(), 0);
+}
+
+#[test]
+fn typed_heads_preserve_empty_only_local_ready_hits() {
+    let ir = lower(EMPTY_CAPTURE_REPEAT);
+    let mut options = memo_options(1);
+    options.set_typed_apply_thunk_heads_enabled(true);
+    let mut memo = *options.memo_options();
+    memo.local_ready_enabled = true;
+    memo.local_ready_empty_only = true;
+    memo.local_ready_min_cost = 1;
+    options.set_memo_options(memo);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("typed capture-free expression evaluates");
+    let (resident, served_hits) = evaluator.test_empty_ready_cell_counts();
+
+    assert_eq!(value.as_int(), Ok(126));
+    assert!(
+        evaluator.heap.typed_thunk_head_counts().0 > 0,
+        "the compatibility check must exercise stable typed heads"
+    );
+    assert!(resident >= 1, "the first force publishes a direct result");
+    assert!(served_hits >= 1, "later forces reuse the direct result");
+    assert_eq!(
+        evaluator.test_ready_cell_directory_counts(),
+        (0, 0),
+        "EMPTY_ONLY does not retain a typed source-head identity"
+    );
+    assert_eq!(evaluator.stats.memo_l0_hits(), 0);
+    assert_eq!(evaluator.stats.memo_l0_misses(), 0);
 }
 
 #[test]

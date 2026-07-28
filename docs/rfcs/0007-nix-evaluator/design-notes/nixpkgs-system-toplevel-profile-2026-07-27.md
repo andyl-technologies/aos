@@ -601,6 +601,52 @@ persisted absence proof and cheap stats counters as reusable infrastructure,
 but do not add dummy-slot substitution or caller-side argument rewriting for
 this workload.
 
+## Broad typed heads with same-run caches
+
+The broad typed-head experiment has an independent compatibility slice before
+it can be measured on this workload. A typed thunk's permanent eight-byte head
+coordinate is monotonic for the evaluator's lifetime; successful publication
+recycles only the separately generated suspended-work slot. The local-Ready
+safety gate therefore no longer rejects typed heads while retaining every
+existing prohibition on collection, address reuse, parallel forcing, alternate
+region ownership, and STG-session execution.
+
+Focused coverage exercises both local-Ready representations with typed heads:
+the `EMPTY_ONLY` path retains only a direct result in the def-site plan, while
+the general path retains and later forces an exact source-head recipe. Both
+must produce their expected hit, preserve output, and prove that typed heads
+were actually allocated. The direct path must leave the general directory
+empty and bypass L0, as it does without typed heads.
+
+An initial same-source representation-only pair used
+`AOS_NIX_TYPED_THUNK_HEADS=apply` with L0 configured, but predates the typed
+force path's local-Ready integration. Both typed runs produced the exact
+`g3lcf1mzgvi8k1gpynbalc6gn130qaxp` system derivation. They retired 136.549B
+and 136.537B instructions, used 53.093B and 53.184B cycles, and peaked at
+3,863,404 and 3,872,952 KiB RSS.
+The matching control was approximately 137.97B instructions, 54.4B cycles, and
+4,266,072 KiB median RSS. Thus the representation-only median signal is about
+1.0% fewer instructions, 2.3% fewer cycles, and 397,894 KiB (9.3%) less peak
+RSS. This is positive evidence for broad typed heads, not yet a result for the
+fully composed cache configuration: under the old predicate the typed force
+path could not publish or consume general local-Ready entries.
+
+The post-integration strict-cold pair kept L0, L1, and `EMPTY_ONLY` local Ready
+enabled and again produced the exact expected system derivation. It measured
+137.781B/137.830B retired instructions, 49.07/42.04 seconds evaluator wall, and
+3,697,708/3,708,168 KiB peak RSS. The builder's cycle readings were not
+comparable to the preceding pair (91.607B/89.947B despite nearly unchanged
+retired instructions), so they receive no performance credit.
+
+Against the representation-only typed pair, the composed-cache median is
+1.268B instructions (0.9%) higher and 165,240 KiB (4.3%) lower in peak RSS.
+Only four exact local-Ready repetitions are known on this workload, so neither
+change should be attributed to useful-hit economics without a narrower
+mechanism pair. The compatibility fix remains required: “cold” excludes data
+from prior processes but does not disable reuse within the run. The next
+optimization target is therefore the per-force cost of classifying millions of
+typed bodies that do not produce a reusable local-Ready result.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self

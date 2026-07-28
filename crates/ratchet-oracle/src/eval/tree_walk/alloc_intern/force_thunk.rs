@@ -940,7 +940,6 @@ impl TreeWalk {
                         })?;
                     return Err(error);
                 }
-                self.increment_thunks_forced();
                 // Evaluation needs `&mut self`, so it reads an immutable clone
                 // while the authoritative detached work remains evaluator-owned
                 // and explicitly scannable for the complete re-entrant body.
@@ -953,6 +952,7 @@ impl TreeWalk {
                         ));
                     }
                 };
+                let ready_probe = self.probe_typed_local_ready(&body_work);
                 #[cfg(feature = "collection_poll_probe")]
                 let corridor_coordinate = self
                     .whole_demand_dispatcher
@@ -975,13 +975,19 @@ impl TreeWalk {
                         .corridor_census
                         .begin_typed_force(coordinate)
                 });
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    #[cfg(test)]
-                    if std::mem::take(&mut self.panic_typed_thunk_body_once) {
-                        panic!("injected typed thunk body panic");
+                let result = match &ready_probe {
+                    super::super::memo::TypedLocalReadyProbe::Hit(value) => Ok(Ok(*value)),
+                    _ => {
+                        self.increment_thunks_forced();
+                        catch_unwind(AssertUnwindSafe(|| {
+                            #[cfg(test)]
+                            if std::mem::take(&mut self.panic_typed_thunk_body_once) {
+                                panic!("injected typed thunk body panic");
+                            }
+                            self.eval_thunk_body(id, span, &body_work)
+                        }))
                     }
-                    self.eval_thunk_body(id, span, &body_work)
-                }));
+                };
                 let work = match self.pop_active_typed_thunk_work_lease(
                     id,
                     span,
@@ -1009,6 +1015,7 @@ impl TreeWalk {
                 let result = match result {
                     Ok(result) => result,
                     Err(payload) => {
+                        self.fail_typed_local_ready(&ready_probe);
                         let restored = self.heap.restore_typed_thunk_work(ptr, handle, work);
                         assert!(
                             restored.is_ok(),
@@ -1021,6 +1028,7 @@ impl TreeWalk {
                 let value = match result {
                     Ok(value) => value,
                     Err(error) => {
+                        self.fail_typed_local_ready(&ready_probe);
                         self.heap
                             .restore_typed_thunk_work(ptr, handle, work)
                             .map_err(|source| {
@@ -1032,6 +1040,7 @@ impl TreeWalk {
                 let value = match guard.finish(value) {
                     Ok(value) => value,
                     Err(source) => {
+                        self.fail_typed_local_ready(&ready_probe);
                         self.heap
                             .restore_typed_thunk_work(ptr, handle, work)
                             .map_err(|source| {
@@ -1048,6 +1057,7 @@ impl TreeWalk {
                     .map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
+                self.publish_typed_local_ready(&ready_probe, source_thunk, value);
                 self.unmark_relocated_lazy_identity_thunk(relocated_source_thunk);
                 Ok(value)
             }

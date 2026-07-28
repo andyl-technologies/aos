@@ -53,6 +53,7 @@ use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
     ReadyCellCandidate, ReadyCellCapturePlan, ReadyCellCaptures, ReadyCellEmptyProbe,
     ReadyCellHitRepresentation, ReadyCellPlanDecision, ReadyCellRecipe, SharedMemoTable,
+    TypedLocalReadyProbe,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -156,6 +157,76 @@ fn elapsed_nanos(started: Instant) -> u64 {
 }
 
 impl TreeWalk {
+    /// Probes local Ready before evaluating a claimed typed-head body.
+    pub(in crate::eval::tree_walk) fn probe_typed_local_ready(
+        &mut self,
+        thunk: &EvalThunk,
+    ) -> TypedLocalReadyProbe {
+        if self.ready_cell_directory.is_none() {
+            return TypedLocalReadyProbe::Ineligible;
+        }
+        if self.options.memo_options().local_ready_empty_only {
+            let Some((def_site, captured_frame_count, probe)) =
+                self.probe_empty_ready_cell_plan(thunk)
+            else {
+                return TypedLocalReadyProbe::Ineligible;
+            };
+            return match probe {
+                ReadyCellEmptyProbe::Hit(value) => TypedLocalReadyProbe::Hit(value),
+                ReadyCellEmptyProbe::Miss => TypedLocalReadyProbe::EmptyMiss {
+                    def_site,
+                    captured_frame_count,
+                },
+                ReadyCellEmptyProbe::Unknown | ReadyCellEmptyProbe::Ineligible => {
+                    TypedLocalReadyProbe::Ineligible
+                }
+            };
+        }
+        let Some(candidate) = self.ready_cell_candidate_for_thunk(thunk) else {
+            return TypedLocalReadyProbe::Ineligible;
+        };
+        if let Some(value) = self.probe_ready_cell_directory(&candidate) {
+            self.mark_ready_cell_candidate_ready(Some(&candidate));
+            TypedLocalReadyProbe::Hit(value)
+        } else {
+            TypedLocalReadyProbe::GeneralMiss(candidate)
+        }
+    }
+
+    /// Publishes a successful typed-head local-Ready miss.
+    pub(in crate::eval::tree_walk) fn publish_typed_local_ready(
+        &mut self,
+        probe: &TypedLocalReadyProbe,
+        source_thunk: Value,
+        value: Value,
+    ) {
+        match probe {
+            TypedLocalReadyProbe::EmptyMiss {
+                def_site,
+                captured_frame_count,
+            } => {
+                if let Some(plans) = self.ready_cell_plans.as_mut() {
+                    plans.publish_empty(*def_site, *captured_frame_count, value);
+                }
+            }
+            TypedLocalReadyProbe::GeneralMiss(candidate) => {
+                self.mark_ready_cell_candidate_ready(Some(candidate));
+                self.publish_ready_cell_candidate(Some(candidate), source_thunk);
+            }
+            TypedLocalReadyProbe::Ineligible | TypedLocalReadyProbe::Hit(_) => {}
+        }
+    }
+
+    /// Records failure of a typed-head local-Ready miss.
+    pub(in crate::eval::tree_walk) fn fail_typed_local_ready(
+        &mut self,
+        probe: &TypedLocalReadyProbe,
+    ) {
+        if let TypedLocalReadyProbe::GeneralMiss(candidate) = probe {
+            self.mark_ready_cell_candidate_failed(Some(candidate));
+        }
+    }
+
     /// Runs the content-memo probe/record protocol around a claimed force.
     ///
     /// When no memo tier is active (or the thunk is not an eligible node
@@ -556,24 +627,31 @@ impl TreeWalk {
 
     /// Serves an exact local recipe only from a still-Ready source thunk.
     fn probe_ready_cell_directory(&mut self, candidate: &ReadyCellCandidate) -> Option<Value> {
-        let value =
-            self.ready_cell_directory
-                .as_ref()?
-                .probe_ready(&candidate.recipe, |source| {
-                    self.heap
-                        .get_thunk(source)
-                        .ok()?
-                        .cell()
-                        .cached_value()
-                        .ok()?
-                })?;
+        let source = self
+            .ready_cell_directory
+            .as_ref()?
+            .probe_source(&candidate.recipe)?;
+        let value = self.ready_cell_source_value(source)?;
         if let Some(directory) = self.ready_cell_directory.as_mut() {
             directory.note_served_hit();
         }
         Some(value)
     }
 
-    /// Publishes one source only after its normal force installed a cached value.
+    /// Returns the published value from either supported thunk-cell representation.
+    fn ready_cell_source_value(&self, source_thunk: Value) -> Option<Value> {
+        if let Some(published) = self.heap.typed_thunk_published_value_if_any(source_thunk) {
+            return published;
+        }
+        self.heap
+            .get_thunk(source_thunk)
+            .ok()?
+            .cell()
+            .cached_value()
+            .ok()?
+    }
+
+    /// Publishes one source only after its authoritative cell installed a value.
     fn publish_ready_cell_candidate(
         &mut self,
         candidate: Option<&ReadyCellCandidate>,
@@ -582,14 +660,7 @@ impl TreeWalk {
         let Some(candidate) = candidate else {
             return;
         };
-        let source_is_ready = self
-            .heap
-            .get_thunk(source_thunk)
-            .ok()
-            .and_then(|thunk| thunk.cell().cached_value().ok())
-            .flatten()
-            .is_some();
-        if !source_is_ready {
+        if self.ready_cell_source_value(source_thunk).is_none() {
             return;
         }
         if let Some(directory) = self.ready_cell_directory.as_mut() {

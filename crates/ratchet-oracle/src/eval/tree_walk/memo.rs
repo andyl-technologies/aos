@@ -30,8 +30,8 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::sync::Arc;
 
@@ -39,9 +39,9 @@ use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
 use crate::eval::EvalNodeRef;
+use crate::value::Value;
 #[cfg(feature = "candidate_c_value")]
 use crate::value::compressed::CompressedValueKind;
-use crate::value::Value;
 
 /// Shard count for the L1 shared table.
 ///
@@ -406,6 +406,23 @@ pub(super) enum ReadyCellPlanDecision {
     BelowFloor,
     /// Static dependency analysis could not validate this body.
     Unavailable,
+}
+
+/// Local-Ready work selected before a typed-head body is evaluated.
+pub(super) enum TypedLocalReadyProbe {
+    /// Local Ready is disabled or the thunk is not eligible.
+    Ineligible,
+    /// A prior exact instance supplied the result directly.
+    Hit(Value),
+    /// A capture-free miss may publish into the def-site plan.
+    EmptyMiss {
+        /// Exact lowered body whose plan receives the result.
+        def_site: EvalNodeRef,
+        /// Captured frame count guarded by the plan.
+        captured_frame_count: usize,
+    },
+    /// A captured-recipe miss may publish the forced source head.
+    GeneralMiss(ReadyCellCandidate),
 }
 
 /// Per-evaluator Ready-cell plan cache shared by census and active lookup.
