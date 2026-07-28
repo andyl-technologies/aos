@@ -27,12 +27,13 @@
 //! Every entry carries its canonicalized per-subtree impure-observation
 //! slice, captured with the same trace-cursor seam the force cache uses; a
 //! hit revalidates every slice entry against the current world or misses.
-//! Payloads are the force cache's closed replayable encoding, so a hit
-//! re-allocates the value in the consuming worker's heap — no heap handles
-//! cross tiers, which keeps L0 free of GC-root obligations and makes L1
-//! entries trivially shareable across parallel workers. `AOS_NIX_MEMO_CHECK`
-//! shadows every hit at a checked tier with a fresh evaluation and asserts
-//! canonical-hash identity, mirroring `AOS_NIX_ROOT_CUTOFF_CHECK`.
+//! Heap-backed payloads are the force cache's closed replayable encoding, so a
+//! hit re-allocates the value in the consuming worker's heap — no heap handles
+//! cross tiers. L0 stores self-contained immediate words directly; Candidate-C
+//! boxed scalars remain payload-backed because their words name arena cells.
+//! `AOS_NIX_MEMO_CHECK` shadows every hit at a checked tier with a fresh
+//! evaluation and asserts canonical-hash identity, mirroring
+//! `AOS_NIX_ROOT_CUTOFF_CHECK`.
 //!
 //! [`CacheExprIdentity`]: crate::cache::CacheExprIdentity
 //! [`ValueHash`]: crate::cache::ValueHash
@@ -43,7 +44,7 @@ use super::force_identity::CapturedFreeVariableDependency;
 use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
-    MemoDefSiteDecision, MemoDefSiteState, MemoEntry, SharedMemoTable,
+    MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -183,16 +184,15 @@ impl TreeWalk {
             return Ok(value);
         }
         let cursor = self.impure_input_trace_cursor();
-        let value =
-            match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
-                Ok(value) => value,
-                Err(error) => {
-                    if stats_enabled {
-                        self.mark_memo_recipe_failed(&candidate);
-                    }
-                    return Err(error);
+        let value = match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
+            Ok(value) => value,
+            Err(error) => {
+                if stats_enabled {
+                    self.mark_memo_recipe_failed(&candidate);
                 }
-            };
+                return Err(error);
+            }
+        };
         if stats_enabled {
             self.mark_memo_recipe_ready(&candidate);
         }
@@ -633,7 +633,8 @@ impl TreeWalk {
                 Some(entry) => {
                     let check = self.options.memo_options().check_l0;
                     let hit_started = stats_enabled.then(Instant::now);
-                    let replay = self.memo_replay_entry(id, span, thunk, candidate, &entry, check);
+                    let replay =
+                        self.memo_replay_l0_entry(id, span, thunk, candidate, &entry, check);
                     self.record_memo_hit_timing(hit_started);
                     match replay? {
                         Some(value) => {
@@ -669,7 +670,7 @@ impl TreeWalk {
                             if hits >= self.options.memo_options().promote_hits
                                 && let Some(l0) = self.memo_l0.as_mut()
                             {
-                                let _ = l0.insert(candidate.key, entry);
+                                let _ = l0.insert(candidate.key, entry.into());
                             }
                             return Ok(Some(value));
                         }
@@ -685,6 +686,51 @@ impl TreeWalk {
             }
         }
         Ok(None)
+    }
+
+    /// Replays one L0 entry through its representation-specific fast path.
+    ///
+    /// Direct values still revalidate and replay their observation slice and
+    /// still participate in CHECK mode, but require no position remap or
+    /// force-cache payload rehydration. Immediate runtime words cannot carry
+    /// Nix attribute positions; position-bearing composites remain payload
+    /// entries and follow [`Self::memo_replay_entry`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates fresh-evaluation errors raised by CHECK mode, including
+    /// [`TreeWalkErrorKind::MemoCheckDivergence`] on a mismatched direct hit.
+    fn memo_replay_l0_entry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: &EvalThunk,
+        candidate: &MemoCandidate,
+        entry: &MemoL0Entry,
+        check: bool,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let value = match entry {
+            MemoL0Entry::Direct { value, .. } => *value,
+            MemoL0Entry::Payload(entry) => {
+                return self.memo_replay_entry(id, span, thunk, candidate, entry, check);
+            }
+        };
+        let replayed = if entry.slice().is_empty() {
+            Vec::new()
+        } else {
+            match self.memo_revalidate_slice(entry.slice()) {
+                Some(replayed) => replayed,
+                None => return Ok(None),
+            }
+        };
+        let value = value.value();
+        if check {
+            self.memo_check_hit(id, span, thunk, candidate, value)?;
+        }
+        for fingerprint in replayed {
+            self.record_impure_input(fingerprint);
+        }
+        Ok(Some(value))
     }
 
     /// Replays one resident entry: revalidate its slice, guard the payload's
@@ -838,16 +884,6 @@ impl TreeWalk {
             self.increment_memo_declines();
             return;
         }
-        let Some(payload) = self.force_cache_payload_for_value(value) else {
-            self.increment_memo_declines();
-            return;
-        };
-        let Some(payload) =
-            self.prepare_observable_payload_for_subject(payload, &candidate.subject)
-        else {
-            self.increment_memo_declines();
-            return;
-        };
         let mut cacheable = Vec::new();
         if cacheable.try_reserve_exact(segment.trace.len()).is_err() {
             self.increment_memo_declines();
@@ -866,15 +902,57 @@ impl TreeWalk {
             self.increment_memo_declines();
             return;
         };
+        let slice: Arc<[CacheableInputFingerprint]> = Arc::from(slice);
+        let direct = MemoDirectValue::new(value);
+        if l0_active && let Some(value) = direct {
+            let admitted = self.memo_l0.as_mut().is_some_and(|table| {
+                table.insert(
+                    candidate.key,
+                    MemoL0Entry::Direct {
+                        value,
+                        slice: Arc::clone(&slice),
+                    },
+                )
+            });
+            if admitted {
+                self.stats.memo_l0_admissions = self.stats.memo_l0_admissions.saturating_add(1);
+            } else {
+                self.stats.memo_l0_declines = self.stats.memo_l0_declines.saturating_add(1);
+            }
+        }
+
+        // L1 always keeps the closed, cross-worker payload representation.
+        // L0 needs that representation only when the value is not immediate.
+        if shared.is_none() && (direct.is_some() || !l0_active) {
+            return;
+        }
+        let Some(payload) = self.force_cache_payload_for_value(value) else {
+            if direct.is_some() {
+                self.stats.memo_l1_declines = self.stats.memo_l1_declines.saturating_add(1);
+            } else {
+                self.increment_memo_declines();
+            }
+            return;
+        };
+        let Some(payload) =
+            self.prepare_observable_payload_for_subject(payload, &candidate.subject)
+        else {
+            if direct.is_some() {
+                self.stats.memo_l1_declines = self.stats.memo_l1_declines.saturating_add(1);
+            } else {
+                self.increment_memo_declines();
+            }
+            return;
+        };
         let entry = MemoEntry {
             payload: Arc::new(payload),
-            slice: Arc::from(slice),
+            slice,
         };
-        if l0_active {
+        if l0_active && direct.is_none() {
             let admitted = self
                 .memo_l0
                 .as_mut()
-                .is_some_and(|table| table.insert(candidate.key, entry.clone()));
+                .is_some_and(|table| table.insert(candidate.key, entry.clone().into()));
             if admitted {
                 self.stats.memo_l0_admissions = self.stats.memo_l0_admissions.saturating_add(1);
             } else {
@@ -917,6 +995,14 @@ impl TreeWalk {
             .unwrap_or_default()
     }
 
+    /// Returns direct and closed-payload L0 entry counts, for tests.
+    #[cfg(test)]
+    pub(crate) fn test_memo_l0_representation_counts(&self) -> (usize, usize) {
+        self.memo_l0.as_ref().map_or((0, 0), |table| {
+            (table.direct_entry_count(), table.payload_entry_count())
+        })
+    }
+
     /// Poisons a resident L0 entry's payload under `key`, for CHECK tests.
     #[cfg(test)]
     pub(crate) fn test_memo_poison_l0_payload(
@@ -932,10 +1018,10 @@ impl TreeWalk {
         };
         table.insert(
             key,
-            MemoEntry {
+            MemoL0Entry::Payload(MemoEntry {
                 payload: Arc::new(payload),
-                slice: entry.slice,
-            },
+                slice: Arc::from(entry.slice()),
+            }),
         )
     }
 }

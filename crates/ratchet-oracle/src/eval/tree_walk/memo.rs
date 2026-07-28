@@ -10,12 +10,12 @@
 //!   [`SharedEvalContext`](super::parallel_demand::SharedEvalContext), the
 //!   parallel substrate's first shared writable map.
 //!
-//! Both tiers store the same [`MemoEntry`]: a self-contained replayable
-//! payload (the force cache's [`CachedExpressionValue`] encoding — attr names
-//! as bytes, no heap handles, no `Symbol` ids) plus the entry's canonicalized
-//! impure-observation slice. Because payloads are plain data, entries cross
-//! worker threads without any publication protocol beyond the shard mutex,
-//! and the L0 table needs no GC-root registration.
+//! L1 stores [`MemoEntry`], a self-contained replayable force-cache payload.
+//! L0 stores [`MemoL0Entry`], which additionally represents self-contained
+//! immediate runtime words directly. Direct entries never name evaluator heap
+//! storage, so they retain L0's no-root contract while avoiding payload
+//! construction and rehydration. Heap-backed values (including Candidate-C
+//! boxed scalars) keep using the ordinary payload representation.
 //!
 //! Keys are [`DemandCacheKey`]s derived per RFC-0007 doc 29 §3: the ordered,
 //! length-prefixed combination of a [`CacheExprIdentity`] code component with
@@ -39,6 +39,9 @@ use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
 use crate::eval::EvalNodeRef;
+use crate::value::Value;
+#[cfg(feature = "candidate_c_value")]
+use crate::value::compressed::CompressedValueKind;
 
 /// Shard count for the L1 shared table.
 ///
@@ -124,10 +127,7 @@ impl MemoDefSiteTable {
 
     /// Returns mutable state for `def_site`, when the site has been decided.
     pub(super) fn get_mut(&mut self, def_site: EvalNodeRef) -> Option<&mut MemoDefSiteState> {
-        let module = self
-            .modules
-            .get_mut(def_site.module().index())?
-            .as_mut()?;
+        let module = self.modules.get_mut(def_site.module().index())?.as_mut()?;
         module.get_mut(&def_site.id().as_u32())
     }
 
@@ -144,8 +144,7 @@ impl MemoDefSiteTable {
 }
 
 /// One module's admission decisions keyed by its local IR node id.
-type MemoDefSiteModuleTable =
-    HashMap<u32, MemoDefSiteState, BuildHasherDefault<MemoNodeIdHasher>>;
+type MemoDefSiteModuleTable = HashMap<u32, MemoDefSiteState, BuildHasherDefault<MemoNodeIdHasher>>;
 
 /// Fast integer mixer for module-local IR node ids.
 ///
@@ -198,6 +197,77 @@ impl MemoEntry {
         } else {
             len as u64
         }
+    }
+}
+
+/// A runtime value word proven not to name evaluator heap storage.
+///
+/// Baseline scalar words are always self-contained. Under Candidate-C, wide
+/// integers and floats use boxed arena cells despite their scalar semantic
+/// tags, so only inline integers, booleans, and null pass construction.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MemoDirectValue(Value);
+
+impl MemoDirectValue {
+    /// Returns a direct value when `value` has no GC or relocation obligation.
+    pub(super) fn new(value: Value) -> Option<Self> {
+        if value.tag().is_heap() {
+            return None;
+        }
+        #[cfg(feature = "candidate_c_value")]
+        if matches!(
+            value.word().kind(),
+            CompressedValueKind::BoxedInt | CompressedValueKind::BoxedFloat
+        ) {
+            return None;
+        }
+        Some(Self(value))
+    }
+
+    /// Returns the self-contained runtime value word.
+    pub(super) const fn value(self) -> Value {
+        self.0
+    }
+}
+
+/// One per-worker L0 entry.
+///
+/// Direct entries hold only a self-contained scalar word and therefore need
+/// neither force-cache rehydration nor GC rooting. Payload entries preserve
+/// the ordinary cross-heap representation used for L1 and for every
+/// heap-backed L0 value.
+#[derive(Clone, Debug)]
+pub(super) enum MemoL0Entry {
+    /// An immediate value plus its canonicalized observation slice.
+    Direct {
+        /// Self-contained value word.
+        value: MemoDirectValue,
+        /// Canonicalized impure-observation slice.
+        slice: Arc<[CacheableInputFingerprint]>,
+    },
+    /// The ordinary closed-payload representation.
+    Payload(MemoEntry),
+}
+
+impl MemoL0Entry {
+    /// Returns the entry's canonicalized impure-observation slice.
+    pub(super) fn slice(&self) -> &[CacheableInputFingerprint] {
+        match self {
+            Self::Direct { slice, .. } => slice,
+            Self::Payload(entry) => &entry.slice,
+        }
+    }
+
+    /// Returns whether this entry uses the direct immediate representation.
+    #[cfg(test)]
+    pub(super) const fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct { .. })
+    }
+}
+
+impl From<MemoEntry> for MemoL0Entry {
+    fn from(entry: MemoEntry) -> Self {
+        Self::Payload(entry)
     }
 }
 
@@ -289,7 +359,7 @@ impl MemoEconomicsCensus {
 /// the decline counters.
 #[derive(Debug)]
 pub(super) struct MemoL0Table {
-    entries: HashMap<DemandCacheKey, MemoEntry>,
+    entries: HashMap<DemandCacheKey, MemoL0Entry>,
     capacity: usize,
 }
 
@@ -303,7 +373,7 @@ impl MemoL0Table {
     }
 
     /// Returns the entry recorded under `key`, if any.
-    pub(super) fn get(&self, key: &DemandCacheKey) -> Option<&MemoEntry> {
+    pub(super) fn get(&self, key: &DemandCacheKey) -> Option<&MemoL0Entry> {
         self.entries.get(key)
     }
 
@@ -316,7 +386,7 @@ impl MemoL0Table {
     ///
     /// Returns `false` (and leaves the table unchanged) when the table is at
     /// capacity and `key` is not already present.
-    pub(super) fn insert(&mut self, key: DemandCacheKey, entry: MemoEntry) -> bool {
+    pub(super) fn insert(&mut self, key: DemandCacheKey, entry: MemoL0Entry) -> bool {
         if self.entries.len() >= self.capacity && !self.entries.contains_key(&key) {
             return false;
         }
@@ -334,6 +404,24 @@ impl MemoL0Table {
     #[cfg(test)]
     pub(super) fn keys(&self) -> Vec<DemandCacheKey> {
         self.entries.keys().copied().collect()
+    }
+
+    /// Returns the number of direct immediate entries.
+    #[cfg(test)]
+    pub(super) fn direct_entry_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| entry.is_direct())
+            .count()
+    }
+
+    /// Returns the number of closed-payload entries.
+    #[cfg(test)]
+    pub(super) fn payload_entry_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| !entry.is_direct())
+            .count()
     }
 }
 
@@ -475,6 +563,10 @@ mod tests {
         }
     }
 
+    fn l0_entry() -> MemoL0Entry {
+        MemoL0Entry::Payload(entry())
+    }
+
     #[test]
     fn def_site_table_indexes_sparse_modules_and_replaces_states() {
         let mut table = MemoDefSiteTable::default();
@@ -513,16 +605,48 @@ mod tests {
             table.get(first).map(|state| state.decision),
             Some(MemoDefSiteDecision::CostAdmitted)
         );
-        assert_eq!(table.get(first).map(|state| state.static_cost_units), Some(16));
+        assert_eq!(
+            table.get(first).map(|state| state.static_cost_units),
+            Some(16)
+        );
     }
 
     #[test]
     fn l0_capacity_declines_new_keys_but_replaces_existing() {
         let mut table = MemoL0Table::new(1);
-        assert!(table.insert(key(1), entry()));
-        assert!(!table.insert(key(2), entry()), "table is at capacity");
-        assert!(table.insert(key(1), entry()), "existing keys replace");
+        assert!(table.insert(key(1), l0_entry()));
+        assert!(!table.insert(key(2), l0_entry()), "table is at capacity");
+        assert!(table.insert(key(1), l0_entry()), "existing keys replace");
         assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn l1_entries_promote_to_payload_backed_l0_entries() {
+        let mut table = MemoL0Table::new(1);
+        assert!(table.insert(key(1), entry().into()));
+        assert_eq!(table.direct_entry_count(), 0);
+        assert_eq!(table.payload_entry_count(), 1);
+    }
+
+    #[test]
+    fn direct_values_accept_only_self_contained_runtime_words() {
+        assert!(MemoDirectValue::new(Value::int(42)).is_some());
+        assert!(MemoDirectValue::new(Value::bool(true)).is_some());
+        assert!(MemoDirectValue::new(Value::null()).is_some());
+
+        #[cfg(feature = "candidate_c_value")]
+        {
+            let domain = crate::heap::ArenaDomainId::from_raw(1).expect("domain is valid");
+            let index = crate::heap::ArenaIndex::new(8);
+            let boxed_int = Value::from_word(
+                crate::value::compressed::CompressedValueWord::boxed_int(domain, index),
+            );
+            let boxed_float = Value::from_word(
+                crate::value::compressed::CompressedValueWord::boxed_float(domain, index),
+            );
+            assert!(MemoDirectValue::new(boxed_int).is_none());
+            assert!(MemoDirectValue::new(boxed_float).is_none());
+        }
     }
 
     #[test]

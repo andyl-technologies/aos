@@ -50,6 +50,69 @@ fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {
 }
 
 #[test]
+fn l0_stores_immediate_results_as_direct_values() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        memo_options(1),
+        "expr.nix",
+        DUPLICATED_SUBTREE.as_bytes().to_vec(),
+    );
+    let value = evaluator.eval_root().expect("expression evaluates");
+    assert_eq!(value.as_int(), Ok(90));
+    let (direct, _) = evaluator.test_memo_l0_representation_counts();
+    assert!(
+        direct >= 1,
+        "the immediate result should avoid a closed payload"
+    );
+    assert!(evaluator.stats.memo_l0_hits >= 1);
+}
+
+#[test]
+fn l0_keeps_position_bearing_attrsets_payload_backed() {
+    const SOURCE: &str = r#"
+        let
+          f = n:
+            let result = { value = 42; };
+            in if n > 0 then result else result;
+        in { first = f 1; second = f 2; }
+    "#;
+    let ir = lower(SOURCE);
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        memo_options(1),
+        "expr.nix",
+        SOURCE.as_bytes().to_vec(),
+    );
+    let root = evaluator.eval_root().expect("root evaluates");
+    let first = evaluator
+        .heap()
+        .get_attrs(root)
+        .expect("root is attrs")
+        .get(symbol_for(&ir, b"first"))
+        .expect("first exists");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), first)
+        .expect("first forces");
+    assert!(evaluator.heap().get_attrs(forced).is_ok());
+    let second = evaluator
+        .heap()
+        .get_attrs(root)
+        .expect("root is attrs")
+        .get(symbol_for(&ir, b"second"))
+        .expect("second exists");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), second)
+        .expect("second forces");
+    assert!(evaluator.heap().get_attrs(forced).is_ok());
+    let (_, payloads) = evaluator.test_memo_l0_representation_counts();
+    assert!(
+        payloads >= 1,
+        "attrsets retain the position-remapping payload path"
+    );
+}
+
+#[test]
 fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
     let ir = lower(DUPLICATED_SUBTREE);
     let mut options = TreeWalkOptions::default();
