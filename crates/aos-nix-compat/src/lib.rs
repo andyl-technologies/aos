@@ -13,6 +13,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod corepkgs;
 pub mod drv;
 pub mod drv_materialize;
 
