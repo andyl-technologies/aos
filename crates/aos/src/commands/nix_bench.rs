@@ -536,7 +536,7 @@ pub(super) fn fresh_isolated_candidate(
 ) -> Result<(Box<dyn NixEval>, Option<TempDir>)> {
     let mut config = base_config.clone();
     // "Cold" excludes cache data from earlier runs; it does not disable caches
-    // populated and reused within this run. Enable the complete in-process memo
+    // populated and reused within this run. Enable both in-process memo
     // stack, but detach persistent and additive disk/network locations. Durable
     // cache population is a separate benchmark axis: including it here measures
     // cross-run serialization and writeback rather than the evaluator's legal
@@ -554,7 +554,7 @@ fn enable_isolated_intra_run_caches(config: &mut NixEvalConfig) {
     memo.enabled = true;
     memo.l0_enabled = true;
     memo.l1_enabled = Some(true);
-    memo.l2_enabled = true;
+    memo.l2_enabled = false;
     config.set_native_memo(memo);
     config.set_native_memo_disk_spec(None);
     config.set_native_memo_net(None);

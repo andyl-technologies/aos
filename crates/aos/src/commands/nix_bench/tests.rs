@@ -35,7 +35,7 @@ fn isolated_cold_run_enables_internal_memo_and_removes_external_tiers() {
     assert!(memo.enabled);
     assert!(memo.l0_enabled);
     assert_eq!(memo.l1_enabled, Some(true));
-    assert!(memo.l2_enabled);
+    assert!(!memo.l2_enabled);
     assert_eq!(config.native_cache_root(), None);
     assert_eq!(config.native_memo_disk_spec(), None);
     assert_eq!(config.native_memo_net(), None);
