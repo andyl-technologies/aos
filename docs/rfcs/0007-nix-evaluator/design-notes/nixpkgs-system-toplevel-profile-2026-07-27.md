@@ -166,7 +166,14 @@ dynamic-scope and 629 unknown-capture cases. A second map over the same key
 cannot materially help this workload. The useful next in-process experiment
 must make identity/admission cheaper or move reuse to the thunk/def-site
 representation; lowering the cost floor with the current key machinery was
-already instruction-negative.
+already instruction-negative. At floor zero the census found 657,633 Ready
+repeats and the L0 served 576,389 hits, but two clean samples retired
+146,021,310,029--146,032,015,540 instructions,
+58,467,713,681--58,614,161,779 cycles, and peaked at
+4,312,408--4,324,324 KiB RSS. That is 7.25 percent more instructions and about
+3 percent more peak RSS than floor 64 despite roughly 607,000 fewer actual
+forces. The cache's limiting cost is structural key derivation and record
+materialization, not the table lookup or a lack of intra-run reuse.
 
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
