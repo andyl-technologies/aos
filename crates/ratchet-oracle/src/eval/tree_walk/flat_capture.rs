@@ -75,7 +75,7 @@ impl TreeWalk {
                 self.current_ir().facts.capture_plan(id),
                 Some(CapturePlan::Flat(slots)) if !slots.is_empty()
             )
-            || self.pending_flat_captures.try_reserve_exact(1).is_err()
+            || self.pending_flat_captures.try_reserve(1).is_err()
         {
             return;
         }
