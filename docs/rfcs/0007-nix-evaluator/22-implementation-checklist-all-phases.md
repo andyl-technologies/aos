@@ -13508,6 +13508,26 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       global lean control. Reuse its explicit ownership concepts, but require
       direct mixed-plan lowering/native execution to remove dispatch rather than
       enabling this interpreter in production.
+      The direct path now accepts polymorphic exact call-target sets and does
+      target work. Real one-word target bodies returning the call parameter, a
+      target-frame local, or an integer literal lower atomically into mixed
+      functions. Backend v3 validates every guarded target, dispatches the
+      prevalidated ordinal without callbacks, computes the selected local or
+      literal result, and carries it into the force/update corridor. Eight core
+      translator tests and five native-backend tests pass (two PMU probes stay
+      ignored). This expands the real-plan grammar but is not yet connected to
+      primary runtime admission and receives no whole-process speed credit.
+      Independent memory-source exploration finds no hidden easy pool:
+      frontend IR/modules/source/paths/symbols total 21,818,125 bytes,
+      structural caches are about 1.44MiB, and the prior eager-purge delta is
+      only about 4.3MiB. A stable direct-index handle generation remains the
+      strongest route that avoids writable 426-frame continuations: ordinal
+      160 dead-first streaming projects about 192.7MiB peak with 46.8MiB
+      headroom because native frames retain stable IDs rather than moved
+      addresses. The segmented resolver's 2.547x lookup cost rejects it; the
+      reserved direct-index lane's 1.034x result merits a <=1% whole-process
+      cycle falsifier plus sibling-process `smaps` and owner-sum reconciliation
+      before changing the carrier.
       The residual factor-speed partition is now bounded. The measured sampled
       virtualizable families total 59.65% of instructions and 55.40% of
       cycles, approximately 8.37B/3.26B on the 14.027B/5.890B lean run.

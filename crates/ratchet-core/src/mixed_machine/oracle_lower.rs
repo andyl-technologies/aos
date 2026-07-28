@@ -125,7 +125,7 @@ pub enum MixedOraclePlanDecline {
     UnsupportedCallable,
     /// The argument leaf is not a supported literal or lexical load.
     UnsupportedArgument,
-    /// A target is not a direct lexical-parameter return.
+    /// A target is not a direct integer-literal or lexical-local return.
     UnsupportedCallTarget {
         /// Zero-based target index.
         target: usize,
@@ -165,10 +165,12 @@ pub enum MixedOraclePlanLowerError {
 ///
 /// The admitted entry is exactly one `Apply1` whose callable is a lexical
 /// value and whose argument is a distinct lexical load or integer literal.
-/// Every caller-supplied target must be a one-word lexical-parameter return.
-/// The translator then installs complete guarded-call and force fallback
-/// statepoints and three exact force/update arms. `claimed_result_slot` is the
-/// runtime frame slot promised by each successfully claimed force family.
+/// Every caller-supplied target must be a one-word integer-literal or
+/// lexical-local return. Local slot zero returns the direct call parameter;
+/// other local slots are loaded from the target frame. The translator then
+/// installs complete guarded-call and force fallback statepoints and three
+/// exact force/update arms. `claimed_result_slot` is the runtime frame slot
+/// promised by each successfully claimed force family.
 ///
 /// No code identity is synthesized: `targets` and `force_guards` are copied
 /// exactly from the caller. Source coordinates are copied from each packed
@@ -325,25 +327,36 @@ pub fn lower_mixed_oracle_apply_force_plan(
     for (target_index, target) in targets.iter().enumerate() {
         validate_block_identity("call target", target.identity, &target.code)?;
         let target_root = target.code.root_pc();
-        let direct_return = target
-            .code
-            .words()
-            .get(target_root as usize)
-            .copied()
-            .filter(|word| word.opcode() == StgOpcode::Local);
-        if target.code.words().len() != 1
-            || !direct_return.is_some_and(|word| word.operand_a() == 0)
-        {
+        let Some(target_return) = lower_call_target_return(&target.code) else {
             return Ok(MixedOraclePlanLowerOutcome::Declined(
                 MixedOraclePlanDecline::UnsupportedCallTarget {
                     target: target_index,
                 },
             ));
-        }
+        };
         let source = packed_source(&target.code, target.identity.module_digest, target_root)?;
         let function_id = MixedFunctionId::new((target_index + 1) as u32);
         let block_id = MixedBlockId::new((target_index + 6) as u32);
         let parameter = MixedValueId::new((target_index + 8) as u32);
+        let result = MixedValueId::new((targets.len() + target_index + 8) as u32);
+        let operation_start = operations.len() as u32;
+        let (operation_count, return_value) = match target_return {
+            MixedOracleCallTargetReturn::Parameter => (0, parameter),
+            MixedOracleCallTargetReturn::Local(slot) => {
+                operations.push(MixedOp::LoadLocal {
+                    destination: result,
+                    slot,
+                });
+                (1, result)
+            }
+            MixedOracleCallTargetReturn::LiteralInt(value) => {
+                operations.push(MixedOp::ConstInt {
+                    destination: result,
+                    value,
+                });
+                (1, result)
+            }
+        };
         functions.push(MixedFunction {
             source,
             parameter,
@@ -354,8 +367,10 @@ pub fn lower_mixed_oracle_apply_force_plan(
         });
         blocks.push(MixedBlock {
             source,
-            operations: MixedTableRange::new(operations.len() as u32, 0),
-            terminator: MixedTerminator::Return { value: parameter },
+            operations: MixedTableRange::new(operation_start, operation_count),
+            terminator: MixedTerminator::Return {
+                value: return_value,
+            },
         });
         call_targets.push(MixedCallTarget {
             code: target.identity,
@@ -402,6 +417,30 @@ pub fn lower_mixed_oracle_apply_force_plan(
         ],
     )?;
     Ok(MixedOraclePlanLowerOutcome::Lowered(plan))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MixedOracleCallTargetReturn {
+    Parameter,
+    Local(u32),
+    LiteralInt(i64),
+}
+
+fn lower_call_target_return(code: &StgCodeBlock) -> Option<MixedOracleCallTargetReturn> {
+    if code.words().len() != 1 {
+        return None;
+    }
+    let root = code.words().get(code.root_pc() as usize).copied()?;
+    match root.opcode() {
+        StgOpcode::Local if root.operand_a() == 0 => Some(MixedOracleCallTargetReturn::Parameter),
+        StgOpcode::Local => Some(MixedOracleCallTargetReturn::Local(root.operand_a())),
+        StgOpcode::LiteralInt => {
+            let crate::stg::StgLiteral::Int(value) =
+                *code.literals().get(root.operand_a() as usize)?;
+            Some(MixedOracleCallTargetReturn::LiteralInt(value))
+        }
+        _ => None,
+    }
 }
 
 fn validate_block_identity(
@@ -700,6 +739,104 @@ mod tests {
     }
 
     #[test]
+    fn translates_and_executes_a_literal_integer_target() {
+        let entry = apply_entry();
+        let target = direct_target("x: 42", StgModuleId::new(8), [8; 32]);
+
+        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_apply_force_plan(
+            MixedModuleKey::new([7; 32], [6; 32], 1),
+            MixedPlanBounds::new(16, 2, 2),
+            &entry,
+            &[target.clone()],
+            exact_force_guards(),
+            0,
+        )
+        .expect("literal corridor translation succeeds") else {
+            panic!("literal target must lower");
+        };
+
+        assert_eq!(
+            plan.operations().last(),
+            Some(&MixedOp::ConstInt {
+                destination: MixedValueId::new(9),
+                value: 42,
+            })
+        );
+        assert!(matches!(
+            plan.blocks()[6].terminator,
+            MixedTerminator::Return {
+                value
+            } if value == MixedValueId::new(9)
+        ));
+
+        let executable = MixedExecutablePlan::new(&plan).expect("translated plan is executable");
+        let mut runner = MixedExecutionRunner::<CorridorRuntime>::new(executable, 0, 777, 0, 2)
+            .expect("runner allocates");
+        let mut runtime = CorridorRuntime {
+            target: target.identity(),
+            frames: vec![vec![8]],
+        };
+        assert_eq!(
+            runner.run(&mut runtime).expect("literal corridor executes"),
+            MixedExecutionOutcome::Complete(42)
+        );
+    }
+
+    #[test]
+    fn translates_a_nonparameter_local_target_to_an_explicit_load() {
+        let entry = apply_entry();
+        let target = local_target(StgModuleId::new(8), [8; 32]);
+
+        let MixedOraclePlanLowerOutcome::Lowered(plan) = lower_mixed_oracle_apply_force_plan(
+            MixedModuleKey::new([7; 32], [6; 32], 1),
+            MixedPlanBounds::new(16, 2, 2),
+            &entry,
+            &[target],
+            exact_force_guards(),
+            0,
+        )
+        .expect("local corridor translation succeeds") else {
+            panic!("nonparameter local target must lower");
+        };
+
+        assert!(matches!(
+            plan.operations().last(),
+            Some(MixedOp::LoadLocal {
+                destination,
+                slot,
+            }) if *destination == MixedValueId::new(9) && *slot != 0
+        ));
+        assert!(matches!(
+            plan.blocks()[6].terminator,
+            MixedTerminator::Return {
+                value
+            } if value == MixedValueId::new(9)
+        ));
+    }
+
+    #[test]
+    fn declines_an_unsupported_target_without_a_partial_plan() {
+        let entry = apply_entry();
+        let direct = direct_target("x: x", StgModuleId::new(8), [8; 32]);
+        let unsupported = direct_target("x: true", StgModuleId::new(9), [9; 32]);
+
+        assert_eq!(
+            lower_mixed_oracle_apply_force_plan(
+                MixedModuleKey::new([7; 32], [6; 32], 1),
+                MixedPlanBounds::new(16, 2, 2),
+                &entry,
+                &[direct, unsupported],
+                exact_force_guards(),
+                0,
+            )
+            .expect("unsupported target is a conservative decline"),
+            MixedOraclePlanLowerOutcome::Declined(MixedOraclePlanDecline::UnsupportedCallTarget {
+                target: 1
+            })
+        );
+    }
+
+    #[test]
     fn declines_shared_apply_operands_atomically() {
         let mut ir = lowered("f: f 1");
         let lambda = *ir.arena.node(ir.root).expect("lambda exists");
@@ -791,7 +928,18 @@ mod tests {
         module_id: StgModuleId,
         module_digest: [u8; 32],
     ) -> MixedOracleCallTargetBlock {
-        let ir = lowered(source);
+        direct_target_from_ir(lowered(source), module_id, module_digest)
+    }
+
+    fn local_target(module_id: StgModuleId, module_digest: [u8; 32]) -> MixedOracleCallTargetBlock {
+        direct_target_from_ir(lowered("{ x, y }: y"), module_id, module_digest)
+    }
+
+    fn direct_target_from_ir(
+        ir: Ir,
+        module_id: StgModuleId,
+        module_digest: [u8; 32],
+    ) -> MixedOracleCallTargetBlock {
         let lambda = *ir.arena.node(ir.root).expect("lambda exists");
         let IrData::Lambda { body, frame, .. } = lambda.data else {
             panic!("lambda payload expected");
@@ -806,6 +954,21 @@ mod tests {
             MixedCodeIdentity::new(module_digest, ir.root, body, frame, [5; 32]),
             code,
         )
+    }
+
+    fn apply_entry() -> MixedOracleNodeBlock {
+        let ir = lowered("f: f 1");
+        let lambda = *ir.arena.node(ir.root).expect("lambda exists");
+        let IrData::Lambda { body, .. } = lambda.data else {
+            panic!("lambda payload expected");
+        };
+        let MixedOracleNodeLowerOutcome::Lowered(entry) =
+            lower_mixed_oracle_node(&ir, StgModuleId::new(7), [7; 32], ir.root, body, [9; 32])
+                .expect("entry lowering succeeds")
+        else {
+            panic!("real application entry must lower");
+        };
+        entry
     }
 
     fn exact_force_guards() -> MixedForceGuards {

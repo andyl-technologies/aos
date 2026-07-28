@@ -43,7 +43,7 @@ macro_rules! field_offset {
     };
 }
 
-const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 2;
+const MIXED_SUPERBLOCK_BACKEND_VERSION: u32 = 3;
 const MIXED_SUPERBLOCK_FUNCTION_NAMESPACE: u32 = 12;
 const MIXED_SUPERBLOCK_SYMBOL: &str = "aos.mixed.superblock.v1";
 const DECLINED_TARGET: u32 = u32::MAX;
@@ -500,9 +500,15 @@ enum ClaimedResult {
 }
 
 #[derive(Clone, Copy)]
+enum AdmittedCallResult {
+    Argument,
+    FrameLocal(u32),
+    Constant(u64),
+}
+
 struct AdmittedCorridor {
     entry_local: u32,
-    call_target_count: u32,
+    call_results: Vec<AdmittedCallResult>,
     call_fallback: MixedStatepointId,
     force_fallback: MixedStatepointId,
     node: ClaimedResult,
@@ -526,6 +532,7 @@ fn lower_mixed_superblock(
     function.dfg.append_block_param(entry_block, types::I64);
     let call_ready = function.dfg.make_block();
     let force_ready = function.dfg.make_block();
+    function.dfg.append_block_param(force_ready, types::I64);
     let force_node = function.dfg.make_block();
     let force_apply = function.dfg.make_block();
     let force_gen_list = function.dfg.make_block();
@@ -545,7 +552,7 @@ fn lower_mixed_superblock(
     };
 
     function.layout.append_block(call_ready);
-    let (callable, argument) = {
+    {
         let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(call_ready);
         let callable = load_i64(
             &mut cursor,
@@ -588,33 +595,29 @@ fn lower_mixed_superblock(
             decision,
             field_offset!(JitMixedSuperblockCallDecision, target_ordinal),
         );
-        let exact_target = cursor.ins().icmp_imm(
-            IntCC::UnsignedLessThan,
-            ordinal,
-            i64::from(corridor.call_target_count),
+        let frame = load_i32(
+            &mut cursor,
+            decision,
+            field_offset!(JitMixedSuperblockCallDecision, frame),
         );
-        let call_declined = cursor.func.dfg.make_block();
-        cursor
-            .ins()
-            .brif(exact_target, force_ready, &[], call_declined, &[]);
-        cursor.func.layout.append_block(call_declined);
-        cursor.set_position(CursorPosition::After(call_declined));
-        let declined = cursor
-            .ins()
-            .icmp_imm(IntCC::Equal, ordinal, i64::from(DECLINED_TARGET));
-        let fallback = cursor
-            .ins()
-            .iconst(types::I32, i64::from(corridor.call_fallback.as_u32()));
-        cursor
-            .ins()
-            .brif(declined, side_exit, &[fallback.into()], invalid, &[]);
-        (callable, argument)
-    };
-    let _ = callable;
+        emit_call_target_dispatch(
+            &mut cursor,
+            activation,
+            ordinal,
+            frame,
+            argument,
+            &corridor.call_results,
+            force_ready,
+            side_exit,
+            invalid,
+            corridor.call_fallback,
+        );
+    }
 
     function.layout.append_block(force_ready);
     {
         let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(force_ready);
+        let call_result = cursor.func.dfg.block_params(force_ready)[0];
         let decision = emit_next_force_decision(&mut cursor, activation, invalid);
         let Some(decision) = decision else {
             unreachable!("decision load always emits a continuation");
@@ -624,7 +627,7 @@ fn lower_mixed_superblock(
             decision,
             field_offset!(JitMixedSuperblockForceDecision, subject),
         );
-        let same_subject = cursor.ins().icmp(IntCC::Equal, observed, argument);
+        let same_subject = cursor.ins().icmp(IntCC::Equal, observed, call_result);
         let action_block = cursor.func.dfg.make_block();
         cursor
             .ins()
@@ -741,6 +744,55 @@ fn lower_mixed_superblock(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_call_target_dispatch(
+    cursor: &mut FuncCursor<'_>,
+    activation: Value,
+    ordinal: Value,
+    frame: Value,
+    argument: Value,
+    results: &[AdmittedCallResult],
+    continuation: Block,
+    side_exit: Block,
+    invalid: Block,
+    fallback: MixedStatepointId,
+) {
+    for (target, result) in results.iter().copied().enumerate() {
+        let matched = cursor.func.dfg.make_block();
+        let next = cursor.func.dfg.make_block();
+        let exact = cursor.ins().icmp_imm(
+            IntCC::Equal,
+            ordinal,
+            i64::try_from(target).unwrap_or(i64::MAX),
+        );
+        cursor.ins().brif(exact, matched, &[], next, &[]);
+        cursor.func.layout.append_block(matched);
+        cursor.set_position(CursorPosition::After(matched));
+        let value = match result {
+            AdmittedCallResult::Argument => argument,
+            AdmittedCallResult::FrameLocal(slot) => {
+                let Some(value) = emit_frame_load(cursor, activation, frame, slot, invalid) else {
+                    unreachable!("frame load always emits a continuation");
+                };
+                value
+            }
+            AdmittedCallResult::Constant(value) => cursor.ins().iconst(types::I64, value as i64),
+        };
+        cursor.ins().jump(continuation, &[value.into()]);
+        cursor.func.layout.append_block(next);
+        cursor.set_position(CursorPosition::After(next));
+    }
+    let declined = cursor
+        .ins()
+        .icmp_imm(IntCC::Equal, ordinal, i64::from(DECLINED_TARGET));
+    let statepoint = cursor
+        .ins()
+        .iconst(types::I32, i64::from(fallback.as_u32()));
+    cursor
+        .ins()
+        .brif(declined, side_exit, &[statepoint.into()], invalid, &[]);
+}
+
 fn admit_corridor(
     plan: &MixedModulePlan,
     entry: usize,
@@ -804,20 +856,31 @@ fn admit_corridor(
         .call_targets()
         .get(target_start..target_end)
         .ok_or_else(|| unsupported_error("guarded target range is absent"))?;
+    let mut call_results = Vec::with_capacity(guarded_targets.len());
     for target in guarded_targets {
         let callee = function(plan, target.function)?;
         if target.argument_destination != callee.parameter {
             return unsupported("callee argument mapping is not direct");
         }
         let callee_block = block(plan, callee.entry)?;
-        if !operations(plan, callee_block)?.is_empty()
-            || !matches!(
-                callee_block.terminator,
-                MixedTerminator::Return { value } if value == callee.parameter
-            )
-        {
-            return unsupported("guarded callee is not a direct parameter return");
-        }
+        let result = match (operations(plan, callee_block)?, &callee_block.terminator) {
+            ([], MixedTerminator::Return { value }) if *value == callee.parameter => {
+                AdmittedCallResult::Argument
+            }
+            ([MixedOp::LoadLocal { destination, slot }], MixedTerminator::Return { value })
+                if destination == value =>
+            {
+                AdmittedCallResult::FrameLocal(*slot)
+            }
+            (
+                [MixedOp::ConstInt { destination, value }],
+                MixedTerminator::Return {
+                    value: return_value,
+                },
+            ) if destination == return_value => AdmittedCallResult::Constant(*value as u64),
+            _ => return unsupported("guarded callee is not a direct scalar return"),
+        };
+        call_results.push(result);
     }
     let force_block = block(plan, *continuation)?;
     if !operations(plan, force_block)?.is_empty() {
@@ -850,7 +913,7 @@ fn admit_corridor(
     }
     Ok(AdmittedCorridor {
         entry_local: *entry_local,
-        call_target_count: targets.len(),
+        call_results,
         call_fallback: *call_fallback,
         force_fallback: *force_fallback,
         node: admit_claimed_result(plan, *node, *force_result, *ready)?,
@@ -1434,7 +1497,7 @@ mod tests {
         let native = compile_mixed_superblock(&plan, 0).expect("polymorphic corridor compiles");
         let frames = [9, 40];
         let calls = [JitMixedSuperblockCallDecision::target(8, 1, 0)];
-        let forces = [JitMixedSuperblockForceDecision::ready(9, 40)];
+        let forces = [JitMixedSuperblockForceDecision::ready(55, 55)];
         let mut updates = [JitMixedSuperblockPublishedUpdate::default()];
         let mut activation =
             JitMixedSuperblockActivation::new(8, 0, &frames, 1, &calls, &forces, &mut updates)
@@ -1442,7 +1505,7 @@ mod tests {
 
         assert_eq!(
             native.run(&mut activation),
-            JitMixedSuperblockOutcome::Complete(40)
+            JitMixedSuperblockOutcome::Complete(55)
         );
         assert_eq!(activation.consumed_calls(), 1);
         assert_eq!(activation.consumed_forces(), 1);
@@ -1601,6 +1664,24 @@ mod tests {
         }];
         let mut target_blocks = Vec::with_capacity(target_count as usize);
         let mut call_targets = Vec::with_capacity(target_count as usize);
+        let mut operations = vec![
+            MixedOp::LoadLocal {
+                destination: MixedValueId::new(1),
+                slot: 0,
+            },
+            MixedOp::LoadLocal {
+                destination: MixedValueId::new(4),
+                slot: 0,
+            },
+            MixedOp::ConstInt {
+                destination: MixedValueId::new(5),
+                value: apply_value,
+            },
+            MixedOp::ConstInt {
+                destination: MixedValueId::new(6),
+                value: 42,
+            },
+        ];
         for target in 0..target_count {
             let parameter = MixedValueId::new(7 + target);
             let block = MixedBlockId::new(6 + target);
@@ -1612,10 +1693,23 @@ mod tests {
                 entry: block,
                 blocks: MixedTableRange::new(block.as_u32(), 1),
             });
+            let (operation_range, return_value) = if target == 0 {
+                (MixedTableRange::new(operations.len() as u32, 0), parameter)
+            } else {
+                let destination = MixedValueId::new(7 + target_count + target - 1);
+                let start = operations.len() as u32;
+                operations.push(MixedOp::ConstInt {
+                    destination,
+                    value: 55,
+                });
+                (MixedTableRange::new(start, 1), destination)
+            };
             target_blocks.push(MixedBlock {
                 source: source(10 + target),
-                operations: MixedTableRange::new(4, 0),
-                terminator: MixedTerminator::Return { value: parameter },
+                operations: operation_range,
+                terminator: MixedTerminator::Return {
+                    value: return_value,
+                },
             });
             call_targets.push(MixedCallTarget {
                 code: code(8 + target),
@@ -1665,7 +1759,7 @@ mod tests {
         blocks.extend(target_blocks);
         MixedModulePlan::new(
             MixedModuleKey::new([3; 32], [4; 32], 1),
-            MixedPlanBounds::new(8 + target_count, 2, 2),
+            MixedPlanBounds::new(7 + target_count.saturating_mul(2), 2, 2),
             vec![MixedEntry {
                 kind: MixedEntryKind::ForceWhnf,
                 source: source(0),
@@ -1675,24 +1769,7 @@ mod tests {
             }],
             functions,
             blocks,
-            vec![
-                MixedOp::LoadLocal {
-                    destination: MixedValueId::new(1),
-                    slot: 0,
-                },
-                MixedOp::LoadLocal {
-                    destination: MixedValueId::new(4),
-                    slot: 0,
-                },
-                MixedOp::ConstInt {
-                    destination: MixedValueId::new(5),
-                    value: apply_value,
-                },
-                MixedOp::ConstInt {
-                    destination: MixedValueId::new(6),
-                    value: 42,
-                },
-            ],
+            operations,
             call_targets,
             vec![
                 statepoint(20, 1, 2, MixedStatepointReason::UnknownCall),
