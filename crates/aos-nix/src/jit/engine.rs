@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
+use ratchet_jit::cranelift::JitMixedSuperblockExecutable;
 use ratchet_jit::{
     JitClifArtifact, JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     JitRuntimeSymbolAddressCandidate, JitValueAbi, classify_interp_thunk_body,
@@ -18,6 +19,9 @@ use ratchet_jit::{
     lower_string_length_inline_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalk;
+use ratchet_oracle::eval::tree_walk::{
+    MixedReadyCallActivation, MixedReadyCallHook, MixedReadyCallToken,
+};
 use ratchet_oracle::eval::{EvalEnv, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
 use ratchet_runtime_ffi::run_context_finalized_native_thunk_call;
 use ratchet_value::value::Value;
@@ -101,9 +105,12 @@ pub struct NixJitTier1Engine {
     tier2_fold_gen: RefCell<tier2_fold_gen::Tier2FoldGenState>,
     /// Tier-2 filter-seam bookkeeping (see [`tier2_filter`]).
     tier2_filter: RefCell<tier2_filter::Tier2FilterState>,
+    /// Prepared direct mixed ready-call executables (see [`mixed_superblock`]).
+    mixed_ready: RefCell<Vec<Rc<JitMixedSuperblockExecutable>>>,
 }
 
 mod dispatch_policy;
+mod mixed_superblock;
 mod stats_dump;
 mod tier2;
 mod tier2_chain;
@@ -245,6 +252,7 @@ impl NixJitTier1Engine {
             tier2_fold: RefCell::new(tier2_fold::Tier2FoldState::default()),
             tier2_fold_gen: RefCell::new(tier2_fold_gen::Tier2FoldGenState::default()),
             tier2_filter: RefCell::new(tier2_filter::Tier2FilterState::default()),
+            mixed_ready: RefCell::new(Vec::new()),
         })
     }
 
@@ -665,6 +673,37 @@ fn body_kind_signature(eval: &TreeWalk, body: EvalNodeRef) -> String {
 }
 
 impl Tier1Engine for NixJitTier1Engine {
+    fn prepare_mixed_ready_call(
+        &self,
+        plan: &ratchet_core::mixed_machine::MixedModulePlan,
+    ) -> Option<MixedReadyCallToken> {
+        #[cfg(feature = "candidate_c_value")]
+        {
+            self.prepare_mixed_ready_call_impl(plan)
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            let _ = plan;
+            None
+        }
+    }
+
+    fn run_mixed_ready_call(
+        &self,
+        token: MixedReadyCallToken,
+        activation: MixedReadyCallActivation<'_>,
+    ) -> MixedReadyCallHook {
+        #[cfg(feature = "candidate_c_value")]
+        {
+            self.run_mixed_ready_call_impl(token, activation)
+        }
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            let _ = (token, activation);
+            MixedReadyCallHook::Invalid
+        }
+    }
+
     fn on_serial_force(
         &self,
         eval: &mut TreeWalk,
