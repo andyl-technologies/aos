@@ -224,6 +224,9 @@ fn indented_strings_decode_escape_forms() {
     let ast = parse("''''$ ''' ''\\n ''\\r ''\\t ''\\x ''${ $${''");
     assert_eq!(string_bytes(&ast, ast.root), b"$ '' \n \r \t x ${ $${");
 
+    let ast = parse(r"''''\${PORT}''");
+    assert_eq!(string_bytes(&ast, ast.root), b"${PORT}");
+
     let ast = parse("''$$$${''");
     assert_eq!(string_bytes(&ast, ast.root), b"$$$${");
 

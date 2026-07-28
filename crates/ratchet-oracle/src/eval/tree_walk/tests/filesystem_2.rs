@@ -715,6 +715,7 @@ fn unsafe_discard_string_context_clears_exactly() {
 
 #[test]
 fn indented_string_interpolation_strips_literals_before_insertion() {
+    assert_eq!(eval_string_bytes(r"''''\${PORT}''"), b"${PORT}");
     assert_eq!(
         eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),
         b"X\ntext\n"

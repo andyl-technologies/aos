@@ -80,6 +80,14 @@ impl Lexer<'_> {
                 continue;
             }
 
+            if self.starts_with(b"''\\") {
+                self.cursor += 3;
+                if !self.is_eof() {
+                    self.cursor += 1;
+                }
+                continue;
+            }
+
             if self.starts_with(b"''") {
                 self.cursor += 2;
                 if !self.is_eof() {

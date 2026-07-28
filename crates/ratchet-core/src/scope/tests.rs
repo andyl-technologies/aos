@@ -607,6 +607,11 @@ fn nested_dynamic_let_attr_names_resolve_after_static_prefix() {
 }
 
 #[test]
+fn backslash_escaped_indented_string_interpolation_does_not_resolve_a_symbol() {
+    resolved(r"''''\${PORT}''");
+}
+
+#[test]
 fn formal_defaults_and_aliases_use_lambda_slots() {
     let ast = resolved("{ a, b ? a, ... }@args: args");
     let frame = ast

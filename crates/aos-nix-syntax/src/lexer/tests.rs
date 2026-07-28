@@ -599,6 +599,34 @@ fn indented_string_escape_prefix_does_not_close() {
 }
 
 #[test]
+fn keeps_backslash_escaped_indented_string_interpolation_as_text() {
+    let source = r"''''\${PORT}''";
+    let tokens = lex_tokens(source).expect("lexes");
+    let significant = tokens
+        .iter()
+        .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        significant
+            .iter()
+            .map(|token| token.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            TokenKind::IndStrStart,
+            TokenKind::IndStrPart,
+            TokenKind::IndStrEnd,
+        ]
+    );
+    assert_eq!(
+        Lexer::from_source_str(source)
+            .slice(*significant[1])
+            .expect("valid indented string span"),
+        br#"''\${PORT}"#
+    );
+}
+
+#[test]
 fn reports_unterminated_constructs() {
     assert_eq!(
         Lexer::from_source_str("/* nope")
