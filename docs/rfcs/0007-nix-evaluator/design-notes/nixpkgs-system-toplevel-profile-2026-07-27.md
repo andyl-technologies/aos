@@ -470,6 +470,21 @@ identity-insensitive Ready-before-allocation hits and 16 MiB of net pre-peak
 bytes; active retention additionally requires at least a 0.25-percent
 instruction reduction without a cycle or wall regression above one percent.
 
+The report-only allocation-time census then rejected that follow-up before an
+active implementation. It observed 502,439 eligible allocations across 16,841
+sites and 380,065 allocations with a Ready source already available. Only
+17,149 of those Ready results were identity-insensitive scalar, string, or path
+values; 362,916 were functions or composite values whose reuse could change
+Nix equality through pointer-identity shortcuts. The safe subset projects only
+1,646,304 replaceable bytes, while a direct four-byte IR-node site map plus
+eight-byte weak slots projects 11,444,408 bytes. The net projection is therefore
+approximately 9.8 MiB worse before charging implementation code or peak timing.
+Only 16,106 of 311,060 eventually forced eligible allocations produced a safe
+result, confirming that a different publication policy cannot recover the
+gate. The exact output remained `g3lcf1mzgvi8k1gpynbalc6gn130qaxp`; the
+measurement-only implementation was reverted so normal allocation and force
+paths retain no census checks.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self
