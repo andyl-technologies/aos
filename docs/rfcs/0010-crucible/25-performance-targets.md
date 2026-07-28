@@ -1119,6 +1119,23 @@ counts. The perf-bench result imports the Class-A admission and the state, log,
 worker, and coordinate-invariance evidence from `gate:replay-oracle` and
 `gate:divergence-bisect`.
 
+T-PERF-34 is completed by the fail-closed register in
+`crucible_harness::perf::admission`, enforced by
+`checks.crucible.phase7.gates.perfBench`. The register names every mechanism
+admitted by §25.12: scheduler host workers and device host-work overlap are Class
+B because their observable commit coordinates are fixed before dispatch;
+fingerprint digestion, translation prefetch, and checkpoint-segment replay are
+Class A because detached work is outside the observable boundary and results
+rejoin only at validated canonical coordinates. Every entry carries its concrete
+class argument and one or more names from a closed proving-gate catalog. The
+validator rejects missing required mechanisms, duplicate or empty identifiers,
+empty arguments, missing or duplicate gates, and unknown gate labels. The class
+is a two-variant enum, so a proposed third class cannot be represented as an
+admission. Negative perf-bench cases remove a required mechanism, clear its
+proving gates, and substitute a nonexistent gate; all three are blocking
+failures rather than tolerance-banded measurements. The perf result publishes
+the complete five-mechanism register and its reject-unclassified policy.
+
 - [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
@@ -1251,7 +1268,7 @@ constant-factor trim on a serial run.
   Assert equality with serial replay in state and canonical log, wire it into the
   divergence-bisect path, and assert the located divergence coordinate is
   independent of segment count. — satisfies [PERF-33]; spec §25.12.5.
-- [ ] **T-PERF-34** Maintain the host-parallelism admission register: each
+- [x] **T-PERF-34** Maintain the host-parallelism admission register: each
   admitted mechanism records its class (A or B), the argument for that class, and
   the gate that proves it; the perf-bench gate fails on an admitted mechanism
   with no recorded class or no proving gate. — satisfies [PERF-34]; spec

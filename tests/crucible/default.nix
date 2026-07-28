@@ -2757,8 +2757,9 @@ in rec {
             "T-PERF-31"
             "T-PERF-32"
             "T-PERF-33"
+            "T-PERF-34"
           ];
-          openTaskIds = ["T-PERF-34"];
+          openTaskIds = [];
           hostParallelism = phase7.qemuHostParallel;
           fingerprintOffload = phase7.fingerprintDigestOffload;
           deviceWorkOverlap = phase7.deviceHostWorkOverlap;

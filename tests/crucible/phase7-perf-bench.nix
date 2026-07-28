@@ -53,6 +53,7 @@
   # lands.
   perfModule = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-harness/src/perf.rs)
+    (builtins.readFile ../../crates/crucible-harness/src/perf/admission.rs)
     (builtins.readFile ../../crates/crucible-harness/src/perf/model.rs)
     (builtins.readFile ../../crates/crucible-harness/src/perf/sweeps.rs)
     (builtins.readFile ../../crates/crucible-harness/src/perf/report.rs)
@@ -178,6 +179,18 @@
       {
         label = "realized parallelism";
         needle = "pub fn realized_parallelism(";
+      }
+      {
+        label = "host-parallelism admission register";
+        needle = "pub fn canonical_host_parallelism_admissions(";
+      }
+      {
+        label = "closed proving-gate catalog";
+        needle = "const PROVING_GATES: [&str; 6]";
+      }
+      {
+        label = "fail-closed admission validator";
+        needle = "pub fn validate_host_parallelism_admissions(";
       }
       {
         label = "latency/parallelism sweep";
@@ -312,6 +325,18 @@
       {
         label = "host profile + content-address";
         needle = "gate_perf_bench_pins_host_profile_and_content_addresses_corpus";
+      }
+      {
+        label = "complete host-parallelism register";
+        needle = "gate_perf_bench_requires_complete_host_parallelism_admission_register";
+      }
+      {
+        label = "missing proving gate rejection";
+        needle = "gate_perf_bench_rejects_unproved_host_parallelism_admission";
+      }
+      {
+        label = "unknown proving gate rejection";
+        needle = "gate_perf_bench_rejects_unknown_proving_gate";
       }
     ]
     ++ forbiddenFor "crates/crucible-harness/tests/gate_perf_bench.rs" perfGate [
@@ -488,6 +513,11 @@ in
             fleet_throughput=near-linear-to-saturation
             cumulative_coverage=monotone-non-decreasing
             determinism_neutral=runs-after-determinism-gates
+            host_parallelism_admission_register=fail-closed
+            host_parallelism_classes=class-a-outside-observable-boundary,class-b-pinned-virtual-time-commit
+            admitted_host_parallel_mechanisms=scheduler-host-worker-pool,fingerprint-digest-offload,device-host-work-overlap,translation-prefetch,segment-parallel-replay
+            unclassified_host_parallelism_policy=reject
+            missing_or_unknown_proving_gate_policy=blocking-failure
             measurement_model=deterministic-cost-model-substrate-no-qemu
             real_process_discharge=checks.fleet.crucible-perf
             real_multi_vm_speedup=checks.fleet.crucible-perf [PERF-3]
