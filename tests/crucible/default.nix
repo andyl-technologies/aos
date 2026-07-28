@@ -2707,7 +2707,14 @@ in rec {
             "T-PERF-27"
             "T-PERF-28"
           ];
-          openTaskIds = [];
+          openTaskIds = [
+            "T-PERF-29"
+            "T-PERF-30"
+            "T-PERF-31"
+            "T-PERF-32"
+            "T-PERF-33"
+            "T-PERF-34"
+          ];
           dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate];
         };
         dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage];

@@ -733,7 +733,208 @@ differs structurally from every gate already in the catalog.
 
 ---
 
-## 25.12 Summary
+## 25.12 Realizing host parallelism: the admission rule and the work plan
+
+§25.2 says *where* multi-VM parallelism comes from. This section says *how any
+candidate speedup is admitted at all*, and enumerates the specific host-parallel
+mechanisms this file commits to building. It exists because "make it faster" is
+the one class of change most likely to quietly destroy the property the whole
+system is for, and because the design has a single checkable rule that keeps that
+from happening.
+
+### 25.12.1 The admission rule: two classes, no third
+
+Determinism requires the *guest-observable* transition sequence to be a pure
+function of `(image, cmdline, seed, I, Schedule)` ([DET-3], [INV-1]). It does
+**not** require the host to be single-threaded. A host-parallel mechanism is
+admissible if and only if it belongs to one of exactly two classes:
+
+- **Class A — outside the observable boundary.** The parallel work produces
+  nothing the guest, the execution fingerprint, or the canonical event log can
+  observe; or it produces a value that is a pure function of an input stream
+  already fixed before the worker starts. A digest over a captured byte range is
+  Class A: the bytes cannot change while the worker runs, so the digest cannot
+  depend on *when* it runs.
+- **Class B — commit pinned to virtual time.** The parallel work *is* observable,
+  but the virtual-time coordinate at which it becomes observable is computed
+  **before** the work is dispatched, and the requester stalls if it reaches that
+  coordinate first. The I/O sub-node contract is already Class B: a completion
+  lands at a time that is a pure function of `(request icount, modeled latency,
+  per-device RNG draw)` ([IO-3], [IO-21], [IO-24]), which leaves the host free to
+  do the underlying work whenever it likes.
+
+There is no third class. "Run it in parallel and it will probably come out the
+same" is not an admission argument, and neither is a measured bit-identical
+result on one host: Class A and Class B are arguments *about the mechanism*, and
+the gates then confirm the argument was true. MTTCG (`thread=multi`) is the
+canonical rejected proposal — it is neither Class A (guest memory ordering is
+observable) nor Class B (there is no pre-computed commit coordinate; the
+interleaving *is* the output), which is why it is forbidden outright ([NG-1],
+[DET-23]) rather than merely discouraged.
+
+### 25.12.2 Axis 1 — cross-node execution on host workers (the primary lever)
+
+This is the axis §25.2 already specifies, and the one with the most headroom: `P`
+in the cost model is realized here or not at all.
+
+The determinism-critical half is the run set and its ordering — the scheduler
+derives the set of nodes whose horizons do not constrain each other, and orders
+the resulting advance plans by a **completion-order key** computed from the plans
+themselves, so outcomes commit in an order that is a function of the scenario and
+never of which host worker finished first — RESOLVE and EMIT stay serialized
+through the single scheduler in the total order of §8.6 ([SCHED-40], [INV-3]).
+The half that turns that into wall-clock is the runtime: the selected nodes must
+actually be advanced on distinct host workers rather than one after another on
+the calling thread. Until they are, the run set is a plan that nothing executes
+in parallel, and `P ≈ 1` regardless of core count or lookahead.
+
+[PERF-29] closes that gap: dispatch the run set across a pool of
+`max_host_workers`, let each worker advance its own node to its own ceiling, and
+commit outcomes strictly in completion-order-key order. The worker count is a
+host resource, not scenario content — it MUST NOT enter any content hash and MUST
+NOT change `S`, `T`, or the canonical log, which is exactly the varied-core-count
+identity `gate:adversarial-determinism` already asserts ([HARN-11]).
+
+### 25.12.3 Axis 2 — fingerprint digestion off the vCPU thread
+
+The single-VM execution fingerprint samples at a fixed icount cadence, and each
+sample digests writable guest RAM together with serialized non-RAM device state
+([DET-3], 24 §4). At the specified cadence that is a full pass over writable
+guest RAM every few thousand retired instructions, taken synchronously on the
+vCPU thread: the guest does not advance while it runs. For any realistic guest
+RAM size this is one of the largest non-TCG costs in the system, and it is pure
+Class A work — the digest is a function of bytes, and the bytes at the sample
+coordinate are fixed by definition.
+
+[PERF-30] moves it off the vCPU thread: capture the sample under
+write-protection or dirty-page tracking so the guest resumes immediately, and
+digest the captured image on a worker. The result MUST be byte-identical to the
+synchronous digest. That identity is not a hoped-for outcome but the reason the
+offload is admissible at all — it is the same pure function, evaluated
+elsewhere — and `gate:single-vm-fingerprint` is its proof.
+
+### 25.12.4 Axis 3 — overlapping host device work behind a pinned completion
+
+The I/O contract fixes *when* a completion is delivered ([IO-3]); it does not
+require the host work behind that completion to happen at that moment, or
+serially. Every device-side cost that is not the completion itself — reading a
+backing extent, decompressing, checksumming, serializing a reply — MAY run on a
+host pool from the moment the request is observed, provided the completion still
+lands at the pre-computed icount and the requester stalls, without moving that
+icount, if it arrives first. This is Class B by construction.
+
+[PERF-31] makes the overlap explicit and measurable. The load-bearing assertion
+is not that the fast path is fast: it is that the *race outcome is not
+observable*. Whether the guest reaches the completion coordinate before the host
+finishes the work or after it, the delivered icount MUST be the same, and the
+same as a fully synchronous run.
+
+### 25.12.5 Axis 4 — translation-side and replay-side parallelism
+
+Two smaller levers, one of them subtle.
+
+**Ahead-of-time translation.** A translation block is a pure function of the
+guest bytes and the translation flags, so generating one on a helper thread is
+Class A *in its output*. It is not automatically Class A in its *effect*: block
+partitioning interacts with the icount budget and with where per-instruction
+plugin callbacks fall, so a change in which blocks exist can move an observable
+boundary even when every block is individually correct. This is the one axis
+where the class argument does not carry itself, so [PERF-32] requires
+fingerprint-neutrality to be *measured* — bit-identical fingerprints with
+translation prefetch on and off — before the mechanism may be enabled at all.
+
+**Segment-parallel replay.** Replay and divergence bisection walk serially from a
+checkpoint to a target coordinate, at a cost bounded by suffix length
+([PERF-18]). Because every checkpoint is a realizable start state, a suffix
+spanning `n` checkpoints is `n` independent replays that may run concurrently,
+one per worker, and be joined at the checkpoint coordinates. This accelerates the
+debug loop — `goto`, reverse-step, bisect ([DBG-14], [DBG-17]) — rather than the
+forward run, which is why [PERF-33] keeps it separate from Axis 1.
+
+### 25.12.6 What is deliberately not on the list
+
+Recorded so a later reader does not re-derive these as missed opportunities:
+
+- **Any parallel-vCPU execution inside one node.** Rejected by the admission rule
+  (§25.12.1) and by [NG-1]. The only known way to run guest vCPUs on multiple
+  host cores *and* keep the interleaving pure is deterministic multiprocessing —
+  quantum-scoped memory ownership, or speculative execution rolled back against a
+  canonical serial order — which needs conflict detection on every guest memory
+  access plus per-quantum rollback of CPU and memory state. That instrumentation
+  routinely costs more than the parallelism returns, and it would fight [G-11],
+  which makes the round-robin switch point a first-class explorable `Decision`
+  rather than an implementation detail to be optimized away.
+- **Sampling or thinning the fingerprint to go faster.** The fingerprint cadence
+  is determinism evidence, not telemetry. The answer to an expensive digest is
+  §25.12.3, not a coarser one.
+- **Widening lookahead beyond the modeled minimum link latency.** That is not a
+  speedup; it is a different scenario, and the floor is part of the scenario's
+  identity ([SCHED-20], [SCHED-21]).
+
+- **[PERF-29]** The QEMU-backed runtime MUST execute the scheduler's concurrent
+  run set on distinct host workers — each selected node advanced to its own
+  ceiling concurrently, bounded by `max_host_workers` — and MUST commit the
+  resulting outcomes in completion-order-key order, never in worker-completion
+  order ([SCHED-40], [INV-3]). The worker count MUST NOT appear in any content
+  hash and MUST NOT change `S`, `T`, or the canonical event log; a run at one
+  worker and a run at `max_host_workers` MUST be bit-identical. The perf-bench
+  gate MUST report realized `P` from this path, not from a modeled projection.
+  *Gate:* `gate:perf-bench`, `gate:adversarial-determinism`. *Spec:* §25.12.2;
+  routes [G-9], references [PERF-3], [PERF-5], [HARN-11].
+
+- **[PERF-30]** Execution-fingerprint digestion MUST NOT hold the vCPU thread for
+  the duration of the digest: the sample MUST be captured at its exact icount
+  coordinate and digested off the vCPU thread, with the guest free to advance
+  once the capture is consistent. The digest value MUST be byte-identical to the
+  synchronous computation for every sample, and the offload MUST NOT change the
+  sample cadence, the sampled coordinates, or the event boundaries that force a
+  sample. *Gate:* `gate:single-vm-fingerprint`, `gate:perf-bench`. *Spec:*
+  §25.12.3; routes [G-9], references [DET-3], [PERF-9].
+
+- **[PERF-31]** Device-side host work MAY be dispatched to a host pool when the
+  request is observed rather than when the completion is due, provided the
+  delivered completion icount remains the pure function of `(request icount,
+  modeled latency, per-device RNG draw)` required by [IO-3]. The requester MUST
+  stall if it reaches the completion coordinate before the host work finishes,
+  and that stall MUST NOT move the delivered icount: a run in which the guest
+  wins the race and a run in which the host wins it MUST deliver identical
+  icounts and identical canonical logs. *Gate:* `gate:e2e-determinism`,
+  `gate:perf-bench`. *Spec:* §25.12.4; routes [G-9], references [IO-3], [IO-21],
+  [IO-24].
+
+- **[PERF-32]** Ahead-of-time or concurrent translation-block generation MAY be
+  enabled only behind measured fingerprint-neutrality: the perf-bench gate MUST
+  demonstrate bit-identical execution fingerprints and canonical logs with the
+  mechanism on and off, over a corpus that includes translation-heavy boot, and
+  MUST treat any divergence as a blocking failure rather than a tolerance. Absent
+  that evidence the mechanism MUST stay off, because block partitioning can move
+  observable icount-budget and plugin-callback boundaries even when every block
+  is individually correct. *Gate:* `gate:perf-bench`,
+  `gate:single-vm-fingerprint`. *Spec:* §25.12.5; routes [G-9], references
+  [PERF-24].
+
+- **[PERF-33]** Replay to a target coordinate MUST be parallelizable across
+  checkpoint segments: a suffix spanning `n` checkpoints MUST be replayable as
+  `n` concurrent segment replays joined at the checkpoint coordinates, yielding
+  the same state and canonical log as the equivalent serial replay. The
+  divergence-bisect path MUST use it, and the segment count MUST NOT change the
+  located divergence coordinate. *Gate:* `gate:replay-oracle`,
+  `gate:divergence-bisect`. *Spec:* §25.12.5; routes [G-9], references [PERF-18],
+  [DBG-14], [DBG-17].
+
+- **[PERF-34]** Every host-parallel mechanism admitted under this file MUST be
+  recorded with its admission class — Class A (outside the observable boundary)
+  or Class B (commit pinned to a virtual-time coordinate computed before
+  dispatch) — and the gate that proves the class argument (§25.12.1). A proposed
+  speedup that fits neither class MUST be rejected regardless of measured
+  bit-identity on any particular host, and a mechanism whose class argument is
+  later falsified MUST be disabled rather than tolerance-banded. *Gate:*
+  `gate:perf-bench`, `gate:e2e-determinism`. *Spec:* §25.12.1; routes [G-9],
+  references [PERF-5], [PERF-24].
+
+---
+
+## 25.13 Summary
 
 ```text
 COST MODEL (25.1)
@@ -762,6 +963,15 @@ TENSIONS (25.10)
     granularity vs parallelism — REAL, but explicit + floored + correctness-neutral
     the design NEVER sacrifices exactness for speed; it trades PARALLELISM for tighter
     latency only when a scenario demands sub-ms links — and says so.
+
+HOST PARALLELISM (25.12)
+    admission rule: Class A (outside the observable boundary) or Class B (commit
+      pinned to a virtual-time coordinate computed BEFORE dispatch). No third class.
+    axis 1  run the scheduler's concurrent run set on real host workers  [PERF-29]
+    axis 2  fingerprint digestion off the vCPU thread (Class A)          [PERF-30]
+    axis 3  device host work overlapped behind a pinned completion (B)   [PERF-31]
+    axis 4  AoT translation (proof required) + segment-parallel replay   [PERF-32/33]
+    NOT on the list: parallel vCPUs in a node, thinner fingerprints, wider lookahead
 ```
 
 If the cost model is `busy / (TCG × parallelism) + amortized boot + small sync`,
@@ -919,3 +1129,46 @@ the fleet and phase-0 checks supply the live reference-host measurements.
   require an explicit recorded baseline event for a fresh campaign lineage,
   binding `gate:perf-bench` + `gate:campaign-continuity`. — satisfies [PERF-28];
   spec §25.5.4.
+
+The remaining tasks realize the host parallelism of §25.12. They are sequenced
+after the whole determinism stack, not merely after their own phase's gates:
+each one is a change to *when host work happens*, and the only thing that makes
+such a change safe is a determinism suite that already passes and can therefore
+falsify it ([PERF-24], [PERF-34]). T-PERF-29 is the primary lever — until the run
+set is executed on real workers, `P` is a projection and every other axis is a
+constant-factor trim on a serial run.
+
+- [ ] **T-PERF-29** Execute the scheduler's concurrent run set on a host worker
+  pool: advance each selected node to its own ceiling on its own worker, bounded
+  by `max_host_workers`, and commit outcomes strictly in completion-order-key
+  order. Assert worker count is absent from every content hash and that
+  `max_host_workers = 1` and `= N` are bit-identical in `S`, `T`, and the
+  canonical log; report realized `P` measured from this path. — satisfies
+  [PERF-29]; spec §25.12.2.
+- [ ] **T-PERF-30** Move execution-fingerprint digestion off the vCPU thread:
+  capture the sample at its exact icount coordinate under write-protection or
+  dirty-page tracking, resume the guest, and digest on a worker. Assert
+  byte-identical digests versus the synchronous path over the fingerprint corpus,
+  and unchanged cadence, coordinates, and forced-sample event boundaries. —
+  satisfies [PERF-30]; spec §25.12.3.
+- [ ] **T-PERF-31** Dispatch device-side host work at request-observation time
+  behind the pinned completion icount, with a requester stall that cannot move
+  the delivered coordinate. Assert identical completion icounts and canonical
+  logs across a forced guest-wins-the-race run, a forced host-wins-the-race run,
+  and a fully synchronous run. — satisfies [PERF-31]; spec §25.12.4.
+- [ ] **T-PERF-32** Add the translation-prefetch neutrality experiment: run the
+  perf corpus (including a translation-heavy cold boot) with concurrent
+  translation-block generation on and off, and require bit-identical fingerprints
+  and canonical logs as the precondition for enabling it; treat any divergence as
+  a blocking failure and keep the mechanism off by default until the evidence
+  exists. — satisfies [PERF-32]; spec §25.12.5.
+- [ ] **T-PERF-33** Implement segment-parallel replay: split a replay suffix at
+  checkpoint coordinates, replay the segments concurrently, and join them.
+  Assert equality with serial replay in state and canonical log, wire it into the
+  divergence-bisect path, and assert the located divergence coordinate is
+  independent of segment count. — satisfies [PERF-33]; spec §25.12.5.
+- [ ] **T-PERF-34** Maintain the host-parallelism admission register: each
+  admitted mechanism records its class (A or B), the argument for that class, and
+  the gate that proves it; the perf-bench gate fails on an admitted mechanism
+  with no recorded class or no proving gate. — satisfies [PERF-34]; spec
+  §25.12.1.
