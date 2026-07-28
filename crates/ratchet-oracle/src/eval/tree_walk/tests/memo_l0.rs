@@ -16,6 +16,24 @@ fn memo_options(min_cost: u32) -> TreeWalkOptions {
     options
 }
 
+/// Evaluates one boolean with capture-free Ready replay either enabled or off.
+fn eval_empty_ready_bool(source: &str, enabled: bool) -> (Result<bool, String>, (usize, u64)) {
+    let ir = lower(source);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        local_ready_enabled: enabled,
+        local_ready_empty_only: enabled,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let result = evaluator
+        .eval_root()
+        .map_err(|error| format!("{:?}", error.kind()))
+        .and_then(|value| value.as_bool().map_err(|error| error.to_string()));
+    (result, evaluator.test_empty_ready_cell_counts())
+}
+
 /// A lambda whose body re-allocates one content-identical closed subtree per
 /// call: every call after the first should replay from the memo.
 const DUPLICATED_SUBTREE: &str = r#"
@@ -144,6 +162,112 @@ fn empty_only_ready_hit_bypasses_recipe_and_durable_memo_work() {
     assert_eq!(evaluator.stats.memo_l0_hits(), 0);
     assert_eq!(evaluator.stats.memo_l0_misses(), 0);
     assert_eq!(evaluator.stats.memo_l0_admissions(), 0);
+}
+
+#[test]
+fn empty_only_ready_preserves_equality_for_non_reflexive_results() {
+    const CASES: &[(&str, &str, bool)] = &[
+        (
+            "lambda",
+            "let f = _: let value = if (10 + 20) == 30 then (x: x) else (x: x); \
+             in value; a = f 1; b = f 2; in a == b",
+            false,
+        ),
+        (
+            "primop",
+            "let f = _: let value = if (10 + 20) == 30 then builtins.length else builtins.head; \
+             in value; a = f 1; b = f 2; in a == b",
+            false,
+        ),
+        (
+            "nan",
+            r#"let f = _: let value =
+                ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308));
+              in value;
+              a = f 1;
+              b = f 2;
+              in a == b"#,
+            true,
+        ),
+        (
+            "list-with-lambda",
+            "let f = _: let value = if (10 + 20) == 30 then [ (x: x) ] else []; \
+             in value; a = f 1; b = f 2; in a == b",
+            false,
+        ),
+        (
+            "attrs-with-lambda",
+            "let f = _: let value = if (10 + 20) == 30 then { call = x: x; } else {}; \
+             in value; a = f 1; b = f 2; in a == b",
+            false,
+        ),
+    ];
+
+    for (label, source, should_replay) in CASES {
+        let (baseline, _) = eval_empty_ready_bool(source, false);
+        let (ready, (_, served_hits)) = eval_empty_ready_bool(source, true);
+        assert_eq!(ready, baseline, "{label}: direct comparison changed");
+        assert_eq!(
+            served_hits != 0,
+            *should_replay,
+            "{label}: unexpected direct Ready replay eligibility"
+        );
+    }
+}
+
+#[test]
+fn empty_only_ready_preserves_equality_after_seq_forcing_non_reflexive_results() {
+    const CASES: &[(&str, &str, bool)] = &[
+        (
+            "lambda",
+            "let f = _: let value = if (10 + 20) == 30 then (x: x) else (x: x); \
+             in value; a = f 1; b = f 2; \
+             in builtins.seq a (builtins.seq b (a == b))",
+            false,
+        ),
+        (
+            "primop",
+            "let f = _: let value = if (10 + 20) == 30 then builtins.length else builtins.head; \
+             in value; a = f 1; b = f 2; \
+             in builtins.seq a (builtins.seq b (a == b))",
+            false,
+        ),
+        (
+            "nan",
+            r#"let f = _: let value =
+                ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308));
+              in value;
+              a = f 1;
+              b = f 2;
+              in builtins.seq a (builtins.seq b (a == b))"#,
+            true,
+        ),
+        (
+            "list-with-lambda",
+            "let f = _: let value = if (10 + 20) == 30 then [ (x: x) ] else []; \
+             in value; a = f 1; b = f 2; \
+             in builtins.seq a (builtins.seq b (a == b))",
+            false,
+        ),
+        (
+            "attrs-with-lambda",
+            "let f = _: let value = if (10 + 20) == 30 then { call = x: x; } else {}; \
+             in value; a = f 1; b = f 2; \
+             in builtins.seq a (builtins.seq b (a == b))",
+            false,
+        ),
+    ];
+
+    for (label, source, should_replay) in CASES {
+        let (baseline, _) = eval_empty_ready_bool(source, false);
+        let (ready, (_, served_hits)) = eval_empty_ready_bool(source, true);
+        assert_eq!(ready, baseline, "{label}: seq-forced comparison changed");
+        assert_eq!(
+            served_hits != 0,
+            *should_replay,
+            "{label}: unexpected seq-forced Ready replay eligibility"
+        );
+    }
 }
 
 #[test]
