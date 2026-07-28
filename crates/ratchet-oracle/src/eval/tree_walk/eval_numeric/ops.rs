@@ -587,12 +587,14 @@ impl TreeWalk {
             Some(NativeContinuationEdge::EvalNode),
             |eval| eval.eval_node(lhs),
         )?;
+        let left = self.force_demanded_value(lhs, lhs_span, left)?;
         let rhs_span = self.node(rhs)?.span;
         let right = self.with_uncovered_native_continuation_marker(
             NativeContinuationKind::BinaryRhs,
             rhs,
             |eval| eval.eval_node(rhs),
         )?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let source_lhs_span = self.node(source_lhs)?.span;
         let source_rhs_span = self.node(source_rhs)?.span;
         let value = self.eval_comparison_values(

@@ -300,6 +300,34 @@ fn comparisons_force_operands_before_type_checks() {
 }
 
 #[test]
+fn comparisons_force_annotated_fold_results() {
+    // `lib/lists.nix`'s `findFirstIndex` compares a let-bound strict-fold
+    // result. Analysis can preserve that result behind a thunk even though
+    // direct scalar operands normally arrive in WHNF.
+    let source = r#"let
+      pred = x: x == 2;
+      resultIndex = builtins.foldl' (
+        index: el:
+        if index < 0 then
+          if pred el then -index - 1 else index - 1
+        else
+          index
+      ) (-1) [ 1 2 3 ];
+    in
+    if resultIndex < 0 then null else resultIndex"#;
+    let mut ir = lower(source);
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(
+        eval_whnf_owned(&ir)
+            .expect("annotated fold result compares")
+            .value()
+            .as_int(),
+        Ok(1),
+    );
+}
+
+#[test]
 fn boolean_binary_operators_short_circuit() {
     assert_eq!(eval("true && true").as_bool(), Ok(true));
     assert_eq!(eval("true && false").as_bool(), Ok(false));
