@@ -9,7 +9,11 @@ use super::*;
 use crate::cache::hashing::CacheDigestHasher;
 
 impl TreeWalk {
-    pub(super) fn subtree_is_speculable(ir: &Ir, symbols: &SymbolTable, root: IrId) -> bool {
+    pub(in crate::eval::tree_walk::eval_core) fn subtree_is_speculable(
+        ir: &Ir,
+        symbols: &SymbolTable,
+        root: IrId,
+    ) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {

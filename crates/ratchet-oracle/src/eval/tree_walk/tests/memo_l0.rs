@@ -50,6 +50,80 @@ fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {
 }
 
 #[test]
+fn local_ready_directory_serves_a_completed_exact_recipe() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        local_ready_enabled: true,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator.eval_root().expect("expression evaluates");
+    let (entries, served_hits) = evaluator.test_ready_cell_directory_counts();
+
+    assert_eq!(value.as_int(), Ok(90));
+    assert!(entries >= 1, "successful normal forces publish Ready cells");
+    assert!(
+        served_hits >= 1,
+        "a later exact recipe should reuse a still-Ready source cell"
+    );
+}
+
+#[test]
+fn local_ready_census_declines_trace_revalidated_impure_nodes() {
+    const READS_ENV: &str = r#"
+        let f = n:
+          let big = builtins.getEnv "LOCAL_READY_TEST_VAR";
+          in big + (if n > 0 then "" else "!");
+        in (f 1) + (f 2)
+    "#;
+    let ir = lower(READS_ENV);
+    let mut options = TreeWalkOptions::default();
+    options.set_env_var(b"LOCAL_READY_TEST_VAR".to_vec(), b"ready-value".to_vec());
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        stats_enabled: true,
+        local_ready_enabled: true,
+        ..MemoOptions::default()
+    });
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("expression evaluates");
+
+    assert!(
+        outcome
+            .stats
+            .memo_economics()
+            .ready_cell_effect_or_unsafe_declines()
+            >= 1,
+        "getEnv must not enter a directory without observation revalidation"
+    );
+}
+
+#[test]
+fn local_ready_directory_fails_closed_when_gc_is_enabled() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        local_ready_enabled: true,
+        ..MemoOptions::default()
+    });
+    let evaluator = TreeWalk::with_options(&ir, options);
+
+    assert_eq!(
+        evaluator.test_ready_cell_directory_counts(),
+        (0, 0),
+        "weak thunk identities must not survive in a reclaiming heap"
+    );
+}
+
+#[test]
 fn l0_stores_immediate_results_as_direct_values() {
     let ir = lower(DUPLICATED_SUBTREE);
     let mut evaluator = TreeWalk::with_options_and_source(

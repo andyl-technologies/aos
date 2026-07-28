@@ -654,6 +654,10 @@ pub struct TreeWalk {
     // Worker-local raw-identity Ready-cell census under `AOS_NIX_MEMO_STATS`.
     // This shadow directory never serves hits or retains evaluator values.
     ready_cell_census: Option<memo::ReadyCellCensus>,
+    // Opt-in one-way Ready-cell directory. Entries are weak thunk identities,
+    // so construction is restricted to the monotonic serial GC-off heap.
+    // Every hit rechecks that the source cell still has a cached value.
+    ready_cell_directory: Option<memo::ReadyCellDirectory>,
     // Per-def-site static admission decisions for the content memo, computed
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the

@@ -54,6 +54,8 @@ pub struct MemoOptions {
     pub check_l3: bool,
     /// Enables potential-hit census and stage timing (`AOS_NIX_MEMO_STATS`).
     pub stats_enabled: bool,
+    /// Enables the GC-off worker-local Ready-cell directory (`AOS_NIX_LOCAL_READY`).
+    pub local_ready_enabled: bool,
 }
 
 impl Default for MemoOptions {
@@ -72,6 +74,7 @@ impl Default for MemoOptions {
             check_l2: false,
             check_l3: false,
             stats_enabled: false,
+            local_ready_enabled: false,
         }
     }
 }

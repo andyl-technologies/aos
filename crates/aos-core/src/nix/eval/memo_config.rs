@@ -40,6 +40,8 @@ pub struct NativeMemoSettings {
     pub check_l3: bool,
     /// Whether potential-hit census and stage timing are enabled.
     pub stats_enabled: bool,
+    /// Whether the worker-local one-way Ready-cell directory is enabled.
+    pub local_ready_enabled: bool,
 }
 
 impl Default for NativeMemoSettings {
@@ -58,6 +60,7 @@ impl Default for NativeMemoSettings {
             check_l2: false,
             check_l3: false,
             stats_enabled: false,
+            local_ready_enabled: false,
         }
     }
 }
@@ -91,6 +94,7 @@ pub(super) struct EnvMemoKnobs {
     pub(super) promote_hits: Option<String>,
     pub(super) check: Option<String>,
     pub(super) stats: Option<String>,
+    pub(super) local_ready: Option<String>,
     pub(super) disk: Option<String>,
     pub(super) net: Option<String>,
     pub(super) net_mode: Option<String>,
@@ -111,6 +115,7 @@ impl EnvMemoKnobs {
             promote_hits: std::env::var("AOS_NIX_MEMO_PROMOTE_HITS").ok(),
             check: std::env::var("AOS_NIX_MEMO_CHECK").ok(),
             stats: std::env::var("AOS_NIX_MEMO_STATS").ok(),
+            local_ready: std::env::var("AOS_NIX_LOCAL_READY").ok(),
             disk: std::env::var("AOS_NIX_MEMO_DISK").ok(),
             net: std::env::var("AOS_NIX_MEMO_NET").ok(),
             net_mode: std::env::var("AOS_NIX_MEMO_NET_MODE").ok(),

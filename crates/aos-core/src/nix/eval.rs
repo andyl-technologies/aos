@@ -1787,6 +1787,15 @@ impl NixEvalConfig {
                 );
             }
         }
+        if let Some(value) = knobs.local_ready.as_deref() {
+            memo.local_ready_enabled = env_flag_is_truthy(value);
+            if !memo.local_ready_enabled && !value.trim().is_empty() && !env_flag_is_falsy(value) {
+                tracing::warn!(
+                    value,
+                    "invalid AOS_NIX_LOCAL_READY value; disabling the Ready-cell directory"
+                );
+            }
+        }
         if let Some(value) = knobs.check.as_deref() {
             memo.check_l0 = false;
             memo.check_l1 = false;
@@ -3419,6 +3428,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         check_l2: memo.check_l2,
         check_l3: memo.check_l3,
         stats_enabled: memo.stats_enabled,
+        local_ready_enabled: memo.local_ready_enabled,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     if config.native_gc_sweep() {
@@ -3813,6 +3823,10 @@ mod tests {
     #[test]
     fn eval_config_parses_memo_env_knobs() {
         let mut config = NixEvalConfig::new();
+        assert!(
+            !config.native_memo().local_ready_enabled,
+            "the active Ready-cell directory must remain opt-in"
+        );
         config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
             master: Some("1".to_owned()),
             l0: Some("off".to_owned()),
@@ -3823,6 +3837,7 @@ mod tests {
             promote_hits: Some("3".to_owned()),
             check: Some("l0,l1".to_owned()),
             stats: Some("yes".to_owned()),
+            local_ready: Some("1".to_owned()),
             l2: Some("off".to_owned()),
             disk: Some("hdd:/bulk/cache".to_owned()),
             net: Some("http://memo.example/base/".to_owned()),
@@ -3843,6 +3858,7 @@ mod tests {
         assert!(!memo.check_l2);
         assert!(!memo.check_l3);
         assert!(memo.stats_enabled);
+        assert!(memo.local_ready_enabled);
         assert_eq!(config.native_memo_disk_spec(), Some("hdd:/bulk/cache"));
         let net = config.native_memo_net().expect("net settings parse");
         assert_eq!(net.endpoint, "http://memo.example/base");

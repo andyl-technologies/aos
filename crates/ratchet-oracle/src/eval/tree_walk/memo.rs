@@ -350,6 +350,35 @@ impl MemoEconomicsCensus {
     }
 }
 
+/// Raw captured-slot identities retained inline for the common small recipes.
+///
+/// The floor-zero nixpkgs census averages approximately one slot per recipe.
+/// Keeping zero, one, and two identities inline avoids a heap allocation on
+/// nearly every active-directory probe while preserving full equality.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum ReadyCellCaptures {
+    /// The expression has no captured slots.
+    Empty,
+    /// The expression directly captures one slot.
+    One(u64),
+    /// The expression directly captures two slots.
+    Two([u64; 2]),
+    /// The expression directly captures more than two slots.
+    Many(Box<[u64]>),
+}
+
+impl ReadyCellCaptures {
+    /// Returns the number of captured identities.
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::One(_) => 1,
+            Self::Two(_) => 2,
+            Self::Many(captures) => captures.len(),
+        }
+    }
+}
+
 /// An exact worker-local recipe for a potentially reusable Ready cell.
 ///
 /// Captures contain raw relocation-sensitive value words for only the lexical
@@ -360,12 +389,12 @@ impl MemoEconomicsCensus {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ReadyCellRecipe {
     def_site: EvalNodeRef,
-    captures: Box<[u64]>,
+    captures: ReadyCellCaptures,
 }
 
 impl ReadyCellRecipe {
     /// Creates one exact recipe in canonical captured-slot order.
-    pub(super) fn new(def_site: EvalNodeRef, captures: Box<[u64]>) -> Self {
+    pub(super) fn new(def_site: EvalNodeRef, captures: ReadyCellCaptures) -> Self {
         Self { def_site, captures }
     }
 
@@ -382,6 +411,91 @@ pub(super) struct ReadyCellCandidate {
     pub(super) recipe: ReadyCellRecipe,
     /// Static cost units avoided by a hypothetical hit.
     pub(super) static_cost_units: u32,
+}
+
+/// One weak, worker-local Ready-cell directory entry.
+///
+/// `source_thunk` is intentionally not a GC root. The active directory exists
+/// only for a monotonic GC-off worker heap, and every probe rechecks the source
+/// cell for a published cached value before serving it.
+#[derive(Clone, Debug)]
+struct ReadyCellDirectoryEntry {
+    captures: ReadyCellCaptures,
+    source_thunk: Value,
+}
+
+/// Bounded one-way Ready-cell directory keyed by exact module-qualified def-site.
+///
+/// One entry is retained per [`EvalNodeRef`]. Publishing a second recipe for
+/// the same def-site replaces the first. The directory never represents
+/// Pending or Blackhole state: only a source thunk whose normal force completed
+/// successfully may be inserted, and callers must recheck its cell on probe.
+#[derive(Debug, Default)]
+pub(super) struct ReadyCellDirectory {
+    entries: HashMap<EvalNodeRef, ReadyCellDirectoryEntry>,
+    static_costs: HashMap<EvalNodeRef, Option<u32>>,
+    served_hits: u64,
+}
+
+impl ReadyCellDirectory {
+    /// Returns a cached strictly speculable static cost classification.
+    pub(super) fn static_cost(&self, def_site: EvalNodeRef) -> Option<Option<u32>> {
+        self.static_costs.get(&def_site).copied()
+    }
+
+    /// Records a strictly speculable static cost classification.
+    pub(super) fn remember_static_cost(&mut self, def_site: EvalNodeRef, cost: Option<u32>) {
+        self.static_costs.insert(def_site, cost);
+    }
+
+    /// Returns the weak source thunk when the resident recipe matches exactly.
+    pub(super) fn probe_source(&self, recipe: &ReadyCellRecipe) -> Option<Value> {
+        let entry = self.entries.get(&recipe.def_site)?;
+        (entry.captures == recipe.captures).then_some(entry.source_thunk)
+    }
+
+    /// Resolves a matching weak source through the caller's Ready-cell check.
+    pub(super) fn probe_ready(
+        &self,
+        recipe: &ReadyCellRecipe,
+        ready_value: impl FnOnce(Value) -> Option<Value>,
+    ) -> Option<Value> {
+        ready_value(self.probe_source(recipe)?)
+    }
+
+    /// Records one hit that passed the source cell's Ready check.
+    pub(super) fn note_served_hit(&mut self) {
+        self.served_hits = self.served_hits.saturating_add(1);
+    }
+
+    /// Publishes a successfully forced source thunk under its exact recipe.
+    pub(super) fn publish(&mut self, recipe: &ReadyCellRecipe, source_thunk: Value) {
+        self.entries.insert(
+            recipe.def_site,
+            ReadyCellDirectoryEntry {
+                captures: recipe.captures.clone(),
+                source_thunk,
+            },
+        );
+    }
+
+    /// Clears all weak identities before their backing heap can be invalidated.
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+        self.static_costs.clear();
+    }
+
+    /// Returns the number of resident def-sites.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns the number of source cells served after a Ready check.
+    #[cfg(test)]
+    pub(super) const fn served_hits(&self) -> u64 {
+        self.served_hits
+    }
 }
 
 /// Lifecycle state for one exact worker-local Ready-cell recipe.
@@ -701,12 +815,18 @@ mod tests {
     }
 
     fn ready_recipe(node: u32, captures: &[u64]) -> ReadyCellRecipe {
+        let captures = match captures {
+            [] => ReadyCellCaptures::Empty,
+            [capture] => ReadyCellCaptures::One(*capture),
+            [first, second] => ReadyCellCaptures::Two([*first, *second]),
+            captures => ReadyCellCaptures::Many(captures.to_vec().into_boxed_slice()),
+        };
         ReadyCellRecipe::new(
             EvalNodeRef::new(
                 crate::eval::EvalModuleId::ROOT,
                 crate::compile::IrId::new(node),
             ),
-            captures.to_vec().into_boxed_slice(),
+            captures,
         )
     }
 
@@ -765,6 +885,43 @@ mod tests {
         assert!(!retried.pending_overlap);
         assert!(!retried.one_way_hit);
         assert!(!retried.two_way_hit);
+    }
+
+    #[test]
+    fn ready_cell_directory_hits_only_an_exact_resident_recipe() {
+        let mut directory = ReadyCellDirectory::default();
+        let resident = ready_recipe(7, &[11]);
+        let other_capture = ready_recipe(7, &[13]);
+        let other_def_site = ready_recipe(8, &[11]);
+        let source = Value::int(42);
+
+        assert!(directory.probe_source(&resident).is_none());
+        directory.publish(&resident, source);
+        assert_eq!(
+            directory
+                .probe_ready(&resident, |source| Some(source))
+                .map(Value::relocation_sensitive_identity_bits),
+            Some(source.relocation_sensitive_identity_bits())
+        );
+        assert!(
+            directory.probe_ready(&resident, |_source| None).is_none(),
+            "a matching Pending source must not be served"
+        );
+        assert!(directory.probe_source(&other_capture).is_none());
+        assert!(directory.probe_source(&other_def_site).is_none());
+    }
+
+    #[test]
+    fn ready_cell_directory_clear_invalidates_every_weak_source() {
+        let mut directory = ReadyCellDirectory::default();
+        let recipe = ready_recipe(7, &[11]);
+        directory.publish(&recipe, Value::int(42));
+        assert_eq!(directory.len(), 1);
+
+        directory.clear();
+
+        assert_eq!(directory.len(), 0);
+        assert!(directory.probe_source(&recipe).is_none());
     }
 
     #[test]

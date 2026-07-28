@@ -45,7 +45,7 @@ use super::*;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
 use crate::eval::tree_walk::memo::{
     MemoDefSiteDecision, MemoDefSiteState, MemoDirectValue, MemoEntry, MemoL0Entry,
-    ReadyCellCandidate, ReadyCellRecipe, SharedMemoTable,
+    ReadyCellCandidate, ReadyCellCaptures, ReadyCellRecipe, SharedMemoTable,
 };
 
 /// Consecutive per-force derivation declines before a def-site is gated.
@@ -138,12 +138,27 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let tiers_active = self.memo_l0.is_some() || self.shared_memo_table().is_some();
         let stats_enabled = self.options.memo_options().stats_enabled;
-        if !tiers_active && !stats_enabled {
+        let local_ready_active = self.ready_cell_directory.is_some();
+        if !tiers_active && !stats_enabled && !local_ready_active {
             return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         let ready_cell_candidate = self.ready_cell_candidate_for_thunk(thunk);
         if let Some(candidate) = ready_cell_candidate.as_ref() {
             self.observe_ready_cell_candidate(candidate);
+        }
+        if let Some(candidate) = ready_cell_candidate.as_ref()
+            && let Some(value) = self.probe_ready_cell_directory(candidate)
+        {
+            return match self.finish_forced_value(id, span, source_thunk, guard, value) {
+                Ok(value) => {
+                    self.mark_ready_cell_candidate_ready(Some(candidate));
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.mark_ready_cell_candidate_failed(Some(candidate));
+                    Err(error)
+                }
+            };
         }
         let key_started = stats_enabled.then(Instant::now);
         let candidate = self.memo_candidate_for_thunk(thunk);
@@ -152,6 +167,7 @@ impl TreeWalk {
             return match self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard) {
                 Ok(value) => {
                     self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
+                    self.publish_ready_cell_candidate(ready_cell_candidate.as_ref(), source_thunk);
                     Ok(value)
                 }
                 Err(error) => {
@@ -166,6 +182,7 @@ impl TreeWalk {
                 Ok(value) => {
                     self.mark_memo_recipe_ready(&candidate);
                     self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
+                    self.publish_ready_cell_candidate(ready_cell_candidate.as_ref(), source_thunk);
                     Ok(value)
                 }
                 Err(error) => {
@@ -217,6 +234,7 @@ impl TreeWalk {
             self.mark_memo_recipe_ready(&candidate);
         }
         self.mark_ready_cell_candidate_ready(ready_cell_candidate.as_ref());
+        self.publish_ready_cell_candidate(ready_cell_candidate.as_ref(), source_thunk);
         let record_started = stats_enabled.then(Instant::now);
         self.memo_admit(&candidate, value, cursor);
         self.record_memo_record_timing(record_started);
@@ -233,7 +251,7 @@ impl TreeWalk {
         let EvalThunkKind::Node { body, env, .. } = thunk.kind() else {
             return None;
         };
-        if self.ready_cell_census.is_none() {
+        if self.ready_cell_census.is_none() && self.ready_cell_directory.is_none() {
             return None;
         }
         if !thunk.with_scope_env()?.scopes().is_empty()
@@ -250,13 +268,24 @@ impl TreeWalk {
         let cached_cost = self
             .ready_cell_census
             .as_ref()
-            .and_then(|census| census.static_cost(*body));
+            .and_then(|census| census.static_cost(*body))
+            .or_else(|| {
+                self.ready_cell_directory
+                    .as_ref()
+                    .and_then(|directory| directory.static_cost(*body))
+            });
         let static_cost_units = match cached_cost {
             Some(cost) => cost,
             None => {
-                let cost = self.memo_static_cost(*body);
+                let module = self.modules.get(body.module().index())?;
+                let cost = Self::subtree_is_speculable(&module.ir, &self.symbols, body.id())
+                    .then(|| self.memo_static_cost(*body))
+                    .flatten();
                 if let Some(census) = self.ready_cell_census.as_mut() {
                     census.remember_static_cost(*body, cost);
+                }
+                if let Some(directory) = self.ready_cell_directory.as_mut() {
+                    directory.remember_static_cost(*body, cost);
                 }
                 cost
             }
@@ -280,24 +309,90 @@ impl TreeWalk {
             let module = self.modules.get(body.module().index())?;
             Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())?
         };
-        let mut captures = Vec::new();
-        captures.try_reserve_exact(dependencies.len()).ok()?;
-        for dependency in dependencies {
+        if dependencies
+            .iter()
+            .any(|dependency| !matches!(dependency, CapturedFreeVariableDependency::Slot { .. }))
+        {
+            self.stats.memo_economics.ready_cell_non_slot_declines = self
+                .stats
+                .memo_economics
+                .ready_cell_non_slot_declines
+                .saturating_add(1);
+            return None;
+        }
+        let capture_identity = |dependency: &CapturedFreeVariableDependency| {
             let CapturedFreeVariableDependency::Slot { frame_index, slot } = dependency else {
-                self.stats.memo_economics.ready_cell_non_slot_declines = self
-                    .stats
-                    .memo_economics
-                    .ready_cell_non_slot_declines
-                    .saturating_add(1);
                 return None;
             };
-            let value = self.env_ref_value_at_index(env, frame_index, slot)?;
-            captures.push(value.relocation_sensitive_identity_bits());
-        }
+            self.env_ref_value_at_index(env, *frame_index, *slot)
+                .map(Value::relocation_sensitive_identity_bits)
+        };
+        let captures = match dependencies.len() {
+            0 => ReadyCellCaptures::Empty,
+            1 => ReadyCellCaptures::One(capture_identity(dependencies.iter().next()?)?),
+            2 => {
+                let mut dependencies = dependencies.iter();
+                ReadyCellCaptures::Two([
+                    capture_identity(dependencies.next()?)?,
+                    capture_identity(dependencies.next()?)?,
+                ])
+            }
+            _ => {
+                let mut captures = Vec::new();
+                captures.try_reserve_exact(dependencies.len()).ok()?;
+                for dependency in &dependencies {
+                    captures.push(capture_identity(dependency)?);
+                }
+                ReadyCellCaptures::Many(captures.into_boxed_slice())
+            }
+        };
         Some(ReadyCellCandidate {
-            recipe: ReadyCellRecipe::new(*body, captures.into_boxed_slice()),
+            recipe: ReadyCellRecipe::new(*body, captures),
             static_cost_units,
         })
+    }
+
+    /// Serves an exact local recipe only from a still-Ready source thunk.
+    fn probe_ready_cell_directory(&mut self, candidate: &ReadyCellCandidate) -> Option<Value> {
+        let value =
+            self.ready_cell_directory
+                .as_ref()?
+                .probe_ready(&candidate.recipe, |source| {
+                    self.heap
+                        .get_thunk(source)
+                        .ok()?
+                        .cell()
+                        .cached_value()
+                        .ok()?
+                })?;
+        if let Some(directory) = self.ready_cell_directory.as_mut() {
+            directory.note_served_hit();
+        }
+        Some(value)
+    }
+
+    /// Publishes one source only after its normal force installed a cached value.
+    fn publish_ready_cell_candidate(
+        &mut self,
+        candidate: Option<&ReadyCellCandidate>,
+        source_thunk: Value,
+    ) {
+        let Some(candidate) = candidate else {
+            return;
+        };
+        let source_is_ready = self
+            .heap
+            .get_thunk(source_thunk)
+            .ok()
+            .and_then(|thunk| thunk.cell().cached_value().ok())
+            .flatten()
+            .is_some();
+        if !source_is_ready {
+            return;
+        }
+        if let Some(directory) = self.ready_cell_directory.as_mut() {
+            directory.publish(&candidate.recipe, source_thunk);
+        }
     }
 
     /// Records one exact recipe observation and bounded-directory projections.
@@ -1163,6 +1258,16 @@ impl TreeWalk {
         self.memo_l0.as_ref().map_or((0, 0), |table| {
             (table.direct_entry_count(), table.payload_entry_count())
         })
+    }
+
+    /// Returns resident entries and served hits in the local Ready directory.
+    #[cfg(test)]
+    pub(crate) fn test_ready_cell_directory_counts(&self) -> (usize, u64) {
+        self.ready_cell_directory
+            .as_ref()
+            .map_or((0, 0), |directory| {
+                (directory.len(), directory.served_hits())
+            })
     }
 
     /// Poisons a resident L0 entry's payload under `key`, for CHECK tests.
