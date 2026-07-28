@@ -428,6 +428,32 @@ impl TreeWalk {
             self.stats.binding_assembly_elisions.saturating_add(1);
     }
 
+    /// Records one demand-position local-variable alias retained solely for
+    /// active force-cache observation.
+    pub(super) fn increment_force_cache_suppressed_local_var_alias_thunks(&mut self) {
+        self.stats.force_cache_suppressed_lexical_alias_thunks = self
+            .stats
+            .force_cache_suppressed_lexical_alias_thunks
+            .saturating_add(1);
+        self.stats.force_cache_suppressed_local_var_alias_thunks = self
+            .stats
+            .force_cache_suppressed_local_var_alias_thunks
+            .saturating_add(1);
+    }
+
+    /// Records one demand-position upvalue alias retained solely for active
+    /// force-cache observation.
+    pub(super) fn increment_force_cache_suppressed_upval_var_alias_thunks(&mut self) {
+        self.stats.force_cache_suppressed_lexical_alias_thunks = self
+            .stats
+            .force_cache_suppressed_lexical_alias_thunks
+            .saturating_add(1);
+        self.stats.force_cache_suppressed_upval_var_alias_thunks = self
+            .stats
+            .force_cache_suppressed_upval_var_alias_thunks
+            .saturating_add(1);
+    }
+
     pub(super) fn increment_thunks_forced(&mut self) {
         self.stats.thunks_forced = self.stats.thunks_forced.saturating_add(1);
     }

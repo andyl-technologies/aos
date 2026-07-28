@@ -477,6 +477,73 @@ fn demand_position_lexical_alias_reuses_the_referenced_thunk() {
 }
 
 #[test]
+fn force_cache_alias_census_splits_local_and_upvalue_opportunities() {
+    fn run(source: &str) -> EvalStats {
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_eval_stats_dump(true);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.force_cache_active = true;
+        evaluator
+            .eval_root()
+            .expect("alias census expression evaluates");
+        evaluator.stats_snapshot()
+    }
+
+    let local = run("let x = x; in [ x ]");
+    assert_eq!(local.force_cache_suppressed_lexical_alias_thunks(), 1);
+    assert_eq!(local.force_cache_suppressed_local_var_alias_thunks(), 1);
+    assert_eq!(local.force_cache_suppressed_upval_var_alias_thunks(), 0);
+    assert_eq!(local.thunks_elided(), 0);
+
+    let upval = run("(x: (y: [ x ]) 2) 1");
+    assert_eq!(upval.force_cache_suppressed_lexical_alias_thunks(), 1);
+    assert_eq!(upval.force_cache_suppressed_local_var_alias_thunks(), 0);
+    assert_eq!(upval.force_cache_suppressed_upval_var_alias_thunks(), 1);
+    assert_eq!(
+        upval.force_cache_suppressed_lexical_alias_thunks(),
+        upval.force_cache_suppressed_local_var_alias_thunks()
+            + upval.force_cache_suppressed_upval_var_alias_thunks()
+    );
+}
+
+#[test]
+fn force_cache_alias_census_requires_every_non_cache_elision_gate() {
+    fn run(source: &str, stats_enabled: bool, max_call_depth: usize) -> EvalStats {
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::with_max_call_depth(max_call_depth);
+        options.set_eval_stats_dump(stats_enabled);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.force_cache_active = true;
+        evaluator
+            .eval_root()
+            .expect("alias census gate expression evaluates");
+        evaluator.stats_snapshot()
+    }
+
+    let stats_disabled = run("let x = x; in [ x ]", false, DEFAULT_MAX_CALL_DEPTH);
+    assert_eq!(
+        stats_disabled.force_cache_suppressed_lexical_alias_thunks(),
+        0
+    );
+
+    let unsupported_capture = run("let x = x; in [ x ]", true, usize::from(u16::MAX) + 1);
+    assert_eq!(
+        unsupported_capture.force_cache_suppressed_lexical_alias_thunks(),
+        0
+    );
+
+    let binding_assembly = run("let x = 1; y = x; in y", true, DEFAULT_MAX_CALL_DEPTH);
+    assert_eq!(
+        binding_assembly.force_cache_suppressed_lexical_alias_thunks(),
+        0
+    );
+
+    let non_alias = run("[ (1 + 2) ]", true, DEFAULT_MAX_CALL_DEPTH);
+    assert_eq!(non_alias.force_cache_suppressed_lexical_alias_thunks(), 0);
+}
+
+#[test]
 fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
     let mut ir = lower(r#"builtins.foldl' (acc: x: acc + x) (builtins.throw "initial") []"#);
     crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");

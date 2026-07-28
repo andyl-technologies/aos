@@ -279,6 +279,25 @@ impl TreeWalk {
                 return value;
             }
         }
+        if self.options.eval_stats_dump()
+            && context == TreeWalkThunkAllocationContext::DemandPosition
+            && self.force_cache_active
+            && EvalFlatCapture::supports_frame_count(self.options.max_call_depth())
+        {
+            // This is a strictly observational census of the optimization
+            // opportunity suppressed by force-cache semantics. Classification
+            // uses only lowered node metadata: it must not read the referenced
+            // slot, force a value, allocate, or otherwise perturb evaluation.
+            match body_node.kind {
+                IrKind::LocalVar => {
+                    self.increment_force_cache_suppressed_local_var_alias_thunks();
+                }
+                IrKind::UpvalVar => {
+                    self.increment_force_cache_suppressed_upval_var_alias_thunks();
+                }
+                _ => {}
+            }
+        }
         match plan {
             TreeWalkThunkAllocationPlan::UpdateSlot(update) => {
                 self.alloc_update_thunk_from_plan(update.thunk(), update.body(), node.span)

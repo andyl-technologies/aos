@@ -8003,3 +8003,27 @@ falsification evidence, but they are not admissible lean controls. Every future
 control records the exact Cargo feature fingerprint, and runtime-off probe
 comparisons use the same feature binary rather than comparing a diagnostic
 binary with the lean composition.
+
+### Force-cache-suppressed lexical-alias census
+
+The existing allocation census classifies lexical aliases by body shape and
+assembly context, but does not isolate the demand-position aliases retained
+solely because force-cache observation is active. `eval_thunk_alloc` now
+records that exact counterfactual under `AOS_NIX_EVAL_STATS=1`, split into
+`LocalVar` and `UpvalVar` bodies. The census reuses every production elision
+gate except `!force_cache_active`: demand position, supported flat capture,
+and a lexical-variable body. It inspects lowered node metadata only and does
+not read a slot, force a value, allocate, or change cache/evaluation behavior.
+All three counters remain zero when stats collection is disabled.
+
+Next profile checklist:
+
+- run the primary toplevel with force-cache observation and
+  `AOS_NIX_EVAL_STATS=1`;
+- record
+  `force_cache_suppressed_lexical_alias_thunks` and its `local_var`/`upval_var`
+  split from the evaluator JSON;
+- compare the count with total lexical-alias allocations and force-cache child
+  observation volume before designing an observation-preserving elision; and
+- retain the current conservative path unless that measured ceiling is
+  material and byte/observation parity can be proved.

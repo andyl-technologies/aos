@@ -10,7 +10,11 @@
 //!
 //! ```text
 //! {"aos_nix_eval_stats":{"thunks_allocated":22013,"thunks_elided":12,
-//!  "binding_assembly_elisions":0,"single_entry_thunks_allocated":0,
+//!  "binding_assembly_elisions":0,
+//!  "force_cache_suppressed_lexical_alias_thunks":0,
+//!  "force_cache_suppressed_local_var_alias_thunks":0,
+//!  "force_cache_suppressed_upval_var_alias_thunks":0,
+//!  "single_entry_thunks_allocated":0,
 //!  "single_entry_thunks_forced":0,"thunks_forced":21880,
 //!  "attrsets_built":6042,"attrs_entries_total":38110,"values_allocated":24901,
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
@@ -86,6 +90,9 @@ impl NixNative {
 \"thunks_allocated\":{},\
 \"thunks_elided\":{},\
 \"binding_assembly_elisions\":{},\
+\"force_cache_suppressed_lexical_alias_thunks\":{},\
+\"force_cache_suppressed_local_var_alias_thunks\":{},\
+\"force_cache_suppressed_upval_var_alias_thunks\":{},\
 \"single_entry_thunks_allocated\":{},\
 \"single_entry_thunks_forced\":{},\
 \"thunks_forced\":{},\
@@ -189,6 +196,9 @@ impl NixNative {
             stats.thunks_allocated(),
             stats.thunks_elided(),
             stats.binding_assembly_elisions(),
+            stats.force_cache_suppressed_lexical_alias_thunks(),
+            stats.force_cache_suppressed_local_var_alias_thunks(),
+            stats.force_cache_suppressed_upval_var_alias_thunks(),
             stats.single_entry_thunks_allocated(),
             stats.single_entry_thunks_forced(),
             stats.thunks_forced(),

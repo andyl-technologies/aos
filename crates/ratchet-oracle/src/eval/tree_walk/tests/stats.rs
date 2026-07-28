@@ -160,6 +160,9 @@ fn eval_outcome_reports_mirrored_stats() {
     assert!(permanent_stats.mapped_bytes >= permanent_stats.reserved_bytes);
     assert!(permanent_stats.reserved_bytes >= permanent_stats.used_bytes);
     assert_eq!(stats.thunks_elided(), 0);
+    assert_eq!(stats.force_cache_suppressed_lexical_alias_thunks(), 0);
+    assert_eq!(stats.force_cache_suppressed_local_var_alias_thunks(), 0);
+    assert_eq!(stats.force_cache_suppressed_upval_var_alias_thunks(), 0);
     assert_eq!(stats.inline_cache_hits(), 0);
     assert_eq!(stats.inline_cache_misses(), 0);
     assert_eq!(stats.shape_transitions(), 0);
@@ -214,6 +217,9 @@ fn eval_stats_are_emitted_through_tracing() {
         .expect("stats event recorded");
     assert_trace_field(stats_event, "thunks_allocated");
     assert_trace_field(stats_event, "thunks_forced");
+    assert_trace_field(stats_event, "force_cache_suppressed_lexical_alias_thunks");
+    assert_trace_field(stats_event, "force_cache_suppressed_local_var_alias_thunks");
+    assert_trace_field(stats_event, "force_cache_suppressed_upval_var_alias_thunks");
     assert_trace_field(stats_event, "force_cache_hits");
     assert_trace_field(stats_event, "force_cache_misses");
     assert_trace_field(stats_event, "force_cache_probes");

@@ -13,6 +13,15 @@ pub struct EvalStats {
     pub(crate) thunks_allocated: u64,
     pub(crate) thunks_elided: u64,
     pub(crate) binding_assembly_elisions: u64,
+    /// Demand-position lexical-alias thunks retained solely because force-cache
+    /// observation is active, collected only under `AOS_NIX_EVAL_STATS`.
+    pub(crate) force_cache_suppressed_lexical_alias_thunks: u64,
+    /// Local-variable subset of
+    /// [`Self::force_cache_suppressed_lexical_alias_thunks`].
+    pub(crate) force_cache_suppressed_local_var_alias_thunks: u64,
+    /// Upvalue-variable subset of
+    /// [`Self::force_cache_suppressed_lexical_alias_thunks`].
+    pub(crate) force_cache_suppressed_upval_var_alias_thunks: u64,
     /// Thunks allocated with single-entry storage (no update, no blackhole,
     /// no parallel payload cell) under the C-8 frame-local proof.
     pub(crate) single_entry_thunks_allocated: u64,
@@ -177,6 +186,22 @@ impl EvalStats {
     /// [`Self::thunks_elided`]).
     pub const fn binding_assembly_elisions(&self) -> u64 {
         self.binding_assembly_elisions
+    }
+
+    /// Returns demand-position lexical-alias thunks retained solely for the
+    /// active force cache.
+    pub const fn force_cache_suppressed_lexical_alias_thunks(&self) -> u64 {
+        self.force_cache_suppressed_lexical_alias_thunks
+    }
+
+    /// Returns the local-variable subset of force-cache-suppressed alias thunks.
+    pub const fn force_cache_suppressed_local_var_alias_thunks(&self) -> u64 {
+        self.force_cache_suppressed_local_var_alias_thunks
+    }
+
+    /// Returns the upvalue-variable subset of force-cache-suppressed alias thunks.
+    pub const fn force_cache_suppressed_upval_var_alias_thunks(&self) -> u64 {
+        self.force_cache_suppressed_upval_var_alias_thunks
     }
 
     /// Returns the number of thunks allocated with single-entry storage.
@@ -450,6 +475,9 @@ impl EvalStats {
             thunks_allocated,
             thunks_elided,
             binding_assembly_elisions,
+            force_cache_suppressed_lexical_alias_thunks,
+            force_cache_suppressed_local_var_alias_thunks,
+            force_cache_suppressed_upval_var_alias_thunks,
             single_entry_thunks_allocated,
             single_entry_thunks_forced,
             thunk_cache_hits,
@@ -547,6 +575,15 @@ impl EvalStats {
         self.binding_assembly_elisions = self
             .binding_assembly_elisions
             .saturating_add(binding_assembly_elisions);
+        self.force_cache_suppressed_lexical_alias_thunks = self
+            .force_cache_suppressed_lexical_alias_thunks
+            .saturating_add(force_cache_suppressed_lexical_alias_thunks);
+        self.force_cache_suppressed_local_var_alias_thunks = self
+            .force_cache_suppressed_local_var_alias_thunks
+            .saturating_add(force_cache_suppressed_local_var_alias_thunks);
+        self.force_cache_suppressed_upval_var_alias_thunks = self
+            .force_cache_suppressed_upval_var_alias_thunks
+            .saturating_add(force_cache_suppressed_upval_var_alias_thunks);
         self.single_entry_thunks_allocated = self
             .single_entry_thunks_allocated
             .saturating_add(single_entry_thunks_allocated);

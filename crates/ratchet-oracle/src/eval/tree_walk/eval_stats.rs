@@ -50,6 +50,15 @@ impl TreeWalk {
             thunks_allocated: self.stats.thunks_allocated,
             thunks_elided: self.stats.thunks_elided,
             binding_assembly_elisions: self.stats.binding_assembly_elisions,
+            force_cache_suppressed_lexical_alias_thunks: self
+                .stats
+                .force_cache_suppressed_lexical_alias_thunks,
+            force_cache_suppressed_local_var_alias_thunks: self
+                .stats
+                .force_cache_suppressed_local_var_alias_thunks,
+            force_cache_suppressed_upval_var_alias_thunks: self
+                .stats
+                .force_cache_suppressed_upval_var_alias_thunks,
             single_entry_thunks_allocated: self.stats.single_entry_thunks_allocated,
             single_entry_thunks_forced: self.stats.single_entry_thunks_forced,
             thunk_cache_hits: self.stats.thunk_cache_hits,
@@ -260,6 +269,12 @@ impl TreeWalk {
             thunks_allocated = stats.thunks_allocated(),
             thunks_elided = stats.thunks_elided(),
             binding_assembly_elisions = stats.binding_assembly_elisions(),
+            force_cache_suppressed_lexical_alias_thunks = stats
+                .force_cache_suppressed_lexical_alias_thunks(),
+            force_cache_suppressed_local_var_alias_thunks = stats
+                .force_cache_suppressed_local_var_alias_thunks(),
+            force_cache_suppressed_upval_var_alias_thunks = stats
+                .force_cache_suppressed_upval_var_alias_thunks(),
             single_entry_thunks_allocated = stats.single_entry_thunks_allocated(),
             single_entry_thunks_forced = stats.single_entry_thunks_forced(),
             thunk_cache_hits = stats.thunk_cache_hits(),
