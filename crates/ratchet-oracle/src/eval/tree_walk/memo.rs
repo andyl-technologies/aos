@@ -29,7 +29,7 @@
 //! [`ValueHash`]: crate::cache::ValueHash
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -104,29 +104,22 @@ impl MemoDefSiteState {
     }
 }
 
-/// Module/node-indexed storage for content-memo admission decisions.
+/// Module-indexed sparse storage for content-memo admission decisions.
 ///
 /// The claimed-force path consults this table for every node thunk while the
-/// memo is active. A two-level index avoids hashing [`EvalNodeRef`] millions
-/// of times while keeping the comparatively large [`MemoDefSiteState`] values
-/// sparse: each module owns a compact node-to-state index and a state slab.
+/// memo is active. Indexing the module directly and hashing only its `u32` node
+/// id avoids hashing [`EvalNodeRef`] millions of times while keeping state
+/// sparse for modules whose forced node ids span a large arena range.
 #[derive(Debug, Default)]
 pub(super) struct MemoDefSiteTable {
     modules: Vec<Option<MemoDefSiteModuleTable>>,
 }
 
 impl MemoDefSiteTable {
-    /// Sentinel for a node that has no sparse state-slab entry.
-    const UNDECIDED: u32 = u32::MAX;
-
     /// Returns the state for `def_site`, when the site has been decided.
     pub(super) fn get(&self, def_site: EvalNodeRef) -> Option<&MemoDefSiteState> {
         let module = self.modules.get(def_site.module().index())?.as_ref()?;
-        let state = *module.by_node.get(def_site.id().index())?;
-        if state == Self::UNDECIDED {
-            return None;
-        }
-        module.states.get(state as usize)
+        module.get(&def_site.id().as_u32())
     }
 
     /// Returns mutable state for `def_site`, when the site has been decided.
@@ -135,52 +128,51 @@ impl MemoDefSiteTable {
             .modules
             .get_mut(def_site.module().index())?
             .as_mut()?;
-        let state = *module.by_node.get(def_site.id().index())?;
-        if state == Self::UNDECIDED {
-            return None;
-        }
-        module.states.get_mut(state as usize)
+        module.get_mut(&def_site.id().as_u32())
     }
 
     /// Installs or replaces the decision for `def_site`.
-    ///
-    /// Returns `false` only if the sparse state slab can no longer be
-    /// addressed by its compact `u32` node index.
     pub(super) fn insert(&mut self, def_site: EvalNodeRef, state: MemoDefSiteState) -> bool {
         let module_index = def_site.module().index();
         if self.modules.len() <= module_index {
             self.modules.resize_with(module_index + 1, || None);
         }
         let module = self.modules[module_index].get_or_insert_with(MemoDefSiteModuleTable::default);
-        let node_index = def_site.id().index();
-        if module.by_node.len() <= node_index {
-            module.by_node.resize(node_index + 1, Self::UNDECIDED);
-        }
-        let existing = module.by_node[node_index];
-        if existing != Self::UNDECIDED {
-            if let Some(slot) = module.states.get_mut(existing as usize) {
-                *slot = state;
-                return true;
-            }
-            return false;
-        }
-        let Ok(state_index) = u32::try_from(module.states.len()) else {
-            return false;
-        };
-        if state_index == Self::UNDECIDED {
-            return false;
-        }
-        module.states.push(state);
-        module.by_node[node_index] = state_index;
+        module.insert(def_site.id().as_u32(), state);
         true
     }
 }
 
-/// One module's compact node index and sparse admission-state slab.
+/// One module's admission decisions keyed by its local IR node id.
+type MemoDefSiteModuleTable =
+    HashMap<u32, MemoDefSiteState, BuildHasherDefault<MemoNodeIdHasher>>;
+
+/// Fast integer mixer for module-local IR node ids.
+///
+/// The table's key type is exactly `u32`, so the specialized `write_u32` path
+/// handles every production lookup. `write` remains a complete fallback for
+/// the [`Hasher`] contract and for diagnostic tooling.
 #[derive(Debug, Default)]
-struct MemoDefSiteModuleTable {
-    by_node: Vec<u32>,
-    states: Vec<MemoDefSiteState>,
+struct MemoNodeIdHasher(u64);
+
+impl Hasher for MemoNodeIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = hash;
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        let mixed = u64::from(value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
 }
 
 /// One memoized forced-subtree record shared by the L0 and L1 tiers.

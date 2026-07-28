@@ -655,7 +655,7 @@ pub struct TreeWalk {
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the
     // design's "admission flags on lowered nodes": non-admitted def-sites pay
-    // two indexed loads per force and nothing else.
+    // one direct module index plus a module-local integer lookup per force.
     memo_def_sites: memo::MemoDefSiteTable,
     // Per-eval memo of captured values known to have no durable hash (keyed
     // by value payload bits). Purely advisory: a stale entry can only cause
