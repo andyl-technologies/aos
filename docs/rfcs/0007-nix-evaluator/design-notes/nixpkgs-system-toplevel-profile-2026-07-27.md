@@ -568,6 +568,18 @@ population), a projected 32 MiB of pre-peak storage, or at least 1% retired
 instructions. Below those floors, retain the proof/counters and measure the
 supplied-value class before adding a semantic rewrite.
 
+The exact pinned Nix-2.24-compatible system run rejects both active follow-ups:
+each of three benchmark evaluations reported 12 eligible missing-default
+allocations, 1,026 supplied-value opportunities, zero missing-required cases,
+and 376 alias declines. The cold and warm native evaluations both passed byte
+parity. Twelve allocations are 0.00028% of the 4.335 million
+allocated-but-unforced population and 0.0055% of the 217,000-candidate gate;
+even the broader supplied-value ceiling is only 0.024% of that population.
+Neither class can plausibly reach 32 MiB or 1% retired instructions. Retain the
+persisted absence proof and cheap stats counters as reusable infrastructure,
+but do not add dummy-slot substitution or caller-side argument rewriting for
+this workload.
+
 ## Cycle profile
 
 A low-overhead cycles profile of the current build attributed the largest self
