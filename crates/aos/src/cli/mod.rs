@@ -71,6 +71,10 @@ pub struct Cli {
     #[arg(long, value_name = "VERSION", global = true)]
     pub nix_compat: Option<NixCompatProfile>,
 
+    /// Set the Nix search path used during evaluation
+    #[arg(long, value_name = "VALUE", global = true)]
+    pub nix_path: Option<String>,
+
     /// Evaluate with normal impure Nix semantics
     #[arg(long, global = true, conflicts_with_all = ["pure_eval", "restrict_eval"])]
     pub impure_eval: bool,

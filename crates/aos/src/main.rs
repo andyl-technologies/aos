@@ -672,6 +672,9 @@ fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
         eval_config.set_nix_compat_profile(profile);
         eval_config.reset_reported_nix_version();
     }
+    if let Some(nix_path) = &cli.nix_path {
+        eval_config.set_nix_path_env(nix_path);
+    }
     for path in &cli.eval_allowed_paths {
         eval_config.add_allowed_path(path.clone())?;
     }
@@ -803,6 +806,22 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_from_cli_sets_explicit_nix_path() -> Result<()> {
+        let cli = Cli {
+            nix_path: Some("nixpkgs=/nix/store/pinned-source".to_string()),
+            ..base_nix_diff_cli()
+        };
+
+        let config = eval_config_from_cli(&cli)?;
+
+        assert_eq!(
+            config.nix_path_env(),
+            Some("nixpkgs=/nix/store/pinned-source")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn eval_config_from_cli_rejects_zero_max_rss() {
         let cli = Cli {
             max_rss: Some(0),
@@ -848,6 +867,7 @@ mod tests {
             eval_system: None,
             max_rss: None,
             nix_compat: None,
+            nix_path: None,
             impure_eval: false,
             pure_eval: false,
             restrict_eval: false,
