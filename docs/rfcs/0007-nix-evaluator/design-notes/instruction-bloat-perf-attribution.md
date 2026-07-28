@@ -119,8 +119,11 @@ Here **cold** means that no cache data enters from an earlier run. The isolated
 candidate clears persistent roots and disables disk/network tiers, but enables
 every applicable same-run tier: serial evaluation gets the content-memo L0 and
 the GC-off worker-local Ready directory, while a shared parallel-demand context
-also gets L1. An earlier helper enabled L0/L1 but accidentally left the Ready
-directory off; benchmarks before that fix understate legal intra-run reuse.
+also gets L1. The strict-cold Ready admission uses its capture-free direct
+specialization: the pinned system census found 12/12 Ready hits there and zero
+captured-recipe hits, so broader recipe construction only added force-path work.
+An earlier helper enabled L0/L1 but accidentally left Ready off; benchmarks
+before that fix understate legal intra-run reuse.
 
 `--eval-system` and `--impure-eval` are **global** flags — put them before the
 subcommand. All commands assume `x86_64-linux`.

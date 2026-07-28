@@ -557,6 +557,7 @@ fn enable_isolated_intra_run_caches(config: &mut NixEvalConfig) {
     memo.l1_enabled = Some(true);
     memo.l2_enabled = false;
     memo.local_ready_enabled = true;
+    memo.local_ready_empty_only = true;
     config.set_native_memo(memo);
     config.set_native_memo_disk_spec(None);
     config.set_native_memo_net(None);

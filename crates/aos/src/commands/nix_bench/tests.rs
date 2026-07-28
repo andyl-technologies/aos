@@ -22,6 +22,7 @@ fn isolated_cold_run_enables_internal_memo_and_removes_external_tiers() {
     memo.l1_enabled = Some(false);
     memo.l2_enabled = false;
     memo.local_ready_enabled = false;
+    memo.local_ready_empty_only = false;
     config.set_native_memo(memo);
     config.set_native_memo_disk_spec(Some("nvme:/external/cache".to_owned()));
     config.set_native_memo_net(Some(aos_core::nix::eval::NativeMemoNetSettings {
@@ -38,6 +39,7 @@ fn isolated_cold_run_enables_internal_memo_and_removes_external_tiers() {
     assert_eq!(memo.l1_enabled, Some(true));
     assert!(!memo.l2_enabled);
     assert!(memo.local_ready_enabled);
+    assert!(memo.local_ready_empty_only);
     assert_eq!(config.native_cache_root(), None);
     assert_eq!(config.native_memo_disk_spec(), None);
     assert_eq!(config.native_memo_net(), None);
