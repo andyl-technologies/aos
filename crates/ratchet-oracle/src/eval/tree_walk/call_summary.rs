@@ -172,12 +172,11 @@ impl TreeWalk {
                 .map(Some);
         }
         self.increment_thunks_elided();
-        if self.order_sensitive_binding_depth > 0 {
+        if self.order_sensitive_binding_allocation_is_active() {
             self.increment_binding_assembly_elisions();
-            let saved = std::mem::take(&mut self.order_sensitive_binding_depth);
-            let result = self.eval_node(body);
-            self.order_sensitive_binding_depth = saved;
-            return result.map(Some);
+            return self
+                .with_order_sensitive_binding_planning_suspended(|eval| eval.eval_node(body))
+                .map(Some);
         }
         self.eval_node(body).map(Some)
     }

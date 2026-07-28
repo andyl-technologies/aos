@@ -313,7 +313,7 @@ impl TreeWalk {
                 let env = self.capture_active_env_snapshot(id, span)?;
                 return Ok((env, None));
             }
-            if self.order_sensitive_binding_depth != 0 {
+            if self.order_sensitive_binding_allocation_is_active() {
                 let env = self.capture_active_env_snapshot(id, span)?;
                 let buffer =
                     EvalFlatCaptureBuffer::pending(allocation_site, frame_count, capture_len)

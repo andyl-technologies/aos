@@ -322,6 +322,12 @@ pub struct TreeWalk {
     pending_flat_captures: Vec<flat_capture::PendingFlatCapture>,
     /// Whether any nested binding assembly failed before publication.
     order_sensitive_binding_failed: bool,
+    /// Outer assembly depth hidden while an eagerly elided thunk body runs.
+    ///
+    /// Publication still belongs to the physical outer scopes, but allocation
+    /// planning must see the elided body as the demand-position evaluation
+    /// that the removed thunk would have performed.
+    order_sensitive_binding_planning_floor: usize,
     with_scopes: EvalWithEnv,
     scoped_globals: EvalScopedGlobalEnv,
     /// Opt-in capture-on-demand elision state for dynamic environments

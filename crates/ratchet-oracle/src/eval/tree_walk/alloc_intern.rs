@@ -296,27 +296,53 @@ impl TreeWalk {
                 self.increment_thunks_elided();
                 if context == TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly {
                     self.increment_binding_assembly_elisions();
-                    // Evaluate the body exactly as its deferred force would:
-                    // outside the assembly window, so nested allocations plan
-                    // in demand position. The GC-stress accumulator depth is
+                    // Hide the physical outer assembly from allocation
+                    // planning so the body behaves like its deferred force,
+                    // while preserving that assembly's publication lifetime
+                    // and pending captures. The GC-stress accumulator depth is
                     // deliberately left in place - in-flight frame entries
                     // are not rooted during assembly, matching the existing
                     // dynamic-key evaluation path.
-                    let saved = std::mem::take(&mut self.order_sensitive_binding_depth);
-                    let result = self.eval_node(elision.body());
-                    self.order_sensitive_binding_depth = saved;
-                    return result;
+                    return self.with_order_sensitive_binding_planning_suspended(|eval| {
+                        eval.eval_node(elision.body())
+                    });
                 }
                 self.eval_node(elision.body())
             }
         }
     }
     fn thunk_allocation_context(&self) -> TreeWalkThunkAllocationContext {
-        if self.order_sensitive_binding_depth > 0 {
+        if self.order_sensitive_binding_allocation_is_active() {
             TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly
         } else {
             TreeWalkThunkAllocationContext::DemandPosition
         }
+    }
+
+    /// Returns whether allocation planning sees an active assembly scope.
+    pub(super) fn order_sensitive_binding_allocation_is_active(&self) -> bool {
+        self.order_sensitive_binding_depth > self.order_sensitive_binding_planning_floor
+    }
+
+    /// Runs an elided thunk body with its physical outer assembly scopes hidden
+    /// from allocation planning while preserving their publication boundary.
+    pub(super) fn with_order_sensitive_binding_planning_suspended<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let previous_floor = std::mem::replace(
+            &mut self.order_sensitive_binding_planning_floor,
+            self.order_sensitive_binding_depth,
+        );
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.order_sensitive_binding_planning_floor = previous_floor;
+                std::panic::resume_unwind(payload);
+            }
+        };
+        self.order_sensitive_binding_planning_floor = previous_floor;
+        result
     }
 
     fn alloc_update_thunk_from_plan(

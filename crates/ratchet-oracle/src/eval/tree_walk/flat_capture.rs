@@ -69,7 +69,7 @@ impl TreeWalk {
         #[cfg(not(test))]
         let runtime_conversion_enabled = true;
         if !runtime_conversion_enabled
-            || self.order_sensitive_binding_depth == 0
+            || !self.order_sensitive_binding_allocation_is_active()
             || !self.heap.supports_post_assembly_flat_capture()
             || !matches!(
                 self.current_ir().facts.capture_plan(id),

@@ -2,6 +2,57 @@
 use super::*;
 
 #[test]
+fn eager_elision_hides_only_outer_assembly_from_allocation_planning() {
+    let mut ir = lower("let captured = \"flat\"; in x: captured");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+    let closure = evaluator.eval_root().expect("closure evaluates");
+    let closure_env = evaluator
+        .heap
+        .clone_lambda(closure)
+        .expect("lambda clones")
+        .env()
+        .clone();
+    let tail = closure_env
+        .flat_base()
+        .expect("closure has a flat capture")
+        .tail_handle();
+
+    evaluator.begin_order_sensitive_binding_assembly();
+    evaluator.test_push_pending_flat_capture(
+        EvalNodeRef::new(EvalModuleId::ROOT, ir.root),
+        closure,
+        tail,
+        closure_env,
+    );
+    assert!(evaluator.order_sensitive_binding_allocation_is_active());
+    let physical_depth = evaluator.order_sensitive_binding_depth;
+
+    let observed = evaluator
+        .with_order_sensitive_binding_planning_suspended(|evaluator| {
+            assert_eq!(evaluator.order_sensitive_binding_depth, physical_depth);
+            assert!(!evaluator.order_sensitive_binding_allocation_is_active());
+
+            // A binding form entered by the eagerly evaluated body is still
+            // order-sensitive relative to that body. Only the physical outer
+            // prefix is hidden from allocation planning.
+            evaluator.begin_order_sensitive_binding_assembly();
+            assert!(evaluator.order_sensitive_binding_allocation_is_active());
+            evaluator.end_order_sensitive_binding_assembly(true);
+            assert_eq!(evaluator.pending_flat_captures.len(), 1);
+            Ok(17)
+        })
+        .expect("planning suspension succeeds");
+
+    assert_eq!(observed, 17);
+    assert_eq!(evaluator.order_sensitive_binding_depth, physical_depth);
+    assert!(evaluator.order_sensitive_binding_allocation_is_active());
+    assert_eq!(evaluator.pending_flat_captures.len(), 1);
+    evaluator.end_order_sensitive_binding_assembly(false);
+    assert!(evaluator.pending_flat_captures.is_empty());
+}
+
+#[test]
 fn single_entry_storage_preserves_observables_and_is_exercised() {
     // A consumed-position once-used binding takes single-entry storage in
     // the annotated run; per-call frames re-allocate it, so the trace count

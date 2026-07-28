@@ -221,6 +221,7 @@ impl TreeWalk {
             flat_env: None,
             pending_flat_captures: Vec::new(),
             order_sensitive_binding_failed: false,
+            order_sensitive_binding_planning_floor: 0,
             with_scopes: EvalWithEnv::default(),
             scoped_globals: EvalScopedGlobalEnv::default(),
             capture_on_demand: super::capture_on_demand::CaptureOnDemand::from_env(),
