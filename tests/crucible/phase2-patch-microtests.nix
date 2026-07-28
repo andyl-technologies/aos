@@ -293,6 +293,18 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0043-crucible-time-advance-commit-barrier.patch";
+      check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
+    }
+    {
+      patch = "0044-crucible-time-advance-enqueue-kick.patch";
+      check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
+    }
+    {
+      patch = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
+      check = import ./phase1-plugin-time-advance.nix {inherit pkgs lib qemuPackage;};
+    }
   ];
 
   microtestPatchNames =

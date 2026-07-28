@@ -2691,6 +2691,13 @@ in rec {
         phase2.qemuLivePluginFingerprint
       ];
     };
+    deviceHostWorkOverlap = import ./phase7-device-host-work-overlap.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.deviceHostWorkOverlap";
+      taskIds = ["T-PERF-31"];
+      liveBlockIo = phase2.qemuLiveBlockIo;
+      dependencies = [phase2.qemuLiveBlockIo];
+    };
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
@@ -2729,18 +2736,19 @@ in rec {
             "T-PERF-28"
             "T-PERF-29"
             "T-PERF-30"
+            "T-PERF-31"
           ];
           openTaskIds = [
-            "T-PERF-31"
             "T-PERF-32"
             "T-PERF-33"
             "T-PERF-34"
           ];
           hostParallelism = phase7.qemuHostParallel;
           fingerprintOffload = phase7.fingerprintDigestOffload;
-          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel phase7.fingerprintDigestOffload];
+          deviceWorkOverlap = phase7.deviceHostWorkOverlap;
+          dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap];
         };
-        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload];
+        dependencies = [phase6.gates.replayOracle phase6.basicBlockCoverage phase7.qemuHostParallel phase7.fingerprintDigestOffload phase7.deviceHostWorkOverlap];
       };
       e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";

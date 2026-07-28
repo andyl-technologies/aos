@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "46932de17e2b50f71124b91db43e2d4b22404e5619c5bd12418022e92b7acc43";
+  patchBranchBundleSha256 = "48f340ea792b149d7fddfd81487ca8b84dfa8a13ce19d0035910fd8c16c01545";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "cfb76410a7cd9261c27a549348ee25f9842c3c5a";
+  patchBranchHeadCommit = "29e5dfd63181ddb5001a1bbfa9a9af572eb737df";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -393,6 +393,33 @@ let
       class = "D";
       enforces = "DET-4,PLUG-14,GHC-4";
       capability = "AArch64 deterministic IPI adapter for the shared RR and commanded-preemption paths";
+    }
+    {
+      file = "0043-crucible-time-advance-commit-barrier.patch";
+      branchCommit = "7b79f2f4adffdfe6f39f93b8190005c5eb4c9b70";
+      branchTree = "28796968fb32d6abf2dadcaf658eff97b36086ed";
+      catalogName = "crucible-time-advance-commit-barrier";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "RR and plugin logical-time commits remain fenced until both owners release";
+    }
+    {
+      file = "0044-crucible-time-advance-enqueue-kick.patch";
+      branchCommit = "932bb2be120e63d892e213c643aa25fc2e0c86e7";
+      branchTree = "5a76b55e24ea291812a8306b0167847f7da733d0";
+      catalogName = "crucible-time-advance-enqueue-kick";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "queued time advance kicks the active sim vCPU into the pending barrier";
+    }
+    {
+      file = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
+      branchCommit = "29e5dfd63181ddb5001a1bbfa9a9af572eb737df";
+      branchTree = "9068a0363942e4a66426f09525c0b972ad8e7a35";
+      catalogName = "crucible-time-advance-arm-at-vcpu-boundary";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "pending time advance arms synchronously at a stopped-vCPU work boundary";
     }
   ];
   catalogOnlyCapabilities = [

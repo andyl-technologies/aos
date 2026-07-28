@@ -59,6 +59,9 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0040-crucible-9p-sync-kick.patch",
     "0041-crucible-whitebox-guest-write.patch",
     "0042-crucible-aarch64-det-ipi-adapter.patch",
+    "0043-crucible-time-advance-commit-barrier.patch",
+    "0044-crucible-time-advance-enqueue-kick.patch",
+    "0045-crucible-time-advance-arm-at-vcpu-boundary.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

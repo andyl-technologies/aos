@@ -1,0 +1,43 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -184,6 +184,7 @@ static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
+ 
+     return cpu &&
+            cpu_can_run(cpu) &&
++           !qemu_plugin_time_advance_is_pending() &&
+            cpu_work_list_empty(cpu) &&
+            !cpu->exit_request &&
+            !cpu->stop &&
+@@ -221,6 +222,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+     while (true) {
+         int r;
+ 
++        if (rr_crucible_sim_mode() &&
++            qemu_plugin_time_advance_is_pending()) {
++            qemu_cond_wait_bql(first_cpu->halt_cond);
++            return true;
++        }
++
+         if (rr_crucible_sim_mode() &&
+             (crucible_sim_shmem_dispatch_registered() ||
+              crucible_sim_observer_registered())) {
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -214,10 +214,14 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+     int64_t target = qatomic_read(&qemu_plugin_time_advance_target);
+ 
+     (void)opaque;
+-    qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
+     if (cb) {
+         cb(status, target, userdata);
+     }
++    /*
++     * Keep the RR-thread barrier armed until the plugin has committed its
++     * corresponding logical-time state.
++     */
++    qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
+     /*
+      * A Crucible block coroutine can be parked because the guest itself cannot
+      * retire instructions while waiting for device I/O.  Re-enter all

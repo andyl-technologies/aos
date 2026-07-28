@@ -865,6 +865,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
             crate::QemuPluginTargetArchitecture::X86_64,
             LiveVcpuTimeCallbackCapabilities {
                 icount_raw: test_icount_raw,
+                force_vcpu_exit: test_force_vcpu_exit,
                 inject_preemption: Some(test_inject_preemption),
                 clock_deadline_ns: Some(test_deadline),
                 advance_time_ns: Some(test_direct_advance),

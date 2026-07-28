@@ -69,6 +69,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
     let state = LiveVcpuTimeCallbackState::new(
         13,
         test_icount_raw,
+        super::super::test_support::test_force_vcpu_exit,
         injector,
         1,
         0,

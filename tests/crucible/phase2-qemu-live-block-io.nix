@@ -6,8 +6,9 @@
   # a crucible-shmem virtio-blk device to the diskless guest and services the
   # guest's virtio-blk probe reads on SLOT_BLK_IO. The plugin must advance a guest
   # blocked on device I/O to the published completion horizon, deliver the
-  # response, and continue through bounded scheduler windows. The run repeats
-  # under host CPU load and the two runs' block-traffic observations must match.
+  # response, and continue through bounded scheduler windows. Synchronous,
+  # host-wins, and guest-wins legs must retain identical completion coordinates
+  # and canonical I/O logs.
   taskIds ? ["T-PLUG-12" "T-IO-15" "T-PATCH-9"],
   openTaskIds ? [],
   # The write initramfs reaches PID 1 after kernel device discovery. Keep a
@@ -74,11 +75,15 @@ in
           grep -Fxq 'gate=gate:live-block-io' "$report"
           grep -Fxq 'block_backend=crucible-shmem-host-servicer' "$report"
           grep -Fxq 'block_ring=SLOT_BLK_IO' "$report"
-          # The run completed twice and the two runs' block-traffic observations
-          # matched (poll jitter may change only the terminal sample coordinate).
+          # All three race legs matched (poll jitter may change only host-side
+          # service-call counts and terminal sample coordinates).
           grep -Fxq 'deterministic_under_host_load=true' "$report"
           grep -Fxq 'host_load_applied=true' "$report"
           grep -Fxq 'delayed_response_applied=true' "$report"
+          grep -Fxq 'host_wins_race_proven=true' "$report"
+          grep -Fxq 'guest_wins_race_proven=true' "$report"
+          grep -Fxq 'completion_pinned_before_dispatch=true' "$report"
+          grep -Fxq 'canonical_logs_identical=true' "$report"
           # Real guest traffic must cross SLOT_BLK_IO, publish a deterministic
           # future completion horizon, complete, and let the guest continue.
           grep -Eq '^frames_processed=[1-9][0-9]*$' "$report"
@@ -97,7 +102,7 @@ in
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-block-io-completion-advance\n'
-            printf 'proven=live-SLOT_BLK_IO-request-servicing,successful-zero-byte-write-completion,device-horizon-advance,delayed-response-wall-time-inertness,guest-progress,run-twice-observation-determinism\n'
+            printf 'proven=live-SLOT_BLK_IO-request-servicing,successful-zero-byte-write-completion,device-horizon-advance,pre-dispatch-completion-pin,host-wins-race,guest-wins-race,synchronous-async-canonical-log-identity,guest-progress\n'
           } >> "$out/result"
         '';
       }

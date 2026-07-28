@@ -200,6 +200,9 @@
   # patch -p1 < ${./qemu-patches/0040-crucible-9p-sync-kick.patch}
   # patch -p1 < ${./qemu-patches/0041-crucible-whitebox-guest-write.patch}
   # patch -p1 < ${./qemu-patches/0042-crucible-aarch64-det-ipi-adapter.patch}
+  # patch -p1 < ${./qemu-patches/0043-crucible-time-advance-commit-barrier.patch}
+  # patch -p1 < ${./qemu-patches/0044-crucible-time-advance-enqueue-kick.patch}
+  # patch -p1 < ${./qemu-patches/0045-crucible-time-advance-arm-at-vcpu-boundary.patch}
 in
   mkDerivation {
     inherit pname;

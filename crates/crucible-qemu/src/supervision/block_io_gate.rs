@@ -4,26 +4,32 @@
 //! completes the production-plugin handshake, and drives the mapped quantum
 //! hot path while a [`QemuLiveBlockIoServicer`] services the guest's probe reads.
 //!
-//! The plugin must advance an I/O-blocked guest to the host-published completion
-//! horizon, expose the response, and continue to the scheduler ceiling. A second
-//! run adds host CPU load and deliberately delays the due response's physical
-//! ring write after logical time reaches its horizon. Both runs must produce
-//! identical block observations, proving host timing changes only wall-clock
-//! parking duration.
+//! The gate compares three executions: fully synchronous servicing, asynchronous
+//! host work forced to finish before the guest reaches the pinned completion,
+//! and asynchronous host work forced to finish after the guest reaches it. All
+//! three must produce identical completion coordinates and canonical I/O logs.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crucible::{Icount, NodeId};
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+use crucible::{
+    EventLog, Icount, IoEventKind, NodeId, ObservableEvent, SchedulerError, VirtualTime,
+};
+use crucible_shmem::{
+    MappedSetupRegion, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+};
 use thiserror::Error;
 
 use self::support::{GateSendAuthorizer, HostLoad};
 use super::block_io_servicer::{
-    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServicer,
-    QemuLiveBlockIoServicerError,
+    BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServiceStep,
+    QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError,
+};
+use super::device_host_work::{
+    QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
 };
 use crate::{
     CrucibleShmemBlockDevice, LaunchProfileCandidate, LaunchProfileError, QemuHostPluginSetup,
@@ -55,7 +61,7 @@ const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Consecutive no-progress polls (at [`PRIME_POLL_INTERVAL`]) before the drive
 /// declares the guest stalled on device I/O rather than merely executing slowly.
 const DRIVE_STALL_POLLS: u64 = 5_000;
-/// Wall delay injected after virtual time reaches a pending response horizon.
+/// Wall delay that forces the guest to win the host-work race.
 const DELAYED_RESPONSE_WALL_TIME: Duration = Duration::from_millis(100);
 /// Default crucible-shmem device length: 4 MiB, a whole sector multiple.
 const DEFAULT_DEVICE_SIZE_BYTES: u64 = 4 * 1024 * 1024;
@@ -174,7 +180,18 @@ struct BlockIoRunOutcome {
     advance: BlockIoAdvanceOutcome,
     diagnostics: BlockIoDiagnosticsSnapshot,
     orderly_child_exit: bool,
-    response_delay_applied: bool,
+    race: DeviceHostWorkRaceEvidence,
+    completion_observations: Vec<BlockCompletionObservation>,
+    canonical_log: Vec<u8>,
+}
+
+/// Host-race evidence accumulated by one gate leg.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeviceHostWorkRaceEvidence {
+    completion_pinned_before_dispatch: bool,
+    host_won_race: bool,
+    guest_won_race: bool,
+    async_dispatches: usize,
 }
 
 /// Certifying evidence from the live block-I/O gate.
@@ -192,6 +209,14 @@ pub struct QemuLiveBlockIoReport {
     pub host_load_applied: bool,
     /// The second run delayed a due host response without changing observations.
     pub delayed_response_applied: bool,
+    /// The host-wins leg finished COMPUTE before the guest reached completion.
+    pub host_wins_race_proven: bool,
+    /// The guest-wins leg reached completion before host COMPUTE finished.
+    pub guest_wins_race_proven: bool,
+    /// Every asynchronous request had its completion pinned before dispatch.
+    pub completion_pinned_before_dispatch: bool,
+    /// All three legs produced byte-identical canonical I/O logs.
+    pub canonical_logs_identical: bool,
 }
 
 /// Drives the certifying live block-I/O gate and reports the observed behaviour.
@@ -199,63 +224,97 @@ pub struct QemuLiveBlockIoReport {
 /// Boots the diskless-firmware guest with a `crucible-shmem` virtio-blk device,
 /// stands up a live node whose host-I/O runtime services `SLOT_BLK_IO`, advances
 /// the node once toward the busy ceiling, and records what the servicing observed.
-/// The run is repeated under host load and the two runs' block observations must
-/// match.
+/// The run is repeated in synchronous, host-wins, and guest-wins modes. Their
+/// block observations and canonical I/O logs must match exactly.
 ///
 /// # Errors
 ///
 /// Returns [`QemuLiveBlockIoGateError`] when launch preparation, the plugin
 /// handshake, the host-I/O runtime, shared-memory driving, or child supervision
-/// fails, or when the two runs' block observations diverge.
+/// fails, or when any race leg diverges.
 pub fn run_qemu_live_block_io_gate(
     config: &QemuLiveBlockIoGateConfig,
 ) -> Result<QemuLiveBlockIoReport, QemuLiveBlockIoGateError> {
-    let reference = run_one_scenario(config, RunRole::Reference)?;
-    let (second, host_load_applied) = if config.second_run_host_load {
-        (run_one_scenario(config, RunRole::HostLoad)?, true)
-    } else {
-        (run_one_scenario(config, RunRole::Repeat)?, false)
-    };
+    let reference = run_one_scenario(config, RunRole::Synchronous)?;
+    let host_wins = run_one_scenario(config, RunRole::HostWins)?;
+    let guest_wins = run_one_scenario(config, RunRole::GuestWins)?;
 
-    assert_runs_match(&reference, &second)?;
+    assert_runs_match(&reference, &host_wins, "host-wins")?;
+    assert_runs_match(&reference, &guest_wins, "guest-wins")?;
+    if !host_wins.race.host_won_race {
+        return Err(QemuLiveBlockIoGateError::RaceNotForced {
+            role: "host-wins",
+            evidence: format!("{:?}", host_wins.race),
+        });
+    }
+    if !guest_wins.race.guest_won_race {
+        return Err(QemuLiveBlockIoGateError::RaceNotForced {
+            role: "guest-wins",
+            evidence: format!("{:?}", guest_wins.race),
+        });
+    }
+    let completion_pinned_before_dispatch = host_wins.race.completion_pinned_before_dispatch
+        && guest_wins.race.completion_pinned_before_dispatch;
 
     Ok(QemuLiveBlockIoReport {
         advance: reference.advance,
         diagnostics: reference.diagnostics,
         orderly_child_exit: reference.orderly_child_exit,
         deterministic_under_host_load: true,
-        host_load_applied,
-        delayed_response_applied: second.response_delay_applied,
+        host_load_applied: config.second_run_host_load,
+        delayed_response_applied: guest_wins.race.guest_won_race,
+        host_wins_race_proven: true,
+        guest_wins_race_proven: true,
+        completion_pinned_before_dispatch,
+        canonical_logs_identical: true,
     })
 }
 
 /// Which scenario run this is, controlling the run subdirectory and host load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
-    Reference,
-    HostLoad,
-    Repeat,
+    Synchronous,
+    HostWins,
+    GuestWins,
 }
 
 impl RunRole {
     const fn subdir(self) -> &'static str {
         match self {
-            Self::Reference => "run-reference",
-            Self::HostLoad => "run-host-load",
-            Self::Repeat => "run-repeat",
+            Self::Synchronous => "run-synchronous",
+            Self::HostWins => "run-host-wins",
+            Self::GuestWins => "run-guest-wins",
         }
     }
 
     const fn applies_host_load(self) -> bool {
-        matches!(self, Self::HostLoad)
+        matches!(self, Self::GuestWins)
     }
 
-    const fn response_wall_delay(self) -> Duration {
+    const fn worker_delay(self) -> QemuDeviceHostWorkDelay {
         match self {
-            Self::HostLoad => DELAYED_RESPONSE_WALL_TIME,
-            Self::Reference | Self::Repeat => Duration::ZERO,
+            Self::GuestWins => QemuDeviceHostWorkDelay::Wall(DELAYED_RESPONSE_WALL_TIME),
+            Self::Synchronous | Self::HostWins => QemuDeviceHostWorkDelay::None,
         }
     }
+}
+
+enum BlockServiceMode {
+    Synchronous(Box<QemuLiveBlockIoServicer>),
+    Asynchronous(QemuLiveBlockHostWorkPool),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlockCompletionObservation {
+    request_icount: u64,
+    completion_icount: u64,
+    write: bool,
+}
+
+#[derive(Debug, Default)]
+struct BlockCompletionLogState {
+    pending: VecDeque<BlockCompletionObservation>,
+    delivered: Vec<BlockCompletionObservation>,
 }
 
 fn run_one_scenario(
@@ -270,7 +329,7 @@ fn run_one_scenario(
         }
     })?;
 
-    let host_load = HostLoad::start_if(role.applies_host_load());
+    let host_load = HostLoad::start_if(role.applies_host_load() && config.second_run_host_load);
 
     let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
     if let Some(cmdline) = &config.kernel_cmdline {
@@ -322,18 +381,29 @@ fn run_one_scenario(
         return Err(QemuLiveBlockIoGateError::SetupAckNotReady);
     }
 
-    // The block servicer owns a writable mapping confined to the SLOT_BLK_IO ring
-    // pair (it never writes the guest node slot's observed fields). Diagnostics is
-    // shared so the observations survive teardown.
     let diagnostics = BlockIoDiagnostics::shared();
-    let mut servicer = QemuLiveBlockIoServicer::from_shmem_fd(
-        setup.shmem_as_fd(),
-        setup.region().region_len,
-        GATE_SLOT,
-        icount_shift,
-        config.device_size_bytes,
-    )
-    .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+    let mut service_mode = match role {
+        RunRole::Synchronous => BlockServiceMode::Synchronous(Box::new(
+            QemuLiveBlockIoServicer::from_shmem_fd(
+                setup.shmem_as_fd(),
+                setup.region().region_len,
+                GATE_SLOT,
+                icount_shift,
+                config.device_size_bytes,
+            )
+            .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?,
+        )),
+        RunRole::HostWins | RunRole::GuestWins => BlockServiceMode::Asynchronous(
+            QemuLiveBlockHostWorkPool::from_shmem_fd(
+                setup.shmem_as_fd(),
+                setup.region().region_len,
+                GATE_SLOT,
+                icount_shift,
+                config.device_size_bytes,
+            )
+            .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?,
+        ),
+    };
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveBlockIoGateError::DriveRegionMap { source })?;
@@ -341,29 +411,29 @@ fn run_one_scenario(
         .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
         .map_err(|source| QemuLiveBlockIoGateError::DriveHotPath { source })?;
+    let observer = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
+        .map_err(|source| QemuLiveBlockIoGateError::DriveRegionMap { source })?;
 
     let mut advance = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
-    let mut response_delay_applied = false;
+    let mut race = DeviceHostWorkRaceEvidence::default();
+    let mut completion_log = BlockCompletionLogState::default();
     for quantum in 1..=MAX_BLOCK_IO_QUANTA {
         let ceiling = config.busy_ceiling_icount.saturating_mul(quantum);
-        let (next_advance, delayed) = drive_and_service(
+        advance = drive_and_service(
             &mut hot_path,
-            &mut servicer,
+            &observer,
+            &mut service_mode,
             &diagnostics,
             &setup,
             &mut child,
+            role,
+            &mut race,
+            &mut completion_log,
             DriveOptions {
                 ceiling,
                 timeout: config.completion_timeout,
-                response_wall_delay: if response_delay_applied {
-                    Duration::ZERO
-                } else {
-                    role.response_wall_delay()
-                },
             },
         )?;
-        advance = next_advance;
-        response_delay_applied |= delayed;
         if matches!(advance, BlockIoAdvanceOutcome::Failed { .. }) {
             break;
         }
@@ -379,11 +449,14 @@ fn run_one_scenario(
     drop(child);
     drop(host_load);
 
+    let canonical_log = canonical_block_io_log(&completion_log.delivered)?;
     Ok(BlockIoRunOutcome {
         advance,
         diagnostics: diagnostics.snapshot(),
         orderly_child_exit,
-        response_delay_applied,
+        race,
+        completion_observations: completion_log.delivered,
+        canonical_log,
     })
 }
 
@@ -404,17 +477,25 @@ fn run_one_scenario(
 struct DriveOptions {
     ceiling: u64,
     timeout: Duration,
-    response_wall_delay: Duration,
 }
 
+// crucible-lint: allow rust-allow -- the drive boundary joins distinct launch, shared-memory, service, evidence, and scheduling owners.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the drive boundary joins distinct launch, shared-memory, service, evidence, and scheduling owners"
+)]
 fn drive_and_service(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
-    servicer: &mut QemuLiveBlockIoServicer,
+    observer: &MappedSetupRegion,
+    service_mode: &mut BlockServiceMode,
     diagnostics: &BlockIoDiagnostics,
     setup: &QemuHostPluginSetup,
     child: &mut QemuNodeChild,
+    role: RunRole,
+    race: &mut DeviceHostWorkRaceEvidence,
+    completion_log: &mut BlockCompletionLogState,
     options: DriveOptions,
-) -> Result<(BlockIoAdvanceOutcome, bool), QemuLiveBlockIoGateError> {
+) -> Result<BlockIoAdvanceOutcome, QemuLiveBlockIoGateError> {
     let pending = QemuShmemHotPathChannel::start_quantum(
         hot_path,
         crucible::ExecutionHorizon {
@@ -428,36 +509,96 @@ fn drive_and_service(
     let max_polls = bounded_drive_polls(options.timeout);
     let mut last_icount = 0_u64;
     let mut stall_polls = 0_u64;
-    let mut response_delay_applied = false;
     let mut outcome = BlockIoAdvanceOutcome::PausedBelowCeiling { icount: 0 };
     for _ in 0..max_polls {
-        let _ = setup.signal_plugin_wake();
-        let snapshot = servicer
-            .vm_node_snapshot()
-            .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
-        if !response_delay_applied
-            && !options.response_wall_delay.is_zero()
-            && servicer
-                .next_completion_icount()
-                .is_some_and(|deadline| snapshot.current_icount >= deadline)
-        {
-            // This wall-only delay forces QEMU to re-poll at an already reached
-            // delivery icount before the response ring write becomes visible.
-            // The guest remains parked at the same logical time throughout.
-            thread::sleep(options.response_wall_delay);
-            response_delay_applied = true;
-        }
-        let serviced = servicer
-            .service(snapshot.current_icount)
-            .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
-        diagnostics.record(
+        let snapshot = observer
+            .node_slot(GATE_SLOT)
+            .map_err(|source| QemuLiveBlockIoGateError::DriveSlot { source })?
+            .snapshot();
+        diagnostics.observe_slot(
             snapshot.current_icount,
             snapshot.device_io_active != 0,
             snapshot.idle_wake_icount,
-            &serviced,
         );
+        let mut worker_busy = false;
+        let mut signal_guest = snapshot.device_io_active == 0;
+        match service_mode {
+            BlockServiceMode::Synchronous(servicer) => {
+                let pin = servicer
+                    .pin_next_request_completion()
+                    .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+                let new_request = pin.observed.is_some();
+                let delivery_due = pin
+                    .next_completion_icount
+                    .is_some_and(|deadline| snapshot.current_icount >= deadline);
+                if new_request || delivery_due {
+                    let serviced = servicer
+                        .service(snapshot.current_icount)
+                        .map_err(|source| QemuLiveBlockIoGateError::BlockServicer { source })?;
+                    signal_guest |= new_request || serviced.delivered > 0;
+                    record_service_step(diagnostics, &snapshot, &serviced, completion_log);
+                }
+            }
+            BlockServiceMode::Asynchronous(pool) => {
+                if let Some(serviced) = pool
+                    .try_complete()
+                    .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?
+                {
+                    if let Some(completion_icount) = serviced.computed_completion_icount {
+                        if snapshot.current_icount < completion_icount {
+                            race.host_won_race = true;
+                        } else {
+                            race.guest_won_race = true;
+                        }
+                        signal_guest |= matches!(role, RunRole::HostWins);
+                    }
+                    signal_guest |= serviced.delivered > 0;
+                    record_service_step(diagnostics, &snapshot, &serviced, completion_log);
+                }
+                worker_busy = pool.work_in_flight();
+                if !worker_busy {
+                    let pin = pool
+                        .pin_next_request_completion()
+                        .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?;
+                    let new_request = pin.observed.is_some();
+                    let delivery_due = pin
+                        .next_completion_icount
+                        .is_some_and(|deadline| snapshot.current_icount >= deadline);
+                    if new_request || delivery_due {
+                        if let Some(observed) = pin.observed {
+                            if pin
+                                .next_completion_icount
+                                .is_none_or(|deadline| deadline > observed.completion_icount)
+                            {
+                                return Err(QemuLiveBlockIoGateError::PinMismatch {
+                                    observed_completion_icount: observed.completion_icount,
+                                    published_completion_icount: pin.next_completion_icount,
+                                });
+                            }
+                            race.completion_pinned_before_dispatch = true;
+                        }
+                        let delay = if new_request && !race.guest_won_race {
+                            role.worker_delay()
+                        } else {
+                            QemuDeviceHostWorkDelay::None
+                        };
+                        pool.dispatch(snapshot.current_icount, delay)
+                            .map_err(|source| QemuLiveBlockIoGateError::HostWorkPool { source })?;
+                        race.async_dispatches += 1;
+                        worker_busy = true;
+                        signal_guest |= new_request && matches!(role, RunRole::GuestWins);
+                    }
+                }
+            }
+        }
+        if signal_guest {
+            let _ = setup.signal_plugin_wake();
+        }
 
-        if snapshot.current_icount >= options.ceiling {
+        if snapshot.current_icount >= options.ceiling
+            && !worker_busy
+            && snapshot.device_io_active == 0
+        {
             outcome = BlockIoAdvanceOutcome::ReachedCeiling {
                 icount: snapshot.current_icount,
             };
@@ -488,7 +629,65 @@ fn drive_and_service(
     }
 
     let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
-    Ok((outcome, response_delay_applied))
+    Ok(outcome)
+}
+
+fn record_service_step(
+    diagnostics: &BlockIoDiagnostics,
+    snapshot: &crucible_shmem::NodeSlotSnapshot,
+    serviced: &QemuLiveBlockIoServiceStep,
+    completion_log: &mut BlockCompletionLogState,
+) {
+    diagnostics.record(
+        snapshot.current_icount,
+        snapshot.device_io_active != 0,
+        snapshot.idle_wake_icount,
+        serviced,
+    );
+    if let (Some(request_icount), Some(completion_icount)) = (
+        serviced.first_request_icount,
+        serviced.computed_completion_icount,
+    ) {
+        completion_log
+            .pending
+            .push_back(BlockCompletionObservation {
+                request_icount,
+                completion_icount,
+                write: serviced.write_frames_processed > 0,
+            });
+    }
+    for _ in 0..serviced.delivered {
+        if let Some(delivered) = completion_log.pending.pop_front() {
+            completion_log.delivered.push(delivered);
+        }
+    }
+}
+
+fn canonical_block_io_log(
+    observations: &[BlockCompletionObservation],
+) -> Result<Vec<u8>, QemuLiveBlockIoGateError> {
+    let node = node_id(GATE_NODE);
+    let events = observations.iter().map(|observation| {
+        let mut payload = Vec::with_capacity(16);
+        payload.extend_from_slice(&observation.request_icount.to_le_bytes());
+        payload.extend_from_slice(&observation.completion_icount.to_le_bytes());
+        ObservableEvent::io_completion(
+            VirtualTime {
+                ticks: observation.completion_icount,
+            },
+            node.clone(),
+            if observation.write {
+                IoEventKind::BlockWrite
+            } else {
+                IoEventKind::BlockRead
+            },
+            payload,
+        )
+    });
+    let mut log = EventLog::new();
+    log.append_observable_events(events)
+        .map(|append| append.segment_bytes)
+        .map_err(|source| QemuLiveBlockIoGateError::CanonicalLog { source })
 }
 
 /// Reaps the child within a bounded poll budget, force-killing on drop otherwise.
@@ -508,11 +707,12 @@ fn reap_child(child: &mut QemuNodeChild, timeout: Duration) -> bool {
 fn assert_runs_match(
     reference: &BlockIoRunOutcome,
     second: &BlockIoRunOutcome,
+    role: &'static str,
 ) -> Result<(), QemuLiveBlockIoGateError> {
     if !same_advance_class(&reference.advance, &second.advance) {
         return Err(QemuLiveBlockIoGateError::SecondRunDiverged {
             reason: format!(
-                "advance outcome class differed: {:?} vs {:?}",
+                "{role} advance outcome class differed: {:?} vs {:?}",
                 reference.advance, second.advance
             ),
         });
@@ -523,8 +723,16 @@ fn assert_runs_match(
     {
         return Err(QemuLiveBlockIoGateError::SecondRunDiverged {
             reason: format!(
-                "block observations differed: {:?} vs {:?}",
+                "{role} block observations differed: {:?} vs {:?}",
                 reference.diagnostics, second.diagnostics
+            ),
+        });
+    }
+    if reference.canonical_log != second.canonical_log {
+        return Err(QemuLiveBlockIoGateError::SecondRunDiverged {
+            reason: format!(
+                "{role} canonical I/O log differed from synchronous run: {:?} vs {:?}",
+                reference.completion_observations, second.completion_observations
             ),
         });
     }
@@ -649,11 +857,23 @@ pub enum QemuLiveBlockIoGateError {
         /// Underlying block-servicer error.
         source: QemuLiveBlockIoServicerError,
     },
+    /// The asynchronous device host-work pool could not run.
+    #[error("device host-work pool failed")]
+    HostWorkPool {
+        /// Underlying host-work pool error.
+        source: QemuLiveBlockHostWorkPoolError,
+    },
     /// The drive hot path could not map the shared-memory region.
     #[error("map drive shared-memory region failed")]
     DriveRegionMap {
         /// Underlying setup-region mapping error.
         source: crucible_shmem::SetupRegionMapError,
+    },
+    /// The observer mapping could not read the guest node slot.
+    #[error("read drive node slot failed")]
+    DriveSlot {
+        /// Underlying mapped-region access error.
+        source: crucible_shmem::MappedSetupRegionAccessError,
     },
     /// The drive mapped hot-path adapter could not bind the region.
     #[error("bind drive mapped hot path failed")]
@@ -674,6 +894,30 @@ pub enum QemuLiveBlockIoGateError {
     ChildWait {
         /// Underlying child-wait error.
         source: crate::QemuShutdownTargetError,
+    },
+    /// Canonical I/O observations could not be appended to the unified log.
+    #[error("build canonical block-I/O event log failed")]
+    CanonicalLog {
+        /// Underlying event-log error.
+        source: SchedulerError,
+    },
+    /// The pre-dispatch pin did not cover the observed request's completion.
+    #[error(
+        "published completion {published_completion_icount:?} does not pin observed completion {observed_completion_icount}"
+    )]
+    PinMismatch {
+        /// Completion computed directly from the observed request.
+        observed_completion_icount: u64,
+        /// Earliest completion published before dispatch.
+        published_completion_icount: Option<u64>,
+    },
+    /// A certifying race leg did not produce its required ordering.
+    #[error("{role} device host-work race was not forced: {evidence}")]
+    RaceNotForced {
+        /// Race leg that failed.
+        role: &'static str,
+        /// Captured race evidence.
+        evidence: String,
     },
     /// The second run diverged from the reference run.
     #[error("second run diverged from the reference run: {reason}")]

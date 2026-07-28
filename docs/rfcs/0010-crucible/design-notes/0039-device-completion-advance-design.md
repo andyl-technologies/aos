@@ -10,10 +10,20 @@ guest-visible progress. Part B uses B2: after the callback queues an advance,
 the block coroutine yields through QEMU's ordinary `CoQueue`, returning control
 to the AioContext main loop so it can drain either the deadline-publication wake
 fd or the queued advance and ordering barrier. The completion callback commits
-logical time, notifies wake-fd-backed device waiters, clears the pending state,
-and kicks the vCPU. A response that is still physically absent simply parks and
-retries at the same logical icount, satisfying R3 without a second
+logical time while QEMU's RR-thread pending barrier remains armed; QEMU then
+clears that barrier, notifies wake-fd-backed device waiters, and kicks the vCPU.
+A response that is still physically absent simply parks and retries at the same
+logical icount, satisfying R3 without a second
 icount-to-nanosecond conversion in the block driver.
+
+Request observation has a matching deterministic boundary. The launch sets
+`ioeventfd=off` only on the `crucible-shmem` virtio-blk device so QEMU invokes
+its submit callback synchronously from the requesting vCPU path. The callback
+release-publishes the request and device-I/O hold, then forces the current TCG
+reservation to exit. Until the host pins a nonzero completion deadline,
+`max_advance_icount` clamps to the published request coordinate; afterward it
+clamps to that deadline. Host wall time can therefore delay dispatch or
+completion, but cannot move the request or delivery coordinate.
 
 ## 1. Problem (observed, live)
 
@@ -185,7 +195,7 @@ synchronous-delivery shortcut is part of the evidence.
 ## 5. Verification
 
 The standalone `checks.crucible.phase2.qemuDeviceCompletionAdvance` realization
-passes on the Linux builder against the complete 40-patch QEMU package. It:
+passes on the Linux builder against the complete carried QEMU package. It:
 
 - compiles a stock-QEMU negative control for the block-wait API;
 - applies the authoritative series with zero patch fuzz;
@@ -216,5 +226,5 @@ passes on the Linux builder against the complete 40-patch QEMU package. It:
 ## 6. Sequencing / dependencies
 
 - Patch 0039 and its Rust callback trampoline are present in the deterministic
-  40-patch stack. The certifying live block-I/O run and byte-for-byte patch
+  carried stack. The certifying live block-I/O run and byte-for-byte patch
   regeneration gate both pass on the Linux builder.

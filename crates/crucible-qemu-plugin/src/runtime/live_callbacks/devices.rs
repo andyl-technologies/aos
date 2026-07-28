@@ -492,7 +492,13 @@ impl LiveVcpuTimeCallbackState {
                 data,
                 len,
             )
-            .map_err(LiveVcpuTimeCallbackError::live_device)
+            .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        // The submit callback has release-published `device_io_active` and the
+        // request frame. Leave the active TCG reservation now so the sim loop
+        // re-reads max-advance and freezes at this exact request boundary until
+        // the host pins the deterministic completion deadline.
+        (self.force_vcpu_exit)();
+        Ok(())
     }
 
     fn block_poll(

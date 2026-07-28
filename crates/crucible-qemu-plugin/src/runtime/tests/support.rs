@@ -223,6 +223,7 @@ pub(super) fn test_state() -> PluginStatePartition {
 pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
     LiveInstallCapabilities {
         icount_raw: test_icount_raw,
+        force_vcpu_exit: test_force_vcpu_exit,
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
         clock_deadline_ns: Some(test_deadline),
@@ -353,7 +354,7 @@ pub(super) extern "C" fn test_icount_raw() -> u64 {
     0
 }
 
-extern "C" fn test_force_vcpu_exit() {}
+pub(super) extern "C" fn test_force_vcpu_exit() {}
 
 extern "C" fn test_register_wake_fd(_fd: i32) -> i32 {
     WAKE_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);

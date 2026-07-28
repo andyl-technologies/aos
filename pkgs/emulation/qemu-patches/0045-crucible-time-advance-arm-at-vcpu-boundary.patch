@@ -1,0 +1,54 @@
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -128,6 +128,9 @@ void *qemu_plugin_crucible_ipi_delivery_userdata;
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
+ 
++#define QEMU_PLUGIN_TIME_ADVANCE_RESERVED 1
++#define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
++
+ bool qemu_plugin_has_time_control(void)
+ {
+     return has_control;
+@@ -170,9 +173,19 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+     return 0;
+ }
+ 
++static void qemu_plugin_time_advance_arm_on_cpu(CPUState *cpu,
++                                                run_on_cpu_data data)
++{
++    (void)cpu;
++    (void)data;
++    qatomic_store_release(&qemu_plugin_time_advance_pending,
++                          QEMU_PLUGIN_TIME_ADVANCE_ARMED);
++}
++
+ bool qemu_plugin_time_advance_is_pending(void)
+ {
+-    return qatomic_load_acquire(&qemu_plugin_time_advance_pending) != 0;
++    return qatomic_load_acquire(&qemu_plugin_time_advance_pending) ==
++           QEMU_PLUGIN_TIME_ADVANCE_ARMED;
+ }
+ 
+ static void qemu_plugin_advance_time_bh(void *opaque)
+@@ -245,11 +258,18 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+     if (!has_control || !qemu_plugin_time_advance_cb) {
+         return -ENODEV;
+     }
+-    if (qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0, 1) != 0) {
++    if (qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0,
++                        QEMU_PLUGIN_TIME_ADVANCE_RESERVED) != 0) {
+         return -EBUSY;
+     }
++    if (!first_cpu) {
++        qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
++        return -ENODEV;
++    }
+ 
+     qatomic_set(&qemu_plugin_time_advance_target, new_time);
++    run_on_cpu(first_cpu, qemu_plugin_time_advance_arm_on_cpu,
++               RUN_ON_CPU_HOST_ULONG(0));
+     aio_bh_schedule_oneshot(qemu_get_aio_context(),
+                             qemu_plugin_advance_time_bh, NULL);
+     if (first_cpu) {

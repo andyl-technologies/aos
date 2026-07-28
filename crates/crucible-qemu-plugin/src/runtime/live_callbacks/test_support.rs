@@ -16,3 +16,5 @@ pub(super) fn test_preemption_injector() -> crate::PluginPreemptionInjector {
     crate::PluginPreemptionInjector::require(Some(accept_preemption))
         .unwrap_or_else(|error| panic!("test preemption capability should bind: {error}"))
 }
+
+pub(super) extern "C" fn test_force_vcpu_exit() {}

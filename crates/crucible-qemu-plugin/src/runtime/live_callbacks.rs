@@ -31,13 +31,13 @@ use crate::{
     QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue,
-    QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn,
-    QemuPluginTargetArchitecture, QemuRegisterBlkCbFn, QemuRegisterBlkWaitCbFn,
-    QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
-    QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
-    QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling,
-    TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
+    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuForceVcpuExitFn, QemuIcountRawFn,
+    QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn,
+    QemuPluginNetSendFn, QemuPluginTargetArchitecture, QemuRegisterBlkCbFn,
+    QemuRegisterBlkWaitCbFn, QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn,
+    QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn,
+    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, RoundRobinError,
+    SchedulerCeiling, TimeAdvanceCompletion, VcpuHaltTracker, compute_idle_wake_plan,
     handle_network_rx_idle_callback,
 };
 
@@ -61,6 +61,7 @@ static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
 #[derive(Clone, Copy)]
 pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) icount_raw: QemuIcountRawFn,
+    pub(crate) force_vcpu_exit: QemuForceVcpuExitFn,
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
     pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
@@ -167,6 +168,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         };
         Ok(RequiredLiveVcpuTimeCapabilities {
             icount_raw: self.capabilities.icount_raw,
+            force_vcpu_exit: self.capabilities.force_vcpu_exit,
             preemption_injector,
             exact_deadline,
             queued_idle_advance,
@@ -225,6 +227,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 self.execution_model.smp_vcpus(),
                 args.slot(),
                 capabilities.icount_raw,
+                capabilities.force_vcpu_exit,
                 capabilities.preemption_injector,
                 (capabilities.icount_raw)(),
                 capabilities.exact_deadline,
@@ -325,6 +328,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
 #[derive(Clone, Copy)]
 struct RequiredLiveVcpuTimeCapabilities {
     icount_raw: QemuIcountRawFn,
+    force_vcpu_exit: QemuForceVcpuExitFn,
     preemption_injector: PluginPreemptionInjector,
     exact_deadline: ExactDeadlineReader,
     queued_idle_advance: QueuedIdleAdvance,
@@ -620,6 +624,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     shared_shutdown_signaled: AtomicBool,
     plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
+    force_vcpu_exit: QemuForceVcpuExitFn,
     preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
     icount_shift: u8,
@@ -666,6 +671,7 @@ impl LiveVcpuTimeCallbackState {
     pub(super) fn new(
         plugin_id: QemuPluginId,
         icount_raw: QemuIcountRawFn,
+        force_vcpu_exit: QemuForceVcpuExitFn,
         preemption_injector: PluginPreemptionInjector,
         vcpu_count: u32,
         icount_shift: u8,
@@ -706,6 +712,7 @@ impl LiveVcpuTimeCallbackState {
             shared_shutdown_signaled: AtomicBool::new(false),
             plugin_id,
             icount_raw,
+            force_vcpu_exit,
             preemption_injector,
             vcpu_count,
             icount_shift,
@@ -970,10 +977,9 @@ impl LiveVcpuTimeCallbackState {
                         icount_shift: self.icount_shift,
                     },
                 )?;
-                let pending = self
-                    .queued_idle_advance
-                    .enqueue(target_virtual_ns)
-                    .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
+                let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
+                    return Ok(());
+                };
                 self.arm_idle_advance(raw_icount, target_icount, pending)
             }
         }
@@ -1276,19 +1282,25 @@ impl LiveVcpuTimeCallbackState {
         if pending.target_icount == ceiling_icount {
             self.publish_fingerprint_sample(pending.target_icount)?;
         }
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            pending.target_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        let completed_target_icount = pending.target_icount;
         self.logical_icount_offset
             .store(logical_icount_offset, Ordering::Release);
         self.last_icount
-            .store(pending.target_icount, Ordering::Release);
-        let completed_target_icount = pending.target_icount;
+            .store(completed_target_icount, Ordering::Release);
         *pending_slot = None;
+        drop(pending_slot);
         self.all_halted_idle_handled.store(false, Ordering::Release);
+        // Publish the reached coordinate only after clearing the pending token.
+        // The host treats this release-published coordinate as permission to
+        // expose a due device response and wake its coroutine. Publishing first
+        // would let that wake re-enter QEMU while this callback still considered
+        // the queued idle advance pending.
+        PluginShmemOrdering::publish_reached_icount(
+            self.slot.get(),
+            completed_target_icount,
+            self.icount_shift,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         Ok(completed_target_icount)
     }
 
@@ -1391,11 +1403,31 @@ impl LiveVcpuTimeCallbackState {
                 icount_shift: self.icount_shift,
             },
         )?;
-        let pending = self
-            .queued_idle_advance
-            .enqueue(target_virtual_ns)
-            .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
+        let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
+            return Ok(());
+        };
         self.arm_idle_advance((self.icount_raw)(), target_icount, pending)
+    }
+
+    /// Enqueues an idle advance or defers behind QEMU's outstanding barrier.
+    ///
+    /// QEMU notifies every idle and device waiter after releasing an accepted
+    /// advance, so `-EBUSY` means this callback can park and recompute its target
+    /// on that deterministic retry. Guest execution remains frozen by the
+    /// outstanding barrier in the meantime.
+    fn enqueue_idle_advance_or_defer(
+        &self,
+        target_virtual_ns: u64,
+    ) -> Result<Option<PendingIdleAdvance>, LiveVcpuTimeCallbackError> {
+        match self.queued_idle_advance.enqueue(target_virtual_ns) {
+            Ok(pending) => Ok(Some(pending)),
+            Err(QueuedIdleAdvanceError::EnqueueRejected { status, .. })
+                if status == -libc::EBUSY =>
+            {
+                Ok(None)
+            }
+            Err(source) => Err(LiveVcpuTimeCallbackError::QueuedIdleAdvance { source }),
+        }
     }
 
     fn callback_current_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
@@ -1471,21 +1503,22 @@ impl LiveVcpuTimeCallbackState {
     /// never calls. The budget is the scheduler ceiling minus this node's
     /// logical icount offset.
     ///
-    /// When a device-I/O request is in flight and the host has published a
-    /// completion deadline, the budget is additionally capped at that deadline
-    /// (same merge rule as [`compute_idle_wake_plan`]: a zero/retracted deadline
-    /// imposes no cap; a past deadline saturates the budget to zero). This stops
-    /// a *busy* guest from running past a mid-quantum completion, which would
-    /// deliver it late and nondeterministically. The distinct case of a guest
-    /// *halted* on device I/O (where the sim loop stops querying this callback
-    /// altogether) is closed separately by the device-wait callback of the
-    /// SCHED-8 delivery patch, not here.
+    /// When a device-I/O request is in flight, the budget freezes at the current
+    /// coordinate until the host publishes the deterministic completion
+    /// deadline, then advances at most to that deadline. This closes the
+    /// request-observation race: host wall time may delay publication, but the
+    /// guest cannot retire instructions between the request callback and the
+    /// publication that pins its completion. A past deadline likewise
+    /// saturates the budget to zero. The distinct case of a guest *halted* on
+    /// device I/O (where the sim loop stops querying this callback altogether)
+    /// is closed separately by the device-wait callback of the SCHED-8 delivery
+    /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
             match PluginShmemOrdering::device_completion_deadline_icount(self.slot.get()) {
-                0 => ceiling,
+                0 => ceiling.min(self.last_icount.load(Ordering::Acquire)),
                 deadline => ceiling.min(deadline),
             }
         } else {

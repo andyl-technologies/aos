@@ -186,6 +186,9 @@ DETERMINISM (source elimination)                       class  enforces
 PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-rr-fingerprint-helpers phase-1 fp helper ABI F    DET-29, QEMU-43
   crucible-plugin-time-advance .. queued vtime + completion D    TIME-23, TIME-27, DET-1, INV-10
+  crucible-time-advance-commit-barrier  fence RR through plugin commit D  TIME-23, TIME-27, DET-1, INV-10
+  crucible-time-advance-enqueue-kick  kick active vCPU into barrier D  TIME-23, TIME-27, DET-1, INV-10
+  crucible-time-advance-arm-at-vcpu-boundary  arm after TCG exit D  TIME-23, TIME-27, DET-1, INV-10
   crucible-plugin-advance-barrier  order timer BH completion D    PATCH-19, DET-1, INV-10
   crucible-plugin-device-wake ... event-driven device wake   D    PATCH-20, DET-1, INV-10
   crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
@@ -556,15 +559,65 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   plugin/vCPU callback, advances
   `QEMU_CLOCK_VIRTUAL` and dispatches due virtual timers. A two-stage main-loop
   BH barrier then invokes the registered completion callback after BHs produced
-  by those timers. The request path MUST NOT call `main_loop_wait`, `aio_poll`,
-  or `aio_bh_poll`.
+  by those timers. The QEMU-side pending barrier remains armed through that
+  callback and is released only after the plugin has committed the matching
+  logical-time state, so the RR thread cannot resume in the cross-owner commit
+  window. The request path MUST NOT call `main_loop_wait`, `aio_poll`, or
+  `aio_bh_poll`.
 - **Micro-test:** acquire time control, enqueue a known target, prove the callback
   returns before clock movement, run the queued main-loop work, and prove timer BHs run
-  in the normal main loop before the completion callback. Negative controls
-  reject missing ownership/callbacks, overlap, negative targets, and backwards
-  targets with explicit status.
+  in the normal main loop before the completion callback. Assert that the
+  callback still observes the pending barrier and that the barrier is clear
+  only after the callback returns. Negative controls reject missing
+  ownership/callbacks, overlap, negative targets, and backwards targets with
+  explicit status.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D (it is the mechanism every other time patch composes with).
+
+### crucible-time-advance-commit-barrier — cross-owner commit fence
+
+- **Enforces:** [TIME-23], [TIME-27], [DET-1], [INV-10].
+- **Mechanism:** keeps QEMU's pending flag set while the registered plugin
+  completion callback commits its corresponding logical-time state. The sim RR
+  loop also checks that flag at TCG-batch entry and continuation boundaries and
+  parks on the vCPU halt condition while it is set.
+- **Micro-test:** require the plugin completion callback to observe the pending
+  flag, then require the flag to clear after callback return. The live block-I/O
+  gate additionally fails if raw icount advances between enqueue and completion.
+- **Inertness:** all new checks are gated by a plugin-owned pending advance, and
+  the RR-loop checks are additionally gated by sim mode.
+- **Risk:** D.
+
+### crucible-time-advance-enqueue-kick — prompt pending-barrier entry
+
+- **Enforces:** [TIME-23], [TIME-27], [DET-1], [INV-10].
+- **Mechanism:** kicks the active sim vCPU immediately after enqueueing the
+  main-loop advance bottom half. The kick terminates an already-running TCG
+  batch so the RR loop reaches the pending check rather than retiring a stale
+  batch after the advance request has claimed its slot.
+- **Micro-test:** the live block-I/O gate races host completion against guest
+  execution in both directions and requires identical request, completion, and
+  delivery coordinates across repeated synchronous and asynchronous runs.
+- **Inertness:** the kick occurs only after an explicit plugin time-advance
+  request successfully claims the single pending slot.
+- **Risk:** D.
+
+### crucible-time-advance-arm-at-vcpu-boundary — synchronous barrier handshake
+
+- **Enforces:** [TIME-23], [TIME-27], [DET-1], [INV-10].
+- **Mechanism:** reserves the single advance slot, then uses QEMU's synchronous
+  `run_on_cpu` work queue to arm the pending predicate on the vCPU thread. A
+  request from another thread therefore returns only after the current TCG
+  batch has exited and the vCPU has processed the arm work; a request already
+  on that vCPU executes the arm callback directly. The RR loop ignores the
+  reserved state and parks only after the arm callback release-publishes the
+  armed state.
+- **Micro-test:** require one synchronous vCPU-boundary arm per accepted
+  request, require overlap rejection while reserved or armed, and require raw
+  icount to remain fixed from API return through completion.
+- **Inertness:** the work-queue handshake occurs only after an explicit plugin
+  request claims the time-control advance slot.
+- **Risk:** D.
 
 - **[PATCH-18]** The series MUST export a plugin time-control surface that lets
   the plugin acquire ownership and enqueue one explicit absolute virtual-time
@@ -963,8 +1016,10 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   on the requesting vCPU thread. This pins entry into the existing
   `crucible-9p-shmem` raw-message forwarding path instead of leaving the initial
   kick queued on a host-scheduled main-loop eventfd. Completion remains modeled
-  by the 9p I/O sub-node and delivered through the existing wake-fd notifier;
-  virtio-blk retains its asynchronous kick and the block-wait completion barrier.
+  by the 9p I/O sub-node and delivered through the existing wake-fd notifier.
+  The separate virtio-blk launch contract sets `ioeventfd=off` only on each
+  `crucible-shmem` device, then uses the block-wait completion barrier after the
+  synchronous request-observation boundary.
 - **Micro-test:** reconstruct the exact QEMU prefix through patch 0039, compile
   and execute the `virtio_pci_ioeventfd_enabled` predicate before and after this
   patch, and require only sim-mode icount virtio-9p to change from asynchronous
@@ -1380,9 +1435,9 @@ time-control primitives the whole design rests on.
     warning-clean compilation, source-tree provenance, exported-symbol first
     appearance, and monotonic sim-off opt-in for every prefix. Drop-one attribution
     (`checks.crucible.phase2.gates.patchMicrotests.dropOne`) removes each carried
-    patch from the series and observes the result live. For the 40-patch series it
-    reports 24 source-dependency, one build-required, four exported-symbol, and
-    eleven focused semantic attributions. The aggregate rejects composition and
+    patch from the series and observes the result live. It reports a concrete
+    source-dependency, build-required, exported-symbol, or focused-semantic
+    attribution for every patch in the current carried series. The aggregate rejects composition and
     structural fallback classifications, so a later patch cannot silently make
     an earlier patch's focused effect pass. `gate:qemu-inert` depends on this
     aggregate and supplies the completed upstream-equivalence corpus.

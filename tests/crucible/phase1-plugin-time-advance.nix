@@ -5,8 +5,14 @@
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchName = "0010-crucible-plugin-time-advance.patch";
+  commitBarrierPatchName = "0043-crucible-time-advance-commit-barrier.patch";
+  enqueueKickPatchName = "0044-crucible-time-advance-enqueue-kick.patch";
+  vcpuBoundaryPatchName = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
+  commitBarrierPatchSource = builtins.readFile (patchDir + "/${commitBarrierPatchName}");
+  enqueueKickPatchSource = builtins.readFile (patchDir + "/${enqueueKickPatchName}");
+  vcpuBoundaryPatchSource = builtins.readFile (patchDir + "/${vcpuBoundaryPatchName}");
   microtestSource = builtins.readFile ./phase1-plugin-time-advance.c;
   defaultChecks = builtins.readFile ./default.nix;
   qemuPackageResultLines =
@@ -49,6 +55,18 @@
       {
         label = "plugin time advance patch wiring";
         needle = "patch -p1 < \${./qemu-patches/0010-crucible-plugin-time-advance.patch}";
+      }
+      {
+        label = "time advance commit barrier patch wiring";
+        needle = "patch -p1 < \${./qemu-patches/0043-crucible-time-advance-commit-barrier.patch}";
+      }
+      {
+        label = "time advance enqueue kick patch wiring";
+        needle = "patch -p1 < \${./qemu-patches/0044-crucible-time-advance-enqueue-kick.patch}";
+      }
+      {
+        label = "time advance vCPU-boundary arm patch wiring";
+        needle = "patch -p1 < \${./qemu-patches/0045-crucible-time-advance-arm-at-vcpu-boundary.patch}";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
@@ -103,12 +121,46 @@
         needle = "qemu_plugin_time_advance_barrier_bh";
       }
       {
-        label = "completion clears pending before callback";
+        label = "completion clears pending after callback commit";
         needle = "qatomic_store_release(&qemu_plugin_time_advance_pending, 0)";
       }
       {
         label = "RR-loop pending predicate";
         needle = "qemu_plugin_time_advance_is_pending";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/${commitBarrierPatchName}" commitBarrierPatchSource [
+      {
+        label = "RR batch continuation pending barrier";
+        needle = "!qemu_plugin_time_advance_is_pending()";
+      }
+      {
+        label = "RR batch entry pending barrier";
+        needle = "qemu_cond_wait_bql(first_cpu->halt_cond)";
+      }
+      {
+        label = "completion callback precedes pending release";
+        needle = "Keep the RR-thread barrier armed until the plugin has committed";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/${enqueueKickPatchName}" enqueueKickPatchSource [
+      {
+        label = "time advance enqueue vCPU kick";
+        needle = "qemu_cpu_kick(first_cpu)";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/${vcpuBoundaryPatchName}" vcpuBoundaryPatchSource [
+      {
+        label = "reserved versus armed pending states";
+        needle = "QEMU_PLUGIN_TIME_ADVANCE_RESERVED";
+      }
+      {
+        label = "synchronous vCPU work boundary";
+        needle = "run_on_cpu(first_cpu, qemu_plugin_time_advance_arm_on_cpu";
+      }
+      {
+        label = "release-published armed state";
+        needle = "QEMU_PLUGIN_TIME_ADVANCE_ARMED";
       }
     ]
     ++ lib.optionals (hasInfix "main_loop_wait(true" patchSource
@@ -197,6 +249,14 @@
         label = "main-loop reentry negative assertion";
         needle = "callback_path_main_loop_reentry_absent=true";
       }
+      {
+        label = "advance enqueue vCPU kick assertion";
+        needle = "advance_enqueue_kicks_first_vcpu=true";
+      }
+      {
+        label = "advance vCPU-boundary arm assertion";
+        needle = "advance_arms_at_vcpu_boundary=true";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -213,13 +273,26 @@ in
       version = "0";
       src = null;
 
-      inherit microtestSource patchSource;
-      passAsFile = ["microtestSource" "patchSource"];
+      inherit
+        commitBarrierPatchSource
+        enqueueKickPatchSource
+        microtestSource
+        patchSource
+        vcpuBoundaryPatchSource
+        ;
+      passAsFile = [
+        "commitBarrierPatchSource"
+        "enqueueKickPatchSource"
+        "microtestSource"
+        "patchSource"
+        "vcpuBoundaryPatchSource"
+      ];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
         pkgs.patch
+        pkgs.sed
       ];
 
       phases = [
@@ -562,8 +635,53 @@ in
             }
             ICOUNT_COMMON_FIXTURE
 
+            cat > accel/tcg/tcg-accel-ops-rr.c <<'RR_FIXTURE'
+            static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
+                                                            int batch_index)
+            {
+                (void)batch_index;
+
+                return cpu &&
+                       cpu_can_run(cpu) &&
+                       cpu_work_list_empty(cpu) &&
+                       !cpu->exit_request &&
+                       !cpu->stop &&
+                       !cpu->stopped;
+            }
+
+            static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+                                                       CPUState *first_cpu)
+            {
+                while (true) {
+                    int r;
+
+                    if (rr_crucible_sim_mode() &&
+                        (crucible_sim_shmem_dispatch_registered() ||
+                         crucible_sim_observer_registered())) {
+                        r = 0;
+                    }
+                }
+            }
+            RR_FIXTURE
+
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
+            # Patch 0043 is ordered after 0039 in the shipped stack. Preserve
+            # the latter's leading device-wake comment as zero-fuzz trailing
+            # context without pulling the unrelated block-driver fixture into
+            # this focused time-control microtest.
+            sed -i '/^    if (first_cpu) {$/i\
+                /*\
+                 * A Crucible block coroutine can be parked because the guest itself cannot\
+                 * retire instructions while waiting for device I/O.  Re-enter all\
+                 */' plugins/api-system.c
+            patch --batch --fuzz=0 -p1 < "$commitBarrierPatchSourcePath"
+            patch --batch --fuzz=0 -p1 < "$enqueueKickPatchSourcePath"
+            patch --batch --fuzz=0 -p1 < "$vcpuBoundaryPatchSourcePath"
             ! grep -Eq 'main_loop_wait[[:space:]]*\(|aio_poll[[:space:]]*\(|aio_bh_poll[[:space:]]*\(' plugins/api-system.c
+            grep -q '!qemu_plugin_time_advance_is_pending()' accel/tcg/tcg-accel-ops-rr.c
+            grep -q 'qemu_cond_wait_bql(first_cpu->halt_cond)' accel/tcg/tcg-accel-ops-rr.c
+            grep -q 'qemu_cpu_kick(first_cpu)' plugins/api-system.c
+            grep -q 'run_on_cpu(first_cpu, qemu_plugin_time_advance_arm_on_cpu' plugins/api-system.c
             cp "$microtestSourcePath" phase1-plugin-time-advance.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -I. -Iinclude \
@@ -590,9 +708,14 @@ in
             grep -q '^completion_uses_two_stage_bh_barrier=true$' "$out/result"
             grep -q '^timer_bh_precedes_plugin_completion=true$' "$out/result"
             grep -q '^completion_kicks_first_vcpu=true$' "$out/result"
+            grep -q '^advance_enqueue_kicks_first_vcpu=true$' "$out/result"
+            grep -q '^advance_arms_at_vcpu_boundary=true$' "$out/result"
             grep -q '^callback_path_main_loop_reentry_absent=true$' "$out/result"
 
             cp "$patchSourcePath" "$out/${patchName}"
+            cp "$commitBarrierPatchSourcePath" "$out/${commitBarrierPatchName}"
+            cp "$enqueueKickPatchSourcePath" "$out/${enqueueKickPatchName}"
+            cp "$vcpuBoundaryPatchSourcePath" "$out/${vcpuBoundaryPatchName}"
             cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp plugins/api-system.c "$out/api-system.c.patched"
             cat >> "$out/result" <<'RESULT'
@@ -603,6 +726,9 @@ in
             gate.divergence=gate:divergence-bisect
             tasks=T-PATCH-9
             patch=0010-crucible-plugin-time-advance.patch
+            patch=0043-crucible-time-advance-commit-barrier.patch
+            patch=0044-crucible-time-advance-enqueue-kick.patch
+            patch=0045-crucible-time-advance-arm-at-vcpu-boundary.patch
             patched_fixture_exercised=true
             stock_negative_control=true
             stock_negative_control_mode=callback-return-before-queued-work
@@ -616,6 +742,9 @@ in
             qemu_time_advance_two_stage_bh_barrier=true
             qemu_time_advance_overlap_rejected=true
             qemu_time_advance_pending_lifetime_observed=true
+            qemu_time_advance_rr_batch_pending_barrier=true
+            qemu_time_advance_enqueue_kicks_first_vcpu=true
+            qemu_time_advance_arms_at_vcpu_boundary=true
             qemu_time_advance_backward_failure_reported=true
             qemu_main_loop_reentry_from_callback=false
             aio_poll_from_callback=false
