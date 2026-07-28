@@ -15,6 +15,7 @@ fn plugin_args_parse_required_simfd_and_slot() {
     assert_eq!(args.app_random(), None);
     assert_eq!(args.coverage(), PluginSwitch::Off);
     assert_eq!(args.fingerprint(), PluginSwitch::Off);
+    assert_eq!(args.fingerprint_oracle(), PluginSwitch::Off);
     assert_eq!(args.state_dump(), None);
     assert_eq!(args.validate_slot_index(3), Ok(()));
 }
@@ -22,7 +23,7 @@ fn plugin_args_parse_required_simfd_and_slot() {
 #[test]
 fn plugin_args_parse_optional_fds_and_switches() {
     let args = PluginArgs::parse(
-        "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on",
+        "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on,fingerprint_oracle=on",
     )
     .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
 
@@ -42,7 +43,16 @@ fn plugin_args_parse_optional_fds_and_switches() {
     );
     assert!(!args.coverage().is_on());
     assert!(args.fingerprint().is_on());
+    assert!(args.fingerprint_oracle().is_on());
     assert_eq!(args.state_dump(), None);
+}
+
+#[test]
+fn plugin_args_require_fingerprint_for_synchronous_oracle() {
+    assert_eq!(
+        PluginArgs::parse("simfd=4,slot=1,fingerprint_oracle=on"),
+        Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint)
+    );
 }
 
 #[test]

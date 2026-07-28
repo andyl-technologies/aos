@@ -29,7 +29,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -467,6 +467,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+@@ -468,6 +468,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
      return true;
  }
  

@@ -35,6 +35,7 @@
   openTaskIds ? [],
   dependencies ? [],
   hostParallelism ? null,
+  fingerprintOffload ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -406,7 +407,8 @@ in
           pkgs.sed
         ]
         ++ dependencies
-        ++ lib.optionals (hostParallelism != null) [hostParallelism];
+        ++ lib.optionals (hostParallelism != null) [hostParallelism]
+        ++ lib.optionals (fingerprintOffload != null) [fingerprintOffload];
 
       phases = [
         {
@@ -508,6 +510,26 @@ in
               if hostParallelism == null
               then "/dev/null"
               else "${hostParallelism}/result"
+            }" \
+                >> "$out/result"
+            fi
+            if [ -n "${
+              if fingerprintOffload == null
+              then ""
+              else builtins.toString fingerprintOffload
+            }" ]; then
+              sed -n \
+                -e 's/^admission_class=/metric_fingerprint_offload_class=/p' \
+                -e 's/^capture=/metric_fingerprint_capture=/p' \
+                -e 's/^digest_thread=/metric_fingerprint_digest_thread=/p' \
+                -e 's/^synchronous_corpus_identity=/metric_fingerprint_sync_identity=/p' \
+                -e 's/^cadence_unchanged=/metric_fingerprint_cadence_unchanged=/p' \
+                -e 's/^sample_coordinates_unchanged=/metric_fingerprint_coordinates_unchanged=/p' \
+                -e 's/^forced_event_boundaries_unchanged=/metric_fingerprint_forced_boundaries_unchanged=/p' \
+                "${
+              if fingerprintOffload == null
+              then "/dev/null"
+              else "${fingerprintOffload}/result"
             }" \
                 >> "$out/result"
             fi

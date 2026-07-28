@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CONFIG_PLUGIN 1
@@ -17,6 +18,16 @@
 #define g_autoptr(type) type *
 #define g_assert(condition) ((void)sizeof(condition))
 #define G_CHECKSUM_SHA256 2
+#define G_MAXSIZE SIZE_MAX
+#define g_steal_pointer(pp) test_g_steal_pointer((void **)(pp))
+#define g_clear_pointer(pp, destroy)                                             \
+  do {                                                                           \
+    void *clear_pointer_value = *(void **)(pp);                                   \
+    *(void **)(pp) = NULL;                                                        \
+    if (clear_pointer_value != NULL) {                                            \
+      destroy(clear_pointer_value);                                               \
+    }                                                                            \
+  } while (0)
 
 typedef enum ICountMode {
   ICOUNT_DISABLED = 0,
@@ -59,7 +70,7 @@ typedef struct GArray {
 
 typedef struct GByteArray {
   unsigned int len;
-  unsigned char data[32];
+  unsigned char data[1024];
 } GByteArray;
 
 typedef size_t gsize;
@@ -161,6 +172,12 @@ static unsigned int schema_variant;
 static int64_t observed_icount = 9876;
 static bool observed_running;
 static unsigned int qemu_save_device_state_calls;
+static unsigned int dirty_log_start_calls;
+static unsigned int dirty_log_stop_calls;
+static unsigned int global_dirty_tracking;
+static bool test_bql_locked;
+static unsigned int bql_lock_calls;
+static unsigned int bql_unlock_calls;
 static uint8_t serialized_device_state[] = {0x51, 0x45, 0x56, 0x4d, 0x01};
 static QIOChannelBuffer device_state_buffer;
 static QEMUFile device_state_file;
@@ -172,6 +189,99 @@ static RAMBlock ram_blocks[] = {
     {.idstr = "ram.low", .used_length = sizeof(ram0), .host = ram0, .mr = &ram0},
     {.idstr = "ram.high", .used_length = sizeof(ram1), .host = ram1, .mr = &ram1},
 };
+
+#define GLOBAL_DIRTY_MIGRATION (1U << 0)
+
+static void *
+test_g_steal_pointer(void **pointer)
+{
+  void *value = *pointer;
+  *pointer = NULL;
+  return value;
+}
+
+static GByteArray *
+g_byte_array_new(void)
+{
+  return calloc(1, sizeof(GByteArray));
+}
+
+static void
+g_byte_array_append(GByteArray *array, const uint8_t *bytes, size_t length)
+{
+  if (array->len + length > sizeof(array->data)) {
+    fputs("fingerprint capture fixture buffer overflow\n", stderr);
+    abort();
+  }
+  memcpy(array->data + array->len, bytes, length);
+  array->len += length;
+}
+
+static uint8_t *
+g_byte_array_free(GByteArray *array, bool free_segment)
+{
+  uint8_t *data = NULL;
+
+  if (!free_segment) {
+    data = malloc(array->len);
+    if (data != NULL) {
+      memcpy(data, array->data, array->len);
+    }
+  }
+  free(array);
+  return data;
+}
+
+static void
+g_free(void *pointer)
+{
+  free(pointer);
+}
+
+static void
+error_free(Error *error)
+{
+  free(error);
+}
+
+static bool
+bql_locked(void)
+{
+  return test_bql_locked;
+}
+
+static void
+bql_lock(void)
+{
+  bql_lock_calls++;
+  test_bql_locked = true;
+}
+
+static void
+bql_unlock(void)
+{
+  bql_unlock_calls++;
+  test_bql_locked = false;
+}
+
+static bool
+memory_global_dirty_log_start(unsigned int flags, Error **error)
+{
+  (void)error;
+  if (!test_bql_locked) {
+    return false;
+  }
+  dirty_log_start_calls++;
+  global_dirty_tracking |= flags;
+  return true;
+}
+
+static void
+memory_global_dirty_log_stop(unsigned int flags)
+{
+  dirty_log_stop_calls++;
+  global_dirty_tracking &= ~flags;
+}
 
 static GChecksum *
 g_checksum_new(int type)
@@ -833,6 +943,14 @@ test_plugin_fingerprint_exports(void)
   uint8_t ram_digest[32] = {0};
   uint8_t device_digest[32] = {0};
   uint8_t schema_digest[32] = {0};
+  uint8_t captured_ram_digest[32] = {0};
+  uint8_t captured_device_digest[32] = {0};
+  uint8_t *ram_material = NULL;
+  uint8_t *device_material = NULL;
+  uint64_t ram_material_length = 0;
+  uint64_t device_material_length = 0;
+  uint64_t captured_ram_bytes = 0;
+  uint64_t captured_device_bytes = 0;
   const uint64_t expected_hash = expected_ram_hash();
   const uint64_t expected_device_hash = expected_fnv1a_bytes(
       14695981039346656037ULL,
@@ -939,6 +1057,54 @@ test_plugin_fingerprint_exports(void)
           stderr);
     return 1;
   }
+  dirty_log_start_calls = 0;
+  dirty_log_stop_calls = 0;
+  bql_lock_calls = 0;
+  bql_unlock_calls = 0;
+  test_bql_locked = false;
+  global_dirty_tracking = 0;
+  if (qemu_plugin_crucible_fingerprint_capture(
+          &ram_material, &ram_material_length, &captured_ram_bytes,
+          &device_material, &device_material_length,
+          &captured_device_bytes) != 0 ||
+      ram_material == NULL || device_material == NULL ||
+      captured_ram_bytes != crypto_ram_bytes ||
+      captured_device_bytes != crypto_device_bytes ||
+      dirty_log_start_calls != 1 || dirty_log_stop_calls != 1 ||
+      bql_lock_calls != 1 || bql_unlock_calls != 1 || test_bql_locked ||
+      global_dirty_tracking != 0 ||
+      qemu_plugin_crucible_sha256_bytes(
+          ram_material, ram_material_length, captured_ram_digest) != 0 ||
+      qemu_plugin_crucible_sha256_bytes(
+          device_material, device_material_length,
+          captured_device_digest) != 0 ||
+      memcmp(captured_ram_digest, ram_digest, sizeof(ram_digest)) != 0 ||
+      memcmp(captured_device_digest, device_digest,
+             sizeof(device_digest)) != 0) {
+    fputs("detached fingerprint capture did not match synchronous digests\n",
+          stderr);
+    return 1;
+  }
+  qemu_plugin_crucible_fingerprint_capture_free(ram_material);
+  qemu_plugin_crucible_fingerprint_capture_free(device_material);
+  ram_material = NULL;
+  device_material = NULL;
+
+  global_dirty_tracking = GLOBAL_DIRTY_MIGRATION;
+  if (qemu_plugin_crucible_fingerprint_capture(
+          &ram_material, &ram_material_length, &captured_ram_bytes,
+          &device_material, &device_material_length,
+          &captured_device_bytes) != 0 ||
+      dirty_log_start_calls != 1 || dirty_log_stop_calls != 1 ||
+      bql_lock_calls != 2 || bql_unlock_calls != 2 || test_bql_locked ||
+      global_dirty_tracking != GLOBAL_DIRTY_MIGRATION) {
+    fputs("fingerprint capture disturbed an existing dirty-log owner\n",
+          stderr);
+    return 1;
+  }
+  qemu_plugin_crucible_fingerprint_capture_free(ram_material);
+  qemu_plugin_crucible_fingerprint_capture_free(device_material);
+  global_dirty_tracking = 0;
   schema_digest_status = 0;
   if (qemu_plugin_crucible_device_state_schema_sha256(
           schema_digest, &device_sections) != 0 ||
@@ -1064,6 +1230,10 @@ main(void)
   puts("device_state_hash_covers_serialized_non_ram_vmstate=true");
   puts("device_state_error_status_clears_outputs=true");
   puts("crypto_component_digests_are_32_bytes=true");
+  puts("fingerprint_capture_uses_dirty_tracking=true");
+  puts("fingerprint_capture_acquires_bql=true");
+  puts("fingerprint_capture_preserves_existing_dirty_owner=true");
+  puts("captured_component_digests_match_synchronous=true");
   puts("device_state_schema_digest_and_count=true");
   puts("device_state_schema_field_and_subsection_mutations=true");
   puts("observed_icount_and_runstate=true");

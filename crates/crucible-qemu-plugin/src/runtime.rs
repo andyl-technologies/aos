@@ -235,6 +235,7 @@ impl OwnedCallbackRuntimeState {
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
         fingerprint: Option<crate::PluginFingerprintSampling>,
+        fingerprint_oracle: bool,
         state_dump: Option<crate::PluginRawStateDump>,
     ) -> Result<*mut live_callbacks::LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
         // SAFETY: this projection does not move the pinned parent or any
@@ -306,7 +307,7 @@ impl OwnedCallbackRuntimeState {
                     .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
                         source,
                     })?;
-                callback_state.attach_fingerprint(sampling, slot)
+                callback_state.attach_fingerprint(sampling, slot, fingerprint_oracle)?
             }
             None => callback_state,
         };

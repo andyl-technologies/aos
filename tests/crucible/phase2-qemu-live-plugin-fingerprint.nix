@@ -136,8 +136,31 @@ in
           grep -Eq '^matching_final_fingerprint=[0-9a-f]{64}$' "$report"
           grep -Fxq 'deterministic_run_twice=true' "$report"
           grep -Fxq 'second_run_host_load=true' "$report"
+          grep -Fxq 'synchronous_oracle_enabled=false' "$report"
+          grep -Fxq 'synchronous_oracle_matches_all_samples=false' "$report"
           grep -Fxq 'probe_prefix_equal_at_6000000=true' "$report"
           grep -Eq '^probe_count=[1-9][0-9]*$' "$report"
+
+          oracle_report="$TMPDIR/live-plugin-fingerprint-oracle.result"
+          CRUCIBLE_FP_SYNC_ORACLE=1 \
+            CRUCIBLE_FP_SECOND_RUN_LOAD=0 \
+            timeout -k 15 1190 \
+            "$TMPDIR/live-plugin-fingerprint-example/debug/examples/crucible-qemu-live-plugin-fingerprint" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            "$vmlinuz" \
+            "$GUEST_FIRMWARE" \
+            "$run_dir/oracle" \
+            "$GUEST_INITRD" \
+            "$GUEST_KERNEL_APPEND" \
+            > "$oracle_report"
+          cat "$oracle_report"
+          grep -Fxq PASS "$oracle_report"
+          grep -Fxq 'sample_count=5' "$oracle_report"
+          grep -Fxq 'sample_target_icounts=4000000,4000001,8000000,8000001,12000000' "$oracle_report"
+          grep -Fxq 'aggregate_icount_equals_target=true' "$oracle_report"
+          grep -Fxq 'synchronous_oracle_enabled=true' "$oracle_report"
+          grep -Fxq 'synchronous_oracle_matches_all_samples=true' "$oracle_report"
 
           divergence_report="$TMPDIR/live-plugin-fingerprint-divergence.result"
           CRUCIBLE_FP_DIVERGENCE_DUMP=1 \
@@ -164,12 +187,13 @@ in
 
           mkdir -p "$out"
           cp "$report" "$out/result"
+          cp "$oracle_report" "$out/oracle-result"
           cp "$divergence_report" "$out/divergence-result"
           {
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
-            printf 'proven=rust-plugin-fingerprint-authority,periodic-cadence-sampling,frame-delivery-sampling,fault-activation-sampling,run-twice-determinism,restart-probe-equality,instruction-exact-bisection,both-side-raw-state-dump\n'
+            printf 'proven=rust-plugin-fingerprint-authority,async-digest-worker,synchronous-corpus-identity,periodic-cadence-sampling,frame-delivery-sampling,fault-activation-sampling,run-twice-determinism,restart-probe-equality,instruction-exact-bisection,both-side-raw-state-dump\n'
           } >> "$out/result"
         '';
       }
