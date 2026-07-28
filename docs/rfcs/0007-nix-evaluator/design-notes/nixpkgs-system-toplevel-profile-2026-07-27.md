@@ -318,6 +318,13 @@ but empty replay remains opt-in. A small module-local hot-plan PIC is the next
 bounded experiment: it can bypass even the specialized sparse-map hash for
 temporally repeated def-sites without allocating a dense max-IR-id table.
 
+That one-entry-per-module PIC did not improve the sparse-map result. Two exact
+pairs measured +0.208 and +0.245 percent instructions, for a +0.226-percent
+mean; cycles were flat (+0.003 percent), and native wall regressed 5.32 percent.
+The added tag/frame comparison and coherence maintenance cost more than the
+hashes avoided by temporal hits. Commit `94d0c0304` therefore reverts only the
+PIC while retaining the better sparse module/u32 plan index.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
