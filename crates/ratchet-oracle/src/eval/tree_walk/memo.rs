@@ -30,18 +30,19 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::sync::Arc;
 
 use crate::cache::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue, DemandCacheKey,
 };
-use crate::eval::EvalNodeRef;
+use crate::compile::IrId;
+use crate::eval::{EvalModuleId, EvalNodeRef};
+use crate::value::Value;
 #[cfg(feature = "candidate_c_value")]
 use crate::value::compressed::CompressedValueKind;
-use crate::value::Value;
 
 /// Shard count for the L1 shared table.
 ///
@@ -406,6 +407,222 @@ pub(super) enum ReadyCellPlanDecision {
     BelowFloor,
     /// Static dependency analysis could not validate this body.
     Unavailable,
+}
+
+/// Direct capture-free Ready results indexed by module-local IR body ids.
+///
+/// The active empty-only mode uses this table instead of hashing every forced
+/// body through [`ReadyCellPlanCache`]. Each module is classified lazily on its
+/// first relevant force. Within a classified module, one eligibility bit and
+/// one rank base per 64 IR nodes map eligible body ids into compact mutable
+/// states with one masked population count.
+#[derive(Debug, Default)]
+pub(super) struct ReadyEmptyPlanCache {
+    modules: Vec<ReadyEmptyModuleState>,
+    #[cfg(test)]
+    served_hits: u64,
+}
+
+/// Lazy classification state for one evaluator module.
+#[derive(Debug, Default)]
+enum ReadyEmptyModuleState {
+    /// The module has not yet paid static Ready classification.
+    #[default]
+    Unclassified,
+    /// Classification failed and this module must permanently decline.
+    Rejected,
+    /// The module has a direct body-id index, possibly with no eligible bodies.
+    Classified(ReadyEmptyModuleTable),
+}
+
+/// Rank-indexed capture-free sites for one module.
+#[derive(Debug)]
+struct ReadyEmptyModuleTable {
+    eligible_words: Box<[u64]>,
+    rank_bases: Box<[u32]>,
+    sites: Box<[ReadyEmptySiteState]>,
+}
+
+/// Mutable direct-result state for one statically eligible body.
+#[derive(Clone, Copy, Debug, Default)]
+struct ReadyEmptySiteState {
+    captured_frame_count: Option<usize>,
+    ready_value: Option<Value>,
+}
+
+impl ReadyEmptyPlanCache {
+    /// Returns whether `module` still needs its lazy whole-module classification.
+    pub(super) fn module_is_unclassified(&self, module: EvalModuleId) -> bool {
+        self.modules
+            .get(module.index())
+            .is_none_or(|state| matches!(state, ReadyEmptyModuleState::Unclassified))
+    }
+
+    /// Installs one module's statically eligible body ids.
+    ///
+    /// Returns `false` when compact index allocation or rank conversion fails.
+    /// Callers should then reject the module permanently.
+    pub(super) fn classify_module(
+        &mut self,
+        module: EvalModuleId,
+        node_count: usize,
+        eligible: &[IrId],
+    ) -> bool {
+        let Some(table) = ReadyEmptyModuleTable::new(node_count, eligible) else {
+            self.reject_module(module);
+            return false;
+        };
+        self.resize_for_module(module);
+        self.modules[module.index()] = ReadyEmptyModuleState::Classified(table);
+        true
+    }
+
+    /// Permanently declines direct Ready lookup for `module`.
+    pub(super) fn reject_module(&mut self, module: EvalModuleId) {
+        self.resize_for_module(module);
+        self.modules[module.index()] = ReadyEmptyModuleState::Rejected;
+    }
+
+    /// Probes one capture-free body and claims its first observed frame count.
+    pub(super) fn probe(
+        &mut self,
+        def_site: EvalNodeRef,
+        captured_frame_count: usize,
+    ) -> ReadyCellEmptyProbe {
+        let Some(ReadyEmptyModuleState::Classified(module)) =
+            self.modules.get_mut(def_site.module().index())
+        else {
+            return ReadyCellEmptyProbe::Ineligible;
+        };
+        let Some(site) = module.site_mut(def_site.id()) else {
+            return ReadyCellEmptyProbe::Ineligible;
+        };
+        match site.captured_frame_count {
+            Some(planned) if planned != captured_frame_count => ReadyCellEmptyProbe::Ineligible,
+            None => {
+                site.captured_frame_count = Some(captured_frame_count);
+                ReadyCellEmptyProbe::Miss
+            }
+            Some(_) => match site.ready_value {
+                Some(value) => {
+                    #[cfg(test)]
+                    {
+                        self.served_hits = self.served_hits.saturating_add(1);
+                    }
+                    ReadyCellEmptyProbe::Hit(value)
+                }
+                None => ReadyCellEmptyProbe::Miss,
+            },
+        }
+    }
+
+    /// Publishes one successfully completed capture-free result.
+    pub(super) fn publish(
+        &mut self,
+        def_site: EvalNodeRef,
+        captured_frame_count: usize,
+        value: Value,
+    ) -> bool {
+        let Some(ReadyEmptyModuleState::Classified(module)) =
+            self.modules.get_mut(def_site.module().index())
+        else {
+            return false;
+        };
+        let Some(site) = module.site_mut(def_site.id()) else {
+            return false;
+        };
+        if site.captured_frame_count != Some(captured_frame_count) {
+            return false;
+        }
+        site.ready_value = Some(value);
+        true
+    }
+
+    /// Invalidates one direct result after failed normal force completion.
+    pub(super) fn clear(&mut self, def_site: EvalNodeRef) {
+        let Some(ReadyEmptyModuleState::Classified(module)) =
+            self.modules.get_mut(def_site.module().index())
+        else {
+            return;
+        };
+        if let Some(site) = module.site_mut(def_site.id()) {
+            site.ready_value = None;
+        }
+    }
+
+    /// Returns resident direct results and served hits.
+    #[cfg(test)]
+    pub(super) fn counts(&self) -> (usize, u64) {
+        let resident = self
+            .modules
+            .iter()
+            .filter_map(|state| match state {
+                ReadyEmptyModuleState::Classified(module) => Some(module),
+                ReadyEmptyModuleState::Unclassified | ReadyEmptyModuleState::Rejected => None,
+            })
+            .flat_map(|module| module.sites.iter())
+            .filter(|site| site.ready_value.is_some())
+            .count();
+        (resident, self.served_hits)
+    }
+
+    fn resize_for_module(&mut self, module: EvalModuleId) {
+        if self.modules.len() <= module.index() {
+            self.modules
+                .resize_with(module.index() + 1, ReadyEmptyModuleState::default);
+        }
+    }
+}
+
+impl ReadyEmptyModuleTable {
+    fn new(node_count: usize, eligible: &[IrId]) -> Option<Self> {
+        let word_count = node_count.checked_add(63)?.checked_div(64)?;
+        let mut eligible_words = Vec::new();
+        eligible_words.try_reserve_exact(word_count).ok()?;
+        eligible_words.resize(word_count, 0_u64);
+        for id in eligible {
+            let index = id.index();
+            if index >= node_count {
+                continue;
+            }
+            eligible_words[index / 64] |= 1_u64 << (index % 64);
+        }
+
+        let mut rank_bases = Vec::new();
+        rank_bases.try_reserve_exact(word_count).ok()?;
+        let mut rank = 0_u32;
+        for word in &eligible_words {
+            rank_bases.push(rank);
+            rank = rank.checked_add(word.count_ones())?;
+        }
+
+        let site_count = rank as usize;
+        let mut sites = Vec::new();
+        sites.try_reserve_exact(site_count).ok()?;
+        sites.resize(site_count, ReadyEmptySiteState::default());
+        Some(Self {
+            eligible_words: eligible_words.into_boxed_slice(),
+            rank_bases: rank_bases.into_boxed_slice(),
+            sites: sites.into_boxed_slice(),
+        })
+    }
+
+    fn site_mut(&mut self, id: IrId) -> Option<&mut ReadyEmptySiteState> {
+        let index = id.index();
+        let word_index = index / 64;
+        let bit_index = index % 64;
+        let word = *self.eligible_words.get(word_index)?;
+        let bit = 1_u64 << bit_index;
+        if word & bit == 0 {
+            return None;
+        }
+        let lower_mask = bit.wrapping_sub(1);
+        let rank = self
+            .rank_bases
+            .get(word_index)?
+            .checked_add((word & lower_mask).count_ones())?;
+        self.sites.get_mut(rank as usize)
+    }
 }
 
 /// Per-evaluator Ready-cell plan cache shared by census and active lookup.
@@ -1094,6 +1311,66 @@ mod tests {
             panic!("the matching frame count should serve the direct result");
         };
         assert!(hit.raw_eq(value));
+    }
+
+    #[test]
+    fn ready_empty_rank_index_crosses_distant_word_boundaries() {
+        let module = EvalModuleId::new(3);
+        let eligible = [0_u32, 63, 64, 511, 512].map(IrId::new);
+        let mut plans = ReadyEmptyPlanCache::default();
+        assert!(plans.classify_module(module, 513, &eligible));
+
+        for (ordinal, id) in eligible.into_iter().enumerate() {
+            let def_site = EvalNodeRef::new(module, id);
+            assert!(matches!(
+                plans.probe(def_site, 2),
+                ReadyCellEmptyProbe::Miss
+            ));
+            let value = Value::int(ordinal as i64);
+            assert!(plans.publish(def_site, 2, value));
+            let ReadyCellEmptyProbe::Hit(hit) = plans.probe(def_site, 2) else {
+                panic!("eligible body {id:?} should resolve through its compact rank");
+            };
+            assert!(hit.raw_eq(value));
+        }
+
+        assert!(matches!(
+            plans.probe(EvalNodeRef::new(module, IrId::new(62)), 2),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(
+            plans.probe(EvalNodeRef::new(module, IrId::new(513)), 2),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+    }
+
+    #[test]
+    fn ready_empty_index_is_module_qualified_and_preserves_frame_matching() {
+        let first_module = EvalModuleId::new(1);
+        let second_module = EvalModuleId::new(7);
+        let id = IrId::new(64);
+        let first = EvalNodeRef::new(first_module, id);
+        let second = EvalNodeRef::new(second_module, id);
+        let value = Value::int(42);
+        let mut plans = ReadyEmptyPlanCache::default();
+        assert!(plans.classify_module(first_module, 65, &[id]));
+        assert!(plans.classify_module(second_module, 65, &[id]));
+
+        assert!(matches!(plans.probe(first, 3), ReadyCellEmptyProbe::Miss));
+        assert!(plans.publish(first, 3, value));
+        assert!(matches!(
+            plans.probe(first, 2),
+            ReadyCellEmptyProbe::Ineligible
+        ));
+        assert!(matches!(plans.probe(second, 3), ReadyCellEmptyProbe::Miss));
+        let ReadyCellEmptyProbe::Hit(hit) = plans.probe(first, 3) else {
+            panic!("matching module and frame count should serve the value");
+        };
+        assert!(hit.raw_eq(value));
+
+        plans.clear(first);
+        assert!(matches!(plans.probe(first, 3), ReadyCellEmptyProbe::Miss));
+        assert!(matches!(plans.probe(second, 3), ReadyCellEmptyProbe::Miss));
     }
 
     #[test]

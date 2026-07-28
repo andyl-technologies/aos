@@ -223,8 +223,13 @@ impl TreeWalk {
             && !options.typed_apply_thunk_heads_enabled()
             && !options.stg_session_enabled())
         .then(Default::default);
-        let ready_cell_plans =
-            (ready_cell_census.is_some() || ready_cell_directory.is_some()).then(Default::default);
+        let empty_ready_active = ready_cell_directory.is_some()
+            && options.memo_options().local_ready_empty_only
+            && !options.memo_options().stats_enabled;
+        let ready_cell_plans = (ready_cell_census.is_some()
+            || (ready_cell_directory.is_some() && !empty_ready_active))
+            .then(Default::default);
+        let ready_empty_plans = empty_ready_active.then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(
@@ -407,6 +412,7 @@ impl TreeWalk {
             ready_cell_census,
             ready_cell_directory,
             ready_cell_plans,
+            ready_empty_plans,
             memo_def_sites: super::memo::MemoDefSiteTable::default(),
             memo_unhashable_values: HashSet::new(),
             #[cfg(test)]

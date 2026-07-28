@@ -299,6 +299,47 @@ fn empty_only_ready_declines_per_instance_dynamic_scopes() {
 }
 
 #[test]
+fn empty_only_ready_classifies_an_imported_module_after_symbol_adoption() {
+    let directory = std::fs::canonicalize(unique_temp_dir("ready-empty-import"))
+        .expect("temporary import directory canonicalizes");
+    let imported = directory.join("ready.nix");
+    std::fs::write(
+        &imported,
+        r#"
+            let f = _: let answer = 10 + 20 + 12; in answer;
+            in (f 1) + (f 2)
+        "#,
+    )
+    .expect("import source writes");
+    let source = format!("import {}", imported.display());
+    let ir = lower(&source);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        local_ready_enabled: true,
+        local_ready_empty_only: true,
+        local_ready_min_cost: 1,
+        ..MemoOptions::default()
+    });
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    let value = evaluator
+        .eval_root()
+        .expect("imported expression evaluates");
+    let (resident, served_hits) = evaluator.test_empty_ready_cell_counts();
+
+    assert_eq!(value.as_int(), Ok(84));
+    assert!(
+        resident >= 1,
+        "the imported module publishes a direct result"
+    );
+    assert!(
+        served_hits >= 1,
+        "the imported module's remapped IR receives its own rank sidecar"
+    );
+    std::fs::remove_dir_all(directory).expect("temporary import directory removes");
+}
+
+#[test]
 fn local_ready_census_declines_trace_revalidated_impure_nodes() {
     const READS_ENV: &str = r#"
         let f = n:

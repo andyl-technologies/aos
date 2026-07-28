@@ -151,6 +151,7 @@ impl TreeWalk {
             return self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         if empty_ready_only
+            && !stats_enabled
             && let Some((def_site, captured_frame_count, probe)) =
                 self.probe_empty_ready_cell_plan(thunk)
         {
@@ -159,8 +160,8 @@ impl TreeWalk {
                     return match self.finish_forced_value(id, span, source_thunk, guard, value) {
                         Ok(value) => Ok(value),
                         Err(error) => {
-                            if let Some(plans) = self.ready_cell_plans.as_mut() {
-                                plans.clear_empty(def_site);
+                            if let Some(plans) = self.ready_empty_plans.as_mut() {
+                                plans.clear(def_site);
                             }
                             Err(error)
                         }
@@ -175,8 +176,8 @@ impl TreeWalk {
                         guard,
                     ) {
                         Ok(value) => {
-                            if let Some(plans) = self.ready_cell_plans.as_mut() {
-                                plans.publish_empty(def_site, captured_frame_count, value);
+                            if let Some(plans) = self.ready_empty_plans.as_mut() {
+                                plans.publish(def_site, captured_frame_count, value);
                             }
                             Ok(value)
                         }
@@ -315,21 +316,80 @@ impl TreeWalk {
             return None;
         }
         let captured_frame_count = self.captured_env_ref(env).frame_count();
-        let probe = self
-            .ready_cell_plans
-            .as_mut()?
-            .probe_empty(*body, captured_frame_count);
-        if !matches!(probe, ReadyCellEmptyProbe::Unknown) {
-            return Some((*body, captured_frame_count, probe));
+        if self
+            .ready_empty_plans
+            .as_ref()?
+            .module_is_unclassified(body.module())
+        {
+            self.classify_empty_ready_module(body.module());
         }
-        let plan = self.compute_ready_cell_plan(*body, captured_frame_count);
-        let plans = self.ready_cell_plans.as_mut()?;
-        plans.insert(*body, plan);
         Some((
             *body,
             captured_frame_count,
-            plans.probe_empty(*body, captured_frame_count),
+            self.ready_empty_plans
+                .as_mut()?
+                .probe(*body, captured_frame_count),
         ))
+    }
+
+    /// Lazily classifies every potential capture-free Ready body in one module.
+    ///
+    /// Imported symbols have already been remapped into `self.symbols` before a
+    /// module can produce a thunk, so builtin safety checks use the same symbol
+    /// identities as ordinary force-cache classification.
+    fn classify_empty_ready_module(&mut self, module_id: EvalModuleId) {
+        let Some(module) = self.modules.get(module_id.index()) else {
+            if let Some(plans) = self.ready_empty_plans.as_mut() {
+                plans.reject_module(module_id);
+            }
+            return;
+        };
+        let node_count = module.ir.arena.nodes().len();
+        let mut candidates = BTreeSet::new();
+        candidates.insert(module.ir.root.as_u32());
+        for node in module.ir.arena.nodes() {
+            if node.kind == IrKind::ThunkAlloc
+                && let IrData::Node(body) = node.data
+            {
+                candidates.insert(body.as_u32());
+            }
+        }
+
+        let floor = self.options.memo_options().local_ready_min_cost;
+        let mut eligible = Vec::new();
+        if eligible.try_reserve_exact(candidates.len()).is_err() {
+            if let Some(plans) = self.ready_empty_plans.as_mut() {
+                plans.reject_module(module_id);
+            }
+            return;
+        }
+        for body in candidates.into_iter().map(IrId::new) {
+            let speculable = self
+                .modules
+                .get(module_id.index())
+                .is_some_and(|module| Self::subtree_is_speculable(&module.ir, &self.symbols, body));
+            if !speculable {
+                continue;
+            }
+            let def_site = EvalNodeRef::new(module_id, body);
+            if self
+                .memo_static_cost(def_site)
+                .is_none_or(|cost| cost < floor)
+            {
+                continue;
+            }
+            let capture_free = self
+                .modules
+                .get(module_id.index())
+                .and_then(|module| Self::captured_free_variable_dependencies(&module.ir, body, 0))
+                .is_some_and(|dependencies| dependencies.is_empty());
+            if capture_free {
+                eligible.push(body);
+            }
+        }
+        if let Some(plans) = self.ready_empty_plans.as_mut() {
+            let _ = plans.classify_module(module_id, node_count, &eligible);
+        }
     }
 
     /// Derives a cheap worker-local recipe from direct static slot captures.
@@ -1473,6 +1533,9 @@ impl TreeWalk {
     /// Returns resident capture-free direct results and served hits.
     #[cfg(test)]
     pub(crate) fn test_empty_ready_cell_counts(&self) -> (usize, u64) {
+        if let Some(plans) = self.ready_empty_plans.as_ref() {
+            return plans.counts();
+        }
         self.ready_cell_plans
             .as_ref()
             .map_or((0, 0), super::super::memo::ReadyCellPlanCache::empty_counts)
