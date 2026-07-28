@@ -51,6 +51,31 @@ It still confirms only 49 demand-key hashes. This is the current acceptance
 baseline: it retains every in-process cache opportunity without importing data
 or paying cross-run persistence costs.
 
+The serial evaluator constructs only the per-evaluator L0 table; L1 is a
+shared table created with a parallel-demand context. An opt-in memo-economics
+run made the serial result more precise:
+
+```text
+claimed force attempts                 7,961,369
+successfully derived memo keys                49
+unique keys                                   33
+keys observed more than once                   7
+potential repeated occurrences                16
+L0 admissions                                 29
+L0 hits                                       14
+total L0 record time                    3.390 ms
+```
+
+The instrumented run remained byte-identical and peaked at 4,316,908 KiB RSS.
+The admitted L0 population is therefore too small, and record construction too
+cheap, to explain the multi-gigabyte peak. The immediate in-process cache
+problem is effectiveness: its durable-value-hash key model declines almost
+every captured-thunk environment. A same-run key must be able to use
+evaluator-local stable identities, with explicit invalidation at relocation,
+instead of requiring every capture to have a cross-run hash. Independently,
+the terminal liveness evidence below still makes reclamation of historical
+arena state the factor-level memory path.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
