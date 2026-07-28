@@ -478,7 +478,7 @@ in rec {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.patchMicrotests";
           taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-          openTaskIds = [];
+          openTaskIds = ["T-PATCH-2"];
           dependencies = [layer1Injection.rawGate];
         };
         dependencies = [layer1Injection];
@@ -1516,7 +1516,6 @@ in rec {
       attrPath = "checks.crucible.phase5.cliBackendSelection";
       taskIds = [];
       openTaskIds = ["T-CLI-3"];
-      openTaskIds = [];
       dependencies = [
         phase5.cliThinWrapper
         phase5.apiNondeterminism
@@ -1552,7 +1551,6 @@ in rec {
       attrPath = "checks.crucible.phase5.cliRunWorkflow";
       taskIds = [];
       openTaskIds = ["T-CLI-6"];
-      openTaskIds = [];
       dependencies = [
         phase5.cliHermeticDiscovery
         phase4.gates.replayOracle.rawGate
@@ -1599,7 +1597,6 @@ in rec {
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
       taskIds = [];
       openTaskIds = ["T-CLI-7"];
-      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.e2eDeterminism.rawGate
@@ -1622,7 +1619,6 @@ in rec {
       attrPath = "checks.crucible.phase5.cliReplayCheck";
       taskIds = [];
       openTaskIds = ["T-CLI-12"];
-      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -2605,7 +2601,7 @@ in rec {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
         taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-        openTaskIds = [];
+        openTaskIds = ["T-PATCH-2"];
       };
     };
     crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix {

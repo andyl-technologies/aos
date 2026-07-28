@@ -25,7 +25,10 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::Icount;
-use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
+use crucible_shmem::{
+    NodeSlotSnapshot, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, STATUS_IDLE,
+    mmap_setup_region,
+};
 
 pub use self::error::QemuLive9pIoGateError;
 use self::support::{
@@ -170,6 +173,13 @@ pub enum NinepIoAdvanceOutcome {
     ReachedCeiling {
         /// Node icount reached at the ceiling.
         icount: u64,
+    },
+    /// The guest completed 9p I/O and parked with no wake due through the ceiling.
+    QuiescentThroughCeiling {
+        /// Node icount where the guest became idle.
+        icount: u64,
+        /// First deterministic local wake, strictly beyond the scheduler ceiling.
+        idle_wake_icount: u64,
     },
     /// The guest parked below the ceiling (stalled on 9p I/O or idled).
     PausedBelowCeiling {
@@ -696,19 +706,13 @@ fn drive_and_service(
             &serviced,
         );
 
-        // Reaching the scheduler ceiling is not sufficient while a just-serviced
-        // completion is still crossing back into QEMU. Wait for the plugin to
-        // consume the response and release its device-I/O hold before teardown;
-        // otherwise shutdown can make the callback return -1 and turn a valid
-        // response into a spurious virtio I/O error.
-        if snapshot.current_icount >= options.ceiling
-            && snapshot.device_io_active == 0
-            && serviced.processed == 0
-            && serviced.delivered == 0
-        {
-            outcome = NinepIoAdvanceOutcome::ReachedCeiling {
-                icount: snapshot.current_icount,
-            };
+        // Reaching the scheduler boundary is not sufficient while a
+        // just-serviced completion is still crossing back into QEMU. Wait for
+        // the plugin to consume the response and release its device-I/O hold
+        // before teardown; otherwise shutdown can make the callback return -1
+        // and turn a valid response into a spurious virtio I/O error.
+        if let Some(closed) = completed_ceiling_outcome(&snapshot, &serviced, options.ceiling) {
+            outcome = closed;
             break;
         }
         if let Some(status) = child
@@ -737,6 +741,33 @@ fn drive_and_service(
 
     let _ = QemuShmemHotPathChannel::finish_quantum(hot_path, pending);
     Ok((outcome, response_delay_applied))
+}
+
+/// Classifies a fully drained guest observation that closes the scheduler ceiling.
+fn completed_ceiling_outcome(
+    snapshot: &NodeSlotSnapshot,
+    serviced: &super::ninep_io_servicer::QemuLive9pIoServiceStep,
+    ceiling: u64,
+) -> Option<NinepIoAdvanceOutcome> {
+    if snapshot.device_io_active != 0 || serviced.processed != 0 || serviced.delivered != 0 {
+        return None;
+    }
+    if snapshot.current_icount >= ceiling {
+        return Some(NinepIoAdvanceOutcome::ReachedCeiling {
+            icount: snapshot.current_icount,
+        });
+    }
+    // An idle node whose earliest deterministic wake lies beyond the ceiling
+    // has also closed this quantum: no guest work is eligible before the
+    // scheduler boundary. Host polling may observe either this publication or
+    // the preceding busy retirement, so both are valid closure modes and
+    // neither depends on wall-clock timing.
+    (snapshot.status == STATUS_IDLE && snapshot.idle_wake_icount > ceiling).then_some(
+        NinepIoAdvanceOutcome::QuiescentThroughCeiling {
+            icount: snapshot.current_icount,
+            idle_wake_icount: snapshot.idle_wake_icount,
+        },
+    )
 }
 
 /// Connects QMP while pulsing the plugin wake fd after the priming quantum.
@@ -839,11 +870,20 @@ fn certify_run(
         Some("the first 9p completion horizon was not in the future")
     } else if observations.last_device_io_active {
         Some("device I/O remained active after the response")
+    } else if matches!(
+        (
+            observations.last_current_icount,
+            observations.first_completion_horizon,
+        ),
+        (current, Some(horizon)) if current <= horizon
+    ) {
+        Some("the guest did not progress past the first 9p completion horizon")
     } else if !matches!(
         &outcome.advance,
         NinepIoAdvanceOutcome::ReachedCeiling { .. }
+            | NinepIoAdvanceOutcome::QuiescentThroughCeiling { .. }
     ) {
-        Some("the guest did not progress to the scheduler ceiling")
+        Some("the guest did not close the scheduler ceiling")
     } else if require_response_delay && !outcome.response_delay_applied {
         Some("the host-load leg never injected its due-response wall delay")
     } else {

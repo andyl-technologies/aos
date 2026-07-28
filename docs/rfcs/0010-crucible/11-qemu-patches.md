@@ -225,6 +225,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
   crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-14, GHC-12, GHC-16
+  crucible-translation-prefetch-helper dedicated demand TCG helper F PERF-32
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1025,9 +1026,10 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   patch, and require only sim-mode icount virtio-9p to change from asynchronous
   to synchronous. The virtio-rng, virtio-blk, plain-TCG, and sim-without-icount
   results remain unchanged. The live 9p gate additionally boots a mounting
-  guest, requires nonzero request and response frames on `SLOT_9P_IO`, reaches
-  the scheduler ceiling, and reproduces identical icount-domain observations
-  under host load with a deliberately late physical response write.
+  guest, requires nonzero request and response frames on `SLOT_9P_IO`, closes
+  the scheduler ceiling by retirement or a later idle wake, and reproduces
+  identical icount-domain observations under host load with a deliberately
+  late physical response write.
 - **Inertness:** [PATCH-3](a), [PATCH-3](c) — outside sim-mode icount the
   upstream ioeventfd predicate is unchanged; other virtio devices are unchanged.
 - **Risk:** D.
@@ -1340,6 +1342,25 @@ patches are dev-only and **not shipped**.
   `crucible-sim-freeze-warp-at-observation-boundary` (0037) is the root fix; this
   held cleanup is bundled with it. *Gate:* `gate:qemu-inert`. *Spec:* §11.8;
   enforces [DET-30].
+
+### crucible-translation-prefetch-helper — off-by-default demand translation helper (F, perf)
+
+- **Enforces:** [PERF-32], **determinism-preserving admission required**. At a
+  demand translation miss, the RR vCPU remains stopped while a dedicated,
+  registered TCG helper context runs `tb_gen_code`; the requesting vCPU waits
+  synchronously for that exact translation result before continuing.
+- **Micro-test:** reconstruct the exact QEMU prefix through patch 0045, prove
+  the helper source is absent, apply patch 0046, and require the helper entry
+  point. The real translation-heavy cold-boot gate then runs the packaged QEMU
+  with the helper off and on, requires more than 100 completed translation
+  requests, and compares fingerprints and canonical boundary logs bit-for-bit.
+- **Inertness:** the experiment is off by default. Off mode does not start the
+  helper thread and retains the original `mmap_lock` / `tb_gen_code` demand
+  translation path.
+- **Risk:** F — admission remains blocked on any divergence, and the helper
+  stays disabled by default even after a green neutrality proof. *Gate:*
+  `gate:perf-bench`, `gate:single-vm-fingerprint`. *Spec:* §11.8; satisfies
+  [PERF-32], [INV-10].
 
 ## 11.9 The regeneration / rebase pipeline and CI gates
 

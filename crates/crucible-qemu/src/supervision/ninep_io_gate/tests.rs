@@ -1,6 +1,32 @@
 //! Certification and deterministic-projection tests for the live 9p gate.
 
+use super::super::ninep_io_servicer::QemuLive9pIoServiceStep;
 use super::*;
+use crucible_shmem::{KIND_VM, STATUS_RUNNING};
+
+fn idle_snapshot(current_icount: u64, idle_wake_icount: u64) -> NodeSlotSnapshot {
+    NodeSlotSnapshot {
+        current_icount,
+        current_ns: current_icount,
+        max_advance_icount: 100,
+        idle_wake_icount,
+        wake_signal: 0,
+        status: STATUS_IDLE,
+        kind: KIND_VM,
+        device_io_active: 0,
+        publish_gen: 0,
+    }
+}
+
+fn empty_service_step() -> QemuLive9pIoServiceStep {
+    QemuLive9pIoServiceStep {
+        processed: 0,
+        delivered: 0,
+        first_request_icount: None,
+        computed_completion_icount: None,
+        next_completion_icount: None,
+    }
+}
 
 fn certifying_outcome() -> NinepIoRunOutcome {
     NinepIoRunOutcome {
@@ -27,6 +53,14 @@ fn certification_requires_forwarding_completion_and_progress() {
     assert!(certify_run("reference", &outcome, false).is_ok());
     assert!(certify_run("host-load", &outcome, true).is_ok());
 
+    let mut quiescent = certifying_outcome();
+    quiescent.advance = NinepIoAdvanceOutcome::QuiescentThroughCeiling {
+        icount: 99,
+        idle_wake_icount: 101,
+    };
+    quiescent.diagnostics.last_current_icount = 99;
+    assert!(certify_run("host-load", &quiescent, true).is_ok());
+
     let mut missing_forward = certifying_outcome();
     missing_forward.diagnostics.frames_processed = 0;
     assert!(matches!(
@@ -45,6 +79,13 @@ fn certification_requires_forwarding_completion_and_progress() {
     nonfuture_horizon.diagnostics.first_completion_horizon = Some(20);
     assert!(matches!(
         certify_run("reference", &nonfuture_horizon, false),
+        Err(QemuLive9pIoGateError::CertificationFailed { .. })
+    ));
+
+    let mut no_progress_past_completion = certifying_outcome();
+    no_progress_past_completion.diagnostics.last_current_icount = 30;
+    assert!(matches!(
+        certify_run("reference", &no_progress_past_completion, false),
         Err(QemuLive9pIoGateError::CertificationFailed { .. })
     ));
 }
@@ -89,5 +130,40 @@ fn deterministic_projection_excludes_poll_jitter() {
         deterministic_projection(&reference.diagnostics),
         deterministic_projection(&missing_forward.diagnostics),
         "the projection must still reject a run with no forwarded request"
+    );
+}
+
+#[test]
+fn ceiling_closure_accepts_only_drained_idle_wakes_beyond_the_boundary() {
+    let service = empty_service_step();
+    assert_eq!(
+        completed_ceiling_outcome(&idle_snapshot(99, 101), &service, 100),
+        Some(NinepIoAdvanceOutcome::QuiescentThroughCeiling {
+            icount: 99,
+            idle_wake_icount: 101,
+        })
+    );
+    assert_eq!(
+        completed_ceiling_outcome(&idle_snapshot(100, 101), &service, 100),
+        Some(NinepIoAdvanceOutcome::ReachedCeiling { icount: 100 })
+    );
+    assert_eq!(
+        completed_ceiling_outcome(&idle_snapshot(99, 100), &service, 100),
+        None
+    );
+
+    let mut running = idle_snapshot(99, 101);
+    running.status = STATUS_RUNNING;
+    assert_eq!(completed_ceiling_outcome(&running, &service, 100), None);
+
+    let mut active = idle_snapshot(99, 101);
+    active.device_io_active = 1;
+    assert_eq!(completed_ceiling_outcome(&active, &service, 100), None);
+
+    let mut delivered = service;
+    delivered.delivered = 1;
+    assert_eq!(
+        completed_ceiling_outcome(&idle_snapshot(99, 101), &delivered, 100),
+        None
     );
 }

@@ -158,7 +158,7 @@
       }
       {
         label = "Phase 7 waits for Phase 6";
-        needle = "dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate];";
+        needle = "dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.";
       }
       {
         label = "phase-gate-ordering check import";
