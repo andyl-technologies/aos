@@ -29,6 +29,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use crate::compile::mixed_machine::{MixedModulePlan, MixedStatepointId};
 use crate::compile::{Ir, IrId};
 use crate::eval::module::EvalModuleId;
 use crate::eval::thunk::{ForceError, ThunkState};
@@ -190,6 +191,71 @@ pub enum Tier2AllAnyHook {
     },
 }
 
+/// An engine-owned reference to one prepared mixed ready-call executable.
+///
+/// The oracle treats the payload as opaque and returns it only to the same
+/// [`Tier1Engine`] that produced it. Preparation happens before a thunk force is
+/// claimed, so compilation and executable-memory allocation cannot occur while
+/// the evaluator owns an unfinished update.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MixedReadyCallToken(u64);
+
+impl MixedReadyCallToken {
+    /// Creates a token from an engine-local identifier.
+    pub const fn new(engine_id: u64) -> Self {
+        Self(engine_id)
+    }
+
+    /// Returns the engine-local identifier carried by this token.
+    pub const fn engine_id(self) -> u64 {
+        self.0
+    }
+}
+
+/// One prevalidated guarded-call choice for a mixed ready-call activation.
+#[derive(Clone, Copy, Debug)]
+pub struct MixedReadyCallDecision {
+    /// The exact callable value whose identity the native guard checks.
+    pub callable: Value,
+    /// The zero-based guarded target selected for the callable.
+    pub target_ordinal: u32,
+    /// The activation frame containing the target's locals.
+    pub frame: u32,
+}
+
+/// Safe evaluator-owned inputs for one prepared mixed ready-call activation.
+///
+/// Every value remains a rooted [`Value`] across the native call. The backend
+/// may encode these values for its private ABI, but must return
+/// [`MixedReadyCallHook::Completed`] only when the native result exactly equals
+/// `expected_result`; arbitrary native words are never decoded into values.
+#[derive(Debug)]
+pub struct MixedReadyCallActivation<'storage> {
+    /// The outer entry's parameter.
+    pub argument: Value,
+    /// The frame selected for the outer entry.
+    pub entry_frame: u32,
+    /// Frame-local values in row-major order.
+    pub frames: &'storage [Value],
+    /// Number of values in each frame.
+    pub frame_stride: u32,
+    /// Prevalidated guarded-call choices in execution order.
+    pub calls: &'storage [MixedReadyCallDecision],
+    /// The already-known safe value the native result must equal.
+    pub expected_result: Value,
+}
+
+/// Result of running one prepared mixed ready-call activation.
+#[derive(Clone, Copy, Debug)]
+pub enum MixedReadyCallHook {
+    /// Native execution returned the prevalidated safe result.
+    Completed(Value),
+    /// Native execution selected an exact mixed-machine statepoint.
+    SideExit(MixedStatepointId),
+    /// The token, activation geometry, or native result was invalid.
+    Invalid,
+}
+
 /// A pluggable tier-1 JIT engine consulted by the serial force path.
 ///
 /// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
@@ -203,6 +269,27 @@ pub enum Tier2AllAnyHook {
 /// forcing while dispatching native code. Its counters are surfaced through
 /// [`EvalStats`](crate::eval::EvalStats) by the force path, not the engine.
 pub trait Tier1Engine: fmt::Debug {
+    /// Prepares a validated ready-call plan before any force is claimed.
+    ///
+    /// The default implementation declines, preserving the JIT-free evaluator
+    /// path for engines that do not implement mixed execution.
+    fn prepare_mixed_ready_call(&self, plan: &MixedModulePlan) -> Option<MixedReadyCallToken> {
+        let _ = plan;
+        None
+    }
+
+    /// Runs one previously prepared ready-call activation.
+    ///
+    /// The default implementation rejects the opaque token and activation.
+    fn run_mixed_ready_call(
+        &self,
+        token: MixedReadyCallToken,
+        activation: MixedReadyCallActivation<'_>,
+    ) -> MixedReadyCallHook {
+        let _ = (token, activation);
+        MixedReadyCallHook::Invalid
+    }
+
     /// Consulted once when the thunk behind `thunk` is claimed for forcing.
     ///
     /// `id` and `span` identify the forced expression for diagnostics. The engine
