@@ -367,6 +367,10 @@
         needle = "--backend qemu";
       }
       {
+        label = "live performance verification uses a valid reduction count";
+        needle = "verify \"$scenario\" --runs 2";
+      }
+      {
         label = "logical fleet-host sweep";
         needle = "for hosts in 1 2 4 8";
       }
