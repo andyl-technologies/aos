@@ -32,6 +32,30 @@ pub enum PluginFingerprintRunnerError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// A stale translation-prefetch report could not be removed.
+    #[error("cannot prepare translation-prefetch report path {path}")]
+    PrepareTranslationPrefetchReport {
+        /// Artifact path that could not be prepared.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// QEMU did not emit a readable translation-prefetch report.
+    #[error("cannot read translation-prefetch report {path}")]
+    ReadTranslationPrefetchReport {
+        /// Artifact path that could not be read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// QEMU emitted translation-prefetch evidence inconsistent with the launch.
+    #[error("invalid translation-prefetch report {path}: {reason}")]
+    InvalidTranslationPrefetchReport {
+        /// Malformed artifact path.
+        path: PathBuf,
+        /// Stable rejection reason.
+        reason: &'static str,
+    },
     /// A stale per-run terminal dump artifact could not be removed.
     #[error("cannot prepare terminal state-dump path {path}")]
     PrepareStateDump {

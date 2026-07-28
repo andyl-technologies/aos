@@ -62,6 +62,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0043-crucible-time-advance-commit-barrier.patch",
     "0044-crucible-time-advance-enqueue-kick.patch",
     "0045-crucible-time-advance-arm-at-vcpu-boundary.patch",
+    "0046-crucible-translation-prefetch-helper.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each

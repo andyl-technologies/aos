@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "48f340ea792b149d7fddfd81487ca8b84dfa8a13ce19d0035910fd8c16c01545";
+  patchBranchBundleSha256 = "2e7188c472fc1181c88672057d91ecac000bcf49e63fa3873396697331a8d253";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "29e5dfd63181ddb5001a1bbfa9a9af572eb737df";
+  patchBranchHeadCommit = "78068ce3b5ccdbc5602919a588a171a1ac6e9dfb";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -420,6 +420,15 @@ let
       class = "D";
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
       capability = "pending time advance arms synchronously at a stopped-vCPU work boundary";
+    }
+    {
+      file = "0046-crucible-translation-prefetch-helper.patch";
+      branchCommit = "78068ce3b5ccdbc5602919a588a171a1ac6e9dfb";
+      branchTree = "13943c88c2ca35ffc27e7a6b1d00311f6c45330f";
+      catalogName = "crucible-translation-prefetch-helper";
+      class = "F";
+      enforces = "PERF-32";
+      capability = "off-by-default sim translation generation on a dedicated registered TCG helper";
     }
   ];
   catalogOnlyCapabilities = [

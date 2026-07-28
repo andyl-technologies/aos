@@ -81,6 +81,11 @@ pub(super) fn assert_per_patch_evidence() -> Result<(), Box<dyn Error>> {
             "0045-crucible-time-advance-arm-at-vcpu-boundary.patch",
         ),
         (
+            "tests/crucible/phase7-translation-prefetch-neutrality.nix",
+            "",
+            "0046-crucible-translation-prefetch-helper.patch",
+        ),
+        (
             "tests/crucible/phase1-plugin-runtime-apis.nix",
             "tests/crucible/phase1-plugin-runtime-apis.c",
             "0011-crucible-plugin-icount-raw.patch",

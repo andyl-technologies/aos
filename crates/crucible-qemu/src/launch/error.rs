@@ -18,6 +18,9 @@ pub enum QemuLaunchCommandError {
         "terminal state dump requires fingerprint mode, a nonzero target, and an absolute comma-free path"
     )]
     InvalidStateDumpConfiguration,
+    /// A translation-prefetch experiment lacked a safe absolute report path.
+    #[error("translation-prefetch report path must be absolute and comma-free")]
+    InvalidTranslationPrefetchReportPath,
     /// White-box mode lacked a live QEMU port-map validation.
     #[error("white-box QEMU launch requires live setup collision validation")]
     MissingWhiteboxSetupValidation,

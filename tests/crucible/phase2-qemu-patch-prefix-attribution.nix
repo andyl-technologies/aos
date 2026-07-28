@@ -254,6 +254,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0046-crucible-translation-prefetch-helper.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

@@ -1,0 +1,397 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -983,9 +983,14 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+                 CPUJumpCache *jc;
+                 uint32_t h;
+ 
+-                mmap_lock();
+-                tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
+-                mmap_unlock();
++                if (crucible_translation_prefetch_enabled()) {
++                    tb = crucible_translation_prefetch_generate(
++                        cpu, pc, cs_base, flags, cflags);
++                } else {
++                    mmap_lock();
++                    tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
++                    mmap_unlock();
++                }
+ 
+                 /*
+                  * We add the TB in the virtual pc hash table
+diff --git a/accel/tcg/crucible-translation-prefetch.c b/accel/tcg/crucible-translation-prefetch.c
+new file mode 100644
+--- /dev/null
++++ b/accel/tcg/crucible-translation-prefetch.c
+@@ -0,0 +1,153 @@
++/*
++ * Crucible experimental translation-block helper
++ *
++ * This path is deliberately off by default.  At a demand translation miss the
++ * RR vCPU remains stopped, so its architectural state is immutable, while a
++ * dedicated registered TCG context generates the block.  Moving generation to
++ * another host thread is not assumed deterministic: RFC 0010 PERF-32 admits it
++ * only when the real cold-boot fingerprint corpus proves byte identity.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/notify.h"
++#include "qemu/rcu.h"
++#include "qemu/thread.h"
++#include "qemu/error-report.h"
++#include "system/system.h"
++#include "system/tcg.h"
++#include "exec/cpu-common.h"
++#include "exec/translation-block.h"
++#include "hw/core/cpu.h"
++#include "tcg/startup.h"
++
++#include "internal-common.h"
++
++typedef struct CrucibleTranslationRequest {
++    CPUState *cpu;
++    vaddr pc;
++    uint64_t cs_base;
++    uint32_t flags;
++    int cflags;
++    TranslationBlock *result;
++    QemuEvent done;
++} CrucibleTranslationRequest;
++
++typedef struct CrucibleTranslationHelper {
++    QemuMutex lock;
++    QemuCond request_ready;
++    QemuEvent thread_ready;
++    QemuThread thread;
++    CrucibleTranslationRequest *request;
++    Notifier exit_notifier;
++    uint64_t requests;
++    uint64_t completions;
++    bool started;
++} CrucibleTranslationHelper;
++
++static CrucibleTranslationHelper helper;
++
++static void crucible_translation_prefetch_write_report(Notifier *notifier,
++                                                       void *opaque)
++{
++    const char *path = crucible_translation_prefetch_report_path();
++    g_autofree char *contents = NULL;
++    g_autoptr(GError) error = NULL;
++
++    if (!path || !path[0]) {
++        return;
++    }
++
++    contents = g_strdup_printf(
++        "enabled=%s\n"
++        "mode=dedicated-demand-tcg-helper\n"
++        "helper_thread_started=%s\n"
++        "requests=%" PRIu64 "\n"
++        "completions=%" PRIu64 "\n",
++        crucible_translation_prefetch_enabled() ? "true" : "false",
++        helper.started ? "true" : "false",
++        qatomic_read(&helper.requests),
++        qatomic_read(&helper.completions));
++    if (!g_file_set_contents(path, contents, -1, &error)) {
++        warn_report("cannot write Crucible translation-prefetch report %s: %s",
++                    path, error->message);
++    }
++}
++
++static void *crucible_translation_prefetch_thread(void *opaque)
++{
++    rcu_register_thread();
++    tcg_register_thread();
++    qemu_event_set(&helper.thread_ready);
++
++    for (;;) {
++        CrucibleTranslationRequest *request;
++
++        qemu_mutex_lock(&helper.lock);
++        while (!helper.request) {
++            qemu_cond_wait(&helper.request_ready, &helper.lock);
++        }
++        request = helper.request;
++        helper.request = NULL;
++        qemu_mutex_unlock(&helper.lock);
++
++        current_cpu = request->cpu;
++        mmap_lock();
++        request->result = tb_gen_code(request->cpu, request->pc,
++                                      request->cs_base, request->flags,
++                                      request->cflags);
++        mmap_unlock();
++        current_cpu = NULL;
++
++        qatomic_inc(&helper.completions);
++        qemu_event_set(&request->done);
++    }
++
++    return NULL;
++}
++
++void crucible_translation_prefetch_start(void)
++{
++    helper.exit_notifier.notify =
++        crucible_translation_prefetch_write_report;
++    qemu_add_exit_notifier(&helper.exit_notifier);
++
++    if (!crucible_translation_prefetch_enabled()) {
++        return;
++    }
++
++    qemu_mutex_init(&helper.lock);
++    qemu_cond_init(&helper.request_ready);
++    qemu_event_init(&helper.thread_ready, false);
++    qemu_thread_create(&helper.thread, "crucible-tb-helper",
++                       crucible_translation_prefetch_thread, NULL,
++                       QEMU_THREAD_DETACHED);
++    qemu_event_wait(&helper.thread_ready);
++    helper.started = true;
++}
++
++TranslationBlock *crucible_translation_prefetch_generate(
++    CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags, int cflags)
++{
++    CrucibleTranslationRequest request = {
++        .cpu = cpu,
++        .pc = pc,
++        .cs_base = cs_base,
++        .flags = flags,
++        .cflags = cflags,
++    };
++
++    g_assert(helper.started);
++    qemu_event_init(&request.done, false);
++
++    qemu_mutex_lock(&helper.lock);
++    g_assert(!helper.request);
++    helper.request = &request;
++    qatomic_inc(&helper.requests);
++    qemu_cond_signal(&helper.request_ready);
++    qemu_mutex_unlock(&helper.lock);
++
++    qemu_event_wait(&request.done);
++    qemu_event_destroy(&request.done);
++    return request.result;
++}
+diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
+--- a/accel/tcg/internal-common.h
++++ b/accel/tcg/internal-common.h
+@@ -48,6 +48,10 @@ static inline bool cpu_plugin_mem_cbs_enabled(const CPUState *cpu)
+ TranslationBlock *tb_gen_code(CPUState *cpu, vaddr pc,
+                               uint64_t cs_base, uint32_t flags,
+                               int cflags);
++
++void crucible_translation_prefetch_start(void);
++TranslationBlock *crucible_translation_prefetch_generate(
++    CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags, int cflags);
+ void page_init(void);
+ void tb_htable_init(void);
+ void tb_reset_jump(TranslationBlock *tb, int n);
+diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+--- a/accel/tcg/meson.build
++++ b/accel/tcg/meson.build
+@@ -32,5 +32,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
+   'tcg-accel-ops-sim.c',
+   'tcg-accel-ops-preemption.c',
+   'tcg-accel-ops-sim-shmem.c',
++  'crucible-translation-prefetch.c',
+   'watchpoint.c',
+ ))
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -40,6 +40,7 @@
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
+ #include "tcg-accel-ops-sim-shmem.h"
++#include "internal-common.h"
+ #include "system/crucible-sim-ipi.h"
+ #include "system/crucible-sim-preemption.h"
+ 
+@@ -506,6 +507,7 @@ static void *rr_cpu_thread_fn(void *arg)
+     force_rcu.notify = rr_force_rcu;
+     rcu_add_force_rcu_notifier(&force_rcu);
+     tcg_register_thread();
++    crucible_translation_prefetch_start();
+ 
+     bql_lock();
+     qemu_thread_get_self(cpu->thread);
+diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+--- a/accel/tcg/tcg-all.c
++++ b/accel/tcg/tcg-all.c
+@@ -49,6 +49,8 @@ struct TCGState {
+ 
+     bool mttcg_enabled;
+     bool one_insn_per_tb;
++    bool crucible_translation_prefetch;
++    char *crucible_translation_prefetch_report;
+     int splitwx_enabled;
+     unsigned long tb_size;
+ };
+@@ -105,6 +107,28 @@ static void tcg_accel_instance_init(Object *obj)
+ bool mttcg_enabled;
+ bool one_insn_per_tb;
+ 
++bool crucible_translation_prefetch_enabled(void)
++{
++    TCGState *s;
++
++    if (!current_accel()) {
++        return false;
++    }
++    s = TCG_STATE(current_accel());
++    return s->crucible_translation_prefetch;
++}
++
++const char *crucible_translation_prefetch_report_path(void)
++{
++    TCGState *s;
++
++    if (!current_accel()) {
++        return NULL;
++    }
++    s = TCG_STATE(current_accel());
++    return s->crucible_translation_prefetch_report;
++}
++
+ static int tcg_init_machine(MachineState *ms)
+ {
+     TCGState *s = TCG_STATE(current_accel());
+@@ -117,9 +141,16 @@ static int tcg_init_machine(MachineState *ms)
+     tcg_allowed = true;
+     mttcg_enabled = s->mttcg_enabled;
+ 
++    if (s->crucible_translation_prefetch &&
++        strcmp(current_accel_name(), "sim") != 0) {
++        error_report("crucible-translation-prefetch requires -accel sim");
++        return -EINVAL;
++    }
++
+     page_init();
+     tb_htable_init();
+-    tcg_init(s->tb_size * MiB, s->splitwx_enabled, max_cpus);
++    tcg_init(s->tb_size * MiB, s->splitwx_enabled,
++             max_cpus + (s->crucible_translation_prefetch ? 1 : 0));
+ 
+ #if defined(CONFIG_SOFTMMU)
+     /*
+@@ -229,6 +260,39 @@ static void tcg_set_one_insn_per_tb(Object *obj, bool value, Error **errp)
+     qatomic_set(&one_insn_per_tb, value);
+ }
+ 
++static bool tcg_get_crucible_translation_prefetch(Object *obj, Error **errp)
++{
++    TCGState *s = TCG_STATE(obj);
++
++    return s->crucible_translation_prefetch;
++}
++
++static void tcg_set_crucible_translation_prefetch(Object *obj, bool value,
++                                                  Error **errp)
++{
++    TCGState *s = TCG_STATE(obj);
++
++    s->crucible_translation_prefetch = value;
++}
++
++static char *tcg_get_crucible_translation_prefetch_report(Object *obj,
++                                                          Error **errp)
++{
++    TCGState *s = TCG_STATE(obj);
++
++    return g_strdup(s->crucible_translation_prefetch_report);
++}
++
++static void tcg_set_crucible_translation_prefetch_report(Object *obj,
++                                                         const char *value,
++                                                         Error **errp)
++{
++    TCGState *s = TCG_STATE(obj);
++
++    g_free(s->crucible_translation_prefetch_report);
++    s->crucible_translation_prefetch_report = g_strdup(value);
++}
++
+ static int tcg_gdbstub_supported_sstep_flags(void)
+ {
+     /*
+@@ -274,6 +338,27 @@ static void tcg_accel_class_init(ObjectClass *oc, void *data)
+                                    tcg_set_one_insn_per_tb);
+     object_class_property_set_description(oc, "one-insn-per-tb",
+         "Only put one guest insn in each translation block");
++
++    object_class_property_add_bool(oc, "crucible-translation-prefetch",
++        tcg_get_crucible_translation_prefetch,
++        tcg_set_crucible_translation_prefetch);
++    object_class_property_set_description(oc,
++        "crucible-translation-prefetch",
++        "Generate translation blocks on a dedicated helper (experimental)");
++
++    object_class_property_add_str(oc, "crucible-translation-prefetch-report",
++        tcg_get_crucible_translation_prefetch_report,
++        tcg_set_crucible_translation_prefetch_report);
++    object_class_property_set_description(oc,
++        "crucible-translation-prefetch-report",
++        "Write Crucible translation helper evidence at process exit");
++}
++
++static void tcg_accel_instance_finalize(Object *obj)
++{
++    TCGState *s = TCG_STATE(obj);
++
++    g_free(s->crucible_translation_prefetch_report);
+ }
+ 
+ static void sim_accel_class_init(ObjectClass *oc, void *data)
+@@ -290,6 +375,7 @@ static const TypeInfo tcg_accel_type = {
+     .name = TYPE_TCG_ACCEL,
+     .parent = TYPE_ACCEL,
+     .instance_init = tcg_accel_instance_init,
++    .instance_finalize = tcg_accel_instance_finalize,
+     .class_init = tcg_accel_class_init,
+     .instance_size = sizeof(TCGState),
+ };
+diff --git a/include/system/tcg.h b/include/system/tcg.h
+--- a/include/system/tcg.h
++++ b/include/system/tcg.h
+@@ -13,6 +13,14 @@
+ #ifdef CONFIG_TCG
+ extern bool tcg_allowed;
+ #define tcg_enabled() (tcg_allowed)
++
++/*
++ * Crucible's translation-prefetch experiment is restricted to the sim
++ * accelerator and disabled by default.  The vCPU stops at a translation miss
++ * while a dedicated TCG context generates the block on a helper thread.
++ */
++bool crucible_translation_prefetch_enabled(void);
++const char *crucible_translation_prefetch_report_path(void);
+ #else
+ #define tcg_enabled() 0
+ #endif
+diff --git a/tcg/region.c b/tcg/region.c
+--- a/tcg/region.c
++++ b/tcg/region.c
+@@ -32,6 +32,7 @@
+ #include "qapi/error.h"
+ #include "tcg/tcg.h"
+ #include "exec/translation-block.h"
++#include "system/tcg.h"
+ #include "tcg-internal.h"
+ #include "host/cpuinfo.h"
+ 
+@@ -436,7 +437,9 @@ static size_t tcg_n_regions(size_t tb_size, unsigned max_cpus)
+      * dividing the code_gen_buffer among the vCPUs.
+      */
+     /* Use a single region if all we have is one vCPU thread */
+-    if (max_cpus == 1 || !qemu_tcg_mttcg_enabled()) {
++    if (max_cpus == 1 ||
++        (!qemu_tcg_mttcg_enabled() &&
++         !crucible_translation_prefetch_enabled())) {
+         return 1;
+     }
+ 

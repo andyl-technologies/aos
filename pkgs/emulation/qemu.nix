@@ -203,6 +203,7 @@
   # patch -p1 < ${./qemu-patches/0043-crucible-time-advance-commit-barrier.patch}
   # patch -p1 < ${./qemu-patches/0044-crucible-time-advance-enqueue-kick.patch}
   # patch -p1 < ${./qemu-patches/0045-crucible-time-advance-arm-at-vcpu-boundary.patch}
+  # patch -p1 < ${./qemu-patches/0046-crucible-translation-prefetch-helper.patch}
 in
   mkDerivation {
     inherit pname;
