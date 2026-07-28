@@ -371,10 +371,11 @@ impl QemuHostWorkerPool {
                 }
                 _ => {}
             }
-            if let Some(handle) = handle {
-                if handle.join().is_err() && first_error.is_none() {
-                    first_error = Some(QemuHostWorkerPoolError::WorkerPanicked { node });
-                }
+            if let Some(handle) = handle
+                && handle.join().is_err()
+                && first_error.is_none()
+            {
+                first_error = Some(QemuHostWorkerPoolError::WorkerPanicked { node });
             }
         }
         match first_error {

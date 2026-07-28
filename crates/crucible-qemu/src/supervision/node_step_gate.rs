@@ -246,6 +246,10 @@ impl QemuLiveNodeStepGateConfig {
         self.second_run_host_load = second_run_host_load;
         self
     }
+
+    pub(super) fn run_directory(&self) -> &Path {
+        &self.run_directory
+    }
 }
 
 /// Raw-versus-logical accounting for one bounded node step.
@@ -362,108 +366,16 @@ fn run_one_scenario(
     role: RunRole,
 ) -> Result<NodeStepOutcome, QemuLiveNodeStepGateError> {
     let run_directory = config.run_directory.join(role.subdir());
-    fs::create_dir_all(&run_directory).map_err(|source| {
-        QemuLiveNodeStepGateError::PrepareRunDirectory {
-            path: run_directory.clone(),
-            source,
-        }
-    })?;
-
     let host_load = HostLoad::start_if(role.applies_host_load());
-
-    // Diskless-firmware profile with a QMP endpoint. The QMP endpoint is the one
-    // deliberate divergence from the M1 quantum gate: the node factory requires a
-    // typed VMState channel, which the M1 quantum gate never wires.
-    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
-    if let Some(cmdline) = &config.kernel_cmdline {
-        candidate = candidate.with_kernel_cmdline(cmdline.clone());
-    }
-    let profile = candidate
-        .try_into_deterministic()
-        .map_err(|source| QemuLiveNodeStepGateError::LaunchProfile { source })?;
-    profile
-        .guest_entropy_seed_file()
-        .write_to_dir(&run_directory)
-        .map_err(|source| QemuLiveNodeStepGateError::GuestEntropySeed {
-            path: run_directory.clone(),
-            source,
-        })?;
-
-    let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
-        .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    // Build the command through the builder rather than `qemu_launch_command` so
-    // the QMP endpoint can be attached: `build_qemu_node_from_completed_setup`
-    // requires a typed VMState channel, which the M1 quantum gate never wires.
-    let command = QemuLaunchCommandBuilder::new(
-        profile,
-        vm_launch_config(config),
-        path_text(&config.qemu_executable),
-        plugin,
-    )
-    .with_qmp(qmp_config.clone())
-    .build()
-    .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
-
-    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
-    let allocation = RegionAllocation::new(region_config)
-        .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
-    let spawned = spawn_qemu_child_with_fds_in_directory(
-        &command,
+    let mut node = build_live_node(
+        config,
         &run_directory,
-        allocation.layout().region_size,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-    let (child, resources) = spawned.into_parts();
-
-    let setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })?;
-    if !setup.setup_ack().can_schedule() {
-        return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
-    }
-
-    // The production host-I/O runtime maps an INDEPENDENT read-only view of the
-    // same shmem descriptor the node's hot-path channel writes and clones the
-    // plugin wake eventfd so it can rouse a vCPU parked in its between-quanta idle
-    // wait each advance; the node keeps its own owning mappings, so no
-    // channel-ownership refactor is needed.
-    let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
-        setup.shmem_as_fd(),
-        setup.wake_as_fd(),
-        setup.region().region_len,
-        GATE_SLOT,
-    )
-    .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
-
-    // Drive one priming quantum off the boot barrier BEFORE connecting QMP. Right
-    // after the setup handshake the guest is parked at the boot barrier holding
-    // the BQL while the plugin waits for the first ceiling; QEMU's main loop
-    // cannot acquire the BQL, so it never services the QMP `qmp_capabilities`
-    // command and a plain connect times out. Publishing a first ceiling (exactly
-    // as the M1 install gate releases the boot barrier -- via `start_quantum`
-    // alone, no eventfd) makes the guest execute and then park BETWEEN quanta,
-    // where the patch-0025 `rr_wait_io_event` wait releases the BQL. With the BQL
-    // free the main loop runs and QMP negotiates capabilities.
-    prime_guest_off_boot_barrier(&setup, config.completion_timeout)?;
-
-    // Belt-and-suspenders: keep pulsing the plugin wake while connecting so the
-    // main loop keeps iterating even if it briefly re-parks between quanta.
-    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(&run_directory))
-        .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
-
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
-        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
-    let factory_runtime = QemuNodeFactoryRuntime::new(
-        shmem_config,
-        GateSendAuthorizer,
-        gate_shutdown_policy(),
-        gate_async_policy(config.completion_timeout),
-        QemuCrashDetector::new(GATE_CRASH_NODE_ID),
-        runtime,
-    );
-    let mut node = build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime)
-        .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
+        LiveNodeIdentity {
+            node: GATE_NODE,
+            router: GATE_ROUTER,
+            crash_detector: GATE_CRASH_NODE_ID,
+        },
+    )?;
 
     let quanta = drive_busy_window_steps(&mut node, ceilings)?;
     let fingerprint = node
@@ -483,6 +395,99 @@ fn run_one_scenario(
         fingerprint,
         orderly_child_exit,
     })
+}
+
+pub(super) struct LiveNodeIdentity<'a> {
+    pub(super) node: &'a str,
+    pub(super) router: &'a str,
+    pub(super) crash_detector: &'a str,
+}
+
+pub(super) fn build_live_node(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: &Path,
+    identity: LiveNodeIdentity<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    fs::create_dir_all(run_directory).map_err(|source| {
+        QemuLiveNodeStepGateError::PrepareRunDirectory {
+            path: run_directory.to_path_buf(),
+            source,
+        }
+    })?;
+
+    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
+    if let Some(cmdline) = &config.kernel_cmdline {
+        candidate = candidate.with_kernel_cmdline(cmdline.clone());
+    }
+    let profile = candidate
+        .try_into_deterministic()
+        .map_err(|source| QemuLiveNodeStepGateError::LaunchProfile { source })?;
+    profile
+        .guest_entropy_seed_file()
+        .write_to_dir(run_directory)
+        .map_err(|source| QemuLiveNodeStepGateError::GuestEntropySeed {
+            path: run_directory.to_path_buf(),
+            source,
+        })?;
+
+    let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
+        .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
+    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
+    let command = QemuLaunchCommandBuilder::new(
+        profile,
+        vm_launch_config(config, identity.node),
+        path_text(&config.qemu_executable),
+        plugin,
+    )
+    .with_qmp(qmp_config.clone())
+    .build()
+    .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
+
+    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
+    let allocation = RegionAllocation::new(region_config)
+        .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
+    let spawned = spawn_qemu_child_with_fds_in_directory(
+        &command,
+        run_directory,
+        allocation.layout().region_size,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+    let (child, resources) = spawned.into_parts();
+    let setup =
+        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
+            .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })?;
+    if !setup.setup_ack().can_schedule() {
+        return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
+    }
+
+    let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
+        setup.shmem_as_fd(),
+        setup.wake_as_fd(),
+        setup.region().region_len,
+        GATE_SLOT,
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
+    prime_guest_off_boot_barrier(
+        &setup,
+        config.completion_timeout,
+        identity.node,
+        identity.router,
+    )?;
+    let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(run_directory))
+        .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
+
+    let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
+        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32);
+    let factory_runtime = QemuNodeFactoryRuntime::new(
+        shmem_config,
+        GateSendAuthorizer,
+        gate_shutdown_policy(),
+        gate_async_policy(config.completion_timeout),
+        QemuCrashDetector::new(identity.crash_detector),
+        runtime,
+    );
+    build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime)
+        .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })
 }
 
 /// Advances the node through each busy-window ceiling with a caller re-issue loop.
@@ -596,11 +601,13 @@ fn assert_runs_match(
 fn prime_guest_off_boot_barrier(
     setup: &crate::QemuHostPluginSetup,
     timeout: Duration,
+    node_name: &str,
+    router_name: &str,
 ) -> Result<(), QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(GATE_NODE), GATE_SLOT)
-        .with_router(node_id(GATE_ROUTER), SLOT_NET_ROUTER as u32);
+    let shmem_config = QemuQuantumShmemConfig::new(node_id(node_name), GATE_SLOT)
+        .with_router(node_id(router_name), SLOT_NET_ROUTER as u32);
     let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeHotPath { source })?;
 
@@ -678,10 +685,10 @@ fn connect_qmp_priming_main_loop(
 }
 
 /// Builds the diskless-firmware VM launch config for the node-step run.
-fn vm_launch_config(config: &QemuLiveNodeStepGateConfig) -> QemuVmLaunchConfig {
+fn vm_launch_config(config: &QemuLiveNodeStepGateConfig, node_name: &str) -> QemuVmLaunchConfig {
     let kernel = launch_artifact("kernel", &config.kernel);
     let vm = QemuVmLaunchConfig::new_diskless(
-        GATE_NODE,
+        node_name,
         kernel,
         launch_artifact("firmware", &config.firmware),
     );
