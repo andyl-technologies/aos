@@ -1,6 +1,8 @@
 //! Attribute sets, `let`/`inherit` bindings, attribute paths, and the
 //! parse-time binding normalization and merging logic.
 
+use std::collections::HashMap;
+
 use super::*;
 
 impl<'a> Parser<'a> {
@@ -129,6 +131,7 @@ impl<'a> Parser<'a> {
         bindings: Vec<NodeId>,
     ) -> Result<Vec<NodeId>, ParseError> {
         let mut merged = Vec::new();
+        let mut static_targets = HashMap::new();
         for binding in bindings {
             let binding = self.normalize_binding_path(binding)?;
             let Some(symbol) = self.binding_target_symbol(binding)? else {
@@ -136,15 +139,10 @@ impl<'a> Parser<'a> {
                 continue;
             };
 
-            let mut merged_binding = Some(binding);
-            for existing in &mut merged {
-                if self.binding_target_symbol(*existing)? == Some(symbol) {
-                    *existing = self.merge_binding_nodes(*existing, binding)?;
-                    merged_binding = None;
-                    break;
-                }
-            }
-            if let Some(binding) = merged_binding {
+            if let Some(&index) = static_targets.get(&symbol) {
+                merged[index] = self.merge_binding_nodes(merged[index], binding)?;
+            } else {
+                static_targets.insert(symbol, merged.len());
                 merged.push(binding);
             }
         }
