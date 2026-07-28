@@ -175,6 +175,17 @@ repeats and the L0 served 576,389 hits, but two clean samples retired
 forces. The cache's limiting cost is structural key derivation and record
 materialization, not the table lookup or a lack of intra-run reuse.
 
+A bounded direct-value L0 path then stored representation-self-contained
+scalars without constructing or rehydrating a closed payload. Candidate-C
+boxed integers and floats remain payload-backed because their words name arena
+cells; heap and position-bearing values also retain the old path. At floor zero
+two clean samples retired 145,941,654,201--145,951,546,965 instructions, only
+about 0.055 percent below the payload-only result. At the accepted floor 64 the
+same build retired 136,199,366,638--136,259,249,242 instructions, within run
+noise of the preceding result. Direct scalar replay is sound and worth keeping,
+but the material opportunity is avoiding durable key and payload work for
+equivalent Ready thunk cells, not specializing more payload scalar cases.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
