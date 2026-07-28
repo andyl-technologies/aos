@@ -108,9 +108,20 @@ fn run() -> Result<(), String> {
     );
     match &report.advance {
         NinepIoAdvanceOutcome::ReachedCeiling { icount } => {
-            println!("advance_outcome=reached-ceiling");
+            println!("advance_outcome=closed-ceiling");
+            println!("ceiling_closure=retired-to-ceiling");
             println!("guest_progressed_past_ninep_io=true");
             println!("advance_icount={icount}");
+        }
+        NinepIoAdvanceOutcome::QuiescentThroughCeiling {
+            icount,
+            idle_wake_icount,
+        } => {
+            println!("advance_outcome=closed-ceiling");
+            println!("ceiling_closure=idle-wake-beyond-ceiling");
+            println!("guest_progressed_past_ninep_io=true");
+            println!("advance_icount={icount}");
+            println!("advance_idle_wake_icount={idle_wake_icount}");
         }
         NinepIoAdvanceOutcome::PausedBelowCeiling { icount } => {
             println!("advance_outcome=paused-below-ceiling");

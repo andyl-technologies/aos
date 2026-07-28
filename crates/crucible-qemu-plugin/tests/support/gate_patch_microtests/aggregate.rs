@@ -29,9 +29,9 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "gate=gate:patch-microtests");
     assert_contains(
         &aggregate,
-        "taskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\" \"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",
+        "taskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",
     );
-    assert_contains(&aggregate, "openTaskIds ? []");
+    assert_contains(&aggregate, "openTaskIds ? [\"T-PATCH-2\"]");
     assert_contains(&aggregate, "open_tasks=${builtins.concatStringsSep");
     assert_contains(&aggregate, "status=complete");
     assert_contains(&aggregate, "drop_one_composition_count=0");
@@ -291,8 +291,9 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
     assert_contains(
         &default_checks,
-        "taskIds = [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"",
+        "taskIds = [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-20\"",
     );
+    assert_contains(&default_checks, "openTaskIds = [\"T-PATCH-2\"]");
     assert_contains(
         &default_checks,
         "taskIds = [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
