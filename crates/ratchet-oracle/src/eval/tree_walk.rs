@@ -661,10 +661,6 @@ pub struct TreeWalk {
     // Static direct-slot plans shared by the Ready-cell census and active
     // directory. Absent unless one of those opt-in modes is actually active.
     ready_cell_plans: Option<memo::ReadyCellPlanCache>,
-    // Rank-indexed direct results for the serial GC-off, stats-free
-    // capture-free Ready specialization. The general captured and census
-    // paths continue to use `ready_cell_plans`.
-    ready_empty_plans: Option<memo::ReadyEmptyPlanCache>,
     // Per-def-site static admission decisions for the content memo, computed
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the
