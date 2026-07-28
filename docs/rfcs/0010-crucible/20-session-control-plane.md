@@ -1254,3 +1254,28 @@ pub enum SessionError {
     routes that capability to a wrapped live backend, `QemuNode` binds and
     retains a mediated listener, and `SimDouble`/`MockSimulationBackend` return
     typed `Unsupported` errors.
+- [ ] **T-SESS-14** Make the non-`Passed` terminal outcomes reachable: derive the
+  session's terminal `Outcome` from the run verdict (18 §9) — `Failed` on a
+  violated property, `Timeout` on budget exhaustion, `Crashed` on an unrecovered
+  node crash — instead of entering `Stopped` with a fixed verdict, and forbid any
+  surface from synthesizing a terminal status the engine did not produce.
+  — satisfies [ASRT-23], [SESS-6]; spec §4, §9 of 18.
+  - Defect (audit 2026-07-28): `crucible-session/src/session/engine.rs` has one
+    production site that supplies a terminal outcome other than `Stopped`, and it
+    is hardcoded `Outcome::Passed`; `Outcome::Failed`, `Outcome::Timeout`, and
+    `Outcome::Crashed` are unreachable outside tests. The CLI compensates in
+    `crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
+    outcome is `Passed` under `--until property-violation`, and by deriving
+    `Timeout` from a CLI-side budget comparison. A harness whose purpose is
+    finding failures therefore cannot report one from its engine.
+  - Plan: (1) fold the assertion layer's run verdict into the engine's stop path
+    so `enter_stopped` takes the verdict rather than a literal; (2) map
+    budget exhaustion and unrecovered node crash onto `Timeout` / `Crashed` at
+    the same site; (3) delete the compensating inversion in the CLI so exit codes
+    are a pure projection of the engine outcome ([CLI-16]); (4) add a
+    harness-lint rule forbidding a literal `Outcome::` construction outside the
+    single stop path.
+  - Gate: extend `checks.crucible.phase5.sessionLifecycle` with a negative
+    control per terminal outcome — a scenario that must produce each of
+    `Failed`, `Timeout`, `Crashed` — so a regression to a constant verdict fails
+    the gate.
