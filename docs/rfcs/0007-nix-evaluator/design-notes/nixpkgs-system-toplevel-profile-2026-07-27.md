@@ -155,6 +155,19 @@ rejected flat scratch allocation. Three exact samples retired
 about 1.7-percent peak-RSS reduction from the geometric-capture baseline; the
 first two cycle samples were distorted upward by builder contention.
 
+An opt-in Ready-lifecycle census then tested whether a second in-process
+structural table could expose missed reuse without changing the ordinary hot
+path. Across 7,961,369 force-path key samples, the cost floor admitted only 49
+exact recipes: 33 unique recipes, 16 repeats after an earlier recipe was Ready,
+and no repeats overlapping a Pending recipe. The existing L0 already served 14
+of those 16 repeats. The two missed repeats account for only 1,024 bytes of
+conservatively estimated thunk work, while candidate derivation declined 181
+dynamic-scope and 629 unknown-capture cases. A second map over the same key
+cannot materially help this workload. The useful next in-process experiment
+must make identity/admission cheaper or move reuse to the thunk/def-site
+representation; lowering the cost floor with the current key machinery was
+already instruction-negative.
+
 Enabling a fresh persistent cache independently exposed a correctness defect:
 cached-import hydration did not remap the symbol carried by an
 `IrData::SearchPath` node, so `<nix/fetchurl.nix>` resolved through an unrelated
