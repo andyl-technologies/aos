@@ -38,6 +38,9 @@ pub(super) fn fuzz_dispatch_route(
     backend_plan: &BackendSelectionPlan,
     plan: &FuzzDriverPlan,
 ) -> Option<FuzzDispatchRoute> {
+    if backend_plan.target == BackendExecutionTarget::Local && is_packaged_backend(backend_plan) {
+        return Some(FuzzDispatchRoute::LocalPackagedBackend);
+    }
     if plan.family.is_builtin_fault_campaign() {
         return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
     }
@@ -48,9 +51,6 @@ pub(super) fn fuzz_dispatch_route(
         )
     {
         return Some(FuzzDispatchRoute::LocalDouble);
-    }
-    if backend_plan.target == BackendExecutionTarget::Local && is_packaged_backend(backend_plan) {
-        return Some(FuzzDispatchRoute::LocalPackagedBackend);
     }
     None
 }

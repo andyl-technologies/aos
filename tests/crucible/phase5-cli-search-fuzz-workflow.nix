@@ -489,12 +489,12 @@
         needle = "fn run_local_qemu_fuzz_workflow";
       }
       {
-        label = "search live backend evidence";
-        needle = "append_live_qemu_backend_proof(&mut outcome, \"search\", report)";
+        label = "search rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"search\")";
       }
       {
-        label = "fuzz live backend evidence";
-        needle = "append_live_qemu_backend_proof(&mut outcome, \"fuzz\", report)";
+        label = "fuzz rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"fuzz\")";
       }
       {
         label = "stored fuzz family loader";

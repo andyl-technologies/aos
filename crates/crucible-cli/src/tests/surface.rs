@@ -2241,6 +2241,28 @@ pub(super) fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exi
 }
 
 #[test]
+pub(super) fn cli_unwired_qemu_workflows_never_fall_back_to_the_double() {
+    let backend = ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/test/qemu"),
+        plugin: PathBuf::from("/test/plugin"),
+        qemu_build_id: String::from("test-build"),
+        qemu_patch_series_hash: String::from("test-patches"),
+        plugin_abi: String::from("test-plugin-abi"),
+        shmem_abi_version: String::from("test-shmem-abi"),
+        qemu_source: QemuDiscoverySource::Flag,
+        plugin_source: QemuDiscoverySource::Flag,
+    };
+
+    for command in [
+        "run", "save", "resume", "fork", "verify", "search", "fuzz", "debug",
+    ] {
+        let error = reject_unwired_qemu_workflow(&backend, command)
+            .expect_err("an unwired QEMU workflow must fail instead of using the double");
+        assert_qemu_workflow_unwired(&error, command);
+    }
+}
+
+#[test]
 pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;

@@ -157,8 +157,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "debug live QEMU execution";
-        needle = "crucible: debug live-qemu icount=";
+        label = "debug rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(&backend, \"debug\")";
       }
       {
         label = "coordinate flag group";

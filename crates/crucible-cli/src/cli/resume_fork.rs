@@ -19,30 +19,16 @@ pub(super) fn run_local_double_fork_workflow(
 }
 
 pub(super) fn run_local_qemu_fork_workflow(
-    thin_plan: &CliThinWrapperPlan,
+    _thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    fork_plan: &ForkInvocationPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    _fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
-    let live = run_live_qemu_backend_probe_for_command(backend)?;
-    let evidence = fork_handle_evidence(fork_plan)?;
-    let mut outcome = run_local_double_fork_workflow_with_driver(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        fork_plan,
-        evidence,
-        default_fork_interactive_driver(fork_plan),
-    )?;
-    append_local_qemu_fork_identity(&mut outcome, backend_plan)?;
-    if let Some(report) = live.as_ref() {
-        append_live_qemu_backend_proof(&mut outcome, "fork", report);
-    }
-    Ok(outcome)
+    reject_unwired_qemu_workflow(backend, "fork")
 }
 
 pub(super) fn default_fork_interactive_driver(
@@ -1559,126 +1545,6 @@ pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'st
         crucible::Decision::AppRandom(_) => "app_random",
         crucible::Decision::ControlFault(_) => "control_fault",
     }
-}
-
-pub(super) fn append_local_qemu_verify_identity(
-    outcome: &mut BackendCommandOutcome,
-    backend_plan: &BackendSelectionPlan,
-) -> Result<(), CliError> {
-    let Some(ResolvedLocalBackend::Qemu {
-        qemu_build_id,
-        qemu_patch_series_hash,
-        plugin_abi,
-        shmem_abi_version,
-        ..
-    }) = backend_plan.resolved_backend.as_ref()
-    else {
-        return Err(backend_error(
-            "local QEMU verify requires a resolved QEMU backend identity",
-        ));
-    };
-    outcome.stdout.push(format!(
-        "verify-qemu-runner\tfingerprint_source=control-client-execution-fingerprint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
-    ));
-    Ok(())
-}
-
-pub(super) fn append_local_qemu_save_identity(
-    outcome: &mut BackendCommandOutcome,
-    backend_plan: &BackendSelectionPlan,
-) -> Result<(), CliError> {
-    let Some(ResolvedLocalBackend::Qemu {
-        qemu_build_id,
-        qemu_patch_series_hash,
-        plugin_abi,
-        shmem_abi_version,
-        ..
-    }) = backend_plan.resolved_backend.as_ref()
-    else {
-        return Err(backend_error(
-            "local QEMU save requires a resolved QEMU backend identity",
-        ));
-    };
-    outcome.stdout.push(format!(
-        "save-qemu-runner\tmaterialization=create-savepoint-reply\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
-    ));
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("qemu"),
-        kind: String::from("save_qemu_runner"),
-        summary: format!(
-            "materialization=create-savepoint-reply qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    Ok(())
-}
-
-pub(super) fn append_local_qemu_resume_identity(
-    outcome: &mut BackendCommandOutcome,
-    backend_plan: &BackendSelectionPlan,
-    proof: &ModelCheckpointVmResumeRealizationProof,
-) -> Result<(), CliError> {
-    let Some(ResolvedLocalBackend::Qemu {
-        qemu_build_id,
-        qemu_patch_series_hash,
-        plugin_abi,
-        shmem_abi_version,
-        ..
-    }) = backend_plan.resolved_backend.as_ref()
-    else {
-        return Err(backend_error(
-            "local QEMU resume requires a resolved QEMU backend identity",
-        ));
-    };
-    let proof_summary = proof.field_summary();
-    outcome.stdout.push(format!(
-        "resume-qemu-runner\t{proof_summary}\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
-    ));
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("qemu"),
-        kind: String::from("resume_qemu_runner"),
-        summary: format!(
-            "{proof_summary} qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    Ok(())
-}
-
-pub(super) fn append_local_qemu_fork_identity(
-    outcome: &mut BackendCommandOutcome,
-    backend_plan: &BackendSelectionPlan,
-) -> Result<(), CliError> {
-    let Some(ResolvedLocalBackend::Qemu {
-        qemu_build_id,
-        qemu_patch_series_hash,
-        plugin_abi,
-        shmem_abi_version,
-        ..
-    }) = backend_plan.resolved_backend.as_ref()
-    else {
-        return Err(backend_error(
-            "local QEMU fork requires a resolved QEMU backend identity",
-        ));
-    };
-    outcome.stdout.push(format!(
-        "fork-qemu-runner\tmaterialization=child-session-savepoint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
-    ));
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("qemu"),
-        kind: String::from("fork_qemu_runner"),
-        summary: format!(
-            "materialization=child-session-savepoint qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    Ok(())
 }
 
 pub(super) fn run_remote_workflow(

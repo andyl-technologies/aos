@@ -409,7 +409,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         &mut FakeSeedEntropySource::new(0),
     )?
     .expect("save should resolve a seed");
-    let mut qemu_outcome = execute_backend_routed_command(
+    let error = execute_backend_routed_command(
         &plan_cli_invocation(&qemu_cli),
         &plan_backend_selection(&qemu_cli)?.expect("save should require backend"),
         Some(&qemu_seed_plan),
@@ -417,53 +417,10 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         None,
         Some(&qemu_save_plan),
         &mut NullBackendCommandRunner,
-    )?;
-    export_savepoint_handle(&qemu_save_plan, &mut qemu_outcome)?;
-    assert_eq!(qemu_outcome.status, BackendCommandStatus::Passed);
-    assert!(qemu_outcome.terminal_savepoint.is_some());
-    assert!(qemu_outcome.savepoint_oracle.is_some());
-    assert!(qemu_outcome.stdout.iter().any(|line| {
-        line.starts_with("save-qemu-runner\tmaterialization=create-savepoint-reply\tqemu_build_id=")
-            && line.contains("qemu_patch_series=")
-            && line.contains("plugin_abi=")
-            && line.contains("shmem_abi=")
-    }));
-    assert!(
-        qemu_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "save_qemu_runner")
-    );
-    let qemu_handle = fs::read_to_string(qemu_out)?;
-    assert!(qemu_handle.contains("label\tqemu-save\n"));
-    assert!(qemu_handle.contains("oracle\tfat==thin-passed\n"));
-
-    let qemu_dispatch_out = temp.path().join("qemu-dispatch.crucible-savepoint");
-    let qemu_dispatch_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("qemu"),
-        String::from("--qemu"),
-        qemu,
-        String::from("--plugin"),
-        plugin,
-        String::from("--seed"),
-        String::from("17"),
-        String::from("save"),
-        scenario.display().to_string(),
-        String::from("--at"),
-        String::from("quiescence"),
-        String::from("--label"),
-        String::from("qemu-dispatch-save"),
-        String::from("--out"),
-        qemu_dispatch_out.display().to_string(),
-    ]);
-    dispatch(&qemu_dispatch_cli)?;
-    let qemu_dispatch_handle = fs::read_to_string(qemu_dispatch_out)?;
-    assert!(qemu_dispatch_handle.contains("label\tqemu-dispatch-save\n"));
-    assert!(qemu_dispatch_handle.contains("oracle\tfat==thin-passed\n"));
+    )
+    .expect_err("local QEMU save must not execute the recording double");
+    assert_qemu_workflow_unwired(&error, "save");
+    assert!(!qemu_out.exists());
 
     Ok(())
 }
@@ -2484,15 +2441,13 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
 }
 
 #[test]
-pub(super) fn cli_fork_workflow_executes_local_qemu_handle_with_identity()
--> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fork_workflow_rejects_unwired_local_qemu_execution() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
-    let artifact_dir = temp.path().join("qemu-fork-artifacts");
     let store_root = temp.path().join("store");
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
-    let inherited_seed = seed_to_u64(form.seed());
     let scenario = form.scenario_def();
     let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {
@@ -2517,8 +2472,6 @@ pub(super) fn cli_fork_workflow_executes_local_qemu_handle_with_identity()
     let cli = Cli::parse_from([
         String::from("crucible"),
         String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
         String::from("--backend"),
         String::from("qemu"),
         String::from("--qemu"),
@@ -2543,54 +2496,10 @@ pub(super) fn cli_fork_workflow_executes_local_qemu_handle_with_identity()
         backend_plan.resolved_backend,
         Some(ResolvedLocalBackend::Qemu { .. })
     ));
-    let outcome =
-        run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)?;
-
-    assert_eq!(outcome.status, BackendCommandStatus::Passed);
-    assert_eq!(outcome.exit_code, 0);
-    assert!(outcome.terminal_savepoint.is_some());
-    assert!(outcome.savepoint_oracle.is_some());
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains("label=qemu-child")
-            && line.contains("final=virtual-time")
-            && line.contains("frontier_ticks=2")
-    }));
-    let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
-    let expected_plugin_abi = required_qemu_plugin_abi();
-    let expected_shmem_abi = crucible::SHMEM_ABI_VERSION.to_string();
-    assert!(outcome.stdout.iter().any(|line| {
-        line == &format!(
-            "fork-qemu-runner\tmaterialization=child-session-savepoint\tqemu_build_id={expected_qemu_build_id}\tqemu_patch_series=sha256-test-qemu-patch-series\tplugin_abi={expected_plugin_abi}\tshmem_abi={expected_shmem_abi}"
-        )
-    }));
-    assert!(
-        outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "fork_qemu_runner")
-    );
-    assert_fork_artifact_replays(&cli, &outcome, inherited_seed)?;
-
-    let dispatch_artifact_dir = temp.path().join("qemu-fork-dispatch-artifacts");
-    let dispatch_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        dispatch_artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("qemu"),
-        String::from("--qemu"),
-        qemu,
-        String::from("--plugin"),
-        plugin,
-        String::from("fork"),
-        handle_path.display().to_string(),
-        String::from("--label"),
-        String::from("qemu-dispatch-child"),
-    ]);
-    dispatch(&dispatch_cli)?;
-    assert!(fs::read_dir(&dispatch_artifact_dir)?.next().is_some());
+    let error =
+        run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)
+            .expect_err("local QEMU fork must not execute the double-backed fork");
+    assert_qemu_workflow_unwired(&error, "fork");
 
     Ok(())
 }

@@ -205,17 +205,6 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         if let Some(fuzz_plan) = &fuzz_plan {
             match fuzz_dispatch_route(&backend_plan, fuzz_plan) {
                 Some(FuzzDispatchRoute::BuiltInFaultCampaignProof) => {
-                    if let Some(backend @ ResolvedLocalBackend::Qemu { .. }) =
-                        backend_plan.resolved_backend.as_ref()
-                        && let Some(live) = run_live_qemu_backend_probe_for_command(backend)?
-                        && emit_human
-                    {
-                        println!(
-                            "crucible: fuzz live-qemu icount={} fingerprint={}",
-                            live.completed_icount,
-                            format_content_hash_ref(live.execution_fingerprint.hash)
-                        );
-                    }
                     run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
                     return Ok(());
                 }
@@ -370,29 +359,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Commands::Debug(args) => {
-            let plan = plan_debug_invocation(cli, args)?;
+            let _plan = plan_debug_invocation(cli, args)?;
             let backend = require_selftest_qemu_backend(cli)?;
-            let live = run_live_qemu_backend_probe_for_command(&backend)?;
-            if !cli.quiet {
-                println!(
-                    "crucible: debug target={} coordinate={} mode={} listen={} verb={}",
-                    plan.target.label(),
-                    plan.coordinate.label(),
-                    plan.mode_label(),
-                    plan.gdb_listen,
-                    plan.verb.label()
-                );
-                if let Some(report) = live {
-                    println!(
-                        "crucible: debug live-qemu icount={} fingerprint={} proto={} shmem-abi={}",
-                        report.completed_icount,
-                        format_content_hash_ref(report.execution_fingerprint.hash),
-                        report.negotiated_proto_version,
-                        report.negotiated_abi_version
-                    );
-                }
-            }
-            Ok(())
+            reject_unwired_qemu_workflow(&backend, "debug").map(|_| ())
         }
     }
 }

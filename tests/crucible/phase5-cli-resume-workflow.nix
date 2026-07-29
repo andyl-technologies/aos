@@ -175,28 +175,12 @@
         needle = "fn run_local_qemu_resume_workflow";
       }
       {
-        label = "resume local-QEMU live backend execution";
-        needle = "append_live_qemu_backend_proof(&mut outcome, \"resume\", report)";
+        label = "resume rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"resume\")";
       }
       {
-        label = "resume local-QEMU realization output";
-        needle = "resume-qemu-runner";
-      }
-      {
-        label = "resume local-QEMU canonical log";
-        needle = "resume_qemu_runner";
-      }
-      {
-        label = "resume local-QEMU proof derivation";
-        needle = "fn realize_local_qemu_resume(";
-      }
-      {
-        label = "resume local-QEMU coordinator invocation";
-        needle = "realize_model_checkpoint_vm_resume_from_savepoint(";
-      }
-      {
-        label = "resume local-QEMU realization summary";
-        needle = "proof.field_summary()";
+        label = "resume local-QEMU no-double assertion";
+        needle = "no in-process double fallback was executed";
       }
       {
         label = "resume terminal configuration report";
@@ -501,44 +485,12 @@
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
-        label = "process qemu resume JSONL regression";
-        needle = "cli_resume_qemu_process_jsonl_reports_identity_and_oracle";
+        label = "process qemu resume rejection regression";
+        needle = "cli_resume_qemu_process_rejects_unwired_execution";
       }
       {
-        label = "process qemu resume runner kind";
-        needle = "\"resume_qemu_runner\"";
-      }
-      {
-        label = "process qemu resume oracle kind";
-        needle = "\"resume_oracle_validation\"";
-      }
-      {
-        label = "process qemu resume patch series";
-        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
-      }
-      {
-        label = "process qemu resume materialization";
-        needle = "materialization=qemu-vm-realization";
-      }
-      {
-        label = "process qemu resume model executor";
-        needle = "executor=model-checkpoint";
-      }
-      {
-        label = "process qemu resume branch";
-        needle = "branch=ancestor-replay";
-      }
-      {
-        label = "process qemu resume runtime proof";
-        needle = "runtime=blake3:";
-      }
-      {
-        label = "process qemu resume ancestor proof";
-        needle = "ancestor_configuration=blake3:";
-      }
-      {
-        label = "process qemu resume replay proof";
-        needle = "replayed_decisions=1";
+        label = "process qemu resume rejection";
+        needle = "local QEMU resume execution is unavailable";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -619,7 +571,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-resume-workflow-target" \
               -p crucible-cli \
-              cli_resume_qemu_process_jsonl_reports_identity_and_oracle \
+              cli_resume_qemu_process_rejects_unwired_execution \
               -- --test-threads=1
 
             qemu_pid=""
