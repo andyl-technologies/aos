@@ -8,20 +8,7 @@
   tracePluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   liveFingerprintGateSource = builtins.readFile ./phase2-qemu-nvcpu-fingerprint.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   failures =
     lib.optionals (!(hasInfix "crucible_sim_observer_clamp_cpu_budget" patchSource)) [

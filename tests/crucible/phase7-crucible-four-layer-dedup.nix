@@ -24,27 +24,9 @@
   ratchetSeamGate = builtins.readFile ./phase7-crucible-cas-fleet-ratchet-seam.nix;
   fleetStore = pkgs.crucible-fleet-store;
 
-  hasInfix = needle: haystack:
-    needle == ""
-    || builtins.replaceStrings [needle] [""] haystack != haystack;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   fleetEquivalenceRawDependency =
     "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";

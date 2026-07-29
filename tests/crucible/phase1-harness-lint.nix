@@ -38,29 +38,8 @@
   harnessLintScanCode = normalize harnessLintScanRust;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (i: i) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   charAt = content: index: builtins.substring index 1 content;
 

@@ -18,9 +18,7 @@
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
 
-  hasInfix = needle: haystack:
-    needle == ""
-    || builtins.replaceStrings [needle] [""] haystack != haystack;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -46,23 +44,7 @@
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
   rpcAbiVersion = "${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}";
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [

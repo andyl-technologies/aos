@@ -60,6 +60,16 @@ rec {
   in
     sufLen <= strLen && builtins.substring (strLen - sufLen) sufLen str == suffix;
 
+  ## Test whether a string contains a given substring anywhere.
+  ##
+  ## The empty needle is contained in every string. Otherwise the needle is
+  ## present exactly when deleting it changes the haystack.
+  ## # Type
+  ## `string -> string -> bool`
+  hasInfix = needle: haystack:
+    needle == ""
+    || builtins.replaceStrings [needle] [""] haystack != haystack;
+
   ## Remove a prefix from a string if present, otherwise return unchanged.
   ## # Type
   ## `string -> string -> string`

@@ -18,38 +18,9 @@
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;

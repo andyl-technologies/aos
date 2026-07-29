@@ -8,20 +8,7 @@
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
   tracePluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   failures =
     lib.optionals (!(hasInfix "qemu_plugin_register_sim_shmem_observer_cb" patchSource)) [

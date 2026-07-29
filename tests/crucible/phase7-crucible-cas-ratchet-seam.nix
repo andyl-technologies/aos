@@ -9,27 +9,9 @@
   casManifest = builtins.readFile ../../crates/crucible-cas/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
 
-  hasInfix = needle: haystack:
-    needle == ""
-    || builtins.replaceStrings [needle] [""] haystack != haystack;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [

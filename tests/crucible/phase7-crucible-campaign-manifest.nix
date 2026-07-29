@@ -20,27 +20,9 @@
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   fleetStore = pkgs.crucible-fleet-store;
 
-  hasInfix = needle: haystack:
-    needle == ""
-    || builtins.replaceStrings [needle] [""] haystack != haystack;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   campaignContinuityRawDependency =
     "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";

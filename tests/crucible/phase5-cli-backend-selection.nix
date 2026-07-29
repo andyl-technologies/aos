@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-3"],
+  taskIds ? ["T-CLI-19"],
+  openTaskIds ? ["T-CLI-3" "T-CLI-20"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -21,38 +21,9 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
-  forbiddenFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -252,6 +223,32 @@
         label = "host PATH QEMU launch";
         needle = "Command::new(\"qemu";
       }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "ELF dynamic-symbol parser";
+        needle = "fn defined_global_dynamic_symbols(";
+      }
+      {
+        label = "dynamic-symbol section selection";
+        needle = "ELF_SECTION_DYNAMIC_SYMBOLS";
+      }
+      {
+        label = "undefined dynamic-symbol rejection";
+        needle = "section_index == ELF_SYMBOL_UNDEFINED_SECTION";
+      }
+      {
+        label = "global dynamic-symbol binding validation";
+        needle = "ELF_SYMBOL_BINDING_GLOBAL | ELF_SYMBOL_BINDING_WEAK";
+      }
+      {
+        label = "ELF symbol-table adversarial controls";
+        needle = "names outside .dynsym must not impersonate exported symbols";
+      }
+      {
+        label = "undefined-symbol adversarial control";
+        needle = "undefined dynamic symbols must not satisfy plugin discovery";
+      }
     ];
 
   failureText = builtins.concatStringsSep "\n" failures;
@@ -323,6 +320,13 @@ in
             -p crucible-cli \
             cli_backend_selection \
             -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-cli-backend-selection-target" \
+            -p crucible-cli \
+            cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation \
+            -- --test-threads=1
         '';
       }
       {
@@ -337,6 +341,8 @@ in
           open_tasks=$OPEN_TASK_IDS
           status=complete
           evidence_scope=backend-routing-live-qemu-and-production-api
+          plugin_validation=elf64-dynsym-defined-global
+          plugin_negative_controls=names-only,undefined,non-elf
           RESULT
         '';
       }

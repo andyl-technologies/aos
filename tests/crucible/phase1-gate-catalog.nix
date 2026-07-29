@@ -22,20 +22,7 @@
   phaseGateWiringCheck = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
   rfcConsistencyCheck = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
 
-  hasInfix = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0
-      then [0]
-      else if maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.any (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   gateNameFromCatalogLine = line: let
     matched = builtins.match ".*`(gate:[a-z0-9-]+)`.*" line;
@@ -66,14 +53,6 @@
   unknownTargets =
     builtins.filter (gate: !(builtins.elem gate catalogGates)) phaseGateTargets;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   failures =
     map (gate: "${gate}: canonical gate lacks a phase-gate CI target") missingTargets
