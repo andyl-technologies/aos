@@ -80,11 +80,16 @@ const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
+#[cfg(any(test, feature = "test-double"))]
+const BACKEND_VALUE_NAME: &str = "auto|qemu|double";
+#[cfg(not(any(test, feature = "test-double")))]
+const BACKEND_VALUE_NAME: &str = "auto|qemu";
 #[cfg(test)]
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
 const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
 const SAVE_GUEST_MARKER_CMDLINE_PREFIX: &str = "crucible-guest-marker=";
+#[cfg(any(test, feature = "test-double"))]
 const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
     "gate:layer0-determinism",
     "gate:content-address",
@@ -135,7 +140,7 @@ struct Cli {
     #[arg(
         long,
         value_enum,
-        value_name = "auto|qemu|double",
+        value_name = BACKEND_VALUE_NAME,
         default_value_t = Backend::Auto,
         global = true
     )]
@@ -190,6 +195,7 @@ enum Backend {
     /// Use patched QEMU locally.
     Qemu,
     /// Use the in-process test double.
+    #[cfg(any(test, feature = "test-double"))]
     Double,
 }
 

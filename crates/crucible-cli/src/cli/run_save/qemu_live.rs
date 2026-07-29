@@ -31,7 +31,10 @@ pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestRep
     } else {
         None
     };
+    #[cfg(any(test, feature = "test-double"))]
     let verified = verify_selftest_corpus(args)?;
+    #[cfg(not(any(test, feature = "test-double")))]
+    let verified = Vec::new();
     let mut gates = Vec::with_capacity(selected_gates.len());
     for gate in selected_gates {
         let runner = if selftest_gate_uses_real_backend(&gate) {
@@ -42,6 +45,7 @@ pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestRep
         let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
             qemu_backend.as_ref().and_then(|backend| match backend {
                 ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
+                #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => None,
             })
         } else {

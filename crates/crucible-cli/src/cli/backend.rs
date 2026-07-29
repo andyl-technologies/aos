@@ -43,6 +43,7 @@ impl BackendSelectionPlan {
                                 Some(ResolvedLocalBackend::Qemu { qemu, plugin, .. }),
                                 BackendSelectionReason::AutoQemuArtifactsSupplied,
                             ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
+                            #[cfg(any(test, feature = "test-double"))]
                             (
                                 Backend::Auto,
                                 Some(ResolvedLocalBackend::Double),
@@ -67,6 +68,7 @@ impl BackendSelectionPlan {
     pub(super) fn proves_t_cli_5(&self) -> bool {
         match (&self.target, &self.resolved_backend, self.requested_backend) {
             (BackendExecutionTarget::RemoteDaemon, None, _) => true,
+            #[cfg(any(test, feature = "test-double"))]
             (BackendExecutionTarget::Local, Some(ResolvedLocalBackend::Double), Backend::Auto)
             | (
                 BackendExecutionTarget::Local,
@@ -103,11 +105,12 @@ impl BackendSelectionPlan {
 
     pub(super) fn should_announce(&self, quiet: bool) -> bool {
         !quiet
-            && matches!(
-                self.reason,
-                BackendSelectionReason::AutoFallbackDouble
-                    | BackendSelectionReason::AutoQemuArtifactsSupplied
-            )
+            && match self.reason {
+                BackendSelectionReason::AutoQemuArtifactsSupplied => true,
+                #[cfg(any(test, feature = "test-double"))]
+                BackendSelectionReason::AutoFallbackDouble => true,
+                _ => false,
+            }
     }
 
     pub(super) fn announcement(&self) -> String {
@@ -119,6 +122,7 @@ impl BackendSelectionPlan {
             ) => String::from(
                 "crucible: backend = qemu (--backend auto; patched QEMU and plugin discovered)",
             ),
+            #[cfg(any(test, feature = "test-double"))]
             (
                 BackendExecutionTarget::Local,
                 Some(ResolvedLocalBackend::Double),
@@ -126,6 +130,7 @@ impl BackendSelectionPlan {
             ) => String::from(
                 "crucible: backend = double (--backend auto; patched QEMU/plugin not discoverable)",
             ),
+            #[cfg(any(test, feature = "test-double"))]
             (
                 BackendExecutionTarget::Local,
                 Some(ResolvedLocalBackend::Double),
@@ -167,6 +172,7 @@ pub(super) enum ResolvedLocalBackend {
         qemu_source: QemuDiscoverySource,
         plugin_source: QemuDiscoverySource,
     },
+    #[cfg(any(test, feature = "test-double"))]
     Double,
 }
 
@@ -219,9 +225,11 @@ pub(super) struct PluginBuildMarker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BackendSelectionReason {
     RemoteDaemon,
+    #[cfg(any(test, feature = "test-double"))]
     ExplicitDouble,
     ExplicitQemu,
     AutoQemuArtifactsSupplied,
+    #[cfg(any(test, feature = "test-double"))]
     AutoFallbackDouble,
 }
 
@@ -287,6 +295,7 @@ pub(super) fn plan_backend_selection_with_discovery(
     }
 
     let (resolved_backend, reason) = match cli.backend {
+        #[cfg(any(test, feature = "test-double"))]
         Backend::Double => (
             ResolvedLocalBackend::Double,
             BackendSelectionReason::ExplicitDouble,
@@ -297,10 +306,18 @@ pub(super) fn plan_backend_selection_with_discovery(
         ),
         Backend::Auto => match discover_qemu_artifacts(cli, environment, package_set)? {
             Some(artifacts) => (artifacts, BackendSelectionReason::AutoQemuArtifactsSupplied),
+            #[cfg(any(test, feature = "test-double"))]
             None => (
                 ResolvedLocalBackend::Double,
                 BackendSelectionReason::AutoFallbackDouble,
             ),
+            #[cfg(not(any(test, feature = "test-double")))]
+            None => {
+                return Err(backend_error(
+                    "no hermetic QEMU backend was discovered; this production build does not \
+                     include the in-process test double",
+                ));
+            }
         },
     };
 
@@ -1164,6 +1181,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                         report,
                     )
                 }
+                #[cfg(any(test, feature = "test-double"))]
                 (VerifyMode::RunScenario { .. }, ResolvedLocalBackend::Double) => {
                     run_local_double_verify_workflow(
                         thin_plan,
@@ -1184,6 +1202,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         }
         if let Some(save_plan) = save_plan {
             return match backend {
+                #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => run_local_double_save_workflow(
                     thin_plan,
                     backend_plan,
@@ -1200,6 +1219,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         }
         if let Some(run_plan) = run_plan {
             return match backend {
+                #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
                 }

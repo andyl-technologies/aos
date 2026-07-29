@@ -6,6 +6,11 @@
 use std::error::Error;
 use std::process::Command;
 
+#[cfg(feature = "test-double")]
+const BACKEND_HELP: &str = "--backend <auto|qemu|double>";
+#[cfg(not(feature = "test-double"))]
+const BACKEND_HELP: &str = "--backend <auto|qemu>";
+
 #[test]
 fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
@@ -35,7 +40,7 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
         "completions",
         "--seed <u64|hex>",
         "Root entropy (06 §5.3). Overrides CRUCIBLE_SEED",
-        "--backend <auto|qemu|double>",
+        BACKEND_HELP,
         "Local backend (20 §10). Default: auto",
         "Talk to a daemon (21) instead of running in-process",
         "Patched QEMU system binary (26). Else discovered",
@@ -59,6 +64,21 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
         "crucible --help should not write stderr, got `{}`",
         String::from_utf8_lossy(&output.stderr),
     );
+    Ok(())
+}
+
+#[cfg(not(feature = "test-double"))]
+#[test]
+fn cli_production_build_rejects_the_test_double_backend() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--backend", "double", "run", "scenario.toml"])
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("invalid value 'double'"));
+
     Ok(())
 }
 

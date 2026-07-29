@@ -1,6 +1,7 @@
 //! Resume, fork, and verification workflow realization.
 
 use super::*;
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fork_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -41,6 +42,7 @@ pub(super) fn default_fork_interactive_driver(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fork_workflow_with_driver(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,

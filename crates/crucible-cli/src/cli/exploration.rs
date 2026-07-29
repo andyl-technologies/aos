@@ -44,17 +44,21 @@ pub(super) fn fuzz_dispatch_route(
     if plan.family.is_builtin_fault_campaign() {
         return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
     }
-    if backend_plan.target == BackendExecutionTarget::Local
-        && matches!(
-            backend_plan.resolved_backend,
-            Some(ResolvedLocalBackend::Double)
-        )
+    #[cfg(any(test, feature = "test-double"))]
     {
-        return Some(FuzzDispatchRoute::LocalDouble);
+        if backend_plan.target == BackendExecutionTarget::Local
+            && matches!(
+                backend_plan.resolved_backend,
+                Some(ResolvedLocalBackend::Double)
+            )
+        {
+            return Some(FuzzDispatchRoute::LocalDouble);
+        }
     }
     None
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fuzz_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -71,6 +75,7 @@ pub(super) fn run_local_double_fuzz_workflow(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fuzz_workflow_with_family(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -109,6 +114,7 @@ pub(super) fn run_local_double_fuzz_workflow_with_family(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn local_double_fuzz_report_from_run(
     plan: &FuzzDriverPlan,
     run: &crucible::CoverageGuidedFuzzRun,
@@ -131,6 +137,7 @@ pub(super) fn local_double_fuzz_report_from_run(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn local_double_fuzz_report_from_corpus_run(
     plan: &FuzzDriverPlan,
     corpus: &Path,
@@ -155,6 +162,7 @@ pub(super) fn local_double_fuzz_report_from_corpus_run(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn apply_local_double_fuzz_report(
     outcome: &mut BackendCommandOutcome,
     plan: &FuzzDriverPlan,
@@ -209,6 +217,7 @@ pub(super) fn apply_local_double_fuzz_report(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_search_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -228,6 +237,7 @@ pub(super) fn run_local_double_search_workflow(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_search_workflow_with_graph(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -344,6 +354,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -561,6 +572,7 @@ pub(super) fn cli_digest_from_engine_hash(hash: crucible::ContentHash) -> String
     format!("{CONTENT_ADDRESS_PREFIX}{}", hash.to_hex())
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn apply_local_double_search_report(
     outcome: &mut BackendCommandOutcome,
     plan: &SearchDriverPlan,
@@ -633,6 +645,7 @@ pub(super) fn apply_local_double_search_report(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn local_double_search_counterexample_fields(
     counterexample: Option<&LocalDoubleSearchCounterexample>,
 ) -> (String, String) {
@@ -654,6 +667,7 @@ pub(super) fn local_double_search_counterexample_fields(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn local_double_search_status(
     discovered_failures: bool,
     exhausted: bool,

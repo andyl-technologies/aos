@@ -79,7 +79,7 @@ in
     };
 
     cargoFlags = workspaceCargoFlags;
-    cargoTestFlags = workspaceCargoFlags;
+    cargoTestFlags = "${workspaceCargoFlags} --features crucible-cli/test-double";
     doCheck = true;
     buildDeps = [rust.dev pkg-config openssl];
     runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];

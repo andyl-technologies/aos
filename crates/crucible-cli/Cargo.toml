@@ -4,9 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+test-double = ["crucible/test-double"]
+
 [[bin]]
 name = "crucible"
 path = "src/main.rs"
+
+[[test]]
+name = "machine_readable"
+path = "tests/machine_readable.rs"
+required-features = ["test-double"]
 
 [lints]
 workspace = true
@@ -14,6 +23,7 @@ workspace = true
 [dependencies]
 clap = { workspace = true }
 clap_complete = { workspace = true }
+crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-session = { path = "../crucible-session" }
 serde = { workspace = true }
