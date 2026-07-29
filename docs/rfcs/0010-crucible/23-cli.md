@@ -1369,7 +1369,7 @@ branch on the verdict without parsing output:
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
   and the at-failure footer shared with failure artifact emission.
-- [ ] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
+- [x] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.
   — satisfies [CLI-13], [CLI-14]; spec §7.
@@ -1385,6 +1385,10 @@ branch on the verdict without parsing output:
   - Gate: `checks.crucible.phase5.cliBackendSelection` gains negative controls —
     an ELF with the names only in `.strtab`, an ELF with both symbols undefined,
     and a non-ELF file containing the names — each of which MUST be rejected.
+  - Completed by the ELF64 section-table parser in
+    `crates/crucible-cli/src/cli/backend.rs`. It resolves `.dynsym` through its
+    linked string table, accepts only defined globally visible symbols, and the
+    backend-selection gate executes all three specified negative controls.
 
 - [ ] **T-CLI-20** Make the backend-selection evidence falsifiable: derive the
   local/remote proof predicates from observed execution rather than from literals

@@ -811,12 +811,38 @@ fn qemu_process_artifacts(dir: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Erro
 }
 
 fn qemu_plugin_elf_fixture() -> Vec<u8> {
-    let mut bytes = vec![0_u8; 64];
+    let strings = b"\0qemu_plugin_install\0qemu_plugin_version\0";
+    let string_offset = 64_usize;
+    let symbol_offset = (string_offset + strings.len() + 7) & !7;
+    let section_offset = symbol_offset + 3 * 24;
+    let mut bytes = vec![0_u8; section_offset + 3 * 64];
     bytes[..4].copy_from_slice(b"\x7fELF");
     bytes[4] = 2;
     bytes[5] = 1;
     bytes[16..18].copy_from_slice(&3_u16.to_le_bytes());
-    bytes.extend_from_slice(b"qemu_plugin_install\0qemu_plugin_version\0");
+    bytes[40..48].copy_from_slice(&(section_offset as u64).to_le_bytes());
+    bytes[58..60].copy_from_slice(&64_u16.to_le_bytes());
+    bytes[60..62].copy_from_slice(&3_u16.to_le_bytes());
+    bytes[string_offset..string_offset + strings.len()].copy_from_slice(strings);
+    let install = symbol_offset + 24;
+    bytes[install..install + 4].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[install + 4] = 0x12;
+    bytes[install + 6..install + 8].copy_from_slice(&1_u16.to_le_bytes());
+    let version = symbol_offset + 48;
+    let version_name = 1 + b"qemu_plugin_install".len() + 1;
+    bytes[version..version + 4].copy_from_slice(&(version_name as u32).to_le_bytes());
+    bytes[version + 4] = 0x11;
+    bytes[version + 6..version + 8].copy_from_slice(&1_u16.to_le_bytes());
+    let dynstr = section_offset + 64;
+    bytes[dynstr + 4..dynstr + 8].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[dynstr + 24..dynstr + 32].copy_from_slice(&(string_offset as u64).to_le_bytes());
+    bytes[dynstr + 32..dynstr + 40].copy_from_slice(&(strings.len() as u64).to_le_bytes());
+    let dynsym = section_offset + 128;
+    bytes[dynsym + 4..dynsym + 8].copy_from_slice(&11_u32.to_le_bytes());
+    bytes[dynsym + 24..dynsym + 32].copy_from_slice(&(symbol_offset as u64).to_le_bytes());
+    bytes[dynsym + 32..dynsym + 40].copy_from_slice(&72_u64.to_le_bytes());
+    bytes[dynsym + 40..dynsym + 44].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[dynsym + 56..dynsym + 64].copy_from_slice(&24_u64.to_le_bytes());
     bytes
 }
 

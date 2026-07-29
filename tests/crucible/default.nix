@@ -1514,8 +1514,8 @@ in rec {
     cliBackendSelection = import ./phase5-cli-backend-selection.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliBackendSelection";
-      taskIds = [];
-      openTaskIds = ["T-CLI-3"];
+      taskIds = ["T-CLI-19"];
+      openTaskIds = ["T-CLI-3" "T-CLI-20"];
       dependencies = [
         phase5.cliThinWrapper
         phase5.apiNondeterminism
