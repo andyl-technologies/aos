@@ -117,16 +117,12 @@
         needle = "fn run_local_qemu_verify_workflow";
       }
       {
-        label = "independent live QEMU verify probes";
-        needle = "fn run_live_qemu_verify_probes";
+        label = "verify rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"verify\")";
       }
       {
-        label = "live QEMU report identity comparison";
-        needle = "independent live QEMU verify reductions diverged";
-      }
-      {
-        label = "local QEMU verify identity line";
-        needle = "verify-qemu-runner";
+        label = "verify local-QEMU no-double assertion";
+        needle = "no in-process double fallback was executed";
       }
       {
         label = "adversarial planning test";
@@ -149,18 +145,8 @@
         needle = "cli_verify_workflow_compares_existing_reproduction_artifacts";
       }
       {
-        label = "local qemu verify test";
-        needle = "cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
-      {
-        label = "old qemu verify blocker";
-        needle = "verify with local QEMU requires an RFC-0010 execution-fingerprint runner";
-      }
-      {
-        label = "old qemu blocker test";
-        needle = "cli_verify_workflow_rejects_local_qemu_without_rfc_fingerprint_runner";
+        label = "local qemu verify rejection test";
+        needle = "cli_verify_workflow_rejects_unwired_local_qemu_execution";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

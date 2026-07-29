@@ -576,23 +576,16 @@ pub(super) fn run_local_double_verify_workflow(
 }
 
 pub(super) fn run_local_qemu_save_workflow(
-    thin_plan: &CliThinWrapperPlan,
+    _thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    _save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU save requires a resolved backend"))?;
-    let live = run_live_qemu_backend_probe_for_command(backend)?;
-    let mut outcome =
-        run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)?;
-    append_local_qemu_save_identity(&mut outcome, backend_plan)?;
-    if let Some(report) = live.as_ref() {
-        append_live_qemu_backend_proof(&mut outcome, "save", report);
-    }
-    Ok(outcome)
+    reject_unwired_qemu_workflow(backend, "save")
 }
 
 pub(super) fn run_local_save_recording_workflow(
@@ -647,54 +640,16 @@ pub(super) fn run_local_double_resume_workflow(
 }
 
 pub(super) fn run_local_qemu_resume_workflow(
-    thin_plan: &CliThinWrapperPlan,
+    _thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    resume_plan: &ResumeInvocationPlan,
+    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    _resume_plan: &ResumeInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
-    let live = run_live_qemu_backend_probe_for_command(backend)?;
-    let interactive_driver = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive)
-    {
-        ResumeInteractiveCommandDriver::Stdin
-    } else {
-        ResumeInteractiveCommandDriver::Preparsed(&[])
-    };
-    let (evidence, report) =
-        run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
-    let realization = realize_local_qemu_resume(&evidence, &report.terminal_configuration)?;
-    let mut outcome = finish_resume_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        resume_plan,
-        report,
-    )?;
-    append_local_qemu_resume_identity(&mut outcome, backend_plan, &realization)?;
-    if let Some(report) = live.as_ref() {
-        append_live_qemu_backend_proof(&mut outcome, "resume", report);
-    }
-    Ok(outcome)
-}
-
-pub(super) fn realize_local_qemu_resume(
-    evidence: &ResumeHandleEvidence,
-    terminal_configuration: &CliModelConfiguration,
-) -> Result<ModelCheckpointVmResumeRealizationProof, CliError> {
-    realize_model_checkpoint_vm_resume_from_savepoint(
-        &evidence.scenario_form,
-        &evidence.configuration,
-        &evidence.checkpoint,
-        terminal_configuration,
-    )
-    .map_err(|error| {
-        CliError::Identity(format!(
-            "local QEMU resume realization coordinator failed: {error}"
-        ))
-    })
+    reject_unwired_qemu_workflow(backend, "resume")
 }
 
 pub(super) fn run_local_resume_workflow_report_with_driver(

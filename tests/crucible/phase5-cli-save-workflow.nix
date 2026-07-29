@@ -86,8 +86,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "save local-QEMU live backend execution";
-        needle = "append_live_qemu_backend_proof(&mut outcome, \"save\", report)";
+        label = "save rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"save\")";
       }
       {
         label = "save arguments";
@@ -246,16 +246,12 @@
         needle = "cli_save_workflow_executes_local_double_and_exports_handle";
       }
       {
-        label = "qemu-selected save runner identity";
-        needle = "save-qemu-runner";
+        label = "qemu-selected save rejection";
+        needle = "local QEMU {command} execution is unavailable";
       }
       {
         label = "qemu-selected save test";
         needle = "qemu-save";
-      }
-      {
-        label = "qemu-selected dispatch save test";
-        needle = "qemu-dispatch-save";
       }
       {
         label = "remote daemon save test";
@@ -476,24 +472,12 @@
         needle = "out=";
       }
       {
-        label = "process qemu save JSONL regression";
-        needle = "cli_save_qemu_process_jsonl_reports_identity_and_handle";
+        label = "process qemu save rejection regression";
+        needle = "cli_save_qemu_process_rejects_unwired_execution";
       }
       {
-        label = "process qemu save runner kind";
-        needle = "\"save_qemu_runner\"";
-      }
-      {
-        label = "process qemu backend fidelity";
-        needle = "summary\\\":\\\"Qemu\\\"";
-      }
-      {
-        label = "process qemu patch series";
-        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
-      }
-      {
-        label = "process qemu handle materialization";
-        needle = "materialization\\tcreate-savepoint\\treply";
+        label = "process qemu save no-double assertion";
+        needle = "no in-process double fallback was executed";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -616,7 +600,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
-              cli_save_qemu_process_jsonl_reports_identity_and_handle \
+              cli_save_qemu_process_rejects_unwired_execution \
               -- --test-threads=1
 
             qemu_pid=""

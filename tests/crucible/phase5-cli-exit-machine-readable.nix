@@ -180,16 +180,16 @@
         needle = "cli_exit_machine_readable_process_stdout_is_pure_json";
       }
       {
-        label = "qemu save process stdout regression";
-        needle = "cli_save_qemu_process_jsonl_reports_identity_and_handle";
+        label = "qemu save process rejection regression";
+        needle = "cli_save_qemu_process_rejects_unwired_execution";
       }
       {
-        label = "qemu resume process stdout regression";
-        needle = "cli_resume_qemu_process_jsonl_reports_identity_and_oracle";
+        label = "qemu resume process rejection regression";
+        needle = "cli_resume_qemu_process_rejects_unwired_execution";
       }
       {
-        label = "qemu fork process stdout regression";
-        needle = "cli_fork_qemu_process_jsonl_reports_identity_and_artifact";
+        label = "qemu fork process rejection regression";
+        needle = "cli_fork_qemu_process_rejects_unwired_execution";
       }
       {
         label = "search fuzz process stdout regression";
@@ -224,16 +224,16 @@
         needle = "\"save_export\"";
       }
       {
-        label = "qemu save canonical jsonl assertion";
-        needle = "\"save_qemu_runner\"";
+        label = "qemu save rejection assertion";
+        needle = "local QEMU save execution is unavailable";
       }
       {
-        label = "qemu resume canonical jsonl assertion";
-        needle = "\"resume_qemu_runner\"";
+        label = "qemu resume rejection assertion";
+        needle = "local QEMU resume execution is unavailable";
       }
       {
-        label = "qemu fork canonical jsonl assertion";
-        needle = "\"fork_qemu_runner\"";
+        label = "qemu fork rejection assertion";
+        needle = "local QEMU fork execution is unavailable";
       }
       {
         label = "search canonical jsonl assertion";

@@ -26,11 +26,9 @@ use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, ControlClient,
     CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
-    LifecycleServerMode, ModelCheckpointVmResumeRealizationProof, QuiescentLifecycleLoop,
-    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
-    ResumeSessionRequest, RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
-    realize_model_checkpoint_vm_resume_from_savepoint,
-    serve_lifecycle_http2_with_mode_until_shutdown,
+    LifecycleServerMode, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,
+    RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
+    SendRequest, SessionRef, serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]

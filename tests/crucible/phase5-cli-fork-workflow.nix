@@ -117,16 +117,12 @@
         needle = "fn run_local_qemu_fork_workflow";
       }
       {
-        label = "fork local-QEMU live backend execution";
-        needle = "append_live_qemu_backend_proof(&mut outcome, \"fork\", report)";
+        label = "fork rejects unwired QEMU execution";
+        needle = "reject_unwired_qemu_workflow(backend, \"fork\")";
       }
       {
-        label = "fork local-QEMU identity output";
-        needle = "fork-qemu-runner";
-      }
-      {
-        label = "fork local-QEMU canonical log";
-        needle = "fork_qemu_runner";
+        label = "fork local-QEMU no-double assertion";
+        needle = "no in-process double fallback was executed";
       }
       {
         label = "fork child actor runner";
@@ -209,8 +205,8 @@
         needle = "cli_fork_workflow_executes_local_double_handle";
       }
       {
-        label = "fork local-QEMU execution test";
-        needle = "cli_fork_workflow_executes_local_qemu_handle_with_identity";
+        label = "fork local-QEMU rejection test";
+        needle = "cli_fork_workflow_rejects_unwired_local_qemu_execution";
       }
       {
         label = "fork tampered frontier test";
@@ -219,28 +215,12 @@
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
-        label = "process qemu fork JSONL regression";
-        needle = "cli_fork_qemu_process_jsonl_reports_identity_and_artifact";
+        label = "process qemu fork rejection regression";
+        needle = "cli_fork_qemu_process_rejects_unwired_execution";
       }
       {
-        label = "process qemu fork runner kind";
-        needle = "\"fork_qemu_runner\"";
-      }
-      {
-        label = "process qemu fork artifact kind";
-        needle = "\"fork_reproduction_artifact\"";
-      }
-      {
-        label = "process qemu fork oracle kind";
-        needle = "\"fork_oracle_validation\"";
-      }
-      {
-        label = "process qemu fork patch series";
-        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
-      }
-      {
-        label = "process qemu fork materialization";
-        needle = "materialization=child-session-savepoint";
+        label = "process qemu fork rejection";
+        needle = "local QEMU fork execution is unavailable";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -318,7 +298,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-fork-workflow-target" \
               -p crucible-cli \
-              cli_fork_qemu_process_jsonl_reports_identity_and_artifact \
+              cli_fork_qemu_process_rejects_unwired_execution \
               -- --test-threads=1
           '';
         }

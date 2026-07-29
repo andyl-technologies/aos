@@ -102,13 +102,12 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<dyn Error>> {
+fn cli_save_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("qemu-save-artifacts");
     let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")
@@ -119,56 +118,21 @@ fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<d
         .arg("builtin:happy-path.scn")
         .args(["--at", "quiescence", "--label", "qemu-process"])
         .output()?;
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("local QEMU save execution is unavailable"));
+    assert!(stderr.contains("no in-process double fallback was executed"));
     assert!(
-        output.status.success(),
-        "crucible save --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        !artifact_dir.exists() || fs::read_dir(&artifact_dir)?.next().is_none(),
+        "rejected QEMU save must not emit an artifact"
     );
-    let stdout = String::from_utf8(output.stdout)?;
-    assert_machine_readable_jsonl(
-        &stdout,
-        &[
-            "backend_fidelity",
-            "save_oracle_validation",
-            "save_qemu_runner",
-            "save_export",
-        ],
-    )?;
-    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
-    let expected_plugin_abi = qemu_process_plugin_abi();
-    assert!(stdout.contains("summary\":\"Qemu\""));
-    assert!(stdout.contains("materialization=create-savepoint-reply"));
-    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
-    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
-    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
-    assert!(stdout.contains(&format!("shmem_abi={}", crucible::SHMEM_ABI_VERSION)));
-    assert!(stdout.contains("status=fat==thin-passed"));
-    assert!(stdout.contains(".crucible-savepoint"));
-
-    let handles = fs::read_dir(&artifact_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_str()?;
-            (file_name.starts_with("savepoint-qemu-process-")
-                && file_name.ends_with(".crucible-savepoint"))
-            .then_some(entry.path())
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let handle = fs::read_to_string(&handles[0])?;
-    assert!(handle.contains("label\tqemu-process\n"));
-    assert!(handle.contains("materialization\tcreate-savepoint\treply\n"));
-    assert!(handle.contains("oracle\tfat==thin-passed\n"));
-    assert!(handle.contains("terminal-condition\tquiescence\n"));
 
     Ok(())
 }
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box<dyn Error>> {
+fn cli_resume_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("resume-source-artifacts");
     let save_store = temp.path().join("resume-source-store");
@@ -202,7 +166,6 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
     let source = single_savepoint_handle(&save_artifact_dir, "resume-source")?;
 
     let resume_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")
@@ -215,51 +178,21 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
         .arg(&source)
         .args(["--until", "virtual-time", "--max-virtual-time", "2ticks"])
         .output()?;
+    assert_eq!(resume_output.status.code(), Some(4));
+    let stderr = String::from_utf8(resume_output.stderr)?;
+    assert!(stderr.contains("local QEMU resume execution is unavailable"));
+    assert!(stderr.contains("no in-process double fallback was executed"));
     assert!(
-        resume_output.status.success(),
-        "crucible resume --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&resume_output.stdout),
-        String::from_utf8_lossy(&resume_output.stderr),
+        !resume_artifact_dir.exists() || fs::read_dir(&resume_artifact_dir)?.next().is_none(),
+        "rejected QEMU resume must not emit an artifact"
     );
-    let stdout = String::from_utf8(resume_output.stdout)?;
-    assert_machine_readable_jsonl(
-        &stdout,
-        &[
-            "backend_fidelity",
-            "resume_checkpoint",
-            "resume_oracle_validation",
-            "resume_qemu_runner",
-        ],
-    )?;
-    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
-    let expected_plugin_abi = qemu_process_plugin_abi();
-    assert!(stdout.contains("summary\":\"Qemu\""));
-    assert!(stdout.contains("until=virtual-time"));
-    assert!(stdout.contains("checkpoint=blake3:"));
-    assert!(stdout.contains("configuration=blake3:"));
-    assert!(stdout.contains("status=fat==thin-passed"));
-    assert!(
-        stdout.contains(
-            "materialization=qemu-vm-realization operation=resume executor=model-checkpoint branch=ancestor-replay"
-        )
-    );
-    assert!(stdout.contains("configuration=blake3:"));
-    assert!(stdout.contains("runtime=blake3:"));
-    assert!(stdout.contains("ancestor_configuration=blake3:"));
-    assert!(stdout.contains("checkpoint=none"));
-    assert!(stdout.contains("replayed_decisions=1"));
-    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
-    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
-    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
-    assert!(stdout.contains(&format!("shmem_abi={}", crucible::SHMEM_ABI_VERSION)));
-    assert!(stdout.contains("exit_code=0"));
 
     Ok(())
 }
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box<dyn Error>> {
+fn cli_fork_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("fork-source-artifacts");
     let fork_artifact_dir = temp.path().join("qemu-fork-artifacts");
@@ -289,7 +222,6 @@ fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box
     let source = single_savepoint_handle(&save_artifact_dir, "fork-source")?;
 
     let fork_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .env("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE", "1")
         .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
         .arg(&qemu)
         .arg("--plugin")
@@ -307,47 +239,14 @@ fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box
             "qemu-process-child",
         ])
         .output()?;
+    assert_eq!(fork_output.status.code(), Some(4));
+    let stderr = String::from_utf8(fork_output.stderr)?;
+    assert!(stderr.contains("local QEMU fork execution is unavailable"));
+    assert!(stderr.contains("no in-process double fallback was executed"));
     assert!(
-        fork_output.status.success(),
-        "crucible fork --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
-        String::from_utf8_lossy(&fork_output.stdout),
-        String::from_utf8_lossy(&fork_output.stderr),
+        !fork_artifact_dir.exists() || fs::read_dir(&fork_artifact_dir)?.next().is_none(),
+        "rejected QEMU fork must not emit an artifact"
     );
-    let stdout = String::from_utf8(fork_output.stdout)?;
-    assert_machine_readable_jsonl(
-        &stdout,
-        &[
-            "backend_fidelity",
-            "fork_checkpoint",
-            "fork_oracle_validation",
-            "fork_reproduction_artifact",
-            "fork_qemu_runner",
-        ],
-    )?;
-    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
-    let expected_plugin_abi = qemu_process_plugin_abi();
-    assert!(stdout.contains("summary\":\"Qemu\""));
-    assert!(stdout.contains("label=qemu-process-child"));
-    assert!(stdout.contains("status=fat==thin-passed"));
-    assert!(stdout.contains("materialization=child-session-savepoint"));
-    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
-    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
-    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
-    assert!(stdout.contains("digest=crucible-hash:"));
-    assert!(stdout.contains("model_artifact=blake3:"));
-    assert!(stdout.contains("replay_state=blake3:"));
-    assert!(stdout.contains("fork_seed=inherited"));
-    assert!(stdout.contains("exit_code=0"));
-
-    let fork_artifacts = fs::read_dir(&fork_artifact_dir)?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            let file_name = path.file_name()?.to_str()?;
-            (file_name.starts_with("fork-qemu-process-child-") && file_name.ends_with(".crucible"))
-                .then_some(path)
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(fork_artifacts.len(), 1);
 
     Ok(())
 }

@@ -408,7 +408,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
 }
 
 #[test]
-pub(super) fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity()
+pub(super) fn cli_verify_workflow_rejects_unwired_local_qemu_execution()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -433,7 +433,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_p
     let backend_plan =
         plan_backend_selection(&cli)?.expect("qemu verify should require backend selection");
 
-    let outcome = execute_backend_routed_command(
+    let error = execute_backend_routed_command(
         &plan_cli_invocation(&cli),
         &backend_plan,
         None,
@@ -442,26 +442,8 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_p
         None,
         &mut NullBackendCommandRunner,
     )
-    .expect("local qemu verify should run independent reductions");
-
-    assert_eq!(outcome.status, BackendCommandStatus::Passed);
-    assert_eq!(outcome.exit_code, 0);
-    assert_eq!(
-        outcome
-            .stdout
-            .iter()
-            .filter(|line| line.starts_with("verify-run\t"))
-            .count(),
-        2
-    );
-    let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
-    let expected_plugin_abi = required_qemu_plugin_abi();
-    let expected_shmem_abi = crucible::SHMEM_ABI_VERSION.to_string();
-    assert!(outcome.stdout.iter().any(|line| {
-        line == &format!(
-            "verify-qemu-runner\tfingerprint_source=control-client-execution-fingerprint\tqemu_build_id={expected_qemu_build_id}\tqemu_patch_series=sha256-test-qemu-patch-series\tplugin_abi={expected_plugin_abi}\tshmem_abi={expected_shmem_abi}"
-        )
-    }));
+    .expect_err("local QEMU verify must not execute double-backed reductions");
+    assert_qemu_workflow_unwired(&error, "verify");
 
     Ok(())
 }

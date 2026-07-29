@@ -22,3 +22,12 @@ mod verify_dispatch;
 
 use graph_support::*;
 use surface::*;
+
+fn assert_qemu_workflow_unwired(error: &CliError, command: &str) {
+    assert!(matches!(error, CliError::Backend(_)));
+    assert_eq!(error.exit_code(), 4);
+    let message = error.to_string();
+    assert!(message.contains(&format!("local QEMU {command} execution is unavailable")));
+    assert!(message.contains("no in-process double fallback was executed"));
+    assert!(message.contains("select `--backend double` explicitly"));
+}
