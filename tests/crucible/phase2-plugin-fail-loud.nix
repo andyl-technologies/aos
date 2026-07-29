@@ -51,18 +51,8 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
-  hasInfix = needle: haystack:
-    needle == ""
-    || builtins.replaceStrings [needle] [""] haystack != haystack;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  failuresFor = fileLabel: content: requirements:
-    lib.concatMap (
-      requirement:
-        lib.optionals (!(hasInfix requirement.needle content)) [
-          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    requirements;
 
   forbiddenFallbackApis = [
     "Instant::now"
