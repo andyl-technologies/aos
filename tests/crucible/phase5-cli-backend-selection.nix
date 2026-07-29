@@ -16,6 +16,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliHelpTests = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -42,7 +44,29 @@
         needle = "`T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+      {
+        label = "production-default feature set";
+        needle = "default = []";
+      }
+      {
+        label = "explicit test-double feature";
+        needle = ''test-double = ["crucible/test-double"]'';
+      }
+      {
+        label = "process double tests require feature";
+        needle = ''required-features = ["test-double"]'';
+      }
+    ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+      {
+        label = "double backend compile-time gate";
+        needle = ''#[cfg(any(test, feature = "test-double"))]'';
+      }
+      {
+        label = "production auto backend fails closed";
+        needle = "this production build does not include the in-process test double";
+      }
       {
         label = "backend-selection plan type";
         needle = "struct BackendSelectionPlan";
@@ -202,6 +226,16 @@
       {
         label = "serve daemon rejection test";
         needle = "cli_backend_selection_rejects_daemon_on_serve";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" cliHelpTests [
+      {
+        label = "production double rejection regression";
+        needle = "cli_production_build_rejects_the_test_double_backend";
+      }
+      {
+        label = "production backend help surface";
+        needle = ''const BACKEND_HELP: &str = "--backend <auto|qemu>"'';
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -795,6 +795,7 @@ pub(super) fn plan_debug_invocation(
     cli: &Cli,
     args: &DebugArgs,
 ) -> Result<DebugInvocationPlan, CliError> {
+    #[cfg(any(test, feature = "test-double"))]
     if cli.backend == Backend::Double {
         return Err(CliError::Backend(
             "selected backend `double` does not implement open_gdbstub".to_string(),

@@ -835,6 +835,7 @@ pub(super) fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u
     .into_bytes()
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_local_double_workflow_async(
     run_plan: &RunInvocationPlan,
     _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -849,6 +850,7 @@ pub(super) async fn run_local_double_workflow_async(
     run_control_client_workflow_async(&client, run_plan, interactive_commands).await
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_local_double_workflow_stdin_async(
     run_plan: &RunInvocationPlan,
     _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,

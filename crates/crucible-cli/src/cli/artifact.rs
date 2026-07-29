@@ -171,11 +171,19 @@ pub(super) fn expected_replay_identity_for_backend(
             shmem_abi_version.clone(),
             plugin_abi.clone(),
         ),
+        #[cfg(any(test, feature = "test-double"))]
         Some(ResolvedLocalBackend::Double) | None => (
             content_address_bytes(b"mock-backend-source-v1"),
             content_address_bytes(b"mock-qemu-patch-series-v1"),
             crucible::SHMEM_ABI_VERSION.to_string(),
             String::from("simdouble-mock-plugin-abi"),
+        ),
+        #[cfg(not(any(test, feature = "test-double")))]
+        None => (
+            content_address_bytes(b"unresolved-backend-source-v1"),
+            content_address_bytes(b"unresolved-qemu-patch-series-v1"),
+            crucible::SHMEM_ABI_VERSION.to_string(),
+            String::from("unresolved-plugin-abi"),
         ),
     };
     CliIdentity {

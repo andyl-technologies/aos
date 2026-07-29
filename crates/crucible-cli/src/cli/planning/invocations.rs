@@ -235,6 +235,7 @@ pub(crate) struct SearchRetainedEvidencePlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleSearchReport {
     pub(crate) root: crucible::ContentHash,
     pub(crate) expansions: usize,
@@ -253,6 +254,7 @@ pub(crate) struct LocalDoubleSearchReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleSearchCounterexample {
     pub(crate) configuration: crucible::ContentHash,
     pub(crate) fingerprint: crucible::ContentHash,
@@ -275,11 +277,13 @@ pub(crate) struct FuzzDriverPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FuzzDispatchRoute {
     BuiltInFaultCampaignProof,
+    #[cfg(any(test, feature = "test-double"))]
     LocalDouble,
     LocalPackagedBackend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleFuzzReport {
     pub(crate) family: String,
     pub(crate) corpus: Option<PathBuf>,

@@ -147,6 +147,7 @@ pub(super) struct RunObservation {
     pub(super) watch_statuses: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -171,6 +172,7 @@ pub(super) fn run_local_double_workflow(
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_save_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -545,6 +547,7 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -616,6 +619,7 @@ pub(super) fn run_local_save_recording_workflow(
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_resume_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,

@@ -105,6 +105,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         if let Some(resume_plan) = &resume_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
                 let outcome = match backend_plan.resolved_backend.as_ref() {
+                    #[cfg(any(test, feature = "test-double"))]
                     Some(ResolvedLocalBackend::Double) => run_local_double_resume_workflow(
                         &thin_plan,
                         &backend_plan,
@@ -149,6 +150,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         if let Some(fork_plan) = &fork_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
                 let outcome = match backend_plan.resolved_backend.as_ref() {
+                    #[cfg(any(test, feature = "test-double"))]
                     Some(ResolvedLocalBackend::Double) => run_local_double_fork_workflow(
                         &thin_plan,
                         &backend_plan,
@@ -177,6 +179,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         if let Some(search_plan) = &search_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
                 let outcome = match backend_plan.resolved_backend.as_ref() {
+                    #[cfg(any(test, feature = "test-double"))]
                     Some(ResolvedLocalBackend::Double) => run_local_double_search_workflow(
                         &thin_plan,
                         &backend_plan,
@@ -208,6 +211,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
                     return Ok(());
                 }
+                #[cfg(any(test, feature = "test-double"))]
                 Some(FuzzDispatchRoute::LocalDouble) => {
                     let outcome = run_local_double_fuzz_workflow(
                         &thin_plan,
@@ -449,10 +453,16 @@ pub(super) fn default_run_store_root(cli: &Cli) -> PathBuf {
 }
 
 pub(super) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
-    let mut requested = match args.gates.as_deref() {
+    let requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
+        #[cfg(any(test, feature = "test-double"))]
         None => BUILT_IN_CORPUS_SELFTEST_GATES.to_vec(),
+        #[cfg(not(any(test, feature = "test-double")))]
+        None => REAL_QEMU_SELFTEST_GATES.to_vec(),
     };
+    #[cfg(any(test, feature = "test-double"))]
+    let mut requested = requested;
+    #[cfg(any(test, feature = "test-double"))]
     if args.gates.is_none() && args.with_qemu {
         requested.extend(REAL_QEMU_SELFTEST_GATES.iter().copied());
     }
@@ -474,6 +484,7 @@ pub(super) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, Cl
                 "unknown selftest gate `{gate}`; use canonical gate names from RFC-0010 file 24"
             )));
         }
+        #[cfg(any(test, feature = "test-double"))]
         if BUILT_IN_CORPUS_SELFTEST_GATES.contains(gate) {
             continue;
         }
