@@ -530,6 +530,12 @@ const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LITTLE_ENDIAN: u8 = 1;
 const ELF_TYPE_EXECUTABLE: u16 = 2;
 const ELF_TYPE_SHARED_OBJECT: u16 = 3;
+const ELF_SECTION_DYNAMIC_SYMBOLS: u32 = 11;
+const ELF_SYMBOL_UNDEFINED_SECTION: u16 = 0;
+const ELF_SYMBOL_BINDING_GLOBAL: u8 = 1;
+const ELF_SYMBOL_BINDING_WEAK: u8 = 2;
+const ELF_SYMBOL_VISIBILITY_DEFAULT: u8 = 0;
+const ELF_SYMBOL_VISIBILITY_PROTECTED: u8 = 3;
 
 pub(super) fn probe_qemu_executable(path: &Path) -> Result<(), CliError> {
     let bytes = fs::read(path).map_err(|error| {
@@ -606,12 +612,9 @@ pub(super) fn probe_qemu_plugin(path: &Path) -> Result<(), CliError> {
             qemu_discovery_order_help()
         )));
     }
-    for symbol in [
-        b"qemu_plugin_install\0".as_slice(),
-        b"qemu_plugin_version\0".as_slice(),
-    ] {
-        if !bytes.windows(symbol.len()).any(|window| window == symbol) {
-            let symbol_name = String::from_utf8_lossy(&symbol[..symbol.len() - 1]);
+    let dynamic_symbols = defined_global_dynamic_symbols(path, &bytes)?;
+    for symbol_name in ["qemu_plugin_install", "qemu_plugin_version"] {
+        if !dynamic_symbols.contains(symbol_name) {
             return Err(qemu_backend_config_error(format!(
                 "QEMU plugin `{}` does not expose required dynamic symbol `{symbol_name}`; {}",
                 path.display(),
@@ -620,6 +623,200 @@ pub(super) fn probe_qemu_plugin(path: &Path) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+fn defined_global_dynamic_symbols(path: &Path, bytes: &[u8]) -> Result<BTreeSet<String>, CliError> {
+    let section_offset = elf_u64(bytes, 40, "section-header offset", path)?;
+    let section_entry_size = usize::from(elf_u16(bytes, 58, "section-header entry size", path)?);
+    let section_count = usize::from(elf_u16(bytes, 60, "section-header count", path)?);
+    if section_entry_size < 64 || section_count == 0 {
+        return Err(invalid_plugin_elf(
+            path,
+            "ELF has no complete section-header table",
+        ));
+    }
+    let section_offset = usize::try_from(section_offset).map_err(|_| {
+        invalid_plugin_elf(path, "section-header offset exceeds host address space")
+    })?;
+    checked_elf_slice(
+        bytes,
+        section_offset,
+        section_entry_size
+            .checked_mul(section_count)
+            .ok_or_else(|| invalid_plugin_elf(path, "section-header table size overflowed"))?,
+        "section-header table",
+        path,
+    )?;
+
+    let mut symbols = BTreeSet::new();
+    let mut saw_dynamic_symbols = false;
+    for index in 0..section_count {
+        let header = section_header(bytes, section_offset, section_entry_size, index, path)?;
+        if header.kind != ELF_SECTION_DYNAMIC_SYMBOLS {
+            continue;
+        }
+        saw_dynamic_symbols = true;
+        if header.entry_size < 24 || header.entry_size == 0 {
+            return Err(invalid_plugin_elf(
+                path,
+                "dynamic symbol table has an invalid entry size",
+            ));
+        }
+        let string_index = usize::try_from(header.link)
+            .map_err(|_| invalid_plugin_elf(path, "dynamic string-table index overflowed"))?;
+        if string_index >= section_count {
+            return Err(invalid_plugin_elf(
+                path,
+                "dynamic symbol table links outside the section table",
+            ));
+        }
+        let strings = section_header(
+            bytes,
+            section_offset,
+            section_entry_size,
+            string_index,
+            path,
+        )?;
+        let string_bytes = checked_elf_slice(
+            bytes,
+            strings.offset,
+            strings.size,
+            "dynamic string table",
+            path,
+        )?;
+        let symbol_bytes = checked_elf_slice(
+            bytes,
+            header.offset,
+            header.size,
+            "dynamic symbol table",
+            path,
+        )?;
+        if symbol_bytes.len() % header.entry_size != 0 {
+            return Err(invalid_plugin_elf(
+                path,
+                "dynamic symbol table size is not a multiple of its entry size",
+            ));
+        }
+        for entry in symbol_bytes.chunks_exact(header.entry_size) {
+            let name_offset =
+                usize::try_from(u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]))
+                    .map_err(|_| {
+                        invalid_plugin_elf(path, "dynamic symbol name offset overflowed")
+                    })?;
+            let binding = entry[4] >> 4;
+            let visibility = entry[5] & 0x03;
+            let section_index = u16::from_le_bytes([entry[6], entry[7]]);
+            if !matches!(binding, ELF_SYMBOL_BINDING_GLOBAL | ELF_SYMBOL_BINDING_WEAK)
+                || !matches!(
+                    visibility,
+                    ELF_SYMBOL_VISIBILITY_DEFAULT | ELF_SYMBOL_VISIBILITY_PROTECTED
+                )
+                || section_index == ELF_SYMBOL_UNDEFINED_SECTION
+            {
+                continue;
+            }
+            let name = elf_c_string(string_bytes, name_offset, path)?;
+            if !name.is_empty() {
+                symbols.insert(name.to_owned());
+            }
+        }
+    }
+    if !saw_dynamic_symbols {
+        return Err(invalid_plugin_elf(path, "ELF has no dynamic symbol table"));
+    }
+    Ok(symbols)
+}
+
+#[derive(Clone, Copy)]
+struct ElfSectionHeader {
+    kind: u32,
+    offset: usize,
+    size: usize,
+    link: u32,
+    entry_size: usize,
+}
+
+fn section_header(
+    bytes: &[u8],
+    table_offset: usize,
+    entry_size: usize,
+    index: usize,
+    path: &Path,
+) -> Result<ElfSectionHeader, CliError> {
+    let offset = table_offset
+        .checked_add(
+            entry_size
+                .checked_mul(index)
+                .ok_or_else(|| invalid_plugin_elf(path, "section-header index overflowed"))?,
+        )
+        .ok_or_else(|| invalid_plugin_elf(path, "section-header offset overflowed"))?;
+    let header = checked_elf_slice(bytes, offset, entry_size, "section header", path)?;
+    Ok(ElfSectionHeader {
+        kind: u32::from_le_bytes([header[4], header[5], header[6], header[7]]),
+        offset: usize::try_from(u64::from_le_bytes([
+            header[24], header[25], header[26], header[27], header[28], header[29], header[30],
+            header[31],
+        ]))
+        .map_err(|_| invalid_plugin_elf(path, "section offset exceeds host address space"))?,
+        size: usize::try_from(u64::from_le_bytes([
+            header[32], header[33], header[34], header[35], header[36], header[37], header[38],
+            header[39],
+        ]))
+        .map_err(|_| invalid_plugin_elf(path, "section size exceeds host address space"))?,
+        link: u32::from_le_bytes([header[40], header[41], header[42], header[43]]),
+        entry_size: usize::try_from(u64::from_le_bytes([
+            header[56], header[57], header[58], header[59], header[60], header[61], header[62],
+            header[63],
+        ]))
+        .map_err(|_| invalid_plugin_elf(path, "section entry size exceeds host address space"))?,
+    })
+}
+
+fn checked_elf_slice<'a>(
+    bytes: &'a [u8],
+    offset: usize,
+    size: usize,
+    label: &'static str,
+    path: &Path,
+) -> Result<&'a [u8], CliError> {
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| invalid_plugin_elf(path, format!("{label} range overflowed")))?;
+    bytes
+        .get(offset..end)
+        .ok_or_else(|| invalid_plugin_elf(path, format!("{label} lies outside the file")))
+}
+
+fn elf_u16(bytes: &[u8], offset: usize, label: &'static str, path: &Path) -> Result<u16, CliError> {
+    let value = checked_elf_slice(bytes, offset, 2, label, path)?;
+    Ok(u16::from_le_bytes([value[0], value[1]]))
+}
+
+fn elf_u64(bytes: &[u8], offset: usize, label: &'static str, path: &Path) -> Result<u64, CliError> {
+    let value = checked_elf_slice(bytes, offset, 8, label, path)?;
+    Ok(u64::from_le_bytes([
+        value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
+    ]))
+}
+
+fn elf_c_string<'a>(strings: &'a [u8], offset: usize, path: &Path) -> Result<&'a str, CliError> {
+    let suffix = strings
+        .get(offset..)
+        .ok_or_else(|| invalid_plugin_elf(path, "dynamic symbol name lies outside .dynstr"))?;
+    let end = suffix
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| invalid_plugin_elf(path, "dynamic symbol name is not NUL terminated"))?;
+    std::str::from_utf8(&suffix[..end])
+        .map_err(|_| invalid_plugin_elf(path, "dynamic symbol name is not UTF-8"))
+}
+
+fn invalid_plugin_elf(path: &Path, reason: impl fmt::Display) -> CliError {
+    qemu_backend_config_error(format!(
+        "QEMU plugin `{}` has an invalid ELF dynamic symbol table: {reason}; {}",
+        path.display(),
+        qemu_discovery_order_help()
+    ))
 }
 
 fn validate_elf64_header(label: &'static str, path: &Path, bytes: &[u8]) -> Result<u16, CliError> {
