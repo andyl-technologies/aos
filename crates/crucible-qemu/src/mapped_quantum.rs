@@ -466,6 +466,15 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         })
     }
 
+    fn publish_preemption_command(
+        &mut self,
+        command: crucible_shmem::SchedulerPreemptionCommand,
+    ) -> Result<(), QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::publish_preemption_command(self, command)
+            .map(|_| ())
+            .map_err(|source| source.into_channel_error("publish_preemption_command"))
+    }
+
     fn coverage_enabled(&self) -> bool {
         self.coverage_bridge.is_some()
     }

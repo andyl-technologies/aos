@@ -810,6 +810,19 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             .map_err(QemuNodeChannelError::from)
     }
 
+    fn publish_preemption_command(
+        &mut self,
+        command: crucible_shmem::SchedulerPreemptionCommand,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.view
+            .node_slot
+            .publish_preemption_command(command)
+            .map(|_| ())
+            .map_err(|source| {
+                QemuNodeChannelError::new("publish_preemption_command", source.to_string())
+            })
+    }
+
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
         let delivery_icount = Icount {
             retired: self.current_icount_from_slot().retired.saturating_add(1),

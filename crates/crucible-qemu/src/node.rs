@@ -16,6 +16,9 @@ use crucible::{
     GdbListen, Icount, NodeId, ObservableEvent, SchedulerEventLogAppend, SimulationBackend,
     StepObservation, VirtualTime,
 };
+use crucible_shmem::{
+    SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
+};
 // crucible-lint: allow host-nondeterminism-state -- node transport exposes untrusted causal records for scheduler validation.
 use crucible::Decision;
 
@@ -238,6 +241,17 @@ pub trait QemuShmemHotPathChannel {
         pending: QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
 
+    /// Publishes one scheduler-commanded preemption before its bounded RUN.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the command is invalid or a prior
+    /// command remains unconsumed.
+    fn publish_preemption_command(
+        &mut self,
+        command: SchedulerPreemptionCommand,
+    ) -> Result<(), QemuNodeChannelError>;
+
     /// Advances the node to `horizon` or until it pauses earlier.
     ///
     /// This helper is retained for direct channel tests and already-completed
@@ -417,6 +431,7 @@ pub struct QemuNode {
     last_observed_time: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     active_gdbstub: Option<QemuGdbstubProxyServer>,
+    pending_preemption: Option<crucible::PreemptionDecision>,
 }
 
 impl QemuNode {
@@ -441,6 +456,7 @@ impl QemuNode {
             last_observed_time: VirtualTime::default(),
             gdbstub: None,
             active_gdbstub: None,
+            pending_preemption: None,
         }
     }
 
@@ -854,6 +870,20 @@ impl SimulationBackend for QemuNode {
         let icount_ceiling = Icount {
             retired: ceiling.ticks,
         };
+        if let Some(decision) = self.pending_preemption.as_ref() {
+            let command = scheduler_preemption_command(
+                decision,
+                self.last_observed_time.ticks,
+                icount_ceiling.retired,
+            )?;
+            self.channels
+                .shmem_hot_path
+                .publish_preemption_command(command)
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                })?;
+            self.pending_preemption = None;
+        }
         let report = self
             .advance_to_ceiling_report(icount_ceiling)
             .map_err(BackendError::from)?;
@@ -896,6 +926,17 @@ impl SimulationBackend for QemuNode {
             BackendEffect::DeliverInput(input) => self
                 .deliver_frame(input.clone())
                 .map_err(BackendError::from),
+            BackendEffect::Preemption(decision) => {
+                if self.pending_preemption.is_some() {
+                    return Err(BackendError::Rejected {
+                        message: String::from(
+                            "qemu backend already has a pending scheduler preemption",
+                        ),
+                    });
+                }
+                self.pending_preemption = Some(decision.clone());
+                Ok(())
+            }
             BackendEffect::Shutdown => self
                 .shutdown_child()
                 .map(|_| ())
@@ -975,6 +1016,41 @@ impl SimulationBackend for QemuNode {
             .map(|_| ())
             .map_err(BackendError::from)
     }
+}
+
+fn scheduler_preemption_command(
+    decision: &crucible::PreemptionDecision,
+    deadline_icount: u64,
+    ceiling_icount: u64,
+) -> Result<SchedulerPreemptionCommand, BackendError> {
+    if decision.at.retired < deadline_icount || decision.at.retired > ceiling_icount {
+        return Err(BackendError::Rejected {
+            message: format!(
+                "scheduler preemption at {} is outside backend RUN window [{deadline_icount}, {ceiling_icount}]",
+                decision.at.retired
+            ),
+        });
+    }
+    let kind = match decision.kind {
+        crucible::PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
+            ShmemSchedulerPreemptionKind::VcpuSwitch {
+                from_vcpu: from_vcpu.index,
+                to_vcpu: to_vcpu.index,
+            }
+        }
+        crucible::PreemptionKind::InterruptAt { target_vcpu, irq } => {
+            ShmemSchedulerPreemptionKind::InterruptAt {
+                target_vcpu: target_vcpu.index,
+                irq: irq.vector,
+            }
+        }
+    };
+    Ok(SchedulerPreemptionCommand {
+        at_icount: decision.at.retired,
+        deadline_icount,
+        ceiling_icount,
+        kind,
+    })
 }
 
 const fn virtual_time_from_advance_outcome(
@@ -1120,6 +1196,7 @@ mod tests {
         },
         ShmemStart(u64),
         ShmemFinish(u64),
+        ShmemPreemption(SchedulerPreemptionCommand),
         ShmemDeliver {
             node: String,
             payload: Vec<u8>,
@@ -1216,6 +1293,16 @@ mod tests {
                     QemuQuantumOperation::ObservePluginReport,
                 ],
             })
+        }
+
+        fn publish_preemption_command(
+            &mut self,
+            command: SchedulerPreemptionCommand,
+        ) -> Result<(), QemuNodeChannelError> {
+            self.log
+                .borrow_mut()
+                .push(ChannelCall::ShmemPreemption(command));
+            Ok(())
         }
 
         fn drain_observable_events(
@@ -1642,6 +1729,62 @@ mod tests {
             ]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let mut node = scripted_node_with_runtime(
+            Rc::clone(&log),
+            false,
+            false,
+            false,
+            [
+                QemuAsyncWaitOutcome::Completed,
+                QemuAsyncWaitOutcome::Completed,
+            ],
+        )?;
+
+        SimulationBackend::step_to(&mut node, VirtualTime { ticks: 23 })?;
+        SimulationBackend::apply(
+            &mut node,
+            &BackendEffect::Preemption(crucible::PreemptionDecision {
+                node: node_id("vm-a"),
+                at: Icount { retired: 27 },
+                kind: crucible::PreemptionKind::InterruptAt {
+                    target_vcpu: crucible::VcpuId { index: 1 },
+                    irq: crucible::IrqVector { vector: 48 },
+                },
+            }),
+            VirtualTime { ticks: 23 },
+        )?;
+        SimulationBackend::step_to(&mut node, VirtualTime { ticks: 29 })?;
+
+        let calls = recorded(&log);
+        let command_index = calls
+            .iter()
+            .position(|call| matches!(call, ChannelCall::ShmemPreemption(_)))
+            .ok_or("preemption command was not published")?;
+        let second_run_index = calls
+            .iter()
+            .rposition(|call| matches!(call, ChannelCall::ShmemStart(29)))
+            .ok_or("second RUN was not started")?;
+        assert!(command_index < second_run_index);
+        assert_eq!(
+            calls[command_index],
+            ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
+                at_icount: 27,
+                deadline_icount: 23,
+                ceiling_icount: 29,
+                kind: ShmemSchedulerPreemptionKind::InterruptAt {
+                    target_vcpu: 1,
+                    irq: 48,
+                },
+            })
+        );
+
+        SimulationBackend::shutdown(&mut node)?;
         Ok(())
     }
 

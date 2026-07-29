@@ -195,6 +195,7 @@ impl SimulationBackend for SimBackend {
         match effect {
             BackendEffect::Noop => Ok(()),
             BackendEffect::DeliverInput(input) => self.deliver_input(input.clone()),
+            BackendEffect::Preemption(_) => Ok(()),
             BackendEffect::Shutdown => Backend::shutdown(self),
         }
     }
@@ -1181,6 +1182,7 @@ impl SimulationBackend for SimDouble {
         match effect {
             BackendEffect::Noop => Ok(()),
             BackendEffect::DeliverInput(input) => self.backend.deliver_input(input.clone()),
+            BackendEffect::Preemption(_) => Ok(()),
             BackendEffect::Shutdown => Backend::shutdown(&mut self.backend),
         }
     }

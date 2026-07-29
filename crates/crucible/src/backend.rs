@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Checkpoint, CheckpointKind, ContentHash, Decision, Icount, NodeId, ObservableEvent, VirtualTime,
+    Checkpoint, CheckpointKind, ContentHash, Decision, Icount, NodeId, ObservableEvent,
+    PreemptionDecision, VirtualTime,
 };
 mod error;
 pub use error::BackendError;
@@ -245,6 +246,8 @@ pub enum BackendEffect {
     Noop,
     /// Deliver deterministic input that the scheduler has already admitted.
     DeliverInput(BackendInput),
+    /// Apply an explorer-selected preemption during the next bounded RUN.
+    Preemption(PreemptionDecision),
     /// Shut all backend nodes down as part of a terminal stop.
     Shutdown,
 }
@@ -477,6 +480,7 @@ impl SimulationBackend for MockSimulationBackend {
         match effect {
             BackendEffect::Noop => {}
             BackendEffect::DeliverInput(input) => self.state.delivered_inputs.push(input.clone()),
+            BackendEffect::Preemption(_) => {}
             BackendEffect::Shutdown => self.state.shutdown = true,
         }
         self.state.applied_effects.push(effect.clone());

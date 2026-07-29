@@ -1,7 +1,7 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::{RngDecision, ScenarioDef, step};
+use crate::{BackendEffect, MockSimulationBackend, RngDecision, ScenarioDef, step};
 
 #[test]
 fn quantum_loop_trait_is_object_safe() {
@@ -151,6 +151,68 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
             },
             String::from("127.0.0.1:9000"),
         )]
+    );
+}
+
+#[test]
+fn backend_quantum_loop_applies_resolved_preemption_before_run() {
+    struct PreemptionLoop {
+        decision: PreemptionDecision,
+    }
+
+    impl QuantumLoop for PreemptionLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10 },
+                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
+                resolved_events: Vec::new(),
+                decisions: vec![Decision::Preemption(self.decision.clone())],
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    let decision = PreemptionDecision {
+        node: NodeId {
+            name: String::from("vm-a"),
+        },
+        at: Icount { retired: 7 },
+        kind: PreemptionKind::VcpuSwitch {
+            from_vcpu: VcpuId { index: 0 },
+            to_vcpu: VcpuId { index: 1 },
+        },
+    };
+    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.backend-preemption",
+        "scenario=backend-preemption",
+    ));
+    let mut adapter = BackendQuantumLoop::new(
+        PreemptionLoop {
+            decision: decision.clone(),
+        },
+        MockSimulationBackend::default(),
+    );
+
+    adapter
+        .drive_quantum(QuantumRequest {
+            configuration: config,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
+
+    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
+    assert_eq!(
+        adapter.backend().state().applied_effects,
+        vec![BackendEffect::Preemption(decision)]
     );
 }
 
