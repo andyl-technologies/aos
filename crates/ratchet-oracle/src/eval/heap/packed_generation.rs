@@ -5,7 +5,7 @@
 //! Construction is the memory admission boundary: it charges the owner itself,
 //! every backing vector's allocator-granted capacity, caller-supplied
 //! collection scratch, and a caller-supplied safety allowance against the
-//! strict half-stock-Nix RSS ceiling.
+//! caller-provided RSS ceiling.
 //!
 //! Retained active thunk shells are the only source-generation identities
 //! carried across a future publication. The constructor sorts their allowlist
@@ -35,11 +35,8 @@ use super::packed_thunk_lane::{PackedThunkLane, PackedThunkLaneBytes};
 use super::packed_translation::PackedTranslationBytes;
 use super::{EvalHeap, EvalHeapError};
 
-/// Strict half-stock-Nix RSS ceiling for the agreed primary benchmark.
-pub(crate) const PACKED_GENERATION_RSS_CEILING_BYTES: usize = 239_054_848;
-
 /// Caller-observed process state charged at packed-generation admission.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PackedGenerationAdmissionInput {
     /// Current resident bytes immediately before destination admission.
     pub(crate) current_rss_bytes: usize,
@@ -47,6 +44,19 @@ pub(crate) struct PackedGenerationAdmissionInput {
     pub(crate) scratch_bytes: usize,
     /// Explicit unmodeled and allocator safety allowance.
     pub(crate) safety_bytes: usize,
+    /// Caller-selected resident-memory ceiling.
+    pub(crate) rss_ceiling_bytes: usize,
+}
+
+impl Default for PackedGenerationAdmissionInput {
+    fn default() -> Self {
+        Self {
+            current_rss_bytes: 0,
+            scratch_bytes: 0,
+            safety_bytes: 0,
+            rss_ceiling_bytes: usize::MAX,
+        }
+    }
 }
 
 impl PackedGenerationAdmissionInput {
@@ -65,6 +75,7 @@ impl PackedGenerationAdmissionInput {
         translation: PackedTranslationBytes,
         additional_scratch_bytes: usize,
         safety_bytes: usize,
+        rss_ceiling_bytes: usize,
     ) -> Result<Self, PackedGenerationError> {
         let scratch_bytes = translation
             .capacity_total
@@ -74,6 +85,7 @@ impl PackedGenerationAdmissionInput {
             current_rss_bytes,
             scratch_bytes,
             safety_bytes,
+            rss_ceiling_bytes,
         })
     }
 }
@@ -282,10 +294,10 @@ impl PackedGeneration {
             .and_then(|total| total.checked_add(input.scratch_bytes))
             .and_then(|total| total.checked_add(input.safety_bytes))
             .ok_or(PackedGenerationError::AdmissionOverflow)?;
-        if projected_peak_bytes >= PACKED_GENERATION_RSS_CEILING_BYTES {
+        if projected_peak_bytes >= input.rss_ceiling_bytes {
             return Err(PackedGenerationError::RssCeilingReached {
                 projected_peak_bytes,
-                ceiling_bytes: PACKED_GENERATION_RSS_CEILING_BYTES,
+                ceiling_bytes: input.rss_ceiling_bytes,
             });
         }
         let admission = PackedGenerationAdmission {
@@ -294,7 +306,7 @@ impl PackedGeneration {
             scratch_bytes: input.scratch_bytes,
             safety_bytes: input.safety_bytes,
             projected_peak_bytes,
-            headroom_bytes: PACKED_GENERATION_RSS_CEILING_BYTES - projected_peak_bytes,
+            headroom_bytes: input.rss_ceiling_bytes - projected_peak_bytes,
         };
         Ok(Self {
             domain: domain.id(),
@@ -904,36 +916,39 @@ mod tests {
 
     #[test]
     fn admission_is_strict_at_the_rss_boundary() {
+        const TEST_CEILING_BYTES: usize = 16 * 1024 * 1024;
         let probe = admitted_with(PackedGenerationAdmissionInput::default()).unwrap();
         assert!(
             crate::heap::reservation_base(probe.domain()).is_none(),
             "packed logical domains must not permit native pointer reconstruction"
         );
         let destination = probe.bytes().capacity_total;
-        let below = PACKED_GENERATION_RSS_CEILING_BYTES
+        let below = TEST_CEILING_BYTES
             .checked_sub(destination)
             .and_then(|bytes| bytes.checked_sub(1))
             .unwrap();
         let admitted = admitted_with(PackedGenerationAdmissionInput {
             current_rss_bytes: below,
+            rss_ceiling_bytes: TEST_CEILING_BYTES,
             ..PackedGenerationAdmissionInput::default()
         })
         .unwrap();
         assert_eq!(
             admitted.admission().projected_peak_bytes,
-            PACKED_GENERATION_RSS_CEILING_BYTES - 1
+            TEST_CEILING_BYTES - 1
         );
         assert_eq!(admitted.admission().headroom_bytes, 1);
 
         let boundary = admitted_with(PackedGenerationAdmissionInput {
             current_rss_bytes: below + 1,
+            rss_ceiling_bytes: TEST_CEILING_BYTES,
             ..PackedGenerationAdmissionInput::default()
         });
         assert!(matches!(
             boundary,
             Err(PackedGenerationError::RssCeilingReached {
-                projected_peak_bytes: PACKED_GENERATION_RSS_CEILING_BYTES,
-                ceiling_bytes: PACKED_GENERATION_RSS_CEILING_BYTES,
+                projected_peak_bytes: TEST_CEILING_BYTES,
+                ceiling_bytes: TEST_CEILING_BYTES,
             })
         ));
     }
@@ -1219,6 +1234,7 @@ mod tests {
             current_rss_bytes: usize::MAX,
             scratch_bytes: 1,
             safety_bytes: 1,
+            rss_ceiling_bytes: usize::MAX,
         })
         .unwrap_err();
         assert_eq!(error, PackedGenerationError::AdmissionOverflow);
@@ -1296,6 +1312,7 @@ mod tests {
             current_rss_bytes: 100,
             scratch_bytes: 200,
             safety_bytes: 300,
+            rss_ceiling_bytes: usize::MAX,
         })
         .unwrap();
         let bytes = generation.bytes();

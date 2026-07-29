@@ -433,7 +433,6 @@ impl TreeWalk {
         let root = ir.root;
         let module =
             self.push_module(id, span, ir, base.to_vec(), path.to_vec(), source.to_vec())?;
-        self.emit_weak_liveness_import_milestone();
         let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
         let saved_env = self.swap_env_frames(Vec::new());
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);

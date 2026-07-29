@@ -508,8 +508,6 @@ impl TreeWalk {
         elements: &[Value],
         accumulator_slot: usize,
     ) -> Result<Value, TreeWalkError> {
-        #[cfg(feature = "option_map_fold_probe")]
-        let option_map_fold_plan = self.observe_option_map_fold(id, op, elements.len());
         let initial_span = self.node(initial_id)?.span;
         let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
         if !self.set_current_transient_value_stack_root(accumulator_slot, accumulator) {
@@ -560,8 +558,6 @@ impl TreeWalk {
             index += 1;
         }
 
-        #[cfg(feature = "option_map_fold_probe")]
-        self.finish_option_map_fold_probe(option_map_fold_plan, elements);
         Ok(accumulator)
     }
 
@@ -578,8 +574,6 @@ impl TreeWalk {
         list_id: IrId,
         elements: &[Value],
     ) -> Result<Value, TreeWalkError> {
-        #[cfg(feature = "option_map_fold_probe")]
-        let option_map_fold_plan = self.observe_option_map_fold(id, op, elements.len());
         let initial_span = self.node(initial_id)?.span;
         let mut accumulator = self.alloc_thunk_for_node(initial_id, initial_id, initial_span)?;
         if elements.is_empty() {
@@ -606,8 +600,6 @@ impl TreeWalk {
             accumulator = self.force_value(op_id, op_span, result)?;
             index += 1;
         }
-        #[cfg(feature = "option_map_fold_probe")]
-        self.finish_option_map_fold_probe(option_map_fold_plan, elements);
         Ok(accumulator)
     }
 

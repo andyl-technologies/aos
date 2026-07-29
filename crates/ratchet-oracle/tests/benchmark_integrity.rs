@@ -7,8 +7,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Returns every Rust source beneath `root` in deterministic path order.
-fn rust_sources(root: &Path) -> Vec<PathBuf> {
+/// Returns every evaluator source or manifest beneath `root` in deterministic order.
+fn evaluator_sources(root: &Path) -> Vec<PathBuf> {
     let mut pending = vec![root.to_path_buf()];
     let mut sources = Vec::new();
     while let Some(path) = pending.pop() {
@@ -19,7 +19,10 @@ fn rust_sources(root: &Path) -> Vec<PathBuf> {
                 .collect::<Vec<_>>();
             children.sort();
             pending.extend(children.into_iter().rev());
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "rs" || extension == "toml")
+        {
             sources.push(path);
         }
     }
@@ -67,8 +70,11 @@ fn production_evaluator_has_no_workload_pinned_execution_admission() {
         .expect("ratchet-oracle is inside the crates workspace");
     let roots = [
         manifest.join("src"),
+        manifest.join("Cargo.toml"),
         workspace.join("aos-nix/src"),
+        workspace.join("aos-nix/Cargo.toml"),
         workspace.join("aos/src"),
+        workspace.join("aos/Cargo.toml"),
         workspace.join("ratchet-core/src"),
         workspace.join("ratchet-value/src"),
     ];
@@ -78,13 +84,26 @@ fn production_evaluator_has_no_workload_pinned_execution_admission() {
         concat!("AOS_NIX_", "PACKED_PORTAL_CUTOVER"),
         concat!("AOS_NIX_", "EXEC176_WEAK_PURGE"),
         concat!("AOS_NIX_", "FINAL_FORCE_RESUME_ORDINAL"),
+        concat!("AOS_NIX_", "NESTED_NONMOVING_PROOF_ORDINAL"),
+        concat!("AOS_NIX_", "NESTED_NONMOVING_RETIREMENT_REPORT_ORDINAL"),
+        concat!("AOS_NIX_", "YOUNG_INCREMENT_PROJECTION_ORDINAL"),
+        concat!("AOS_NIX_", "NONMOVING_RECLAIM_MODULE"),
         concat!("FinalForce", "PortalSuspend"),
         concat!("/lib/", "modules.nix"),
+        concat!("option_map_", "fold_probe"),
+        concat!("trusted_", "reference"),
+        "14_030_054_434",
+        "5_826_183_736",
+        "10_523_952_238",
+        "3_858_165_127",
+        "239_054_848",
+        "226_492_416",
+        "15_254",
     ];
     let mut violations = Vec::new();
 
     for root in roots {
-        for path in rust_sources(&root) {
+        for path in evaluator_sources(&root) {
             let source = fs::read_to_string(&path).expect("evaluator source is UTF-8");
             if embeds_nix_source(&source) {
                 violations.push(format!("{}: embeds a Nix source", path.display()));

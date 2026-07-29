@@ -57,8 +57,6 @@ mod closure_code_ref;
 #[cfg(feature = "candidate_c_value")]
 #[allow(dead_code)] // Production heap routing is the next packed-publication slice.
 mod collection_view;
-#[cfg(feature = "compact_destination_probe")]
-mod compact_destination;
 #[cfg(feature = "candidate_c_value")]
 #[allow(unused_imports)] // Used by the next packed resolver integration slice.
 pub(crate) use collection_view::{EvalAttrsView, EvalListView};
@@ -79,21 +77,11 @@ mod errors;
 #[cfg(feature = "candidate_c_value")]
 #[allow(dead_code)] // Installed by the next selective-evacuation publication slice.
 mod evacuation_forwarding;
-#[cfg(feature = "evacuation_plan_probe")]
-mod evacuation_plan;
 mod flat_values;
 mod gc;
-#[cfg(feature = "immutable_cohort_projection_probe")]
-mod immutable_cohort_projection;
 mod lambda;
-#[cfg(feature = "lifetime_cohort_probe")]
-mod lifetime_quarantine;
 #[cfg(feature = "mesh_projection_probe")]
 mod mesh_projection;
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-mod nested_nonmoving_retirement;
-#[cfg(feature = "nonmoving_reclaim_probe")]
-mod nonmoving_reclaim;
 #[cfg(any(
     feature = "compact_destination_probe",
     feature = "evacuation_plan_probe"
@@ -169,8 +157,6 @@ mod packed_translation;
 ))]
 #[allow(dead_code)] // Prepared replacement is consumed by the publication hook.
 mod packed_weak_indexes;
-#[cfg(feature = "young_increment_projection_probe")]
-mod young_increment_projection;
 #[cfg(any(
     feature = "compact_destination_probe",
     feature = "evacuation_plan_probe"
@@ -180,8 +166,6 @@ pub(in crate::eval) use packed_weak_indexes::{PackedWeakIndexError, PreparedPack
 #[cfg(feature = "peak_ordinal_probe")]
 mod peak_ordinal;
 mod primop;
-#[cfg(feature = "ready_exclusive_probe")]
-mod ready_exclusive;
 mod record_table;
 #[allow(dead_code)] // Production string consumers are migrated incrementally.
 mod string_view;
@@ -189,9 +173,6 @@ mod string_view;
 pub(crate) use string_view::{EvalStringContextView, EvalStringView};
 mod root_scan;
 mod roots;
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-#[allow(dead_code)] // Consumed by the next exact multi-checkpoint probe wiring.
-mod rotating_rollover_projection;
 mod shared_arena;
 mod shared_backend;
 #[cfg(feature = "candidate_c_value")]
@@ -236,17 +217,6 @@ pub(in crate::eval) use flat_values::permanent_publication::PermanentRetirementR
 pub(in crate::eval) use flat_values::thunk_heads::TypedThunkWorkHandle;
 use flat_values::thunk_heads::{StableThunkHead, TypedThunkWorkPool};
 pub(in crate::eval) use flat_values::thunk_heads::{TypedThunkForceClaim, TypedThunkForceParts};
-#[cfg(feature = "immutable_cohort_projection_probe")]
-pub(crate) use immutable_cohort_projection::{
-    ImmutableCohortFingerprint, ImmutableCohortProjection,
-};
-#[cfg(feature = "lifetime_cohort_probe")]
-pub(crate) use lifetime_quarantine::{LifetimeQuarantineInstallReport, LifetimeQuarantineOrigin};
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-pub(crate) use nested_nonmoving_retirement::{
-    NestedNonmovingRetirementReport, NestedNonmovingRuntimeHeapSnapshot,
-    NestedNonmovingRuntimeReservationSnapshot,
-};
 #[cfg(any(
     feature = "compact_destination_probe",
     feature = "evacuation_plan_probe"
@@ -272,25 +242,8 @@ pub(in crate::eval) use packed_retained_heap_healing::{
 pub(in crate::eval) use packed_rotation_prepare::PackedRotationAdmissionInput;
 #[cfg(feature = "peak_ordinal_probe")]
 pub(crate) use peak_ordinal::{PeakAllocationSample, PeakOrdinalProbe};
-#[cfg(feature = "ready_exclusive_probe")]
-#[allow(unused_imports)] // Consumed by the later tree-walk phase-window wiring.
-pub(crate) use ready_exclusive::{
-    ReadyExclusiveCandidate, ReadyExclusiveCensus, ReadyExclusiveObjectKind,
-};
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-#[allow(unused_imports)] // Exported for the next exact multi-checkpoint probe wiring.
-pub(crate) use rotating_rollover_projection::{
-    ROTATING_ROLLOVER_ENGINEERING_GATE_BYTES, ROTATING_ROLLOVER_ORDINALS, RotatingRolloverBlockers,
-    RotatingRolloverCheckpointInput, RotatingRolloverDestinationInput, RotatingRolloverEvidence,
-    RotatingRolloverExternalCohort, RotatingRolloverExternalLifecycle,
-    RotatingRolloverIntervalInput, RotatingRolloverOwnershipLedger, RotatingRolloverProjection,
-    RotatingRolloverProjectionError, RotatingRolloverReplayInput, RotatingRolloverWatermarkInput,
-    project_rotating_rollover,
-};
 #[cfg(feature = "lifetime_cohort_probe")]
 pub(crate) use weak_hash_cons_purge::{WeakHashConsPurgeReport, WeakHashConsTablePurgeReport};
-#[cfg(feature = "young_increment_projection_probe")]
-pub(crate) use young_increment_projection::YoungIncrementProjection;
 
 use crate::heap::flat::{
     FlatKindSet, FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark,

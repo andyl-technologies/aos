@@ -180,21 +180,6 @@ impl TreeWalk {
         // results.
         let force_cache_active = options.persist_cache_root().is_some()
             || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
-        #[cfg(feature = "lifetime_cohort_probe")]
-        let lifetime_cohort_probe = super::lifetime_cohort_probe::LifetimeCohortProbe::from_env(
-            &options,
-            force_cache_active,
-        );
-        #[cfg(feature = "lifetime_cohort_probe")]
-        if lifetime_cohort_probe.is_some() {
-            // The admitted residual-retirement shadow window consumes generic
-            // object touch epochs. Default and refused probe modes retain the
-            // ordinary cheap-advice-only stamping policy above.
-            heap.set_epoch_tracking_enabled(true);
-        }
-        #[cfg(feature = "young_increment_projection_probe")]
-        let young_increment_projection_probe =
-            super::young_increment_projection_probe::YoungIncrementProjectionProbe::from_env(&heap);
         let store_validity_checker = StoreValidityChecker::for_store_dir(options.store_dir());
         // Parallel forcing gives each evaluator a wait registry; demand-graph
         // workers replace it with one shared through `set_parallel_force_registry`.
@@ -251,37 +236,12 @@ impl TreeWalk {
                     &options,
                     force_cache_active,
                 ),
-            #[cfg(feature = "lifetime_cohort_probe")]
-            lifetime_cohort_probe,
-            #[cfg(feature = "immutable_cohort_projection_probe")]
-            immutable_cohort_projection_probe:
-                super::immutable_cohort_projection_probe::ImmutableCohortProbe::from_env(),
-            #[cfg(feature = "root_continuation_probe")]
-            root_continuation_probe:
-                super::root_continuation_probe::RootContinuationProbe::from_env(),
             #[cfg(feature = "collection_poll_probe")]
             whole_demand_dispatcher:
                 super::whole_demand_dispatcher::WholeDemandDispatcherRuntime::default(),
             #[cfg(feature = "collection_poll_probe")]
-            restart_to_root_probe: super::restart_to_root_probe::RestartToRootProbe::from_env(),
-            #[cfg(feature = "collection_poll_probe")]
-            nested_nonmoving_safepoint_probe:
-                super::nested_nonmoving_safepoint_probe::NestedNonmovingSafepointProbe::from_env(),
-            #[cfg(feature = "nested_nonmoving_retirement_probe")]
-            nested_nonmoving_retirement_probe:
-                super::nested_nonmoving_retirement_probe::NestedNonmovingRetirementProbe::from_env(),
-            #[cfg(feature = "nested_nonmoving_retirement_probe")]
-            rotating_rollover_probe:
-                super::rotating_rollover_probe::RotatingRolloverProbe::from_env(),
-            #[cfg(feature = "young_increment_projection_probe")]
-            young_increment_projection_probe,
-            #[cfg(feature = "collection_poll_probe")]
             native_continuation_shadow:
                 super::native_continuation_shadow::NativeContinuationShadow::from_env(),
-            #[cfg(feature = "option_map_fold_probe")]
-            option_map_fold_probe_plans: HashMap::new(),
-            #[cfg(feature = "ready_exclusive_probe")]
-            ready_exclusive_window: None,
             options,
             stats: EvalStats::default(),
             #[cfg(feature = "peak_ordinal_probe")]
@@ -605,12 +565,8 @@ impl TreeWalk {
     pub fn eval_root(&mut self) -> Result<Value, TreeWalkError> {
         let root = self.current_ir().root;
         let previous_root_eval_node = self.active_root_eval_node.replace(root);
-        #[cfg(feature = "root_continuation_probe")]
-        self.begin_root_continuation_probe();
         let result = self.eval_node(root);
         self.active_root_eval_node = previous_root_eval_node;
-        #[cfg(feature = "root_continuation_probe")]
-        self.finish_root_continuation_probe(result.is_ok());
         result
     }
 

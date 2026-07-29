@@ -64,16 +64,6 @@ use super::heap::{
     EvalPrimOpArg, EvalRootSet, EvalRootSource, EvalThunk, EvalThunkKind, HeapAllocationDomain,
     HeapEdgeSource, PreciseHeapScan,
 };
-#[cfg(any(
-    feature = "compact_destination_probe",
-    feature = "evacuation_plan_probe"
-))]
-use super::heap::{DirectRootObservation, DirectRootRewriteError, DirectRootRewritePlan};
-#[cfg(feature = "lifetime_cohort_probe")]
-use super::heap::{
-    LifetimeCohortCandidate, LifetimeCohortCandidateObservation, LifetimeCohortCensus,
-    LifetimeCohortMass,
-};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{DetachedForceClaim, ForceClaim, ForceError, ForceGuard, ThunkState};
 use super::thunk_cas::ParallelThunkWorkerId;
@@ -136,8 +126,6 @@ use crate::heap::{
     RegionPlacementReason, RegionPlan, RegionRuntimeTier, RegionSharing, RememberedEdge,
     RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
 };
-#[cfg(feature = "nonmoving_reclaim_probe")]
-use crate::heap::{PeakResidentMemoryScope, peak_resident_memory_bytes};
 use crate::list::{NixList, NixListError};
 #[cfg(test)]
 use crate::runtime::alloc::RuntimeAllocationEntryPoint;
@@ -166,35 +154,16 @@ mod collection_poll;
 mod constants;
 mod error_kind;
 mod errors;
-#[cfg(feature = "collection_poll_probe")]
-mod final_force_leaf_pmu;
 mod native_continuation_shadow;
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-mod nested_nonmoving_retirement_probe;
-#[cfg(feature = "collection_poll_probe")]
-mod nested_nonmoving_safepoint_probe;
 mod op_types;
 mod options;
 mod outcome;
-#[cfg(any(
-    feature = "compact_destination_probe",
-    feature = "evacuation_plan_probe"
-))]
-mod packed_mutator_root_stage;
 #[cfg(feature = "peak_ordinal_probe")]
 mod peak_ordinal;
-#[cfg(feature = "collection_poll_probe")]
-mod restart_to_root_probe;
-#[cfg(feature = "nested_nonmoving_retirement_probe")]
-mod rotating_rollover_probe;
 mod toml_normalize;
 mod version;
 #[cfg(feature = "collection_poll_probe")]
-mod whole_demand_corridor_census;
-#[cfg(feature = "collection_poll_probe")]
 mod whole_demand_dispatcher;
-#[cfg(feature = "young_increment_projection_probe")]
-mod young_increment_projection_probe;
 pub(crate) use constants::*;
 mod config_types;
 pub use config_types::*;
@@ -335,47 +304,12 @@ pub struct TreeWalk {
     /// Compile-time-only whole-demand allocation/statepoint shadow census.
     #[cfg(feature = "demand_region_shadow_probe")]
     demand_region_shadow_probe: Option<demand_region_shadow_probe::DemandRegionShadowProbe>,
-    /// Compile-time-only chronological allocation-cohort aggregate probe.
-    #[cfg(feature = "lifetime_cohort_probe")]
-    lifetime_cohort_probe: Option<lifetime_cohort_probe::LifetimeCohortProbe>,
-    /// Compile-time-only all-object immutable-cohort packing projection.
-    #[cfg(feature = "immutable_cohort_projection_probe")]
-    immutable_cohort_projection_probe:
-        Option<immutable_cohort_projection_probe::ImmutableCohortProbe>,
-    /// Compile-time-only root-session continuation coverage shadow.
-    #[cfg(feature = "root_continuation_probe")]
-    root_continuation_probe: Option<root_continuation_probe::RootContinuationProbe>,
     /// Compile-time-only whole-demand suspended-dispatch coverage state.
     #[cfg(feature = "collection_poll_probe")]
     whole_demand_dispatcher: whole_demand_dispatcher::WholeDemandDispatcherRuntime,
-    /// Compile-time-only restart-to-API eligibility falsifier.
-    #[cfg(feature = "collection_poll_probe")]
-    restart_to_root_probe: Option<restart_to_root_probe::RestartToRootProbe>,
-    /// Default-off proof-only inventory for a nested nonmoving safepoint.
-    #[cfg(feature = "collection_poll_probe")]
-    nested_nonmoving_safepoint_probe:
-        Option<nested_nonmoving_safepoint_probe::NestedNonmovingSafepointProbe>,
-    /// Default-off report-only admission for one nested retirement ordinal.
-    #[cfg(feature = "nested_nonmoving_retirement_probe")]
-    nested_nonmoving_retirement_probe:
-        Option<nested_nonmoving_retirement_probe::NestedNonmovingRetirementProbe>,
-    /// Bounded read-only producer for the rotating-rollover checkpoint schedule.
-    #[cfg(feature = "nested_nonmoving_retirement_probe")]
-    rotating_rollover_probe: Option<rotating_rollover_probe::RotatingRolloverProbe>,
-    /// Read-only packed-at-birth chronological increment projection.
-    #[cfg(feature = "young_increment_projection_probe")]
-    young_increment_projection_probe:
-        Option<young_increment_projection_probe::YoungIncrementProjectionProbe>,
     /// Bounded proof-only roots and edge census for native continuations.
     #[cfg(feature = "collection_poll_probe")]
     native_continuation_shadow: Option<native_continuation_shadow::NativeContinuationShadow>,
-    /// Cached source-independent admissions for the report-only option-map fold probe.
-    #[cfg(feature = "option_map_fold_probe")]
-    option_map_fold_probe_plans:
-        HashMap<EvalNodeRef, Option<option_map_fold_probe::OptionMapFoldPlan>>,
-    /// Ready-import-exclusive objects captured before the terminal demand window.
-    #[cfg(feature = "ready_exclusive_probe")]
-    ready_exclusive_window: Option<crate::eval::heap::ReadyExclusiveCensus>,
     options: TreeWalkOptions,
     stats: EvalStats,
     #[cfg(feature = "peak_ordinal_probe")]
@@ -731,18 +665,12 @@ mod formal_set_layout_cache;
 mod formal_set_ready_census;
 mod gc_sweep;
 mod genlist_elem_at;
-#[cfg(feature = "immutable_cohort_projection_probe")]
-mod immutable_cohort_projection_probe;
 mod import_persist_locations;
 mod json_float;
 mod lambda_call_lease;
-#[cfg(feature = "lifetime_cohort_probe")]
-mod lifetime_cohort_probe;
 #[cfg(feature = "maximal_laziness_probe")]
 mod maximal_laziness_census;
 mod memo;
-#[cfg(feature = "option_map_fold_probe")]
-mod option_map_fold_probe;
 mod parallel_demand;
 mod parallel_import;
 mod parallel_shape;
@@ -751,8 +679,6 @@ mod primop_builtin_cache;
 mod promise_region_census;
 mod region;
 mod relocation_identity;
-#[cfg(feature = "root_continuation_probe")]
-mod root_continuation_probe;
 mod runtime_alloc;
 mod safepoint_roots;
 mod select_cache_hash;

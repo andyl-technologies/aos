@@ -21,13 +21,6 @@ const TRACE_MAX_ENTRIES: usize = 4_096;
 // projection. The shadow emits both the constants and its derivation, so a
 // later source refresh cannot silently pass these figures off as fresh
 // counters.
-const PROFILE_BASELINE_INSTRUCTIONS: u64 = 14_030_054_434;
-const PROFILE_BASELINE_CYCLES: u64 = 5_826_183_736;
-const PROFILE_VIRTUALIZABLE_INSTRUCTION_PPM: u64 = 596_500;
-const PROFILE_VIRTUALIZABLE_CYCLE_PPM: u64 = 554_000;
-const PROFILE_TARGET_INSTRUCTIONS: u64 = 10_523_952_238;
-const PROFILE_TARGET_CYCLES: u64 = 3_858_165_127;
-const TRACE_PROJECTED_ELIMINATION_PPM: u64 = 700_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum EntryKind {
@@ -755,37 +748,6 @@ fn emit_trace_report(probe: &DemandRegionShadowProbe, root_limit: usize, trace: 
         .min(trace.global_operation_weight);
     let selected_operation_ppm =
         ratio_ppm(selected_operation_weight, trace.global_operation_weight);
-    let virtualizable_instructions = mul_div(
-        PROFILE_BASELINE_INSTRUCTIONS,
-        PROFILE_VIRTUALIZABLE_INSTRUCTION_PPM,
-        1_000_000,
-    );
-    let virtualizable_cycles = mul_div(
-        PROFILE_BASELINE_CYCLES,
-        PROFILE_VIRTUALIZABLE_CYCLE_PPM,
-        1_000_000,
-    );
-    let covered_instructions = mul_div(
-        virtualizable_instructions,
-        selected_operation_ppm,
-        1_000_000,
-    );
-    let covered_cycles = mul_div(virtualizable_cycles, selected_operation_ppm, 1_000_000);
-    let ideal_instruction_floor =
-        PROFILE_BASELINE_INSTRUCTIONS.saturating_sub(covered_instructions);
-    let ideal_cycle_floor = PROFILE_BASELINE_CYCLES.saturating_sub(covered_cycles);
-    let projected_instructions = PROFILE_BASELINE_INSTRUCTIONS.saturating_sub(mul_div(
-        covered_instructions,
-        TRACE_PROJECTED_ELIMINATION_PPM,
-        1_000_000,
-    ));
-    let projected_cycles = PROFILE_BASELINE_CYCLES.saturating_sub(mul_div(
-        covered_cycles,
-        TRACE_PROJECTED_ELIMINATION_PPM,
-        1_000_000,
-    ));
-    let instruction_coverage_ppm = ratio_ppm(covered_instructions, PROFILE_BASELINE_INSTRUCTIONS);
-    let cycle_coverage_ppm = ratio_ppm(covered_cycles, PROFILE_BASELINE_CYCLES);
     let guard_denominator = trace
         .guard_events
         .saturating_add(probe.dropped_guard_sites)
@@ -834,23 +796,9 @@ fn emit_trace_report(probe: &DemandRegionShadowProbe, root_limit: usize, trace: 
          \"virtualized_allocations\":{{\"events\":{},\
          \"bytes_lower_bound\":{},\"attributed_bytes_lower_bound\":{},\
          \"byte_coverage_ppm\":{},\"sites\":{}}},\
-         \"profile_projection\":{{\"source\":\"post-master-final-config-lean-2026-07-26\",\
-         \"baseline_instructions\":{},\"baseline_cycles\":{},\
-         \"profile_virtualizable_instruction_ppm\":{},\
-         \"profile_virtualizable_cycle_ppm\":{},\
-         \"instruction_weighted_coverage\":{},\
-         \"instruction_weighted_coverage_ppm\":{},\
-         \"cycle_weighted_coverage\":{},\"cycle_weighted_coverage_ppm\":{},\
-         \"ideal_global_instruction_floor\":{},\"ideal_global_cycle_floor\":{},\
-         \"assumed_elimination_ppm\":{},\
-         \"projected_global_instructions\":{},\"projected_global_cycles\":{},\
-         \"target_instructions\":{},\"target_cycles\":{},\
-         \"ideal_instruction_floor_passes\":{},\"ideal_cycle_floor_passes\":{},\
-         \"projected_instructions_pass\":{},\"projected_cycles_pass\":{}}},\
          \"contracts\":{{\"executes_regions\":false,\"widens_dispatch\":false,\
          \"retains_values\":false,\"uses_runtime_values_in_trace_key\":false,\
-         \"unknown_calls_require_at_most_four_observed_code_identities\":true,\
-         \"instruction_weights_are_external_profile_projection\":true}}}}",
+         \"unknown_calls_require_at_most_four_observed_code_identities\":true}}}}",
         root_limit,
         roots,
         trace.roots.len(),
@@ -878,25 +826,6 @@ fn emit_trace_report(probe: &DemandRegionShadowProbe, root_limit: usize, trace: 
         attributed_bytes,
         virtualized_byte_ppm,
         trace.virtual_sites.len(),
-        PROFILE_BASELINE_INSTRUCTIONS,
-        PROFILE_BASELINE_CYCLES,
-        PROFILE_VIRTUALIZABLE_INSTRUCTION_PPM,
-        PROFILE_VIRTUALIZABLE_CYCLE_PPM,
-        covered_instructions,
-        instruction_coverage_ppm,
-        covered_cycles,
-        cycle_coverage_ppm,
-        ideal_instruction_floor,
-        ideal_cycle_floor,
-        TRACE_PROJECTED_ELIMINATION_PPM,
-        projected_instructions,
-        projected_cycles,
-        PROFILE_TARGET_INSTRUCTIONS,
-        PROFILE_TARGET_CYCLES,
-        ideal_instruction_floor < PROFILE_TARGET_INSTRUCTIONS,
-        ideal_cycle_floor < PROFILE_TARGET_CYCLES,
-        projected_instructions < PROFILE_TARGET_INSTRUCTIONS,
-        projected_cycles < PROFILE_TARGET_CYCLES,
     );
 }
 

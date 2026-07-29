@@ -14,10 +14,9 @@ use super::*;
 const PAGE_BYTES: usize = 4096;
 const LINE_BYTES: usize = 64;
 const LINES_PER_PAGE: usize = PAGE_BYTES / LINE_BYTES;
-const REQUIRED_PAGE_EQUIVALENTS: usize = 15_254;
 
 /// Read-only accounting for one constructive page-meshing schedule.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MeshProjection {
     roots: usize,
     reachable_objects: usize,
@@ -29,6 +28,23 @@ pub(crate) struct MeshProjection {
     greedy_pairs: usize,
     greedy_bins: usize,
     line_bound_bins: usize,
+}
+
+impl Default for MeshProjection {
+    fn default() -> Self {
+        Self {
+            roots: 0,
+            reachable_objects: 0,
+            live_pages: 0,
+            occupied_lines: 0,
+            max_line_frequency: 0,
+            line_frequencies: [0; LINES_PER_PAGE],
+            cross_page_objects: 0,
+            greedy_pairs: 0,
+            greedy_bins: 0,
+            line_bound_bins: 0,
+        }
+    }
 }
 
 impl fmt::Display for MeshProjection {
@@ -45,8 +61,7 @@ impl fmt::Display for MeshProjection {
              \"constructive_greedy_bins\":{},\"constructive_page_savings\":{},\
              \"constructive_saved_bytes\":{},\"average_line_bound_bins\":{},\
              \"certified_bound_bins\":{},\
-             \"line_bound_savings\":{},\"required_page_equivalents\":{},\
-             \"constructive_pass\":{},\"upper_bound_pass\":{},\
+             \"line_bound_savings\":{},\
              \"semantics\":{{\"mutates_heap\":false,\"preserves_virtual_addresses\":true,\
              \"requires_retired_holes_never_reused\":true}}}}",
             self.roots,
@@ -65,9 +80,6 @@ impl fmt::Display for MeshProjection {
             self.line_bound_bins,
             certified_bins,
             upper_bound_savings,
-            REQUIRED_PAGE_EQUIVALENTS,
-            constructive_savings >= REQUIRED_PAGE_EQUIVALENTS,
-            upper_bound_savings >= REQUIRED_PAGE_EQUIVALENTS,
         )
     }
 }

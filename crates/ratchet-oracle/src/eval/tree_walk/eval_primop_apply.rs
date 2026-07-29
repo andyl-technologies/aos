@@ -350,11 +350,7 @@ impl TreeWalk {
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
         let argument_span = self.node(argument_id)?.span;
-        #[cfg(feature = "collection_poll_probe")]
-        let token = self.begin_speed_opportunity_phase(
-            super::whole_demand_corridor_census::SpeedOpportunityPhase::Apply,
-        );
-        let result = self.apply_lambda_value_with_argument_span(
+        self.apply_lambda_value_with_argument_span(
             id,
             span,
             function_id,
@@ -363,10 +359,7 @@ impl TreeWalk {
             argument_id,
             argument_span,
             argument,
-        );
-        #[cfg(feature = "collection_poll_probe")]
-        self.finish_speed_opportunity_phase(token, &result);
-        result
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -641,9 +634,7 @@ impl TreeWalk {
             let boundary_wall =
                 probe_boundary.then(super::pkg_boundary_probe::BoundaryWallGuard::enter);
             let ready_census_application = is_formal_set
-                .then(|| {
-                    eval.begin_formal_set_ready_census_application(function, lambda, argument)
-                })
+                .then(|| eval.begin_formal_set_ready_census_application(function, lambda, argument))
                 .flatten();
             let result = (|| {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {

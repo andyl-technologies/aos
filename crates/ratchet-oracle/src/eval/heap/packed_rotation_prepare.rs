@@ -51,7 +51,7 @@ use super::{
 };
 
 /// Caller-observed admission state for one non-mutating rotation preparation.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PackedRotationAdmissionInput {
     /// Current resident bytes before any destination allocation.
     pub(crate) current_rss_bytes: usize,
@@ -59,6 +59,19 @@ pub(crate) struct PackedRotationAdmissionInput {
     pub(crate) additional_scratch_bytes: usize,
     /// Explicit unmodeled and allocator safety allowance.
     pub(crate) safety_bytes: usize,
+    /// Caller-selected resident-memory ceiling.
+    pub(crate) rss_ceiling_bytes: usize,
+}
+
+impl Default for PackedRotationAdmissionInput {
+    fn default() -> Self {
+        Self {
+            current_rss_bytes: 0,
+            additional_scratch_bytes: 0,
+            safety_bytes: 0,
+            rss_ceiling_bytes: usize::MAX,
+        }
+    }
 }
 
 /// One source value selected for packed movement and its direct destination.
@@ -282,6 +295,7 @@ impl PreparedPackedPermanentRotation {
             translation.bytes()?,
             additional_scratch_bytes,
             admission.safety_bytes,
+            admission.rss_ceiling_bytes,
         )?;
 
         drop(list_scratch);
@@ -994,10 +1008,10 @@ mod tests {
             &heap,
             &scan,
             PackedRotationAdmissionInput {
-                current_rss_bytes:
-                    super::super::packed_generation::PACKED_GENERATION_RSS_CEILING_BYTES,
+                current_rss_bytes: 16 * 1024 * 1024,
                 additional_scratch_bytes: 0,
                 safety_bytes: 0,
+                rss_ceiling_bytes: 16 * 1024 * 1024,
             },
         )
         .unwrap_err();

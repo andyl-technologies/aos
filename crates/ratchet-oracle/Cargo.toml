@@ -3,6 +3,12 @@ name = "ratchet-oracle"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+# Recognize retired experimental cfg names while their unreachable generic
+# plumbing is removed incrementally. They are deliberately not Cargo features,
+# so no build can activate the deleted benchmark-coordinate schedulers.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("compact_destination_probe", "evacuation_plan_probe", "immutable_cohort_projection_probe", "lifetime_cohort_probe", "nested_nonmoving_retirement_probe", "nonmoving_reclaim_probe", "ready_exclusive_probe", "root_continuation_probe", "young_increment_projection_probe"))'] }
+
 [features]
 default = []
 # RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
@@ -19,10 +25,6 @@ active_packed_thunk_probe = ["candidate_c_value"]
 # Compile-time-only peak locator for RFC-0007 memory experiments. Ordinary
 # builds omit its counters, samples, fields, and allocation-path branches.
 peak_ordinal_probe = []
-# Compile-time-only Ready-import ownership and reuse-window census. The feature
-# depends on Candidate C because the primary experiment projects its compressed
-# values and headerless typed-thunk heads.
-ready_exclusive_probe = ["candidate_c_value"]
 # Compile-time-only projected duplicate-work census for maximal-laziness
 # experiments. Ordinary builds omit its maps, timers, fields, and force hooks.
 maximal_laziness_probe = ["candidate_c_value"]
@@ -33,54 +35,17 @@ demand_region_shadow_probe = ["candidate_c_value"]
 # whole-demand callers and links their bounded runtime code identities. It
 # reuses the demand-region observation hooks and never dispatches a plan.
 whole_demand_trace_shadow_probe = ["demand_region_shadow_probe"]
-# Compile-time-only checkpoint aggregate for chronological lifetime-cohort
-# experiments. Ordinary builds omit every field, scan, and branch.
-lifetime_cohort_probe = ["candidate_c_value"]
-# Compile-time-only root-session continuation coverage shadow. Successful
-# finalConfig canary completions are counted at their nested production site
-# and reconciled only after the root evaluator has fully unwound.
-root_continuation_probe = ["candidate_c_value"]
 # Compile-time-only no-collection preflight and coverage-only outer dispatcher
 # skeleton. The runtime door leaves ordinary evaluation byte-for-byte inert.
 collection_poll_probe = ["candidate_c_value"]
-# Compile-time-only read-only projection of a compact evacuation destination
-# at the final import peak-band root census.
-compact_destination_probe = ["candidate_c_value"]
-# Compile-time-only all-object immutable-cohort packing projection. The probe
-# observes final-config epochs but never moves, retires, or publishes values.
-immutable_cohort_projection_probe = ["candidate_c_value"]
-# Compile-time-only read-only planner for a same-layout moving evacuation.
-# The planner computes forwarding metadata and dense lane accounting but never
-# allocates a destination or mutates the evaluator heap. Its execution-count
-# checkpoint observes successful final-config canary folds, so the probe must
-# compile that otherwise default-off detection seam as well.
-evacuation_plan_probe = ["candidate_c_value"]
 # Default-off replay of real Candidate-C allocation and GC-retirement events
 # through a bounded-search, address-neutral reusable-hole model.
 hole_reuse_shadow_probe = [
   "candidate_c_value",
   "ratchet-value/hole_reuse_shadow_probe",
 ]
-# Default-off read-only projection of weak-object invalidation, dead-page
-# advice, metadata shrinking, and its carried adjusted-RSS schedule.
-nonmoving_reclaim_probe = ["candidate_c_value"]
-# Default-off report-only admission planner for one root-complete nested
-# nonmoving retirement ordinal. This never mutates or advises heap storage.
-nested_nonmoving_retirement_probe = [
-  "collection_poll_probe",
-  "nonmoving_reclaim_probe",
-]
-# Default-off read-only projection of packed-at-birth chronological typed
-# increments. It reuses the nonmoving root proof and allocation fences, but
-# never retires, advises, moves, or rewrites a value.
-young_increment_projection_probe = [
-  "nested_nonmoving_retirement_probe",
-  "demand_region_shadow_probe",
-  "compact_destination_probe",
-]
 # Default-off read-only projection of address-preserving virtual-page meshing.
 mesh_projection_probe = ["candidate_c_value"]
-option_map_fold_probe = ["candidate_c_value"]
 
 [dependencies]
 anyhow = { workspace = true }

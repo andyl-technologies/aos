@@ -416,28 +416,11 @@ pub(super) struct NativeContinuationShadow {
 
 #[cfg(feature = "collection_poll_probe")]
 impl NativeContinuationShadow {
-    /// Enables the shadow for either root-completeness consumer.
+    /// Enables the source-independent native-continuation shadow.
     pub(super) fn from_env() -> Option<Self> {
-        let proof_requested = std::env::var("AOS_NIX_NESTED_NONMOVING_PROOF_ORDINAL")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|ordinal| *ordinal != 0)
-            .is_some();
-        #[cfg(feature = "nested_nonmoving_retirement_probe")]
-        let retirement_requested =
-            std::env::var("AOS_NIX_NESTED_NONMOVING_RETIREMENT_REPORT_ORDINAL")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .filter(|ordinal| *ordinal != 0)
-                .is_some();
-        #[cfg(feature = "nested_nonmoving_retirement_probe")]
-        let rotating_rollover_requested =
-            std::env::var("AOS_NIX_ROTATING_ROLLOVER_PROBE").is_ok_and(|value| value == "1");
-        #[cfg(not(feature = "nested_nonmoving_retirement_probe"))]
-        let retirement_requested = false;
-        #[cfg(not(feature = "nested_nonmoving_retirement_probe"))]
-        let rotating_rollover_requested = false;
-        (proof_requested || retirement_requested || rotating_rollover_requested).then(Self::new)
+        std::env::var("AOS_NIX_NATIVE_CONTINUATION_SHADOW")
+            .is_ok_and(|value| value == "1")
+            .then(Self::new)
     }
 
     const fn new() -> Self {

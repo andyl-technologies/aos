@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Counts roots added by a generic nonmoving root-set inventory.
+#[cfg(feature = "collection_poll_probe")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::eval::tree_walk) struct NestedNonmovingRootInventory {
+    pub(in crate::eval::tree_walk) total_roots: usize,
+    pub(in crate::eval::tree_walk) result_roots: usize,
+    pub(in crate::eval::tree_walk) pending_values: usize,
+    pub(in crate::eval::tree_walk) pending_env_values: usize,
+    pub(in crate::eval::tree_walk) pending_flat_owners: usize,
+    pub(in crate::eval::tree_walk) native_shadow_values: usize,
+}
+
 impl TreeWalk {
     /// Builds roots for a proof-only nested nonmoving collection attempt.
     ///
@@ -13,16 +25,9 @@ impl TreeWalk {
     pub(in crate::eval::tree_walk) fn nested_nonmoving_root_set(
         &self,
         result: Value,
-    ) -> Result<
-        (
-            EvalRootSet,
-            super::super::nested_nonmoving_safepoint_probe::NestedNonmovingRootInventory,
-        ),
-        TreeWalkSafepointRootError,
-    > {
+    ) -> Result<(EvalRootSet, NestedNonmovingRootInventory), TreeWalkSafepointRootError> {
         let mut roots = self.mutator_root_set()?;
-        let mut inventory =
-            super::super::nested_nonmoving_safepoint_probe::NestedNonmovingRootInventory::default();
+        let mut inventory = NestedNonmovingRootInventory::default();
         let mut slot = self.transient_value_stack_roots.len();
         if roots.try_push_value_stack(slot, result)? {
             inventory.result_roots = 1;

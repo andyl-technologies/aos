@@ -17,8 +17,6 @@ active_packed_thunk_probe = [
   "aos-core/active_packed_thunk_probe",
   "aos-nix/active_packed_thunk_probe",
 ]
-# Compile-time-only Ready-import ownership and reuse-window census.
-ready_exclusive_probe = ["candidate_c_value", "aos-nix/ready_exclusive_probe"]
 # Compile-time-only projected duplicate-work census.
 maximal_laziness_probe = ["candidate_c_value", "aos-nix/maximal_laziness_probe"]
 # Compile-time-only allocation-byte and statepoint shadow census.
@@ -27,30 +25,8 @@ whole_demand_trace_shadow_probe = [
   "demand_region_shadow_probe",
   "aos-nix/whole_demand_trace_shadow_probe",
 ]
-# Compile-time-only chronological lifetime-cohort aggregate probe.
-lifetime_cohort_probe = ["candidate_c_value", "aos-nix/lifetime_cohort_probe"]
-# Compile-time-only root-session continuation coverage shadow.
-root_continuation_probe = ["candidate_c_value", "aos-nix/root_continuation_probe"]
 # Compile-time-only no-collection explicit-dispatcher safepoint preflight.
 collection_poll_probe = ["candidate_c_value", "aos-nix/collection_poll_probe"]
-# Default-off report-only admission planner for nested nonmoving retirement.
-nested_nonmoving_retirement_probe = [
-  "candidate_c_value",
-  "aos-nix/nested_nonmoving_retirement_probe",
-]
-option_map_fold_probe = ["candidate_c_value", "aos-nix/option_map_fold_probe"]
-# Compile-time-only read-only evacuation-plan and first-slice census.
-evacuation_plan_probe = ["candidate_c_value", "aos-nix/evacuation_plan_probe"]
-# Compile-time-only all-object immutable-cohort packing projection.
-immutable_cohort_projection_probe = [
-  "candidate_c_value",
-  "aos-nix/immutable_cohort_projection_probe",
-]
-# Compile-time-only read-only chronological segment projection.
-young_increment_projection_probe = [
-  "candidate_c_value",
-  "aos-nix/young_increment_projection_probe",
-]
 # Install mimalloc as the process-wide `#[global_allocator]` (on by default).
 # The declaration in `src/main.rs` is cfg-gated to the complement of alejandra's
 # own allocator gate (alejandra declares mimalloc on Linux gnu/musl), so this

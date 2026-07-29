@@ -6649,10 +6649,13 @@ Exactly two execution architecture families remain independently plausible:
    call-pattern specialization follows
    [SpecConstr](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/07/spec-constr.pdf).
 2. Interpreter partial evaluation specializes a small safe explicit machine
-   with module IR and a binder-aware semantic certificate. It must specialize
-   complete force/apply/update basic blocks, promote bounded call targets,
-   scalar-replace virtual heap state, and side-exit at effects, rather than
-   specialize source bytes or complete observed traces. The analysis anchors
+   through parameterized rewrite laws over ordinary module IR. Admission must
+   be derived directly from local semantics, effects, and runtime shapes; it
+   must never compare against a workload-derived semantic certificate or
+   reference program. It must specialize complete force/apply/update basic
+   blocks, promote bounded call targets, scalar-replace virtual heap state, and
+   side-exit at effects, rather than specialize source bytes or complete
+   observed traces. The analysis anchors
    are `ratchet-core/src/analysis/semantic_slice.rs`,
    `analysis/promise_region.rs`, `grin_region.rs`, and `stg.rs`; the semantic
    source of truth remains the same force, node, and apply seams as the

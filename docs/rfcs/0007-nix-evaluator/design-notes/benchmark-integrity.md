@@ -26,6 +26,13 @@ numbers demonstrate only that those particular computations admit specialized
 implementations; they provide no evidence about general evaluator performance
 and receive no credit toward the RFC targets.
 
+The option-map/fold probe was also removed. Its canonical semantic reference
+accepted alpha-renamed variants, but it still selected behavior by recognizing
+one workload-derived program rather than by applying a general rewrite law.
+Likewise, benchmark-derived RSS ceilings and projected pass thresholds are no
+longer compiled into evaluator policy; callers must supply real resource
+budgets where an admission decision needs one.
+
 Read-only profiling may label a workload in an external harness. Production
 evaluator code must instead expose general counters and semantic statepoints.
 Reclamation policy may respond to allocation and resident-memory budgets, but

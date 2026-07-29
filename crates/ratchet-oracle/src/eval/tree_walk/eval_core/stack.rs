@@ -129,14 +129,7 @@ impl TreeWalk {
     }
 
     fn eval_node_with_stack_headroom(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
-        #[cfg(feature = "collection_poll_probe")]
-        let token = self.begin_speed_opportunity_phase(
-            super::super::whole_demand_corridor_census::SpeedOpportunityPhase::Eval,
-        );
-        let result = self.eval_node_with_stack_headroom_inner(id);
-        #[cfg(feature = "collection_poll_probe")]
-        self.finish_speed_opportunity_phase(token, &result);
-        result
+        self.eval_node_with_stack_headroom_inner(id)
     }
 
     fn eval_node_with_stack_headroom_inner(&mut self, id: IrId) -> Result<Value, TreeWalkError> {

@@ -68,10 +68,6 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?
             .is_some()
         {
-            #[cfg(feature = "collection_poll_probe")]
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_declined_special();
             return Ok(BeginForceLease::Declined);
         }
         let thunk = self
@@ -87,28 +83,8 @@ impl TreeWalk {
                     | EvalThunkKind::GenListElemAtAddOne { .. }
             )
         {
-            #[cfg(feature = "collection_poll_probe")]
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_declined_special();
             return Ok(BeginForceLease::Declined);
         }
-        #[cfg(feature = "collection_poll_probe")]
-        let corridor_coordinate = self
-            .whole_demand_dispatcher
-            .corridor_census
-            .is_enabled()
-            .then(|| {
-                super::super::whole_demand_corridor_census::CorridorForceCoordinate::from_thunk(
-                    self.current_module,
-                    id,
-                    thunk,
-                    false,
-                    false,
-                    self.tier1_engine.is_some(),
-                    false,
-                )
-            });
         #[cfg(feature = "collection_poll_probe")]
         let detach_node_work =
             self.active_node_work_detachment_enabled() && self.tier1_engine.is_none();
@@ -182,10 +158,6 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
         match claim {
             DetachedForceClaim::AlreadyForced(value) => {
-                #[cfg(feature = "collection_poll_probe")]
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .note_already_forced();
                 self.unmark_relocated_lazy_identity_thunk(source_thunk);
                 self.increment_thunk_cache_hits();
                 Ok(BeginForceLease::AlreadyForced(value))
@@ -202,9 +174,6 @@ impl TreeWalk {
                             source.cell().abort_detached_force().map_err(|source| {
                                 TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
                             })?;
-                            self.whole_demand_dispatcher
-                                .corridor_census
-                                .note_declined_special();
                             return Ok(BeginForceLease::Declined);
                         }
                     }
@@ -232,12 +201,6 @@ impl TreeWalk {
                         ptr,
                         work,
                     });
-                }
-                #[cfg(feature = "collection_poll_probe")]
-                if let Some(corridor_coordinate) = corridor_coordinate {
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .begin_force_lease(token, corridor_coordinate);
                 }
                 Ok(BeginForceLease::Claimed(token))
             }
@@ -548,10 +511,6 @@ impl TreeWalk {
         let Some(popped) = self.active_force_leases.pop() else {
             unreachable!("checked active force lease disappeared");
         };
-        #[cfg(feature = "collection_poll_probe")]
-        self.whole_demand_dispatcher
-            .corridor_census
-            .finish_force_lease(token);
         debug_assert_eq!(popped.token, token);
         let result = self.active_force_roots.pop();
         debug_assert!(result.is_some());
@@ -626,14 +585,7 @@ impl TreeWalk {
             WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
             WhnfTagFastPath::RequiresThunkProtocol(value) => value,
         };
-        #[cfg(feature = "collection_poll_probe")]
-        let token = self.begin_speed_opportunity_phase(
-            super::super::whole_demand_corridor_census::SpeedOpportunityPhase::Force,
-        );
-        let result = self.force_value_with_native_census_inner(id, span, value);
-        #[cfg(feature = "collection_poll_probe")]
-        self.finish_speed_opportunity_phase(token, &result);
-        result
+        self.force_value_with_native_census_inner(id, span, value)
     }
 
     #[allow(unsafe_code)]
@@ -908,10 +860,6 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
         {
             crate::eval::heap::TypedThunkForceClaim::AlreadyForced(value) => {
-                #[cfg(feature = "collection_poll_probe")]
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .note_already_forced();
                 self.unmark_relocated_lazy_identity_thunk(source_thunk);
                 self.increment_thunk_cache_hits();
                 Ok(value)
@@ -952,28 +900,6 @@ impl TreeWalk {
                     }
                 };
                 let ready_probe = self.probe_typed_local_ready(&body_work);
-                #[cfg(feature = "collection_poll_probe")]
-                let corridor_coordinate = self
-                    .whole_demand_dispatcher
-                    .corridor_census
-                    .is_enabled()
-                    .then(|| {
-                        super::super::whole_demand_corridor_census::CorridorForceCoordinate::from_thunk(
-                            self.current_module,
-                            id,
-                            &body_work,
-                            false,
-                            body_work.parallel_payload_cell().is_some(),
-                            self.tier1_engine.is_some(),
-                            true,
-                        )
-                    });
-                #[cfg(feature = "collection_poll_probe")]
-                let corridor_token = corridor_coordinate.and_then(|coordinate| {
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .begin_typed_force(coordinate)
-                });
                 let result = match &ready_probe {
                     super::super::memo::TypedLocalReadyProbe::Hit(value) => Ok(Ok(*value)),
                     _ => {
@@ -995,22 +921,8 @@ impl TreeWalk {
                     handle,
                 ) {
                     Ok(work) => work,
-                    Err(error) => {
-                        #[cfg(feature = "collection_poll_probe")]
-                        if let Some(corridor_token) = corridor_token {
-                            self.whole_demand_dispatcher
-                                .corridor_census
-                                .finish_force(corridor_token, false);
-                        }
-                        return Err(error);
-                    }
+                    Err(error) => return Err(error),
                 };
-                #[cfg(feature = "collection_poll_probe")]
-                if let Some(corridor_token) = corridor_token {
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .finish_force(corridor_token, result.is_ok());
-                }
                 let result = match result {
                     Ok(result) => result,
                     Err(payload) => {
@@ -1081,16 +993,6 @@ impl TreeWalk {
         else {
             return Ok(None);
         };
-        #[cfg(feature = "collection_poll_probe")]
-        if matches!(thunk.kind(), EvalThunkKind::Node { .. }) {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_already_forced();
-        } else {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_declined_special();
-        }
         self.increment_reforce_fast_path_hits();
         self.unmark_relocated_lazy_identity_thunk(value);
         self.increment_thunk_cache_hits();
@@ -1138,9 +1040,6 @@ impl TreeWalk {
             return Ok(None);
         }
         let has_parallel_cell = thunk.parallel_payload_cell().is_some();
-        #[cfg(feature = "collection_poll_probe")]
-        let corridor_reusable_node =
-            !has_parallel_cell && matches!(thunk.kind(), EvalThunkKind::Node { .. });
         let cached = thunk
             .cell()
             .cached_value()
@@ -1150,16 +1049,6 @@ impl TreeWalk {
         let Some(cached) = cached else {
             return Ok(None);
         };
-        #[cfg(feature = "collection_poll_probe")]
-        if corridor_reusable_node {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_already_forced();
-        } else {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .note_declined_special();
-        }
         self.increment_reforce_fast_path_hits();
         if has_parallel_cell {
             // A parallel-payload thunk forced by another worker still needs the
@@ -1287,22 +1176,6 @@ impl TreeWalk {
             let result = self.force_single_entry_thunk_value(id, span, source_thunk, thunk);
             return result;
         }
-        #[cfg(feature = "collection_poll_probe")]
-        let corridor_coordinate = self
-            .whole_demand_dispatcher
-            .corridor_census
-            .is_enabled()
-            .then(|| {
-                super::super::whole_demand_corridor_census::CorridorForceCoordinate::from_thunk(
-                    self.current_module,
-                    id,
-                    thunk,
-                    false,
-                    thunk.parallel_payload_cell().is_some(),
-                    self.tier1_engine.is_some(),
-                    false,
-                )
-            });
         if let EvalThunkKind::Apply {
             function,
             function_span,
@@ -1329,53 +1202,17 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
         {
             ForceClaim::AlreadyForced(value) => {
-                #[cfg(feature = "collection_poll_probe")]
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .note_already_forced();
                 self.unmark_relocated_lazy_identity_thunk(source_thunk);
                 self.increment_thunk_cache_hits();
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
                 self.push_active_force_root(id, span, source_thunk)?;
-                #[cfg(feature = "collection_poll_probe")]
-                let corridor_token = corridor_coordinate.and_then(|coordinate| {
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .begin_generic_force(coordinate, 1)
-                });
                 #[cfg(test)]
                 self.capture_validation_arm_force(source_thunk, thunk.kind());
-                #[cfg(feature = "collection_poll_probe")]
-                let result = if let Some(corridor_token) = corridor_token {
-                    match catch_unwind(AssertUnwindSafe(|| {
-                        self.force_claimed_thunk_with_tier1(id, span, source_thunk, thunk, guard)
-                    })) {
-                        Ok(result) => result,
-                        Err(payload) => {
-                            let _ = self.pop_active_force_root();
-                            self.whole_demand_dispatcher
-                                .corridor_census
-                                .finish_force(corridor_token, false);
-                            #[cfg(test)]
-                            self.capture_validation_disarm();
-                            resume_unwind(payload);
-                        }
-                    }
-                } else {
-                    self.force_claimed_thunk_with_tier1(id, span, source_thunk, thunk, guard)
-                };
-                #[cfg(not(feature = "collection_poll_probe"))]
                 let result =
                     self.force_claimed_thunk_with_tier1(id, span, source_thunk, thunk, guard);
                 let relocated_source_thunk = self.pop_active_force_root();
-                #[cfg(feature = "collection_poll_probe")]
-                if let Some(corridor_token) = corridor_token {
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .finish_force(corridor_token, result.is_ok());
-                }
                 #[cfg(test)]
                 self.capture_validation_disarm();
                 if result.is_ok() {
@@ -1455,62 +1292,12 @@ impl TreeWalk {
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
         self.push_active_force_root(id, span, source_thunk)?;
-        #[cfg(feature = "collection_poll_probe")]
-        let corridor_coordinate = self
-            .whole_demand_dispatcher
-            .corridor_census
-            .is_enabled()
-            .then(|| {
-                super::super::whole_demand_corridor_census::CorridorForceCoordinate::from_thunk(
-                    self.current_module,
-                    id,
-                    thunk,
-                    true,
-                    thunk.parallel_payload_cell().is_some(),
-                    self.tier1_engine.is_some(),
-                    false,
-                )
-            });
-        #[cfg(feature = "collection_poll_probe")]
-        let corridor_token = corridor_coordinate.and_then(|coordinate| {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .begin_generic_force(coordinate, 1)
-        });
-        #[cfg(feature = "collection_poll_probe")]
-        let result = if let Some(corridor_token) = corridor_token {
-            match catch_unwind(AssertUnwindSafe(|| {
-                self.increment_thunks_forced();
-                self.increment_single_entry_thunks_forced();
-                self.eval_thunk_body(id, span, thunk)
-            })) {
-                Ok(result) => result,
-                Err(payload) => {
-                    let _ = self.pop_active_force_root();
-                    self.whole_demand_dispatcher
-                        .corridor_census
-                        .finish_force(corridor_token, false);
-                    resume_unwind(payload);
-                }
-            }
-        } else {
-            self.increment_thunks_forced();
-            self.increment_single_entry_thunks_forced();
-            self.eval_thunk_body(id, span, thunk)
-        };
-        #[cfg(not(feature = "collection_poll_probe"))]
         let result = (|| -> Result<Value, TreeWalkError> {
             self.increment_thunks_forced();
             self.increment_single_entry_thunks_forced();
             self.eval_thunk_body(id, span, thunk)
         })();
         let source_thunk = self.pop_active_force_root();
-        #[cfg(feature = "collection_poll_probe")]
-        if let Some(corridor_token) = corridor_token {
-            self.whole_demand_dispatcher
-                .corridor_census
-                .finish_force(corridor_token, result.is_ok());
-        }
         let value = result?;
         self.unmark_relocated_lazy_identity_thunk(source_thunk);
         Ok(value)
@@ -1776,14 +1563,7 @@ impl TreeWalk {
         guard: ForceGuard<'_>,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        #[cfg(feature = "collection_poll_probe")]
-        let token = self.begin_speed_opportunity_phase(
-            super::super::whole_demand_corridor_census::SpeedOpportunityPhase::Update,
-        );
-        let result = self.finish_forced_value_inner(id, span, source_thunk, guard, value);
-        #[cfg(feature = "collection_poll_probe")]
-        self.finish_speed_opportunity_phase(token, &result);
-        result
+        self.finish_forced_value_inner(id, span, source_thunk, guard, value)
     }
 
     fn finish_forced_value_inner(

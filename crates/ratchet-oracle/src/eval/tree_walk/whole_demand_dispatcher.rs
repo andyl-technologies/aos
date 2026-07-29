@@ -5,14 +5,10 @@
 //! final forcing remain synchronous semantic-oracle leaves. Between leaves the
 //! current value is retained only in a transient evaluator root slot, while
 //! controls contain value-free segment coordinates.
-//! `AOS_NIX_WHOLE_DEMAND_CORRIDOR_CENSUS=0` leaves identified PMU windows
-//! active while disabling every mixed-corridor census allocation, counter,
-//! phase cursor, and census report. The census remains enabled by default.
 
 use super::*;
 
 const ENABLE_ENV: &str = "AOS_NIX_WHOLE_DEMAND_DISPATCHER_PROBE";
-const CENSUS_ENV: &str = "AOS_NIX_WHOLE_DEMAND_CORRIDOR_CENSUS";
 const PACKED_ROOT_CENSUS_ENV: &str = "AOS_NIX_PACKED_ROOT_CENSUS";
 const STORAGE_CAP_BYTES: usize = 64 * 1024;
 static PACKED_ROOT_CENSUS_ORDINAL: AtomicU64 = AtomicU64::new(0);
@@ -34,50 +30,12 @@ pub(super) enum WholeDemandControl {
     FinalForce { segment: usize },
 }
 
-impl WholeDemandControl {
-    const fn kind(self) -> &'static str {
-        match self {
-            Self::RootEval { .. } => "root_eval",
-            Self::AutoCall { .. } => "auto_call",
-            Self::ForceReceiver { .. } => "force_receiver",
-            Self::SelectAttrs { .. } => "select_attrs",
-            Self::SelectList { .. } => "select_list",
-            Self::FinalForce { .. } => "final_force",
-        }
-    }
-
-    const fn segment(self) -> usize {
-        match self {
-            Self::RootEval { segment }
-            | Self::AutoCall { segment }
-            | Self::ForceReceiver { segment }
-            | Self::SelectAttrs { segment }
-            | Self::SelectList { segment }
-            | Self::FinalForce { segment } => segment,
-        }
-    }
-}
-
-/// Hidden completion count for one exact semantic leaf coordinate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct HiddenCompletionAttribution {
-    control: WholeDemandControl,
-    completions: u64,
-}
-
 /// Default-off ownership and coverage state for one whole demand.
 #[derive(Debug, Default)]
 pub(super) struct WholeDemandDispatcherRuntime {
     pub(super) active: bool,
     pub(super) suspended_loop_head: bool,
     pub(super) generic_oracle_depth: usize,
-    pub(super) pending_completions: u64,
-    pub(super) pending_hidden_completions: u64,
-    pub(super) completions: u64,
-    pub(super) hidden_completions: u64,
-    pub(super) safe_loop_head_completions: u64,
-    pub(super) returned_loop_head_completions: u64,
-    pub(super) abandoned_completions: u64,
     pub(super) oracle_calls: u64,
     pub(super) proof_accepts: u64,
     pub(super) proof_declines: u64,
@@ -90,22 +48,11 @@ pub(super) struct WholeDemandDispatcherRuntime {
     pub(super) force_tokens: Vec<ForceLeaseToken>,
     pub(super) lambda_tokens: Vec<LambdaCallLeaseToken>,
     pub(super) import_tokens: Vec<ImportModuleLeaseToken>,
-    hidden_attribution: Vec<HiddenCompletionAttribution>,
-    pub(super) corridor_census: super::whole_demand_corridor_census::WholeDemandCorridorCensus,
-    speed_pmu_windows: Option<super::demand_epoch_probe::DemandWindowController>,
 }
 
 impl WholeDemandDispatcherRuntime {
     fn enabled() -> bool {
         std::env::var(ENABLE_ENV).is_ok_and(|value| value == "1")
-    }
-
-    fn census_enabled() -> bool {
-        Self::census_enabled_for(std::env::var_os(CENSUS_ENV).as_deref())
-    }
-
-    fn census_enabled_for(value: Option<&std::ffi::OsStr>) -> bool {
-        value != Some(std::ffi::OsStr::new("0"))
     }
 
     pub(super) fn modeled_storage_bytes(&self) -> usize {
@@ -132,12 +79,6 @@ impl WholeDemandDispatcherRuntime {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<ImportModuleLeaseToken>()),
             )
-            .saturating_add(
-                self.hidden_attribution
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<HiddenCompletionAttribution>()),
-            )
-            .saturating_add(self.corridor_census.modeled_storage_bytes())
     }
 
     pub(super) fn ownership_matches(
@@ -170,28 +111,6 @@ impl WholeDemandDispatcherRuntime {
             && self.value_slots.iter().all(|slot| *slot < transient_roots)
             && self.value_slots.windows(2).all(|slots| slots[0] < slots[1])
     }
-
-    fn record_hidden_completion(&mut self, control: WholeDemandControl) {
-        if let Some(attribution) = self
-            .hidden_attribution
-            .iter_mut()
-            .find(|attribution| attribution.control == control)
-        {
-            attribution.completions = attribution.completions.saturating_add(1);
-        } else {
-            self.hidden_attribution.push(HiddenCompletionAttribution {
-                control,
-                completions: 1,
-            });
-        }
-    }
-
-    fn attributed_hidden_completions(&self) -> u64 {
-        self.hidden_attribution
-            .iter()
-            .map(|attribution| attribution.completions)
-            .sum()
-    }
 }
 
 impl TreeWalk {
@@ -204,7 +123,7 @@ impl TreeWalk {
     pub(super) fn begin_whole_demand_dispatcher_probe(
         &mut self,
         root: IrId,
-        attr_path_len: usize,
+        _attr_path_len: usize,
     ) -> Result<bool, TreeWalkError> {
         if !WholeDemandDispatcherRuntime::enabled() {
             return Ok(false);
@@ -219,37 +138,14 @@ impl TreeWalk {
                 Span::default(),
             )
         })?;
-        runtime
-            .hidden_attribution
-            .try_reserve(attr_path_len.saturating_mul(3).saturating_add(2))
-            .map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed {
-                        id: root,
-                        len: attr_path_len.saturating_mul(3).saturating_add(2),
-                    },
-                    Span::default(),
-                )
-            })?;
         runtime.active = true;
         runtime.suspended_loop_head = true;
-        runtime
-            .corridor_census
-            .begin_session(WholeDemandDispatcherRuntime::census_enabled());
-        runtime.speed_pmu_windows = super::demand_epoch_probe::DemandWindowController::connect();
         self.note_whole_demand_loop_head(true);
         Ok(true)
     }
 
     /// Marks entry into one synchronous attr-path semantic leaf.
     fn enter_whole_demand_oracle(&mut self, control: WholeDemandControl) {
-        let census_enabled = self.whole_demand_dispatcher.corridor_census.is_enabled();
-        let allocation_cursor = census_enabled.then(|| {
-            (
-                self.heap.arena_stats().used_bytes,
-                self.heap.permanent_arena_stats().used_bytes,
-            )
-        });
         let runtime = &mut self.whole_demand_dispatcher;
         if !runtime.active {
             return;
@@ -258,65 +154,7 @@ impl TreeWalk {
         runtime.generic_oracle_depth = runtime.generic_oracle_depth.saturating_add(1);
         runtime.oracle_calls = runtime.oracle_calls.saturating_add(1);
         runtime.control.push(control);
-        if census_enabled {
-            runtime.corridor_census.enter_outer(control);
-        }
-        let window_kind = match control {
-            WholeDemandControl::AutoCall { segment: 4 } => {
-                Some(super::demand_epoch_probe::DemandWindowKind::AutoCall4)
-            }
-            WholeDemandControl::FinalForce { segment: 5 } => {
-                Some(super::demand_epoch_probe::DemandWindowKind::FinalForce5)
-            }
-            _ => None,
-        };
-        if let (Some(kind), Some(controller)) = (window_kind, runtime.speed_pmu_windows.as_mut())
-            && controller.begin_window(kind)
-            && kind == super::demand_epoch_probe::DemandWindowKind::FinalForce5
-        {
-            runtime.corridor_census.begin_final_force_leaf_pmu();
-        }
-        if let Some(allocation_cursor) = allocation_cursor {
-            runtime
-                .corridor_census
-                .begin_speed_opportunity_outer(allocation_cursor);
-        }
         runtime.max_control_depth = runtime.max_control_depth.max(runtime.control.len());
-    }
-
-    /// Records one final-config completion at its nested production site.
-    pub(super) fn note_whole_demand_final_config_completion(&mut self) {
-        let census_enabled = self.whole_demand_dispatcher.corridor_census.is_enabled();
-        let active_force_counts = census_enabled.then(|| {
-            (
-                self.active_force_roots.len(),
-                self.active_force_leases.len(),
-                self.active_typed_thunk_work_leases.len(),
-            )
-        });
-        let runtime = &mut self.whole_demand_dispatcher;
-        if !runtime.active {
-            return;
-        }
-        runtime.completions = runtime.completions.saturating_add(1);
-        runtime.pending_completions = runtime.pending_completions.saturating_add(1);
-        if let Some((active_force_roots, active_force_leases, active_typed_work)) =
-            active_force_counts
-        {
-            runtime.corridor_census.note_target_completion(
-                active_force_roots,
-                active_force_leases,
-                active_typed_work,
-            );
-        }
-        if runtime.generic_oracle_depth != 0 {
-            runtime.hidden_completions = runtime.hidden_completions.saturating_add(1);
-            runtime.pending_hidden_completions =
-                runtime.pending_hidden_completions.saturating_add(1);
-            if let Some(control) = runtime.control.last().copied() {
-                runtime.record_hidden_completion(control);
-            }
-        }
     }
 
     /// Stores one leaf result in the dispatcher slot and proves its loop head.
@@ -361,39 +199,9 @@ impl TreeWalk {
             );
             *value = Value::null();
         }
-        if let Some(control) = self.whole_demand_dispatcher.control.pop() {
-            if self.whole_demand_dispatcher.corridor_census.is_enabled() {
-                let allocation_cursor = (
-                    self.heap.arena_stats().used_bytes,
-                    self.heap.permanent_arena_stats().used_bytes,
-                );
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .end_speed_opportunity_outer(allocation_cursor);
-            }
-            if matches!(control, WholeDemandControl::FinalForce { segment: 5 }) {
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .end_final_force_leaf_pmu();
-            }
-            if matches!(
-                control,
-                WholeDemandControl::AutoCall { segment: 4 }
-                    | WholeDemandControl::FinalForce { segment: 5 }
-            ) && let Some(controller) = self.whole_demand_dispatcher.speed_pmu_windows.as_mut()
-            {
-                controller.end_window();
-            }
-            if self.whole_demand_dispatcher.corridor_census.is_enabled() {
-                self.whole_demand_dispatcher
-                    .corridor_census
-                    .leave_outer(control);
-            }
-        }
+        self.whole_demand_dispatcher.control.pop();
         self.whole_demand_dispatcher.suspended_loop_head = true;
         self.note_whole_demand_loop_head(result.is_ok());
-        #[cfg(feature = "young_increment_projection_probe")]
-        self.note_young_increment_returned_outer_loop_head();
     }
 
     /// Reads the current value back from its relocation-aware transient slot.
@@ -464,9 +272,6 @@ impl TreeWalk {
         self.transient_value_stack_roots.truncate(base);
         self.whole_demand_dispatcher.value_slots.clear();
         self.whole_demand_dispatcher.control.clear();
-        if self.whole_demand_dispatcher.corridor_census.is_enabled() {
-            self.whole_demand_dispatcher.corridor_census.end_session();
-        }
         self.whole_demand_dispatcher.active = false;
         self.whole_demand_dispatcher.suspended_loop_head = false;
     }
@@ -561,27 +366,8 @@ impl TreeWalk {
         result
     }
 
-    fn note_whole_demand_loop_head(&mut self, succeeded: bool) {
-        let hidden = self.whole_demand_dispatcher.pending_hidden_completions;
-        let pending = self.whole_demand_dispatcher.pending_completions;
-        if succeeded {
-            self.whole_demand_dispatcher.returned_loop_head_completions = self
-                .whole_demand_dispatcher
-                .returned_loop_head_completions
-                .saturating_add(pending);
-            self.whole_demand_dispatcher.safe_loop_head_completions = self
-                .whole_demand_dispatcher
-                .safe_loop_head_completions
-                .saturating_add(pending.saturating_sub(hidden));
-        } else {
-            self.whole_demand_dispatcher.abandoned_completions = self
-                .whole_demand_dispatcher
-                .abandoned_completions
-                .saturating_add(pending);
-        }
-        self.whole_demand_dispatcher.pending_completions = 0;
-        self.whole_demand_dispatcher.pending_hidden_completions = 0;
-        let proof_succeeded = if pending == 0 {
+    fn note_whole_demand_loop_head(&mut self, _succeeded: bool) {
+        let proof_succeeded = if self.whole_demand_dispatcher.value_slots.is_empty() {
             self.whole_demand_dispatcher.structural_proof_attempts = self
                 .whole_demand_dispatcher
                 .structural_proof_attempts
@@ -627,86 +413,14 @@ impl TreeWalk {
         if runtime.oracle_calls == 0 {
             return;
         }
-        let attributed_hidden_completions = runtime.attributed_hidden_completions();
-        for attribution in &runtime.hidden_attribution {
-            eprintln!(
-                "aos_nix_whole_demand_hidden control={} segment={} completions={}",
-                attribution.control.kind(),
-                attribution.control.segment(),
-                attribution.completions,
-            );
-        }
-        let pmu_evidence = runtime
-            .speed_pmu_windows
-            .as_ref()
-            .map(super::demand_epoch_probe::DemandWindowController::counter_evidence);
-        let census_enabled = runtime.corridor_census.is_enabled();
-        if census_enabled {
-            runtime.corridor_census.emit_report(pmu_evidence);
-        }
-        let (
-            pmu_connected,
-            pmu_begin_commands,
-            pmu_end_commands,
-            pmu_failures,
-            pmu_balanced,
-            pmu_provenance_available,
-        ) = runtime.speed_pmu_windows.as_ref().map_or(
-            (false, 0, 0, 0, false, false),
-            |controller| {
-                (
-                    true,
-                    controller.begin_commands(),
-                    controller.end_commands(),
-                    controller.failures(),
-                    controller.balanced(),
-                    controller.provenance_available(),
-                )
-            },
-        );
-        let evidence = pmu_evidence
-            .unwrap_or_else(|| super::demand_epoch_probe::DemandCounterEvidence::unavailable());
-        for kind in [
-            super::demand_epoch_probe::DemandWindowKind::AutoCall4,
-            super::demand_epoch_probe::DemandWindowKind::FinalForce5,
-        ] {
-            eprintln!(
-                "aos_nix_whole_demand_pmu_window kind={} windows={} \
-                 instructions={} cycles={} authoritative={} census_enabled={}",
-                kind.name(),
-                evidence.windows(kind),
-                evidence.instructions(kind),
-                evidence.cycles(kind),
-                evidence.authoritative(),
-                census_enabled,
-            );
-        }
         eprintln!(
             "aos_nix_whole_demand_dispatcher_probe \
-             oracle_calls={} completions={} hidden_completions={} \
-             attributed_hidden_completions={} hidden_conserved={} \
-             safe_loop_head_completions={} returned_loop_head_completions={} \
-             abandoned_completions={} pending_completions={} \
-             proof_accepts={} proof_declines={} \
+             oracle_calls={} proof_accepts={} proof_declines={} \
              structural_proof_attempts={} rooted_proof_attempts={} \
              max_control_depth={} max_value_slots={} modeled_storage_bytes={} \
              storage_cap_bytes={} execution_substitution=attr_path_outer_loop \
-             speed_pmu_connected={} speed_pmu_begin_commands={} \
-             speed_pmu_end_commands={} speed_pmu_failures={} \
-             speed_pmu_balanced={} speed_pmu_process_owner=true \
-             speed_pmu_evaluator_session_window_provenance_available={} \
-             speed_pmu_session_id={} speed_pmu_null_instructions={} \
-             speed_pmu_null_cycles={} speed_pmu_authoritative={} census_enabled={} \
              collection=false",
             runtime.oracle_calls,
-            runtime.completions,
-            runtime.hidden_completions,
-            attributed_hidden_completions,
-            attributed_hidden_completions == runtime.hidden_completions,
-            runtime.safe_loop_head_completions,
-            runtime.returned_loop_head_completions,
-            runtime.abandoned_completions,
-            runtime.pending_completions,
             runtime.proof_accepts,
             runtime.proof_declines,
             runtime.structural_proof_attempts,
@@ -715,17 +429,6 @@ impl TreeWalk {
             runtime.max_value_slots,
             runtime.modeled_storage_bytes(),
             STORAGE_CAP_BYTES,
-            pmu_connected,
-            pmu_begin_commands,
-            pmu_end_commands,
-            pmu_failures,
-            pmu_balanced,
-            pmu_provenance_available,
-            evidence.session_id(),
-            evidence.null_instructions(),
-            evidence.null_cycles(),
-            evidence.authoritative(),
-            census_enabled,
         );
     }
 }
@@ -806,17 +509,6 @@ mod tests {
     use super::*;
     use crate::compile::resolve as resolve_ast;
     use crate::syntax::parse_str;
-
-    #[test]
-    fn corridor_census_is_default_on_and_explicitly_disabled_by_zero() {
-        assert!(WholeDemandDispatcherRuntime::census_enabled_for(None));
-        assert!(WholeDemandDispatcherRuntime::census_enabled_for(Some(
-            std::ffi::OsStr::new("1"),
-        )));
-        assert!(!WholeDemandDispatcherRuntime::census_enabled_for(Some(
-            std::ffi::OsStr::new("0"),
-        )));
-    }
 
     fn lower(source: &str) -> Ir {
         nix_lower(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -926,30 +618,6 @@ mod tests {
     }
 
     #[test]
-    fn hidden_completion_attribution_conserves_exact_control_coordinate() {
-        let mut runtime = WholeDemandDispatcherRuntime::default();
-        let control = WholeDemandControl::AutoCall { segment: 2 };
-        runtime.record_hidden_completion(control);
-        runtime.record_hidden_completion(control);
-        runtime.record_hidden_completion(WholeDemandControl::FinalForce { segment: 3 });
-
-        assert_eq!(runtime.attributed_hidden_completions(), 3);
-        assert_eq!(
-            runtime.hidden_attribution,
-            [
-                HiddenCompletionAttribution {
-                    control,
-                    completions: 2,
-                },
-                HiddenCompletionAttribution {
-                    control: WholeDemandControl::FinalForce { segment: 3 },
-                    completions: 1,
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn modeled_storage_stays_below_the_strict_cap() {
         let mut runtime = WholeDemandDispatcherRuntime::default();
         runtime.control.reserve(400);
@@ -958,18 +626,6 @@ mod tests {
         runtime.lambda_tokens.reserve(102);
         runtime.import_tokens.reserve(151);
         assert!(runtime.modeled_storage_bytes() < STORAGE_CAP_BYTES);
-    }
-
-    #[test]
-    fn active_corridor_and_dispatcher_storage_stay_below_the_shared_cap() {
-        let mut runtime = WholeDemandDispatcherRuntime::default();
-        runtime.control.reserve(1);
-        runtime.value_slots.reserve(1);
-        runtime.hidden_attribution.reserve(17);
-        runtime.corridor_census.begin_session(true);
-        assert!(runtime.corridor_census.modeled_storage_bytes() > 60_928);
-        assert!(runtime.modeled_storage_bytes() < STORAGE_CAP_BYTES);
-        runtime.corridor_census.end_session();
     }
 
     #[test]
@@ -1066,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn loop_head_proof_materializes_roots_only_for_pending_completion() {
+    fn loop_head_proof_materializes_roots_only_when_values_are_live() {
         let ir = lower("null");
         let mut evaluator = TreeWalk::new(&ir);
         evaluator.whole_demand_dispatcher.active = true;
@@ -1085,7 +741,6 @@ mod tests {
             .expect("rooted candidate allocates");
         evaluator.transient_value_stack_roots.push(value);
         evaluator.whole_demand_dispatcher.value_slots.push(0);
-        evaluator.whole_demand_dispatcher.pending_completions = 1;
         evaluator.note_whole_demand_loop_head(true);
 
         assert_eq!(

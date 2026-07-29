@@ -179,8 +179,6 @@ fn eval_whnf_owned_with_evaluator(
     }
     evaluator.emit_formal_set_ready_census_report();
     let mut value = value?;
-    #[cfg(feature = "ready_exclusive_probe")]
-    evaluator.emit_ready_exclusive_window_report();
     emit_terminal_reservation_residency(&evaluator);
     emit_weak_liveness_census(&evaluator, value);
     emit_permanent_retention_census(&evaluator, value);
@@ -188,8 +186,6 @@ fn eval_whnf_owned_with_evaluator(
     #[cfg(feature = "active_packed_thunk_probe")]
     emit_active_packed_thunk_accounting(&evaluator);
     emit_promise_region_census(&evaluator);
-    #[cfg(feature = "lifetime_cohort_probe")]
-    evaluator.emit_lifetime_cohort_terminal(value);
     #[cfg(feature = "candidate_c_value")]
     emit_terminal_composite_retirement(&mut evaluator, value);
     // Tier-B quiescent point: the root force has fully unwound, so worker
@@ -397,8 +393,6 @@ fn eval_instantiation_attr_path_with_evaluator(
     let demand_epoch_enabled = demand_epoch.is_some();
     #[cfg(feature = "demand_region_shadow_probe")]
     evaluator.begin_demand_region_shadow_epoch();
-    #[cfg(feature = "root_continuation_probe")]
-    evaluator.begin_root_continuation_probe();
     let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
     #[cfg(feature = "collection_poll_probe")]
     let dispatcher_probe =
@@ -412,32 +406,7 @@ fn eval_instantiation_attr_path_with_evaluator(
             None => {
                 let root = evaluator.eval_root()?;
                 let span = evaluator.node(ir.root)?.span;
-                #[cfg(feature = "lifetime_cohort_probe")]
-                {
-                    let mut roots = [root];
-                    evaluator.with_lifetime_cohort_shadow_roots(
-                        ir.root,
-                        span,
-                        &mut roots,
-                        |eval, slots| {
-                            let root = eval
-                                .current_transient_value_stack_root(slots.start)
-                                .ok_or_else(|| {
-                                    TreeWalkError::new(
-                                        TreeWalkErrorKind::SafepointRootStackLengthOverflow {
-                                            id: ir.root,
-                                        },
-                                        span,
-                                    )
-                                })?;
-                            eval.eval_instantiation_attr_path(ir.root, span, root, attr_path)
-                        },
-                    )
-                }
-                #[cfg(not(feature = "lifetime_cohort_probe"))]
-                {
-                    evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
-                }
+                evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
             }
         })()
     };
@@ -447,62 +416,19 @@ fn eval_instantiation_attr_path_with_evaluator(
         None => {
             let root = evaluator.eval_root()?;
             let span = evaluator.node(ir.root)?.span;
-            #[cfg(feature = "lifetime_cohort_probe")]
-            {
-                let mut roots = [root];
-                evaluator.with_lifetime_cohort_shadow_roots(
-                    ir.root,
-                    span,
-                    &mut roots,
-                    |eval, slots| {
-                        let root = eval
-                            .current_transient_value_stack_root(slots.start)
-                            .ok_or_else(|| {
-                                TreeWalkError::new(
-                                    TreeWalkErrorKind::SafepointRootStackLengthOverflow {
-                                        id: ir.root,
-                                    },
-                                    span,
-                                )
-                            })?;
-                        eval.eval_instantiation_attr_path(ir.root, span, root, attr_path)
-                    },
-                )
-            }
-            #[cfg(not(feature = "lifetime_cohort_probe"))]
-            {
-                evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
-            }
+            evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
         }
     })();
     if let Some(pool) = pool {
         pool.finish(&mut evaluator);
     }
     evaluator.emit_formal_set_ready_census_report();
-    #[cfg(feature = "root_continuation_probe")]
-    evaluator.finish_root_continuation_probe(value.is_ok());
     let mut value = value?;
     #[cfg(feature = "demand_region_shadow_probe")]
     evaluator.emit_demand_region_shadow_report();
-    #[cfg(feature = "option_map_fold_probe")]
-    evaluator.emit_option_map_fold_probe_report();
-    #[cfg(feature = "root_continuation_probe")]
-    evaluator.emit_root_continuation_probe_report();
     #[cfg(feature = "collection_poll_probe")]
     evaluator.emit_whole_demand_dispatcher_probe_report();
-    #[cfg(feature = "collection_poll_probe")]
-    evaluator.emit_restart_to_root_probe_report();
-    #[cfg(feature = "collection_poll_probe")]
-    evaluator.emit_nested_nonmoving_safepoint_probe_report();
-    #[cfg(feature = "nested_nonmoving_retirement_probe")]
-    evaluator.emit_rotating_rollover_probe_report();
-    #[cfg(feature = "nested_nonmoving_retirement_probe")]
-    evaluator.emit_nested_nonmoving_retirement_report();
-    #[cfg(feature = "young_increment_projection_probe")]
-    evaluator.emit_young_increment_projection_report();
     evaluator.emit_resident_phase("demand-complete");
-    #[cfg(feature = "ready_exclusive_probe")]
-    evaluator.emit_ready_exclusive_window_report();
     emit_terminal_reservation_residency(&evaluator);
     emit_weak_liveness_census(&evaluator, value);
     emit_permanent_retention_census(&evaluator, value);
@@ -510,8 +436,6 @@ fn eval_instantiation_attr_path_with_evaluator(
     #[cfg(feature = "active_packed_thunk_probe")]
     emit_active_packed_thunk_accounting(&evaluator);
     emit_promise_region_census(&evaluator);
-    #[cfg(feature = "lifetime_cohort_probe")]
-    evaluator.emit_lifetime_cohort_terminal(value);
     #[cfg(feature = "candidate_c_value")]
     emit_terminal_composite_retirement(&mut evaluator, value);
     // Tier-B quiescent point: the instantiation force has fully unwound (see
@@ -997,252 +921,6 @@ impl TreeWalk {
                 permanent.used_bytes,
             ),
         }
-    }
-
-    /// Emits a weak-root liveness sample at selected import milestones.
-    pub(super) fn emit_weak_liveness_import_milestone(&mut self) {
-        let modules = self.modules.len();
-        #[cfg(feature = "evacuation_plan_probe")]
-        self.emit_evacuation_plan_projection(modules);
-        #[cfg(feature = "compact_destination_probe")]
-        self.emit_compact_destination_projection(modules);
-        #[cfg(feature = "nonmoving_reclaim_probe")]
-        self.emit_nonmoving_reclaim_projection(modules);
-        #[cfg(feature = "ready_exclusive_probe")]
-        self.capture_ready_exclusive_window(modules);
-        if !matches!(
-            modules,
-            64 | 128 | 256 | 512 | 1024 | 1152 | 1200 | 1216 | 1220
-        ) {
-            return;
-        }
-        self.emit_resident_phase("import-milestone");
-        if std::env::var_os("AOS_NIX_WEAK_LIVENESS_CENSUS").is_none() {
-            return;
-        }
-        let result = self
-            .mutator_root_set()
-            .map_err(|error| error.to_string())
-            .and_then(|roots| {
-                self.heap
-                    .weak_liveness_census(&roots)
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok(census) => {
-                eprintln!("aos_nix_weak_liveness_milestone modules={modules} {census}")
-            }
-            Err(error) => {
-                eprintln!("aos_nix_weak_liveness_milestone_error modules={modules} {error:?}")
-            }
-        }
-    }
-
-    /// Emits the read-only same-layout evacuation plan at selected milestones.
-    #[cfg(feature = "evacuation_plan_probe")]
-    fn emit_evacuation_plan_projection(&self, modules: usize) {
-        const CAPTURE_MODULES: [usize; 8] = [512, 768, 896, 1024, 1088, 1152, 1188, 1220];
-        if !CAPTURE_MODULES.contains(&modules)
-            || !std::env::var("AOS_NIX_EVACUATION_PLAN_PROBE").is_ok_and(|value| value == "1")
-        {
-            return;
-        }
-        let result = self
-            .mutator_root_set()
-            .map_err(|error| error.to_string())
-            .and_then(|roots| {
-                self.heap
-                    .evacuation_plan(&roots)
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok(plan) => eprintln!("aos_nix_evacuation_plan modules={modules} {plan}"),
-            Err(error) => eprintln!(
-                "aos_nix_evacuation_plan_error \
-                 {{\"modules\":{modules},\"error\":{error:?}}}"
-            ),
-        }
-    }
-
-    /// Emits the read-only compact-destination projection at the peak-band entry.
-    #[cfg(feature = "compact_destination_probe")]
-    fn emit_compact_destination_projection(&self, modules: usize) {
-        const CAPTURE_MODULES: [usize; 9] = [512, 768, 896, 1024, 1088, 1152, 1188, 1200, 1220];
-        if !CAPTURE_MODULES.contains(&modules)
-            || !std::env::var("AOS_NIX_COMPACT_DESTINATION_PROBE").is_ok_and(|value| value == "1")
-        {
-            return;
-        }
-        let result = self
-            .mutator_root_set()
-            .map_err(|error| error.to_string())
-            .and_then(|roots| {
-                self.heap
-                    .compact_destination_projection(&roots)
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok(projection) => {
-                eprintln!("aos_nix_compact_destination modules={modules} {projection}")
-            }
-            Err(error) => eprintln!(
-                "aos_nix_compact_destination_error \
-                 {{\"modules\":{modules},\"error\":{error:?}}}"
-            ),
-        }
-    }
-
-    /// Emits the read-only nonmoving reclamation projection.
-    #[cfg(feature = "nonmoving_reclaim_probe")]
-    fn emit_nonmoving_reclaim_projection(&self, modules: usize) {
-        const CAPTURE_MODULES: [usize; 9] = [512, 768, 896, 1024, 1088, 1152, 1188, 1200, 1220];
-        let selected_module = std::env::var("AOS_NIX_NONMOVING_RECLAIM_MODULE")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok());
-        let selected = selected_module.map_or_else(
-            || CAPTURE_MODULES.contains(&modules),
-            |value| value == modules,
-        );
-        if !selected
-            || !std::env::var("AOS_NIX_NONMOVING_RECLAIM_PROBE").is_ok_and(|value| value == "1")
-        {
-            return;
-        }
-        let rss = ProcessResidentMemorySample::current()
-            .ok()
-            .flatten()
-            .map_or(0, ProcessResidentMemorySample::resident_bytes);
-        let peak_rss = peak_resident_memory_bytes(PeakResidentMemoryScope::SelfProcess)
-            .ok()
-            .flatten()
-            .unwrap_or(rss as u64);
-        let result = self
-            .mutator_root_set()
-            .map_err(|error| error.to_string())
-            .and_then(|roots| {
-                self.heap
-                    .nonmoving_reclaim_projection(
-                        &roots,
-                        rss as u64,
-                        peak_rss,
-                        modules,
-                        selected_module.is_some(),
-                        &[],
-                    )
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok(projection) => {
-                eprintln!("aos_nix_nonmoving_reclaim modules={modules} {projection}")
-            }
-            Err(error) => eprintln!(
-                "aos_nix_nonmoving_reclaim_error \
-                 {{\"modules\":{modules},\"error\":{error:?}}}"
-            ),
-        }
-    }
-
-    /// Captures Ready-import-exclusive ownership before the final demand window.
-    #[cfg(feature = "ready_exclusive_probe")]
-    fn capture_ready_exclusive_window(&mut self, modules: usize) {
-        const CAPTURE_MODULES: usize = 1188;
-        if modules != CAPTURE_MODULES
-            || self.ready_exclusive_window.is_some()
-            || !std::env::var("AOS_NIX_READY_EXCLUSIVE_PROBE").is_ok_and(|value| value == "1")
-        {
-            return;
-        }
-        let census = self
-            .mutator_root_set()
-            .map_err(|error| error.to_string())
-            .and_then(|roots| {
-                self.heap
-                    .ready_exclusive_census(&roots)
-                    .map_err(|error| error.to_string())
-            });
-        match census {
-            Ok(census) => {
-                eprintln!(
-                    "aos_nix_ready_exclusive_capture \
-                     {{\"modules\":{modules},\"ready_roots\":{},\"other_roots\":{},\
-                     \"all_objects\":{},\"ready_objects\":{},\"other_objects\":{},\
-                     \"shared_objects\":{},\"union_reconciled\":{},\
-                     \"unclassified_objects\":{},\"candidates\":{},\
-                     \"inline_bytes\":{},\"list_spine_bytes\":{},\"bytes\":{}}}",
-                    census.ready_roots(),
-                    census.other_roots(),
-                    census.all_reachable_objects(),
-                    census.ready_reachable_objects(),
-                    census.other_reachable_objects(),
-                    census.shared_reachable_objects(),
-                    census.union_reconciled(),
-                    census.unclassified_exclusive_objects(),
-                    census.candidates().len(),
-                    census.inline_bytes(),
-                    census.list_spine_bytes(),
-                    census.attributable_bytes(),
-                );
-                self.ready_exclusive_window = Some(census);
-            }
-            Err(error) => {
-                eprintln!(
-                    "aos_nix_ready_exclusive_capture_error \
-                     {{\"modules\":{modules},\"error\":{error:?}}}"
-                );
-            }
-        }
-    }
-
-    /// Classifies captured Ready-exclusive bytes by access in the final window.
-    #[cfg(feature = "ready_exclusive_probe")]
-    fn emit_ready_exclusive_window_report(&self) {
-        if !std::env::var("AOS_NIX_READY_EXCLUSIVE_PROBE").is_ok_and(|value| value == "1") {
-            return;
-        }
-        let Some(census) = self.ready_exclusive_window.as_ref() else {
-            eprintln!("aos_nix_ready_exclusive_window_error \"capture milestone not reached\"");
-            return;
-        };
-        let mut touched_count = 0_u64;
-        let mut touched_bytes = 0_u64;
-        let mut cold_count = 0_u64;
-        let mut cold_bytes = 0_u64;
-        let mut unattributed_count = 0_u64;
-        let mut unattributed_bytes = 0_u64;
-        for candidate in census.candidates() {
-            let bytes = candidate.attributable_bytes();
-            match (
-                candidate.initial_touch_epoch(),
-                self.heap.ready_exclusive_candidate_touch_epoch(*candidate),
-            ) {
-                (Some(initial), Some(current)) if current > initial => {
-                    touched_count = touched_count.saturating_add(1);
-                    touched_bytes = touched_bytes.saturating_add(bytes);
-                }
-                (Some(initial), Some(current)) if current == initial => {
-                    cold_count = cold_count.saturating_add(1);
-                    cold_bytes = cold_bytes.saturating_add(bytes);
-                }
-                _ => {
-                    unattributed_count = unattributed_count.saturating_add(1);
-                    unattributed_bytes = unattributed_bytes.saturating_add(bytes);
-                }
-            }
-        }
-        eprintln!(
-            "aos_nix_ready_exclusive_window \
-             {{\"capture_candidates\":{},\"capture_bytes\":{},\
-             \"touched\":[{touched_count},{touched_bytes}],\
-             \"cold\":[{cold_count},{cold_bytes}],\
-             \"unattributed\":[{unattributed_count},{unattributed_bytes}],\
-             \"bytes_reconciled\":{}}}",
-            census.candidates().len(),
-            census.attributable_bytes(),
-            touched_bytes
-                .saturating_add(cold_bytes)
-                .saturating_add(unattributed_bytes)
-                == census.attributable_bytes(),
-        );
     }
 }
 
