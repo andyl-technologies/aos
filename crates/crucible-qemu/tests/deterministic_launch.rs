@@ -6,7 +6,10 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible::{ClockDriftRate, ContentHash, NodeClockSkew, ScenarioDef, SimOffset};
+use crucible::{
+    ClockDriftRate, ContentHash, NodeClockSkew, NodeId, ScenarioDef, SchedulerNodeId,
+    SchedulingNodeKind, SimOffset,
+};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
@@ -175,6 +178,16 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
 
     assert_eq!(profile.smp_vcpus(), 4);
     assert_eq!(profile.rr_switch_quantum(), 8192);
+    let scheduler_policy = profile
+        .scheduler_run_subdivision_policy(SchedulerNodeId {
+            node: NodeId {
+                name: String::from("vm-a"),
+            },
+            kind: SchedulingNodeKind::Vm,
+        })
+        .unwrap_or_else(|error| panic!("launch profile should derive scheduler RR policy: {error}"));
+    assert_eq!(scheduler_policy.vcpu_count, 4);
+    assert_eq!(scheduler_policy.rr_switch_quantum, 8192);
     assert!(
         args.windows(2)
             .any(|window| window == ["-accel", "sim,thread=single"])
