@@ -1,6 +1,7 @@
 //! Live-backend adapter for the authoritative scheduler quantum loop.
 
 use super::*;
+use crate::BackendEffect;
 
 /// Advances one live backend and drains it at completed scheduler boundaries.
 #[derive(Clone, Debug)]
@@ -49,6 +50,14 @@ where
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         let mut outcome = self.loop_impl.drive_quantum(request)?;
         if outcome.advanced_node.is_some() {
+            for decision in &outcome.decisions {
+                if let Decision::Preemption(preemption) = decision {
+                    self.backend.apply(
+                        &BackendEffect::Preemption(preemption.clone()),
+                        self.backend.now(),
+                    )?;
+                }
+            }
             let backend_step = self.backend.step_to(outcome.frontier)?;
             if backend_step.requested_ceiling != outcome.frontier
                 || backend_step.reached != outcome.frontier
