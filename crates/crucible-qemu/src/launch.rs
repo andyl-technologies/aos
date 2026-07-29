@@ -24,7 +24,10 @@ use canonical::{
     canonical_node_clock_skew_lines, canonical_node_icount_shift_lines, validate_icount_shift,
 };
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{ContentHash, NodeClockSkew, Seed};
+use crucible::{
+    ContentHash, NodeClockSkew, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy,
+    Seed,
+};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
@@ -1286,6 +1289,27 @@ impl DeterministicLaunchProfile {
     #[must_use]
     pub fn rr_switch_quantum(&self) -> u64 {
         self.rr_switch_quantum
+    }
+
+    /// Derives the scheduler's RUN-subdivision policy from this exact launch profile.
+    ///
+    /// This keeps the scheduler model and patched QEMU on the same vCPU count
+    /// and retired-instruction switch quantum instead of duplicating launch
+    /// defaults at the call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the validated launch topology cannot be
+    /// represented as a scheduler subdivision policy.
+    pub fn scheduler_run_subdivision_policy(
+        &self,
+        node: SchedulerNodeId,
+    ) -> Result<SchedulerRunSubdivisionPolicy, SchedulerError> {
+        SchedulerRunSubdivisionPolicy::new(
+            node,
+            u32::from(self.smp_vcpus),
+            self.rr_switch_quantum,
+        )
     }
 
     /// Validates that every node launch declaration uses this profile's shift.
