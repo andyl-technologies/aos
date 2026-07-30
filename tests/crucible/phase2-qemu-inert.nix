@@ -697,8 +697,8 @@ in
             rm -f "$qmp_socket" "$serial" "$stderr" "$evidence_source" "$evidence"
 
             case "$icount_mode" in
-              none)
-                icount_args=""
+              deterministic)
+                icount_args="-icount shift=7,sleep=off,align=off"
                 ;;
               plain)
                 icount_args="-icount shift=0,sleep=off,align=off"
@@ -913,8 +913,14 @@ in
             qemu_pid=""
           }
 
-          run_boot_case reference-tcg "$REFERENCE_QEMU" none
-          run_boot_case patched-tcg "$PATCHED_QEMU" none
+          # Both sim-off comparison profiles use upstream QEMU's instruction
+          # clock. A host-realtime TCG clock makes Linux's early PIT/IO-APIC
+          # calibration depend on builder CPU starvation, producing spurious
+          # guest-visible warnings or panics even when the binaries are
+          # identical. This is a platform launch constraint, not a guest
+          # workaround: the stock kernel and initramfs remain unchanged.
+          run_boot_case reference-tcg "$REFERENCE_QEMU" deterministic
+          run_boot_case patched-tcg "$PATCHED_QEMU" deterministic
           compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"
           compare_files boot-tcg "$TMPDIR/normalized-serial-reference-tcg.txt" "$TMPDIR/normalized-serial-patched-tcg.txt"
           compare_files execution-output-tcg "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$TMPDIR/execution-fingerprint-patched-tcg.txt"
@@ -981,6 +987,9 @@ in
           plugin_loaded=false
           sim_accel_selected=false
           sim_flags_present=false
+          stock_linux_kernel_unmodified=true
+          tcg_virtual_clock=upstream-icount
+          tcg_virtual_clock_host_load_independent=true
           patch_microtests_dependency_passed=true
           guest_visible_boot_serial_compared_raw=true
           guest_kernel_printk_timestamps_disabled_at_source=true
