@@ -75,3 +75,32 @@ impl BackendSelectionPlan {
         }
     }
 }
+
+pub(crate) fn observe_local_backend_execution(
+    backend: &ResolvedLocalBackend,
+) -> Result<BackendExecutionEvidence, CliError> {
+    match backend {
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => Ok(BackendExecutionEvidence::LocalDouble),
+        ResolvedLocalBackend::Qemu { qemu, plugin, .. } => {
+            let observed = validate_qemu_artifacts(qemu, plugin)?;
+            Ok(BackendExecutionEvidence::LocalProduction {
+                build_id: observed.qemu_build_id,
+                plugin_abi: observed.plugin_abi,
+            })
+        }
+    }
+}
+
+pub(crate) fn validate_backend_execution_evidence(
+    plan: &BackendSelectionPlan,
+    evidence: &BackendExecutionEvidence,
+) -> Result<(), CliError> {
+    if evidence.proves_t_cli_3(plan) {
+        Ok(())
+    } else {
+        Err(CliError::Backend(
+            "executed backend identity does not match the selected RFC-0010 route".to_string(),
+        ))
+    }
+}

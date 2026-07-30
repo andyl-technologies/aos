@@ -71,6 +71,7 @@ pub(super) fn replay_reproduction_artifact(
     let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
     let seed = artifact.seed;
     let scenario_digest = artifact.scenario.digest.clone();
+    let reduction = replay_embedded_model_artifact(&artifact)?;
     let to_savepoint = args
         .to
         .as_deref()
@@ -112,10 +113,115 @@ pub(super) fn replay_reproduction_artifact(
         digest: content_address_bytes(&bytes),
         seed,
         scenario_digest,
+        reduction,
         to_savepoint,
         check,
         bisect,
     })
+}
+
+pub(super) fn replay_embedded_model_artifact(
+    artifact: &CliReproductionArtifact,
+) -> Result<Option<ReplayReductionProof>, CliError> {
+    let model_components = artifact
+        .components
+        .iter()
+        .filter(|component| component.media_type == MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE)
+        .collect::<Vec<_>>();
+    let state_components = artifact
+        .components
+        .iter()
+        .filter(|component| component.media_type == MODEL_REPLAY_STATE_MEDIA_TYPE)
+        .collect::<Vec<_>>();
+    if model_components.is_empty() && state_components.is_empty() {
+        return Ok(None);
+    }
+    if model_components.len() != 1 || state_components.len() != 1 {
+        return Err(artifact_error(
+            "replay requires exactly one paired model reproduction and replay-state component",
+        ));
+    }
+    let model_bytes = resolved_component_payload(artifact, model_components[0])?;
+    let expected_state_bytes = resolved_component_payload(artifact, state_components[0])?;
+    let model =
+        crucible::ReproductionArtifact::from_compact_binary(model_bytes).map_err(|error| {
+            artifact_error(format!(
+                "model reproduction component could not be decoded: {error}"
+            ))
+        })?;
+    if seed_to_u64(model.seed()) != artifact.seed {
+        return Err(CliError::Identity(format!(
+            "model reproduction seed {} does not match CLI artifact seed {}",
+            seed_to_u64(model.seed()),
+            artifact.seed
+        )));
+    }
+    let model_scenario_digest =
+        content_address_bytes(&scenario_identity_bytes(&model.scenario_def()));
+    if model_scenario_digest != artifact.scenario.digest {
+        return Err(CliError::Identity(format!(
+            "model reproduction scenario {} does not match CLI artifact scenario {}",
+            model_scenario_digest, artifact.scenario.digest
+        )));
+    }
+    let replay = model.replay().map_err(|error| {
+        CliError::ReplayCheck(format!(
+            "pure reduce(ScenarioDef, Schedule) replay failed: {error}"
+        ))
+    })?;
+    let expected_state = std::str::from_utf8(expected_state_bytes).map_err(|error| {
+        artifact_error(format!(
+            "model replay-state component is not UTF-8: {error}"
+        ))
+    })?;
+    if expected_state != format_content_hash_ref(replay.state) {
+        return Err(CliError::ReplayCheck(format!(
+            "pure reduction reached {}, expected {}",
+            format_content_hash_ref(replay.state),
+            expected_state
+        )));
+    }
+    let typed_decisions = replay_schedule_prefix_decisions(model.schedule());
+    if typed_decisions.len() > artifact.decisions.len() {
+        return Err(CliError::ReplayCheck(format!(
+            "model reproduction has {} decisions but CLI artifact records only {}",
+            typed_decisions.len(),
+            artifact.decisions.len()
+        )));
+    }
+    for (index, expected) in typed_decisions.iter().enumerate() {
+        let actual = &artifact.decisions[index];
+        let actual_payload = decision_payload_summary(artifact, actual)?;
+        if !replay_schedule_prefix_decision_matches(actual, &actual_payload, expected) {
+            return Err(CliError::ReplayCheck(format!(
+                "re-executed model schedule diverges from canonical decision {index}"
+            )));
+        }
+    }
+    Ok(Some(ReplayReductionProof {
+        artifact: replay.artifact,
+        scenario: replay.scenario,
+        schedule: replay.schedule,
+        state: replay.state,
+        reconstructed_decisions: typed_decisions.len(),
+    }))
+}
+
+fn resolved_component_payload<'a>(
+    artifact: &'a CliReproductionArtifact,
+    component: &CliComponent,
+) -> Result<&'a [u8], CliError> {
+    artifact
+        .payloads
+        .iter()
+        .find(|payload| payload.digest == component.digest)
+        .map(|payload| payload.bytes.as_slice())
+        .ok_or_else(|| {
+            artifact_error(format!(
+                "component `{}` payload `{}` is unresolved",
+                component.name, component.digest
+            ))
+        })
 }
 
 pub(super) fn replay_to_savepoint(

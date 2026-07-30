@@ -131,6 +131,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ),
                     None => Err(unsupported_resume_backend_error(resume_plan)),
                 }?;
+                let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+                    backend_error("local resume completed without a resolved backend")
+                })?;
+                let evidence = observe_local_backend_execution(backend)?;
+                validate_backend_execution_evidence(&backend_plan, &evidence)?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }
@@ -176,6 +181,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ),
                     None => Err(unsupported_fork_backend_error(fork_plan)),
                 }?;
+                let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+                    backend_error("local fork completed without a resolved backend")
+                })?;
+                let evidence = observe_local_backend_execution(backend)?;
+                validate_backend_execution_evidence(&backend_plan, &evidence)?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }
@@ -205,6 +215,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ),
                     None => Err(unsupported_search_backend_error(search_plan)),
                 }?;
+                let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+                    backend_error("local search completed without a resolved backend")
+                })?;
+                let evidence = observe_local_backend_execution(backend)?;
+                validate_backend_execution_evidence(&backend_plan, &evidence)?;
                 if emit_human && backend_plan.should_announce(cli.quiet) {
                     println!("{}", backend_plan.announcement());
                 }
@@ -230,6 +245,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         fuzz_plan,
                     )?;
+                    let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+                        backend_error("local fuzz completed without a resolved backend")
+                    })?;
+                    let evidence = observe_local_backend_execution(backend)?;
+                    validate_backend_execution_evidence(&backend_plan, &evidence)?;
                     if emit_human && backend_plan.should_announce(cli.quiet) {
                         println!("{}", backend_plan.announcement());
                     }
@@ -246,6 +266,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         fuzz_plan,
                     )?;
+                    let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
+                        backend_error("local fuzz completed without a resolved backend")
+                    })?;
+                    let evidence = observe_local_backend_execution(backend)?;
+                    validate_backend_execution_evidence(&backend_plan, &evidence)?;
                     if emit_human && backend_plan.should_announce(cli.quiet) {
                         println!("{}", backend_plan.announcement());
                     }
@@ -398,6 +423,17 @@ pub(super) fn write_replay_report_human(
         report.scenario_digest,
         report.digest
     )?;
+    if let Some(reduction) = &report.reduction {
+        writeln!(
+            output,
+            "crucible: replay reduction status=reexecuted artifact={} scenario={} schedule={} state={} reconstructed_decisions={}",
+            format_content_hash_ref(reduction.artifact),
+            format_content_hash_ref(reduction.scenario),
+            format_content_hash_ref(reduction.schedule),
+            format_content_hash_ref(reduction.state),
+            reduction.reconstructed_decisions
+        )?;
+    }
     if let Some(check) = &report.check {
         match &check.mismatch {
             Some(mismatch) => {

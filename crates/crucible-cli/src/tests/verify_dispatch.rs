@@ -642,6 +642,50 @@ pub(super) fn cli_backend_selection_rejects_execution_identity_divergence()
 }
 
 #[test]
+pub(super) fn cli_backend_execution_observation_reloads_invoked_artifact_identity()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "--backend",
+        "qemu",
+        "--qemu",
+        qemu.as_str(),
+        "--plugin",
+        plugin.as_str(),
+        "run",
+        TEST_SCENARIO,
+    ]);
+    let backend_plan = plan_backend_selection(&cli)?.expect("run should require backend selection");
+    let mut executed_backend = backend_plan
+        .resolved_backend
+        .clone()
+        .expect("local route should resolve a backend");
+    let ResolvedLocalBackend::Qemu { qemu_build_id, .. } = &mut executed_backend else {
+        panic!("explicit QEMU route should resolve QEMU");
+    };
+    *qemu_build_id = content_address_bytes(b"identity-not-present-in-invoked-artifacts");
+
+    let observed = observe_local_backend_execution(&executed_backend)?;
+    let error = validate_backend_execution_evidence(
+        &BackendSelectionPlan {
+            resolved_backend: Some(executed_backend),
+            ..backend_plan
+        },
+        &observed,
+    )
+    .expect_err("post-execution artifact observation must reject stale selected identity");
+
+    assert!(
+        error
+            .to_string()
+            .contains("executed backend identity does not match")
+    );
+    Ok(())
+}
+
+#[test]
 pub(super) fn cli_backend_selection_rejects_daemon_on_serve() {
     let cli = Cli::parse_from([
         "crucible",
@@ -1555,6 +1599,44 @@ pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn
     assert_eq!(report.digest, artifact.digest()?);
     assert!(report.check.is_none());
 
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_replay_reexecutes_embedded_model_reproduction()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("model-case.crucible");
+    let fixture = crucible::happy_path_scenario()?;
+    let schedule = replay_to_savepoint_schedule(1);
+    let model = crucible::ReproductionArtifact::capture(&fixture.scenario, &schedule)?;
+    let replay = model.replay()?;
+    let entries = canonical_log_entries_from_engine_schedule(&schedule);
+    let payloads = model_reproduction_artifact_payloads(&model, replay.state);
+    let bytes = verify_reproduction_artifact_bytes_with_components(
+        seed_to_u64(model.seed()),
+        Some(&ResolvedLocalBackend::Double),
+        &model.scenario_def(),
+        &entries,
+        &[],
+        &payloads,
+    )?;
+    fs::write(&path, bytes)?;
+
+    let cli = Cli::parse_from(["crucible", "replay", &path.display().to_string()]);
+    let Commands::Replay(args) = &cli.command else {
+        panic!("expected replay command");
+    };
+    let report = replay_reproduction_artifact(&cli, args)?;
+    let reduction = report
+        .reduction
+        .expect("model-backed artifact should report pure reduction evidence");
+
+    assert_eq!(reduction.artifact, replay.artifact);
+    assert_eq!(reduction.scenario, replay.scenario);
+    assert_eq!(reduction.schedule, replay.schedule);
+    assert_eq!(reduction.state, replay.state);
+    assert_eq!(reduction.reconstructed_decisions, schedule.len());
     Ok(())
 }
 

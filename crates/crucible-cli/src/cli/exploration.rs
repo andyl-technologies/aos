@@ -396,6 +396,20 @@ pub(super) fn replay_machine_readable_trace_entries(
             report.scenario_digest
         ),
     );
+    if let Some(reduction) = &report.reduction {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_reduction",
+            format!(
+                "status=reexecuted artifact={} scenario={} schedule={} state={} reconstructed_decisions={}",
+                format_content_hash_ref(reduction.artifact),
+                format_content_hash_ref(reduction.scenario),
+                format_content_hash_ref(reduction.schedule),
+                format_content_hash_ref(reduction.state),
+                reduction.reconstructed_decisions
+            ),
+        );
+    }
     if let Some(check) = &report.check {
         push_replay_trace_entry(
             &mut entries,

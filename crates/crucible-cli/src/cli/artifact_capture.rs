@@ -12,6 +12,26 @@ pub(crate) struct ReproductionScenarioPayload<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
+pub(crate) fn model_reproduction_artifact_payloads(
+    artifact: &crucible::ReproductionArtifact,
+    replay_state: crucible::ContentHash,
+) -> Vec<ReproductionArtifactComponentPayload> {
+    vec![
+        ReproductionArtifactComponentPayload {
+            kind: String::from("model_reproduction"),
+            name: String::from("reproduction.crucible-model"),
+            media_type: String::from(MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE),
+            bytes: artifact.to_compact_binary(),
+        },
+        ReproductionArtifactComponentPayload {
+            kind: String::from("model_replay_state"),
+            name: String::from("replay-state.txt"),
+            media_type: String::from(MODEL_REPLAY_STATE_MEDIA_TYPE),
+            bytes: format_content_hash_ref(replay_state).into_bytes(),
+        },
+    ]
+}
+
 pub(crate) fn verify_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
