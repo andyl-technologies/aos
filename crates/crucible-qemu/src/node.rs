@@ -230,6 +230,17 @@ pub trait QemuShmemHotPathChannel: Send {
         horizon: ExecutionHorizon,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
 
+    /// Polls a split quantum without consuming its pending token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the shared-memory completion report
+    /// cannot be read or is not yet visible.
+    fn poll_quantum(
+        &mut self,
+        pending: &mut QemuNodePendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
+
     /// Finishes a split quantum after the bounded host-I/O runtime completes.
     ///
     /// # Errors
@@ -238,8 +249,10 @@ pub trait QemuShmemHotPathChannel: Send {
     /// cannot be read.
     fn finish_quantum(
         &mut self,
-        pending: QemuNodePendingQuantum,
-    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
+        mut pending: QemuNodePendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        self.poll_quantum(&mut pending)
+    }
 
     /// Publishes one scheduler-commanded preemption before its bounded RUN.
     ///
@@ -371,11 +384,14 @@ impl QemuNodePendingQuantum {
     ///
     /// Returns [`QemuNodeChannelError`] when the token came from a different
     /// shared-memory channel implementation.
-    pub fn downcast<T>(self, operation: &'static str) -> Result<T, QemuNodeChannelError>
+    pub fn downcast_mut<T>(
+        &mut self,
+        operation: &'static str,
+    ) -> Result<&mut T, QemuNodeChannelError>
     where
         T: Any,
     {
-        self.token.downcast().map(|token| *token).map_err(|_| {
+        self.token.downcast_mut().ok_or_else(|| {
             QemuNodeChannelError::new(operation, "pending quantum token type mismatch")
         })
     }
@@ -853,9 +869,9 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
 
     fn finish_quantum(
         &mut self,
-        pending: Self::PendingQuantum,
+        pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.finish_quantum(pending)
+        self.channels.shmem_hot_path.poll_quantum(pending)
     }
 }
 
@@ -1368,11 +1384,11 @@ mod tests {
             Ok(QemuNodePendingQuantum::new(horizon.icount.retired))
         }
 
-        fn finish_quantum(
+        fn poll_quantum(
             &mut self,
-            pending: QemuNodePendingQuantum,
+            pending: &mut QemuNodePendingQuantum,
         ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-            let horizon = pending.downcast::<u64>("finish_quantum")?;
+            let horizon = *pending.downcast_mut::<u64>("finish_quantum")?;
             self.log
                 .lock()
                 .unwrap()
@@ -1496,6 +1512,14 @@ mod tests {
                 outcome,
             });
             Ok(outcome)
+        }
+
+        fn repoll_child(
+            &mut self,
+            wait: QemuAsyncWait,
+            timeout: Duration,
+        ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+            self.await_child(wait, timeout)
         }
     }
 
@@ -1764,7 +1788,7 @@ mod tests {
                 VirtualTime { ticks: 22 },
             ),
             Err(BackendError::Rejected { message })
-                if message.contains("does not match scheduler time")
+                if message.contains("does not match physical node time")
         ));
         SimulationBackend::apply(
             &mut node,

@@ -24,6 +24,28 @@ impl QuantumLoop for SingleScheduler {
         }
     }
 
+    fn backend_effect_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let counter =
+            self.node_counter_for_time_ceil(&self.nodes[index], SimInstant { nanos: at.ticks })?;
+        let projected = self.node_time_for_counter(&self.nodes[index], counter)?;
+        if projected != (SimInstant { nanos: at.ticks }) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "backend effect for node `{}` at scheduler time {} has no exact physical counter (next counter {} projects to {})",
+                    node.name, at.ticks, counter.ticks, projected.nanos
+                ),
+            });
+        }
+        Ok(VirtualTime {
+            ticks: counter.ticks,
+        })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
@@ -69,7 +91,11 @@ impl QuantumLoop for SingleScheduler {
         decisions: Vec<Decision>,
     ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
         let original_len = self.configuration.schedule.decisions().len();
-        let mut recorder = DecisionRecorder::new(self.configuration.clone());
+        let mut recorder = DecisionRecorder::from_seed_and_positions(
+            self.configuration.clone(),
+            self.decision_seed,
+            &self.decision_rng_cursor,
+        );
         for decision in decisions {
             let Decision::AppRandom(expected) = decision else {
                 return Err(SchedulerError::BoundaryViolation {
@@ -95,6 +121,11 @@ impl QuantumLoop for SingleScheduler {
                         expected.value
                     ),
                 });
+            }
+        }
+        for decision in &recorder.schedule().decisions()[original_len..] {
+            if let Decision::RngDraw(draw) = decision {
+                self.advance_decision_rng_cursor_for(draw.stream.clone());
             }
         }
         let configuration = recorder.into_configuration();
@@ -202,12 +233,15 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 })?;
             for (link, direction) in routes {
+                let emit_time =
+                    self.vm_delivery_time_for_icount(&output.source, output.emit_icount)?;
+                let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
                 let frame = crucible_device::Frame::new(
-                    output.emit_icount.retired,
+                    logical_emit_icount,
                     frame_id,
                     output.payload.clone(),
                 );
-                let seed = self.configuration.def.seed();
+                let seed = self.decision_seed;
                 let (record, branch_choices) = self.resolve_live_world_network_frame(
                     &link,
                     direction,
@@ -215,8 +249,8 @@ impl QuantumLoop for SingleScheduler {
                     &frame,
                     crucible_device::PastDeliveryPolicy::FailLoud,
                 )?;
-                let projected = self
-                    .project_device_decisions_for_vm_time(&output.source, record.decisions)?
+                let projected = record
+                    .decisions
                     .into_iter()
                     .map(|decision| match decision {
                         Decision::FaultFires(mut fault) => {
@@ -236,21 +270,18 @@ impl QuantumLoop for SingleScheduler {
                     let projected_choices = branch_choices
                         .into_iter()
                         .map(|choice| {
-                            self.project_device_decisions_for_vm_time(&output.source, choice)
-                                .map(|decisions| {
-                                    decisions
-                                        .into_iter()
-                                        .map(|decision| match decision {
-                                            Decision::FaultFires(mut fault) => {
-                                                fault.at = source_boundary;
-                                                Decision::FaultFires(fault)
-                                            }
-                                            other => other,
-                                        })
-                                        .collect::<Vec<_>>()
+                            choice
+                                .into_iter()
+                                .map(|decision| match decision {
+                                    Decision::FaultFires(mut fault) => {
+                                        fault.at = source_boundary;
+                                        Decision::FaultFires(fault)
+                                    }
+                                    other => other,
                                 })
+                                .collect::<Vec<_>>()
                         })
-                        .collect::<Result<Vec<_>, _>>()?;
+                        .collect::<Vec<_>>();
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: source_boundary,
@@ -305,13 +336,17 @@ impl SingleScheduler {
                     runtime_key.0.name
                 ),
             })?;
+        // The link direction and logical RNG position identify one causal
+        // emission. Do not include the live guest's raw TX icount: QEMU may
+        // report a slightly different instruction count for the same hostless
+        // probe across fresh process launches, while the scheduler-owned stream
+        // ordinal and frame correlation remain the canonical replay identity.
         let point = SchedulingPoint {
             key: format!(
-                "live-world-network/{}/{}/{}/{}/{}",
+                "live-world-network/{}/{}/{}/{}",
                 runtime_key.0.name,
                 network_direction_label(direction),
                 frame.frame_id,
-                frame.emit_icount,
                 rng_position
             ),
         };

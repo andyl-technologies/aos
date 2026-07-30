@@ -18,7 +18,10 @@
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   streamingTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -174,7 +177,7 @@
         needle = "SendRequest::new";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control attach coverage";
         needle = "RPC Control attach should decode";

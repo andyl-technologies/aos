@@ -18,7 +18,10 @@
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   epochGuardTest = builtins.readFile ../../crates/crucible-api/tests/gate_epoch_guards.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -122,7 +125,7 @@
         needle = "streaming.event_log().current_cursor(), before_cursor";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC destroy expected epoch coverage";
         needle = "with_expected_epoch(inline_created.session.epoch)";

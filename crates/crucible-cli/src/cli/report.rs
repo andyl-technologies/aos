@@ -483,6 +483,7 @@ pub(super) enum CliError {
     ReplayCheck(String),
     InvalidScenario(String),
     Triage(String),
+    #[cfg(any(test, feature = "test-double"))]
     Selftest(crucible::ExampleCorpusError),
 }
 
@@ -503,6 +504,7 @@ impl CliError {
             Self::ReplayCheck(_) => 1,
             Self::InvalidScenario(_) => 5,
             Self::Triage(_) => 1,
+            #[cfg(any(test, feature = "test-double"))]
             Self::Selftest(_) => 1,
         }
     }
@@ -522,6 +524,7 @@ impl fmt::Display for CliError {
             Self::ReplayCheck(error) => write!(formatter, "{error}"),
             Self::InvalidScenario(error) => write!(formatter, "{error}"),
             Self::Triage(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, feature = "test-double"))]
             Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
         }
     }
@@ -541,6 +544,7 @@ impl Error for CliError {
             Self::ReplayCheck(_) => None,
             Self::InvalidScenario(_) => None,
             Self::Triage(_) => None,
+            #[cfg(any(test, feature = "test-double"))]
             Self::Selftest(error) => Some(error),
         }
     }

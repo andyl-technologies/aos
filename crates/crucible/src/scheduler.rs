@@ -46,8 +46,6 @@ use crate::{
     step,
 };
 
-const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
-const SCHEDULER_QUANTUM_STREAM: &str = "quantum";
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
 const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 1;
 const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;

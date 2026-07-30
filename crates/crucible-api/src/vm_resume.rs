@@ -25,6 +25,8 @@ pub use crucible_qemu::LivePluginInstallGateConfig as ProductionPluginInstallCon
 pub use crucible_qemu::LivePluginInstallGateError as ProductionPluginInstallError;
 /// Observed evidence returned by the production plugin-installation probe.
 pub use crucible_qemu::LivePluginInstallReport as ProductionPluginInstallReport;
+/// Seeded live app-random launch configuration.
+pub(crate) use crucible_qemu::QemuLaunchAppRandomConfig as ProductionAppRandomConfig;
 /// Production plugin feature switch pinned into launch identity.
 pub use crucible_qemu::QemuLaunchPluginSwitch as ProductionPluginSwitch;
 /// Root-image format pinned into production launch identity.

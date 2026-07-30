@@ -72,7 +72,7 @@
       }
       {
         label = "live quantum probabilistic resolve";
-        needle = "resolve_probabilistic_decisions(self.configuration.clone(), resolved_events)";
+        needle = "resolve_probabilistic_decisions_from_seed(";
       }
       {
         label = "rng draw cursor update";

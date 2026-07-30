@@ -15,7 +15,10 @@
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -43,7 +46,7 @@
         needle = ''crucible-qemu = { path = "../crucible-qemu" }'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "reference client conformance test";
         needle = "reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend";

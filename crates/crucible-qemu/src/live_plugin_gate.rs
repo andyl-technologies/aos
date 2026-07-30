@@ -21,14 +21,13 @@
 //! which some other plugin owns time control.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crucible::{
-    DecisionRecorder, EventLog, EventLogCoverageObservation, ExecutionFingerprint,
-    ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
-    SchedulerSendAuthorizer, Seed, event_log_coverage_projection,
+    DecisionRecorder, DecisionRngState, EventLog, EventLogCoverageObservation,
+    ExecutionFingerprint, ExecutionHorizon, Icount, RngStreamId, RngStreamPosition,
+    event_log_coverage_projection,
 };
 // crucible-lint: allow host-nondeterminism-state -- this seeded value is reconstructed before admission.
 use crucible::Configuration;
@@ -38,8 +37,10 @@ use crucible::Decision;
 use crucible::ScenarioDef;
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 mod error;
+mod support;
 // crucible-lint: allow host-nondeterminism-state -- this typed error exports failures, not host-derived state.
 pub use error::LivePluginInstallGateError;
+use support::*;
 
 use crate::{
     LaunchProfileCandidate, QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchPluginConfig,
@@ -466,13 +467,42 @@ fn validate_app_random_decisions(
     let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
         GATE_DOMAIN,
         "scenario=live-app-random-doorbell",
-        Seed::from_u64(app_random.scenario_seed),
+        app_random.authoritative_seed(),
         app_random.draw_cap,
     );
-    // crucible-lint: allow host-nondeterminism-state -- this configuration is seeded canonical material, not a host observation.
-    let mut recorder = DecisionRecorder::new(Configuration::genesis(scenario));
+    let continuation = DecisionRngState {
+        positions: app_random
+            .stream_positions
+            .iter()
+            .map(|(name, draws)| {
+                (
+                    RngStreamId::from_name(name.clone()),
+                    RngStreamPosition::new(*draws),
+                )
+            })
+            .collect(),
+    };
+    let mut recorder = DecisionRecorder::from_seed_and_positions(
+        // crucible-lint: allow host-nondeterminism-state -- this configuration is seeded canonical material, not a host observation.
+        Configuration::genesis(scenario),
+        app_random.authoritative_seed(),
+        &continuation,
+    );
     let mut evidence = LiveAppRandomEvidence::default();
+    let mut branch_applied = false;
     for decision in decisions {
+        let current_draw = app_random.draw_offset.saturating_add(evidence.count as u64);
+        if !branch_applied
+            && app_random.branch_after_draws == Some(current_draw)
+            && let Some(branch_seed) = app_random.branch_seed()
+        {
+            recorder = DecisionRecorder::from_seed_and_positions(
+                recorder.into_configuration(),
+                branch_seed,
+                &DecisionRngState::empty(),
+            );
+            branch_applied = true;
+        }
         // crucible-lint: allow host-nondeterminism-state -- the plugin conjecture is compared and rejected on any mismatch.
         let Decision::AppRandom(expected) = decision else {
             return Err(LivePluginInstallGateError::UnsupportedCausalDecision {
@@ -503,143 +533,4 @@ fn validate_app_random_decisions(
         evidence.count = evidence.count.saturating_add(1);
     }
     Ok(evidence)
-}
-
-// crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds QEMU liveness only.
-#[allow(clippy::disallowed_methods)]
-fn wait_for_exact_boundary(
-    hot_path: &mut QemuMappedQuantumShmemHotPath,
-    child: &mut crate::QemuNodeChild,
-    config: &LivePluginInstallGateConfig,
-) -> Result<(), LivePluginInstallGateError> {
-    let started = Instant::now();
-    loop {
-        let current = QemuShmemHotPathChannel::current_icount(hot_path)
-            .map_err(|source| channel_error("poll completed icount", source))?
-            .retired;
-        if current >= config.horizon_icount {
-            return Ok(());
-        }
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| LivePluginInstallGateError::ChildWait { source })?
-        {
-            return Err(LivePluginInstallGateError::ChildExitBeforeBoundary {
-                horizon_icount: config.horizon_icount,
-                status: status.to_string(),
-            });
-        }
-        if started.elapsed() >= config.completion_timeout {
-            return Err(LivePluginInstallGateError::CompletionTimeout {
-                horizon_icount: config.horizon_icount,
-                last_icount: current,
-                timeout: config.completion_timeout,
-            });
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-// crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds plugin teardown only.
-#[allow(clippy::disallowed_methods)]
-fn wait_for_plugin_teardown(
-    hot_path: &QemuMappedQuantumShmemHotPath,
-    config: &LivePluginInstallGateConfig,
-) -> Result<(), LivePluginInstallGateError> {
-    let started = Instant::now();
-    loop {
-        if hot_path
-            .plugin_teardown_done()
-            .map_err(|source| LivePluginInstallGateError::MappedHotPath { source })?
-        {
-            return Ok(());
-        }
-        if started.elapsed() >= config.completion_timeout {
-            return Err(LivePluginInstallGateError::PluginQuitTimeout {
-                timeout: config.completion_timeout,
-            });
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-// crucible-lint: allow clippy-disallowed-method -- install-gate host timeout bounds child reap only.
-#[allow(clippy::disallowed_methods)]
-fn wait_for_natural_child_exit(
-    child: &mut crate::QemuNodeChild,
-    config: &LivePluginInstallGateConfig,
-) -> Result<std::process::ExitStatus, LivePluginInstallGateError> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| LivePluginInstallGateError::ChildWait { source })?
-        {
-            return Ok(status);
-        }
-        if started.elapsed() >= config.completion_timeout {
-            return Err(LivePluginInstallGateError::ChildExitTimeout {
-                timeout: config.completion_timeout,
-            });
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn vm_launch_config(config: &LivePluginInstallGateConfig) -> QemuVmLaunchConfig {
-    let vm = QemuVmLaunchConfig::new(
-        GATE_NODE,
-        launch_artifact("kernel", &config.kernel),
-        launch_artifact("root-image", &config.root_image),
-    )
-    .with_root_image_format(config.root_image_format);
-    match &config.initrd {
-        Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
-        None => vm,
-    }
-}
-
-fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
-    let path = path_text(path);
-    QemuLaunchArtifact::new(
-        crucible::ContentHash::from_canonical_material(GATE_DOMAIN, &format!("{kind}={path}")),
-        path,
-    )
-}
-
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn node_id(name: &str) -> NodeId {
-    NodeId {
-        name: name.to_owned(),
-    }
-}
-
-fn channel_error(
-    operation: &'static str,
-    source: QemuNodeChannelError,
-) -> LivePluginInstallGateError {
-    LivePluginInstallGateError::Channel { operation, source }
-}
-
-/// Send authorizer for the single-node install run.
-///
-/// The install gate has one VM and one router slot and never routes a real
-/// cross-node frame, so authorization is unconditional.
-struct GateSendAuthorizer;
-
-impl SchedulerSendAuthorizer for GateSendAuthorizer {
-    fn authorize_cross_node_send(
-        &self,
-        producer: &SchedulerNodeId,
-        consumer: &SchedulerNodeId,
-    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
-        Ok(SchedulerSendAuthorization {
-            producer: producer.clone(),
-            consumer: consumer.clone(),
-            topology_epoch: 0,
-        })
-    }
 }

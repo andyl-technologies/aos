@@ -18,7 +18,10 @@
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   sessionMapping = builtins.readFile ../../crates/crucible-api/src/session_mapping.rs;
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   reproductionTest = builtins.readFile ../../crates/crucible-api/tests/gate_reproduction_context.rs;
   streamingCursorTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_cursor.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -41,7 +44,7 @@
         needle = "`T-API-14` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "API nondeterminism gate test";
         needle = "api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state";

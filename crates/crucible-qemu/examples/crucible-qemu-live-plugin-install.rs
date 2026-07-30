@@ -170,12 +170,18 @@ fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
     let seed = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED");
     let cap = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP");
     let node = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE");
+    let branch_seed = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEED");
+    let branch_after = env::var("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTER");
     match (seed, cap, node) {
         (
             Err(env::VarError::NotPresent),
             Err(env::VarError::NotPresent),
             Err(env::VarError::NotPresent),
-        ) => Ok(None),
+        ) if matches!(&branch_seed, Err(env::VarError::NotPresent))
+            && matches!(&branch_after, Err(env::VarError::NotPresent)) =>
+        {
+            Ok(None)
+        }
         (Ok(seed), Ok(cap), Ok(node)) => {
             let root_seed = seed.parse::<u64>().map_err(|_error| {
                 String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED must be a u64")
@@ -183,9 +189,25 @@ fn app_random_env() -> Result<Option<QemuLaunchAppRandomConfig>, String> {
             let draw_cap = cap.parse::<u64>().map_err(|_error| {
                 String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP must be a u64")
             })?;
-            Ok(Some(QemuLaunchAppRandomConfig::new(
-                root_seed, draw_cap, node,
-            )))
+            let mut config = QemuLaunchAppRandomConfig::new(root_seed, draw_cap, node);
+            match (branch_seed, branch_after) {
+                (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => {}
+                (Ok(seed), Ok(after)) => {
+                    let seed = seed.parse::<u64>().map_err(|_error| {
+                        String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEED must be a u64")
+                    })?;
+                    let after = after.parse::<u64>().map_err(|_error| {
+                        String::from("CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTER must be a u64")
+                    })?;
+                    config = config.with_branch_reseed(seed, after);
+                }
+                _ => {
+                    return Err(String::from(
+                        "live app-random branching requires branch seed and boundary together",
+                    ));
+                }
+            }
+            Ok(Some(config))
         }
         _ => Err(String::from(
             "live app-random requires seed, cap, and node environment variables together",

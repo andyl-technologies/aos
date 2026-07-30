@@ -41,6 +41,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// The live white-box setup probe failed.
+    #[error("validate live white-box setup failed")]
+    WhiteboxSetup {
+        /// Underlying setup-probe error.
+        source: QemuWhiteboxSetupError,
+    },
     /// The QMP channel configuration was rejected.
     #[error("build QMP channel config failed")]
     QmpChannelConfig {

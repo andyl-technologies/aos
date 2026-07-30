@@ -14,7 +14,10 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  preemptionTest = builtins.readFile ../../crates/crucible/tests/scheduler_preemption_resolve.rs;
+  preemptionTest = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/tests/scheduler_preemption_resolve.rs)
+    (builtins.readFile ../../crates/crucible/tests/scheduler_preemption_identity.rs)
+  ];
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 

@@ -47,8 +47,24 @@ impl<L: QuantumLoop> SessionDriver<L> {
         &mut self,
         request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
-        self.quantum_loop.drive_quantum(request)
+        drive_engine_quantum(&mut self.quantum_loop, request)
     }
+}
+
+/// Drives one engine quantum through the session-owned L4 boundary.
+///
+/// This function lets lifecycle adapters retain their engine-loop ownership
+/// while keeping the sole call into [`QuantumLoop`] inside `crucible-session`.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when the engine quantum loop rejects the request
+/// or cannot complete the quantum.
+pub fn drive_engine_quantum<L: QuantumLoop>(
+    quantum_loop: &mut L,
+    request: QuantumRequest,
+) -> Result<QuantumOutcome, SchedulerError> {
+    quantum_loop.drive_quantum(request)
 }
 
 /// Explicit run state for the Crucible engine.

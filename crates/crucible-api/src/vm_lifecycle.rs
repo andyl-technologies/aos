@@ -13,9 +13,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::vm_resume::{
-    PRODUCTION_ROOT_OVERLAY_FILE_NAME, ProductionGdbstubChannelConfig, ProductionLiveNode,
-    ProductionLiveNodeStepGateConfig, ProductionNodeSet, ProductionPluginSwitch,
-    ProductionRootImageFormat, launch_production_live_node,
+    PRODUCTION_ROOT_OVERLAY_FILE_NAME, ProductionAppRandomConfig, ProductionGdbstubChannelConfig,
+    ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
+    ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
 };
 use crucible::{
     Action, BackendQuantumLoop, ConditionEvaluationPass, ConditionLeaf, Configuration,
@@ -23,8 +23,8 @@ use crucible::{
     GdbAttachInfo, GdbListen, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
     QuantumTerminalVerdict, RestartPolicy, ScenarioDef, ScenarioDefForm, SchedulerError,
     SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario,
-    SearchFrontierChoices, Shift, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
-    World,
+    SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend, SingleScheduler,
+    VirtualTime, World,
 };
 
 use crate::LifecycleApiError;
@@ -68,20 +68,23 @@ struct ProductionVmDebugConfig {
 #[derive(Clone, Debug)]
 struct ProductionVmBranchConfig {
     base: Configuration,
+    frontier: VirtualTime,
     decisions: Vec<Decision>,
+    seed: Option<Seed>,
 }
 
 #[derive(Clone, Debug)]
 struct ProductionVmCheckpointReplayTarget {
     configuration: Configuration,
     counter: u64,
+    scheduler_time: VirtualTime,
     control_count: usize,
 }
 
 #[derive(Clone, Debug)]
 struct ProductionVmRecordedControl {
     configuration: Configuration,
-    node_counters: BTreeMap<NodeId, u64>,
+    node_times: BTreeMap<NodeId, VirtualTime>,
     control: Vec<ControlOperation>,
 }
 
@@ -180,18 +183,46 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with explorer overrides admitted at `base`.
+    /// Returns this configuration with explorer overrides admitted at `frontier`.
     ///
-    /// The lifecycle waits until deterministic replay reaches the exact base
-    /// configuration, then records the supplied overrides at one authoritative
-    /// scheduler boundary before any further backend advance.
+    /// The lifecycle waits until deterministic replay reaches both the exact
+    /// base configuration and saved frontier, then records the supplied
+    /// overrides before any further backend advance.
     #[must_use]
     pub fn with_branch_prefix_overrides(
         mut self,
         base: Configuration,
+        frontier: VirtualTime,
         decisions: Vec<Decision>,
     ) -> Self {
-        self.branch = Some(ProductionVmBranchConfig { base, decisions });
+        self.branch = Some(ProductionVmBranchConfig {
+            base,
+            frontier,
+            decisions,
+            seed: None,
+        });
+        self
+    }
+
+    /// Returns this configuration with decision streams re-seeded at `frontier`.
+    ///
+    /// Prefix replay continues under the scenario seed. Once the authoritative
+    /// scheduler reaches both `base` and the saved frontier, every future
+    /// scheduler, network, block/9p, and live app-random decision stream
+    /// restarts from cursor zero under `seed`.
+    #[must_use]
+    pub fn with_branch_reseed(
+        mut self,
+        base: Configuration,
+        frontier: VirtualTime,
+        seed: Seed,
+    ) -> Self {
+        self.branch = Some(ProductionVmBranchConfig {
+            base,
+            frontier,
+            decisions: Vec::new(),
+            seed: Some(seed),
+        });
         self
     }
 
@@ -411,6 +442,12 @@ pub fn build_production_vm_lifecycle_loop(
         .with_kernel_cmdline(kernel_cmdline)
         .with_vm_shape(vm.memory_mib, vm.smp_vcpus, vm.icount_shift)
         .with_scenario_seed(launch_seed)
+        .with_whitebox(ProductionPluginSwitch::On)
+        .with_app_random(production_app_random_launch_config(
+            scenario,
+            config.branch.as_ref(),
+            &vm.id,
+        ))
         .with_coverage(config.coverage)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
@@ -500,6 +537,11 @@ pub fn build_production_vm_lifecycle_loop(
     .with_scenario_def(scenario.clone());
     let mut scheduler = SingleScheduler::new(runtime_scenario)
         .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
+    if let Some(branch) = &config.branch {
+        scheduler
+            .set_branch_frontier_cap(branch.frontier)
+            .map_err(|error| loop_factory_error(format!("cap QEMU branch frontier: {error}")))?;
+    }
     scheduler
         .attach_world_network_links(source.world())
         .map_err(|error| loop_factory_error(format!("attach QEMU World network: {error}")))?;

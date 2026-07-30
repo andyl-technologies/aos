@@ -20,7 +20,10 @@
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   streamingEquivalenceTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -136,7 +139,7 @@
         needle = "StateUpdate delivery must remain distinct from event-log entries";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control state update coverage";
         needle = "recv_rpc_control_state_update";

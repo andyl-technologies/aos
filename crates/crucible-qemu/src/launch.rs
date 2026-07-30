@@ -18,6 +18,7 @@ mod plugin_config;
 mod validation;
 mod whitebox_setup;
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use canonical::{
@@ -93,6 +94,10 @@ const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
 const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
+const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
+const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1: &str = "x86-port-00e7-unclaimed-v1";
 const WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1: &str = "aarch64-hlt-04c1-unclaimed-v1";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";

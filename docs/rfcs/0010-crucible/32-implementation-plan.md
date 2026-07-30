@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
 PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:df2316d7c624bdd8`
+Checklist sync digest: `rfc0010-checklist-v1:45bd0152395fae77`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -543,7 +543,11 @@ long-held locks.
   provenance in stdout and the canonical log, and process-level
   `fork --backend qemu` JSONL output plus child artifact creation through
   marker-resolved QEMU/plugin identity and requires an independent live
-  packaged-QEMU/plugin boot before the child workflow.
+  packaged-QEMU/plugin boot before the child workflow. Production-QEMU
+  `--seed` forks now re-seed scheduler, World-network, block, 9p, and
+  plugin-served app-random streams at the exact saved configuration; app-random
+  branch/relaunch cursors are explicit launch inputs, and the patched-QEMU
+  white-box gate proves cursor-zero branch-seed service to a real guest.
   `T-CLI-12` is completed through `checks.crucible.phase5.cliReplayCheck`, which
   covers `replay --check <original-log>` parsing, pinned-identity validation
   before store access, content-addressed component payload resolution from the

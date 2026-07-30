@@ -109,8 +109,8 @@
         needle = "scheduler_actor_drains_message_control_inbox_at_quantum_boundary";
       }
       {
-        label = "decision RNG cursor test";
-        needle = "scheduler_actor_owns_decision_rng_cursor_behind_mailbox";
+        label = "nonrandom progress preserves decision RNG cursor";
+        needle = "scheduler_actor_nonrandom_progress_does_not_advance_rng_cursor";
       }
       {
         label = "read-only state snapshot test";

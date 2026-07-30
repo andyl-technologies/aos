@@ -3,6 +3,54 @@
 use super::*;
 
 impl SingleScheduler {
+    /// Returns the seed that owns every future authoritative decision stream.
+    #[must_use]
+    pub const fn future_decision_seed(&self) -> Seed {
+        self.decision_seed
+    }
+
+    /// Returns the authoritative future decision-stream cursors.
+    #[must_use]
+    pub const fn future_decision_rng_state(&self) -> &DecisionRngState {
+        &self.decision_rng_cursor
+    }
+
+    /// Re-seeds every future authoritative decision stream at a branch boundary.
+    ///
+    /// The recorded configuration prefix remains unchanged. Scheduler, World
+    /// network, app-random, and block/9p streams restart from cursor zero;
+    /// already-resolved device completions remain frozen as prefix state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when explorer-selected
+    /// branch choices or uncommitted World-network decisions are pending.
+    pub fn reseed_future_decisions(&mut self, seed: Seed) -> Result<(), SchedulerError> {
+        if !self.branch_fault_choices.is_empty() || !self.branch_network_choices.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "cannot re-seed while explicit scheduler branch choices are pending",
+                ),
+            });
+        }
+        if !self.world_network_decisions.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("cannot re-seed while World-network decisions await commit"),
+            });
+        }
+        self.decision_seed = seed;
+        self.decision_rng_cursor = DecisionRngState::empty();
+        for position in self.world_network_rng_positions.values_mut() {
+            *position = 0;
+        }
+        for sub_nodes in self.device_sub_nodes.values_mut() {
+            for sub_node in sub_nodes {
+                sub_node.reseed_future_decisions(seed);
+            }
+        }
+        Ok(())
+    }
+
     /// Installs explorer-selected probabilistic fault outcomes for exact RESOLVE points.
     ///
     /// Decisions must be supplied as adjacent `RngDraw`, `FaultFires` pairs.
@@ -207,10 +255,9 @@ impl SingleScheduler {
         preemptions: &[PlannedPreemptionApplication],
         device_decisions: &[Decision],
         at: SimInstant,
-        record_advance: bool,
     ) -> Result<Vec<Decision>, SchedulerError> {
         let mut decisions = Vec::new();
-        if record_advance || !resolved_events.is_empty() {
+        if !resolved_events.is_empty() {
             let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
                 at: VirtualTime { ticks: at.nanos },
                 order: resolved_events
@@ -223,7 +270,6 @@ impl SingleScheduler {
                     })
                     .collect(),
             });
-            self.advance_decision_rng_cursor();
             decisions.push(decision);
             let branch_configuration = self.step_quantum(&decisions);
             let choices = search_frontier_choices_from_scheduled_events(
@@ -237,8 +283,12 @@ impl SingleScheduler {
                     choices,
                 });
             }
-            let mut probabilistic =
-                resolve_probabilistic_decisions(self.configuration.clone(), resolved_events);
+            let mut probabilistic = resolve_probabilistic_decisions_from_seed(
+                self.configuration.clone(),
+                resolved_events,
+                self.decision_seed,
+                &self.decision_rng_cursor,
+            );
             self.apply_branch_fault_choices(resolved_events, &mut probabilistic.decisions)?;
             for decision in &probabilistic.decisions {
                 if let Decision::RngDraw(draw) = decision {

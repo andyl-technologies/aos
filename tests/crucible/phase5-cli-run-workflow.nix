@@ -17,6 +17,11 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliProduction = import ./_rust-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/main.rs;
+    fragmentDirs = [../../crates/crucible-cli/src/cli];
+  };
   sessionCore = import ./_crucible-session-source.nix {inherit lib;};
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
@@ -524,7 +529,7 @@
         needle = "_max_actor_yields: u64";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible-cli/src/{main.rs,cli/**}" cliProduction [
       {
         label = "CLI owns scheduler loop";
         needle = builtins.concatStringsSep "_" ["drive" "quantum("];

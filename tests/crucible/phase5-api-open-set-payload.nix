@@ -20,7 +20,10 @@
   rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   openSetTest = builtins.readFile ../../crates/crucible-api/tests/gate_open_set_payload.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -156,7 +159,7 @@
         needle = "session_command_for_open_set_command_kind(\"crucible.cmd.continue\")";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "test server emits open-set command kinds";
         needle = "open_set_command_kind(capability.command_kind)";

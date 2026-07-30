@@ -952,6 +952,7 @@ pub(crate) fn plan_save_invocation(
         interactive: false,
         save_on: RunSaveOnArg::Always,
         watch: false,
+        #[cfg(any(test, feature = "test-double"))]
         emit_mock_failure_artifact: false,
     };
     let run_plan = plan_run_invocation(&run_args, store_root)?;

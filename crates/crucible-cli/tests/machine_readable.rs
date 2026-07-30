@@ -231,6 +231,7 @@ fn cli_fork_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box
         .arg(&plugin)
         .arg("--artifact-dir")
         .arg(&fork_artifact_dir)
+        .args(["--seed", "7"])
         .arg("fork")
         .arg(&source)
         .args([

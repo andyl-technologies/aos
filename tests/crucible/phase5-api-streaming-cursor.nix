@@ -20,7 +20,10 @@
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   streamingCursorTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_cursor.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -156,7 +159,7 @@
         needle = "attach beyond current length should skip historical replay";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control event receive coverage";
         needle = "recv_rpc_control_event";

@@ -62,16 +62,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("test-support", &["crucible/test-double"][..]),
         ],
     );
-    assert_features(
-        &manifests,
-        "crucible-device",
-        &[
-            ("default", &["disk", "ninep", "net"][..]),
-            ("disk", &[][..]),
-            ("ninep", &[][..]),
-            ("net", &[][..]),
-        ],
-    );
+    assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
 
     Ok(())
 }

@@ -1,7 +1,9 @@
 //! Production-backend scheduler binding, observation, and branch-frontier tests.
 
 use super::*;
-use crate::{BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation, step};
+use crate::{
+    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation, step,
+};
 
 #[test]
 fn quantum_loop_trait_is_object_safe() {
@@ -67,6 +69,37 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
     assert_eq!(
         runtime.canonical_configuration(),
         Configuration::genesis(scenario)
+    );
+}
+
+#[test]
+fn admitted_ready_counter_is_the_scheduler_epoch() {
+    let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let ready = NodeCounter { ticks: 4_096 };
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "production-ready-counter-origin",
+        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
+        4,
+        SimInstant { nanos: 64 },
+        vec![SchedulerScenarioNode {
+            id: node.clone(),
+            counter: ready,
+            activity: SchedulerNodeActivity::Runnable,
+            network_lookahead: NetworkLookahead::Infinite,
+            exact_local_event: ExactLocalEvent::NoArmedTimer,
+        }],
+        Vec::new(),
+    )
+    .with_ready_point_counter(node, ready);
+    let scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("ready-point scheduler should build: {error}"));
+
+    assert_eq!(scheduler.frontier(), VirtualTime { ticks: 0 });
+    assert_eq!(
+        scheduler
+            .node_time_for_counter(&scheduler.nodes[0], NodeCounter { ticks: 4_103 })
+            .unwrap_or_else(|error| panic!("relative node time should project: {error}")),
+        SimInstant { nanos: 7 }
     );
 }
 
@@ -257,6 +290,102 @@ fn branch_prefix_admission_records_only_explorer_overrides() {
         })])
         .expect_err("raw RNG choices must use their owning resolution path");
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+}
+
+#[test]
+fn branch_reseed_restarts_the_authoritative_rng_stream() {
+    let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
+    let event = probabilistic_fault_event(
+        11,
+        &consumer,
+        &producer,
+        0,
+        FaultId {
+            name: String::from("reseeded-loss"),
+        },
+    );
+    let stream = RngStreamId::from_name("test-probabilistic-fault");
+    let seed = Seed::from_u64(0x0010_c111);
+    let mut expected_stream = seed
+        .decision_rng()
+        .fork_in_domain(&stream.domain, &stream.name);
+    let expected = expected_stream.next_u64();
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+
+    scheduler
+        .reseed_future_decisions(seed)
+        .expect("an idle scheduler should admit a branch re-seed");
+    let decisions = scheduler
+        .emit_quantum_decisions(
+            std::slice::from_ref(&event),
+            &[],
+            &[],
+            SimInstant { nanos: 11 },
+        )
+        .expect("the re-seeded fault boundary should resolve");
+    let actual = decisions.iter().find_map(|decision| match decision {
+        Decision::RngDraw(draw) if draw.stream == stream => Some(draw.value),
+        _ => None,
+    });
+
+    assert_eq!(actual, Some(expected));
+    assert_eq!(
+        scheduler
+            .decision_rng_cursor
+            .positions
+            .get(&stream)
+            .map(|position| position.draws),
+        Some(1)
+    );
+}
+
+#[test]
+fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
+    fn app_random_decisions(seed: Seed) -> Vec<Decision> {
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        let stream = RngStreamId::from_name("app-random/node:6:node-a/stream:4:test");
+        let mut expected = seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+        let expected_value = expected.next_u64();
+        let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+        scheduler
+            .reseed_future_decisions(seed)
+            .expect("an idle scheduler should admit a branch re-seed");
+        let (decisions, _configuration, _append) = QuantumLoop::append_backend_causal_decisions(
+            &mut scheduler,
+            vec![Decision::AppRandom(AppRandomDecision {
+                node,
+                stream,
+                request_id: 0,
+                width: 64,
+                value: expected_value,
+            })],
+        )
+        .expect("the live app-random value should match the branch seed");
+        decisions
+    }
+
+    let first_seed = Seed::from_u64(0xa990_0001);
+    let second_seed = Seed::from_u64(0xa990_0002);
+    let first = app_random_decisions(first_seed);
+    let replayed = app_random_decisions(first_seed);
+    let second = app_random_decisions(second_seed);
+    assert_eq!(first, replayed);
+    assert_ne!(first, second);
+
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let link = LinkId::from_name("node-a--node-b");
+    scheduler
+        .world_network_rng_positions
+        .insert(link.clone(), 19);
+    scheduler
+        .reseed_future_decisions(second_seed)
+        .expect("an idle scheduler should reset World-network cursors");
+    assert_eq!(scheduler.world_network_rng_positions.get(&link), Some(&0));
 }
 
 #[test]

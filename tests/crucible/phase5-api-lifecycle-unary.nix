@@ -20,7 +20,10 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   lifecycleTest = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -292,7 +295,7 @@
         needle = "resume_session_rejects_non_baked_genesis_checkpoint_material";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC server backed by lifecycle control plane";
         needle = "LifecycleControlPlane<ServerQuantumLoop";

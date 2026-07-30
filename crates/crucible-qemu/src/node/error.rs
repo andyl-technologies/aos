@@ -39,6 +39,8 @@ pub struct QemuNodeChannelError {
     pub message: String,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
+    /// Whether the operation may be retried without republishing its request.
+    pub retryable: bool,
 }
 
 impl QemuNodeChannelError {
@@ -49,6 +51,18 @@ impl QemuNodeChannelError {
             operation,
             message: message.into(),
             timeout: None,
+            retryable: false,
+        }
+    }
+
+    /// Creates a transient channel error for a request that remains in flight.
+    #[must_use]
+    pub fn retryable(operation: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            operation,
+            message: message.into(),
+            timeout: None,
+            retryable: true,
         }
     }
 
@@ -63,6 +77,7 @@ impl QemuNodeChannelError {
             operation,
             message: message.into(),
             timeout: Some(timeout),
+            retryable: false,
         }
     }
 
@@ -70,6 +85,12 @@ impl QemuNodeChannelError {
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
         self.timeout
+    }
+
+    /// Returns whether the same in-flight operation may be polled again.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        self.retryable
     }
 }
 

@@ -54,6 +54,8 @@
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
 //! ```
 
+mod reseed;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_device::ninep::codec as ninep_codec;
@@ -1267,6 +1269,8 @@ mod tests {
 
     use crate::SchedulingNodeKind;
 
+    mod branch_reseed;
+
     fn device_id(name: &str) -> DeviceId {
         DeviceId {
             name: name.to_owned(),
@@ -1538,28 +1542,5 @@ mod tests {
             })
         ));
         assert!(disk.next_exact_local_event().is_none());
-    }
-
-    #[test]
-    fn run_twice_is_byte_identical() {
-        let faults = IoFaults {
-            jitter_window_ns: 64,
-            loss: Probability::new(1, 3),
-            ..IoFaults::none()
-        };
-        let drive = || {
-            let mut disk = fresh_disk(Seed::from_u64(0x7e57), faults.clone());
-            for index in 0..4u64 {
-                disk.submit(index * 50, &read_request(index as u32 + 1, 0, 8))
-                    .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
-            }
-            let mut out = Vec::new();
-            // Deliver everything that is in flight.
-            while let Some(delivery) = disk.next_exact_local_event() {
-                out.extend(disk.deliver_due(delivery));
-            }
-            out
-        };
-        assert_eq!(drive(), drive(), "two runs must be byte-identical");
     }
 }

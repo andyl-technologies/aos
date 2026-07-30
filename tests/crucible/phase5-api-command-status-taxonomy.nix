@@ -19,7 +19,10 @@
   session = import ./_crucible-session-source.nix {inherit lib;};
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   streamingEquivalenceTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
   explorationForkTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
@@ -184,7 +187,7 @@
         needle = "rpc_status_code_wire_name";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "closed taxonomy conversion coverage";
         needle = "assert_command_rejection_taxonomy_is_closed";

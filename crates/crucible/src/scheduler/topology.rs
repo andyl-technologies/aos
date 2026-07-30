@@ -1,5 +1,10 @@
 //! Control admission, lookahead topology, timeline ordering, horizons, and rendezvous.
 
+mod resolve_decisions;
+
+pub use resolve_decisions::resolve_probabilistic_decisions;
+pub(super) use resolve_decisions::resolve_probabilistic_decisions_from_seed;
+
 use super::*;
 /// Maximum allowed scheduler-side control application latency in quanta.
 pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;
@@ -1082,41 +1087,6 @@ pub fn resolve_due_scheduled_events(
     *pending_events = pending;
 
     Ok(ordered)
-}
-
-/// Records every probabilistic RESOLVE choice in canonical event order.
-///
-/// Only [`ScheduledEventPayload::ProbabilisticFault`] payloads produce decisions.
-/// For each such event, this helper draws from the payload's seeded stream and
-/// records the raw [`Decision::RngDraw`] followed by the derived
-/// [`Decision::FaultFires`] outcome. Non-probabilistic events are ignored.
-#[must_use]
-pub fn resolve_probabilistic_decisions(
-    configuration: Configuration,
-    resolved_events: &[ScheduledEvent],
-) -> SchedulerResolveDecisionRecord {
-    let mut recorder = DecisionRecorder::new(configuration);
-    let mut decisions = Vec::new();
-
-    for event in ordered_scheduled_events(resolved_events) {
-        let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
-            continue;
-        };
-
-        let before = recorder.schedule().len();
-        recorder.decide_fault_basis_points(
-            event.key.virtual_time(),
-            choice.fault.clone(),
-            choice.stream.clone(),
-            choice.rate,
-        );
-        decisions.extend_from_slice(&recorder.schedule().decisions()[before..]);
-    }
-
-    SchedulerResolveDecisionRecord {
-        configuration: recorder.into_configuration(),
-        decisions,
-    }
 }
 
 /// Selects the earliest exact local event for `node`.

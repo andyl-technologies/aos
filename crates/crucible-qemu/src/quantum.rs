@@ -3,8 +3,8 @@
 //! RFC-0010 T-QEMU-12 requires the QEMU node step to be a shared-memory-only
 //! cycle: observe the plugin-published node report, publish the scheduler's
 //! ceiling, wake the parked plugin through the node-slot futex word, observe a
-//! later plugin report in the same shared-memory slot, and move frame records
-//! through SPSC rings. This module encodes that host-side data flow over
+//! a plugin report at the authorized boundary in the same shared-memory slot,
+//! and move frame records through SPSC rings. This module encodes that host-side data flow over
 //! caller-supplied shared-memory ABI objects; it does not allocate private
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
@@ -20,6 +20,7 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
+use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
     QemuAsyncQuantumCompletion, QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState,
     QemuNodePendingQuantum, QemuShmemHotPathChannel,
@@ -220,7 +221,7 @@ pub enum QemuQuantumOperation {
     StoreSchedulerCeiling,
     /// Wake the plugin through the node-slot futex word.
     FutexWake,
-    /// Observe a later plugin report from the same node slot.
+    /// Observe the plugin report at the authorized boundary from the same node slot.
     ObservePluginReport,
     /// Read the completion report from the node slot.
     ReadCompletionReport,
@@ -282,7 +283,7 @@ impl QemuQuantumOperation {
     }
 }
 
-/// A published quantum that is waiting for a plugin report.
+/// A published quantum that is waiting for an authorized boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuPendingQuantum {
     /// Initial node report read before publishing the scheduler ceiling.
@@ -489,11 +490,27 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         &mut self,
         pending: QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
+        self.poll_quantum(&pending)
+    }
+
+    /// Polls a pending quantum without consuming its retry token.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::finish_quantum`]. In particular,
+    /// [`QemuQuantumError::PluginReportNotPublished`] leaves `pending` valid for
+    /// another bounded host-I/O wait and poll.
+    pub fn poll_quantum(
+        &mut self,
+        pending: &QemuPendingQuantum,
+    ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
         let final_snapshot = self.view.node_slot.snapshot();
-        if final_snapshot.publish_gen == pending.report_generation
-            && final_snapshot.current_icount < pending.ceiling.retired
-        {
+        let final_state = idle_state_from_snapshot(final_snapshot);
+        if matches!(
+            classify_quantum_boundary(&final_state, pending.ceiling.retired),
+            QuantumBoundary::Pending
+        ) {
             return Err(QemuQuantumError::PluginReportNotPublished {
                 current_icount: final_snapshot.current_icount,
                 ceiling: pending.ceiling.retired,
@@ -501,9 +518,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         }
 
         self.record(QemuQuantumOperation::ReadCompletionReport);
-        let final_state = idle_state_from_snapshot(final_snapshot);
         let final_device_io_freeze = device_io_freeze_from_snapshot(final_snapshot);
-        let mut due_inbound_frames = pending.due_before_wake;
+        let mut due_inbound_frames = pending.due_before_wake.clone();
         due_inbound_frames.extend(self.drain_due_inbound_since(
             final_state.current_icount.retired,
             final_state.current_icount.retired,
@@ -800,12 +816,12 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             .map_err(QemuNodeChannelError::from)
     }
 
-    fn finish_quantum(
+    fn poll_quantum(
         &mut self,
-        pending: QemuNodePendingQuantum,
+        pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        let pending = pending.downcast::<QemuPendingQuantum>("finish_quantum")?;
-        QemuQuantumShmemHotPath::finish_quantum(self, pending)
+        let pending = pending.downcast_mut::<QemuPendingQuantum>("finish_quantum")?;
+        QemuQuantumShmemHotPath::poll_quantum(self, pending)
             .map(QemuAsyncQuantumCompletion::from)
             .map_err(QemuNodeChannelError::from)
     }
@@ -888,7 +904,11 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 
 impl From<QemuQuantumError> for QemuNodeChannelError {
     fn from(error: QemuQuantumError) -> Self {
-        Self::new("qemu_quantum_shmem_hot_path", error.to_string())
+        if matches!(error, QemuQuantumError::PluginReportNotPublished { .. }) {
+            Self::retryable("qemu_quantum_shmem_hot_path", error.to_string())
+        } else {
+            Self::new("qemu_quantum_shmem_hot_path", error.to_string())
+        }
     }
 }
 
@@ -1153,6 +1173,7 @@ pub enum QemuQuantumError {
 mod tests {
     use super::*;
 
+    mod completion;
     mod network_delivery;
     use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
 
@@ -1278,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn qemu_quantum_rejects_finish_before_shared_plugin_report_changes() {
+    fn qemu_quantum_rejects_finish_before_reaching_a_boundary() {
         let slot = NodeSlot::default();
         let inbound_ring = RingHeader::new();
         let outbound_ring = RingHeader::new();

@@ -64,12 +64,13 @@ use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
     CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
     QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
-    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
-    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
-    QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
+    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
+    QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
     QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
-    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QmpError,
-    build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
+    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuWhiteboxSetupError,
+    QmpError, build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
     complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -191,6 +192,8 @@ pub struct QemuLiveNodeStepGateConfig {
     smp_vcpus: u16,
     icount_shift: u8,
     scenario_seed: u64,
+    whitebox: QemuLaunchPluginSwitch,
+    app_random: Option<QemuLaunchAppRandomConfig>,
     coverage: QemuLaunchPluginSwitch,
     shmem_network_mac: Option<String>,
     queue_capacity: u32,
@@ -238,6 +241,8 @@ impl QemuLiveNodeStepGateConfig {
             smp_vcpus: 1,
             icount_shift: 0,
             scenario_seed: 0,
+            whitebox: QemuLaunchPluginSwitch::Off,
+            app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
@@ -274,6 +279,8 @@ impl QemuLiveNodeStepGateConfig {
             smp_vcpus: 1,
             icount_shift: 0,
             scenario_seed: 0,
+            whitebox: QemuLaunchPluginSwitch::Off,
+            app_random: None,
             coverage: QemuLaunchPluginSwitch::Off,
             shmem_network_mac: None,
             queue_capacity: GATE_QUEUE_CAPACITY,
@@ -329,6 +336,20 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_scenario_seed(mut self, scenario_seed: u64) -> Self {
         self.scenario_seed = scenario_seed;
+        self
+    }
+
+    /// Returns this configuration with the production white-box channel set.
+    #[must_use]
+    pub const fn with_whitebox(mut self, whitebox: QemuLaunchPluginSwitch) -> Self {
+        self.whitebox = whitebox;
+        self
+    }
+
+    /// Returns this configuration with the seeded app-random source set.
+    #[must_use]
+    pub fn with_app_random(mut self, app_random: QemuLaunchAppRandomConfig) -> Self {
+        self.app_random = Some(app_random);
         self
     }
 
@@ -627,14 +648,11 @@ pub(super) fn build_live_node(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
-    let plugin = live_node_plugin_config(config);
-    let mut command = QemuLaunchCommandBuilder::new(
-        profile,
-        vm_launch_config(config, identity.node),
-        path_text(&config.qemu_executable),
-        plugin,
-    )
-    .with_qmp(qmp_config.clone());
+    let vm = vm_launch_config(config, identity.node);
+    let plugin = live_node_plugin_config(config, &profile, &vm, run_directory)?;
+    let mut command =
+        QemuLaunchCommandBuilder::new(profile, vm, path_text(&config.qemu_executable), plugin)
+            .with_qmp(qmp_config.clone());
     if let Some(gdbstub) = &config.gdbstub {
         command = command.with_gdbstub(gdbstub.clone());
     }

@@ -10,6 +10,12 @@ pub enum QemuLaunchCommandError {
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,
+    /// Only part of the app-random branch configuration was supplied.
+    #[error("app-random branch seed and prefix draw count must be configured together")]
+    InvalidAppRandomBranchConfiguration,
+    /// App-random continuation cursors did not match their declared bounds.
+    #[error("app-random continuation cursors do not match their declared draw bounds")]
+    InvalidAppRandomContinuationConfiguration,
     /// The node name cannot be represented in QEMU's comma-separated plugin args.
     #[error("app-random node name must not contain `,` or `=`")]
     InvalidAppRandomNodeName,

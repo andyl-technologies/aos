@@ -9,6 +9,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 #[macro_use]
+#[cfg(any(test, feature = "test-double"))]
 mod quantum_loop_method;
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
@@ -18,6 +19,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,28 +35,29 @@ use crucible_api::{
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
 use crucible_session::engine::QuantumLoop as EngineLoop;
-use crucible_session::engine::{
-    QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
-};
 use crucible_session::validation::{
-    ValidationDag, ValidationDagStoreError, fork_session_from_validation_base,
-    fork_session_from_validation_checkpoint, recorded_checkpoint_for_configuration,
-    resume_session_from_validation_dag, validation_dag_with_baked_genesis,
+    ValidationDag, ValidationDagStoreError, recorded_checkpoint_for_configuration,
+    validation_dag_with_baked_genesis,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply,
-    EngineSnapshot, LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind,
-    QueryResult, SessionCommand, SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, EngineSnapshot,
+    LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand, SessionCommandKind,
+    StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
         OverrideDecision, RecordedAssertionLog, Schedule, SchedulingPoint, SearchDiscoveredFailure,
-        SearchFailureOracle, SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
+        SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
 #[cfg(test)]
 use crucible_session::{BreakpointFiring, EngineState, Outcome};
+#[cfg(any(test, feature = "test-double"))]
+mod test_double_imports;
 use serde::Deserialize;
+#[cfg(any(test, feature = "test-double"))]
+use test_double_imports::*;
+#[cfg(any(test, feature = "test-double"))]
 use tokio::sync::{mpsc, oneshot};
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
@@ -88,16 +91,8 @@ const BACKEND_VALUE_NAME: &str = "auto|qemu";
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
 const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
-const SAVE_GUEST_MARKER_CMDLINE_PREFIX: &str = "crucible-guest-marker=";
 #[cfg(any(test, feature = "test-double"))]
-const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
-    "gate:layer0-determinism",
-    "gate:content-address",
-    "gate:layer1-injection",
-    "gate:replay-oracle",
-    "gate:scheduler-liveness",
-    "gate:control-responsive",
-];
+const SAVE_GUEST_MARKER_CMDLINE_PREFIX: &str = "crucible-guest-marker=";
 const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
     "gate:single-vm-fingerprint",
     "gate:any-guest",
@@ -291,6 +286,7 @@ struct RunArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     watch: bool,
     /// Emit a mock failure artifact for gate testing.
+    #[cfg(any(test, feature = "test-double"))]
     #[arg(long, hide = true, action = ArgAction::SetTrue)]
     emit_mock_failure_artifact: bool,
 }

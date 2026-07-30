@@ -6,7 +6,7 @@
 
 use crucible::{
     Configuration, ControlOperation, ControlOperationKind, ExactLocalEvent, NetworkLookahead,
-    NodeCounter, NodeId, QuantumRequest, RngStreamId, ScheduledEventPayload, SchedulerActor,
+    NodeCounter, NodeId, QuantumRequest, ScheduledEventPayload, SchedulerActor,
     SchedulerActorHandle, SchedulerActorStateSnapshot, SchedulerLivenessScenario,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
     SimDuration, SimInstant,
@@ -63,7 +63,7 @@ fn scheduler_actor_drains_message_control_inbox_at_quantum_boundary() {
 }
 
 #[test]
-fn scheduler_actor_owns_decision_rng_cursor_behind_mailbox() {
+fn scheduler_actor_nonrandom_progress_does_not_advance_rng_cursor() {
     let (handle, mut actor) = scheduler_actor();
     let before = actor_snapshot(&handle, &mut actor);
     assert!(before.decision_rng_cursor.positions.is_empty());
@@ -81,15 +81,7 @@ fn scheduler_actor_owns_decision_rng_cursor_behind_mailbox() {
         .expect("scheduler actor should advance");
 
     let after = actor_snapshot(&handle, &mut actor);
-    let stream = RngStreamId::new("crucible.scheduler.actor", "quantum");
-    assert_eq!(
-        after
-            .decision_rng_cursor
-            .positions
-            .get(&stream)
-            .map(|position| position.draws),
-        Some(1)
-    );
+    assert!(after.decision_rng_cursor.positions.is_empty());
 }
 
 #[test]
