@@ -1516,12 +1516,15 @@ pub(super) fn write_fork_reproduction_artifact(
         node: String::from("fork"),
         digest: content_address_bytes(format_content_hash_ref(finding.replay.state).as_bytes()),
     };
-    let bytes = verify_reproduction_artifact_bytes(
+    let model_payloads =
+        model_reproduction_artifact_payloads(&finding.artifact, finding.replay.state);
+    let bytes = verify_reproduction_artifact_bytes_with_components(
         artifact_seed,
         backend,
         &scenario_form.scenario_def(),
         &canonical_log,
         &[fingerprint],
+        &model_payloads,
     )?;
     let digest = content_address_bytes(&bytes);
     fs::create_dir_all(&plan.artifact_dir)?;

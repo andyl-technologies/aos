@@ -1189,9 +1189,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         };
         Ok(BackendCommandExecution {
             outcome,
-            evidence: backend_plan
-                .expected_execution_evidence()
-                .ok_or_else(|| backend_error("local backend route has no execution identity"))?,
+            evidence: observe_local_backend_execution(backend)?,
         })
     }
 
@@ -1276,12 +1274,11 @@ pub(super) fn execute_backend_routed_command(
             "CLI backend route is internally inconsistent".to_string(),
         )),
     }?;
-    if !execution.evidence.proves_t_cli_3(backend_plan) {
-        return Err(CliError::Backend(
-            "executed backend identity does not match the selected RFC-0010 route".to_string(),
-        ));
-    }
+    validate_backend_execution_evidence(backend_plan, &execution.evidence)?;
     Ok(execution.outcome)
 }
 #[path = "backend/evidence.rs"]
 mod evidence;
+pub(super) use evidence::{
+    observe_local_backend_execution, validate_backend_execution_evidence,
+};

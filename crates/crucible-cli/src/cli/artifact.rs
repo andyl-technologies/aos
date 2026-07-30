@@ -1004,9 +1004,19 @@ pub(super) struct ReplayArtifactReport {
     pub(super) digest: String,
     pub(super) seed: u64,
     pub(super) scenario_digest: String,
+    pub(super) reduction: Option<ReplayReductionProof>,
     pub(super) to_savepoint: Option<ReplayToSavepointReport>,
     pub(super) check: Option<ReplayCheckReport>,
     pub(super) bisect: Option<ReplayBisectionReport>,
+}
+
+#[derive(Debug)]
+pub(super) struct ReplayReductionProof {
+    pub(super) artifact: crucible::ContentHash,
+    pub(super) scenario: crucible::ContentHash,
+    pub(super) schedule: crucible::ContentHash,
+    pub(super) state: crucible::ContentHash,
+    pub(super) reconstructed_decisions: usize,
 }
 
 #[derive(Debug)]

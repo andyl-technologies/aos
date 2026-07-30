@@ -278,7 +278,11 @@ pub(crate) fn search_failure_reproduction_artifact_bytes(
     failure: &SearchDiscoveredFailure,
 ) -> Result<Vec<u8>, CliError> {
     let mut canonical_log = canonical_log_entries_from_search_failure(failure);
-    let extra_payloads = search_extra_artifact_payloads(plan, &mut canonical_log);
+    let mut extra_payloads = search_extra_artifact_payloads(plan, &mut canonical_log);
+    extra_payloads.extend(model_reproduction_artifact_payloads(
+        &failure.reproduction_artifact.artifact,
+        failure.reproduction_artifact.replay.state,
+    ));
     let fingerprint_digest = cli_digest_from_engine_hash(failure.fingerprint);
     let fingerprint_samples = vec![VerifyFingerprintSample {
         index: 0,
