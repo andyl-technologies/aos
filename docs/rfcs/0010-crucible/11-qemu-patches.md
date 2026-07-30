@@ -1474,12 +1474,15 @@ time-control primitives the whole design rests on.
     unpatched reference QEMU from the same pinned 10.0.0 source and
     configuration, then runs it against patched `qemu-crucible` with no plugin,
     sim accelerator, or sim flags. Its curated upstream-equivalent corpus covers
-    raw boot serial and block/9p/virtio-rng output under ordinary TCG and plain
-    icount, QMP capability/state introspection, a migration stream, and
+    raw boot serial and block/9p/virtio-rng output under upstream TCG
+    instruction clocks at the production shift and plain shift zero, QMP
+    capability/state introspection, a migration stream, and
     snapshot save/load. These surfaces represent guest execution and device I/O,
     management compatibility, live state transfer, and durable state restore.
-    Kernel printk timestamps are disabled in the guest command line before
-    capture; the complete resulting serial streams are byte-compared. The
+    The unmodified stock Linux kernel runs without Crucible-specific boot
+    accommodations. Kernel printk timestamps are disabled in the guest command
+    line before capture; the complete resulting serial streams are
+    byte-compared. The
     marker-only projection is secondary evidence, and a negative control proves
     it could mask a guest-visible change that the raw comparison catches. QMP
     normalization sorts unordered capability collections and excludes only QMP
