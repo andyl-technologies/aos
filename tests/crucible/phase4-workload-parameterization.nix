@@ -21,8 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   forbiddenHostDeliveryNeedles = [
     "HostWorkloadParameterPoke"
     "MutableWorkloadConfigTree"
@@ -32,10 +30,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-6 checked off";
-        needle = "- [x] **T-WL-6**";
-      }
       {
         label = "T-WL-6 completion note";
         needle = "Completed by `checks.crucible.phase4.workloadParameterization`";

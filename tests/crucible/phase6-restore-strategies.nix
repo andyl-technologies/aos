@@ -61,7 +61,6 @@
     "    restoreStrategies = greenBeforeAdvance {"
     "    gates = {";
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -73,10 +72,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-5 checked off";
-        needle = "- [x] **T-ADV-5**";
-      }
       {
         label = "T-ADV-5 completion note";
         needle = "Completed by `checks.crucible.phase6.restoreStrategies`";

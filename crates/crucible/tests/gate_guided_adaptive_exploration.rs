@@ -7,10 +7,10 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-#[path = "support/guidance_search.rs"]
-mod guidance_search_support;
 #[path = "support/adaptive_campaign.rs"]
 mod adaptive_campaign_support;
+#[path = "support/guidance_search.rs"]
+mod guidance_search_support;
 
 use adaptive_campaign_support::*;
 use guidance_search_support::*;
@@ -25,8 +25,8 @@ use crucible::{
     MAX_APP_RANDOM_SAMPLES_PER_DRAW, MaterializationPolicy, MaterializationTrigger, NodeId,
     NodeTemplate, NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, Plan,
     PreemptionBranchConfig, PreemptionKind, Properties, ReadyPoint, RngStreamId, ScenarioDef,
-    ScenarioDefForm, SearchBudget, SearchFailureOracle, SearchStrategy, Seed, TemporalGraph, VcpuId,
-    WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
+    ScenarioDefForm, SearchBudget, SearchFailureOracle, SearchStrategy, Seed, TemporalGraph,
+    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions,
     app_random_draw_sites_from_schedule, bake, lint_guidance_determinism_source,
     preemption_branch_decisions, reduce, run_adaptive_strategy_selection, step, try_step,
 };

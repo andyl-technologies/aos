@@ -12,7 +12,7 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
@@ -20,23 +20,14 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-9 checked off";
-        needle = "- [x] **T-EXEC-9**";
-      }
       {
         label = "T-EXEC-9 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `World::from_nodes` builds";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-6 checked off";
-        needle = "- [x] **T-SPAT-6**";
-      }
       {
         label = "T-SPAT-6 completion names ReadyPoint";
         needle = "the `ReadyPoint` enum includes";

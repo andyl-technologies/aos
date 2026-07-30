@@ -22,16 +22,11 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
         label = "T-CLI-16 task";
         needle = "**T-CLI-16** Implement `completions`";
-      }
-      {
-        label = "T-CLI-16 checklist complete";
-        needle = "- [x] **T-CLI-16** Implement `completions`";
       }
       {
         label = "T-CLI-16 completion note";
@@ -79,7 +74,7 @@
       }
       {
         label = "documented backend value surface";
-        needle = "value_name = \"auto|qemu|double\"";
+        needle = "const BACKEND_VALUE_NAME: &str = \"auto|qemu|double\"";
       }
       {
         label = "replay help surface";

@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -42,10 +41,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-15 checked off";
-        needle = "- [x] **T-HARN-15**";
-      }
       {
         label = "T-HARN-15 completion note";
         needle = "Completed by `checks.crucible.phase5.gates.controlResponsive`";
@@ -384,11 +379,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

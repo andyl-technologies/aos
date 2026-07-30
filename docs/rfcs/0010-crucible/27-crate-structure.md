@@ -341,9 +341,9 @@ client; it owns no algorithms.
 
 ## 4. Feature flags — the backend trait and the in-process double
 
-The single most important seam is the `Backend` trait (`CRATE-6`). It has two
-implementations, selected by Cargo features so that the engine's own test suites
-need no QEMU:
+The single most important seam is the `Backend` trait (`CRATE-6`). It has a
+production-safe local implementation and a feature-gated shared-memory test
+double so that the engine's own test suites need no QEMU:
 
 - The **real QEMU driver** (`crucible-qemu`) drives a patched QEMU process.
 - The **in-process double** (`SimBackend`) is a deterministic model of a VM-like
@@ -360,23 +360,15 @@ Feature layout:
 # crucible (the L3 engine) Cargo.toml — features
 [features]
 default = []
-# Compile the in-process deterministic backend (SimBackend) used by the
-# layer-0/engine determinism gates. Enables shared memory for the in-process
-# plugin-side test double; the production engine already owns protocol marker
-# decoding. Pure SAFE Rust; no QEMU.
+# Compile the shared-memory plugin-side SimDouble used by focused integration
+# gates. The production-safe SimBackend remains available without this feature.
 test-double = ["dep:crucible-shmem"]
-# Compile the engine-side hooks used by higher-layer QEMU adapter wiring.
-# The concrete driver lives in crucible-qemu; this only flips engine glue.
-qemu-backend = []
 ```
 
 ```toml
-# crucible-device — feature to compile each sub-node model independently
+# crucible-device ships one uniform I/O model; no inert feature labels.
 [features]
-default = ["disk", "ninep", "net"]
-disk = []
-ninep = []      # the 9p read-only server
-net = []
+default = []
 ```
 
 ```toml
@@ -649,13 +641,14 @@ primitives.
   fingerprint, deliver-input, snapshot, restore, shutdown), object-safe or single
   generic, with no QEMU/FFI types named in the engine. — satisfies [CRATE-6],
   [CRATE-10]; spec §3, §4.
-- [x] **T-CRATE-5** Implement the in-process `SimBackend` under the engine's
-  `test-double` feature in SAFE Rust, deterministic via `crucible-sim`, sufficient
-  to run the engine determinism gates with no QEMU. — satisfies [CRATE-7];
+- [x] **T-CRATE-5** Implement the in-process `SimBackend` in SAFE Rust,
+  deterministic via `crucible-sim`, sufficient to run the engine determinism
+  gates with no QEMU; keep only the shared-memory `SimDouble` behind
+  `test-double`. — satisfies [CRATE-7];
   spec §4.
-- [x] **T-CRATE-6** Establish the additive feature-flag layout (`test-double`,
-  `qemu-backend`; `crucible-device` sub-node features; optional `crucible-guest`)
-  and a feature-powerset compile check; verify `default` works and
+- [x] **T-CRATE-6** Establish the additive feature-flag layout (the consumed
+  `test-double` and QEMU `test-support` gates; optional `crucible-guest`)
+  and a feature-powerset compile check; verify every default works and
   `crucible-guest` is never a default core dependency. — satisfies [CRATE-9];
   spec §4.
 - [x] **T-CRATE-7** Wire `gate:harness-lint` over the reduction-path crates: deny
@@ -690,7 +683,7 @@ primitives.
 - [x] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
   `aos-nix-*`, and locate the content-addressing primitives in `crucible-sim`
   marked as the future-ratchet-integration seam. — satisfies [CRATE-18]; spec §7.
-- [ ] **T-CRATE-16** Remove the test-only surface from the production dependency
+- [x] **T-CRATE-16** Remove the test-only surface from the production dependency
   graph: no shipped crate may depend on `crucible` with the `test-double`
   feature, and no feature may be declared without a `cfg` that consumes it.
   — satisfies [CRATE-11], [CRATE-12]; spec §5.
@@ -710,3 +703,11 @@ primitives.
   - Gate: extend `checks.crucible.phase1.crateFeaturePowerset` to build the
     shipped feature set with `test-double` disabled and fail if any production
     crate requires it.
+  Completed by `checks.crucible.phase1.crateFeaturePowerset`: `SimBackend` is
+  now an always-available local backend while the shmem-backed `SimDouble`
+  remains behind `crucible/test-double`; shipped crates use plain `crucible`,
+  and the live QEMU comparison examples opt into a consumed
+  `crucible-qemu/test-support` feature. The Nix and Rust mirrors reject any
+  production dependency that enables `test-double`, exercise the production
+  no-default-feature build, and reject declared features with no consuming
+  `cfg`.

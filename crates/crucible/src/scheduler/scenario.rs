@@ -68,6 +68,8 @@ pub struct SchedulerLivenessScenario {
     pub event_sequences: EventSequenceState,
     /// Static world products used to validate trigger node scheduling actions.
     pub trigger_static_topology: Option<WorldStaticTopology>,
+    /// Submitted scenario identity retained at a production lifecycle boundary.
+    bound_scenario_def: Option<ScenarioDef>,
 }
 
 impl SchedulerLivenessScenario {
@@ -102,6 +104,7 @@ impl SchedulerLivenessScenario {
             pending_events,
             event_sequences: EventSequenceState::empty(),
             trigger_static_topology: None,
+            bound_scenario_def: None,
         };
         scenario.refresh_configuration();
         scenario
@@ -110,6 +113,12 @@ impl SchedulerLivenessScenario {
     /// Builds the effective scheduler configuration from scenario-owned state.
     #[must_use]
     pub fn canonical_configuration(&self) -> Configuration {
+        if let Some(scenario) = &self.bound_scenario_def {
+            return Configuration {
+                def: scenario.clone(),
+                schedule: self.configuration.schedule.clone(),
+            };
+        }
         Configuration {
             def: ScenarioDef::from_canonical_material_with_seed(
                 "crucible.scheduler-liveness.scenario.v1",
@@ -710,3 +719,4 @@ pub(super) fn hex_bytes(bytes: &[u8]) -> String {
     }
     encoded
 }
+mod production;

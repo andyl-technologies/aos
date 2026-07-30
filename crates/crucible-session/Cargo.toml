@@ -7,12 +7,13 @@ publish = false
 [features]
 default = []
 test-support = []
+test-double = ["crucible/test-double"]
 
 [lints]
 workspace = true
 
 [dependencies]
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible = { path = "../crucible" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

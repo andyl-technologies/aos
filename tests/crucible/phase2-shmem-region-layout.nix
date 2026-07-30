@@ -14,7 +14,7 @@
   };
 
   shmemContract = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
@@ -27,8 +27,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   rustSources = dir: displayPrefix: let
     entries =
@@ -327,26 +325,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-1 checklist complete";
-        needle = "- [x] **T-SHM-1**";
-      }
-      {
-        label = "T-SHM-2 checklist complete";
-        needle = "- [x] **T-SHM-2**";
-      }
-      {
-        label = "T-SHM-4 checklist complete";
-        needle = "- [x] **T-SHM-4**";
-      }
-      {
-        label = "T-SHM-5 checklist complete";
-        needle = "- [x] **T-SHM-5**";
-      }
-      {
-        label = "T-SHM-12 checklist complete";
-        needle = "- [x] **T-SHM-12**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

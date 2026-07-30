@@ -81,10 +81,9 @@
       else if maxStart < 0
       then []
       else builtins.genList (index: index) (maxStart + 1);
-    matches =
-      builtins.filter (index:
-        builtins.substring index needleLen haystack == needle)
-      indexes;
+    matches = builtins.filter (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
   in
     if matches == []
     then null
@@ -159,7 +158,12 @@
 
   pushCurrent = state:
     if lib.trim state.current == ""
-    then state // {current = ""; currentOpen = false;}
+    then
+      state
+      // {
+        current = "";
+        currentOpen = false;
+      }
     else {
       items = state.items ++ [(normalizeItem state.current)];
       current = "";
@@ -186,30 +190,33 @@
           current = state.current + " " + trimmed;
         }
       else state;
-    folded =
-      builtins.foldl' step {
-        items = [];
-        current = "";
-        currentOpen = false;
-      } (lib.splitString "\n" section);
+    folded = builtins.foldl' step {
+      items = [];
+      current = "";
+      currentOpen = false;
+    } (lib.splitString "\n" section);
   in
     (pushCurrent folded).items;
 
-  templateChecklistSection = sliceBetween
+  templateChecklistSection =
+    sliceBetween
     "template determinism checklist section"
     "### DETERMINISM REVIEW CHECKLIST"
     "### Root-Cause Fix Rule"
     template;
-  rfcChecklistSection = sliceBetween
+  rfcChecklistSection =
+    sliceBetween
     "RFC determinism checklist block"
     "```text\nDETERMINISM REVIEW CHECKLIST (apply to any engine/scheduler/transport PR)"
     "\n```"
     standards;
-  rootCauseSection = sliceAfter
+  rootCauseSection =
+    sliceAfter
     "template root-cause fix rule section"
     "### Root-Cause Fix Rule"
     template;
-  applicabilitySection = sliceBetween
+  applicabilitySection =
+    sliceBetween
     "template applicability section"
     "Reviewers must block merge on any unchecked applicable item."
     "### DETERMINISM REVIEW CHECKLIST"

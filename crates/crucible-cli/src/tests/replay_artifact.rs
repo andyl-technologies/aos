@@ -115,7 +115,7 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
         content_address_bytes(valid_search_retained_evidence_toml("root").as_bytes())
     );
     let retained_root =
-        ::crucible::Configuration::genesis(retained_plan.scenario.scenario_def().clone());
+        crucible::Configuration::genesis(retained_plan.scenario.scenario_def().clone());
     assert!(retained_source.evidence.contains_key(&retained_root.id()));
 
     let terminal_quiescence_scenario = write_search_terminal_quiescence_scenario(&temp)?;
@@ -145,9 +145,8 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
             valid_search_terminal_quiescence_retained_evidence_toml("root").as_bytes()
         )
     );
-    let terminal_quiescence_root = ::crucible::Configuration::genesis(
-        terminal_quiescence_plan.scenario.scenario_def().clone(),
-    );
+    let terminal_quiescence_root =
+        crucible::Configuration::genesis(terminal_quiescence_plan.scenario.scenario_def().clone());
     let terminal_quiescence = terminal_quiescence_source
         .evidence
         .get(&terminal_quiescence_root.id())
@@ -180,7 +179,7 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
         )
     );
     let terminal_sometimes_root =
-        ::crucible::Configuration::genesis(terminal_sometimes_plan.scenario.scenario_def().clone());
+        crucible::Configuration::genesis(terminal_sometimes_plan.scenario.scenario_def().clone());
     let terminal_sometimes = terminal_sometimes_source
         .evidence
         .get(&terminal_sometimes_root.id())
@@ -190,14 +189,14 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
     assert_eq!(terminal_sometimes_boundary.at().ticks, 50);
     assert!(matches!(
         terminal_sometimes_boundary.payload(),
-        ::crucible::SchedulerEventLogPayload::EvaluationBoundary(
-            ::crucible::SchedulerEvaluationBoundaryKind::Quantum
+        crucible::SchedulerEventLogPayload::EvaluationBoundary(
+            crucible::SchedulerEvaluationBoundaryKind::Quantum
         )
     ));
     assert!(
         terminal_sometimes
             .terminal_quiescence()
-            .is_some_and(::crucible::SchedulerQuiescence::is_quiescent)
+            .is_some_and(crucible::SchedulerQuiescence::is_quiescent)
     );
 
     for args in [
@@ -1138,9 +1137,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<
     }));
 
     let schedule_only_configuration =
-        ::crucible::ContentHash::from_bytes(b"schedule-only-configuration");
-    let schedule_only_fingerprint =
-        ::crucible::ContentHash::from_bytes(b"schedule-only-fingerprint");
+        crucible::ContentHash::from_bytes(b"schedule-only-configuration");
+    let schedule_only_fingerprint = crucible::ContentHash::from_bytes(b"schedule-only-fingerprint");
     let schedule_oracle = SearchFailureOracle::none()
         .with_failure(schedule_only_configuration, schedule_only_fingerprint);
     let retained_oracle = SearchFailureOracle::none();
@@ -1973,202 +1971,6 @@ pub(super) fn cli_exit_machine_readable_output_records_final_outcome() -> Result
 }
 
 #[test]
-pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let scenario = write_valid_run_scenario(&temp)?;
-    let pass_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("1"),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--watch"),
-    ]);
-    let Commands::Run(pass_args) = &pass_cli.command else {
-        panic!("expected run command");
-    };
-    let pass_run = plan_run_invocation(pass_args, temp.path())?;
-    let pass_seed = plan_determinism_ergonomics(
-        &pass_cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("run should resolve a seed");
-    let pass_outcome = execute_backend_routed_command(
-        &plan_cli_invocation(&pass_cli),
-        &plan_backend_selection(&pass_cli)?.expect("run should require backend selection"),
-        Some(&pass_seed),
-        Some(&pass_run),
-        None,
-        None,
-        &mut NullBackendCommandRunner,
-    )?;
-
-    assert_eq!(pass_outcome.status, BackendCommandStatus::Passed);
-    assert_eq!(pass_outcome.exit_code, 0);
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_scenario")
-    );
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_state_update" && entry.summary == "quiescent")
-    );
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_stream_event"
-                && entry.summary == "crucible.event.diagnostic")
-    );
-    assert!(
-        pass_outcome
-            .stdout
-            .iter()
-            .any(|line| line.starts_with("run-watch\t"))
-    );
-    assert!(
-        pass_outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "run_watch_status")
-    );
-
-    let timeout_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("2"),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("1ticks"),
-        String::from("--save-on"),
-        String::from("fail"),
-    ]);
-    let Commands::Run(timeout_args) = &timeout_cli.command else {
-        panic!("expected run command");
-    };
-    let timeout_run = plan_run_invocation(timeout_args, temp.path())?;
-    let timeout_seed = plan_determinism_ergonomics(
-        &timeout_cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("run should resolve a seed");
-    let timeout_outcome = execute_backend_routed_command(
-        &plan_cli_invocation(&timeout_cli),
-        &plan_backend_selection(&timeout_cli)?.expect("run should require backend selection"),
-        Some(&timeout_seed),
-        Some(&timeout_run),
-        None,
-        None,
-        &mut NullBackendCommandRunner,
-    )?;
-
-    assert_eq!(timeout_outcome.status, BackendCommandStatus::Timeout);
-    assert_eq!(timeout_outcome.exit_code, 2);
-    assert!(timeout_outcome.reproduction_artifact.is_some());
-    assert!(
-        timeout_outcome
-            .stdout
-            .iter()
-            .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
-    );
-
-    let property_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("4"),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--until"),
-        String::from("property"),
-        String::from("--save-on"),
-        String::from("fail"),
-    ]);
-    let Commands::Run(property_args) = &property_cli.command else {
-        panic!("expected run command");
-    };
-    let property_run = plan_run_invocation(property_args, temp.path())?;
-    let property_seed = plan_determinism_ergonomics(
-        &property_cli,
-        &FakeSeedEnvironment::default(),
-        &mut FakeSeedEntropySource::new(0),
-    )?
-    .expect("run should resolve a seed");
-    let property_outcome = execute_backend_routed_command(
-        &plan_cli_invocation(&property_cli),
-        &plan_backend_selection(&property_cli)?.expect("run should require backend selection"),
-        Some(&property_seed),
-        Some(&property_run),
-        None,
-        None,
-        &mut NullBackendCommandRunner,
-    )?;
-
-    assert_eq!(property_outcome.status, BackendCommandStatus::Failed);
-    assert_eq!(property_outcome.exit_code, 1);
-    assert!(property_outcome.reproduction_artifact.is_some());
-    assert!(property_outcome.stdout.iter().any(|line| {
-        line.starts_with("run-session\t") && line.contains("final=property-missing")
-    }));
-    assert!(
-        property_outcome
-            .stdout
-            .iter()
-            .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
-    );
-
-    let dispatch_artifacts = temp.path().join("dispatch-timeout-artifacts");
-    let dispatch_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--seed"),
-        String::from("3"),
-        String::from("--artifact-dir"),
-        dispatch_artifacts.display().to_string(),
-        String::from("run"),
-        scenario.display().to_string(),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("1ticks"),
-    ]);
-    let error = match dispatch(&dispatch_cli) {
-        Ok(_) => panic!("timeout dispatch must propagate outcome exit code"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        CliError::Outcome(BackendCommandStatus::Timeout)
-    ));
-    assert_eq!(error.exit_code(), 2);
-    assert_eq!(
-        fs::read_dir(&dispatch_artifacts)?
-            .collect::<Result<Vec<_>, _>>()?
-            .len(),
-        1
-    );
-
-    Ok(())
-}
-
-#[test]
 pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
@@ -2332,7 +2134,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
             auto_plan.resolved_backend,
             Some(ResolvedLocalBackend::Double)
         );
-        assert!(auto_plan.proves_t_cli_3());
+        assert!(auto_plan.has_consistent_route());
 
         let mut double_args = vec![
             String::from("crucible"),
@@ -2349,7 +2151,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
             double_plan.resolved_backend,
             Some(ResolvedLocalBackend::Double)
         );
-        assert!(double_plan.proves_t_cli_3());
+        assert!(double_plan.has_consistent_route());
 
         let mut qemu_args = vec![
             String::from("crucible"),
@@ -2370,7 +2172,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
             qemu_plan.resolved_backend,
             Some(ResolvedLocalBackend::Qemu { .. })
         ));
-        assert!(qemu_plan.proves_t_cli_3());
+        assert!(qemu_plan.has_consistent_route());
 
         if subcommand == CliSubcommand::Serve {
             let mut daemon_args = vec![
@@ -2400,7 +2202,7 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
         assert_eq!(daemon_plan.target, BackendExecutionTarget::RemoteDaemon);
         assert_eq!(daemon_plan.resolved_backend, None);
         assert!(daemon_plan.remote_uses_control_api);
-        assert!(daemon_plan.proves_t_cli_3());
+        assert!(daemon_plan.has_consistent_route());
     }
 
     for argv in [
@@ -2744,3 +2546,5 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result
 
     Ok(())
 }
+#[path = "replay_artifact/run_budget.rs"]
+mod run_budget;

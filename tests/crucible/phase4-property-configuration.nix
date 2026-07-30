@@ -12,22 +12,22 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  configurationTest = builtins.readFile ../../crates/crucible/tests/property_configuration.rs;
-  vocabularyTest = builtins.readFile ../../crates/crucible/tests/property_vocabulary.rs;
+  configurationTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/property_configuration.rs;
+  };
+  vocabularyTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/property_vocabulary.rs;
+  };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-3 checked off";
-        needle = "- [x] **T-ASRT-3**";
-      }
       {
         label = "T-ASRT-3 completion note";
         needle = "Completed by `checks.crucible.phase4.propertyConfiguration`";
@@ -84,11 +84,11 @@
       }
       {
         label = "property TOML denies unknown fields";
-        needle = "#[serde(deny_unknown_fields)]\nstruct PropertyToml";
+        needle = "#[serde(deny_unknown_fields)]\npub(super) struct PropertyToml";
       }
       {
         label = "reachability TOML denies unknown fields";
-        needle = "#[serde(deny_unknown_fields)]\n#[serde(tag = \"kind\", rename_all = \"snake_case\")]\nenum ReachabilityExpectationToml";
+        needle = "#[serde(deny_unknown_fields)]\n#[serde(tag = \"kind\", rename_all = \"snake_case\")]\npub(super) enum ReachabilityExpectationToml";
       }
       {
         label = "canonical assertion id material";

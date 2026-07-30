@@ -5,7 +5,7 @@
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
 
   shmemSource = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
@@ -15,8 +15,6 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs + shmem/frame_node.rs + shmem/delivery_errors.rs" shmemSource [
@@ -118,10 +116,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-11 checklist complete";
-        needle = "- [x] **T-DET-11**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

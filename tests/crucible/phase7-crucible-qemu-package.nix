@@ -52,8 +52,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     lib.optionals (qemuMajorVersion < 10) [
       "pkgs/emulation/qemu-patches/_series.nix: QEMU pin ${patchSeries.qemuVersion} is older than 10.0"
@@ -98,10 +96,6 @@
       "pkgs.qemu-crucible: missing plugin configure flag"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-2 checklist complete";
-        needle = "- [x] **T-PKG-2**";
-      }
       {
         label = "T-PKG-2 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleQemuPackage`";

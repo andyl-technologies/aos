@@ -21,14 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-8 checklist complete";
-        needle = "- [x] **T-CLI-8** Implement `selftest`";
-      }
       {
         label = "T-CLI-8 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliSelftest`";
@@ -89,7 +83,7 @@
       }
       {
         label = "real-QEMU gates execute the live backend";
-        needle = "run_live_qemu_backend_probe_for_command(backend)?";
+        needle = "probe.run_probe(backend)?";
       }
       {
         label = "real-QEMU selftest icount evidence";

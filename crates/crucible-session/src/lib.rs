@@ -13,14 +13,15 @@
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
     pub use crucible::{
-        AssertionId, AssertionPhase, AssertionQuantifierKind, BlackBoxHostOracle,
-        CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
-        ConditionEventLogPrefix, Configuration, ContentAddressedBlobRef, ContentHash,
+        Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
+        BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind, ChoiceTag,
+        CodePoint, ConditionEventLogPrefix, Configuration, ContentAddressedBlobRef, ContentHash,
         CoverageGuidedCorpusConfig, CoverageGuidedCorpusRun, CoverageGuidedFuzzConfig,
         CoverageGuidedFuzzRun, DagStore, DagStoreError, DebugCheckpointStride,
         DebugCliSurfaceContract, DebugCoordinate, DebugFailureFooterCommand, DebugGdbEndpoint,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError, EventAttributeValue,
-        EventDiagnosticPayload, EventLevel, EventLogOffset, ExampleCorpusError,
+        EventDiagnosticPayload, EventLevel, EventLog, EventLogCoverageFeedback,
+        EventLogCoverageObservation, EventLogOffset, ExampleCorpusError,
         ExampleScenarioVerifyReport, ExecutionFingerprint, FAULT_CAMPAIGN_FAMILY_NAME,
         FailureClusterFinding, FailureClusterReport, FailureClusterReportFailure,
         FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
@@ -28,25 +29,27 @@ pub mod engine {
         FailureSignature, FailureSignatureNormalization,
         FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
         FailureTriageResult, FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
-        FailureTriageStoredArtifact, FamilySpace, FaultDensity, FaultDensityRange, FaultTag,
-        FindingDiscoveryPath, FindingReproductionArtifact, FingerprintSample, GenesisCheckpoint,
-        HAPPY_PATH_SCENARIO_NAME, HostAssertionEvaluator, HostAssertionOutcomeKind,
-        HostAssertionViolation, Icount, LocalDagStore, MarkerId, MaterializationPolicy,
-        MaterializationTrigger, MemPlace, MemoryCmp, MemoryDagStore, MemoryWidth,
-        MinimizationConfig, MinimizationRun, NodeId, NodeTemplate, OverrideDecision,
-        PARTITION_RECOVERY_SCENARIO_NAME, Predicate, QuantumLoop, QuantumOutcome, QuantumRequest,
-        ReadyPoint, RecordedAssertionLog, ReplayOracleCheck, ReproductionArtifact,
-        ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, SHMEM_ABI_VERSION,
-        ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError,
-        SchedulerEventLogEntry, SchedulerQuiescence, SchedulingPoint, SearchBudget,
-        SearchDiscoveredFailure, SearchFailureOracle, SearchReplayOracleSamplingConfig,
-        SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
-        SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
-        SeedSpace, SignaturePolicy, SignaturePolicyLevel, SimBackend, SimDuration,
-        SimulationBackend, TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphStoreError,
+        FailureTriageStoredArtifact, FamilySpace, FaultDecision, FaultDensity, FaultDensityRange,
+        FaultId, FaultTag, FindingDiscoveryPath, FindingReproductionArtifact, FingerprintSample,
+        GenesisCheckpoint, HAPPY_PATH_SCENARIO_NAME, HostAssertionEvaluator,
+        HostAssertionOutcomeKind, HostAssertionViolation, Icount, LocalDagStore, MarkerId,
+        MaterializationPolicy, MaterializationTrigger, MaterializedState, MemPlace, MemoryCmp,
+        MemoryDagStore, MemoryWidth, MinimizationConfig, MinimizationRun, NodeId, NodeTemplate,
+        ObservableEvent, OverrideDecision, PARTITION_RECOVERY_SCENARIO_NAME, Plan, Predicate,
+        Properties, Property, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint,
+        RecordedAssertionLog, ReplayOracleCheck, ReproductionArtifact, ResolvedCodePoint,
+        ResolvedMemPlace, RngDecision, RngStreamId, SHMEM_ABI_VERSION, ScenarioDef,
+        ScenarioDefForm, ScenarioFamily, Schedule, SchedulerError, SchedulerEvaluationBoundaryKind,
+        SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence, SchedulingPoint,
+        SearchBudget, SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle,
+        SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
+        SearchRetainedLogAssertionEvidence, SearchRuntimeFrontier, SearchScheduleNamedPredicateKey,
+        SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, SeedSpace, SignaturePolicy,
+        SignaturePolicyLevel, SimBackend, SimDuration, SimulationBackend, TemporalGraph,
+        TemporalGraphSampledSearchRun, TemporalGraphSearchRun, TemporalGraphStoreError,
         TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence, UnifiedGraphOperationKind,
-        UnifiedGraphOperationReport, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
-        built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
+        UnifiedGraphOperationReport, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+        bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
         happy_path_scenario, partition_recovery_scenario, run_fault_campaign_example, try_step,
         verify_example_scenario_runs,
     };
@@ -70,8 +73,8 @@ use crucible::{
     DebugReverseContinueRequest, DebugReverseStepGrain, DebugReverseStepReport,
     DebugReverseStepRequest, Decision, EngineError, Fault, FaultTag, FingerprintSample, GdbListen,
     MemPlace, NodeId, ObservableEventPayload, QuantumLoop, QuantumOutcome, QuantumRequest,
-    ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule, ScheduledEventPayload,
-    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    QuantumTerminalVerdict, ResolvedCodePoint, ResolvedMemPlace, RuntimeState, Schedule,
+    ScheduledEventPayload, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario,
     SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration, SingleScheduler,
     TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
@@ -94,6 +97,8 @@ mod session_core;
 mod session_engine;
 #[path = "session/exploration.rs"]
 mod session_exploration;
+#[path = "session/exploration/support.rs"]
+mod session_exploration_support;
 #[path = "session/streams.rs"]
 mod session_streams;
 
@@ -103,6 +108,7 @@ pub use session_commands::*;
 pub use session_core::*;
 pub use session_engine::*;
 pub use session_exploration::*;
+use session_exploration_support::*;
 pub use session_streams::*;
 
 #[cfg(test)]

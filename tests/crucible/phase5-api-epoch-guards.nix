@@ -25,13 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-8 checked off";
-        needle = "- [x] **T-API-8**";
-      }
       {
         label = "T-API-8 completion note";
         needle = "Completed by `checks.crucible.phase5.apiEpochGuards`";

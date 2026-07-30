@@ -366,6 +366,15 @@ pub(super) fn content_hash_from_words(present: u8, words: [u64; 4]) -> Option<Co
     Some(ContentHash { bytes })
 }
 
+pub(super) fn content_hash_from_required_words(words: [u64; 4]) -> ContentHash {
+    let mut bytes = [0_u8; 32];
+    bytes[0..8].copy_from_slice(&words[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&words[1].to_be_bytes());
+    bytes[16..24].copy_from_slice(&words[2].to_be_bytes());
+    bytes[24..32].copy_from_slice(&words[3].to_be_bytes());
+    ContentHash { bytes }
+}
+
 impl From<&Outcome> for OutcomeKind {
     fn from(outcome: &Outcome) -> Self {
         match outcome {

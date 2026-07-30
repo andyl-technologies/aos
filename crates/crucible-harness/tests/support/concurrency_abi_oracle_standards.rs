@@ -169,7 +169,7 @@ pub(super) fn concurrent_primitive_before_model_failures(
 
     if has_atomic || (has_context && (has_contextual_atomic || has_unsafe)) {
         vec![format!(
-            "{source_label}: concurrent shmem primitive cannot land before the loom/proptest gate body"
+            "{source_label}: concurrent shmem primitive cannot land before the exhaustive-ordering gate body"
         )]
     } else {
         Vec::new()
@@ -204,10 +204,10 @@ pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
     let source_overrides = BTreeMap::from([(
         ("crucible-shmem", "gate_layer1_injection"),
         r#"
-            /* assert_spsc_ring_loom_model(NoLostFrame); */
+            /* assert_spsc_ring_exhaustive_ordering_model(NoLostFrame); */
             #[test]
             fn bad() {
-                let _ = "assert_spsc_ring_proptest_properties(FifoOrder)";
+                let _ = "assert_spsc_ring_exhaustive_trace_properties(FifoOrder)";
             }
         "#
         .to_string(),
@@ -222,7 +222,7 @@ pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
     }
     if !findings
         .iter()
-        .any(|finding| finding.contains("must check assert_spsc_ring_loom_model("))
+        .any(|finding| finding.contains("must check assert_spsc_ring_exhaustive_ordering_model("))
     {
         failures.push(
             "advanced-test regression failed to reject markers hidden in comments/strings"

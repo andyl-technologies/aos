@@ -47,9 +47,6 @@
     shippedDiagnosticPatchFiles
     ++ map (diagnosticName: "pkgs/emulation/qemu.nix: shipped qemu-crucible package applies diagnostic-only patch ${diagnosticName}")
     qemuNixDiagnosticNeedles
-    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-18**" qemuPatchSpec)) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-18 diagnostic exclusion decision is not marked complete"
-    ]
     ++ lib.optionals (!(hasInfix "PATCH-36" qemuPatchSpec && hasInfix "MUST NOT be applied in the shipped AOS" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-36 shipped diagnostic exclusion requirement missing"
     ]

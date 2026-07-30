@@ -28,13 +28,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-22 checklist complete";
-        needle = "- [x] **T-PATCH-22**";
-      }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
       {

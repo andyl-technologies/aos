@@ -26,8 +26,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-harness/src/divergence/types.rs" divergenceTypes [
       {
@@ -287,27 +285,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-9 checklist complete";
-        needle = "- [x] **T-HARN-9**";
-      }
-      {
-        label = "T-HARN-10 checklist complete";
-        needle = "- [x] **T-HARN-10**";
-      }
-      {
-        label = "T-HARN-13 checklist complete";
-        needle = "- [x] **T-HARN-13**";
-      }
-      {
         label = "T-HARN-13 completion names bisection checker";
         needle = "`check_sampled_search_replay_oracle_with_bisection`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-20 checklist complete";
-        needle = "- [x] **T-DET-20**";
-      }
       {
         label = "DET-39 requires first differing decision";
         needle = "first differing decision";
@@ -318,10 +300,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
-      {
-        label = "T-EXEC-12 checklist complete";
-        needle = "- [x] **T-EXEC-12**";
-      }
       {
         label = "T-EXEC-12 completion note names strict replay-oracle path";
         needle = "strict sampled\n    replay-oracle path";
@@ -336,11 +314,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

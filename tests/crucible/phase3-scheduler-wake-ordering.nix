@@ -12,26 +12,32 @@
   };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
-  runCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_run_ceiling.rs;
-  qemuQuantum = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  shmem = import ./_crucible-shmem-source.nix {inherit lib;};
+  shmemTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+  };
+  runCeilingTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+  };
+  qemuQuantum = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   runCeilingGate = builtins.readFile ./phase3-scheduler-run-ceiling.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-21 checked off";
-        needle = "- [x] **T-SCHED-21**";
-      }
       {
         label = "T-SCHED-21 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerWakeOrdering`";

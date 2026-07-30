@@ -271,8 +271,7 @@ pub fn run_adaptive_strategy_selection(
     for sequence in 0..budget.max_expansions {
         let arm =
             select_adaptive_strategy_arm(config, graph_fingerprint, &rewards, &pulls, sequence);
-        let score =
-            adaptive_strategy_arm_score(config, &rewards, &pulls, arm);
+        let score = adaptive_strategy_arm_score(config, &rewards, &pulls, arm);
         pulls
             .entry(arm)
             .and_modify(|count| *count = count.saturating_add(1))

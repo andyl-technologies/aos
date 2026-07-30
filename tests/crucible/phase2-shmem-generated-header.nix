@@ -11,7 +11,7 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   headerGenerator = builtins.readFile ../../crates/crucible-shmem/src/abi_header.rs;
   generatorBin = builtins.readFile ../../crates/crucible-shmem/examples/crucible-shmem-abi-header.rs;
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
@@ -22,8 +22,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -139,10 +137,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-3 checklist complete";
-        needle = "- [x] **T-SHM-3**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

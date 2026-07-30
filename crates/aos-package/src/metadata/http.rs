@@ -96,7 +96,8 @@ pub trait MetadataHttp: Send + Sync {
     /// # Errors
     ///
     /// As [`get`](MetadataHttp::get).
-    async fn put(&self, url: &str, body: Vec<u8>, headers: &[(&str, &str)]) -> Result<HttpResponse>;
+    async fn put(&self, url: &str, body: Vec<u8>, headers: &[(&str, &str)])
+    -> Result<HttpResponse>;
 }
 
 /// Production [`MetadataHttp`] over a shared `aos_net::TransferEngine`.
@@ -142,7 +143,12 @@ impl EngineHttp {
         let fut = self.engine.execute(request);
         let result = tokio::time::timeout(self.timeout, fut)
             .await
-            .map_err(|_| anyhow!("metadata request to {url} timed out after {:?}", self.timeout))??;
+            .map_err(|_| {
+                anyhow!(
+                    "metadata request to {url} timed out after {:?}",
+                    self.timeout
+                )
+            })??;
         Ok(HttpResponse {
             status: result.status,
             body: result.body.unwrap_or_default(),
@@ -173,7 +179,12 @@ impl MetadataHttp for EngineHttp {
         self.run(req).await
     }
 
-    async fn put(&self, url: &str, body: Vec<u8>, headers: &[(&str, &str)]) -> Result<HttpResponse> {
+    async fn put(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> Result<HttpResponse> {
         let mut req = TransferRequest::put(url, body);
         for (k, v) in headers {
             req = req.with_header(k, v);

@@ -114,8 +114,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   structureFailures =
     lib.concatMap (
       package:
@@ -236,25 +234,20 @@
       }
     ];
 
-  inventoryDocFailures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-1 checklist complete";
-        needle = "- [x] **T-PKG-1**";
-      }
-      {
-        label = "T-PKG-1 completion note";
-        needle = "Completed by `checks.crucible.phase7.cruciblePackageInventory`";
-      }
-      {
-        label = "qemu package attr note";
-        needle = "`pkgs.qemu-crucible`";
-      }
-      {
-        label = "fixtures package attr note";
-        needle = "`pkgs.crucible-fixtures`";
-      }
-    ];
+  inventoryDocFailures = failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    {
+      label = "T-PKG-1 completion note";
+      needle = "Completed by `checks.crucible.phase7.cruciblePackageInventory`";
+    }
+    {
+      label = "qemu package attr note";
+      needle = "`pkgs.qemu-crucible`";
+    }
+    {
+      label = "fixtures package attr note";
+      needle = "`pkgs.crucible-fixtures`";
+    }
+  ];
 
   defaultWiringFailures =
     failuresFor "tests/crucible/default.nix" (builtins.readFile ./default.nix) [

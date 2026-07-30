@@ -15,12 +15,12 @@
 
   backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
   crucibleShmemLib =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
   crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  simBackendLib = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  simBackendLib = import ./_crucible-local-and-test-backends-source.nix;
   qemuNodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -31,13 +31,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-11 is complete";
-        needle = "- [x] **T-SESS-11**";
-      }
       {
         label = "T-SESS-11 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend`";

@@ -206,7 +206,8 @@
           ++ scan rest (lineNumber + 1) {
             line = lineNumber;
             inherit (fence) backticks;
-          } nextInsideBlock;
+          }
+          nextInsideBlock;
   in
     scan lines 1 null false;
 
@@ -275,62 +276,62 @@
 
   regressionFailures = let
     missingModuleDoc = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" ''
-        pub fn documented() {}
-      '';
+      pub fn documented() {}
+    '';
     missingFormat = rustdocFailuresForContent "crucible-shmem" "crucible-shmem/src/lib.rs" ''
-        //! synthetic
-        //!
-        //! Module map: synthetic.
-        #![deny(missing_docs)]
-        #![deny(rustdoc::broken_intra_doc_links)]
-      '';
+      //! synthetic
+      //!
+      //! Module map: synthetic.
+      #![deny(missing_docs)]
+      #![deny(rustdoc::broken_intra_doc_links)]
+    '';
     untaggedFence = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" ''
-        //! synthetic
-        //!
-        //! Module map: synthetic.
-        //!
-        //! ```
-        //! format example
-        //! ```
-        #![deny(missing_docs)]
-        #![deny(rustdoc::broken_intra_doc_links)]
-      '';
+      //! synthetic
+      //!
+      //! Module map: synthetic.
+      //!
+      //! ```
+      //! format example
+      //! ```
+      #![deny(missing_docs)]
+      #![deny(rustdoc::broken_intra_doc_links)]
+    '';
     untaggedBlockFence = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" ''
-        /*!
-         * synthetic
-         *
-         * ```
-         * format example
-         * ```
-         */
-        #![deny(missing_docs)]
-        #![deny(rustdoc::broken_intra_doc_links)]
-      '';
+      /*!
+       * synthetic
+       *
+       * ```
+       * format example
+       * ```
+       */
+      #![deny(missing_docs)]
+      #![deny(rustdoc::broken_intra_doc_links)]
+    '';
     malformedClosingFence = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" ''
-        //! synthetic
-        //!
-        //! Module map: synthetic.
-        //!
-        //! ```text
-        //! format example
-        //! ```rust
-        //! ```
-        #![deny(missing_docs)]
-        #![deny(rustdoc::broken_intra_doc_links)]
-      '';
+      //! synthetic
+      //!
+      //! Module map: synthetic.
+      //!
+      //! ```text
+      //! format example
+      //! ```rust
+      //! ```
+      #![deny(missing_docs)]
+      #![deny(rustdoc::broken_intra_doc_links)]
+    '';
     nestedShorterFence = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" ''
-        //! synthetic
-        //!
-        //! Module map: synthetic.
-        //!
-        //! ````text
-        //! ```rust
-        //! let value = 1;
-        //! ```
-        //! ````
-        #![deny(missing_docs)]
-        #![deny(rustdoc::broken_intra_doc_links)]
-      '';
+      //! synthetic
+      //!
+      //! Module map: synthetic.
+      //!
+      //! ````text
+      //! ```rust
+      //! let value = 1;
+      //! ```
+      //! ````
+      #![deny(missing_docs)]
+      #![deny(rustdoc::broken_intra_doc_links)]
+    '';
     tabTaggedFence = rustdocFailuresForContent "crucible-sim" "crucible-sim/src/lib.rs" (builtins.concatStringsSep "\n" [
       "//! synthetic"
       "//!"

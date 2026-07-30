@@ -15,22 +15,26 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
+  apiServer = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/server.rs;
+  };
+  apiLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/lib.rs;
+  };
   cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  serveProcessTest = builtins.readFile ../../crates/crucible-cli/tests/serve_process.rs;
+  serveProcessTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/tests/serve_process.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 checklist complete";
-        needle = "- [x] **T-CLI-14** Implement `serve`";
-      }
       {
         label = "T-CLI-14 shutdown completion note";
         needle = "`checks.crucible.phase5.cliServeShutdown`";
@@ -70,7 +74,10 @@
         needle = "serve_lifecycle_http2_with_mode_until_shutdown";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" (builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs) [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    }) [
       {
         label = "active Watch shutdown regression";
         needle = "production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream";

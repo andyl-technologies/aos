@@ -756,7 +756,7 @@ pub struct SchedulerSendAuthorization {
 }
 
 /// Authorizes cross-node frame emission against scheduler topology state.
-pub trait SchedulerSendAuthorizer {
+pub trait SchedulerSendAuthorizer: Send + Sync {
     /// Authorizes one producer-to-consumer frame under the current topology.
     ///
     /// # Errors

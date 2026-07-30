@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.gates.adversarialDeterminism",
-  taskIds ? [],
-  openTaskIds ? ["T-HARN-22"],
+  taskIds ? ["T-HARN-22"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -27,14 +27,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-22 checklist complete";
-        needle = "- [ ] **T-HARN-22**";
-      }
       {
         label = "T-HARN-22 completed evidence note";
         needle = "Completed by `checks.crucible.phase3.gates.adversarialDeterminism`";
@@ -255,11 +249,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

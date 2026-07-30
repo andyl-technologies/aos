@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostAppRandomDoorbell",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-16"],
+  taskIds ? ["T-GHC-16"],
+  openTaskIds ? [],
   phase0S5 ? import ./phase0-s5.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,14 +13,32 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
-  engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
+  engineDecision = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/decision.rs;
+  };
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
-  protocolDoorbellMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
-  protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
-  protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  protocolDoorbellFrame = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/doorbell_frame.rs;
+  };
+  protocolDoorbellMarker = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/doorbell_marker.rs;
+  };
+  protocolAbiGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  };
+  protocolGoldenTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  };
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   virtualMemorySpikeGate = builtins.readFile ./phase4-guest-host-virtual-memory-spike.nix;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -36,17 +54,11 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-16 remains open";
-        needle = "- [ ] **T-GHC-16**";
-      }
-      {
-        label = "T-GHC-16 partial-evidence note";
-        needle = "Partial callback-core and engine-model evidence is provided by";
+        label = "T-GHC-16 callback and engine evidence";
+        needle = "Callback-core and engine-model evidence is provided by";
       }
       {
         label = "random request kind table";

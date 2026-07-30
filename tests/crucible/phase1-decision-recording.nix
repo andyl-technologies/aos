@@ -34,11 +34,10 @@
     )
     (builtins.attrNames entries);
 
-  engineCode =
-    builtins.concatStringsSep "\n" (
-      map (relative: builtins.readFile (root + "/${relative}"))
-      (rustFilesUnder "crates/crucible/src")
-    );
+  engineCode = builtins.concatStringsSep "\n" (
+    map (relative: builtins.readFile (root + "/${relative}"))
+    (rustFilesUnder "crates/crucible/src")
+  );
   scrubLintVocabulary = content:
     builtins.replaceStrings
     [
@@ -60,33 +59,31 @@
       ''"lint-vocabulary-hash-map"''
     ]
     content;
-  engineCodeOutsideLintVocabulary =
-    builtins.concatStringsSep "\n" (
-      map (
-        relative: let
-          content = builtins.readFile (root + "/${relative}");
-        in
-          if
-            relative == "crates/crucible/src/trigger.rs"
-            || lib.hasPrefix "crates/crucible/src/trigger/" relative
-          then scrubLintVocabulary content
-          else content
+  engineCodeOutsideLintVocabulary = builtins.concatStringsSep "\n" (
+    map (
+      relative: let
+        content = builtins.readFile (root + "/${relative}");
+      in
+        if
+          relative
+          == "crates/crucible/src/trigger.rs"
+          || lib.hasPrefix "crates/crucible/src/trigger/" relative
+        then scrubLintVocabulary content
+        else content
+    )
+    (rustFilesUnder "crates/crucible/src")
+  );
+  engineCodeOutsideDecision = builtins.concatStringsSep "\n" (
+    map (relative: builtins.readFile (root + "/${relative}"))
+    (builtins.filter (
+        relative:
+          relative
+          != "crates/crucible/src/decision.rs"
+          && relative != "crates/crucible/src/model.rs"
+          && !(lib.hasPrefix "crates/crucible/src/model/" relative)
       )
-      (rustFilesUnder "crates/crucible/src")
-    );
-  engineCodeOutsideDecision =
-    builtins.concatStringsSep "\n" (
-      map (relative: builtins.readFile (root + "/${relative}"))
-      (builtins.filter (
-          relative:
-            relative != "crates/crucible/src/decision.rs"
-            && relative != "crates/crucible/src/model.rs"
-            && !(lib.hasPrefix "crates/crucible/src/model/" relative)
-        )
-        (rustFilesUnder "crates/crucible/src"))
-    );
-
-
+      (rustFilesUnder "crates/crucible/src"))
+  );
 
   failures =
     failuresFor "crates/crucible/src/decision.rs" decisionRust [
@@ -242,30 +239,14 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-16 checklist complete";
-        needle = "- [x] **T-DET-16**";
-      }
-      {
-        label = "T-DET-31 checklist complete";
-        needle = "- [x] **T-DET-31**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
-      {
-        label = "T-EXEC-2 checklist complete";
-        needle = "- [x] **T-EXEC-2**";
-      }
       {
         label = "EXEC-9 requires recorded RngStreamId";
         needle = "A `Decision::RngDraw` MUST record its\n  `RngStreamId`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-5 checklist complete";
-        needle = "- [x] **T-PAT-5**";
-      }
       {
         label = "T-PAT-5 completion names decision recorder";
         needle = "`crucible::decision::DecisionRecorder`";

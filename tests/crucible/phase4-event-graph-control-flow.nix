@@ -20,8 +20,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   engineFacingSources = builtins.concatStringsSep "\n" [
     trigger
@@ -34,10 +32,6 @@
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-1 checked off";
-        needle = "- [x] **T-TRIG-1**";
-      }
       {
         label = "T-TRIG-1 completion note";
         needle = "Completed by `checks.crucible.phase4.eventGraphControlFlow`";

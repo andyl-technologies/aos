@@ -363,9 +363,12 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Commands::Debug(args) => {
-            let _plan = plan_debug_invocation(cli, args)?;
+            let plan = plan_debug_invocation(cli, args)?;
             let backend = require_selftest_qemu_backend(cli)?;
-            reject_unwired_qemu_workflow(&backend, "debug").map(|_| ())
+            for line in run_local_qemu_debug_workflow(&backend, &plan)? {
+                println!("{line}");
+            }
+            Ok(())
         }
     }
 }
@@ -750,7 +753,7 @@ pub(super) fn persist_savepoint_closure_artifact(
         .put(&artifact.to_compact_binary())
         .map_err(CliError::Store)?;
     let index_key = store
-        .write_checkpoint_closure_index(savepoint, artifact_key)
+        .write_checkpoint_closure_index(savepoint, artifact_key, oracle.frontier)
         .map_err(CliError::Store)?;
     Ok(SavepointClosureStoreReport {
         artifact: artifact_key,

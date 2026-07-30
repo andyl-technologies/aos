@@ -20,6 +20,13 @@ use crate::ninep::codec::NinepCodecError;
 /// loudly and reproducibly.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DeviceError {
+    /// An explorer-supplied draw vector does not match the active fault table.
+    #[error("invalid injected network draw vector: {message}")]
+    InvalidInjectedDraws {
+        /// The deterministic shape mismatch.
+        message: String,
+    },
+
     /// The icount-to-nanosecond conversion (or its inverse) failed.
     ///
     /// Wraps the [`NodeSlotError`] raised by `crucible-shmem`'s fixed-shift

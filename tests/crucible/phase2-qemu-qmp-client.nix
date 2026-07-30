@@ -24,14 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-4 checklist complete";
-        needle = "- [x] **T-QEMU-4**";
-      }
       {
         label = "QEMU-19 typed QMP client requirement";
         needle = "**[QEMU-19]** The host MUST provide a typed QMP client";

@@ -1,34 +1,36 @@
 diff --git a/backends/rng-builtin.c b/backends/rng-builtin.c
 --- a/backends/rng-builtin.c
 +++ b/backends/rng-builtin.c
-@@ -34,10 +34,26 @@ static void rng_builtin_receive_entropy_bh(void *opaque)
+@@ -34,6 +34,28 @@ static void rng_builtin_receive_entropy_bh(void *opaque)
      }
  }
  
 +static void rng_builtin_drain_requests(RngBackend *b)
 +{
-+    rng_builtin_receive_entropy_bh(RNG_BUILTIN(b));
++    while (!QSIMPLEQ_EMPTY(&b->requests)) {
++        RngRequest *req = QSIMPLEQ_FIRST(&b->requests);
++
++        /*
++         * Generate every virtio-rng request independently from the run seed.
++         * qemu_guest_getrandom() is thread-local, so sharing it with CPU and
++         * firmware consumers makes the observed bytes depend on which QEMU
++         * thread serviced earlier requests even when completion icount is
++         * exact.  Advancing even a dedicated device stream would also make
++         * the observed bytes depend on host-sensitive kernel entropy consumers
++         * that may submit earlier requests.  The sim-only synchronous path
++         * therefore makes the response a pure function of the run seed and
++         * request length, independent of request ordinal and servicing thread.
++         */
++        qemu_guest_getrandom_sim_rng_nofail(req->data, req->size);
++        req->receive_entropy(req->opaque, req->data, req->size);
++        rng_backend_finalize_request(b, req);
++    }
 +}
 +
  static void rng_builtin_request_entropy(RngBackend *b, RngRequest *req)
  {
      RngBuiltin *s = RNG_BUILTIN(b);
- 
-+    /*
-+     * The builtin backend draws from the deterministically seeded guest-random
-+     * stream, which is available synchronously.  Under the Crucible sim
-+     * accelerator's deterministic icount, the generic backend layer
-+     * (rng_backend_request_entropy) drains the queued request inline on the
-+     * requesting vCPU thread via ->drain_requests so the completion interrupt
-+     * lands at the exact request icount; the bottom half scheduled here then
-+     * runs against an already-empty queue and is a no-op.  Outside the sim
-+     * accelerator, behaviour is unchanged: the bottom half services the request
-+     * from the host main loop.
-+     */
-     replay_bh_schedule_event(s->bh);
- }
- 
-@@ -60,6 +76,7 @@ static void rng_builtin_class_init(ObjectClass *klass, void *data)
+@@ -60,6 +82,7 @@ static void rng_builtin_class_init(ObjectClass *klass, void *data)
      RngBackendClass *rbc = RNG_BACKEND_CLASS(klass);
  
      rbc->request_entropy = rng_builtin_request_entropy;
@@ -49,39 +51,65 @@ diff --git a/backends/rng.c b/backends/rng.c
  #include "qapi/error.h"
  #include "qemu/module.h"
  #include "qom/object_interfaces.h"
-@@ -35,6 +37,32 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
+@@ -32,6 +34,38 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
+         req->opaque = opaque;
+         req->data = g_malloc(req->size);
+ 
++        if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0 &&
++            k->drain_requests) {
++            QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
++
++            /*
++             * Crucible deterministic entropy delivery (no QEMU record/replay,
++             * per RFC-0010 NG-6).  When a backend can produce entropy
++             * synchronously and the Crucible sim accelerator is active under
++             * icount, do not schedule the backend's host-main-loop bottom half
++             * at all.  Queue and complete the request inline on the requesting
++             * (vCPU) thread so the guest-visible completion interrupt fires at
++             * the exact request icount.  Racing an already-scheduled bottom
++             * half against the inline drain would still make the selected
++             * entropy stream and completion icount functions of host timing --
++             * exactly the failure RFC-0010 15-io-subnodes.md warns of ("a
++             * bottom half ... makes the completion icount a function of host
++             * timing rather than of virtual time") -- and forks the guest
++             * instruction stream across otherwise-identical deterministic
++             * runs (determinism-contract 4.6/E7 interrupt-delivery timing;
++             * S6/T-RISK-6).  This is an inherent upstream icount limitation
++             * for asynchronous device completions, sealed here by construction.
++             * Delivery is immediate: any modeled completion latency is a
++             * property of a crucible IO sub-node and its links
++             * (15-io-subnodes.md), so it belongs there if/when virtio-rng
++             * becomes a sub-node, never in this backend.  Plain TCG icount
++             * deliberately retains upstream asynchronous delivery and the
++             * exact upstream request-before-queue call order.
++             */
++            k->drain_requests(s);
++            return;
++        }
++
          k->request_entropy(s, req);
  
          QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
-+
-+        /*
-+         * Crucible deterministic entropy delivery (no QEMU record/replay, per
-+         * RFC-0010 NG-6).  When a backend can produce entropy synchronously and
-+         * the Crucible sim accelerator is active under icount, complete the
-+         * request inline on the requesting (vCPU) thread so the guest-visible
-+         * completion interrupt fires at the exact request icount.  Delivering
-+         * it from a host-scheduled bottom half instead makes the completion
-+         * icount a function of host timing rather than of virtual time --
-+         * exactly the failure RFC-0010 15-io-subnodes.md warns of ("a bottom
-+         * half ... makes the completion icount a function of host timing rather
-+         * than of virtual time") -- and forks the guest instruction stream
-+         * across otherwise-identical deterministic runs (determinism-contract
-+         * 4.6/E7 interrupt-delivery timing; S6/T-RISK-6).  This is an inherent
-+         * upstream icount limitation for asynchronous device completions,
-+         * sealed here by construction.  Delivery is immediate: any modeled
-+         * completion latency is a property of a crucible IO sub-node and its
-+         * links (15-io-subnodes.md), so it belongs there if/when virtio-rng
-+         * becomes a sub-node, never in this backend.  The request was inserted
-+         * above, so ->drain_requests can dequeue and finalize it.  Plain TCG
-+         * icount deliberately retains upstream asynchronous delivery.
-+         */
-+        if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0 &&
-+            k->drain_requests) {
-+            k->drain_requests(s);
-+        }
-     }
- }
+diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
+--- a/include/qemu/guest-random.h
++++ b/include/qemu/guest-random.h
+@@ -65,4 +65,16 @@ int qemu_guest_getrandom(void *buf, size_t len, Error **errp);
+  */
+ void qemu_guest_getrandom_nofail(void *buf, size_t len);
  
++/**
++ * qemu_guest_getrandom_sim_rng_nofail(void *buf, size_t len)
++ * @buf: a buffer of bytes to be written
++ * @len: the number of bytes in @buf
++ *
++ * Fills @buf from a per-request sequence reserved for the Crucible sim
++ * accelerator's synchronous virtio-rng backend.  Each sequence starts from
++ * the run seed, so the response is independent of QEMU thread-local random
++ * consumers and the number of earlier virtio-rng requests.
++ */
++void qemu_guest_getrandom_sim_rng_nofail(void *buf, size_t len);
++
+ #endif /* QEMU_GUEST_RANDOM_H */
 diff --git a/include/system/rng.h b/include/system/rng.h
 --- a/include/system/rng.h
 +++ b/include/system/rng.h
@@ -102,3 +130,52 @@ diff --git a/include/system/rng.h b/include/system/rng.h
      void (*opened)(RngBackend *s, Error **errp);
  };
  
+diff --git a/util/guest-random.c b/util/guest-random.c
+--- a/util/guest-random.c
++++ b/util/guest-random.c
+@@ -20,6 +20,8 @@
+ 
+ static __thread GRand *thread_rand;
+ static bool deterministic;
++static guint32 sim_rng_seed[sizeof(uint64_t) / sizeof(guint32)];
++static bool sim_rng_seeded;
+ static guint32 deterministic_glib_seed(uint64_t seed)
+ {
+     return (guint32)(seed ^ (seed >> 32));
+@@ -52,6 +54,27 @@ static int glib_random_bytes(void *buf, size_t len)
+     return 0;
+ }
+ 
++void qemu_guest_getrandom_sim_rng_nofail(void *buf, size_t len)
++{
++    GRand *sim_rng_rand;
++    size_t i;
++    uint32_t x;
++
++    g_assert(deterministic);
++    g_assert(sim_rng_seeded);
++    sim_rng_rand = g_rand_new_with_seed_array(sim_rng_seed,
++                                               G_N_ELEMENTS(sim_rng_seed));
++    for (i = 0; i + 4 <= len; i += 4) {
++        x = g_rand_int(sim_rng_rand);
++        __builtin_memcpy(buf + i, &x, 4);
++    }
++    if (i < len) {
++        x = g_rand_int(sim_rng_rand);
++        __builtin_memcpy(buf + i, &x, len - i);
++    }
++    g_rand_free(sim_rng_rand);
++}
++
+ int qemu_guest_getrandom(void *buf, size_t len, Error **errp)
+ {
+     int ret;
+@@ -116,6 +139,8 @@ int qemu_guest_random_seed_main(const char *seedstr, Error **errp)
+          * state is reproducible too.
+          */
+         g_random_set_seed(deterministic_glib_seed(seed));
++        memcpy(sim_rng_seed, &seed, sizeof(seed));
++        sim_rng_seeded = true;
+         qemu_guest_random_seed_thread_part2(seed);
+         return 0;
+     }

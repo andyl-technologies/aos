@@ -12,19 +12,14 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-5 checked off";
-        needle = "- [x] **T-SPAT-5**";
-      }
       {
         label = "T-SPAT-5 completion names node launch test";
         needle = "`world_node_launch_inputs_are_portable_and_identity_bearing`";
@@ -250,12 +245,12 @@ in
         {
           name = "write-result";
           script = ''
-            set -eu
-            mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-status=pass
-component=spatial-node-launch-inputs
-RESULT
+                        set -eu
+                        mkdir -p "$out"
+                        cat > "$out/result" <<'RESULT'
+            status=pass
+            component=spatial-node-launch-inputs
+            RESULT
           '';
         }
       ];

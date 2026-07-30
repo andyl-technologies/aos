@@ -28,13 +28,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-21 checklist is complete";
-        needle = "- [x] **T-PLUG-21**";
-      }
       {
         label = "PLUG-46 unsafe boundary wording";
         needle = "Every `unsafe` block in the plugin MUST be minimal";

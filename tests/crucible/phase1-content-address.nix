@@ -29,8 +29,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible/src/model.rs" model [
       {
@@ -1073,39 +1071,19 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-11 checklist complete";
-        needle = "- [x] **T-HARN-11**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" temporalGraph [
       {
-        label = "T-TEMP-1 checklist complete";
-        needle = "- [x] **T-TEMP-1**";
-      }
-      {
         label = "T-TEMP-1 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-2 checklist complete";
-        needle = "- [x] **T-TEMP-2**";
       }
       {
         label = "T-TEMP-2 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
       {
-        label = "T-TEMP-3 checklist complete";
-        needle = "- [x] **T-TEMP-3**";
-      }
-      {
         label = "T-TEMP-3 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-6 checklist complete";
-        needle = "- [x] **T-TEMP-6**";
       }
       {
         label = "T-TEMP-6 completion names CoW refs";
@@ -1124,10 +1102,6 @@
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
       {
-        label = "T-TEMP-8 checklist complete";
-        needle = "- [x] **T-TEMP-8**";
-      }
-      {
         label = "T-TEMP-8 completion names DAG store trait";
         needle = "`crucible::DagStore`";
       }
@@ -1138,10 +1112,6 @@
       {
         label = "T-TEMP-8 completion names store-key artifact";
         needle = "`crucible::DagStoreReproductionArtifact`";
-      }
-      {
-        label = "T-TEMP-9 checklist complete";
-        needle = "- [x] **T-TEMP-9**";
       }
       {
         label = "T-TEMP-9 completion names GC roots";
@@ -1156,10 +1126,6 @@
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
       {
-        label = "T-TEMP-10 checklist complete";
-        needle = "- [x] **T-TEMP-10**";
-      }
-      {
         label = "T-TEMP-10 completion names frontier policy";
         needle = "`crucible::FrontierReductionPolicy`";
       }
@@ -1170,10 +1136,6 @@
       {
         label = "T-TEMP-10 completion names content-address gate";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-11 checklist complete";
-        needle = "- [x] **T-TEMP-11**";
       }
       {
         label = "T-TEMP-11 completion names save operation";
@@ -1189,10 +1151,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-4 checklist complete";
-        needle = "- [x] **T-PAT-4**";
-      }
       {
         label = "T-PAT-4 completion names checkpoint";
         needle = "`crucible::Checkpoint`";

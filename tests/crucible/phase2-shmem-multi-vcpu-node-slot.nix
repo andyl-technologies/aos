@@ -30,8 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   perVcpuShmemForbidden = [
     {
       label = "per-vCPU shared-memory field";
@@ -225,10 +223,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-16 checklist complete";
-        needle = "- [x] **T-SHM-16**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

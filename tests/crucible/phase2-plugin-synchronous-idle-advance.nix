@@ -12,17 +12,41 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+  };
+  pluginAbiTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  };
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginRuntime = import ./_qemu-plugin-runtime-source.nix {inherit lib;};
-  pluginLiveCallbacks = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
-  pluginLiveCallbacksTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginLiveCallbacks = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  };
+  pluginLiveCallbacksTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
+  };
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
   pluginIdleLoopTests =
-    builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+    })
+    + (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
+    });
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -34,7 +58,6 @@
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenTimePathApis = [
     "Instant::now"
@@ -81,10 +104,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-7 completed by the live plugin quantum gate";
-        needle = "- [x] **T-PLUG-7**";
-      }
       {
         label = "T-PLUG-7 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";

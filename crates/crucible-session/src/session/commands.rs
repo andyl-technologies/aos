@@ -140,6 +140,18 @@ impl BreakpointSpec {
             policy: BreakpointPolicy::OneShot,
         }
     }
+
+    /// Builds a one-shot property-failure breakpoint.
+    #[must_use]
+    pub fn fail_once(predicate: Condition, reason: impl Into<String>) -> Self {
+        Self {
+            predicate,
+            disposition: BreakpointDisposition::Action(Action::Fail {
+                reason: reason.into(),
+            }),
+            policy: BreakpointPolicy::OneShot,
+        }
+    }
 }
 
 /// Checkpoint reference accepted by a fork command.
@@ -263,6 +275,8 @@ pub enum QueryKind {
     State,
     /// Return the canonical event-log length.
     EventLogLength,
+    /// Return scheduler-derived choices available at the current boundary.
+    SearchFrontier,
     /// Return one deterministic execution-fingerprint sample for a node.
     ExecutionFingerprint {
         /// Node whose backend fingerprint should be sampled.
@@ -281,6 +295,13 @@ pub enum QueryResult {
     State(LifecycleStateKind),
     /// Canonical event-log length.
     EventLogLength(usize),
+    /// Scheduler-derived choices available at the current boundary.
+    SearchFrontier {
+        /// Runtime RESOLVE frontiers captured in execution order.
+        frontiers: Vec<crucible::SearchRuntimeFrontier>,
+        /// Explorer-forced choices that have not reached their RESOLVE point.
+        pending_branch_choices: usize,
+    },
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
 }
@@ -369,6 +390,8 @@ pub enum SessionCommand {
     },
     /// Transition to a terminal operator-stopped state.
     Stop,
+    /// Transition to a terminal timeout after an observed budget is exhausted.
+    ExhaustBudget,
     /// Read the current boundary state without mutation.
     Query {
         /// Query payload.
@@ -510,6 +533,7 @@ impl SessionCommand {
             | Self::CreateSavepoint { .. }
             | Self::Fork { .. }
             | Self::Stop
+            | Self::ExhaustBudget
             | Self::DebugForkNonCanonical { .. } => false,
         }
     }
@@ -529,6 +553,7 @@ impl SessionCommand {
             | Self::RemoveBreakpoint { .. }
             | Self::CreateSavepoint { .. }
             | Self::Stop
+            | Self::ExhaustBudget
             | Self::AttachGdb { .. }
             | Self::DebugGoto { .. }
             | Self::DebugReverseStep { .. }
@@ -555,7 +580,9 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => true,
-            Self::Start | Self::Continue | Self::Step { .. } | Self::Stop => false,
+            Self::Start | Self::Continue | Self::Step { .. } | Self::Stop | Self::ExhaustBudget => {
+                false
+            }
         }
     }
 
@@ -575,6 +602,7 @@ impl SessionCommand {
             | Self::CreateSavepoint { .. }
             | Self::Fork { .. }
             | Self::Stop
+            | Self::ExhaustBudget
             | Self::AttachGdb { .. }
             | Self::DebugGoto { .. }
             | Self::DebugReverseStep { .. }
@@ -599,6 +627,7 @@ impl SessionCommand {
             | Self::CreateSavepoint { .. }
             | Self::Fork { .. }
             | Self::Stop
+            | Self::ExhaustBudget
             | Self::Query { .. }
             | Self::AttachGdb { .. }
             | Self::DebugGoto { .. }
@@ -626,7 +655,12 @@ impl SessionCommand {
                 command.complete_error(error.clone());
                 reply.complete(Err(error));
             }
-            Self::Start | Self::Continue | Self::Pause | Self::Step { .. } | Self::Stop => {}
+            Self::Start
+            | Self::Continue
+            | Self::Pause
+            | Self::Step { .. }
+            | Self::Stop
+            | Self::ExhaustBudget => {}
             Self::Snapshot | Self::Inject => {}
         }
     }
@@ -653,6 +687,8 @@ pub enum SessionCommandKind {
     StepDuration,
     /// Transition to a terminal operator-stopped state.
     Stop,
+    /// Transition to a terminal timeout after budget exhaustion.
+    ExhaustBudget,
     /// Inject legacy deterministic control.
     Inject,
     /// Inject a typed fault.
@@ -689,7 +725,7 @@ impl SessionCommandKind {
     /// This covers the RFC §4 command surface plus the current implementation's
     /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
     /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -699,6 +735,7 @@ impl SessionCommandKind {
         Self::StepTimer,
         Self::StepDuration,
         Self::Stop,
+        Self::ExhaustBudget,
         Self::Inject,
         Self::InjectFault,
         Self::HealFault,
@@ -726,6 +763,7 @@ impl SessionCommandKind {
             Self::StepTimer => "step-timer",
             Self::StepDuration => "step-duration",
             Self::Stop => "stop",
+            Self::ExhaustBudget => "exhaust-budget",
             Self::Inject => "inject",
             Self::InjectFault => "inject-fault",
             Self::HealFault => "heal-fault",
@@ -771,6 +809,7 @@ impl SessionCommandKind {
                 mode: StepMode::Duration(StepMode::DEFAULT_DURATION),
             },
             Self::Stop => SessionCommand::Stop,
+            Self::ExhaustBudget => SessionCommand::ExhaustBudget,
             Self::Inject => SessionCommand::Inject,
             Self::InjectFault => SessionCommand::InjectFault {
                 spec: FaultSpec::new(
@@ -810,47 +849,6 @@ impl SessionCommandKind {
     }
 }
 
-impl From<&SessionCommand> for SessionCommandKind {
-    fn from(command: &SessionCommand) -> Self {
-        match command {
-            SessionCommand::Start => Self::Start,
-            SessionCommand::Continue => Self::Continue,
-            SessionCommand::Pause => Self::Pause,
-            SessionCommand::Step {
-                mode: StepMode::Quantum,
-            } => Self::StepQuantum,
-            SessionCommand::Step {
-                mode: StepMode::Event,
-            } => Self::StepEvent,
-            SessionCommand::Step {
-                mode: StepMode::Assertion,
-            } => Self::StepAssertion,
-            SessionCommand::Step {
-                mode: StepMode::Timer,
-            } => Self::StepTimer,
-            SessionCommand::Step {
-                mode: StepMode::Duration(_),
-            } => Self::StepDuration,
-            SessionCommand::Snapshot => Self::Snapshot,
-            SessionCommand::Fork { .. } => Self::Fork,
-            SessionCommand::Inject => Self::Inject,
-            SessionCommand::InjectFault { .. } => Self::InjectFault,
-            SessionCommand::HealFault { .. } => Self::HealFault,
-            SessionCommand::SetBreakpoint { .. } => Self::SetBreakpoint,
-            SessionCommand::RemoveBreakpoint { .. } => Self::RemoveBreakpoint,
-            SessionCommand::CreateSavepoint { .. } => Self::CreateSavepoint,
-            SessionCommand::Stop => Self::Stop,
-            SessionCommand::Query { .. } => Self::Query,
-            SessionCommand::AttachGdb { .. } => Self::AttachGdb,
-            SessionCommand::DebugGoto { .. } => Self::DebugGoto,
-            SessionCommand::DebugReverseStep { .. } => Self::DebugReverseStep,
-            SessionCommand::DebugReverseContinue { .. } => Self::DebugReverseContinue,
-            SessionCommand::DebugForkNonCanonical { .. } => Self::DebugForkNonCanonical,
-            SessionCommand::Acknowledge { command, .. } => Self::from(command.as_ref()),
-        }
-    }
-}
-
 /// Pure lifecycle-model decision for one `(state, command)` pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LifecycleTransition {
@@ -879,7 +877,7 @@ pub const fn lifecycle_transition(
             State::Loaded,
             Command::SetBreakpoint | Command::RemoveBreakpoint | Command::Query | Command::Snapshot,
         ) => Accepted { to: State::Loaded },
-        (State::Loaded, Command::Stop) => Accepted { to: State::Stopped },
+        (State::Loaded, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Loaded,
             Command::Continue
@@ -937,7 +935,7 @@ pub const fn lifecycle_transition(
             | Command::DebugReverseContinue
             | Command::DebugForkNonCanonical,
         ) => Accepted { to: State::Paused },
-        (State::Running, Command::Stop) => Accepted { to: State::Stopped },
+        (State::Running, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Running,
             Command::AttachGdb
@@ -960,7 +958,7 @@ pub const fn lifecycle_transition(
         (State::Running, Command::Fork) => Accepted { to: State::Paused },
         (State::Running, Command::Start | Command::Continue) => Rejected,
 
-        (State::Paused, Command::Stop) => Accepted { to: State::Stopped },
+        (State::Paused, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (State::Paused, Command::Start) => Rejected,
 
         (State::Stopped, Command::Snapshot | Command::Fork | Command::Query) => {
@@ -983,6 +981,7 @@ pub const fn lifecycle_transition(
             | Command::RemoveBreakpoint
             | Command::CreateSavepoint
             | Command::Stop
+            | Command::ExhaustBudget
             | Command::AttachGdb
             | Command::DebugGoto
             | Command::DebugReverseStep
@@ -991,3 +990,5 @@ pub const fn lifecycle_transition(
         ) => Rejected,
     }
 }
+#[path = "commands/kind_conversion.rs"]
+mod kind_conversion;

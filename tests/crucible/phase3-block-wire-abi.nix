@@ -15,7 +15,7 @@
   ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   shmem =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
@@ -23,15 +23,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/15-io-subnodes.md" ioDoc [
-      {
-        label = "T-IO-3 checked off";
-        needle = "- [x] **T-IO-3**";
-      }
       {
         label = "T-IO-3 completion note";
         needle = "Completed by `checks.crucible.phase3.blockWireAbi`";

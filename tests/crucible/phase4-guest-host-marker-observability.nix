@@ -15,28 +15,47 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  markerObservabilityTest = builtins.readFile ../../crates/crucible/tests/guest_host_marker_observability.rs;
-  eventLogDeterminismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  pluginWhiteboxTest = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
-  pluginLiveWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
-  mappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
-  mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
+  markerObservabilityTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_host_marker_observability.rs;
+  };
+  eventLogDeterminismTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_log_determinism.rs;
+  };
+  pluginWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
+  pluginWhiteboxTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  };
+  pluginRuntime = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime.rs;
+  };
+  pluginLiveWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
+  };
+  mappedQuantum = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/mapped_quantum.rs;
+  };
+  mappedQuantumTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/mapped_quantum.rs;
+  };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-9 completion";
-        needle = "- [x] **T-GHC-9**";
-      }
       {
         label = "T-GHC-9 live completion evidence";
         needle = "`checks.crucible.phase2.qemuLiveWhiteboxDoorbell`";

@@ -8,7 +8,7 @@ use crate::{QemuNodeChannelError, QemuPluginIpcControlChannel};
 
 impl<S> QemuPluginIpcControlChannel for ControlLifecycleStream<S>
 where
-    S: Write,
+    S: Write + Send,
 {
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.host_send_quit().map_err(|source| {

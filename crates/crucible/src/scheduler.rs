@@ -31,18 +31,19 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    CombinedFaults, CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault,
-    Configuration, ContentHash, ControlFaultAction, ControlFaultDecision, Decision,
-    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset,
-    EventSequenceState, Fault, FaultDecision, FaultId, FaultRateBasisPoints, FaultTag,
-    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY,
-    MarkerId, MembershipFault, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle,
-    PartitionDirection, PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, SearchFrontierChoices, Seed, Shift, SimDuration, SimInstant,
-    SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
-    instantiate_world_io_sub_nodes, step,
+    BackendNetworkOutput, ChoiceTag, CombinedFaults, CombinedNetworkFaults, CombinedNodeFaults,
+    CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction, ControlFaultDecision,
+    Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventId, EventKey,
+    EventLogOffset, EventSequenceState, Fault, FaultDecision, FaultId, FaultRateBasisPoints,
+    FaultTag, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId,
+    MIN_LINK_LATENCY, MarkerId, MembershipFault, NetworkLinkPendingFrame, NodeCounter, NodeId,
+    NodeLifecycle, OverrideDecision, PartitionDirection, PendingFrame, PreemptionDecision,
+    PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
+    SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
+    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
+    step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -59,6 +60,8 @@ const EVENT_LOG_LEVEL_ERROR: u8 = 4;
 const EVENT_LOG_CLASS_CAUSAL: u8 = 0;
 const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 
+mod backend_lifecycle;
+mod branch_exploration;
 mod control_state;
 mod event_codec;
 mod event_log;

@@ -91,14 +91,13 @@
     )
     (builtins.attrNames manifests);
 
-  realManifests =
-    builtins.listToAttrs (
-      map (package: {
-        name = package;
-        value = readManifest package;
-      })
-      packages
-    );
+  realManifests = builtins.listToAttrs (
+    map (package: {
+      name = package;
+      value = readManifest package;
+    })
+    packages
+  );
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
@@ -125,9 +124,10 @@
         dependencies.graph.package = "aos-nix-graph";
       };
     };
-    workspaceFindings = findingsFor (workspaceDependencies // {
-      ratchet-store.package = "ratchet-cache";
-    }) {
+    workspaceFindings = findingsFor (workspaceDependencies
+      // {
+        ratchet-store.package = "ratchet-cache";
+      }) {
       crucible-api = {
         dev-dependencies.ratchet-store.workspace = true;
       };

@@ -38,7 +38,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   patchRequirements =
     if patchName == "0021-crucible-sim-loop-fix.patch"
     then [
@@ -257,10 +256,6 @@
       "pkgs/emulation/qemu-patches/${patchName}: wake-driven block completion must not re-enter or poll the main loop"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-16 checklist complete";
-        needle = "- [x] **T-PATCH-16**";
-      }
       {
         label = "PATCH-34 cross reference";
         needle = "PATCH-34";

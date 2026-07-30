@@ -827,6 +827,15 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         let delivery_icount = Icount {
             retired: self.current_icount_from_slot().retired.saturating_add(1),
         };
+        self.deliver_frame_at(input, delivery_icount)
+    }
+
+    fn deliver_frame_at(
+        &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the erased channel preserves the scheduler-owned input and exact delivery point.
+        input: BackendInput,
+        delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
         let sequence = self
             .next_router_inbound_sequence()
             .map_err(QemuNodeChannelError::from)?;
@@ -1143,6 +1152,8 @@ pub enum QemuQuantumError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    mod network_delivery;
     use crucible_shmem::{AdvanceCeiling, FrameEntry, NodeSlot, STATUS_IDLE, STATUS_RUNNING};
 
     const QUANTUM_SOURCE: &str = include_str!("quantum.rs");
@@ -1408,8 +1419,14 @@ mod tests {
     }
 
     #[test]
-    fn qemu_quantum_deliver_frame_assigns_router_sequences() {
+    fn qemu_quantum_accepts_frame_published_at_current_boundary() {
         let slot = NodeSlot::default();
+        if let Err(error) = slot.publish_scheduler_ceiling(ceiling(5, 5)) {
+            panic!("test ceiling should publish: {error}");
+        }
+        if let Err(error) = slot.publish_reached_icount(5, 0) {
+            panic!("test current icount should publish: {error}");
+        }
         let inbound_ring = RingHeader::new();
         let outbound_ring = RingHeader::new();
         let mut inbound_entries = frame_entries(8);
@@ -1422,107 +1439,31 @@ mod tests {
             &mut outbound_entries,
         );
 
-        let first = QemuShmemHotPathChannel::deliver_frame(
-            &mut hot_path,
-            BackendInput {
-                node: node_id("vm-a"),
-                payload: b"first".to_vec(),
-            },
-        );
-        assert!(first.is_ok());
-        let second = QemuShmemHotPathChannel::deliver_frame(
-            &mut hot_path,
-            BackendInput {
-                node: node_id("vm-a"),
-                payload: b"second".to_vec(),
-            },
-        );
-        assert!(second.is_ok());
-
-        let pending = match hot_path.start_quantum(horizon(1)) {
+        let enqueue = hot_path.enqueue_inbound_frame(QemuInboundFrame {
+            delivery_icount: icount(5),
+            src_node: 31,
+            sequence: 1,
+            payload: b"current-boundary".to_vec(),
+        });
+        assert!(enqueue.is_ok());
+        let pending = match hot_path.start_quantum(horizon(5)) {
             Ok(pending) => pending,
-            Err(error) => panic!("router-delivered frames should authorize exact horizon: {error}"),
+            Err(error) => panic!("current-boundary delivery should be authorized: {error}"),
         };
-        if let Err(error) = slot.publish_reached_icount(1, 0) {
-            panic!("plugin report should publish through shared node slot: {error}");
+        if let Err(error) = slot.publish_reached_icount(5, 0) {
+            panic!("plugin should remain at the exact delivery boundary: {error}");
         }
         let report = match hot_path.finish_quantum(pending) {
             Ok(report) => report,
-            Err(error) => panic!("router-delivered frames should drain: {error}"),
+            Err(error) => panic!("current-boundary delivery should finish: {error}"),
         };
 
+        assert_eq!(report.due_inbound_frames.len(), 1);
         assert_eq!(
-            report
-                .due_inbound_frames
-                .iter()
-                .map(QemuDueInboundFrame::delivery_key)
-                .collect::<Vec<_>>(),
-            vec![
-                frame(1, 31, 0, b"first").delivery_key(),
-                frame(1, 31, 1, b"second").delivery_key(),
-            ]
+            report.due_inbound_frames[0].delivery_key(),
+            frame(5, 31, 1, b"current-boundary").delivery_key()
         );
-        assert_eq!(
-            report
-                .due_inbound_frames
-                .iter()
-                .map(|frame| frame.payload.as_slice())
-                .collect::<Vec<_>>(),
-            vec![b"first".as_slice(), b"second".as_slice()]
-        );
-    }
-
-    #[test]
-    fn qemu_quantum_deliver_frame_fails_loud_on_sequence_overflow() {
-        let slot = NodeSlot::default();
-        let inbound_ring = RingHeader::new();
-        let outbound_ring = RingHeader::new();
-        let mut inbound_entries = frame_entries(8);
-        let mut outbound_entries = frame_entries(8);
-        let mut hot_path = hot_path(
-            &slot,
-            &inbound_ring,
-            &mut inbound_entries,
-            &outbound_ring,
-            &mut outbound_entries,
-        );
-        hot_path.next_router_inbound_sequence = u64::from(u32::MAX);
-
-        let last = QemuShmemHotPathChannel::deliver_frame(
-            &mut hot_path,
-            BackendInput {
-                node: node_id("vm-a"),
-                payload: b"last".to_vec(),
-            },
-        );
-        assert!(last.is_ok());
-        assert_eq!(inbound_ring.write_index(), 1);
-        let overflow = QemuShmemHotPathChannel::deliver_frame(
-            &mut hot_path,
-            BackendInput {
-                node: node_id("vm-a"),
-                payload: b"overflow".to_vec(),
-            },
-        );
-
-        assert_eq!(
-            overflow,
-            Err(QemuNodeChannelError::new(
-                "qemu_quantum_shmem_hot_path",
-                "QEMU quantum inbound router sequence overflow at 4294967296",
-            ))
-        );
-        assert_eq!(inbound_ring.write_index(), 1);
-        let entry = match inbound_ring.dequeue(hot_path.view.inbound_entries) {
-            Ok(Some(entry)) => entry,
-            Ok(None) => panic!("last sequence frame should be queued"),
-            Err(error) => panic!("last sequence frame should dequeue: {error}"),
-        };
-        assert_eq!(entry.seq, u32::MAX);
-        assert_eq!(
-            entry.delivery_key(),
-            frame(1, 31, u32::MAX, b"last").delivery_key()
-        );
+        assert_eq!(inbound_ring.read_index(), 1);
     }
 
     #[test]

@@ -24,7 +24,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-protocol/Cargo.toml" protocolCargo [
       {
@@ -149,10 +148,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-      {
-        label = "T-PROTO-3 checklist complete";
-        needle = "- [x] **T-PROTO-3**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/27-crate-structure.md" crateSpec [
       {

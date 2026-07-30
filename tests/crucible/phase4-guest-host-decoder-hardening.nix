@@ -11,24 +11,30 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  protocolFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
-  protocolCodecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
-  protocolAbiTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  protocolFrame = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/doorbell_frame.rs;
+  };
+  protocolCodecTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/codec.rs;
+  };
+  protocolAbiTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  };
+  pluginWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-14 checked off";
-        needle = "- [x] **T-GHC-14**";
-      }
       {
         label = "T-GHC-14 completion note";
         needle = "Completed by `checks.crucible.phase4.guestHostDecoderHardening`";

@@ -300,8 +300,8 @@ fn validated_batch_capacity(
         });
     }
     let capacity = capacity as u64;
-    let read_idx = ring.header.read_index();
-    let write_idx = ring.header.write_index();
+    let read_idx = PluginShmemOrdering::consumer_read_index(ring.header);
+    let write_idx = PluginShmemOrdering::producer_write_index(ring.header);
     let live = write_idx.wrapping_sub(read_idx);
     if live > capacity {
         return Err(NetworkTxError::RingOperation {

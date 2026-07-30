@@ -27,7 +27,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   pluginSources = [
     {
       label = "crates/crucible-qemu-plugin/src/lib.rs";
@@ -81,22 +80,16 @@
     )
     pluginSources;
 
-  copyableRegistrationReadyFailures =
-    lib.optionals (hasInfix "#[derive(Clone, Copy" pluginRegistration) [
-      "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationReady must remain non-Copy so one completed registration cannot mint multiple clock owners"
-    ];
+  copyableRegistrationReadyFailures = lib.optionals (hasInfix "#[derive(Clone, Copy" pluginRegistration) [
+    "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationReady must remain non-Copy so one completed registration cannot mint multiple clock owners"
+  ];
 
-  clonableRegistrationSequenceFailures =
-    lib.optionals (hasInfix "#[derive(Clone, Debug, Default" pluginRegistration) [
-      "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationSequence must remain non-Clone so completed registration cannot be duplicated before finish"
-    ];
+  clonableRegistrationSequenceFailures = lib.optionals (hasInfix "#[derive(Clone, Debug, Default" pluginRegistration) [
+    "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationSequence must remain non-Clone so completed registration cannot be duplicated before finish"
+  ];
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-4 completed by the live plugin quantum gate";
-        needle = "- [x] **T-PLUG-4**";
-      }
       {
         label = "T-PLUG-4 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";

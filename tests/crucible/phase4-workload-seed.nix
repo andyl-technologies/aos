@@ -21,13 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-3 checked off";
-        needle = "- [x] **T-WL-3**";
-      }
       {
         label = "T-WL-3 completion note";
         needle = "Completed by `checks.crucible.phase4.workloadSeed`";

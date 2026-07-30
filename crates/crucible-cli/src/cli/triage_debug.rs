@@ -792,11 +792,11 @@ pub(super) fn parse_triage_compare_target(value: &str) -> Result<TriageCompareTa
 }
 
 pub(super) fn plan_debug_invocation(
-    cli: &Cli,
+    _cli: &Cli,
     args: &DebugArgs,
 ) -> Result<DebugInvocationPlan, CliError> {
     #[cfg(any(test, feature = "test-double"))]
-    if cli.backend == Backend::Double {
+    if _cli.backend == Backend::Double {
         return Err(CliError::Backend(
             "selected backend `double` does not implement open_gdbstub".to_string(),
         ));
@@ -1008,31 +1008,7 @@ pub(super) fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, C
     }
 }
 
-pub(super) fn short_digest(digest: &str) -> &str {
-    digest
-        .strip_prefix(CONTENT_ADDRESS_PREFIX)
-        .and_then(|hex| hex.get(..12))
-        .unwrap_or("unknown")
-}
+#[path = "triage_debug/slug.rs"]
+mod slug;
 
-pub(super) fn sanitize_slug(slug: &str) -> String {
-    let mut sanitized = slug
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    while sanitized.contains("--") {
-        sanitized = sanitized.replace("--", "-");
-    }
-    sanitized = sanitized.trim_matches('-').to_string();
-    if sanitized.is_empty() {
-        String::from("failure")
-    } else {
-        sanitized
-    }
-}
+pub(crate) use slug::*;

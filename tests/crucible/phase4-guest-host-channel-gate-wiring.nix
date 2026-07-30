@@ -50,17 +50,11 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   canonicalGate = "checks.crucible.phase4.guestHostChannelGateWiring";
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-15 checklist complete";
-        needle = "- [x] **T-GHC-15**";
-      }
       {
         label = "T-GHC-15 completion note";
         needle = "Completed by";

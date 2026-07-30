@@ -618,7 +618,15 @@ where
                 }
 
                 let pending_control = self.engine.pending_control_len() as u64;
-                let _outcome = self.engine.step_quantum()?;
+                let _outcome = match self.engine.step_quantum() {
+                    Ok(outcome) => outcome,
+                    Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.stop_after_backend_crash(error.to_string())?;
+                        self.publish_live_snapshot();
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
                 self.append_event_log_entries(&entries);
@@ -667,7 +675,15 @@ where
                 }
 
                 let pending_control = self.engine.pending_control_len() as u64;
-                let _outcome = self.engine.step_quantum()?;
+                let _outcome = match self.engine.step_quantum() {
+                    Ok(outcome) => outcome,
+                    Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
+                        self.engine.stop_after_backend_crash(error.to_string())?;
+                        self.publish_live_snapshot();
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
                 self.append_event_log_entries(&entries);

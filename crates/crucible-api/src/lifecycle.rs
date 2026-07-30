@@ -22,7 +22,7 @@ use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, Engine, LiveSnapshot,
     LiveStateKind, OutcomeKind, SessionActor, SessionCommand, SessionCommandKind,
     SessionControlLogEntry, SessionControlPayload, SessionControlResult, SessionError,
-    SessionReproductionLog, SessionRunReport, SessionStateTransitionBus,
+    SessionReproductionLog, SessionRunReport, SessionStateTransitionBus, StepMode,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -916,11 +916,20 @@ pub enum LifecycleApiError {
         /// Session error text.
         message: String,
     },
+    /// The delegated execution backend could not be constructed.
+    #[error("session execution backend construction failed: {message}")]
+    LoopFactory {
+        /// Deterministic backend-construction failure detail.
+        message: String,
+    },
 }
 
 /// Source-aware loop factory used by the lifecycle control plane.
-pub type LifecycleLoopFactory<L> =
-    Box<dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync>;
+pub type LifecycleLoopFactory<L> = Box<
+    dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync,
+>;
 
 /// Callback type used to derive node white-box policies for a scenario.
 pub type WhiteBoxPolicyProvider =
@@ -938,62 +947,16 @@ pub struct LifecycleControlPlane<L, F> {
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
     max_sessions: Option<usize>,
+    resume_via_thin_replay: bool,
     _loop: PhantomData<fn() -> L>,
 }
 
-impl<L> LifecycleControlPlane<L, LifecycleLoopFactory<L>>
-where
-    L: QuantumLoop + Send + 'static,
-{
-    /// Builds a lifecycle control plane from a scenario catalog and loop factory.
-    #[must_use]
-    pub fn new<F>(
-        server_name: impl Into<String>,
-        scenarios: Vec<ScenarioCatalogEntry>,
-        loop_factory: F,
-    ) -> Self
-    where
-        F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
-    {
-        Self::new_with_source_factory(server_name, scenarios, move |scenario, _source, seed| {
-            loop_factory(scenario, seed)
-        })
-    }
-
-    /// Builds a lifecycle control plane from a source-aware loop factory.
-    #[must_use]
-    pub fn new_with_source_factory<F>(
-        server_name: impl Into<String>,
-        scenarios: Vec<ScenarioCatalogEntry>,
-        loop_factory: F,
-    ) -> Self
-    where
-        F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
-    {
-        let scenarios = scenarios
-            .into_iter()
-            .map(|entry| (entry.name.clone(), entry))
-            .collect();
-        Self {
-            server_name: server_name.into(),
-            scenarios,
-            sessions: BTreeMap::new(),
-            next_session_id: 1,
-            next_epoch: 1,
-            loop_factory: Box::new(loop_factory),
-            white_box_policy_provider: Box::new(|_| BTreeMap::new()),
-            mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
-            startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,
-            max_sessions: None,
-            _loop: PhantomData,
-        }
-    }
-}
+mod constructors;
 
 impl<L, F> LifecycleControlPlane<L, F>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>,
 {
     /// Installs a trusted guest-marker white-box policy provider for new sessions.
     ///
@@ -1027,6 +990,18 @@ where
     #[must_use]
     pub const fn with_max_sessions(mut self, max_sessions: usize) -> Self {
         self.max_sessions = Some(max_sessions);
+        self
+    }
+
+    /// Realizes resumed sessions by deterministic replay from genesis.
+    ///
+    /// Production QEMU uses this mode while arbitrary exact `loadvm` remains
+    /// disabled by the savevm completeness policy. The control plane verifies
+    /// the replayed configuration and virtual-time boundary before publishing
+    /// the resumed session.
+    #[must_use]
+    pub const fn with_thin_replay_resume(mut self) -> Self {
+        self.resume_via_thin_replay = true;
         self
     }
 
@@ -1089,7 +1064,7 @@ where
         let scenario_form = inline_scenario_form(&request);
         let configuration = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario)?;
-        let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed);
+        let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed)?;
         let white_box_policies = self.white_box_policies_for_source(scenario_form, &scenario);
         let engine = Engine::new(configuration, graph, loop_instance)
             .with_white_box_policies(white_box_policies);
@@ -1157,6 +1132,9 @@ where
                 request_seed: request.seed,
             });
         }
+        if self.resume_via_thin_replay {
+            return self.resume_session_via_thin_replay(request).await;
+        }
 
         let scenario = request.scenario.scenario_def();
         let configuration = Configuration {
@@ -1172,8 +1150,8 @@ where
                 .map_err(resume_checkpoint_error)?;
         }
 
-        let parent_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed);
-        let resumed_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed);
+        let parent_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
+        let resumed_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
         let genesis = Configuration::genesis(scenario);
@@ -1445,7 +1423,18 @@ where
         let session = request.session;
         let command_kind = SessionCommandKind::from(&request.command);
         let streaming_session = self.streaming_session(session)?;
-        let response = streaming_session.send(request).await?;
+        let response = match streaming_session.send(request).await {
+            Ok(response) => response,
+            Err(error @ StreamingApiError::CommandChannelClosed { .. }) => {
+                if let Some(runtime) = self.sessions.remove(&session.id)
+                    && let Err(actor_error) = join_actor(runtime.actor_task).await
+                {
+                    return Err(actor_error.into());
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         if command_kind == SessionCommandKind::Stop
             && response.result.status == CommandResultStatus::Accepted
@@ -1488,7 +1477,10 @@ impl<L, F> InProcessLifecycleClient<L, F> {
 impl<L, F> InProcessLifecycleClient<L, F>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     /// Returns the number of live sessions in the wrapped control plane.
     pub async fn session_count(&self) -> usize {
@@ -1499,7 +1491,10 @@ where
 impl<L, F> ControlClient for InProcessLifecycleClient<L, F>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     fn transport(&self) -> ControlTransportKind {
         ControlTransportKind::InProcess
@@ -1593,15 +1588,15 @@ where
                 .await
                 .streaming_session(request.session)?;
             let stream = streaming_session.control(request)?;
-            let cleanup_control_plane = Arc::clone(&control_plane);
+            let command_control_plane = Arc::clone(&control_plane);
             Ok(ClientControlStream::InProcessLifecycle(
-                InProcessLifecycleControlStream::new(stream, move |session| {
-                    let cleanup_control_plane = Arc::clone(&cleanup_control_plane);
+                InProcessLifecycleControlStream::new(stream, move |request| {
+                    let command_control_plane = Arc::clone(&command_control_plane);
                     async move {
-                        cleanup_control_plane
+                        command_control_plane
                             .lock()
                             .await
-                            .cleanup_accepted_streaming_stop(session)
+                            .send_streaming_command(request)
                             .await
                     }
                 }),
@@ -1874,3 +1869,4 @@ fn resume_checkpoint_error(error: EngineError) -> LifecycleApiError {
         message: error.to_string(),
     }
 }
+mod thin_replay;

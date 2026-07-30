@@ -116,8 +116,8 @@ fn gate_scheduler_liveness_generated_scenarios_terminate() {
             "scenario {index} advanced a node without yielding the scheduler lock"
         );
         assert!(
-            report.final_configuration.schedule.len() <= report.resolved_events,
-            "scenario {index} recorded decisions without resolved scheduler events"
+            report.final_configuration.schedule.len() <= report.event_log_entries,
+            "scenario {index} recorded decisions without canonical event-log entries"
         );
     }
 }

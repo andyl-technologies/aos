@@ -33,7 +33,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
   # The any-guest contract (D-31): guest entropy-suppression flags MUST NOT be
   # baked into the shipped default cmdline or gated on by the launch layer.
 
@@ -116,10 +115,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-6 checklist complete";
-        needle = "- [x] **T-DET-6**";
-      }
       {
         label = "T-DET-6 references RISK-13 retirement";
         needle = "RISK-13";

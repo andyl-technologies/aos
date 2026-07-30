@@ -52,7 +52,14 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("default", &[][..]),
             ("test-support", &[][..]),
             ("test-double", &["dep:crucible-shmem"][..]),
-            ("qemu-backend", &[][..]),
+        ],
+    );
+    assert_features(
+        &manifests,
+        "crucible-qemu",
+        &[
+            ("default", &[][..]),
+            ("test-support", &["crucible/test-double"][..]),
         ],
     );
     assert_features(
@@ -77,6 +84,20 @@ fn crucible_guest_is_not_a_default_core_dependency() -> Result<(), Box<dyn Error
     assert!(
         findings.is_empty(),
         "crucible-guest default dependency findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn shipped_crates_do_not_enable_the_test_double() -> Result<(), Box<dyn Error>> {
+    let manifests = load_crucible_manifests()?;
+    let findings = production_test_double_dependency_findings(&manifests, &shipped_packages());
+
+    assert!(
+        findings.is_empty(),
+        "production test-double dependency findings:\n{}",
         findings.join("\n")
     );
 
@@ -155,6 +176,23 @@ fn core_packages() -> [&'static str; 10] {
     ]
 }
 
+fn shipped_packages() -> [&'static str; 12] {
+    [
+        "crucible-sim",
+        "crucible-assert",
+        "crucible-shmem",
+        "crucible-protocol",
+        "crucible-device",
+        "crucible",
+        "crucible-session",
+        "crucible-api",
+        "crucible-daemon",
+        "crucible-cli",
+        "crucible-qemu",
+        "crucible-qemu-plugin",
+    ]
+}
+
 #[derive(Clone, Debug)]
 struct DependencySpec {
     key: String,
@@ -206,6 +244,42 @@ fn default_guest_dependency_findings(
                     dependency.key
                 ));
             }
+        }
+    }
+
+    findings
+}
+
+fn production_test_double_dependency_findings(
+    manifests: &BTreeMap<String, Value>,
+    packages: &[&str],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for package in packages {
+        let manifest = manifests
+            .get(*package)
+            .unwrap_or_else(|| panic!("missing manifest for `{package}`"));
+        let empty_dependencies = toml::map::Map::new();
+        let dependencies = manifest
+            .get("dependencies")
+            .and_then(Value::as_table)
+            .unwrap_or(&empty_dependencies);
+        let Some(crucible_dependency) = dependencies.get("crucible").and_then(Value::as_table)
+        else {
+            continue;
+        };
+        let enables_test_double = crucible_dependency
+            .get("features")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|feature| feature == "test-double");
+        if enables_test_double {
+            findings.push(format!(
+                "`{package}` enables crucible/test-double in production dependencies"
+            ));
         }
     }
 
@@ -313,16 +387,22 @@ fn feature_cases() -> &'static [FeatureCase] {
             features: &["test-double"],
         },
         FeatureCase {
-            name: "crucible qemu-backend",
-            package: "crucible",
-            no_default_features: true,
-            features: &["qemu-backend"],
-        },
-        FeatureCase {
             name: "crucible all features",
             package: "crucible",
             no_default_features: true,
-            features: &["test-support", "test-double", "qemu-backend"],
+            features: &["test-support", "test-double"],
+        },
+        FeatureCase {
+            name: "crucible-qemu production",
+            package: "crucible-qemu",
+            no_default_features: true,
+            features: &[],
+        },
+        FeatureCase {
+            name: "crucible-qemu test support",
+            package: "crucible-qemu",
+            no_default_features: true,
+            features: &["test-support"],
         },
         FeatureCase {
             name: "crucible-device default",
@@ -335,48 +415,6 @@ fn feature_cases() -> &'static [FeatureCase] {
             package: "crucible-device",
             no_default_features: true,
             features: &[],
-        },
-        FeatureCase {
-            name: "crucible-device disk",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["disk"],
-        },
-        FeatureCase {
-            name: "crucible-device ninep",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["ninep"],
-        },
-        FeatureCase {
-            name: "crucible-device net",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["net"],
-        },
-        FeatureCase {
-            name: "crucible-device disk+ninep",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["disk", "ninep"],
-        },
-        FeatureCase {
-            name: "crucible-device disk+net",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["disk", "net"],
-        },
-        FeatureCase {
-            name: "crucible-device ninep+net",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["ninep", "net"],
-        },
-        FeatureCase {
-            name: "crucible-device all subnodes",
-            package: "crucible-device",
-            no_default_features: true,
-            features: &["disk", "ninep", "net"],
         },
     ]
 }

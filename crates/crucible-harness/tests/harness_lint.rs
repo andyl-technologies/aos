@@ -20,6 +20,8 @@ mod confinement;
 mod error_logging;
 #[path = "support/harness_lint/lex.rs"]
 mod lex;
+#[path = "support/harness_lint/reference_integrity.rs"]
+mod reference_integrity;
 #[path = "support/harness_lint/scan.rs"]
 mod scan;
 
@@ -29,7 +31,62 @@ use common::*;
 use confinement::*;
 use error_logging::*;
 use lex::*;
+use reference_integrity::*;
 use scan::*;
+
+#[test]
+fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {
+    let findings = gate_reference_integrity_failures(&repo_root())?;
+
+    assert!(
+        findings.is_empty(),
+        "gate:harness-lint reference-integrity findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn gate_evidence_rejects_checklist_state_needles() {
+    let findings = checklist_state_needle_failures(
+        Path::new("tests/crucible/synthetic.nix"),
+        r#"
+          failuresFor "docs/rfcs/0010-crucible/example.md" doc [
+            {
+              label = "circular completion evidence";
+              needle = "- [x] **T-SYNTH-1**";
+            }
+            {
+              label = "circular open evidence";
+              needle = "- [ ] **T-SYNTH-2**";
+            }
+          ]
+        "#,
+    );
+
+    assert_contains(&findings, "T-SYNTH-1");
+    assert_contains(&findings, "T-SYNTH-2");
+}
+
+#[test]
+fn session_terminal_outcomes_have_one_engine_owned_construction_path() -> Result<(), Box<dyn Error>>
+{
+    let source =
+        fs::read_to_string(workspace_root().join("crucible-session/src/session/engine.rs"))?;
+    let findings = terminal_outcome_construction_failures(&source);
+    assert!(
+        findings.is_empty(),
+        "session terminal-outcome construction findings:\n{}",
+        findings.join("\n")
+    );
+
+    let negative_control = terminal_outcome_construction_failures(
+        "fn compensate_in_cli() { let _ = Outcome::Timeout; }",
+    );
+    assert_contains(&negative_control, "outside enter_stopped");
+    Ok(())
+}
 
 #[test]
 fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>> {

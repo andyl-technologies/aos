@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {

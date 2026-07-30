@@ -1,7 +1,13 @@
 //! Public fault bridges, scheduler traits, liveness gate, runtime nodes, and errors.
 
 use super::*;
+#[path = "liveness/network_branch.rs"]
+mod network_branch;
 mod quantum_loop;
+pub(super) use network_branch::{
+    LiveNetworkBranchChoice, is_live_network_branch_choice_name, live_network_branch_choices,
+    live_network_branch_draws,
+};
 /// Applies combined node timing faults to a scheduler VM node.
 ///
 /// This is the scheduler-facing bridge used by trigger/fault application code:
@@ -167,6 +173,8 @@ pub fn check_scheduler_liveness(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
+    /// Counter of the baked ready-point runtime admitted at construction.
+    pub(super) ready_counter: NodeCounter,
     pub(super) counter: NodeCounter,
     pub(super) timing_faults: NodeTimingFaults,
     pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
@@ -199,8 +207,10 @@ pub(super) struct RuntimeNodeStoppedState {
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     fn from(node: SchedulerScenarioNode) -> Self {
+        let ready_counter = node.counter;
         Self {
             id: node.id,
+            ready_counter,
             counter: node.counter,
             timing_faults: NodeTimingFaults::default(),
             last_checkpoint: None,

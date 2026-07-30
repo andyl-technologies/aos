@@ -809,9 +809,12 @@ in
             run_qemu "load-$case_name" yes start_at=0,stop_after="$SEGMENT_ICOUNT",logical_base="$snapshot_icount",extended=on,vcpus=1,time_control=on
             wait_for_socket "$TMPDIR/qmp-load-$case_name.sock" \
               || fail "$case_name load QMP socket did not appear"
+            restore_start_ns=$(date +%s%N)
             snapshot_load "$TMPDIR/qmp-load-$case_name.sock" "$tag" "load-$tag"
             qmp_cmd "$TMPDIR/qmp-load-$case_name.sock" '{"execute":"cont"}' "$TMPDIR/qmp-cont-load-$case_name.json" \
               || fail "$case_name load cont failed"
+            restore_end_ns=$(date +%s%N)
+            restore_latency_ms=$(( (restore_end_ns - restore_start_ns + 999999) / 1000000 ))
             wait_for_pause "load-$case_name" "$TMPDIR/qmp-load-$case_name.sock" \
               || fail "$case_name load run did not pause"
             qmp_cmd "$TMPDIR/qmp-load-$case_name.sock" '{"execute":"quit"}' "$TMPDIR/qmp-quit-load-$case_name.json" || true
@@ -837,7 +840,7 @@ in
             cp "$TMPDIR/normalized-load-$case_name.json" "$out/normalized-load-$case_name.json"
             cp "$TMPDIR/suffix-$case_name.diff" "$out/suffix-$case_name.diff"
             reference_line=$(cat "$TMPDIR/pause-reference-$case_name.json")
-            printf '%s\n' "$case_name $point_name $snapshot_icount $(printf '%s\n' "$reference_line" | jq -r '.state_hash') $(printf '%s\n' "$reference_line" | jq -r '.stream_hash') $(printf '%s\n' "$reference_line" | jq -r '.register_hash') $(printf '%s\n' "$reference_line" | jq -r '.ram_hash') $(printf '%s\n' "$reference_line" | jq -r '.ram_bytes') $suffix_match" >> "$TMPDIR/case-results.txt"
+            printf '%s\n' "$case_name $point_name $snapshot_icount $(printf '%s\n' "$reference_line" | jq -r '.state_hash') $(printf '%s\n' "$reference_line" | jq -r '.stream_hash') $(printf '%s\n' "$reference_line" | jq -r '.register_hash') $(printf '%s\n' "$reference_line" | jq -r '.ram_hash') $(printf '%s\n' "$reference_line" | jq -r '.ram_bytes') $suffix_match $restore_latency_ms" >> "$TMPDIR/case-results.txt"
           }
 
           ring_live_hash=$(gawk -F= '/^ring_live_hash=/ { print $2 }' "$TMPDIR/owned-state.txt")
@@ -871,6 +874,9 @@ in
           mid_io_operation_io_events=$(jq -r '.operation_io_events' "$TMPDIR/pause-save-mid_io_burst.json")
           mid_io_pause_hlt_events=$(jq -r '.pause_hlt_events' "$TMPDIR/pause-save-mid_io_burst.json")
           mid_io_operation_hlt_events=$(jq -r '.operation_hlt_events' "$TMPDIR/pause-save-mid_io_burst.json")
+          boot_window_restore_latency_ms=$(awk '$1 == "boot_window" { print $10 }' "$TMPDIR/case-results.txt")
+          cpu_timer_restore_latency_ms=$(awk '$1 == "cpu_timer_window" { print $10 }' "$TMPDIR/case-results.txt")
+          mid_io_restore_latency_ms=$(awk '$1 == "mid_io_burst" { print $10 }' "$TMPDIR/case-results.txt")
           if grep -q "CRUCIBLE_S2_BLOCK_DIRECT=1" "$TMPDIR/serial-save-mid_io_burst.log"; then
             mid_io_guest_block_direct=true
           else
@@ -896,6 +902,10 @@ in
             echo snapshot_icount="$boot_window_icount"
             echo cpu_timer_snapshot_icount="$cpu_timer_icount"
             echo mid_io_snapshot_icount="$mid_io_icount"
+            echo boot_window_restore_to_runnable_ms="$boot_window_restore_latency_ms"
+            echo cpu_timer_restore_to_runnable_ms="$cpu_timer_restore_latency_ms"
+            echo mid_io_restore_to_runnable_ms="$mid_io_restore_latency_ms"
+            echo restore_latency_measurement=qmp-snapshot-load-through-cont-ack
             echo mid_io_active_medium="$mid_io_active_medium"
             echo mid_io_pause_medium="$mid_io_pause_medium"
             echo mid_io_pause_io_events="$mid_io_pause_io_events"

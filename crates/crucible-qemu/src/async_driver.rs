@@ -145,7 +145,7 @@ pub enum QemuAsyncDriverOperation {
 }
 
 /// Host-I/O runtime used by the bounded async driver.
-pub trait QemuHostIoRuntime {
+pub trait QemuHostIoRuntime: Send {
     /// Yields once so control-plane work can run between quanta.
     ///
     /// # Errors
@@ -231,6 +231,8 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
 pub struct QemuAsyncQuantumCompletion {
     /// Scheduler-facing advance result for this quantum.
     pub outcome: AdvanceOutcome,
+    /// Guest-emitted frames drained while completing this quantum.
+    pub emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
     /// Hot-path operations observed during the quantum.
     pub operations: Vec<QemuQuantumOperation>,
 }
@@ -239,6 +241,7 @@ impl From<QemuQuantumReport> for QemuAsyncQuantumCompletion {
     fn from(report: QemuQuantumReport) -> Self {
         Self {
             outcome: report.outcome,
+            emitted_frames: report.emitted_frames,
             operations: report.operations,
         }
     }
@@ -287,6 +290,8 @@ pub enum QemuAsyncNodeStepOutcome {
 pub struct QemuAsyncNodeStepReport {
     /// Outcome of the node-step.
     pub outcome: QemuAsyncNodeStepOutcome,
+    /// Guest-emitted frames drained at this completed boundary.
+    pub emitted_frames: Vec<crate::QemuNodeEmittedFrame>,
     /// Whether the driver yielded before starting this quantum.
     pub yielded_before_quantum: bool,
     /// Whether the driver yielded after finishing this quantum.
@@ -371,6 +376,7 @@ where
             .map_err(QemuAsyncDriverError::Target)?;
         return Ok(QemuAsyncNodeStepReport {
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
+            emitted_frames: Vec::new(),
             yielded_before_quantum: true,
             yielded_after_quantum: false,
             hot_path_operations: Vec::new(),
@@ -392,6 +398,7 @@ where
         outcome: QemuAsyncNodeStepOutcome::Completed {
             advance: completion.outcome,
         },
+        emitted_frames: completion.emitted_frames,
         yielded_before_quantum: true,
         yielded_after_quantum: true,
         hot_path_operations: completion.operations,
@@ -447,24 +454,6 @@ where
         outcome: QemuAsyncLifecycleAwaitOutcome::Completed,
         async_operations,
     })
-}
-
-/// Asserts that a quantum completion used only the shared-memory hot path.
-///
-/// # Errors
-///
-/// Returns [`QemuAsyncDriverError::ForbiddenHotPathOperation`] when a QMP or
-/// plugin-IPC operation appears in the supplied quantum operations.
-pub fn assert_async_driver_quantum_hot_path_is_shmem_only(
-    operations: &[QemuQuantumOperation],
-) -> Result<(), QemuAsyncDriverError> {
-    for operation in operations {
-        let plane = operation.plane();
-        if plane != QemuQuantumOperationPlane::SharedMemory {
-            return Err(QemuAsyncDriverError::ForbiddenHotPathOperation { plane });
-        }
-    }
-    Ok(())
 }
 
 /// Error returned by the bounded async driver.
@@ -641,6 +630,7 @@ mod tests {
         let mut target = ScriptedTarget {
             completion: QemuAsyncQuantumCompletion {
                 outcome: AdvanceOutcome::ReachedHorizon,
+                emitted_frames: Vec::new(),
                 operations: vec![QemuQuantumOperation::QmpCommand {
                     command: "query-status",
                 }],
@@ -823,6 +813,7 @@ mod tests {
             Self {
                 completion: QemuAsyncQuantumCompletion {
                     outcome: AdvanceOutcome::ReachedHorizon,
+                    emitted_frames: Vec::new(),
                     operations: vec![
                         QemuQuantumOperation::StoreSchedulerCeiling,
                         QemuQuantumOperation::FutexWake,
@@ -880,3 +871,6 @@ mod tests {
         }
     }
 }
+mod hot_path;
+
+pub use hot_path::*;

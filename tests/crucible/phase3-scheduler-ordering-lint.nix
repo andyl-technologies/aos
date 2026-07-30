@@ -25,8 +25,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   orderingPathSources = [
     {
       label = "crates/crucible/src/scheduler.rs";
@@ -75,10 +73,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-9 checked off";
-        needle = "- [x] **T-SCHED-9**";
-      }
       {
         label = "T-SCHED-9 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerOrderingLint`";

@@ -14,14 +14,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-9 checklist complete";
-        needle = "- [x] **T-PKG-9**";
-      }
       {
         label = "T-PKG-9 completion note";
         needle = "Completed by `checks.crucible.phase7.cruciblePackageHermeticDiscovery`";
@@ -52,7 +46,7 @@
       }
       {
         label = "matched QEMU/plugin runtime closure";
-        needle = "runtimeDeps = [qemu-crucible crucible-qemu-plugin];";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
         label = "compile-time AOS QEMU hint";

@@ -12,19 +12,14 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-3 checked off";
-        needle = "- [x] **T-SPAT-3**";
-      }
       {
         label = "T-SPAT-3 completion names test";
         needle = "`spatial_components_have_independent_content_addresses_and_cross_reuse`";

@@ -26,24 +26,14 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-26 checklist complete";
-        needle = "- [x] **T-DET-26**";
-      }
       {
         label = "T-DET-26 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
-      {
-        label = "T-ASRT-16 checklist complete";
-        needle = "- [x] **T-ASRT-16**";
-      }
       {
         label = "T-ASRT-16 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
@@ -291,10 +281,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 checklist complete";
-        needle = "- [ ] **T-HARN-23**";
-      }
-      {
         label = "T-HARN-23 production fleet evidence note";
         needle = "Production closure evidence is provided by `checks.fleet.crucible-e2e-determinism`";
       }
@@ -308,11 +294,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

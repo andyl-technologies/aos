@@ -20,6 +20,7 @@ pub(super) struct RunWorkflowReport {
     pub(super) state_updates: Vec<String>,
     pub(super) streamed_events: Vec<String>,
     pub(super) streamed_event_frames: Vec<Vec<u8>>,
+    pub(super) coverage_feedback: crucible::EventLogCoverageFeedback,
     pub(super) execution_fingerprints: Vec<crucible::FingerprintSample>,
     pub(super) acknowledged_commands: Vec<SessionCommandKind>,
     pub(super) watch_statuses: Vec<String>,
@@ -579,16 +580,27 @@ pub(super) fn run_local_double_verify_workflow(
 }
 
 pub(super) fn run_local_qemu_save_workflow(
-    _thin_plan: &CliThinWrapperPlan,
+    thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _save_plan: &SaveInvocationPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU save requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "save")
+    let config = production_qemu_lifecycle_config(backend)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane =
+        production_qemu_control_plane(config, save_plan.run_plan.scenario.scenario_form());
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
+    let mut outcome =
+        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
+    Ok(outcome)
 }
 
 pub(super) fn run_local_save_recording_workflow(
@@ -644,16 +656,35 @@ pub(super) fn run_local_double_resume_workflow(
 }
 
 pub(super) fn run_local_qemu_resume_workflow(
-    _thin_plan: &CliThinWrapperPlan,
+    thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _resume_plan: &ResumeInvocationPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "resume")
+    let evidence = resume_handle_evidence(resume_plan)?;
+    let config = production_qemu_lifecycle_config(backend)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = production_qemu_control_plane(config, &evidence.scenario_form);
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
+        &client,
+        resume_plan,
+    ))?;
+    let mut outcome = finish_resume_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        report,
+    )?;
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-thin-replay");
+    Ok(outcome)
 }
 
 pub(super) fn run_local_resume_workflow_report_with_driver(
@@ -863,7 +894,10 @@ where
                     resumed.session,
                     &mut command_id,
                     SessionCommand::SetBreakpoint {
-                        spec: BreakpointSpec::suspend_once(predicate.clone()),
+                        spec: BreakpointSpec::fail_once(
+                            predicate.clone(),
+                            "requested property was violated",
+                        ),
                         reply: CommandReply::discard(),
                     },
                     &mut acknowledged_commands,
@@ -1025,7 +1059,7 @@ where
 
     Ok(ResumeWorkflowReport {
         run: RunWorkflowReport {
-            status: status_from_outcome(observed_outcome),
+            status: status_from_outcome(observed_outcome)?,
             created_state: format!("{:?}", resumed.state).to_ascii_lowercase(),
             final_state,
             outcome: observed_outcome,
@@ -1036,6 +1070,7 @@ where
             state_updates,
             streamed_events: Vec::new(),
             streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
             acknowledged_commands,
             watch_statuses,

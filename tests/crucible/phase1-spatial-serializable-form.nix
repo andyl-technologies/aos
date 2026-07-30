@@ -12,7 +12,7 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   cargoLock = builtins.readFile ../../crates/Cargo.lock;
   defaultChecks = builtins.readFile ./default.nix;
@@ -20,13 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-16 checked off";
-        needle = "- [x] **T-SPAT-16**";
-      }
       {
         label = "T-SPAT-16 completion names serializable form";
         needle = "`ScenarioDefForm`";
@@ -53,7 +48,7 @@
       }
       {
         label = "crucible lock records toml";
-        needle = " \"toml\",";
+        needle = " \"toml 0.8.23\",";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

@@ -50,12 +50,11 @@ pub mod config;
 pub mod config_artifact;
 #[doc(hidden)]
 pub use config_artifact::render_package_config;
-pub(crate) mod credential;
-pub(crate) mod credential_artifact;
 pub mod config_eval;
 pub mod config_trust;
+pub(crate) mod credential;
+pub(crate) mod credential_artifact;
 pub mod deps;
-pub mod graph_compile;
 pub mod desired;
 pub mod download;
 pub(crate) mod ebpf_lsm;
@@ -65,6 +64,7 @@ pub(crate) mod exposed_units;
 /// [`registry::porcelain`]) and never exec `git`.
 #[cfg(test)]
 pub(crate) mod gitcmd;
+pub mod graph_compile;
 pub mod hold;
 pub mod install;
 pub mod metadata;
@@ -2210,7 +2210,8 @@ pub async fn run(
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
         let json_out = printer.mode() == OutputMode::Json;
         // The candidate manifest is evaluated to a temp file; the diff reads it.
-        let candidate = std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
+        let candidate =
+            std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
         let params = config_eval::dry_run::SwitchParams {
             eval: config_eval::EvalCommand {
                 host_nix: from.clone(),
@@ -2257,9 +2258,15 @@ pub async fn run(
     {
         let config = config::ApmConfig::load(ProfileScope::System)?;
         let json_out = printer.mode() == OutputMode::Json;
-        let code =
-            graph_compile::subverbs::run_fetch(&config, package, manifest, marker_root, json_out, printer)
-                .await;
+        let code = graph_compile::subverbs::run_fetch(
+            &config,
+            package,
+            manifest,
+            marker_root,
+            json_out,
+            printer,
+        )
+        .await;
         std::process::exit(code);
     }
     if let PackageCommand::RenderOne {

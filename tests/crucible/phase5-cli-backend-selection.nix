@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? ["T-CLI-19"],
-  openTaskIds ? ["T-CLI-3" "T-CLI-20"],
+  taskIds ? ["T-CLI-3" "T-CLI-19" "T-CLI-20"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -18,6 +18,7 @@
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliHelpTests = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
+  machineReadableTests = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -25,17 +26,15 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-3 is complete";
-        needle = "- [ ] **T-CLI-3**";
-      }
-      {
         label = "T-CLI-3 completion note";
         needle = "Completed by `checks.crucible.phase5.cliBackendSelection`";
+      }
+      {
+        label = "T-CLI-20 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliBackendSelection`: backend command";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -74,6 +73,34 @@
       {
         label = "backend-selection proof predicate";
         needle = "fn proves_t_cli_3";
+      }
+      {
+        label = "observed backend execution evidence";
+        needle = "enum BackendExecutionEvidence";
+      }
+      {
+        label = "post-execution identity validation";
+        needle = "execution.evidence.proves_t_cli_3(backend_plan)";
+      }
+      {
+        label = "injected live-QEMU probe runner";
+        needle = "trait LiveQemuProbeRunner";
+      }
+      {
+        label = "live-QEMU probe consistency comparison";
+        needle = "live QEMU selftest probes diverged across identical executions";
+      }
+      {
+        label = "executed build-identity negative control";
+        needle = "cli_backend_selection_rejects_execution_identity_divergence";
+      }
+      {
+        label = "live-probe divergence negative control";
+        needle = "divergent live-QEMU probes must fail closed";
+      }
+      {
+        label = "live-probe identity negative control";
+        needle = "a live-QEMU build identity mismatch must fail closed";
       }
       {
         label = "backend-selection planner";
@@ -256,6 +283,16 @@
       {
         label = "host PATH QEMU launch";
         needle = "Command::new(\"qemu";
+      }
+      {
+        label = "live-QEMU probe environment bypass";
+        needle = "CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/tests/machine_readable.rs" machineReadableTests [
+      {
+        label = "live-QEMU probe environment bypass";
+        needle = "CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [

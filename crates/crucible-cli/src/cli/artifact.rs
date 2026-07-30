@@ -1051,24 +1051,6 @@ pub(super) struct ReplayToSavepointMaterializationProof {
     pub(super) replay_thin_checkpoint: crucible::ContentHash,
 }
 
-impl ReplayToSavepointMaterializationProof {
-    pub(super) fn from_report(report: crucible::UnifiedGraphOperationReport) -> Self {
-        Self {
-            materialization: "model-temporal-graph",
-            operation: "replay",
-            graph: report.graph,
-            configuration: report.configuration,
-            schedule: report.schedule,
-            checkpoint: report.checkpoint,
-            reduced_state: report.reduced_state,
-            runtime_state: report.runtime_state,
-            single_vm_fingerprint: report.single_vm_fingerprint.hash,
-            replay_fat_checkpoint: report.replay_oracle.fat_checkpoint,
-            replay_thin_checkpoint: report.replay_oracle.thin_checkpoint,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct ReplayCheckReport {
     pub(super) path: PathBuf,
@@ -1098,3 +1080,5 @@ pub(super) struct FailureArtifactReport {
     pub(super) digest: String,
     pub(super) footer: FailureReproductionFooter,
 }
+#[path = "artifact/materialization_proof.rs"]
+mod materialization_proof;

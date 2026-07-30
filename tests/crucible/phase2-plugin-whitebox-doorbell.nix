@@ -16,14 +16,13 @@
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenCallbackApis = [
     "Instant::now"
@@ -54,10 +53,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-14 completed by live QEMU callback integration";
-        needle = "- [x] **T-PLUG-14**";
-      }
       {
         label = "white-box doorbell wording";
         needle = "Implement the optional white-box doorbell trap";

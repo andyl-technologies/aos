@@ -13,7 +13,7 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   qemuQuantum = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
   topologyChangeTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_change.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
@@ -21,15 +21,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-22 checked off";
-        needle = "- [x] **T-SCHED-22**";
-      }
       {
         label = "T-SCHED-22 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerTopologyChange`";

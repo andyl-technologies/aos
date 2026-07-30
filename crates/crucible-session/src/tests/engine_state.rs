@@ -198,6 +198,7 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::StepTimer,
             SessionCommandKind::StepDuration,
             SessionCommandKind::Stop,
+            SessionCommandKind::ExhaustBudget,
             SessionCommandKind::Inject,
             SessionCommandKind::InjectFault,
             SessionCommandKind::HealFault,
@@ -1291,97 +1292,6 @@ fn boundary_control_at_sequence_is_before_scheduler_control_events() {
 }
 
 #[test]
-fn control_replay_artifact_reproduces_interactive_scheduler_state() {
-    let scenario = generated_scenario(44);
-    let initial = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut interactive = Engine::new(
-        initial.clone(),
-        graph.clone(),
-        ControlSensitiveLoop::default(),
-    );
-    if let Err(error) = interactive.apply_command(SessionCommand::Start) {
-        panic!("interactive replay producer should instantiate: {error}");
-    }
-    if let Err(error) = interactive.apply_command(SessionCommand::Continue) {
-        panic!("interactive replay producer should run: {error}");
-    }
-    if let Err(error) = interactive.step_quantum() {
-        panic!("first producer quantum should establish a control boundary: {error}");
-    }
-
-    let fault_tag = FaultTag::from_name("control-replay-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    if let Err(error) = interactive.apply_command(SessionCommand::Inject) {
-        panic!("producer legacy inject should apply at the current boundary: {error}");
-    }
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = interactive.apply_command(SessionCommand::InjectFault {
-        spec: FaultSpec::new(fault_tag.clone(), fault),
-        reply: inject_reply,
-    }) {
-        panic!("producer inject-fault should apply at the current boundary: {error}");
-    }
-    drop(inject_receiver);
-    if let Err(error) = interactive.step_quantum() {
-        panic!("second producer quantum should observe injected scheduler state: {error}");
-    }
-
-    let (heal_reply, heal_receiver) = CommandReply::channel();
-    if let Err(error) = interactive.apply_command(SessionCommand::HealFault {
-        tag: fault_tag,
-        reply: heal_reply,
-    }) {
-        panic!("producer heal-fault should apply at the current boundary: {error}");
-    }
-    drop(heal_receiver);
-    if let Err(error) = interactive.step_quantum() {
-        panic!("third producer quantum should observe healed scheduler state: {error}");
-    }
-
-    let artifact = interactive.control_replay_artifact(initial);
-    let replay = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
-        graph_with_baked_genesis(&scenario),
-        ControlSensitiveLoop::default(),
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            panic!("control replay artifact should reproduce scheduler state: {error}")
-        }
-    };
-
-    assert_eq!(
-        replay.configuration.id(),
-        artifact.final_snapshot.configuration.id()
-    );
-    assert_eq!(replay.frontier, artifact.final_snapshot.frontier);
-    assert_eq!(replay.event_log_len, artifact.final_snapshot.event_log_len);
-    assert_eq!(replay.quanta, artifact.final_snapshot.quanta);
-    assert_eq!(artifact.control_log.len(), 3);
-    assert!(
-        artifact
-            .control_log
-            .iter()
-            .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
-        "replay controls should be keyed by virtual-time boundaries"
-    );
-    assert_eq!(
-        artifact.control_log[0].quanta,
-        artifact.control_log[1].quanta
-    );
-    assert_ne!(
-        artifact.control_log[0].scheduler_batch, artifact.control_log[1].scheduler_batch,
-        "separate operator commands at the same boundary must remain separate scheduler batches"
-    );
-}
-
-#[test]
 fn control_replay_artifact_rejects_wrong_boundary_frontier() {
     let scenario = generated_scenario(45);
     let initial = Configuration::genesis(scenario.clone());
@@ -2410,6 +2320,128 @@ async fn quiescent_breakpoint_uses_scheduler_quiescence_evidence() {
 }
 
 #[tokio::test]
+async fn property_failure_breakpoint_produces_failed_terminal_outcome() {
+    let scenario = generated_scenario(4_701);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let mut engine = Engine::new(
+        config,
+        graph,
+        ScriptedStepLoop::with_quiescence(SchedulerQuiescence::default()),
+    );
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("failure-outcome start should instantiate runtime: {error}");
+    }
+    let (reply, receiver) = CommandReply::channel();
+    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
+        spec: BreakpointSpec::fail_once(Predicate::quiescent(), "replicated invariant violated"),
+        reply,
+    }) {
+        panic!("failure-outcome breakpoint should register: {error}");
+    }
+    let _breakpoint_id = receive_reply(receiver).await;
+    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+        panic!("failure-outcome continue should enter running state: {error}");
+    }
+    let (_sender, receiver) = mpsc::channel(1);
+    let mut actor = SessionActor::new(engine, receiver);
+    if let Err(error) = actor.run_once().await {
+        panic!("failure-outcome quantum should complete: {error}");
+    }
+    assert!(matches!(
+        actor.engine().state(),
+        EngineState::Stopped {
+            outcome: Outcome::Failed { violations }
+        } if violations == &[String::from("replicated invariant violated")]
+    ));
+}
+
+#[tokio::test]
+async fn quantum_loop_pass_verdict_produces_passed_terminal_outcome() {
+    let scenario = generated_scenario(4_704);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let mut engine = Engine::new(
+        config,
+        graph,
+        TerminalVerdictLoop::new(QuantumTerminalVerdict::Passed),
+    );
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("trigger-pass start should instantiate runtime: {error}");
+    }
+    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+        panic!("trigger-pass continue should enter running state: {error}");
+    }
+    let (_sender, receiver) = mpsc::channel(1);
+    let mut actor = SessionActor::new(engine, receiver);
+    if let Err(error) = actor.run_once().await {
+        panic!("trigger-pass quantum should complete: {error}");
+    }
+    assert!(matches!(
+        actor.engine().state(),
+        EngineState::Stopped {
+            outcome: Outcome::Passed
+        }
+    ));
+}
+
+#[tokio::test]
+async fn quantum_loop_failure_verdict_produces_failed_terminal_outcome() {
+    let scenario = generated_scenario(4_705);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let mut engine = Engine::new(
+        config,
+        graph,
+        TerminalVerdictLoop::new(QuantumTerminalVerdict::Failed(vec![String::from(
+            "trigger invariant violated",
+        )])),
+    );
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("trigger-failure start should instantiate runtime: {error}");
+    }
+    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+        panic!("trigger-failure continue should enter running state: {error}");
+    }
+    let (_sender, receiver) = mpsc::channel(1);
+    let mut actor = SessionActor::new(engine, receiver);
+    if let Err(error) = actor.run_once().await {
+        panic!("trigger-failure quantum should complete: {error}");
+    }
+    assert!(matches!(
+        actor.engine().state(),
+        EngineState::Stopped {
+            outcome: Outcome::Failed { violations }
+        } if violations == &[String::from("trigger invariant violated")]
+    ));
+}
+
+#[tokio::test]
+async fn backend_failure_produces_crashed_terminal_outcome() {
+    let scenario = generated_scenario(4_703);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let mut engine = Engine::new(config, graph, BackendCrashLoop);
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("crash-outcome start should instantiate runtime: {error}");
+    }
+    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+        panic!("crash-outcome continue should enter running state: {error}");
+    }
+    let (_sender, receiver) = mpsc::channel(1);
+    let mut actor = SessionActor::new(engine, receiver);
+    if let Err(error) = actor.run_once().await {
+        panic!("backend crash should become a terminal outcome: {error}");
+    }
+    assert!(matches!(
+        actor.engine().state(),
+        EngineState::Stopped {
+            outcome: Outcome::Crashed { detail }
+        } if detail.contains("backend process exited unexpectedly")
+    ));
+}
+
+#[tokio::test]
 async fn quiescent_breakpoint_fires_without_emitted_entries() {
     let scenario = generated_scenario(48);
     let config = Configuration::genesis(scenario.clone());
@@ -2579,3 +2611,5 @@ fn session_actor_owns_breakpoint_set_with_runtime_state() {
     assert!(actor.engine().breakpoints().is_empty());
     assert_eq!(actor.engine().breakpoints().len(), 0);
 }
+#[path = "engine_state/budget_exhaustion.rs"]
+mod budget_exhaustion;

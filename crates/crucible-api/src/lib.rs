@@ -15,8 +15,9 @@
 //! owns the unary discovery and lifecycle API; [`streaming`] owns the typed
 //! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
-//! typed-attribute payload model; [`vm_resume`] owns the process-local VM
-//! resume realization bridge used by thin CLI callers.
+//! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
+//! loop construction; [`vm_resume`] owns the process-local VM resume realization
+//! bridge used by thin CLI callers.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -31,6 +32,7 @@ pub mod rpc_abi;
 pub mod server;
 pub mod session_mapping;
 pub mod streaming;
+pub mod vm_lifecycle;
 #[path = "vm_resume.rs"]
 pub mod vm_resume;
 
@@ -79,6 +81,10 @@ pub use rpc_abi::{
     RpcEventClass, RpcGoldenVector, RpcGoldenVectorMessage, RpcStatusCode,
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
+};
+pub use vm_lifecycle::{
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, build_production_vm_lifecycle_loop,
+    production_vm_search_frontier,
 };
 // Re-exported so control-plane clients (e.g. the CLI) record the *shared*
 // guest-host protocol version in a reproduction artifact's provenance triple

@@ -8,7 +8,6 @@ publish = false
 default = []
 test-support = []
 test-double = ["dep:crucible-shmem"]
-qemu-backend = []
 
 [lints]
 workspace = true

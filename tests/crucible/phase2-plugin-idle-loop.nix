@@ -32,7 +32,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenIdlePathApis = [
     "Instant::now"
     "SystemTime::now"
@@ -58,10 +57,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-5 completed by the live plugin quantum gate";
-        needle = "- [x] **T-PLUG-5**";
-      }
       {
         label = "T-PLUG-5 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";

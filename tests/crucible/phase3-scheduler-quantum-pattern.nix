@@ -12,15 +12,35 @@
   };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  authoritativeScheduler =
+    builtins.readFile ../../crates/crucible/src/scheduler/single_scheduler_drive.rs;
   patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
-  quantumTest = builtins.readFile ../../crates/crucible/tests/scheduler_quantum_loop.rs;
-  effectiveHorizonTest = builtins.readFile ../../crates/crucible/tests/scheduler_effective_horizon.rs;
-  runCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_run_ceiling.rs;
-  resolveTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve.rs;
-  eventOrderTest = builtins.readFile ../../crates/crucible/tests/scheduler_event_order.rs;
-  emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
+  quantumTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_quantum_loop.rs;
+  };
+  effectiveHorizonTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_effective_horizon.rs;
+  };
+  runCeilingTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+  };
+  resolveTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_resolve.rs;
+  };
+  eventOrderTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_event_order.rs;
+  };
+  emitStepTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_emit_step.rs;
+  };
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -34,22 +54,18 @@
       else if maxStart < 0
       then []
       else builtins.genList (index: index) (maxStart + 1);
-    matches =
-      builtins.filter (index:
-        builtins.substring index needleLen haystack == needle)
-      indexes;
+    matches = builtins.filter (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
   in
     if matches == []
     then -1
     else builtins.head matches;
 
-
-
   orderedNeedlesFor = fileLabel: content: requirements: let
-    positions =
-      builtins.map (requirement:
-        requirement // {position = indexOf requirement.needle content;})
-      requirements;
+    positions = builtins.map (requirement:
+      requirement // {position = indexOf requirement.needle content;})
+    requirements;
     missing =
       lib.concatMap (
         requirement:
@@ -81,16 +97,12 @@
   authoritativeQuantum =
     sliceBetween
     "fn drive_authoritative_quantum"
-    "\n    fn emit_quantum_decisions"
-    scheduler;
+    "\n    pub(super) fn emit_quantum_event_log"
+    authoritativeScheduler;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternDoc [
-      {
-        label = "T-PAT-2 checked off";
-        needle = "- [x] **T-PAT-2**";
-      }
       {
         label = "T-PAT-2 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerQuantumPattern`";
@@ -109,26 +121,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-12 complete";
-        needle = "- [x] **T-SCHED-12**";
-      }
-      {
-        label = "T-SCHED-13 complete";
-        needle = "- [x] **T-SCHED-13**";
-      }
-      {
-        label = "T-SCHED-14 complete";
-        needle = "- [x] **T-SCHED-14**";
-      }
-      {
-        label = "T-SCHED-16 complete";
-        needle = "- [x] **T-SCHED-16**";
-      }
-      {
-        label = "T-SCHED-19 complete";
-        needle = "- [x] **T-SCHED-19**";
-      }
       {
         label = "authoritative quantum section";
         needle = "## 8.9 The quantum: PICK / RUN / RESOLVE / EMIT / STEP";
@@ -174,7 +166,7 @@
         needle = "fn step_quantum";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs::drive_authoritative_quantum" authoritativeQuantum [
+    ++ failuresFor "crates/crucible/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
       {
         label = "control boundary before pick";
         needle = "self.admit_control_at_boundary(request.control)";
@@ -208,7 +200,7 @@
         needle = "self.yield_to_control_inbox()";
       }
     ]
-    ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs::drive_authoritative_quantum" authoritativeQuantum [
+    ++ orderedNeedlesFor "crates/crucible/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
       {
         label = "boundary admission";
         needle = "self.admit_control_at_boundary(request.control)";

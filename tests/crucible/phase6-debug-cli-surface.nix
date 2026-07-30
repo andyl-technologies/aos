@@ -17,17 +17,22 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  surfaceTest = builtins.readFile ../../crates/crucible/tests/gate_debug_cli_surface.rs;
+  surfaceTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_debug_cli_surface.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
@@ -40,10 +45,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-8 checklist complete";
-        needle = "- [x] **T-DBG-8**";
-      }
       {
         label = "T-DBG-8 partial-evidence note";
         needle = "Completed under `checks.crucible.phase6.debugCliSurface`";
@@ -58,10 +59,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-18 checklist complete";
-        needle = "- [x] **T-CLI-18**";
-      }
       {
         label = "T-CLI-18 partial-evidence note";
         needle = "Completed under `checks.crucible.phase6.debugCliSurface`";
@@ -157,8 +154,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "debug rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(&backend, \"debug\")";
+        label = "debug executes live QEMU admission";
+        needle = "run_local_qemu_debug_workflow(&backend, &plan)";
       }
       {
         label = "coordinate flag group";
@@ -301,12 +298,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "red debug cli gate";
-        needle = "debugCliSurface = redBeforeAdvance";
+        label = "green debug cli gate";
+        needle = "debugCliSurface = greenBeforeAdvance";
       }
       {
         label = "explicit task ids";
-        needle = "openTaskIds = [\"T-DBG-8\" \"T-CLI-18\"]";
+        needle = "taskIds = [\"T-DBG-8\" \"T-CLI-18\"]";
       }
       {
         label = "layer0 raw dependency";

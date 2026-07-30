@@ -21,13 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-11 checklist complete";
-        needle = "- [x] **T-CLI-11** Implement `fork`";
-      }
       {
         label = "T-CLI-11 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliForkWorkflow`";
@@ -117,12 +112,12 @@
         needle = "fn run_local_qemu_fork_workflow";
       }
       {
-        label = "fork rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"fork\")";
+        label = "fork dispatches the live QEMU workflow";
+        needle = "fn run_local_qemu_fork_workflow";
       }
       {
-        label = "fork local-QEMU no-double assertion";
-        needle = "no in-process double fallback was executed";
+        label = "fork local-QEMU thin-replay proof";
+        needle = "fork-thin-replay";
       }
       {
         label = "fork child actor runner";
@@ -205,8 +200,8 @@
         needle = "cli_fork_workflow_executes_local_double_handle";
       }
       {
-        label = "fork local-QEMU rejection test";
-        needle = "cli_fork_workflow_rejects_unwired_local_qemu_execution";
+        label = "fork local-QEMU live route test";
+        needle = "cli_fork_workflow_routes_local_qemu_into_live_guest_configuration";
       }
       {
         label = "fork tampered frontier test";
@@ -215,12 +210,12 @@
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
-        label = "process qemu fork rejection regression";
-        needle = "cli_fork_qemu_process_rejects_unwired_execution";
+        label = "process qemu fork live-asset admission regression";
+        needle = "cli_fork_qemu_process_requires_packaged_live_guest_assets";
       }
       {
-        label = "process qemu fork rejection";
-        needle = "local QEMU fork execution is unavailable";
+        label = "process qemu fork no-unwired assertion";
+        needle = "!stderr.contains(\"execution is unavailable\")";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -298,7 +293,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-fork-workflow-target" \
               -p crucible-cli \
-              cli_fork_qemu_process_rejects_unwired_execution \
+              cli_fork_qemu_process_requires_packaged_live_guest_assets \
               -- --test-threads=1
           '';
         }

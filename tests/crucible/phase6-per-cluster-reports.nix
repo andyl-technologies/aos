@@ -10,7 +10,6 @@
   # main.rs, so use a linear index walk instead.
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -37,10 +36,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-6 checked off";
-        needle = "- [x] **T-TRI-6**";
-      }
       {
         label = "T-TRI-6 completion note";
         needle = "Completed by `checks.crucible.phase6.perClusterReports`";

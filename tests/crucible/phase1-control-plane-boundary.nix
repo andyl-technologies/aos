@@ -22,32 +22,31 @@
     then value.package
     else name;
 
-  dependencySpecs = workspaceDeps: manifest:
-    let
-      dependencyTableSpecs = scope: dependencies:
-        lib.mapAttrsToList (name: value: {
-          inherit name scope;
-          package = dependencyPackageName workspaceDeps name value;
-        })
-        dependencies;
-      direct =
-        if manifest ? dependencies
-        then dependencyTableSpecs "dependencies" manifest.dependencies
-        else [];
-      target =
-        if manifest ? target
-        then
-          lib.concatMap (
-            targetName: let
-              targetSpec = manifest.target.${targetName};
-            in
-              if targetSpec ? dependencies
-              then dependencyTableSpecs "target.${targetName}.dependencies" targetSpec.dependencies
-              else []
-          ) (builtins.attrNames manifest.target)
-        else [];
-    in
-      direct ++ target;
+  dependencySpecs = workspaceDeps: manifest: let
+    dependencyTableSpecs = scope: dependencies:
+      lib.mapAttrsToList (name: value: {
+        inherit name scope;
+        package = dependencyPackageName workspaceDeps name value;
+      })
+      dependencies;
+    direct =
+      if manifest ? dependencies
+      then dependencyTableSpecs "dependencies" manifest.dependencies
+      else [];
+    target =
+      if manifest ? target
+      then
+        lib.concatMap (
+          targetName: let
+            targetSpec = manifest.target.${targetName};
+          in
+            if targetSpec ? dependencies
+            then dependencyTableSpecs "target.${targetName}.dependencies" targetSpec.dependencies
+            else []
+        ) (builtins.attrNames manifest.target)
+      else [];
+  in
+    direct ++ target;
 
   allowedEntrypoints = ["crucible-api" "crucible-session"];
 
@@ -74,14 +73,13 @@
 
   controlPlaneCrates = ["crucible-cli" "crucible-daemon"];
 
-  realManifests =
-    builtins.listToAttrs (
-      map (package: {
-        name = package;
-        value = readManifest package;
-      })
-      controlPlaneCrates
-    );
+  realManifests = builtins.listToAttrs (
+    map (package: {
+      name = package;
+      value = readManifest package;
+    })
+    controlPlaneCrates
+  );
 
   regressionFailures = let
     findings = findingsFor workspaceDependencies {
@@ -114,11 +112,12 @@
     ];
 
   workspaceRegressionFailures = let
-    findings = findingsFor (workspaceDependencies // {
-      engine = {
-        package = "crucible";
-      };
-    }) {
+    findings = findingsFor (workspaceDependencies
+      // {
+        engine = {
+          package = "crucible";
+        };
+      }) {
       crucible-cli = {
         dependencies.engine.workspace = true;
       };

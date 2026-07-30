@@ -12,7 +12,7 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   realization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
@@ -20,14 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-8 checked off";
-        needle = "- [x] **T-EXEC-8**";
-      }
       {
         label = "T-EXEC-8 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `bake`";
@@ -128,10 +122,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-9 checklist complete";
-        needle = "- [x] **T-PAT-9**";
-      }
       {
         label = "T-PAT-9 completion names model bake";
         needle = "`crucible::bake`";

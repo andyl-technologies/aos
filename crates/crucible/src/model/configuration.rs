@@ -347,6 +347,30 @@ impl Schedule {
         &self.decisions
     }
 
+    /// Returns the latest virtual-time coordinate carried by recorded decisions.
+    ///
+    /// Decisions without a time coordinate inherit the most recent recorded
+    /// boundary. A schedule containing only timeless decisions returns `None`.
+    #[must_use]
+    pub fn recorded_virtual_time(&self) -> Option<VirtualTime> {
+        self.decisions.iter().fold(None, |recorded, decision| {
+            let at = match decision {
+                Decision::DeliveryOrder(decision) => Some(decision.at),
+                Decision::FaultFires(decision) => Some(decision.at),
+                Decision::ControlFault(decision) => Some(decision.at),
+                Decision::RngDraw(_)
+                | Decision::Override(_)
+                | Decision::Preemption(_)
+                | Decision::AppRandom(_) => None,
+            };
+            match (recorded, at) {
+                (Some(current), Some(at)) => Some(current.max(at)),
+                (None, Some(at)) => Some(at),
+                (recorded, None) => recorded,
+            }
+        })
+    }
+
     /// Returns a schedule containing the first `len` decisions.
     ///
     /// # Errors

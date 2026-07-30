@@ -14,21 +14,15 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   deviceSubnode = builtins.readFile ../../crates/crucible/src/device_subnode.rs;
   worldDevices = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  shmemRoot = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  shmemRoot = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-9 checked off after physical-layout invariance proof";
-        needle = "- [x] **T-SPAT-9**";
-      }
       {
         label = "T-SPAT-9 completion names logical-only world";
         needle = "`World::nodes` is the one\n    heterogeneous logical VM/block/9p collection";

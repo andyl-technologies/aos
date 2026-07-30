@@ -5,10 +5,7 @@ edition = "2024"
 publish = false
 
 [features]
-default = ["disk", "ninep", "net"]
-disk = []
-ninep = []
-net = []
+default = []
 
 [lints]
 workspace = true

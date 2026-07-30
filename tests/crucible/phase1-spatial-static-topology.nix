@@ -12,7 +12,7 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -20,14 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-10 checked off";
-        needle = "- [x] **T-SPAT-10**";
-      }
       {
         label = "T-SPAT-10 completion names immutable accessors";
         needle = "`World` now stores nodes and";
@@ -48,7 +42,7 @@
       }
       {
         label = "world node accessor";
-        needle = "pub fn nodes(&self) -> &[WorldNode]";
+        needle = "pub fn nodes(&self) -> &[WorldNodeDef]";
       }
       {
         label = "world link accessor";
@@ -180,7 +174,7 @@
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
       {
         label = "QEMU reads world nodes immutably";
-        needle = "for node in world.nodes()";
+        needle = "for node in world.vm_nodes()";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

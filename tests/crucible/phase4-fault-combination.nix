@@ -19,15 +19,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-5 checked off";
-        needle = "- [x] **T-FAULT-5**";
-      }
       {
         label = "T-FAULT-5 completion note";
         needle = "Completed by `checks.crucible.phase4.faultCombination`";

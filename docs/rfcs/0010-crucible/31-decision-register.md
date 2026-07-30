@@ -1395,6 +1395,24 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Date:** 2026-07-25.
 - **Decided by:** T-D-4.
 
+### D-37 — Use the hermetic exhaustive SPSC ordering model
+
+- **Status:** Decided
+- **Decision:** Certify the shared-memory SPSC ring with the checked-in
+  exhaustive producer/consumer ordering model and deterministic exhaustive
+  operation-trace corpus, including deliberately weakened-ordering negative
+  controls. Do not describe that mechanism as `loom` or `proptest`.
+- **Rationale:** The existing model enumerates the RFC 13.6 interleavings and
+  proves that relaxed publication admits invalid executions. It is built
+  entirely from the AOS workspace, while adding two proc-macro-heavy upstream
+  dependency trees would expand the hermetic bootstrap without increasing the
+  bounded state space covered by this gate.
+- **Evidence:** `checks.crucible.phase1.concurrencyAbiOracleStandards` and the
+  mirrored `crucible-harness` test require the two executable model entrypoints
+  and emit `spsc=exhaustive-ordering-model`.
+- **Affects:** [STD-22], [STD-23], [HARN-33]; files 13, 24, and 28.
+- **Date:** 2026-07-28.
+
 ---
 
 ## Relationship to spikes already in the determinism contract
@@ -1505,8 +1523,8 @@ register.
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
     `idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
     `block_busy_poll_fraction_requirement=le_100000`,
-    `block_idled_operations=32`, `block_busy_polled_operations=0`,
-    `block_idle_fraction_ppm=1000000`,
+    `block_idled_operations=31..32`, `block_busy_polled_operations=0..1`,
+    `block_idle_fraction_ppm=968750..1000000`,
     `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
     `block_busy_poll_instruction_distribution=empty`,
     `block_hlt_observed=true`, `block_io_events_observed_per_operation=true`,

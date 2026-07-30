@@ -33,13 +33,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
-      {
-        label = "T-DET-30 is complete";
-        needle = "- [x] **T-DET-30**";
-      }
       {
         label = "T-DET-30 completion note names preemption check";
         needle = "`checks.crucible.phase2.qemuPluginPreemption`";
@@ -50,10 +45,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-25 is complete with live QEMU callback integration";
-        needle = "- [x] **T-PLUG-25**";
-      }
       {
         label = "Decision::Preemption obligation";
         needle = "Decision::Preemption";

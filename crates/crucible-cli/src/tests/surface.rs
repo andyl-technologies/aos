@@ -58,6 +58,7 @@ pub(super) struct RecordingBackendCommandRunner {
     pub(super) local_runs: Vec<ResolvedLocalBackend>,
     pub(super) remote_runs: Vec<String>,
     pub(super) outcomes: Vec<BackendCommandOutcome>,
+    pub(super) evidence_override: Option<BackendExecutionEvidence>,
 }
 
 impl BackendCommandRunner for RecordingBackendCommandRunner {
@@ -70,11 +71,18 @@ impl BackendCommandRunner for RecordingBackendCommandRunner {
         _run_plan: Option<&RunInvocationPlan>,
         _verify_plan: Option<&VerifyInvocationPlan>,
         _save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError> {
+    ) -> Result<BackendCommandExecution, CliError> {
         self.local_runs.push(backend.clone());
         let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
         self.outcomes.push(outcome.clone());
-        Ok(outcome)
+        Ok(BackendCommandExecution {
+            outcome,
+            evidence: self
+                .evidence_override
+                .clone()
+                .or_else(|| backend_plan.expected_execution_evidence())
+                .ok_or_else(|| backend_error("test local route has no execution identity"))?,
+        })
     }
 
     fn run_remote(
@@ -86,11 +94,18 @@ impl BackendCommandRunner for RecordingBackendCommandRunner {
         _run_plan: Option<&RunInvocationPlan>,
         _verify_plan: Option<&VerifyInvocationPlan>,
         _save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError> {
+    ) -> Result<BackendCommandExecution, CliError> {
         self.remote_runs.push(daemon.to_string());
         let outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
         self.outcomes.push(outcome.clone());
-        Ok(outcome)
+        Ok(BackendCommandExecution {
+            outcome,
+            evidence: self.evidence_override.clone().unwrap_or_else(|| {
+                BackendExecutionEvidence::RemoteDaemon {
+                    daemon: daemon.to_string(),
+                }
+            }),
+        })
     }
 }
 
@@ -163,91 +178,91 @@ pub(super) fn write_search_terminal_sometimes_scenario(
     Ok(path)
 }
 
-pub(super) fn search_named_truth_scenario_form()
--> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+pub(super) fn search_named_truth_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>>
+{
     let world = search_frontier_world()?;
-    let properties = ::crucible::Properties::from_assertions_for_world(
+    let properties = crucible::Properties::from_assertions_for_world(
         &world,
-        vec![::crucible::AssertionDef {
-            id: ::crucible::AssertionId::from_name("cli-search-named-truth"),
+        vec![crucible::AssertionDef {
+            id: crucible::AssertionId::from_name("cli-search-named-truth"),
             message: String::from("CLI search named truth must hold"),
-            property: ::crucible::Property::Always {
-                predicate: ::crucible::Predicate::named("cli-search/named-truth"),
+            property: crucible::Property::Always {
+                predicate: crucible::Predicate::named("cli-search/named-truth"),
             },
         }],
     )?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
+        &crucible::Plan::empty(),
         &properties,
-        ::crucible::Seed::from_u64(0x5151),
+        crucible::Seed::from_u64(0x5151),
     )?)
 }
 
 pub(super) fn search_retained_evidence_scenario_form()
--> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+-> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
-    let properties = ::crucible::Properties::from_assertions_for_world(
+    let properties = crucible::Properties::from_assertions_for_world(
         &world,
-        vec![::crucible::AssertionDef {
-            id: ::crucible::AssertionId::from_name("cli-search-retained-evidence"),
+        vec![crucible::AssertionDef {
+            id: crucible::AssertionId::from_name("cli-search-retained-evidence"),
             message: String::from("CLI search retained evidence marker must not appear"),
-            property: ::crucible::Property::Always {
-                predicate: ::crucible::Predicate::not(::crucible::Predicate::guest_marker(
-                    ::crucible::MarkerId::from_name("forbidden-search-marker"),
+            property: crucible::Property::Always {
+                predicate: crucible::Predicate::not(crucible::Predicate::guest_marker(
+                    crucible::MarkerId::from_name("forbidden-search-marker"),
                 )),
             },
         }],
     )?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
+        &crucible::Plan::empty(),
         &properties,
-        ::crucible::Seed::from_u64(0x5252),
+        crucible::Seed::from_u64(0x5252),
     )?)
 }
 
 pub(super) fn search_terminal_quiescence_scenario_form()
--> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+-> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
-    let properties = ::crucible::Properties::from_assertions_for_world(
+    let properties = crucible::Properties::from_assertions_for_world(
         &world,
-        vec![::crucible::AssertionDef {
-            id: ::crucible::AssertionId::from_name("cli-search-retained-terminal-quiescence"),
+        vec![crucible::AssertionDef {
+            id: crucible::AssertionId::from_name("cli-search-retained-terminal-quiescence"),
             message: String::from("CLI search terminal quiescence must not be retained"),
-            property: ::crucible::Property::AfterQuiescence {
-                predicate: ::crucible::Predicate::not(::crucible::Predicate::quiescent()),
+            property: crucible::Property::AfterQuiescence {
+                predicate: crucible::Predicate::not(crucible::Predicate::quiescent()),
             },
         }],
     )?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
+        &crucible::Plan::empty(),
         &properties,
-        ::crucible::Seed::from_u64(0x5353),
+        crucible::Seed::from_u64(0x5353),
     )?)
 }
 
 pub(super) fn search_terminal_sometimes_scenario_form()
--> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+-> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
-    let properties = ::crucible::Properties::from_assertions_for_world(
+    let properties = crucible::Properties::from_assertions_for_world(
         &world,
-        vec![::crucible::AssertionDef {
-            id: ::crucible::AssertionId::from_name("cli-search-retained-terminal-sometimes"),
+        vec![crucible::AssertionDef {
+            id: crucible::AssertionId::from_name("cli-search-retained-terminal-sometimes"),
             message: String::from("CLI search terminal retained marker must eventually appear"),
-            property: ::crucible::Property::Sometimes {
-                predicate: ::crucible::Predicate::guest_marker(::crucible::MarkerId::from_name(
+            property: crucible::Property::Sometimes {
+                predicate: crucible::Predicate::guest_marker(crucible::MarkerId::from_name(
                     "never-terminal-sometimes-marker",
                 )),
             },
         }],
     )?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
+        &crucible::Plan::empty(),
         &properties,
-        ::crucible::Seed::from_u64(0x5454),
+        crucible::Seed::from_u64(0x5454),
     )?)
 }
 
@@ -388,24 +403,24 @@ pub(super) fn write_signed_triage_findings_ledger(
     store_root: &Path,
     file_name: &str,
     discovery_signature_assertion: Option<&str>,
-) -> Result<(PathBuf, ::crucible::FindingReproductionArtifact), Box<dyn Error>> {
+) -> Result<(PathBuf, crucible::FindingReproductionArtifact), Box<dyn Error>> {
     fs::create_dir_all(dir)?;
     let form = search_frontier_scenario_form()?;
-    let configuration = ::crucible::try_step(
-        &::crucible::Configuration::genesis(form.scenario_def()),
+    let configuration = crucible::try_step(
+        &crucible::Configuration::genesis(form.scenario_def()),
         search_frontier_decisions()
             .into_iter()
             .nth(1)
             .ok_or_else(|| std::io::Error::other("missing triage fixture decision"))?,
     )?;
-    let finding_fingerprint = ::crucible::ContentHash::from_bytes(b"cli triage signed finding");
-    let finding = ::crucible::FindingReproductionArtifact::capture(
-        ::crucible::FindingDiscoveryPath::StateSpaceSearch,
+    let finding_fingerprint = crucible::ContentHash::from_bytes(b"cli triage signed finding");
+    let finding = crucible::FindingReproductionArtifact::capture(
+        crucible::FindingDiscoveryPath::StateSpaceSearch,
         finding_fingerprint,
         &form,
         &configuration,
     )?;
-    let store = ::crucible::LocalDagStore::new(store_root.to_path_buf());
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let artifact = finding.store_artifact(&store)?;
     assert_eq!(artifact, finding.artifact.id());
 
@@ -438,79 +453,74 @@ finding.0.detail=synthetic signed finding evidence
     Ok((path, finding))
 }
 
-pub(super) fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>>
-{
+pub(super) fn search_frontier_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_frontier_world()?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
-        &::crucible::Properties::empty(),
-        ::crucible::Seed::default(),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        crucible::Seed::default(),
     )?)
 }
 
-pub(super) fn search_frontier_world() -> Result<::crucible::World, Box<dyn Error>> {
-    Ok(::crucible::World::from_nodes(vec![
-        ::crucible::WorldNode {
-            id: ::crucible::NodeId {
-                name: String::from("cli-search-node"),
-            },
-            arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
-            memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
-            cmdline: String::from("crucible-cli-search-frontier"),
-            ready_point: ::crucible::ReadyPoint::FixedIcount {
-                icount: ::crucible::Icount { retired: 100 },
-            },
-            white_box: ::crucible::WhiteBoxPolicy::Disabled,
-            smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-            icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-            kernel: None,
-            root_image: None,
-            initrd: None,
+pub(super) fn search_frontier_world() -> Result<crucible::World, Box<dyn Error>> {
+    Ok(crucible::World::from_nodes(vec![crucible::WorldNode {
+        id: crucible::NodeId {
+            name: String::from("cli-search-node"),
         },
-    ])?)
+        arch: crucible::NodeTemplate::DEFAULT_ARCH,
+        memory_mib: crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("crucible-cli-search-frontier"),
+        ready_point: crucible::ReadyPoint::FixedIcount {
+            icount: crucible::Icount { retired: 100 },
+        },
+        white_box: crucible::WhiteBoxPolicy::Disabled,
+        smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?)
 }
 
-pub(super) fn search_retained_evidence_world() -> Result<::crucible::World, Box<dyn Error>> {
-    Ok(::crucible::World::from_nodes(vec![
-        ::crucible::WorldNode {
-            id: ::crucible::NodeId {
-                name: String::from("cli-search-retained-node"),
-            },
-            arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
-            memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
-            cmdline: String::from("crucible-cli-search-retained"),
-            ready_point: ::crucible::ReadyPoint::FixedIcount {
-                icount: ::crucible::Icount { retired: 100 },
-            },
-            white_box: ::crucible::WhiteBoxPolicy::Enabled,
-            smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-            icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-            kernel: None,
-            root_image: None,
-            initrd: None,
+pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dyn Error>> {
+    Ok(crucible::World::from_nodes(vec![crucible::WorldNode {
+        id: crucible::NodeId {
+            name: String::from("cli-search-retained-node"),
         },
-    ])?)
+        arch: crucible::NodeTemplate::DEFAULT_ARCH,
+        memory_mib: crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("crucible-cli-search-retained"),
+        ready_point: crucible::ReadyPoint::FixedIcount {
+            icount: crucible::Icount { retired: 100 },
+        },
+        white_box: crucible::WhiteBoxPolicy::Enabled,
+        smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?)
 }
 
-pub(super) fn search_frontier_decisions() -> Vec<::crucible::Decision> {
+pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
     vec![
-        ::crucible::Decision::FaultFires(::crucible::FaultDecision {
-            at: ::crucible::VirtualTime { ticks: 12 },
-            fault: ::crucible::FaultId {
+        crucible::Decision::FaultFires(crucible::FaultDecision {
+            at: crucible::VirtualTime { ticks: 12 },
+            fault: crucible::FaultId {
                 name: String::from("cli-search/packet-loss"),
             },
             fired: true,
         }),
-        ::crucible::Decision::RngDraw(::crucible::RngDecision {
-            stream: ::crucible::RngStreamId::from_name("cli-search/decision-rng"),
+        crucible::Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId::from_name("cli-search/decision-rng"),
             value: 0xa5a5_5a5a,
         }),
-        ::crucible::Decision::Override(::crucible::OverrideDecision {
-            point: ::crucible::SchedulingPoint {
+        crucible::Decision::Override(crucible::OverrideDecision {
+            point: crucible::SchedulingPoint {
                 key: String::from("cli-search/scheduler-point"),
             },
-            choice: ::crucible::ChoiceTag {
+            choice: crucible::ChoiceTag {
                 name: String::from("non-default-choice"),
             },
         }),
@@ -524,17 +534,17 @@ pub(super) fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf
     Ok(path)
 }
 
-pub(super) fn property_selector_scenario_form()
--> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
-    let fixture = ::crucible::happy_path_scenario()?;
-    let properties = ::crucible::Properties::from_assertions_for_world(
+pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>>
+{
+    let fixture = crucible::happy_path_scenario()?;
+    let properties = crucible::Properties::from_assertions_for_world(
         fixture.scenario.world(),
         vec![
             property_selector_assertion(SAVE_DOUBLE_ASSERTION_VIOLATION),
             property_selector_assertion("split-active"),
         ],
     )?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         fixture.scenario.world(),
         fixture.scenario.plan(),
         &properties,
@@ -546,7 +556,7 @@ pub(super) fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, 
     write_marker_selector_scenario_with_policy(
         temp,
         "marker-selector-scenario.toml",
-        ::crucible::WhiteBoxPolicy::Enabled,
+        crucible::WhiteBoxPolicy::Enabled,
     )
 }
 
@@ -556,14 +566,14 @@ pub(super) fn write_marker_selector_without_source_scenario(
     write_marker_selector_scenario_with_policy(
         temp,
         "marker-selector-no-source-scenario.toml",
-        ::crucible::WhiteBoxPolicy::Disabled,
+        crucible::WhiteBoxPolicy::Disabled,
     )
 }
 
 pub(super) fn write_marker_selector_scenario_with_policy(
     temp: &TempDir,
     file_name: &str,
-    white_box: ::crucible::WhiteBoxPolicy,
+    white_box: crucible::WhiteBoxPolicy,
 ) -> Result<PathBuf, Box<dyn Error>> {
     let form = marker_selector_scenario_form(white_box)?;
     let path = temp.path().join(file_name);
@@ -572,39 +582,39 @@ pub(super) fn write_marker_selector_scenario_with_policy(
 }
 
 pub(super) fn marker_selector_scenario_form(
-    white_box: ::crucible::WhiteBoxPolicy,
-) -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
-    let world = ::crucible::World::from_nodes(vec![::crucible::WorldNode {
-        id: ::crucible::NodeId {
+    white_box: crucible::WhiteBoxPolicy,
+) -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
+    let world = crucible::World::from_nodes(vec![crucible::WorldNode {
+        id: crucible::NodeId {
             name: String::from("marker-node"),
         },
-        arch: ::crucible::NodeTemplate::DEFAULT_ARCH,
-        memory_mib: ::crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: crucible::NodeTemplate::DEFAULT_ARCH,
+        memory_mib: crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::from("crucible-marker-selector=1 crucible-guest-marker=phase-two-marker"),
-        ready_point: ::crucible::ReadyPoint::FixedIcount {
-            icount: ::crucible::Icount { retired: 1 },
+        ready_point: crucible::ReadyPoint::FixedIcount {
+            icount: crucible::Icount { retired: 1 },
         },
         white_box,
-        smp_vcpus: ::crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: ::crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }])?;
-    Ok(::crucible::ScenarioDefForm::from_components(
+    Ok(crucible::ScenarioDefForm::from_components(
         &world,
-        &::crucible::Plan::empty(),
-        &::crucible::Properties::empty(),
-        ::crucible::Seed::from_u64(14),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        crucible::Seed::from_u64(14),
     )?)
 }
 
-pub(super) fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
-    ::crucible::AssertionDef {
-        id: ::crucible::AssertionId::from_name(name),
+pub(super) fn property_selector_assertion(name: &str) -> crucible::AssertionDef {
+    crucible::AssertionDef {
+        id: crucible::AssertionId::from_name(name),
         message: format!("{name} test selector"),
-        property: ::crucible::Property::Always {
-            predicate: ::crucible::Predicate::at(::crucible::VirtualTime { ticks: 999 }),
+        property: crucible::Property::Always {
+            predicate: crucible::Predicate::at(crucible::VirtualTime { ticks: 999 }),
         },
     }
 }
@@ -1010,10 +1020,12 @@ pub(super) fn write_checkpoint_closure_fixture(
     let artifact = crucible::ReproductionArtifact::capture(form, schedule)?;
     let store = crucible::LocalDagStore::new(store_root.to_path_buf());
     let artifact_key = store.put(&artifact.to_compact_binary())?;
-    let index = store.write_checkpoint_closure_index(checkpoint, artifact_key)?;
+    let frontier = schedule.recorded_virtual_time().unwrap_or_default();
+    let index = store.write_checkpoint_closure_index(checkpoint, artifact_key, frontier)?;
     let loaded = store.read_checkpoint_closure_index(checkpoint)?;
     assert_eq!(loaded.checkpoint, checkpoint);
     assert_eq!(loaded.reproduction_artifact, artifact_key);
+    assert_eq!(loaded.frontier, frontier);
     assert!(store.exists(&index)?);
     Ok(artifact_key)
 }
@@ -2073,175 +2085,19 @@ pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabili
 }
 
 #[test]
-pub(super) fn cli_backend_selection_auto_announces_qemu_or_double_resolution()
+pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
 -> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
-    let double_cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
-    let double_plan =
-        plan_backend_selection(&double_cli)?.expect("run should require backend selection");
-    assert_eq!(double_plan.target, BackendExecutionTarget::Local);
-    assert_eq!(
-        double_plan.resolved_backend,
-        Some(ResolvedLocalBackend::Double)
-    );
-    assert_eq!(
-        double_plan.reason,
-        BackendSelectionReason::AutoFallbackDouble
-    );
-    assert!(double_plan.should_announce(false));
-    assert!(double_plan.announcement().contains("backend = double"));
-    assert!(double_plan.proves_t_cli_3());
-    let mut recorder = RecordingBackendRouteRecorder::default();
-    execute_backend_selection_plan(&double_plan, false, &mut recorder)?;
-    assert_eq!(recorder.local_backends, vec![ResolvedLocalBackend::Double]);
-    assert_eq!(recorder.announcements, vec![double_plan.announcement()]);
+    struct StaticProbe(LiveQemuProbeEvidence);
 
-    let qemu_cli = Cli::parse_from([
-        "crucible",
-        "--qemu",
-        &qemu,
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let qemu_plan =
-        plan_backend_selection(&qemu_cli)?.expect("run should require backend selection");
-    assert!(matches!(
-        qemu_plan.resolved_backend,
-        Some(ResolvedLocalBackend::Qemu { .. })
-    ));
-    assert_eq!(
-        qemu_plan.reason,
-        BackendSelectionReason::AutoQemuArtifactsSupplied
-    );
-    assert!(qemu_plan.announcement().contains("backend = qemu"));
-    assert!(qemu_plan.proves_t_cli_3());
+    impl LiveQemuProbeRunner for StaticProbe {
+        fn run_probe(
+            &mut self,
+            _backend: &ResolvedLocalBackend,
+        ) -> Result<LiveQemuProbeEvidence, CliError> {
+            Ok(self.0.clone())
+        }
+    }
 
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exit()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
-    let double_cli = Cli::parse_from([
-        "crucible",
-        "--backend",
-        "double",
-        "--qemu",
-        &qemu,
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let double_plan =
-        plan_backend_selection(&double_cli)?.expect("run should require backend selection");
-    assert_eq!(double_plan.requested_backend, Backend::Double);
-    assert_eq!(
-        double_plan.resolved_backend,
-        Some(ResolvedLocalBackend::Double)
-    );
-    assert_eq!(double_plan.reason, BackendSelectionReason::ExplicitDouble);
-    assert!(!double_plan.should_announce(false));
-    assert!(double_plan.proves_t_cli_3());
-
-    let missing_qemu = Cli::parse_from(["crucible", "--backend", "qemu", "run", TEST_SCENARIO]);
-    let error = match plan_backend_selection(&missing_qemu) {
-        Ok(_) => panic!("explicit qemu without artifacts must fail"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    assert!(error.to_string().contains("--qemu"));
-    assert!(error.to_string().contains("--plugin"));
-
-    let missing_files = Cli::parse_from([
-        "crucible",
-        "--backend",
-        "qemu",
-        "--qemu",
-        temp.path()
-            .join("missing-qemu")
-            .to_str()
-            .unwrap_or("missing-qemu"),
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let error = match plan_backend_selection(&missing_files) {
-        Ok(_) => panic!("explicit qemu with an unusable artifact must fail"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    assert!(error.to_string().contains("cannot read patched QEMU"));
-
-    let directory_artifact = Cli::parse_from([
-        "crucible",
-        "--backend",
-        "qemu",
-        "--qemu",
-        temp.path().to_str().unwrap_or("."),
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let error = match plan_backend_selection(&directory_artifact) {
-        Ok(_) => panic!("explicit qemu with a directory artifact must fail"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    assert!(error.to_string().contains("not a regular file"));
-
-    let auto_with_unusable_artifact = Cli::parse_from([
-        "crucible",
-        "--qemu",
-        temp.path().to_str().unwrap_or("."),
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let error = match plan_backend_selection(&auto_with_unusable_artifact) {
-        Ok(_) => panic!("auto with a complete but invalid QEMU candidate pair must fail"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    assert!(error.to_string().contains("not a regular file"));
-
-    let qemu_cli = Cli::parse_from([
-        "crucible",
-        "--backend",
-        "qemu",
-        "--qemu",
-        &qemu,
-        "--plugin",
-        &plugin,
-        "run",
-        TEST_SCENARIO,
-    ]);
-    let qemu_plan =
-        plan_backend_selection(&qemu_cli)?.expect("run should require backend selection");
-    assert_eq!(qemu_plan.reason, BackendSelectionReason::ExplicitQemu);
-    assert!(matches!(
-        qemu_plan.resolved_backend,
-        Some(ResolvedLocalBackend::Qemu { .. })
-    ));
-    assert!(qemu_plan.proves_t_cli_3());
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_unwired_qemu_workflows_never_fall_back_to_the_double() {
     let backend = ResolvedLocalBackend::Qemu {
         qemu: PathBuf::from("/test/qemu"),
         plugin: PathBuf::from("/test/plugin"),
@@ -2252,14 +2108,24 @@ pub(super) fn cli_unwired_qemu_workflows_never_fall_back_to_the_double() {
         qemu_source: QemuDiscoverySource::Flag,
         plugin_source: QemuDiscoverySource::Flag,
     };
-
-    for command in [
-        "run", "save", "resume", "fork", "verify", "search", "fuzz", "debug",
-    ] {
-        let error = reject_unwired_qemu_workflow(&backend, command)
-            .expect_err("an unwired QEMU workflow must fail instead of using the double");
-        assert_qemu_workflow_unwired(&error, command);
-    }
+    let cli = Cli::parse_from(["crucible", "--backend", "qemu", "debug", "failure.crucible"]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("debug command should parse");
+    };
+    let plan = plan_debug_invocation(&cli, args)?;
+    let mut probe = StaticProbe(LiveQemuProbeEvidence {
+        qemu_build_id: String::from("test-build"),
+        plugin_abi: String::from("test-plugin-abi"),
+        completed_icount: 42,
+        execution_fingerprint: String::from("blake3:test-fingerprint"),
+    });
+    let lines = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut probe)?;
+    assert!(lines[0].contains("operation=debug-admission"));
+    assert!(lines[0].contains("icount=42"));
+    assert!(lines[1].contains("target=artifact:failure.crucible"));
+    assert!(lines[1].contains("read_only=true"));
+    assert!(lines[1].contains("raw_gdb_single_step=false"));
+    Ok(())
 }
 
 #[test]
@@ -2779,3 +2645,5 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
 
     Ok(())
 }
+#[path = "surface/backend_selection.rs"]
+mod backend_selection;

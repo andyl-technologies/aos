@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginVcpuIntrospection",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-26"],
+  taskIds ? ["T-PLUG-26"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -31,13 +31,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-26 closed live; this gate covers its introspection model";
-        needle = "- [x] **T-PLUG-26**";
-      }
       {
         label = "per-vCPU register wording";
         needle = "per-vCPU register-file";

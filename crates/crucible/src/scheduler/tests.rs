@@ -1,51 +1,10 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::{BackendEffect, MockSimulationBackend, RngDecision, ScenarioDef, step};
+use crate::{BackendEffect, MockSimulationBackend, RngDecision, ScenarioDef};
 
-#[test]
-fn quantum_loop_trait_is_object_safe() {
-    struct StubLoop;
-
-    impl QuantumLoop for StubLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 0 },
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.quantum-loop",
-        "scenario=stub",
-    ));
-    let request = QuantumRequest {
-        configuration: config.clone(),
-        control: Vec::new(),
-    };
-    let mut loop_impl = StubLoop;
-    let object: &mut dyn QuantumLoop = &mut loop_impl;
-
-    let outcome = object.drive_quantum(request);
-
-    assert_eq!(
-        outcome.as_ref().map(|outcome| &outcome.configuration),
-        Ok(&config)
-    );
-}
+#[path = "tests/production_backend.rs"]
+mod production_backend;
 
 #[test]
 fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {

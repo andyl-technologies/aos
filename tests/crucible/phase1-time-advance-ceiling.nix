@@ -22,8 +22,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
@@ -198,10 +196,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-7 completed by the live plugin quantum gate";
-        needle = "- [x] **T-TIME-7**";
-      }
       {
         label = "T-TIME-7 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";

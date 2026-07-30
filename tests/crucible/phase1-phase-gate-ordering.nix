@@ -18,7 +18,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-harness/src/phase_plan.rs" phasePlanRust [
       {
@@ -77,10 +76,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" gateCatalog [
-      {
-        label = "T-HARN-26 checklist complete";
-        needle = "- [x] **T-HARN-26**";
-      }
       {
         label = "green-before-advance requirement";
         needle = "green-before-advance";

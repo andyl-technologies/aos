@@ -15,18 +15,16 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  controlClientGate = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 checklist complete";
-        needle = "- [x] **T-CLI-14** Implement `serve`";
-      }
       {
         label = "T-CLI-14 multi-client completion note";
         needle = "`checks.crucible.phase5.cliServeMultiClient`";

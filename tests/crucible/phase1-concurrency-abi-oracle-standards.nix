@@ -35,23 +35,99 @@
             then charAt (index + 1)
             else "";
         in
-        if state.mode == "code"
-        then
-          if ch == "/" && next == "/"
+          if state.mode == "code"
+          then
+            if ch == "/" && next == "/"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode = "line";
+                skip = true;
+              }
+            else if ch == "/" && next == "*"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode = "block";
+                depth = 1;
+                skip = true;
+              }
+            else if ch == "\""
+            then
+              state
+              // {
+                out = state.out + " ";
+                mode = "string";
+              }
+            else
+              state
+              // {
+                out = state.out + ch;
+              }
+          else if state.mode == "line"
+          then
+            if ch == "\n"
+            then
+              state
+              // {
+                out = state.out + "\n";
+                mode = "code";
+              }
+            else
+              state
+              // {
+                out = state.out + " ";
+              }
+          else if state.mode == "block"
+          then
+            if ch == "/" && next == "*"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                depth = state.depth + 1;
+                skip = true;
+              }
+            else if ch == "*" && next == "/"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode =
+                  if state.depth == 1
+                  then "code"
+                  else "block";
+                depth =
+                  if state.depth == 1
+                  then 0
+                  else state.depth - 1;
+                skip = true;
+              }
+            else
+              state
+              // {
+                out =
+                  state.out
+                  + (
+                    if ch == "\n"
+                    then "\n"
+                    else " "
+                  );
+              }
+          else if ch == "\\" && next != ""
           then
             state
             // {
-              out = state.out + "  ";
-              mode = "line";
-              skip = true;
-            }
-          else if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode = "block";
-              depth = 1;
+              out =
+                state.out
+                + " "
+                + (
+                  if next == "\n"
+                  then "\n"
+                  else " "
+                );
               skip = true;
             }
           else if ch == "\""
@@ -59,88 +135,19 @@
             state
             // {
               out = state.out + " ";
-              mode = "string";
-            }
-          else
-            state
-            // {
-              out = state.out + ch;
-            }
-        else if state.mode == "line"
-        then
-          if ch == "\n"
-          then
-            state
-            // {
-              out = state.out + "\n";
               mode = "code";
             }
           else
             state
             // {
-              out = state.out + " ";
-            }
-        else if state.mode == "block"
-        then
-          if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              depth = state.depth + 1;
-              skip = true;
-            }
-          else if ch == "*" && next == "/"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode =
-                if state.depth == 1
-                then "code"
-                else "block";
-              depth =
-                if state.depth == 1
-                then 0
-                else state.depth - 1;
-              skip = true;
-            }
-          else
-            state
-            // {
-              out = state.out + (
-                if ch == "\n"
-                then "\n"
-                else " "
-              );
-            }
-        else if ch == "\\" && next != ""
-        then
-          state
-          // {
-            out = state.out + " " + (
-              if next == "\n"
-              then "\n"
-              else " "
-            );
-            skip = true;
-          }
-        else if ch == "\""
-        then
-          state
-          // {
-            out = state.out + " ";
-            mode = "code";
-          }
-        else
-          state
-          // {
-            out = state.out + (
-              if ch == "\n"
-              then "\n"
-              else " "
-            );
-          };
+              out =
+                state.out
+                + (
+                  if ch == "\n"
+                  then "\n"
+                  else " "
+                );
+            };
     in
       # Force the accumulated output flat before the next chunk so thunk
       # depth stays bounded by the longest line, not the whole file.
@@ -280,8 +287,8 @@
   ];
 
   spscRingMarkers = [
-    "assert_spsc_ring_loom_model("
-    "assert_spsc_ring_proptest_properties("
+    "assert_spsc_ring_exhaustive_ordering_model("
+    "assert_spsc_ring_exhaustive_trace_properties("
     "NoLostFrame"
     "NoDuplicatedFrame"
     "FifoOrder"
@@ -361,19 +368,19 @@
     "assert_ne!(producer_skewed, consumer_skewed);"
   ];
 
-	  replayOracleMarkers = [
-	    "assert_replay_oracle_fixed_checkpoint_corpus("
-	    "struct MaterializedCheckpoint"
-	    "fn materialize_fat_checkpoint("
-	    "fn schedule_delta("
-	    "fn replay_schedule("
-	    "assert_replay_oracle_rejects_corrupt_configuration_metadata("
-	    "assert_replay_oracle_rejects_corrupt_schedule_delta_metadata("
-	    "assert_replay_oracle_excludes_observational_entries("
-	    "assert_replay_oracle_reports_first_mismatch("
-	    "assert_twice_reduce_canonical_digest("
-	    "SimDouble"
-	  ];
+  replayOracleMarkers = [
+    "assert_replay_oracle_fixed_checkpoint_corpus("
+    "struct MaterializedCheckpoint"
+    "fn materialize_fat_checkpoint("
+    "fn schedule_delta("
+    "fn replay_schedule("
+    "assert_replay_oracle_rejects_corrupt_configuration_metadata("
+    "assert_replay_oracle_rejects_corrupt_schedule_delta_metadata("
+    "assert_replay_oracle_excludes_observational_entries("
+    "assert_replay_oracle_reports_first_mismatch("
+    "assert_twice_reduce_canonical_digest("
+    "SimDouble"
+  ];
 
   standards = [
     {
@@ -438,11 +445,11 @@
       requiredFeatures = [];
       kind = "injection-determinism";
       requiredMarkers = deviceInjectionMarkers;
-	    }
-	    {
-	      id = "replay-oracle-fixed-corpus";
-	      gate = "gate:replay-oracle";
-	      package = "crucible";
+    }
+    {
+      id = "replay-oracle-fixed-corpus";
+      gate = "gate:replay-oracle";
+      package = "crucible";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
       kind = "replay-oracle";
@@ -451,10 +458,11 @@
   ];
 
   targetFor = standard: let
-    matches = builtins.filter (
-      target: target.package == standard.package && target.testTarget == standard.testTarget
-    )
-    targets;
+    matches =
+      builtins.filter (
+        target: target.package == standard.package && target.testTarget == standard.testTarget
+      )
+      targets;
   in
     if matches == []
     then null
@@ -526,7 +534,7 @@
     hasUnsafe = builtins.any (marker: hasInfix marker code) unsafePrimitiveMarkers;
   in
     lib.optionals (placeholder && (hasAtomic || (hasContext && (hasContextualAtomic || hasUnsafe)))) [
-      "${sourceLabel}: concurrent shmem primitive cannot land before the loom/proptest gate body"
+      "${sourceLabel}: concurrent shmem primitive cannot land before the exhaustive-ordering gate body"
     ];
 
   spscTarget = targetFor {
@@ -537,11 +545,10 @@
     if spscTarget == null
     then false
     else spscTarget.placeholder;
-  shmemConcurrentPrimitiveFailures =
-    lib.concatMap (
-      source:
-        concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/${source.display}" source.fileName (builtins.readFile source.path) spscPlaceholder
-    ) (rustSources (cratesDir + "/crucible-shmem/src") "src");
+  shmemConcurrentPrimitiveFailures = lib.concatMap (
+    source:
+      concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/${source.display}" source.fileName (builtins.readFile source.path) spscPlaceholder
+  ) (rustSources (cratesDir + "/crucible-shmem/src") "src");
 
   standardFailures =
     lib.concatMap (
@@ -561,18 +568,16 @@
   abiOwners =
     lib.sort builtins.lessThan (map (target: target.package) (builtins.filter (target: target.gate == "gate:abi-conformance") targets));
   expectedAbiOwners = ["crucible-api" "crucible-harness" "crucible-protocol" "crucible-shmem"];
-  abiOwnerFailures =
-    lib.optionals (abiOwners != expectedAbiOwners) [
-      "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"
-    ];
+  abiOwnerFailures = lib.optionals (abiOwners != expectedAbiOwners) [
+    "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"
+  ];
 
   boundaryAbiIds =
     lib.sort builtins.lessThan (map (standard: standard.id) (builtins.filter (standard: standard.kind == "boundary-abi") standards));
   expectedBoundaryAbiIds = ["all-boundary-abi-conformance" "control-plane-rpc-abi" "guest-host-protocol-abi" "shmem-layout-abi"];
-  boundaryAbiFailures =
-    lib.optionals (boundaryAbiIds != expectedBoundaryAbiIds) [
-      "advanced-test standards must cover the shmem, guest-host protocol, and control-plane RPC ABIs"
-    ];
+  boundaryAbiFailures = lib.optionals (boundaryAbiIds != expectedBoundaryAbiIds) [
+    "advanced-test standards must cover the shmem, guest-host protocol, and control-plane RPC ABIs"
+  ];
 
   requiredRustText = [
     "gate_targets_follow_concurrency_abi_and_oracle_standards"
@@ -589,13 +594,13 @@
     "REPLAY_ORACLE_MARKERS"
     "advanced_standard_regression_failures"
     "spsc_ring_unsafe_without_model_failures"
-    "assert_spsc_ring_loom_model("
-	    "assert_spsc_ring_proptest_properties("
-	    "assert_frozen_golden_vectors("
-	    "assert_decode_encode_roundtrip("
-	    "assert_replay_oracle_fixed_checkpoint_corpus("
-	    "assert_replay_oracle_excludes_observational_entries("
-	  ];
+    "assert_spsc_ring_exhaustive_ordering_model("
+    "assert_spsc_ring_exhaustive_trace_properties("
+    "assert_frozen_golden_vectors("
+    "assert_decode_encode_roundtrip("
+    "assert_replay_oracle_fixed_checkpoint_corpus("
+    "assert_replay_oracle_excludes_observational_entries("
+  ];
 
   rustHarnessFailures =
     lib.concatMap (
@@ -618,9 +623,9 @@
     replayStandard = builtins.elemAt standards 7;
     findings =
       bodyMarkerFailures spscStandard badTarget ''
-        /* assert_spsc_ring_loom_model(NoLostFrame); */
+        /* assert_spsc_ring_exhaustive_ordering_model(NoLostFrame); */
         fn bad() {
-          let _ = "assert_spsc_ring_proptest_properties(FifoOrder)";
+          let _ = "assert_spsc_ring_exhaustive_trace_properties(FifoOrder)";
         }
       ''
       ++ targetStandardFailures replayStandard {
@@ -636,10 +641,11 @@
         fn publish(head: &AtomicUsize) {
           head.store(1, Ordering::Release);
         }
-      '' true;
+      ''
+      true;
     hasFinding = needle: builtins.any (finding: hasInfix needle finding) findings;
   in
-    lib.optionals (!(hasFinding "must check assert_spsc_ring_loom_model(")) [
+    lib.optionals (!(hasFinding "must check assert_spsc_ring_exhaustive_ordering_model(")) [
       "advanced-test regression failed to reject markers hidden in block comments/strings"
     ]
     ++ lib.optionals (!(hasFinding "features [test-double]")) [
@@ -678,7 +684,7 @@ in
             check=checks.crucible.phase1.concurrencyAbiOracleStandards
             gate=gate:layer1-injection,gate:abi-conformance,gate:replay-oracle
             tasks=T-STD-9
-            spsc=loom,proptest
+            spsc=exhaustive-ordering-model
             abi=golden-vectors,round-trip,fuzz-corpus
             replay_oracle=fixed-corpus
             RESULT

@@ -185,7 +185,9 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
             },
             kind: SchedulingNodeKind::Vm,
         })
-        .unwrap_or_else(|error| panic!("launch profile should derive scheduler RR policy: {error}"));
+        .unwrap_or_else(|error| {
+            panic!("launch profile should derive scheduler RR policy: {error}")
+        });
     assert_eq!(scheduler_policy.vcpu_count, 4);
     assert_eq!(scheduler_policy.rr_switch_quantum, 8192);
     assert!(

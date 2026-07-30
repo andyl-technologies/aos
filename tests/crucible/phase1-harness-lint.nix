@@ -16,30 +16,29 @@
   predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
   harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
   harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
-  harnessLintRust =
-    builtins.concatStringsSep "\n" (
-      [
-        harnessLintMainRust
-      ]
-      ++ (map builtins.readFile [
-        ../../crates/crucible-harness/tests/harness_lint_annotations.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/common.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
-        ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
-      ])
-      ++ [
-        harnessLintScanRust
-      ]
-    );
+  harnessLintRust = builtins.concatStringsSep "\n" (
+    [
+      harnessLintMainRust
+    ]
+    ++ (map builtins.readFile [
+      ../../crates/crucible-harness/tests/harness_lint_annotations.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/common.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/reference_integrity.rs
+    ])
+    ++ [
+      harnessLintScanRust
+    ]
+  );
   harnessLintMainCode = normalize harnessLintMainRust;
   harnessLintScanCode = normalize harnessLintScanRust;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   charAt = content: index: builtins.substring index 1 content;
 
@@ -154,12 +153,14 @@
         // {
           out = state.out + spaceFor item.ch;
         };
-    final = builtins.foldl' step {
-      mode = "code";
-      depth = 0;
-      skip = 0;
-      out = "";
-    } chars;
+    final =
+      builtins.foldl' step {
+        mode = "code";
+        depth = 0;
+        skip = 0;
+        out = "";
+      }
+      chars;
   in
     final.out;
 
@@ -519,14 +520,14 @@
 
   scanNormalizedDenyPatterns = patterns: label: normalizedContent:
     lib.concatMap (
-        deny:
-          if hasInfix (normalize deny.pattern) normalizedContent
-          then [
-            "${label}: banned ${deny.reason} pattern `${deny.pattern}`"
-          ]
-          else []
-      )
-      patterns;
+      deny:
+        if hasInfix (normalize deny.pattern) normalizedContent
+        then [
+          "${label}: banned ${deny.reason} pattern `${deny.pattern}`"
+        ]
+        else []
+    )
+    patterns;
 
   denyRule = deny:
     if deny ? rule
@@ -568,7 +569,8 @@
       text = "";
       lines = [];
       line = 0;
-    } indexes;
+    }
+    indexes;
 
   scanNormalizedDenyPatternsWithLines = patterns: label: content: let
     originalLines = lib.splitString "\n" content;
@@ -577,30 +579,30 @@
     normalizedLines = normalizedSource.lines;
   in
     lib.concatMap (
-        deny: let
-          normalizedPattern = normalize deny.pattern;
-          patternLength = builtins.stringLength normalizedPattern;
-          contentLength = builtins.stringLength normalizedContent;
-          maxStart = contentLength - patternLength;
-          indexes =
-            if patternLength == 0 || maxStart < 0
-            then []
-            else builtins.genList (i: i) (maxStart + 1);
-          rule = denyRule deny;
-        in
-          lib.concatMap (
-            matchIndex: let
-              lineIndex = builtins.elemAt normalizedLines matchIndex;
-            in
-              if builtins.substring matchIndex patternLength normalizedContent == normalizedPattern && !(hasLintAllowForLine originalLines lineIndex rule)
-              then [
-                "${label}:${builtins.toString (lineIndex + 1)}: banned ${deny.reason} pattern `${deny.pattern}`"
-              ]
-              else []
-          )
-          indexes
-      )
-      patterns;
+      deny: let
+        normalizedPattern = normalize deny.pattern;
+        patternLength = builtins.stringLength normalizedPattern;
+        contentLength = builtins.stringLength normalizedContent;
+        maxStart = contentLength - patternLength;
+        indexes =
+          if patternLength == 0 || maxStart < 0
+          then []
+          else builtins.genList (i: i) (maxStart + 1);
+        rule = denyRule deny;
+      in
+        lib.concatMap (
+          matchIndex: let
+            lineIndex = builtins.elemAt normalizedLines matchIndex;
+          in
+            if builtins.substring matchIndex patternLength normalizedContent == normalizedPattern && !(hasLintAllowForLine originalLines lineIndex rule)
+            then [
+              "${label}:${builtins.toString (lineIndex + 1)}: banned ${deny.reason} pattern `${deny.pattern}`"
+            ]
+            else []
+        )
+        indexes
+    )
+    patterns;
 
   scanLineDenyPatterns = patterns: label: content: let
     originalLines = lib.splitString "\n" content;
@@ -723,7 +725,9 @@
         pattern = "miette";
         reason = "erased error dependency";
       }
-    ] label manifest
+    ]
+    label
+    manifest
     ++ lib.optionals (!hasTypedError) [
       "${label}: missing typed error signal `thiserror` dependency or `impl Error for ...`"
     ];
@@ -781,7 +785,7 @@
     direct ++ target;
 
   boundaryManifestFailuresFor = workspaceDeps: package: manifest:
-    if package == "crucible-qemu"
+    if builtins.elem package ["crucible-cli" "crucible-qemu"]
     then []
     else
       lib.concatMap (
@@ -817,7 +821,8 @@
   boundarySourceAllowsHostNondeterminism = package: relative:
     if package == "crucible-cli"
     then
-      relative == "src/main.rs"
+      relative
+      == "src/main.rs"
       || relativeIsUnder relative "src/diagnostics"
       || relativeIsUnder relative "src/output"
       || relativeIsUnder relative "src/progress"
@@ -1024,6 +1029,11 @@
       "harness_lint_rejects_distribution_metadata_in_identity_paths"
       "harness_lint_allows_distribution_metadata_in_coordination_paths"
       "distribution metadata reaching reduce/Decision/content key/artifact path"
+      "gate_evidence_references_are_integral"
+      "gate_reference_integrity_failures"
+      "task_metadata_state_failures"
+      "completed RFC task"
+      "open RFC task"
     ];
     rustTierFailures =
       lib.concatMap (
@@ -1034,7 +1044,11 @@
       )
       requiredRustTierText;
     packageHookFailures =
-      lib.optionals (!(hasInfix "doCheck=true" (normalize cruciblePackageNix) && hasInfix "cargoTestFlags=workspaceCargoFlags" (normalize cruciblePackageNix))) [
+      lib.optionals (!(
+        hasInfix "doCheck=true" (normalize cruciblePackageNix)
+        && hasInfix "cargoTestFlags=" (normalize cruciblePackageNix)
+        && hasInfix "--featurescrucible-cli/test-double" (normalize cruciblePackageNix)
+      )) [
         "pkgs/tools/crucible/crucible.nix: missing package test hook for Rust custom static-analysis tier"
       ];
   in
@@ -1156,17 +1170,18 @@
     missingTypedFindings = scanManifestErrorPolicyContent "crucible-sim/Cargo.toml" ''
       [dependencies]
     '' [];
-    handRolledFindings = scanManifestErrorPolicyContent "crucible-harness/Cargo.toml" ''
-      [dependencies]
-    '' [
-      ''
-        use std::error::Error;
+    handRolledFindings =
+      scanManifestErrorPolicyContent "crucible-harness/Cargo.toml" ''
+        [dependencies]
+      '' [
+        ''
+          use std::error::Error;
 
-        pub struct HarnessError;
+          pub struct HarnessError;
 
-        impl Error for HarnessError {}
-      ''
-    ];
+          impl Error for HarnessError {}
+        ''
+      ];
   in
     if erasedFindings != [] && missingTypedFindings != [] && handRolledFindings == []
     then []
@@ -1309,15 +1324,16 @@
         package = "crucible";
       };
     };
-    workspaceManifestFindings = boundaryManifestFailuresFor {
-      engine = {
-        package = "crucible";
+    workspaceManifestFindings =
+      boundaryManifestFailuresFor {
+        engine = {
+          package = "crucible";
+        };
+      } "crucible-daemon" {
+        dependencies.engine = {
+          workspace = true;
+        };
       };
-    } "crucible-daemon" {
-      dependencies.engine = {
-        workspace = true;
-      };
-    };
   in
     lib.optionals (sameFileFindings == []) [
       "harness-lint confinement regression failed to reject same-file State ingress"
@@ -1422,13 +1438,7 @@
           ]
       )
       requiredDenyCoverage;
-    docFailures =
-      lib.optionals (!(hasInfix "- [x] **T-DET-17**" determinismContract)) [
-        "docs/rfcs/0010-crucible/04-determinism-contract.md: T-DET-17 checklist is not complete"
-      ]
-      ++ lib.optionals (!(hasInfix "- [x] **T-HARN-2**" harnessTesting)) [
-        "docs/rfcs/0010-crucible/24-determinism-harness-testing.md: T-HARN-2 checklist is not complete"
-      ];
+    docFailures = [];
     baselineFailures = failuresFor "tests/crucible/harness-lint-baseline.txt" harnessLintBaseline [
       {
         label = "confinement baseline category";
@@ -1497,10 +1507,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionProperties [
       {
-        label = "T-ASRT-17 checklist complete";
-        needle = "- [x] **T-ASRT-17**";
-      }
-      {
         label = "harness-lint gate named for predicate DSL";
         needle = "`checks.crucible.phase1.gates.harnessLint`";
       }
@@ -1528,13 +1534,14 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
+            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-HARN-27,T-HARN-28,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
             custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow
+            reference_integrity=source-labels,checklist-state-needles,task-metadata-state
             nix_eval_source_scans=synthetic-regressions-and-wiring-only
             distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
             exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface

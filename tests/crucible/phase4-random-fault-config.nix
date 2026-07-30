@@ -21,15 +21,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-14 checklist complete";
-        needle = "- [x] **T-FAULT-14**";
-      }
       {
         label = "T-FAULT-14 pinned failure evidence";
         needle = "The focused gate pins the generated failure as a concrete";

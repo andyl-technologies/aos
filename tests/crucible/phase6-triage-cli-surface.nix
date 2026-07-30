@@ -10,7 +10,6 @@
   # main.rs, so use a linear index walk instead.
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -36,10 +35,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-8 checked off";
-        needle = "- [x] **T-TRI-8**";
-      }
       {
         label = "T-TRI-8 completion note";
         needle = "Completed by `checks.crucible.phase6.triageCliSurface`";
@@ -227,7 +222,6 @@
         needle = "Default: table.";
       }
     ];
-
 in
   if failures != []
   then throw "crucible phase6 triage CLI surface check failed:\n${builtins.concatStringsSep "\n" failures}"

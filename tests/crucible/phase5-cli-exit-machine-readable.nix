@@ -21,14 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-15 checklist complete";
-        needle = "- [x] **T-CLI-15** Implement and test the uniform exit-code mapping";
-      }
       {
         label = "T-CLI-15 machine-readable completion note";
         needle = "Completed by\n  `checks.crucible.phase5.cliExitMachineReadable`";
@@ -181,15 +175,15 @@
       }
       {
         label = "qemu save process rejection regression";
-        needle = "cli_save_qemu_process_rejects_unwired_execution";
+        needle = "cli_save_qemu_process_requires_packaged_live_guest_assets";
       }
       {
         label = "qemu resume process rejection regression";
-        needle = "cli_resume_qemu_process_rejects_unwired_execution";
+        needle = "cli_resume_qemu_process_requires_packaged_live_guest_assets";
       }
       {
         label = "qemu fork process rejection regression";
-        needle = "cli_fork_qemu_process_rejects_unwired_execution";
+        needle = "cli_fork_qemu_process_requires_packaged_live_guest_assets";
       }
       {
         label = "search fuzz process stdout regression";
@@ -224,16 +218,16 @@
         needle = "\"save_export\"";
       }
       {
-        label = "qemu save rejection assertion";
-        needle = "local QEMU save execution is unavailable";
+        label = "qemu save live-asset admission assertion";
+        needle = "assert!(stderr.contains(\"requires the AOS kernel\"))";
       }
       {
-        label = "qemu resume rejection assertion";
-        needle = "local QEMU resume execution is unavailable";
+        label = "qemu resume and fork no-unwired assertion";
+        needle = "!stderr.contains(\"execution is unavailable\")";
       }
       {
-        label = "qemu fork rejection assertion";
-        needle = "local QEMU fork execution is unavailable";
+        label = "qemu live route no-double assertion";
+        needle = "!stderr.contains(\"double fallback\")";
       }
       {
         label = "search canonical jsonl assertion";

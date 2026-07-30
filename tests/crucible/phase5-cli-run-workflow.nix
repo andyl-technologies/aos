@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliRunWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-6"],
+  taskIds ? ["T-CLI-6"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -29,14 +29,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-6 checklist complete";
-        needle = "- [ ] **T-CLI-6**";
-      }
       {
         label = "T-CLI-6 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliRunWorkflow`";

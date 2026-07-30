@@ -394,6 +394,8 @@ pub struct LocalCheckpointClosureIndex {
     pub checkpoint: ContentHash,
     /// Store key for the self-contained `(seed, scenario, schedule)` artifact.
     pub reproduction_artifact: ContentHash,
+    /// Shared virtual-time frontier of the saved configuration.
+    pub frontier: VirtualTime,
 }
 
 impl LocalDagStore {
@@ -428,8 +430,9 @@ impl LocalDagStore {
         &self,
         checkpoint: ContentHash,
         reproduction_artifact: ContentHash,
+        frontier: VirtualTime,
     ) -> Result<ContentHash, DagStoreError> {
-        let bytes = checkpoint_closure_index_bytes(checkpoint, reproduction_artifact);
+        let bytes = checkpoint_closure_index_bytes(checkpoint, reproduction_artifact, frontier);
         let index_key = self.put(&bytes)?;
         let path = self.checkpoint_closure_index_path(&checkpoint);
         if let Some(parent) = path.parent() {
@@ -799,28 +802,6 @@ pub enum TemporalGraphStoreError {
     },
 }
 
-impl fmt::Display for TemporalGraphStoreError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Engine { operation, .. } => {
-                write!(f, "temporal graph operation {operation} failed")
-            }
-            Self::Store { operation, .. } => {
-                write!(f, "temporal graph store operation {operation} failed")
-            }
-        }
-    }
-}
-
-impl Error for TemporalGraphStoreError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Engine { source, .. } => Some(source.as_ref()),
-            Self::Store { source, .. } => Some(source),
-        }
-    }
-}
-
 mod binary_plan;
 mod binary_state;
 mod configuration;
@@ -868,6 +849,7 @@ pub use topology_faults::*;
 use validation::*;
 pub use workload::*;
 
+mod store_error;
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used)]

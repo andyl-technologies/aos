@@ -11,10 +11,10 @@ use std::process::Child;
 use std::time::Duration;
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
-    Checkpoint, EventLog, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
-    GdbListen, Icount, NodeId, ObservableEvent, SchedulerEventLogAppend, SimulationBackend,
-    StepObservation, VirtualTime,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
+    BackendSnapshot, Checkpoint, EventLog, ExecutionFingerprint, ExecutionHorizon,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
+    SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_shmem::{
     SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
@@ -190,7 +190,7 @@ impl Drop for QemuNodeChild {
 }
 
 /// Plugin IPC control channel for setup and teardown only.
-pub trait QemuPluginIpcControlChannel {
+pub trait QemuPluginIpcControlChannel: Send {
     /// Sends the plugin IPC `Quit` control message.
     ///
     /// # Errors
@@ -201,7 +201,7 @@ pub trait QemuPluginIpcControlChannel {
 }
 
 /// Shared-memory hot-path channel for per-quantum data.
-pub trait QemuShmemHotPathChannel {
+pub trait QemuShmemHotPathChannel: Send {
     /// Returns whether this channel owns a plugin-to-host coverage queue.
     ///
     /// The registration-time value is immutable. Direct node APIs use it to
@@ -307,6 +307,25 @@ pub trait QemuShmemHotPathChannel {
     /// Returns [`QemuNodeChannelError`] when the frame cannot be delivered.
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError>;
 
+    /// Delivers a deterministic frame at its scheduler-resolved instruction count.
+    ///
+    /// Channels that do not expose timestamped injection may inherit the legacy
+    /// boundary-relative delivery behavior. Production shared-memory channels
+    /// override this method so the event-log timestamp reaches QEMU unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the frame cannot be delivered at
+    /// `delivery_icount`.
+    fn deliver_frame_at(
+        &mut self,
+        input: BackendInput,
+        delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
+        let _ = delivery_icount;
+        self.deliver_frame(input)
+    }
+
     /// Reads one emitted frame from the shared-memory output ring.
     ///
     /// # Errors
@@ -363,7 +382,7 @@ impl QemuNodePendingQuantum {
 }
 
 /// QMP machine-control channel for snapshot and quit commands.
-pub trait QemuQmpMachineControlChannel {
+pub trait QemuQmpMachineControlChannel: Send {
     /// Captures the VM-state half of a checkpoint through QMP.
     ///
     /// # Errors
@@ -432,6 +451,7 @@ pub struct QemuNode {
     gdbstub: Option<QemuGdbstubChannelConfig>,
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
+    pending_network_outputs: Vec<QemuNodeEmittedFrame>,
 }
 
 impl QemuNode {
@@ -457,6 +477,7 @@ impl QemuNode {
             gdbstub: None,
             active_gdbstub: None,
             pending_preemption: None,
+            pending_network_outputs: Vec::new(),
         }
     }
 
@@ -511,6 +532,18 @@ impl QemuNode {
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
+    }
+
+    /// Synchronizes the scheduler-facing time mirror after launch-time priming.
+    ///
+    /// Node factories use this once after the boot barrier has been released
+    /// and before the node is returned to an authoritative scheduler.
+    pub(crate) fn synchronize_observed_time(&mut self) -> Result<VirtualTime, QemuNodeError> {
+        let current = self.current_icount()?;
+        self.last_observed_time = VirtualTime {
+            ticks: current.retired,
+        };
+        Ok(self.last_observed_time)
     }
 
     /// Advances the child to an instruction-count ceiling through shared memory.
@@ -596,6 +629,7 @@ impl QemuNode {
         ceiling: Icount,
         report: crate::QemuAsyncNodeStepReport,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
+        self.pending_network_outputs.extend(report.emitted_frames);
         let advance = match report.outcome {
             QemuAsyncNodeStepOutcome::Completed { advance } => Ok(advance),
             QemuAsyncNodeStepOutcome::Crashed { status, shutdown } => Err(QemuNodeError::Crashed {
@@ -616,6 +650,26 @@ impl QemuNode {
         self.channels
             .shmem_hot_path
             .deliver_frame(input)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    /// Delivers deterministic input at the scheduler-resolved virtual time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory input ring rejects the
+    /// timestamped frame.
+    pub fn deliver_frame_at(
+        &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the node transports an already scheduler-resolved input without deriving engine state.
+        input: BackendInput,
+        at: VirtualTime,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .deliver_frame_at(input, Icount { retired: at.ticks })
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
             })
@@ -845,6 +899,7 @@ impl Backend for QemuNode {
         self.execution_fingerprint().map_err(BackendError::from)
     }
 
+    // crucible-lint: allow host-nondeterminism-state -- this adapter forwards an untrusted input to the validated shared-memory channel.
     fn deliver_input(&mut self, input: BackendInput) -> Result<(), BackendError> {
         self.deliver_frame(input).map_err(BackendError::from)
     }
@@ -912,20 +967,54 @@ impl SimulationBackend for QemuNode {
             })
     }
 
-    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
-        if at != self.last_observed_time {
-            return Err(BackendError::Rejected {
-                message: format!(
-                    "qemu backend effect at {} does not match scheduler time {}",
-                    at.ticks, self.last_observed_time.ticks
-                ),
+    fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
+        let mut outputs = Vec::new();
+        for frame in self.pending_network_outputs.drain(..) {
+            outputs.push(BackendNetworkOutput {
+                source: frame.source,
+                destination: frame.destination,
+                emit_icount: frame.emit_icount,
+                sequence: frame.sequence,
+                payload: frame.payload,
             });
         }
+        while let Some(frame) = self.emit_frame().map_err(BackendError::from)? {
+            outputs.push(BackendNetworkOutput {
+                source: frame.source,
+                destination: frame.destination,
+                emit_icount: frame.emit_icount,
+                sequence: frame.sequence,
+                payload: frame.payload,
+            });
+        }
+        Ok(outputs)
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
         match effect {
+            BackendEffect::DeliverInput(input) => {
+                if at < self.last_observed_time {
+                    return Err(BackendError::Rejected {
+                        message: format!(
+                            "qemu backend input at {} is behind physical node time {}",
+                            at.ticks, self.last_observed_time.ticks
+                        ),
+                    });
+                }
+                self.deliver_frame_at(input.clone(), at)
+                    .map_err(BackendError::from)
+            }
+            BackendEffect::Noop | BackendEffect::Preemption(_) | BackendEffect::Shutdown
+                if at != self.last_observed_time =>
+            {
+                Err(BackendError::Rejected {
+                    message: format!(
+                        "qemu backend effect at {} does not match physical node time {}",
+                        at.ticks, self.last_observed_time.ticks
+                    ),
+                })
+            }
             BackendEffect::Noop => Ok(()),
-            BackendEffect::DeliverInput(input) => self
-                .deliver_frame(input.clone())
-                .map_err(BackendError::from),
             BackendEffect::Preemption(decision) => {
                 if self.pending_preemption.is_some() {
                     return Err(BackendError::Rejected {
@@ -1111,14 +1200,13 @@ fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownT
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::error::Error;
     use std::net::TcpListener;
     use std::process::Command;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use crucible::{
@@ -1132,7 +1220,9 @@ mod tests {
 
     use super::*;
 
-    type SharedLog = Rc<RefCell<Vec<ChannelCall>>>;
+    mod shutdown_and_preemption;
+
+    type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 
     #[test]
     fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup()
@@ -1221,8 +1311,8 @@ mod tests {
         log: SharedLog,
         fail_advance: bool,
         coverage_enabled: bool,
-        quantum_coverage: Rc<RefCell<VecDeque<Vec<ObservableEvent>>>>,
-        teardown_coverage: Rc<RefCell<Vec<ObservableEvent>>>,
+        quantum_coverage: Arc<Mutex<VecDeque<Vec<ObservableEvent>>>>,
+        teardown_coverage: Arc<Mutex<Vec<ObservableEvent>>>,
     }
 
     #[derive(Clone)]
@@ -1240,7 +1330,7 @@ mod tests {
 
     impl QemuPluginIpcControlChannel for ScriptedPluginControl {
         fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::PluginQuit);
+            self.log.lock().unwrap().push(ChannelCall::PluginQuit);
             if self.fail_quit {
                 return Err(QemuNodeChannelError::new("send_quit", "control closed"));
             }
@@ -1254,7 +1344,10 @@ mod tests {
         }
 
         fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::ShmemCurrentIcount);
+            self.log
+                .lock()
+                .unwrap()
+                .push(ChannelCall::ShmemCurrentIcount);
             Ok(Icount { retired: 11 })
         }
 
@@ -1263,7 +1356,8 @@ mod tests {
             horizon: ExecutionHorizon,
         ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
             self.log
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(ChannelCall::ShmemStart(horizon.icount.retired));
             if self.fail_advance {
                 return Err(QemuNodeChannelError::new(
@@ -1280,13 +1374,15 @@ mod tests {
         ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
             let horizon = pending.downcast::<u64>("finish_quantum")?;
             self.log
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(ChannelCall::ShmemFinish(horizon));
-            if let Some(events) = self.quantum_coverage.borrow_mut().pop_front() {
-                self.teardown_coverage.borrow_mut().extend(events);
+            if let Some(events) = self.quantum_coverage.lock().unwrap().pop_front() {
+                self.teardown_coverage.lock().unwrap().extend(events);
             }
             Ok(QemuAsyncQuantumCompletion {
                 outcome: AdvanceOutcome::ReachedHorizon,
+                emitted_frames: Vec::new(),
                 operations: vec![
                     QemuQuantumOperation::StoreSchedulerCeiling,
                     QemuQuantumOperation::FutexWake,
@@ -1300,7 +1396,8 @@ mod tests {
             command: SchedulerPreemptionCommand,
         ) -> Result<(), QemuNodeChannelError> {
             self.log
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(ChannelCall::ShmemPreemption(command));
             Ok(())
         }
@@ -1308,11 +1405,11 @@ mod tests {
         fn drain_observable_events(
             &mut self,
         ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
-            Ok(std::mem::take(&mut *self.teardown_coverage.borrow_mut()))
+            Ok(std::mem::take(&mut *self.teardown_coverage.lock().unwrap()))
         }
 
         fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::ShmemDeliver {
+            self.log.lock().unwrap().push(ChannelCall::ShmemDeliver {
                 node: input.node.name,
                 payload: input.payload,
             });
@@ -1320,7 +1417,7 @@ mod tests {
         }
 
         fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::ShmemEmit);
+            self.log.lock().unwrap().push(ChannelCall::ShmemEmit);
             Ok(Some(QemuNodeEmittedFrame {
                 source: node_id("vm-a"),
                 destination: node_id("vm-b"),
@@ -1331,7 +1428,7 @@ mod tests {
         }
 
         fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::ShmemIdle);
+            self.log.lock().unwrap().push(ChannelCall::ShmemIdle);
             Ok(QemuNodeIdleState {
                 current_icount: Icount { retired: 13 },
                 next_deadline: Some(Icount { retired: 21 }),
@@ -1339,7 +1436,7 @@ mod tests {
         }
 
         fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::ShmemFingerprint);
+            self.log.lock().unwrap().push(ChannelCall::ShmemFingerprint);
             Ok(ExecutionFingerprint {
                 hash: content_hash("fingerprint", "vm-a"),
             })
@@ -1348,7 +1445,7 @@ mod tests {
 
     impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         fn save_checkpoint(&mut self) -> Result<Checkpoint, QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::QmpSnapshot);
+            self.log.lock().unwrap().push(ChannelCall::QmpSnapshot);
             if self.timeout_snapshot {
                 return Err(QemuNodeChannelError::bounded_await_timeout(
                     "save_checkpoint",
@@ -1367,20 +1464,21 @@ mod tests {
             checkpoint: &Checkpoint,
         ) -> Result<(), QemuNodeChannelError> {
             self.log
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(ChannelCall::QmpRestore(checkpoint.id));
             Ok(())
         }
 
         fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
-            self.log.borrow_mut().push(ChannelCall::QmpQuit);
+            self.log.lock().unwrap().push(ChannelCall::QmpQuit);
             Ok(())
         }
     }
 
     impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-            self.log.borrow_mut().push(ChannelCall::HostYield);
+            self.log.lock().unwrap().push(ChannelCall::HostYield);
             Ok(())
         }
 
@@ -1392,7 +1490,7 @@ mod tests {
             let outcome = self.outcomes.pop_front().ok_or_else(|| {
                 QemuAsyncDriverRuntimeError::new("await child", "no scripted outcome")
             })?;
-            self.log.borrow_mut().push(ChannelCall::HostAwait {
+            self.log.lock().unwrap().push(ChannelCall::HostAwait {
                 wait,
                 timeout,
                 outcome,
@@ -1404,7 +1502,7 @@ mod tests {
     #[test]
     fn qemu_node_owns_one_child_and_exactly_three_channel_roles() -> Result<(), Box<dyn Error>> {
         let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), false, false, false)?;
+        let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
 
         assert_eq!(
             node.channel_roles(),
@@ -1444,7 +1542,7 @@ mod tests {
     #[test]
     fn qemu_node_routes_scheduler_operations_over_strict_channels() -> Result<(), Box<dyn Error>> {
         let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), false, false, false)?;
+        let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
 
         assert_eq!(node.current_icount()?, Icount { retired: 11 });
         assert_eq!(
@@ -1534,7 +1632,7 @@ mod tests {
         let event =
             ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
         let mut node = scripted_node_with_coverage(
-            Rc::clone(&log),
+            Arc::clone(&log),
             ScriptedNodeOptions::default(),
             [QemuAsyncWaitOutcome::Completed],
             [vec![event]],
@@ -1569,7 +1667,7 @@ mod tests {
         let event =
             ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
         let mut node = scripted_node_with_coverage(
-            Rc::clone(&log),
+            Arc::clone(&log),
             ScriptedNodeOptions::default(),
             [QemuAsyncWaitOutcome::Completed],
             [vec![event]],
@@ -1594,7 +1692,7 @@ mod tests {
         let event =
             ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
         let mut node = scripted_node_with_coverage(
-            Rc::clone(&log),
+            Arc::clone(&log),
             ScriptedNodeOptions::default(),
             [QemuAsyncWaitOutcome::Completed],
             [vec![event]],
@@ -1623,7 +1721,7 @@ mod tests {
         let event =
             ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
         let mut node = scripted_node_with_coverage(
-            Rc::clone(&log),
+            Arc::clone(&log),
             ScriptedNodeOptions::default(),
             std::iter::empty(),
             std::iter::empty(),
@@ -1645,7 +1743,7 @@ mod tests {
     fn qemu_node_satisfies_simulation_backend_trait() -> Result<(), Box<dyn Error>> {
         let log = shared_log();
         let mut node = scripted_node_with_runtime(
-            Rc::clone(&log),
+            Arc::clone(&log),
             false,
             false,
             false,
@@ -1732,298 +1830,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node_with_runtime(
-            Rc::clone(&log),
-            false,
-            false,
-            false,
-            [
-                QemuAsyncWaitOutcome::Completed,
-                QemuAsyncWaitOutcome::Completed,
-            ],
-        )?;
-
-        SimulationBackend::step_to(&mut node, VirtualTime { ticks: 23 })?;
-        SimulationBackend::apply(
-            &mut node,
-            &BackendEffect::Preemption(crucible::PreemptionDecision {
-                node: node_id("vm-a"),
-                at: Icount { retired: 27 },
-                kind: crucible::PreemptionKind::InterruptAt {
-                    target_vcpu: crucible::VcpuId { index: 1 },
-                    irq: crucible::IrqVector { vector: 48 },
-                },
-            }),
-            VirtualTime { ticks: 23 },
-        )?;
-        SimulationBackend::step_to(&mut node, VirtualTime { ticks: 29 })?;
-
-        let calls = recorded(&log);
-        let command_index = calls
-            .iter()
-            .position(|call| matches!(call, ChannelCall::ShmemPreemption(_)))
-            .ok_or("preemption command was not published")?;
-        let second_run_index = calls
-            .iter()
-            .rposition(|call| matches!(call, ChannelCall::ShmemStart(29)))
-            .ok_or("second RUN was not started")?;
-        assert!(command_index < second_run_index);
-        assert_eq!(
-            calls[command_index],
-            ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
-                at_icount: 27,
-                deadline_icount: 23,
-                ceiling_icount: 29,
-                kind: ShmemSchedulerPreemptionKind::InterruptAt {
-                    target_vcpu: 1,
-                    irq: 48,
-                },
-            })
-        );
-
-        SimulationBackend::shutdown(&mut node)?;
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node_with_runtime(
-            Rc::clone(&log),
-            false,
-            false,
-            false,
-            [QemuAsyncWaitOutcome::Completed],
-        )?
-        .with_gdbstub(QemuGdbstubChannelConfig::new(
-            "tcp:127.0.0.1:9001",
-            "127.0.0.1:0",
-        )?);
-
-        let info = SimulationBackend::open_gdbstub(
-            &mut node,
-            node_id("vm-a"),
-            GdbListen::new("127.0.0.1:0")?,
-        )?;
-
-        assert_eq!(info.node, node_id("vm-a"));
-        assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-        let active_listener = node
-            .active_gdbstub_listener()
-            .expect("open_gdbstub should bind an operator listener");
-        assert_ne!(active_listener.port(), 0);
-        assert_eq!(info.operator_listen.as_str(), active_listener.to_string());
-        assert!(
-            TcpListener::bind(active_listener).is_err(),
-            "gdbstub attach should keep the operator listener bound"
-        );
-        assert!(info.is_out_of_band_debug_proxy());
-        assert!(matches!(
-            SimulationBackend::open_gdbstub(
-                &mut node,
-                node_id("vm-a"),
-                GdbListen::new("127.0.0.1:0")?,
-            ),
-            Err(BackendError::Rejected { message }) if message.contains("already active")
-        ));
-        assert_eq!(recorded(&log), Vec::<ChannelCall>::new());
-        assert!(node.shutdown_child()?.reaped);
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_reports_shmem_failures_as_backend_rejections() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), false, true, false)?;
-
-        let result = Backend::advance_to_horizon(
-            &mut node,
-            ExecutionHorizon {
-                icount: Icount { retired: 99 },
-            },
-        );
-
-        assert_eq!(
-            result,
-            Err(BackendError::Rejected {
-                message: String::from(
-                    "bounded QEMU async driver failed: QEMU async shared-memory channel failed: advance_to_horizon failed: futex wake failed"
-                ),
-            })
-        );
-        assert_eq!(
-            recorded(&log),
-            vec![ChannelCall::HostYield, ChannelCall::ShmemStart(99)]
-        );
-        assert!(node.shutdown_child()?.reaped);
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node_with_runtime(
-            Rc::clone(&log),
-            false,
-            false,
-            false,
-            [QemuAsyncWaitOutcome::TimedOut],
-        )?;
-
-        let result = Backend::advance_to_horizon(
-            &mut node,
-            ExecutionHorizon {
-                icount: Icount { retired: 31 },
-            },
-        );
-
-        match result {
-            Err(BackendError::Rejected { message }) => {
-                assert!(message.contains("QEMU node crashed during bounded await"));
-                assert!(message.contains("BoundedAwaitTimeout"));
-            }
-            other => panic!("expected bounded timeout crash, got {other:?}"),
-        }
-        assert!(node.child_reaped());
-        assert_eq!(
-            node.lifecycle_state(),
-            QemuNodeLifecycleState::ShutdownRequested
-        );
-        assert_eq!(
-            recorded(&log),
-            vec![
-                ChannelCall::HostYield,
-                ChannelCall::ShmemStart(31),
-                ChannelCall::HostAwait {
-                    wait: QemuAsyncWait::AdvanceCompletion,
-                    timeout: Duration::from_millis(4),
-                    outcome: QemuAsyncWaitOutcome::TimedOut,
-                },
-                ChannelCall::PluginQuit,
-                ChannelCall::QmpQuit,
-            ]
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_reports_qmp_failures_without_touching_hot_path() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), false, false, true)?;
-
-        let result = Backend::snapshot(&mut node);
-
-        assert_eq!(
-            result,
-            Err(BackendError::Rejected {
-                message: String::from(
-                    "QMP machine control channel operation save_checkpoint failed: QMP error"
-                ),
-            })
-        );
-        assert_eq!(recorded(&log), vec![ChannelCall::QmpSnapshot]);
-        assert!(node.shutdown_child()?.reaped);
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_qmp_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node_with_options(
-            Rc::clone(&log),
-            ScriptedNodeOptions {
-                qmp_snapshot_timeout: true,
-                ..ScriptedNodeOptions::default()
-            },
-            [QemuAsyncWaitOutcome::Completed],
-        )?;
-
-        let result = Backend::snapshot(&mut node);
-
-        match result {
-            Err(BackendError::Rejected { message }) => {
-                assert!(message.contains("QEMU node crashed during bounded await"));
-                assert!(message.contains("BoundedAwaitTimeout"));
-                assert!(message.contains("save_checkpoint"));
-            }
-            other => panic!("expected QMP timeout crash, got {other:?}"),
-        }
-        assert!(node.child_reaped());
-        assert_eq!(
-            node.lifecycle_state(),
-            QemuNodeLifecycleState::ShutdownRequested
-        );
-        assert_eq!(
-            recorded(&log),
-            vec![
-                ChannelCall::QmpSnapshot,
-                ChannelCall::PluginQuit,
-                ChannelCall::QmpQuit,
-            ]
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_shutdown_continues_to_reap_when_plugin_quit_fails() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), true, false, false)?;
-
-        let report = node.shutdown_child()?;
-
-        assert!(report.reaped);
-        assert!(node.child_reaped());
-        assert_eq!(
-            report
-                .failures
-                .iter()
-                .map(|failure| failure.rung)
-                .collect::<Vec<_>>(),
-            [QemuShutdownRung::ControlQuit]
-        );
-        assert_eq!(
-            recorded(&log),
-            vec![ChannelCall::PluginQuit, ChannelCall::QmpQuit]
-        );
-        assert_eq!(
-            node.lifecycle_state(),
-            QemuNodeLifecycleState::ShutdownRequested
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_node_repeated_shutdown_is_idempotent_after_reap() -> Result<(), Box<dyn Error>> {
-        let log = shared_log();
-        let mut node = scripted_node(Rc::clone(&log), false, false, false)?;
-
-        let first = node.shutdown_child()?;
-        let first_log = recorded(&log);
-        let second = node.shutdown_child()?;
-
-        assert!(first.reaped);
-        assert!(second.reaped);
-        assert!(second.attempts.is_empty());
-        assert!(second.failures.is_empty());
-        assert_eq!(recorded(&log), first_log);
-        assert_eq!(
-            first_log,
-            vec![ChannelCall::PluginQuit, ChannelCall::QmpQuit]
-        );
-        assert!(node.child_reaped());
-
-        Ok(())
-    }
-
     fn scripted_node(
         log: SharedLog,
         fail_plugin_quit: bool,
@@ -2092,18 +1898,18 @@ mod tests {
         let coverage_enabled = !quantum_coverage.is_empty() || !teardown_coverage.is_empty();
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
-                log: Rc::clone(&log),
+                log: Arc::clone(&log),
                 fail_quit: options.fail_plugin_quit,
             },
             ScriptedShmemHotPath {
-                log: Rc::clone(&log),
+                log: Arc::clone(&log),
                 fail_advance: options.fail_shmem_advance,
                 coverage_enabled,
-                quantum_coverage: Rc::new(RefCell::new(quantum_coverage)),
-                teardown_coverage: Rc::new(RefCell::new(teardown_coverage)),
+                quantum_coverage: Arc::new(Mutex::new(quantum_coverage)),
+                teardown_coverage: Arc::new(Mutex::new(teardown_coverage)),
             },
             ScriptedQmpMachineControl {
-                log: Rc::clone(&log),
+                log: Arc::clone(&log),
                 fail_snapshot: options.fail_qmp_snapshot,
                 timeout_snapshot: options.qmp_snapshot_timeout,
             },
@@ -2131,11 +1937,11 @@ mod tests {
     }
 
     fn shared_log() -> SharedLog {
-        Rc::new(RefCell::new(Vec::new()))
+        Arc::new(Mutex::new(Vec::new()))
     }
 
     fn recorded(log: &SharedLog) -> Vec<ChannelCall> {
-        log.borrow().clone()
+        log.lock().unwrap().clone()
     }
 
     fn node_id(name: &str) -> NodeId {

@@ -31,14 +31,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-12 checklist complete";
-        needle = "- [x] **T-QEMU-12**";
-      }
       {
         label = "completion note names shmem hot path";
         needle = "shared-memory hot path";

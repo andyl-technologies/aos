@@ -1049,7 +1049,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     management, transfer, and restore compatibility. Only unordered QMP
     collections and QMP transport metadata are normalized; a marker-projection
     negative control proves raw serial comparison remains authoritative.
-- [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
+- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
   satisfies [HARN-11]; spec §7.
@@ -1065,7 +1065,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   `checks.fleet.crucible-e2e-determinism`, which executes each independent
   reduction through the packaged QEMU/plugin probe before comparing the
   session-level canonical evidence.
-- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
   Completed by `checks.crucible.phase7.gates.e2eDeterminism` and
@@ -1143,7 +1143,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   verifies HARN-3 lower-layer-before-higher-layer gate precedences, and carries
   synthetic negative controls for missing terminal e2e, invalid terminal
   placement, early SimDouble dependency, unknown gates, and layer-order drift.
-- [ ] **T-HARN-27** Remove the self-referential checklist assertion from gate
+- [x] **T-HARN-27** Remove the self-referential checklist assertion from gate
   checks: a check MUST NOT prove its task by asserting that the task's own
   checkbox is ticked. Checkbox state is bookkeeping and MUST NOT appear in a
   check's evidence set.
@@ -1164,8 +1164,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     is equally self-referential and is removed by the same rule; the
     `openTaskIds` ledger already records that state.
   - Gate: `gate:harness-lint` fails on any surviving self-referential needle.
+  - Completed by `checks.crucible.phase1.gates.harnessLint`: every checklist-state
+    evidence assertion was removed from the Nix checks, and the Rust harness lint
+    rejects both checked and open task-state needles with a synthetic negative
+    control.
 
-- [ ] **T-HARN-28** Add a reference-integrity lint over the harness and the RFC:
+- [x] **T-HARN-28** Add a reference-integrity lint over the harness and the RFC:
   every source needle MUST resolve in the file it names, every
   `checks.crucible.*` attribute named in prose MUST exist, and every count
   asserted in prose MUST match its source of truth.
@@ -1191,3 +1195,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     part of landing it.
   - Gate: `gate:harness-lint` fails on an unresolvable needle, attribute path, or
     count.
+  - Completed by `checks.crucible.referenceIntegrity` and
+    `checks.crucible.phase1.gates.harnessLint`: the Nix check walks the complete
+    Crucible and fleet check trees under `tryEval`, resolves every check
+    attribute named by the RFC, and derives the documented patch count from the
+    series manifest. The Rust lint rejects missing `failuresFor` source paths,
+    checklist-state evidence, and completed/open task metadata inversions; its
+    synthetic negative controls prove both task-state inversions fail. The
+    repaired source needles, named check reference, and patch-count prose all
+    pass the full-tree evaluation.

@@ -14,7 +14,10 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   asyncDriver = builtins.readFile ../../crates/crucible-qemu/src/async_driver.rs;
   crashDetection = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
-  nodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  nodeLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
   quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
   qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
@@ -24,8 +27,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   forbiddenHostTimingApis = [
     "Instant::now"
@@ -46,10 +47,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-14 checklist complete";
-        needle = "- [x] **T-QEMU-14**";
-      }
       {
         label = "completion note names bounded async driver";
         needle = "bounded async driver";

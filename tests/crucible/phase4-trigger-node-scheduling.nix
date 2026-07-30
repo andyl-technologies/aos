@@ -19,8 +19,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   nodeSchedulingSources = builtins.concatStringsSep "\n" [
     scheduler
@@ -29,10 +27,6 @@
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-13 checked off";
-        needle = "- [x] **T-TRIG-13**";
-      }
       {
         label = "T-TRIG-13 completion note";
         needle = "Completed by `checks.crucible.phase4.triggerNodeScheduling`";

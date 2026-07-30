@@ -22,15 +22,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternDoc [
-      {
-        label = "T-PAT-7 checked off";
-        needle = "- [x] **T-PAT-7**";
-      }
       {
         label = "T-PAT-7 completion note";
         needle = "Completed by `checks.crucible.phase3.blockCowOverlayPattern`";
@@ -61,14 +55,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/15-io-subnodes.md" ioDoc [
-      {
-        label = "T-IO-2 checked off";
-        needle = "- [x] **T-IO-2**";
-      }
-      {
-        label = "T-IO-5 checked off";
-        needle = "- [x] **T-IO-5**";
-      }
       {
         label = "T-IO-2 completion note";
         needle = "Completed by `checks.crucible.phase3.blockSubnodeOverlay`";

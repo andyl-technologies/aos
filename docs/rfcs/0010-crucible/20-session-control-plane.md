@@ -1254,7 +1254,7 @@ pub enum SessionError {
     routes that capability to a wrapped live backend, `QemuNode` binds and
     retains a mediated listener, and `SimDouble`/`MockSimulationBackend` return
     typed `Unsupported` errors.
-- [ ] **T-SESS-14** Make the non-`Passed` terminal outcomes reachable: derive the
+- [x] **T-SESS-14** Make the non-`Passed` terminal outcomes reachable: derive the
   session's terminal `Outcome` from the run verdict (18 §9) — `Failed` on a
   violated property, `Timeout` on budget exhaustion, `Crashed` on an unrecovered
   node crash — instead of entering `Stopped` with a fixed verdict, and forbid any
@@ -1279,3 +1279,12 @@ pub enum SessionError {
     control per terminal outcome — a scenario that must produce each of
     `Failed`, `Timeout`, `Crashed` — so a regression to a constant verdict fails
     the gate.
+  - Completed by `checks.crucible.phase5.sessionLifecycle`: `SessionEngine`
+    owns the sole production terminal-outcome construction site and accepts an
+    engine-owned cause for property failure, budget exhaustion, backend crash,
+    quiescent pass, or operator stop. The actor converts unrecovered backend
+    failures into `Crashed`, the CLI sends an explicit budget-exhaustion command,
+    and every CLI status is now a fallible projection of the engine outcome.
+    Focused negative controls exercise `Failed`, `Timeout`, and `Crashed`; the
+    reference-integrity lint rejects terminal constructions outside the engine's
+    stop path.

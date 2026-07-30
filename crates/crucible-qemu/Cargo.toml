@@ -4,11 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+test-support = ["crucible/test-double"]
+
 [lints]
 workspace = true
 
 [dependencies]
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
@@ -19,3 +23,11 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 rustix = { workspace = true, features = ["process"] }
+
+[[example]]
+name = "crucible-qemu-live-plugin-quantum"
+required-features = ["test-support"]
+
+[[example]]
+name = "crucible-qemu-live-plugin-preemption"
+required-features = ["test-support"]

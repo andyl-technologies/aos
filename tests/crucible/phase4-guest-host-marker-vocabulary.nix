@@ -11,16 +11,43 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  protocolMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
-  protocolGateAbi = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
-  protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
-  protocolCodecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  protocolLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/lib.rs;
+  };
+  protocolMarker = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/doorbell_marker.rs;
+  };
+  protocolGateAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  };
+  protocolGoldenTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  };
+  protocolCodecTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/codec.rs;
+  };
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   engineTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  engineGateAbi = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  engineGateAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_abi_conformance.rs;
+  };
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
   appRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   abiConformanceGate = builtins.readFile ./phase2-abi-conformance.nix;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -29,15 +56,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-8 checked off";
-        needle = "- [x] **T-GHC-8**";
-      }
       {
         label = "T-GHC-8 completion note";
         needle = "Completed by `checks.crucible.phase4.guestHostMarkerVocabulary`";

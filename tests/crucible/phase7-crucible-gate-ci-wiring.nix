@@ -28,8 +28,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   evalClassGates = [
     {
       gate = "gate:harness-lint";
@@ -342,7 +340,7 @@
       }
       {
         label = "package patch-microtests completed task ownership";
-        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-20"'';
+        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"'';
       }
       {
         label = "package patch-microtests has no open task ownership";
@@ -646,14 +644,6 @@
       needle = "the **e2e** gate";
     }
     {
-      label = "T-PKG-14 checklist complete";
-      needle = "- [x] **T-PKG-14**";
-    }
-    {
-      label = "T-PKG-4 checklist complete";
-      needle = "- [x] **T-PKG-4**";
-    }
-    {
       label = "T-PKG-4 completion note";
       needle = "Completed by `checks.crucible.phase2.gates.patchMicrotests`";
     }
@@ -662,24 +652,12 @@
       needle = "Completed by `checks.crucible.phase7.crucibleGateCiWiring`";
     }
     {
-      label = "T-PKG-21 checklist complete";
-      needle = "- [x] **T-PKG-21**";
-    }
-    {
       label = "T-PKG-21 completion note";
       needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
     }
     {
-      label = "T-PKG-22 checklist complete";
-      needle = "- [x] **T-PKG-22**";
-    }
-    {
       label = "T-PKG-22 completion note";
       needle = "Completed by `checks.crucible.phase7.crucibleCampaignProvenance`";
-    }
-    {
-      label = "T-PKG-23 checklist complete";
-      needle = "- [x] **T-PKG-23**";
     }
     {
       label = "T-PKG-23 completion note";

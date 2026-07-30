@@ -216,6 +216,38 @@ impl ValidationDag {
         self.graph.cache_snapshot(configuration, checkpoint)
     }
 
+    /// Selects one pending frontier with the temporal graph's strategy ordering.
+    #[must_use]
+    pub fn select_strategy_frontier(
+        &self,
+        pending: &[Configuration],
+        strategy: SearchStrategy,
+        max_depth: Option<u64>,
+    ) -> Option<usize> {
+        self.graph
+            .select_strategy_frontier(pending, strategy, max_depth)
+    }
+
+    /// Expands one runtime-hydrated search frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the frontier cannot be realized, recorded,
+    /// enumerated, or materialized.
+    pub fn search_frontier(
+        &mut self,
+        frontier: &Configuration,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+    ) -> Result<crucible::TemporalGraphSearch, EngineError> {
+        self.graph.search(
+            frontier,
+            crucible::FrontierReductionPolicy::none(),
+            materialization_policy,
+            trigger,
+        )
+    }
+
     /// Returns the nearest cached ancestor of `configuration`.
     ///
     /// # Errors

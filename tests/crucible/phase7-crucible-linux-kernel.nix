@@ -42,7 +42,8 @@
     else throw "crucible phase7 linux-crucible check requires pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline";
   linuxCruciblePname = linuxCrucibleMetadata.pname or "(missing)";
   linuxCrucibleFixtureOnly =
-    linuxCrucibleMetadata ? passthru
+    linuxCrucibleMetadata
+    ? passthru
     && linuxCrucibleMetadata.passthru ? crucibleFixtureOnly
     && linuxCrucibleMetadata.passthru.crucibleFixtureOnly;
   linuxCrucibleDeterminismMechanism =
@@ -51,8 +52,6 @@
     else "";
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   forbiddenKernelSuppression = [
     {
@@ -151,10 +150,6 @@
       "pkgs.linux-crucible: passthru.crucibleDeterminismMechanism must name the host-side QEMU-seeded entropy mechanism"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-12 checklist complete";
-        needle = "- [x] **T-PKG-12**";
-      }
       {
         label = "T-PKG-12 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleLinuxKernel`";

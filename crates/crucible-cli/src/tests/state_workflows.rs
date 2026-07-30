@@ -418,8 +418,20 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         Some(&qemu_save_plan),
         &mut NullBackendCommandRunner,
     )
-    .expect_err("local QEMU save must not execute the recording double");
-    assert_qemu_workflow_unwired(&error, "save");
+    .expect_err("fixture QEMU save must reach live-guest discovery or production launch");
+    let message = error.to_string();
+    assert!(
+        matches!(error, CliError::Backend(_) | CliError::Identity(_)),
+        "unexpected QEMU save error: {error}"
+    );
+    assert!(
+        message.contains("requires the AOS kernel")
+            || message.contains("requires the AOS root image")
+            || message.contains("session execution backend construction failed"),
+        "unexpected QEMU save error: {error}"
+    );
+    assert!(!message.contains("execution is unavailable"));
+    assert!(!message.contains("double fallback"));
     assert!(!qemu_out.exists());
 
     Ok(())
@@ -574,7 +586,7 @@ pub(super) fn cli_save_workflow_executes_remote_daemon_selector_savepoint()
     assert!(handle.contains("at\tproperty\n"));
     assert!(handle.contains("oracle\tfat==thin-passed\n"));
 
-    let marker_form = marker_selector_scenario_form(::crucible::WhiteBoxPolicy::Enabled)?;
+    let marker_form = marker_selector_scenario_form(crucible::WhiteBoxPolicy::Enabled)?;
     let marker_scenario = temp.path().join("remote-marker-selector-scenario.toml");
     fs::write(&marker_scenario, marker_form.to_canonical_toml()?)?;
     let marker_daemon = spawn_save_recording_lifecycle_server()?;
@@ -1079,7 +1091,11 @@ pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(
     };
     assert!(matches!(error, CliError::Identity(_)));
     assert_eq!(error.exit_code(), 3);
-    assert!(error.to_string().contains("schedule-derived frontier"));
+    assert!(
+        error
+            .to_string()
+            .contains("exceeded the latest recorded decision boundary")
+    );
 
     Ok(())
 }
@@ -2341,7 +2357,7 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
             && line.contains(&format!("branch={expected_override_branch_ref}"))
             && line.contains("final=virtual-time")
             && line.contains("frontier_ticks=2")
-            && line.contains("quanta=0")
+            && line.contains("quanta=1")
     }));
 
     let override_stopped_cli = Cli::parse_from([
@@ -2381,7 +2397,7 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
         line.starts_with("fork-session\t")
             && line.contains(&format!("branch={expected_override_branch_ref}"))
             && line.contains("final=stopped")
-            && line.contains("frontier_ticks=2")
+            && line.contains("frontier_ticks=1")
             && line.contains("quanta=0")
     }));
 
@@ -2427,22 +2443,22 @@ pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box
         line.starts_with("fork-session\t")
             && line.contains(&format!("branch={expected_override_branch_ref}"))
             && line.contains("final=interactive")
-            && line.contains("frontier_ticks=2")
+            && line.contains("frontier_ticks=1")
             && line.contains("quanta=0")
     }));
     assert!(
         override_interactive_outcome
             .stdout
             .iter()
-            .any(|line| { line.starts_with("run-watch\t") && line.contains("frontier_ticks=2") })
+            .any(|line| { line.starts_with("run-watch\t") && line.contains("frontier_ticks=1") })
     );
 
     Ok(())
 }
 
 #[test]
-pub(super) fn cli_fork_workflow_rejects_unwired_local_qemu_execution() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let store_root = temp.path().join("store");
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
@@ -2498,8 +2514,20 @@ pub(super) fn cli_fork_workflow_rejects_unwired_local_qemu_execution() -> Result
     ));
     let error =
         run_local_qemu_fork_workflow(&plan_cli_invocation(&cli), &backend_plan, None, &fork_plan)
-            .expect_err("local QEMU fork must not execute the double-backed fork");
-    assert_qemu_workflow_unwired(&error, "fork");
+            .expect_err("fixture QEMU fork must reach live-guest discovery or production launch");
+    let message = error.to_string();
+    assert!(
+        matches!(error, CliError::Backend(_)),
+        "unexpected QEMU fork error: {error}"
+    );
+    assert!(
+        message.contains("requires the AOS kernel")
+            || message.contains("requires the AOS root image")
+            || message.contains("session execution backend construction failed"),
+        "unexpected QEMU fork error: {error}"
+    );
+    assert!(!message.contains("execution is unavailable"));
+    assert!(!message.contains("double fallback"));
 
     Ok(())
 }
@@ -2548,7 +2576,11 @@ pub(super) fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(),
     };
     assert!(matches!(error, CliError::Identity(_)));
     assert_eq!(error.exit_code(), 3);
-    assert!(error.to_string().contains("schedule-derived frontier"));
+    assert!(
+        error
+            .to_string()
+            .contains("exceeded the latest recorded decision boundary")
+    );
 
     Ok(())
 }

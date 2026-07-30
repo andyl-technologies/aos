@@ -104,6 +104,7 @@ in
     postBuild = ''
       cargo clippy \
         --all-targets \
+        --features crucible-cli/test-double \
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \

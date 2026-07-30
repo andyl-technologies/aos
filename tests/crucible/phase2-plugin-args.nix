@@ -11,8 +11,14 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginArgs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/args.rs;
+  };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -20,13 +26,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-2 checklist complete";
-        needle = "- [x] **T-PLUG-2**";
-      }
       {
         label = "simfd required by spec";
         needle = "`simfd=N`";

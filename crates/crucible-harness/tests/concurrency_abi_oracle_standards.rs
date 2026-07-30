@@ -37,8 +37,8 @@ struct AdvancedTestStandard {
 }
 
 const SPSC_RING_MARKERS: &[&str] = &[
-    "assert_spsc_ring_loom_model(",
-    "assert_spsc_ring_proptest_properties(",
+    "assert_spsc_ring_exhaustive_ordering_model(",
+    "assert_spsc_ring_exhaustive_trace_properties(",
     "NoLostFrame",
     "NoDuplicatedFrame",
     "FifoOrder",

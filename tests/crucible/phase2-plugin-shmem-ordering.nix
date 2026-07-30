@@ -11,19 +11,49 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginShmemOrdering = builtins.readFile ../../crates/crucible-qemu-plugin/src/shmem_ordering.rs;
-  pluginBootBarrier = builtins.readFile ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
-  pluginDeviceIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
-  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginShmemOrdering = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/shmem_ordering.rs;
+  };
+  pluginBootBarrier = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
+  };
+  pluginDeviceIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+  };
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
+  pluginInbound = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  };
+  pluginNetworkTx = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+  };
+  pluginBlockIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  };
+  pluginNinePIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
-  pluginTeardown = builtins.readFile ../../crates/crucible-qemu-plugin/src/teardown.rs;
+  pluginTeardown = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/teardown.rs;
+  };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -51,10 +81,9 @@
       if needleLen == 0 || maxStart < 0
       then []
       else builtins.genList (index: index) (maxStart + 1);
-    matches =
-      builtins.filter (index:
-        builtins.substring index needleLen haystack == needle)
-      indexes;
+    matches = builtins.filter (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
   in
     if matches == []
     then null
@@ -67,7 +96,6 @@
     then content
     else builtins.substring 0 testIndex content;
 
-
   rawShmemSources = [
     {
       label = "crates/crucible-qemu-plugin/src/boot_barrier.rs";
@@ -79,7 +107,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
-      content = productionRust pluginIdleLoop;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/inbound.rs";
@@ -87,7 +115,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/network_tx.rs";
-      content = productionRust pluginNetworkTx;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/block_io.rs";
@@ -99,7 +127,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/setup.rs";
-      content = productionRust pluginSetup;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/teardown.rs";
@@ -128,7 +156,6 @@
     ".validate_header()"
     ".publish_scheduler_ceiling("
     ".futex_wait_still_valid("
-    ".enqueue("
     ".peek_delivery_icount("
     ".dequeue("
   ];
@@ -153,7 +180,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
-      content = productionRust pluginIdleLoop;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/inbound.rs";
@@ -161,7 +188,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/network_tx.rs";
-      content = productionRust pluginNetworkTx;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/block_io.rs";
@@ -173,7 +200,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/setup.rs";
-      content = productionRust pluginSetup;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/teardown.rs";
@@ -225,10 +252,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-20 checklist complete";
-        needle = "- [x] **T-PLUG-20**";
-      }
       {
         label = "cross-process ordering wording";
         needle = "Enforce the cross-process atomic-ordering rules";

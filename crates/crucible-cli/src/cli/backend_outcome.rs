@@ -97,6 +97,30 @@ pub(crate) struct BackendCommandOutcomeProjection {
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackendExecutionEvidence {
+    #[cfg(any(test, feature = "test-double"))]
+    LocalDouble,
+    LocalProduction {
+        build_id: String,
+        plugin_abi: String,
+    },
+    RemoteDaemon {
+        daemon: String,
+    },
+}
+
+impl BackendExecutionEvidence {
+    pub(crate) fn proves_t_cli_3(&self, plan: &BackendSelectionPlan) -> bool {
+        plan.expected_execution_evidence().as_ref() == Some(self)
+    }
+}
+
+pub(crate) struct BackendCommandExecution {
+    pub(crate) outcome: BackendCommandOutcome,
+    pub(crate) evidence: BackendExecutionEvidence,
+}
+
 pub(crate) trait BackendCommandRunner {
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
@@ -109,7 +133,7 @@ pub(crate) trait BackendCommandRunner {
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError>;
+    ) -> Result<BackendCommandExecution, CliError>;
 
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
@@ -122,5 +146,5 @@ pub(crate) trait BackendCommandRunner {
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError>;
+    ) -> Result<BackendCommandExecution, CliError>;
 }

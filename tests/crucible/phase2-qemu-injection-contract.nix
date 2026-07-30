@@ -11,9 +11,18 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  qemuNode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
+  quantumLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   # Production-only slice for the no-unwrap/no-expect forbids (test code is
   # allowed panic shortcuts, matching the workspace clippy allow policy).
   # splitString uses a regex separator, so route through a regex-safe sentinel.
@@ -22,10 +31,22 @@
       builtins.replaceStrings ["\n#[cfg(test)]"] ["@@CFGTEST@@"] quantumLib
     )
   );
-  pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  pluginDeviceIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  pluginInbound = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  };
+  pluginDeviceIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+  };
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
+  pluginNetworkRx = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -33,14 +54,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-13 checklist complete";
-        needle = "- [x] **T-QEMU-13**";
-      }
       {
         label = "completion note names injection contract";
         needle = "QEMU-level injection-contract enforcement";
@@ -208,8 +223,8 @@
         needle = "IdleWakeCause::DeviceIoFreeze";
       }
       {
-        label = "RX injection waits until after direct advance";
-        needle = "idle_loop_rx_injection_runs_after_direct_advance_and_before_republish";
+        label = "RX injection waits for QEMU completion";
+        needle = "idle_loop_rx_injection_waits_for_qemu_completion";
       }
       {
         label = "RX failure does not commit inbound frames";

@@ -30,10 +30,11 @@
 //! advance_to(limit): drain frames with delivery_icount <= limit  (DESTINATION sees)
 //! ```
 //!
-//! TODO(shmem-slot-binding): the actual ring copy over `SLOT_NET_ROUTER` is left
-//! as a seam, exactly as the block/9p codecs leave their ring copy. The link
-//! references the slot constant and stamps each delivery's `src_node`/`seq` into
-//! a [`FrameDeliveryKey`] so the wire order matches the transport.
+//! The concrete QEMU transport drains and fills the `SLOT_NET_ROUTER` rings in
+//! `crucible-qemu`'s network I/O servicer. This device-level type deliberately
+//! owns only deterministic scheduling and fault transforms. It references the
+//! slot constant and stamps each delivery's `src_node`/`seq` into a
+//! [`FrameDeliveryKey`] so the modeled order matches the transport.
 //!
 //! The probabilistic transforms consume RNG draws; [`NetLink::emit_from_rng`]
 //! draws them from the seeded per-device RNG ([`crate::fault::DeviceRng`]) forked
@@ -56,8 +57,8 @@ use super::fault::{
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
 ///
 /// Re-exported from `crucible-shmem` so the slot binding is referenced, never
-/// hardcoded ([IO-20]). The actual ring copy is a documented seam
-/// (`TODO(shmem-slot-binding)`).
+/// hardcoded ([IO-20]). The QEMU backend performs the concrete ring copy while
+/// this crate owns the deterministic link model.
 pub const LINK_SLOT: usize = SLOT_NET_ROUTER;
 
 /// A frame emitted by the link's source node at a virtual-time icount.
@@ -328,6 +329,15 @@ impl NetLink {
     #[must_use]
     pub fn rng_position(&self) -> u64 {
         self.rng_position
+    }
+
+    /// Repositions the deterministic cursor after an explorer-injected draw set.
+    ///
+    /// This setter is intentionally narrow: the engine supplies a cursor derived
+    /// from the exact draw vector consumed by [`NetLink::emit`]. General callers
+    /// should use [`NetLink::emit_with_rng_draws`].
+    pub fn set_rng_position_for_branch(&mut self, position: u64) {
+        self.rng_position = position;
     }
 
     /// Returns the number of frames in flight (resolved but not yet delivered).
@@ -739,44 +749,6 @@ impl NetLink {
     }
 }
 
-fn corrupt_link_payload(faults: &LinkFaults, payload: &mut Vec<u8>, bit_draws: &[u64]) {
-    if faults.corruption_strategies.is_empty() {
-        corrupt_payload(payload, bit_draws, faults.corrupt_bit_flips);
-        return;
-    }
-
-    let mut draw_offset = 0usize;
-    for strategy in &faults.corruption_strategies {
-        match *strategy {
-            LinkCorruptionStrategy::BitFlip { max_bits } => {
-                let count = max_bits as usize;
-                let end = draw_offset.saturating_add(count).min(bit_draws.len());
-                corrupt_payload(payload, &bit_draws[draw_offset..end], max_bits);
-                draw_offset = draw_offset.saturating_add(count);
-            }
-            LinkCorruptionStrategy::FieldMutation => {
-                let draw = bit_draws.get(draw_offset).copied().unwrap_or(0);
-                draw_offset = draw_offset.saturating_add(1);
-                if !payload.is_empty() {
-                    let index = (draw % payload.len() as u64) as usize;
-                    payload[index] ^= 0x80;
-                }
-            }
-            LinkCorruptionStrategy::Truncation { max_bytes } => {
-                let draw = bit_draws.get(draw_offset).copied().unwrap_or(0);
-                draw_offset = draw_offset.saturating_add(1);
-                let limit = usize::try_from(max_bytes)
-                    .unwrap_or(usize::MAX)
-                    .min(payload.len());
-                if limit != 0 {
-                    let remove = (draw % limit as u64) as usize + 1;
-                    payload.truncate(payload.len().saturating_sub(remove));
-                }
-            }
-        }
-    }
-}
-
 /// The device half of a network link's `MaterializedState` ([IO-23], [IO-26]).
 ///
 /// Captures the link's clock cursor, base latency, floor, effective fault table,
@@ -814,3 +786,6 @@ impl LinkSnapshot {
         &self.inflight
     }
 }
+mod corruption;
+
+use corruption::*;

@@ -20,51 +20,6 @@ pub(super) struct BackendSelectionPlan {
 }
 
 impl BackendSelectionPlan {
-    pub(super) fn proves_t_cli_3(&self) -> bool {
-        self.local_remote_equivalence_contract
-            && match self.target {
-                BackendExecutionTarget::RemoteDaemon => {
-                    self.daemon
-                        .as_deref()
-                        .is_some_and(|daemon| !daemon.is_empty())
-                        && self.resolved_backend.is_none()
-                        && self.remote_uses_control_api
-                        && !self.local_uses_simulation_backend
-                        && self.reason == BackendSelectionReason::RemoteDaemon
-                }
-                BackendExecutionTarget::Local => {
-                    self.daemon.is_none()
-                        && self.resolved_backend.is_some()
-                        && !self.remote_uses_control_api
-                        && self.local_uses_simulation_backend
-                        && match (self.requested_backend, &self.resolved_backend, self.reason) {
-                            (
-                                Backend::Auto,
-                                Some(ResolvedLocalBackend::Qemu { qemu, plugin, .. }),
-                                BackendSelectionReason::AutoQemuArtifactsSupplied,
-                            ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
-                            #[cfg(any(test, feature = "test-double"))]
-                            (
-                                Backend::Auto,
-                                Some(ResolvedLocalBackend::Double),
-                                BackendSelectionReason::AutoFallbackDouble,
-                            )
-                            | (
-                                Backend::Double,
-                                Some(ResolvedLocalBackend::Double),
-                                BackendSelectionReason::ExplicitDouble,
-                            ) => true,
-                            (
-                                Backend::Qemu,
-                                Some(ResolvedLocalBackend::Qemu { qemu, plugin, .. }),
-                                BackendSelectionReason::ExplicitQemu,
-                            ) => !qemu.as_os_str().is_empty() && !plugin.as_os_str().is_empty(),
-                            _ => false,
-                        }
-                }
-            }
-    }
-
     pub(super) fn proves_t_cli_5(&self) -> bool {
         match (&self.target, &self.resolved_backend, self.requested_backend) {
             (BackendExecutionTarget::RemoteDaemon, None, _) => true,
@@ -1124,7 +1079,7 @@ pub(super) fn execute_backend_selection_plan(
     quiet: bool,
     recorder: &mut impl BackendRouteRecorder,
 ) -> Result<(), CliError> {
-    if !plan.proves_t_cli_3() {
+    if !plan.has_consistent_route() {
         return Err(CliError::Backend(
             "CLI backend selection violates the RFC-0010 local/remote split".to_string(),
         ));
@@ -1168,9 +1123,9 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError> {
-        if let Some(verify_plan) = verify_plan {
-            return match (&verify_plan.mode, backend) {
+    ) -> Result<BackendCommandExecution, CliError> {
+        let outcome = if let Some(verify_plan) = verify_plan {
+            match (&verify_plan.mode, backend) {
                 (VerifyMode::CompareArtifacts { .. }, _) => {
                     let report = verify_compare_artifacts(verify_plan, Some(backend))?;
                     finish_verify_workflow_outcome(
@@ -1198,10 +1153,9 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                         verify_plan,
                     )
                 }
-            };
-        }
-        if let Some(save_plan) = save_plan {
-            return match backend {
+            }?
+        } else if let Some(save_plan) = save_plan {
+            match backend {
                 #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => run_local_double_save_workflow(
                     thin_plan,
@@ -1215,10 +1169,9 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     ergonomics_plan,
                     save_plan,
                 ),
-            };
-        }
-        if let Some(run_plan) = run_plan {
-            return match backend {
+            }?
+        } else if let Some(run_plan) = run_plan {
+            match backend {
                 #[cfg(any(test, feature = "test-double"))]
                 ResolvedLocalBackend::Double => {
                     run_local_double_workflow(thin_plan, backend_plan, ergonomics_plan, run_plan)
@@ -1230,13 +1183,16 @@ impl BackendCommandRunner for NullBackendCommandRunner {
                     ergonomics_plan,
                     run_plan,
                 ),
-            };
-        }
-        Ok(backend_command_outcome(
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-        ))
+            }?
+        } else {
+            backend_command_outcome(thin_plan, backend_plan, ergonomics_plan)
+        };
+        Ok(BackendCommandExecution {
+            outcome,
+            evidence: backend_plan
+                .expected_execution_evidence()
+                .ok_or_else(|| backend_error("local backend route has no execution identity"))?,
+        })
     }
 
     fn run_remote(
@@ -1248,33 +1204,28 @@ impl BackendCommandRunner for NullBackendCommandRunner {
         run_plan: Option<&RunInvocationPlan>,
         verify_plan: Option<&VerifyInvocationPlan>,
         save_plan: Option<&SaveInvocationPlan>,
-    ) -> Result<BackendCommandOutcome, CliError> {
-        if let Some(save_plan) = save_plan {
-            return run_remote_save_workflow(
-                daemon,
-                thin_plan,
-                backend_plan,
-                ergonomics_plan,
-                save_plan,
-            );
-        }
-        if let Some(run_plan) = run_plan {
-            return run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan);
-        }
-        if let Some(verify_plan) = verify_plan {
-            return run_remote_verify_workflow(
+    ) -> Result<BackendCommandExecution, CliError> {
+        let outcome = if let Some(save_plan) = save_plan {
+            run_remote_save_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, save_plan)?
+        } else if let Some(run_plan) = run_plan {
+            run_remote_workflow(daemon, thin_plan, backend_plan, ergonomics_plan, run_plan)?
+        } else if let Some(verify_plan) = verify_plan {
+            run_remote_verify_workflow(
                 daemon,
                 thin_plan,
                 backend_plan,
                 ergonomics_plan,
                 verify_plan,
-            );
-        }
-        Ok(backend_command_outcome(
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-        ))
+            )?
+        } else {
+            backend_command_outcome(thin_plan, backend_plan, ergonomics_plan)
+        };
+        Ok(BackendCommandExecution {
+            outcome,
+            evidence: BackendExecutionEvidence::RemoteDaemon {
+                daemon: daemon.to_string(),
+            },
+        })
     }
 }
 
@@ -1287,7 +1238,7 @@ pub(super) fn execute_backend_routed_command(
     save_plan: Option<&SaveInvocationPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if !thin_plan.proves_t_cli_2() || !backend_plan.proves_t_cli_3() {
+    if !thin_plan.proves_t_cli_2() || !backend_plan.has_consistent_route() {
         return Err(CliError::Backend(
             "CLI command route violates the RFC-0010 backend split".to_string(),
         ));
@@ -1298,7 +1249,7 @@ pub(super) fn execute_backend_routed_command(
         ));
     }
 
-    match (
+    let execution = match (
         &backend_plan.target,
         &backend_plan.resolved_backend,
         &backend_plan.daemon,
@@ -1324,5 +1275,13 @@ pub(super) fn execute_backend_routed_command(
         _ => Err(CliError::Backend(
             "CLI backend route is internally inconsistent".to_string(),
         )),
+    }?;
+    if !execution.evidence.proves_t_cli_3(backend_plan) {
+        return Err(CliError::Backend(
+            "executed backend identity does not match the selected RFC-0010 route".to_string(),
+        ));
     }
+    Ok(execution.outcome)
 }
+#[path = "backend/evidence.rs"]
+mod evidence;

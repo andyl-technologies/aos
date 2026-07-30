@@ -22,7 +22,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -183,19 +182,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
-        label = "T-EXEC-15 checked off";
-        needle = "- [x] **T-EXEC-15**";
-      }
-      {
         label = "T-EXEC-15 completion note";
         needle = "Completed by `crates/crucible-session/src/lib.rs`: `LiveSnapshot`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
-      {
-        label = "T-SESS-2 checked off";
-        needle = "- [x] **T-SESS-2**";
-      }
       {
         label = "T-SESS-2 completion names session-side control-responsive target";
         needle = "`gate_control_responsive` target observes mailbox-free live progress";
@@ -210,10 +201,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-1 checked off";
-        needle = "- [x] **T-PAT-1**";
-      }
       {
         label = "T-PAT-1 completion names live snapshot mirror";
         needle = "publish the `LiveSnapshot` mirror";

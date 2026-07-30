@@ -862,7 +862,7 @@ fn command_schema(command_name: &str) -> OpenSetKindSchema {
 fn command_attributes(command_name: &str) -> &'static [&'static str] {
     match command_name {
         "start" | "continue" | "pause" | "step-quantum" | "step-event" | "step-assertion"
-        | "step-timer" | "stop" | "inject" | "snapshot" => &[],
+        | "step-timer" | "stop" | "exhaust-budget" | "inject" | "snapshot" => &[],
         "step-duration" => &["duration_nanos"],
         "inject-fault" => &["tag", "fault_kind", "fault"],
         "heal-fault" => &["tag"],

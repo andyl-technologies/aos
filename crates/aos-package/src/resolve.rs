@@ -966,5 +966,4 @@ requires = ["cycle-a"]
         assert!(msg.contains("[2,4]"), "{msg}");
         assert!(msg.contains("running image is 1"), "{msg}");
     }
-
 }

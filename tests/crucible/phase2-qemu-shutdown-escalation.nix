@@ -20,13 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-8 checklist complete";
-        needle = "- [x] **T-QEMU-8**";
-      }
       {
         label = "QEMU-30 shutdown order requirement";
         needle = "**[QEMU-30]** Graceful shutdown MUST follow the escalation order";

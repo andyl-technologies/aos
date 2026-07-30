@@ -24,13 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-3 is complete with live QEMU callback integration";
-        needle = "- [x] **T-PLUG-3**";
-      }
       {
         label = "fixed registration order required by spec";
         needle = "Registration MUST proceed in this fixed order";

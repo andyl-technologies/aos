@@ -12,19 +12,14 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-13 checked off";
-        needle = "- [x] **T-SPAT-13**";
-      }
       {
         label = "T-SPAT-13 completion names independent properties hash";
         needle = "`Properties` now carries an";
@@ -45,11 +40,7 @@
       }
       {
         label = "private properties identity field";
-        needle = ''
-          pub struct Properties {
-              /// The independently content-addressed properties identity.
-              id: ContentHash,
-        '';
+        needle = "pub(super) id: ContentHash,";
       }
       {
         label = "properties content hash accessor";
@@ -117,11 +108,11 @@
       }
     ]
     ++ lib.optionals (hasInfix ''
-      pub struct Properties {
-          /// The independently content-addressed properties identity.
-          pub id: ContentHash,
-    ''
-    model) [
+        pub struct Properties {
+            /// The independently content-addressed properties identity.
+        pub id: ContentHash,
+      ''
+      model) [
       "crates/crucible/src/model.rs: properties identity field must not be public"
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [

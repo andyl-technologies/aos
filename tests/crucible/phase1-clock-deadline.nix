@@ -41,8 +41,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
@@ -260,10 +258,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-6 completed by the live plugin quantum gate";
-        needle = "- [x] **T-TIME-6**";
-      }
-      {
         label = "T-TIME-6 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
       }
@@ -276,10 +270,6 @@
       {
         label = "PATCH-41 exact deadline remains required";
         needle = "capability remains REQUIRED";
-      }
-      {
-        label = "T-PATCH-10 checklist item";
-        needle = "- [x] **T-PATCH-10** Implement `crucible-clock-deadline`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

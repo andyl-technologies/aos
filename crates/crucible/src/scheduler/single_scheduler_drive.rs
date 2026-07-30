@@ -1452,7 +1452,8 @@ impl SingleScheduler {
             let at = SimInstant {
                 nanos: self.frontier.ticks,
             };
-            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
+            let decisions =
+                self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at, false)?;
             let emit_boundary = !decisions.is_empty() || topology_recomputed;
             let event_log = self.emit_quantum_event_log(
                 &boundary_resolved_events,
@@ -1564,6 +1565,7 @@ impl SingleScheduler {
                 &preemptions,
                 &device_decisions,
                 after_time,
+                true,
             )?;
             let event_log = self.emit_quantum_event_log(
                 &resolved_events,
@@ -1650,6 +1652,7 @@ impl SingleScheduler {
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
+                    false,
                 )?;
                 let emit_boundary = !decisions.is_empty() || topology_recomputed;
                 let event_log = self.emit_quantum_event_log(
@@ -1724,6 +1727,7 @@ impl SingleScheduler {
             &preemptions,
             &device_decisions,
             after_time,
+            true,
         )?;
         let event_log = self.emit_quantum_event_log(
             &resolved_events,
@@ -1767,77 +1771,6 @@ impl SingleScheduler {
             event_log_offset: event_log.offset,
             scheduler_quiescence: Some(self.quiescence()?),
         })
-    }
-
-    pub(super) fn emit_quantum_decisions(
-        &mut self,
-        resolved_events: &[ScheduledEvent],
-        preemptions: &[PlannedPreemptionApplication],
-        device_decisions: &[Decision],
-        at: SimInstant,
-    ) -> Result<Vec<Decision>, SchedulerError> {
-        let mut decisions = Vec::new();
-        if !resolved_events.is_empty() {
-            let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-                at: VirtualTime { ticks: at.nanos },
-                order: resolved_events
-                    .iter()
-                    .map(|event| EventKey {
-                        virtual_time: event.key.virtual_time(),
-                        consumer: event.key.consumer().clone(),
-                        producer: event.key.producer().clone(),
-                        sequence: event.key.sequence(),
-                    })
-                    .collect(),
-            });
-            self.advance_decision_rng_cursor();
-            decisions.push(decision);
-            let probabilistic =
-                resolve_probabilistic_decisions(self.configuration.clone(), resolved_events);
-            for decision in &probabilistic.decisions {
-                if let Decision::RngDraw(draw) = decision {
-                    self.advance_decision_rng_cursor_for(draw.stream.clone());
-                }
-            }
-            decisions.extend(probabilistic.decisions);
-        }
-        for event in ordered_scheduled_events(resolved_events) {
-            let ScheduledEventPayload::Control(operation) = &event.payload else {
-                continue;
-            };
-            if let Some(action) = control_fault_action_for_operation(operation) {
-                decisions.push(Decision::ControlFault(ControlFaultDecision {
-                    at: event.key.virtual_time(),
-                    sequence: operation.sequence,
-                    action,
-                }));
-            }
-        }
-        let network_decisions = std::mem::take(&mut self.world_network_decisions);
-        for decision in &network_decisions {
-            if let Decision::RngDraw(draw) = decision {
-                self.advance_decision_rng_cursor_for(draw.stream.clone());
-            }
-        }
-        decisions.extend(network_decisions);
-
-        // Device I/O completions drew their fault decisions (RngDraw + FaultFires)
-        // at COMPUTE and buffered them; they are appended on the LIVE RESOLVE path
-        // in delivery order ([SCHED-30]). Each device RngDraw advances the owning
-        // stream's decision-RNG cursor exactly as a probabilistic RESOLVE draw does.
-        for decision in device_decisions {
-            if let Decision::RngDraw(draw) = decision {
-                self.advance_decision_rng_cursor_for(draw.stream.clone());
-            }
-        }
-        decisions.extend(device_decisions.iter().cloned());
-        decisions.extend(
-            preemptions
-                .iter()
-                .map(|application| Decision::Preemption(application.decision.clone())),
-        );
-        let preemption_times = preemption_event_times(preemptions);
-        scheduler_ordered_decisions(decisions, at, self.timeline.shift(), &preemption_times)
     }
 
     pub(super) fn emit_quantum_event_log(
@@ -2001,6 +1934,20 @@ impl SingleScheduler {
             });
         }
         self.apply_control_faults_at_boundary(&applications)?;
+        if applications
+            .iter()
+            .any(|application| matches!(application.operation.kind, ControlOperationKind::Snapshot))
+        {
+            let nodes = self
+                .nodes
+                .iter()
+                .filter(|runtime| runtime.id.kind == SchedulingNodeKind::Vm)
+                .map(|runtime| runtime.id.node.clone())
+                .collect::<Vec<_>>();
+            for node in nodes {
+                self.record_node_checkpoint(&node)?;
+            }
+        }
         Ok(SchedulerControlDrain {
             events,
             applications,

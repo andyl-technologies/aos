@@ -11,19 +11,35 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  nodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
-  nodeFactoryTests = builtins.readFile ../../crates/crucible-qemu/src/node_factory/tests.rs;
-  nodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
-  nodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
-  savevmPolicy = builtins.readFile ../../crates/crucible-qemu/src/savevm_policy.rs;
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  nodeFactory = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs)
+    (builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs)
+  ];
+  nodeFactoryTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node_factory/tests.rs;
+  };
+  nodeExecutor = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/realization/node_executor.rs;
+  };
+  nodeExecutorTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
+  };
+  savevmPolicy = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/savevm_policy.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
@@ -139,7 +155,7 @@
       }
       {
         label = "warm restore qmp vmstate connect";
-        needle = "QemuQmpVmStateControlChannel::connect_unix_socket(qmp.socket_path(run_directory))";
+        needle = "connect_qmp_with_wake_pulsing(&setup, &qmp.socket_path(run_directory))";
       }
       {
         label = "warm restore delegates restored factory";
@@ -254,8 +270,8 @@
         needle = "factory_restores_vmstate_before_reducing_qmp_to_shutdown_only";
       }
       {
-        label = "probe authorization rejection test";
-        needle = "factory_rejects_probe_authorization_before_vmstate_restore";
+        label = "probe-only restore admission test";
+        needle = "factory_restores_probe_snapshot_without_runtime_admission";
       }
       {
         label = "baked genesis restore test";
@@ -344,8 +360,8 @@
         needle = ".current_icount()";
       }
       {
-        label = "probe admission TODO is explicit";
-        needle = "real-node replay-oracle probes require a probe-only restore admission path";
+        label = "probe-only restore plan";
+        needle = "QemuNodeRestorePlan::snapshot_completeness_probe(";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization/node_executor/tests.rs" nodeExecutorTests [

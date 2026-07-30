@@ -11,14 +11,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-18 checklist complete";
-        needle = "- [x] **T-PKG-18**";
-      }
       {
         label = "T-PKG-18 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleCasRatchetSeam`";

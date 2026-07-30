@@ -11,11 +11,11 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   shmem = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
@@ -27,14 +27,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-3 checked off";
-        needle = "- [x] **T-HARN-3**";
-      }
       {
         label = "T-HARN-3 completion note";
         needle = "Completed by `crucible::SimDouble`";

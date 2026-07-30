@@ -2,7 +2,17 @@
 
 use super::*;
 mod backend_loop;
+mod observation_append;
 pub use backend_loop::BackendQuantumLoop;
+
+/// Terminal verdict emitted by a scenario trigger at a quantum boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QuantumTerminalVerdict {
+    /// The scenario's trigger graph reached its passing condition.
+    Passed,
+    /// The trigger graph produced one or more deterministic violations.
+    Failed(Vec<String>),
+}
 
 /// Advances the system by one scheduler quantum.
 ///
@@ -17,6 +27,25 @@ pub trait QuantumLoop {
     /// Returns [`SchedulerError`] when the quantum cannot be driven or when the
     /// scheduler detects an invalid boundary condition.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
+
+    /// Returns the selected node's exact backend counter ceiling.
+    ///
+    /// The global frontier is expressed on the shared virtual timeline and is
+    /// not generally interchangeable with a node-local retired-instruction
+    /// counter. Pure and legacy loops inherit the frontier default; schedulers
+    /// with an explicit RUN plan override this with the selected node's exact
+    /// post-RUN counter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `outcome` is inconsistent with the
+    /// loop's most recently completed RUN.
+    fn backend_step_ceiling(
+        &self,
+        outcome: &QuantumOutcome,
+    ) -> Result<VirtualTime, SchedulerError> {
+        Ok(outcome.frontier)
+    }
 
     /// Samples a deterministic execution fingerprint for `node`.
     ///
@@ -100,6 +129,49 @@ pub trait QuantumLoop {
         })
     }
 
+    /// Appends the evaluation boundary following live backend observations.
+    ///
+    /// Backend observations may describe execution earlier in the completed
+    /// quantum while being appended after its causal scheduler segment. Live
+    /// adapters call this after the observational batch so condition evaluation
+    /// ends at the completed scheduler frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when this loop has no unified event-log owner
+    /// or the trailing boundary cannot be appended.
+    fn append_backend_evaluation_boundary(
+        &mut self,
+        _at: VirtualTime,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("quantum loop cannot append a live-backend evaluation boundary"),
+        })
+    }
+
+    /// Atomically appends backend observations and their evaluation boundary.
+    ///
+    /// A live node may advance ahead of the shared conservative frontier. The
+    /// adapter buffers those observations until `at` commits them, then appends
+    /// the observations and boundary in one checked event-log segment so no
+    /// intermediate prefix is evaluated at an earlier point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when this loop has no unified event-log owner
+    /// or the observational boundary batch is invalid.
+    fn append_backend_observations_at_boundary(
+        &mut self,
+        _events: Vec<ObservableEvent>,
+        _at: VirtualTime,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "quantum loop cannot append a live-backend observational boundary batch",
+            ),
+        })
+    }
+
     /// Validates and appends causal decisions completed by a live backend.
     ///
     /// The returned tuple contains the canonical decisions actually appended
@@ -117,6 +189,57 @@ pub trait QuantumLoop {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("quantum loop cannot append causal backend decisions"),
         })
+    }
+
+    /// Routes guest-originated frames through scheduler-owned World links.
+    ///
+    /// The returned tuple contains the canonical network fault decisions
+    /// appended while admitting the frames, the updated configuration, and the
+    /// corresponding unified event-log append.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when an output names an undeclared or
+    /// ambiguous route, violates its source boundary, or cannot be admitted by
+    /// the modeled link.
+    fn append_backend_network_outputs(
+        &mut self,
+        _outputs: Vec<BackendNetworkOutput>,
+    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("quantum loop cannot route live-backend network outputs"),
+        })
+    }
+
+    /// Returns the scheduler-derived choices available at the current boundary.
+    ///
+    /// Loops without state-space exploration support return an empty frontier.
+    /// Live scheduler adapters override this with the same materialized frontier
+    /// used by temporal-graph search.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the loop cannot materialize its current
+    /// search frontier.
+    fn search_frontiers(&self) -> Result<Vec<SearchRuntimeFrontier>, SchedulerError> {
+        Ok(Vec::new())
+    }
+
+    /// Returns the number of explorer-forced branch choices not yet consumed.
+    ///
+    /// Loops without externally installed runtime choices return zero.
+    #[must_use]
+    fn pending_search_branch_choices(&self) -> usize {
+        0
+    }
+
+    /// Takes a terminal verdict emitted while driving the previous quantum.
+    ///
+    /// Live scenario loops override this when trigger evaluation can complete
+    /// or fail a run independently of scheduler quiescence. The verdict is
+    /// consumed exactly once by the session engine.
+    fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
+        None
     }
 
     /// Shuts down scheduler/backend resources and returns final log entries.
@@ -889,49 +1012,6 @@ impl EventLog {
     #[must_use]
     pub fn condition_prefix(&self) -> &ConditionEventLogPrefix {
         &self.condition_prefix
-    }
-
-    /// Appends black-box observable condition facts to this event log.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
-    /// appending the event-log segment would overflow scheduler offsets, or when
-    /// the resulting checked condition prefix is invalid.
-    pub fn append_observable_events(
-        &mut self,
-        events: impl IntoIterator<Item = ObservableEvent>,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        let mut entries = Vec::new();
-        for event in events {
-            let sequence = self.next_sequence(entries.len())?;
-            entries.push(scheduler_event_log_entry(
-                sequence,
-                event.at(),
-                SchedulerEventLogPayload::Observable(event.payload().clone()),
-            ));
-        }
-        self.append_entries(entries)
-    }
-
-    /// Appends a deterministic trigger/assertion evaluation boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when assigning the dense event-log sequence or
-    /// appending the event-log segment would overflow scheduler offsets, or when
-    /// the boundary would make the checked condition prefix invalid.
-    pub fn append_evaluation_boundary(
-        &mut self,
-        at: VirtualTime,
-        kind: SchedulerEvaluationBoundaryKind,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        let sequence = self.next_sequence(0)?;
-        self.append_entries(vec![scheduler_event_log_entry(
-            sequence,
-            at,
-            SchedulerEventLogPayload::EvaluationBoundary(kind),
-        )])
     }
 
     /// Returns the next dense sequence number after `offset` pending entries.

@@ -284,19 +284,21 @@ in
       inherit patchSource pluginSource;
       passAsFile = ["patchSource" "pluginSource"];
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.diffutils
-        pkgs.gawk
-        pkgs.glib
-        pkgs.grep
-        pkgs.jq
-        pkgs.patch
-        pkgs.pkg-config
-        pkgs.socat
-        pkgs.tar
-        pkgs.xz
-      ] ++ lib.optionals (qemuPackage != null) [qemuPackage];
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.diffutils
+          pkgs.gawk
+          pkgs.glib
+          pkgs.grep
+          pkgs.jq
+          pkgs.patch
+          pkgs.pkg-config
+          pkgs.socat
+          pkgs.tar
+          pkgs.xz
+        ]
+        ++ lib.optionals (qemuPackage != null) [qemuPackage];
 
       phases = [
         {

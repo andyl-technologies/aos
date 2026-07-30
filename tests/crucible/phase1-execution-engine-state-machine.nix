@@ -20,7 +20,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-session/src/lib.rs" session [
       {
@@ -89,7 +88,7 @@
       }
       {
         label = "bounded quantum step";
-        needle = "let _outcome = self.engine.step_quantum()?;";
+        needle = "let _outcome = match self.engine.step_quantum()";
       }
       {
         label = "cooperative inter-quantum yield";
@@ -142,19 +141,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
-        label = "T-EXEC-14 checked off";
-        needle = "- [x] **T-EXEC-14**";
-      }
-      {
         label = "T-EXEC-14 completion note";
         needle = "Completed by `crates/crucible-session/src/lib.rs`: `Engine` now owns";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
-      {
-        label = "T-SESS-2 checked off";
-        needle = "- [x] **T-SESS-2**";
-      }
       {
         label = "T-SESS-2 completion names run_once";
         needle = "`SessionActor::run`";
@@ -173,10 +164,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-1 checked off";
-        needle = "- [x] **T-PAT-1**";
-      }
       {
         label = "T-PAT-1 completion names closed run states";
         needle = "`EngineState` is the\n    closed Loaded/Running/Paused/Stopped run-state enum";

@@ -29,7 +29,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenPatchNeedles = [
     "QEMU_CLOCK_REALTIME"
     "g_get_monotonic_time"
@@ -102,10 +101,6 @@
     ++ map (needle: "pkgs/emulation/qemu-patches/${patchName}: pure perf patch must not use wall-clock needle `${needle}`")
     (builtins.filter (needle: hasInfix needle patchSource) forbiddenPatchNeedles)
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-17 checklist complete";
-        needle = "- [x] **T-PATCH-17**";
-      }
       {
         label = "PATCH-35 cross reference";
         needle = "PATCH-35";

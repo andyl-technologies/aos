@@ -11,16 +11,17 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  handoffTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
+  handoffTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+  };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -178,18 +179,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-8 checklist complete";
-        needle = "- [x] **T-SHM-8**";
-      }
-      {
-        label = "T-SHM-9 checklist complete";
-        needle = "- [x] **T-SHM-9**";
-      }
-      {
-        label = "T-SHM-10 checklist complete";
-        needle = "- [x] **T-SHM-10**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

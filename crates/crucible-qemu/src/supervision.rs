@@ -57,5 +57,6 @@ pub use ninep_io_servicer::{
 };
 pub use node_step_gate::{
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
-    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, run_qemu_live_node_step_gate,
+    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, launch_qemu_live_node,
+    launch_qemu_live_node_restored, run_qemu_live_node_step_gate,
 };

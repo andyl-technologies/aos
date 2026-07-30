@@ -11,16 +11,31 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  protocolTest = builtins.readFile ../../crates/crucible-protocol/tests/setup_completion.rs;
+  protocolLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/lib.rs;
+  };
+  protocolTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/setup_completion.rs;
+  };
   # The setup-region mmap surface was split out of lib.rs into
   # mapped_setup_region.rs; scan both so the needles survive file moves.
   shmemLib =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
-  shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
+    (import ./_crucible-shmem-source.nix {inherit lib;})
+    + (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+    });
+  shmemTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/setup_validation.rs;
+  };
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -29,7 +44,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   failures =
     failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
@@ -215,7 +229,7 @@
       }
       {
         label = "completion token returned before ready ack";
-        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        wake_fd,\n        registered_wake_fd,\n    })";
+        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        wake_fd,\n        registered_wake_fd: None,\n    })";
       }
       {
         label = "ready setup ack";
@@ -261,10 +275,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-      {
-        label = "T-PROTO-5 checklist complete";
-        needle = "- [x] **T-PROTO-5**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

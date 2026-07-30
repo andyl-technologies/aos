@@ -14,19 +14,14 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   canonicalRust = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-14 checked off";
-        needle = "- [x] **T-SPAT-14**";
-      }
       {
         label = "T-SPAT-14 completion names seed root entropy";
         needle = "`Seed` now carries the 256-bit";

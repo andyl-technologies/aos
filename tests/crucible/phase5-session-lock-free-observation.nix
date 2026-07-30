@@ -22,13 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-10 checked off";
-        needle = "- [x] **T-SESS-10**";
-      }
       {
         label = "T-SESS-10 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionLockFreeObservation`";
@@ -118,8 +113,8 @@
         needle = "broadcast::channel(SESSION_EVENT_LOG_BROADCAST_CAPACITY)";
       }
       {
-        label = "event-log stream lag error";
-        needle = "SessionEventLogStreamError::Lagged";
+        label = "event-log stream lag resumes retained replay";
+        needle = "self.resume_from_retained_log();";
       }
       {
         label = "actor event-log stream API";

@@ -69,7 +69,7 @@
       }
     ];
   };
-  deps = [pkgs.bash pkgs.coreutils pkgs.kmod pkgs.linux nvmeNguidProbe pkgs.util-linux];
+  deps = [pkgs.bash pkgs.coreutils pkgs.grep pkgs.kmod pkgs.linux nvmeNguidProbe pkgs.util-linux];
   depPaths = builtins.concatStringsSep ":" (builtins.concatMap (d: ["${d}/bin" "${d}/sbin"]) deps);
   graphPairs = lib.concatLists (lib.imap (i: d: ["closure-${toString i}" d]) deps);
   initramfs = pkgs.mkDerivation {
@@ -95,13 +95,19 @@
           echo "SIMBOOT:USERSPACE"
           modprobe virtio_rng 2>/dev/null || true
           modprobe virtio_net 2>/dev/null || true
+          modprobe nvme 2>/dev/null || true
           i=0; while [ \$i -lt 100 ] && [ ! -c /dev/hwrng ]; do sleep 0.05; i=\$((i+1)); done
           if [ -c /dev/hwrng ]; then echo "SIMBOOT:HWRNG=\$(head -c 8 /dev/hwrng | od -An -tx1 | tr -d ' ')"; else echo SIMBOOT:NOHWRNG; fi
           echo "SIMBOOT:BOOTID=\$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d -)"
           echo "SIMBOOT:GRND=\$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' ')"
           echo "SIMBOOT:RTC=\$(cat /sys/class/rtc/rtc0/time 2>/dev/null; cat /sys/class/rtc/rtc0/date 2>/dev/null)"
-          echo "SIMBOOT:MAC=\$(cat /sys/class/net/*/address 2>/dev/null | grep -v '^00:00:00' | sort | tr -d : | tr '\n' ' ')"
-          i=0; while [ \$i -lt 100 ] && [ ! -c /dev/nvme0 ]; do sleep 0.05; i=\$((i+1)); done
+          i=0; mac=""; while [ \$i -lt 1000 ] && [ -z "\$mac" ]; do
+            mac=\$(cat /sys/class/net/*/address 2>/dev/null | grep -v '^00:00:00' | sort | tr -d : | tr '\n' ' ')
+            [ -n "\$mac" ] || sleep 0.05
+            i=\$((i+1))
+          done
+          echo "SIMBOOT:MAC=\$mac"
+          i=0; while [ \$i -lt 1000 ] && [ ! -c /dev/nvme0 ]; do sleep 0.05; i=\$((i+1)); done
           echo "SIMBOOT:NVME_NGUID=\$(nvme-nguid 2>/dev/null)"
           echo SIMBOOT:DONE
           sync; sleep 0.2
@@ -161,7 +167,18 @@
       # after additional PCI devices are present. They remain diagnostic serial
       # output, but the discriminator hashes only direct QEMU-controlled
       # observables.
-      grep -E 'SIMBOOT:(HWRNG|RTC|MAC|NVME_NGUID)=' "$ser.normalized" 2>/dev/null | sha256sum | cut -c1-16
+      observables=$(grep -E 'SIMBOOT:(HWRNG|RTC|MAC|NVME_NGUID)=' "$ser.normalized" 2>/dev/null)
+      for observable in HWRNG RTC MAC NVME_NGUID; do
+        if ! printf '%s\n' "$observables" | grep -Eq "^SIMBOOT:$observable=.+$"; then
+          echo "missing non-empty SIMBOOT:$observable observable" >&2
+          tail -100 "$ser.normalized" >&2 || true
+          return 0
+        fi
+      done
+      if [ "''${SIM_DEBUG_OBSERVABLES:-0}" = 1 ]; then
+        printf '%s\n' "$observables" >&2
+      fi
+      printf '%s\n' "$observables" | sha256sum | cut -c1-16
     }
   '';
 in {

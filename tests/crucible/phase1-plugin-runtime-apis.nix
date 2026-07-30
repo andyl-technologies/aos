@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   patchRequirements =
     if patchName == "0011-crucible-plugin-icount-raw.patch"
     then [
@@ -220,10 +219,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-11 checklist complete";
-        needle = "- [x] **T-PATCH-11**";
-      }
       {
         label = "raw icount RFC export";
         needle = "qemu_plugin_icount_raw";

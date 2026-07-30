@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostChannelDeterminism",
-  taskIds ? [],
-  openTaskIds ? ["T-GHC-12"],
+  taskIds ? ["T-GHC-12"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,16 +12,23 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
-  markerObservabilityTest = builtins.readFile ../../crates/crucible/tests/guest_host_marker_observability.rs;
+  pluginWhitebox = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
+  channelDeterminismTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_host_channel_determinism.rs;
+  };
+  markerObservabilityTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_host_marker_observability.rs;
+  };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   phaseGate = builtins.readFile ./phase4-guest-host-channel-determinism.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   forbiddenCallbackApis = [
     "Instant::now"
@@ -55,12 +62,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-12 remains open";
-        needle = "- [ ] **T-GHC-12**";
-      }
-      {
-        label = "T-GHC-12 partial-evidence note";
-        needle = "Partial callback-core and scheduler-model evidence is provided by";
+        label = "T-GHC-12 callback and scheduler evidence";
+        needle = "Callback-core and scheduler-model evidence is provided by";
       }
       {
         label = "channel determinism implementation note";
@@ -192,7 +195,7 @@
       }
       {
         label = "phase4 channel determinism task id";
-        needle = "openTaskIds = [\"T-GHC-12\"]";
+        needle = "taskIds = [\"T-GHC-12\"]";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-guest-host-channel-determinism.nix" phaseGate [

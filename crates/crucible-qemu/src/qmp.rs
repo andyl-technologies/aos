@@ -57,7 +57,7 @@ pub const QMP_MAX_LINE_BYTES: usize = 1024 * 1024;
 pub const QMP_MAX_ASYNC_EVENTS_PER_COMMAND: usize = 1024;
 
 /// Stream contract required by the bounded QMP client.
-pub trait QmpTimeoutStream: Read + Write {
+pub trait QmpTimeoutStream: Read + Write + Send {
     /// Installs the read timeout used by the next QMP receive operation.
     ///
     /// # Errors

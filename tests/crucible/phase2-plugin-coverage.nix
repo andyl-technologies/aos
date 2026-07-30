@@ -24,7 +24,7 @@
   pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
   pluginRuntimeTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
   shmemLib = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
   ];
   shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
@@ -44,7 +44,6 @@
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenCallbackApis = [
     "Instant::now"
@@ -95,10 +94,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-15 is complete after the loaded-QEMU fingerprint run";
-        needle = "- [x] **T-PLUG-15**";
-      }
       {
         label = "T-PLUG-15 records the loaded-QEMU equivalence evidence";
         needle = "independent instruction/register/RR-cursor/writable-RAM/device-I/O trajectory";
@@ -254,8 +249,8 @@
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "backend observations appended to canonical scheduler log";
-        needle = "append_backend_observable_events(observations)";
+        label = "backend observations atomically appended to canonical scheduler log";
+        needle = "append_backend_observations_at_boundary(observations, outcome.frontier)";
       }
       {
         label = "shutdown returns final canonical entries to the session";

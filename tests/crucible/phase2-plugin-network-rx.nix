@@ -12,22 +12,45 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
-  pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginIdleLoopInboundTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginInbound = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+  };
+  pluginNetworkRx = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  };
+  pluginIdleLoop = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  };
+  pluginIdleLoopInboundTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+  };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemDeliveryErrors = builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
-  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
-  shmemRingCoverage = builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
+  shmemDeliveryErrors = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
+  };
+  shmemFrameNode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+  };
+  shmemRingCoverage = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenCallbackApis = [
     "Instant::now"
@@ -73,10 +96,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-11 is closed by live QEMU callback integration";
-        needle = "- [x] **T-PLUG-11**";
-      }
       {
         label = "network RX wording";
         needle = "Implement RX injection via the lossless queueing path";

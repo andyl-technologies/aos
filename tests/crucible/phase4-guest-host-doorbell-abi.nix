@@ -11,13 +11,31 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  protocolDoorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
+  pluginLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+  };
+  pluginWhiteboxDoorbell = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  };
+  protocolLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/lib.rs;
+  };
+  protocolDoorbellAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/doorbell_abi.rs;
+  };
   guestCargo = builtins.readFile ../../crates/crucible-guest/Cargo.toml;
-  guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
-  gateAbiConformance = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  guestLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-guest/src/lib.rs;
+  };
+  gateAbiConformance = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -26,14 +44,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-5 checked off";
-        needle = "- [x] **T-GHC-5**";
-      }
       {
         label = "T-GHC-5 completion note";
         needle = "Completed by `checks.crucible.phase4.guestHostDoorbellAbi`";

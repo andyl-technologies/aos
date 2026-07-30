@@ -10,8 +10,7 @@ use super::*;
 pub const ADAPTIVE_UCB_SCORE_ONE_MICRO: u64 = 1_000_000;
 
 /// Default fixed-point exploration weight for deterministic UCB.
-pub const DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS: u64 =
-    ADAPTIVE_UCB_SCORE_ONE_MICRO;
+pub const DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS: u64 = ADAPTIVE_UCB_SCORE_ONE_MICRO;
 
 /// Signal and bandit configuration hashed into one adaptive campaign identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -124,12 +123,7 @@ impl AdaptiveCampaignState {
             &self.pulls,
             sequence,
         );
-        let score = adaptive_strategy_arm_score(
-            config,
-            &self.rewards,
-            &self.pulls,
-            arm,
-        );
+        let score = adaptive_strategy_arm_score(config, &self.rewards, &self.pulls, arm);
         (arm, score)
     }
 
@@ -164,20 +158,20 @@ impl AdaptiveCampaignState {
                 continue;
             };
             let observation = guidance.observation_for(graph, configuration_value);
-            let new_coverage = u64::from(
-                self.seen_coverage
-                    .insert(observation.coverage_fingerprint),
-            );
+            let new_coverage =
+                u64::from(self.seen_coverage.insert(observation.coverage_fingerprint));
             let rarity_count = guidance
                 .rarity()
                 .count(observation.coverage_fingerprint)
                 .max(1);
             let novelty_gain = ADAPTIVE_UCB_SCORE_ONE_MICRO / rarity_count;
-            let assertion_proximity_progress =
-                match (self.best_assertion_distance, observation.assertion_proximity_distance) {
-                    (Some(previous), Some(current)) if current < previous => previous - current,
-                    _ => 0,
-                };
+            let assertion_proximity_progress = match (
+                self.best_assertion_distance,
+                observation.assertion_proximity_distance,
+            ) {
+                (Some(previous), Some(current)) if current < previous => previous - current,
+                _ => 0,
+            };
             if let Some(current) = observation.assertion_proximity_distance {
                 self.best_assertion_distance = Some(
                     self.best_assertion_distance

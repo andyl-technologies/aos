@@ -54,10 +54,9 @@
       else if maxStart < 0
       then []
       else builtins.genList (index: index) (maxStart + 1);
-    matches =
-      builtins.filter (index:
-        builtins.substring index needleLen haystack == needle)
-      indexes;
+    matches = builtins.filter (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
   in
     if matches == []
     then null
@@ -87,7 +86,8 @@
   isCommentOnlyLine = line: let
     trimmed = lib.trim line;
   in
-    trimmed == ""
+    trimmed
+    == ""
     || lib.hasPrefix "//!" trimmed
     || lib.hasPrefix "///" trimmed
     || lib.hasPrefix "// SAFETY:" trimmed;
@@ -110,11 +110,13 @@
       "${label}: comments-only classifier accepted non-comment code drift"
     ];
 
-  rfcConsistencyBody = sliceBetween
+  rfcConsistencyBody =
+    sliceBetween
     "fn rfc_0010_consistency_lint_is_clean"
     "\n#[test]\nfn rfc_consistency_rules"
     rfcConsistencyRust;
-  taskSyncBody = sliceBetween
+  taskSyncBody =
+    sliceBetween
     "pub(super) fn task_sync_failures"
     "\npub(super) fn task_order_failures"
     rfcConsistencyTasks;

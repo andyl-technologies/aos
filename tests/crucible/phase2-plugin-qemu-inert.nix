@@ -22,13 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-23 checklist complete";
-        needle = "- [x] **T-PLUG-23**";
-      }
       {
         label = "plugin-half scope wording";
         needle = "contributes plugin-half evidence for [PLUG-49]";

@@ -17,15 +17,15 @@
   # series order, so `patch --fuzz=0` replays the exact prefix qemu.nix applies.
   previousPatchFiles =
     (builtins.foldl' (
-      acc: patch:
-        if acc.done || patch == patchName
-        then acc // {done = true;}
-        else acc // {list = acc.list ++ [patch];}
-    ) {
-      list = [];
-      done = false;
-    }
-    series.patchFiles)
+        acc: patch:
+          if acc.done || patch == patchName
+          then acc // {done = true;}
+          else acc // {list = acc.list ++ [patch];}
+      ) {
+        list = [];
+        done = false;
+      }
+      series.patchFiles)
     .list;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -37,13 +37,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-24 checklist complete";
-        needle = "- [x] **T-PATCH-24**";
-      }
       {
         label = "PATCH-47 export";
         needle = "qemu_plugin_inject_preemption";

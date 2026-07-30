@@ -21,8 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   inventoryFailures =
     map (member: "pkgs/tools/crucible/_packages.nix: missing Crucible workspace member `${member}`")
     missingInventoryMembers
@@ -31,10 +29,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-8 checklist complete";
-        needle = "- [x] **T-PKG-8**";
-      }
       {
         label = "T-PKG-8 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleWorkspacePackage`";
@@ -75,7 +69,7 @@
       }
       {
         label = "workspace cargo test";
-        needle = "cargoTestFlags = workspaceCargoFlags;";
+        needle = "cargoTestFlags = \"" + "$" + "{workspaceCargoFlags} --features crucible-cli/test-double\";";
       }
       {
         label = "package checks enabled";

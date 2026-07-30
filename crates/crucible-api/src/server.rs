@@ -112,7 +112,10 @@ pub async fn serve_lifecycle_http2<L, F>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     serve_lifecycle_http2_with_mode(listener, control_plane, LifecycleServerMode::read_write())
         .await
@@ -134,7 +137,10 @@ pub async fn serve_lifecycle_http2_with_mode<L, F>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     serve_lifecycle_http2_with_mode_until_shutdown(
         listener,
@@ -163,7 +169,10 @@ pub async fn serve_lifecycle_http2_with_mode_until_shutdown<L, F, S>(
 ) -> Result<(), std::io::Error>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -183,7 +192,10 @@ where
 fn lifecycle_router<L, F>(state: Http2LifecycleState<L, F>) -> Router
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     Router::new()
         .route("/crucible.rpc/hello", post(handle_rpc_hello::<L, F>))
@@ -230,7 +242,10 @@ async fn handle_rpc_hello<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -260,7 +275,10 @@ async fn handle_list_scenarios<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -279,7 +297,10 @@ async fn handle_create_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -311,7 +332,10 @@ async fn handle_resume_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -343,7 +367,10 @@ async fn handle_list_sessions<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -362,7 +389,10 @@ async fn handle_destroy_session<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -394,7 +424,10 @@ async fn handle_get_reproduction<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -422,7 +455,10 @@ async fn handle_control_attach<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -457,7 +493,10 @@ async fn handle_control_send<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     handle_streaming_send(state, request).await
 }
@@ -468,7 +507,10 @@ async fn handle_watch_attach<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -500,7 +542,10 @@ async fn handle_send_command<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     handle_streaming_send(state, request).await
 }
@@ -511,7 +556,10 @@ async fn handle_streaming_send<L, F>(
 ) -> Response
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
@@ -1059,40 +1107,6 @@ fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, 
     }
 }
 
-fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
-    let value = parse_wire_line(line, "query=")?;
-    let mut fields = value.split('|');
-    match fields
-        .next()
-        .ok_or_else(|| String::from("missing query kind"))?
-    {
-        "snapshot" => {
-            reject_extra_query_field(fields.next())?;
-            Ok(QueryKind::Snapshot)
-        }
-        "breakpoint-firings" => {
-            reject_extra_query_field(fields.next())?;
-            Ok(QueryKind::BreakpointFirings)
-        }
-        "state" => {
-            reject_extra_query_field(fields.next())?;
-            Ok(QueryKind::State)
-        }
-        "event-log-length" => {
-            reject_extra_query_field(fields.next())?;
-            Ok(QueryKind::EventLogLength)
-        }
-        "execution-fingerprint" => {
-            let node = parse_hex_string_field(fields.next(), "query fingerprint node")?;
-            reject_extra_query_field(fields.next())?;
-            Ok(QueryKind::ExecutionFingerprint {
-                node: NodeId { name: node },
-            })
-        }
-        kind => Err(format!("unknown query kind `{kind}`")),
-    }
-}
-
 fn reject_extra_query_field(field: Option<&str>) -> Result<(), String> {
     if field.is_some() {
         return Err(String::from("unexpected extra query fields"));
@@ -1370,44 +1384,6 @@ fn encode_send_response(response: &SendResponse) -> String {
     output
 }
 
-fn query_result_wire(result: Option<&QueryResult>) -> String {
-    match result {
-        Some(QueryResult::State(state)) => {
-            format!("state|{}", lifecycle_state_wire_name(*state))
-        }
-        Some(QueryResult::EventLogLength(len)) => {
-            format!("event-log-length|{len}")
-        }
-        Some(QueryResult::ExecutionFingerprint(sample)) => format!(
-            "execution-fingerprint|{}|{}|{}",
-            hex_encode(sample.node.name.as_bytes()),
-            sample.at.ticks,
-            sample.fingerprint.hash.to_hex()
-        ),
-        Some(QueryResult::Snapshot(snapshot)) => {
-            let terminal = snapshot
-                .terminal_savepoint
-                .as_ref()
-                .map(|checkpoint| hex_encode(&checkpoint.to_compact_binary()))
-                .unwrap_or_else(|| String::from("none"));
-            format!(
-                "snapshot|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-                snapshot_engine_state_wire(&snapshot.state),
-                snapshot.frontier.ticks,
-                snapshot.event_log_len,
-                snapshot.quanta,
-                snapshot.configuration.def.id().to_hex(),
-                snapshot.configuration.def.seed().to_hex(),
-                snapshot.configuration.def.app_random_draw_cap(),
-                hex_encode(&snapshot.configuration.schedule.to_compact_binary()),
-                terminal
-            )
-        }
-        Some(QueryResult::BreakpointFirings(firings)) => breakpoint_firings_wire(firings),
-        None => String::from("none"),
-    }
-}
-
 fn breakpoint_firings_wire(firings: &[crucible_session::BreakpointFiring]) -> String {
     let mut output = format!("breakpoint-firings|{}", firings.len());
     for firing in firings {
@@ -1681,6 +1657,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         ),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
+        | LifecycleApiError::LoopFactory { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
@@ -2223,3 +2200,6 @@ mod tests {
         Ok(())
     }
 }
+mod query_wire;
+
+use query_wire::*;

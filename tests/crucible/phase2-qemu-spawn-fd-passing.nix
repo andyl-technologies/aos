@@ -11,10 +11,22 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  nodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  spawnLib = builtins.readFile ../../crates/crucible-qemu/src/spawn.rs;
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  launchLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch.rs;
+  };
+  nodeLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
+  spawnLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/spawn.rs;
+  };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,14 +34,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-7 checklist complete";
-        needle = "- [x] **T-QEMU-7**";
-      }
       {
         label = "T-QEMU-7 completion note names Linux spawn adapter";
         needle = "Linux-only `crucible-qemu` spawn adapter";
@@ -105,8 +111,8 @@
         needle = "let _ = self.child.kill();";
       }
       {
-        label = "drop-time reap";
-        needle = "self.child.wait()";
+        label = "bounded drop-time reap";
+        needle = "wait_child(&mut self.child, DROP_REAP_DEADLINE)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/spawn.rs" spawnLib [

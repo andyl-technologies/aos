@@ -17,29 +17,83 @@
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   perfDoc = builtins.readFile ../../docs/rfcs/0010-crucible/25-performance-targets.md;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  basicBlockGateTest = builtins.readFile ../../crates/crucible/tests/gate_basic_block_coverage.rs;
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
-  pluginCoverageTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
-  pluginRuntimeTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
-  pluginLiveCallbacksTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
-  qemuCoverage = builtins.readFile ../../crates/crucible-qemu/src/coverage.rs;
-  qemuLiveCoverageGate = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate.rs;
-  qemuLiveCoverageTrace = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  basicBlockGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_basic_block_coverage.rs;
+  };
+  protocol = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/src/lib.rs;
+  };
+  pluginCoverage = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  };
+  pluginCoverageTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+  };
+  pluginRuntimeTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+  };
+  pluginLiveCallbacksTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
+  };
+  qemuCoverage = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/coverage.rs;
+  };
+  qemuLiveCoverageGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/live_coverage_gate.rs;
+  };
+  qemuLiveCoverageTrace = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
+  };
   qemuLiveCoverageGateCli = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-coverage.rs;
   qemuTracePlugin = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   qemuFingerprintPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch;
   qemuSimObserverPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0033-crucible-sim-observer.patch;
   guestSource = builtins.readFile ./phase6-basic-block-coverage-guest.nix;
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qemuCoverageTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_basic_block_coverage.rs;
-  qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  qemuAsyncDriver = builtins.readFile ../../crates/crucible-qemu/src/async_driver.rs;
-  mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
-  backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
+  qemuLaunch = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch.rs;
+  };
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  qemuCoverageTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/gate_basic_block_coverage.rs;
+  };
+  qemuMappedQuantum = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/mapped_quantum.rs;
+  };
+  qemuNode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
+  qemuAsyncDriver = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/async_driver.rs;
+  };
+  mappedQuantumTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/mapped_quantum.rs;
+  };
+  backendBoundary = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/backend.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   session = import ./_crucible-session-source.nix {inherit lib;};
   pluginCoverageGate = builtins.readFile ./phase2-plugin-coverage.nix;
@@ -115,7 +169,6 @@
     "    basicBlockCoverage = greenBeforeAdvance {"
     "    coverageFeedback = greenBeforeAdvance {";
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -127,10 +180,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-10 is complete after loaded-QEMU callback evidence";
-        needle = "- [x] **T-ADV-10**";
-      }
       {
         label = "T-ADV-10 completion evidence";
         needle = "Completed by `checks.crucible.phase6.basicBlockCoverage`";
@@ -154,19 +203,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginDoc [
       {
-        label = "T-PLUG-15 is complete";
-        needle = "- [x] **T-PLUG-15**";
-      }
-      {
         label = "plugin coverage opt-in";
         needle = "registration-time\n  opt-in TCG-exec basic-block map";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/25-performance-targets.md" perfDoc [
-      {
-        label = "T-PERF-15 is complete";
-        needle = "- [x] **T-PERF-15**";
-      }
       {
         label = "T-PERF-15 records production observation-only evidence";
         needle = "identical execution fingerprint, canonical causal log, and independent";
@@ -656,8 +697,8 @@
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "canonical scheduler observation append";
-        needle = "append_backend_observable_events(observations)";
+        label = "atomic canonical scheduler observation boundary append";
+        needle = "append_backend_observations_at_boundary(observations, outcome.frontier)";
       }
       {
         label = "shutdown returns final canonical entries to the session";

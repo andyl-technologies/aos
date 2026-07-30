@@ -66,12 +66,12 @@
     ]
     else [];
 
-  workspacePackages =
-    builtins.filter (
-      name:
-        name != harnessPackage
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir));
+  workspacePackages = builtins.filter (
+    name:
+      name
+      != harnessPackage
+      && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
+  ) (builtins.attrNames (builtins.readDir cratesDir));
 
   dependencyPackageName = workspaceDeps: name: value:
     if builtins.isAttrs value && value ? workspace && value.workspace == true
@@ -83,38 +83,36 @@
     then value.package
     else name;
 
-  dependencyTableSpecs = workspaceDeps: scope: manifest:
-    let
-      tableName = lib.last (lib.splitString "." scope);
-      dependencies =
-        if builtins.hasAttr tableName manifest
-        then manifest.${tableName}
-        else {};
-    in
-      lib.mapAttrsToList (name: value: {
-        inherit name scope;
-        package = dependencyPackageName workspaceDeps name value;
-      })
-      dependencies;
+  dependencyTableSpecs = workspaceDeps: scope: manifest: let
+    tableName = lib.last (lib.splitString "." scope);
+    dependencies =
+      if builtins.hasAttr tableName manifest
+      then manifest.${tableName}
+      else {};
+  in
+    lib.mapAttrsToList (name: value: {
+      inherit name scope;
+      package = dependencyPackageName workspaceDeps name value;
+    })
+    dependencies;
 
-  productionDependencySpecs = workspaceDeps: manifest:
-    let
-      direct =
-        dependencyTableSpecs workspaceDeps "dependencies" manifest
-        ++ dependencyTableSpecs workspaceDeps "build-dependencies" manifest;
-      target =
-        if manifest ? target
-        then
-          lib.concatMap (
-            targetName: let
-              targetSpec = manifest.target.${targetName};
-            in
-              dependencyTableSpecs workspaceDeps "target.${targetName}.dependencies" targetSpec
-              ++ dependencyTableSpecs workspaceDeps "target.${targetName}.build-dependencies" targetSpec
-          ) (builtins.attrNames manifest.target)
-        else [];
-    in
-      direct ++ target;
+  productionDependencySpecs = workspaceDeps: manifest: let
+    direct =
+      dependencyTableSpecs workspaceDeps "dependencies" manifest
+      ++ dependencyTableSpecs workspaceDeps "build-dependencies" manifest;
+    target =
+      if manifest ? target
+      then
+        lib.concatMap (
+          targetName: let
+            targetSpec = manifest.target.${targetName};
+          in
+            dependencyTableSpecs workspaceDeps "target.${targetName}.dependencies" targetSpec
+            ++ dependencyTableSpecs workspaceDeps "target.${targetName}.build-dependencies" targetSpec
+        ) (builtins.attrNames manifest.target)
+      else [];
+  in
+    direct ++ target;
 
   harnessDependencyFailuresFor = workspaceDeps: manifests:
     lib.concatMap (
@@ -127,14 +125,13 @@
         ) (productionDependencySpecs workspaceDeps manifests.${package})
     ) (builtins.attrNames manifests);
 
-  realManifests =
-    builtins.listToAttrs (
-      map (package: {
-        name = package;
-        value = builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
-      })
-      workspacePackages
-    );
+  realManifests = builtins.listToAttrs (
+    map (package: {
+      name = package;
+      value = builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+    })
+    workspacePackages
+  );
 
   dependencyRegressionFailures = let
     directFindings = harnessDependencyFailuresFor workspaceDependencies {
@@ -147,11 +144,12 @@
         target."cfg(unix)"."build-dependencies".harness.package = harnessPackage;
       };
     };
-    workspaceFindings = harnessDependencyFailuresFor (workspaceDependencies // {
-      harness = {
-        package = harnessPackage;
-      };
-    }) {
+    workspaceFindings = harnessDependencyFailuresFor (workspaceDependencies
+      // {
+        harness = {
+          package = harnessPackage;
+        };
+      }) {
       crucible-session = {
         target."cfg(unix)".dependencies.harness.workspace = true;
       };

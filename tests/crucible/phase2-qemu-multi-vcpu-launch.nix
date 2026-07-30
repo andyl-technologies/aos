@@ -29,7 +29,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
       {

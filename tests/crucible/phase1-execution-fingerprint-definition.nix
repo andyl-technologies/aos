@@ -14,8 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-harness/src/fingerprint.rs" fingerprintRust [
       {

@@ -23,6 +23,7 @@ in
 
     buildDeps = [
       pkgs.coreutils
+      pkgs.crucible-fixtures
       pkgs.crucible-qemu-plugin
       pkgs.grep
       pkgs.qemu-crucible
@@ -93,6 +94,13 @@ in
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
             --example crucible-qemu-live-network-io
+          cargo build \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/live-network-io-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-api \
+            --example crucible-qemu-live-world-network
 
           run_dir="$TMPDIR/live-network-io-run"
           mkdir -p "$run_dir"
@@ -129,14 +137,40 @@ in
           grep -Fxq 'delayed_reply_applied=false' "$report"
           grep -Fxq 'orderly_child_exit=true' "$report"
 
+          world_report="$TMPDIR/live-world-network.result"
+          root_image=${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4
+          timeout -k 15 590 \
+            "$TMPDIR/live-network-io-target/debug/examples/crucible-qemu-live-world-network" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            "$vmlinuz" \
+            "$root_image" \
+            "$GUEST_INITRD" \
+            > "$world_report"
+
+          cat "$world_report"
+          grep -Fxq PASS "$world_report"
+          grep -Fxq 'gate=gate:live-world-network' "$world_report"
+          grep -Fxq 'backend=production-qemu-lifecycle' "$world_report"
+          grep -Fxq 'topology=two-vm-hostless-world-link' "$world_report"
+          grep -Eq '^network_decisions=[1-9][0-9]*$' "$world_report"
+          grep -Eq '^delivered_frames=[1-9][0-9]*$' "$world_report"
+          grep -Fxq 'search_branch=loss-fire' "$world_report"
+          grep -Fxq 'branch_decisions_match=true' "$world_report"
+          grep -Fxq 'process_crash_stopped=true' "$world_report"
+          grep -Fxq 'ready_point_process_relaunched=true' "$world_report"
+          grep -Fxq 'stay_down_start_node_process_relaunched=true' "$world_report"
+          grep -Fxq 'last_checkpoint_thin_replay_relaunched=true' "$world_report"
+
           mkdir -p "$out"
           cp "$report" "$out/result"
+          cp "$world_report" "$out/live-world-network.result"
           {
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
             printf 'scope=certifying-live-guest-network-plugin-ring-exchange\n'
-            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance\n'
+            printf 'proven=guest-originated-tx,hostless-router-ring,exact-router-latency,lossless-qemu-rx,guest-ack,frame-order-host-load-invariance,production-two-vm-world-route,production-live-search-branch,production-process-crash,production-ready-point-process-relaunch,production-stay-down-start-node-process-relaunch,production-last-checkpoint-thin-replay\n'
             printf 'kernel_packet_socket=built-in\n'
             printf 'kernel_virtio_net=built-in\n'
           } >> "$out/result"

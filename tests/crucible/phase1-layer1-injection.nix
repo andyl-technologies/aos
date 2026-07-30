@@ -27,8 +27,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-device/Cargo.toml" deviceManifest [
       {
@@ -173,16 +171,8 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-14 checklist complete";
-        needle = "- [x] **T-DET-14**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-8 checklist complete";
-        needle = "- [x] **T-HARN-8**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -211,10 +201,12 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.grep
+        ]
+        ++ dependencies;
 
       phases = [
         {

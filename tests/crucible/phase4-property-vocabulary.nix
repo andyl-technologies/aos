@@ -48,7 +48,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
   forbiddenForSources = requirements:
     lib.concatMap (
       source:
@@ -65,10 +64,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-1 checked off";
-        needle = "- [x] **T-ASRT-1**";
-      }
       {
         label = "T-ASRT-1 completion note";
         needle = "Completed by `checks.crucible.phase4.propertyVocabulary`";

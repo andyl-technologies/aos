@@ -19,15 +19,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-15 checked off";
-        needle = "- [x] **T-ASRT-15**";
-      }
       {
         label = "T-ASRT-15 completion note";
         needle = "Completed by `checks.crucible.phase4.assertionViolationReproduction`";

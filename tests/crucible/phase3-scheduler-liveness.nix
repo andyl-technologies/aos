@@ -26,8 +26,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
@@ -203,19 +201,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-14 checklist complete";
-        needle = "- [x] **T-HARN-14**";
-      }
-      {
         label = "HARN-18 generated scenario requirement";
         needle = "`gate:scheduler-liveness` MUST drive the single authoritative";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingSpec [
-      {
-        label = "T-SCHED-4 checklist complete";
-        needle = "- [x] **T-SCHED-4**";
-      }
       {
         label = "T-SCHED-4 completion note";
         needle = "Completed by `checks.crucible.phase3.gates.schedulerLiveness`";
@@ -238,11 +228,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

@@ -20,8 +20,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   faultApplySources = builtins.concatStringsSep "\n" [
     scheduler
@@ -29,10 +27,6 @@
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-2 checked off";
-        needle = "- [x] **T-FAULT-2**";
-      }
       {
         label = "T-FAULT-2 completion note";
         needle = "Completed by `checks.crucible.phase4.faultModelRule`";

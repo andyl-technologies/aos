@@ -18,7 +18,13 @@ use super::{
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
 pub struct MappedSetupRegion {
-    ptr: NonNull<u8>,
+    /// Process-local address of the uniquely owned mapping.
+    ///
+    /// The address is stored as an integer so ownership may move between
+    /// scheduler threads. Typed pointers are reconstructed only inside the
+    /// layout-checked accessors below, and the mapping remains uniquely owned
+    /// until `Drop`.
+    address: usize,
     len: usize,
     region_len: u64,
 }
@@ -73,6 +79,10 @@ pub struct MappedNodeRingPairMut<'a> {
 }
 
 impl MappedSetupRegion {
+    fn base_ptr(&self) -> *mut u8 {
+        self.address as *mut u8
+    }
+
     /// Returns the mapped length supplied by the control-protocol `Setup` frame.
     #[must_use]
     pub const fn region_len(&self) -> u64 {
@@ -89,7 +99,7 @@ impl MappedSetupRegion {
         // SAFETY: `mmap_setup_region` validates that the live mapping is large
         // enough and correctly aligned for `RegionHeader` before constructing
         // `Self`. The returned borrow cannot outlive this mapping owner.
-        unsafe { &*self.ptr.as_ptr().cast::<RegionHeader>() }
+        unsafe { &*self.base_ptr().cast::<RegionHeader>() }
     }
 
     /// Returns an acquire snapshot of the mapped region header.
@@ -134,7 +144,7 @@ impl MappedSetupRegion {
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
         let node_slot_offset = mapped_node_slot_offset(layout, self.len, node_slot)?;
-        let base = self.ptr.as_ptr();
+        let base = self.base_ptr();
         // SAFETY: `mapped_node_slot_offset` validated the slot index, byte
         // range, and ABI alignment against this live owned mapping.
         Ok(unsafe { &*base.add(node_slot_offset).cast::<NodeSlot>() })
@@ -192,7 +202,7 @@ impl MappedSetupRegion {
             }
         })?;
 
-        let base = self.ptr.as_ptr();
+        let base = self.base_ptr();
         // SAFETY: all offsets and byte lengths were checked against the owned
         // mapping, alignment was validated for each typed segment, and duplicate
         // ring indices were rejected so the returned mutable slices are disjoint.
@@ -261,7 +271,7 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
-        let base = self.ptr.as_ptr();
+        let base = self.base_ptr();
         // SAFETY: the coverage offset helpers validate the complete typed ranges
         // and alignments inside this owned mapping. Each VM slot names a distinct
         // header and entry slice, and this exclusive mapping borrow prevents a
@@ -311,7 +321,7 @@ impl MappedSetupRegion {
                     index: vm_slot,
                 }
             })?;
-        let base = self.ptr.as_ptr();
+        let base = self.base_ptr();
         // SAFETY: the marker offset helpers validate the complete typed ranges
         // and alignments inside this owned mapping. Each VM names a distinct
         // SPSC slice, and the exclusive mapping borrow prevents safe aliasing.
@@ -356,7 +366,7 @@ impl MappedSetupRegion {
             });
         }
         let offset = mapped_fingerprint_sample_offset(layout, self.len, vm_slot)?;
-        let base = self.ptr.as_ptr();
+        let base = self.base_ptr();
         // SAFETY: `mapped_fingerprint_sample_offset` validated the slot index,
         // byte range, and ABI alignment against this live owned mapping.
         Ok(unsafe { &*base.add(offset).cast::<FingerprintSampleSlot>() })
@@ -368,7 +378,7 @@ impl Drop for MappedSetupRegion {
         // SAFETY: `ptr` and `len` were returned by `mmap` and are owned by this
         // value until `Drop`.
         unsafe {
-            libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), self.len);
+            libc::munmap(self.base_ptr().cast::<libc::c_void>(), self.len);
         }
     }
 }
@@ -441,7 +451,7 @@ pub fn mmap_setup_region(
     }
 
     Ok(MappedSetupRegion {
-        ptr,
+        address: ptr.as_ptr() as usize,
         len,
         region_len,
     })
@@ -608,23 +618,6 @@ pub enum SetupRegionMapError {
         /// Required ABI alignment.
         alignment: usize,
     },
-}
-
-fn setup_region_backing_len(fd: BorrowedFd<'_>) -> Result<u64, SetupRegionMapError> {
-    let mut stat = MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: `stat` points to valid writable storage and `fd` is borrowed from
-    // a live owned descriptor for the duration of the syscall.
-    let result = unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) };
-    if result != 0 {
-        return Err(SetupRegionMapError::FstatFailed {
-            errno: last_os_error(),
-        });
-    }
-    // SAFETY: successful `fstat` initialized the output structure.
-    let stat = unsafe { stat.assume_init() };
-    u64::try_from(stat.st_size).map_err(|_| SetupRegionMapError::NegativeBackingLength {
-        backing_len: stat.st_size,
-    })
 }
 
 #[cfg(target_os = "linux")]
@@ -872,17 +865,6 @@ fn mapped_segment_offset(
     Ok(offset)
 }
 
-fn unmap_setup_region(ptr: *mut libc::c_void, len: usize) {
-    // SAFETY: callers pass an address and length returned by `mmap`.
-    unsafe {
-        libc::munmap(ptr, len);
-    }
-}
-
-fn last_os_error() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::ffi::CString;
@@ -890,6 +872,12 @@ mod tests {
     use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
     use super::*;
+
+    #[test]
+    fn owned_mapping_can_move_to_a_session_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<MappedSetupRegion>();
+    }
 
     #[test]
     fn seal_capable_memfd_must_prevent_shrink_before_mapping()
@@ -937,3 +925,5 @@ mod tests {
         Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
     }
 }
+mod os_mapping;
+use os_mapping::*;

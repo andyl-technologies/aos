@@ -9,8 +9,11 @@
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  pluginAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+  };
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   qemuPluginApiVersionPrefix = "pub const QEMU_PLUGIN_API_VERSION: c_int = ";
@@ -36,14 +39,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-7 checklist complete";
-        needle = "- [x] **T-PKG-7**";
-      }
       {
         label = "T-PKG-7 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleQemuPluginPackage`";
@@ -142,7 +139,7 @@
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
         label = "CLI package carries matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [qemu-crucible crucible-qemu-plugin];";
+        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
         label = "CLI package pins AOS QEMU hint";

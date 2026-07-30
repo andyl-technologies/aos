@@ -9,11 +9,13 @@ in
       pathString = toString path;
       base = baseNameOf path;
     in
-      base != ".git"
+      base
+      != ".git"
       && base != "target"
       && base != "result"
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || pathString == "${repoRootString}/.github"
         || pathString == "${repoRootString}/.github/pull_request_template.md"
         || pathString == "${repoRootString}/CLAUDE.md"

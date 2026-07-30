@@ -12,13 +12,12 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
@@ -152,19 +151,11 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
-        label = "T-EXEC-6 checked off";
-        needle = "- [x] **T-EXEC-6**";
-      }
-      {
         label = "T-EXEC-6 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-9 checklist complete";
-        needle = "- [x] **T-PAT-9**";
-      }
       {
         label = "T-PAT-9 completion names instantiate";
         needle = "`crucible::instantiate`";

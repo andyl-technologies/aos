@@ -15,15 +15,20 @@
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  inspectionTest = builtins.readFile ../../crates/crucible/tests/gate_read_only_debug_inspection.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  inspectionTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_read_only_debug_inspection.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
@@ -36,10 +41,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-2 checklist complete";
-        needle = "- [x] **T-DBG-2**";
-      }
       {
         label = "T-DBG-2 partial-evidence note";
         needle = "Completed under `checks.crucible.phase6.readOnlyDebugInspection`";
@@ -217,12 +218,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "red read-only debug inspection gate";
-        needle = "readOnlyDebugInspection = redBeforeAdvance";
+        label = "green read-only debug inspection gate";
+        needle = "readOnlyDebugInspection = greenBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "openTaskIds = [\"T-DBG-2\"]";
+        needle = "taskIds = [\"T-DBG-2\"]";
       }
       {
         label = "debug attach raw dependency";

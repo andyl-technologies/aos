@@ -54,10 +54,6 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
       {
-        label = "T-TRI-4 checked off";
-        needle = "- [x] **T-TRI-4**";
-      }
-      {
         label = "T-TRI-4 completion note";
         needle = "Completed by `checks.crucible.phase6.failureClustering`";
       }

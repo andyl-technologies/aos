@@ -12,26 +12,26 @@
   };
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  determinismTest = builtins.readFile ../../crates/crucible/tests/assertion_determinism_nonperturbation.rs;
+  triggerAssertions = builtins.readFile ../../crates/crucible/src/trigger/assertions.rs;
+  determinismTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/assertion_determinism_nonperturbation.rs;
+  };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
-  assertionEngineBlock = builtins.elemAt (
-    lib.splitString "fn push_observed_state_facts" (
-      builtins.elemAt (lib.splitString "pub struct OfflineAssertionChecker" trigger) 1
+  assertionEngineBlock =
+    builtins.elemAt (
+      lib.splitString "fn push_observed_state_facts" (
+        builtins.elemAt (lib.splitString "pub struct OfflineAssertionChecker" triggerAssertions) 1
+      )
     )
-  ) 0;
+    0;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-13 checked off";
-        needle = "- [x] **T-ASRT-13**";
-      }
       {
         label = "T-ASRT-13 completion note";
         needle = "Completed by `checks.crucible.phase4.assertionDeterminismNonPerturbation`";

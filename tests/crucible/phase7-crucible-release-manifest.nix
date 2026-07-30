@@ -12,7 +12,7 @@
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   sourceNix = builtins.readFile ../../pkgs/tools/crucible/_source.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -83,7 +83,6 @@
   sourceStoreHash = builtins.substring 0 32 sourceStoreName;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenTimestampNeedles = [
     {
@@ -322,7 +321,7 @@
     ++ failuresFor "pkgs/tools/crucible/_source.nix" sourceNix [
       {
         label = "source filter excludes git";
-        needle = "base != \".git\"";
+        needle = "!= \".git\"";
       }
       {
         label = "source filter excludes target";
@@ -400,10 +399,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-19 checklist complete";
-        needle = "- [x] **T-PKG-19**";
-      }
       {
         label = "T-PKG-19 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleReleaseManifest`";

@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginHandshake",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-16"],
+  taskIds ? ["T-PLUG-16"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -17,7 +17,7 @@
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmem = import ./_crucible-shmem-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -27,13 +27,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-16 completed by the live plugin install gate";
-        needle = "- [x] **T-PLUG-16**";
-      }
       {
         label = "T-PLUG-16 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";

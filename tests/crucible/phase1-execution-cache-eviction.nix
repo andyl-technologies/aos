@@ -17,7 +17,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-session/src/lib.rs" session [
       {
@@ -88,10 +87,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-16 checked off";
-        needle = "- [x] **T-EXEC-16**";
-      }
       {
         label = "T-EXEC-16 completion note";
         needle = "Completed by `crates/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`";

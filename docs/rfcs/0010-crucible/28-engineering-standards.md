@@ -284,7 +284,8 @@ atomics with explicit orderings — and nowhere else. The root `CLAUDE.md` rule
   shmem region exposes safe typed accessors; the plugin FFI is wrapped in safe
   Rust shims. No `unsafe` detail leaks into the engine (L3) or control plane
   (L4), which remain `#![forbid(unsafe_code)]`. The SPSC ring's `unsafe` MUST be
-  validated by the loom/property tests of [STD-22] before it is relied on.
+  validated by the exhaustive ordering model and trace-property corpus of
+  [STD-22] before it is relied on.
   *Spec:* §3, §4.
 
 ---
@@ -326,13 +327,14 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
 
 - **[STD-22]** Every concurrent primitive — the SPSC frame ring and any other
   lock-free or atomics-based structure ([`13-shmem-abi.md`](13-shmem-abi.md)) —
-  MUST be covered by **(a)** an exhaustive memory-ordering model-checker test
-  (`loom`-style: all interleavings of the producer/consumer under the declared
-  atomic orderings) and **(b)** randomized **property tests** (`proptest`-style)
+  MUST be covered by **(a)** a hermetic exhaustive memory-ordering model that
+  enumerates all producer/consumer interleavings under the declared atomic
+  orderings and **(b)** a deterministic exhaustive operation-trace corpus
   asserting no lost frame, no duplicated frame, FIFO order, correct full/empty
-  behavior, and correct wraparound ([HARN-33]). These run in-process, are part
-  of the L1 gate set, and MUST pass before any `unsafe` in the ring is relied on
-  ([STD-18]). *Gate:* `gate:layer1-injection`. *Spec:* §8.2 of 24.
+  behavior, and correct wraparound ([HARN-33]). At least one deliberately
+  weakened ordering MUST fail as a negative control. These run in-process, are
+  part of the L1 gate set, and MUST pass before any `unsafe` in the ring is
+  relied on ([STD-18]). *Gate:* `gate:layer1-injection`. *Spec:* §8.2 of 24.
 
 - **[STD-23]** Each of the three boundary ABIs — the shmem layout, the
   guest↔host protocol framing, and the control-plane RPC schema — MUST have a
@@ -480,7 +482,8 @@ ABI, unsafe, errors
     THIS PR; round-trip property still holds [STD-23], gate:abi-conformance.
 [ ] If unsafe was added/touched: the crate is an enumerated unsafe-permitted
     crate [STD-16]; every block has a // SAFETY: comment [STD-17]; the safe
-    wrapper upholds the invariant; SPSC changes are covered by loom [STD-22].
+    wrapper upholds the invariant; SPSC changes are covered by the exhaustive
+    ordering model and its negative controls [STD-22].
 [ ] No .unwrap()/.expect() in production; library errors are typed (thiserror),
     anyhow only at the binary boundary; a loud-failure panic names the invariant
     it defends [STD-7, STD-8, INV-10].
@@ -562,10 +565,11 @@ the conditions under which feature code can be trusted to stay deterministic
   flaky-is-failing; the `SimDouble` carries the bulk of L1/L3/L4 determinism
   tests. — satisfies [STD-19], [STD-20], [STD-21]; spec §4.
 - [x] **T-STD-9** Establish the concurrency-, ABI-, and oracle-test standards:
-  loom + proptest on the SPSC ring (before its `unsafe` is relied on), golden
-  vectors + round-trip + fuzzing for the three ABIs, and the replay-oracle test
-  run both fixed-corpus and in-search. — satisfies [STD-22], [STD-23], [STD-25];
-  spec §4, §8 of 24, §6 of 24.
+  an exhaustive ordering model and deterministic exhaustive trace corpus on the
+  SPSC ring (before its `unsafe` is relied on), golden vectors + round-trip +
+  fuzzing for the three ABIs, and the replay-oracle test run both fixed-corpus
+  and in-search. — satisfies [STD-22], [STD-23], [STD-25]; spec §4, §8 of 24,
+  §6 of 24.
 - [x] **T-STD-10** Define and measure the determinism-core coverage floor (every
   ordering branch and error variant in the scheduler/RNG/digest/ring/codec/
   oracle/artifact paths exercised), measured deterministically in a separate
@@ -581,7 +585,7 @@ the conditions under which feature code can be trusted to stay deterministic
   require it on any engine/scheduler/transport PR, and codify the
   root-cause-not-workaround rule for surfaced leaks. — satisfies [STD-32],
   [STD-33]; spec §6.
-- [ ] **T-STD-14** Reconcile the concurrency-oracle standard with what the
+- [x] **T-STD-14** Reconcile the concurrency-oracle standard with what the
   workspace can hermetically build: either vendor `loom` and `proptest` as AOS
   packages and use them on the SPSC ring, or narrow [STD-22]/[STD-23] to the
   bespoke exhaustive model checker actually in use — and make the emitted gate
@@ -606,3 +610,9 @@ the conditions under which feature code can be trusted to stay deterministic
     instead, the marker and this task's text move with it.
   - Gate: `checks.crucible.phase1.concurrencyAbiOracleStandards` MUST assert the
     marker matches the mechanism actually linked into the test binary.
+  Completed by `checks.crucible.phase1.concurrencyAbiOracleStandards`: the
+  production gate and its Rust mirror require
+  `assert_spsc_ring_exhaustive_ordering_model` plus
+  `assert_spsc_ring_exhaustive_trace_properties`, preserve weakened-ordering
+  negative controls, and emit `spsc=exhaustive-ordering-model`. D-37 records
+  the hermetic mechanism choice.

@@ -23,8 +23,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   forbiddenOriginationApis = [
     "struct ApplicationTrafficInjector"
     "enum ApplicationTrafficInjector"
@@ -43,10 +41,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-1 checked off";
-        needle = "- [x] **T-WL-1**";
-      }
       {
         label = "T-WL-1 completion note";
         needle = "Completed by `checks.crucible.phase4.workloadModel`";
@@ -136,8 +130,8 @@
         needle = "MUST NOT be used to originate application traffic";
       }
       {
-        label = "backend input requires guest-origin app traffic";
-        needle = "Application workload traffic must originate";
+        label = "backend input accepts only scheduled model events";
+        needle = "already-scheduled model events";
       }
     ]
     ++ failuresFor "crates/crucible/src/device.rs" engineDevice [

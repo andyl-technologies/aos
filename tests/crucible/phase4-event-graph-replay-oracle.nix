@@ -22,15 +22,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-20 checked off";
-        needle = "- [x] **T-TRIG-20**";
-      }
       {
         label = "T-TRIG-20 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
@@ -38,16 +32,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
       {
-        label = "T-ASRT-16 checked off";
-        needle = "- [x] **T-ASRT-16**";
-      }
-      {
         label = "T-ASRT-16 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
-      }
-      {
-        label = "T-ASRT-18 checked off";
-        needle = "- [x] **T-ASRT-18**";
       }
       {
         label = "T-ASRT-18 replay completion note";
@@ -245,10 +231,6 @@
         label = "stale replay gate pending prose";
         needle = "Replay gates remain T-TRIG-20";
       }
-      {
-        label = "stale unchecked T-TRIG-20 task";
-        needle = "- [ ] **T-TRIG-20**";
-      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -291,11 +273,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

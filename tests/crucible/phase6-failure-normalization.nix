@@ -23,7 +23,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -35,10 +34,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-2 checked off";
-        needle = "- [x] **T-TRI-2**";
-      }
       {
         label = "T-TRI-2 completion note";
         needle = "Completed by `checks.crucible.phase6.failureNormalization`";

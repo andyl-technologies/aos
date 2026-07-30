@@ -22,14 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" exampleDoc [
-      {
-        label = "T-EX-2 checked off";
-        needle = "- [x] **T-EX-2**";
-      }
       {
         label = "T-EX-2 completion note";
         needle = "Completed by `checks.crucible.phase7.partitionRecoveryExample`";

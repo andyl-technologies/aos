@@ -55,7 +55,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   patchRequirements =
     if patchName == "0015-crucible-blk-shmem.patch"
     then [
@@ -150,10 +149,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-12 checklist complete";
-        needle = "- [x] **T-PATCH-12**";
-      }
       {
         label = "block shmem patch catalog";
         needle = "crucible-blk-shmem";

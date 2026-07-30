@@ -38,8 +38,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   qemuBackendForbidden = [
     {
       label = "crucible-qemu crate import";
@@ -70,10 +68,6 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-12 is complete";
-        needle = "- [x] **T-SESS-12**";
-      }
-      {
         label = "T-SESS-12 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
       }
@@ -83,10 +77,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsDoc [
-      {
-        label = "T-PAT-6 is complete";
-        needle = "- [x] **T-PAT-6**";
-      }
       {
         label = "T-PAT-6 session backend completion note";
         needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend` and";

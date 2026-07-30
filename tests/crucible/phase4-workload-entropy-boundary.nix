@@ -13,11 +13,26 @@
   };
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
-  workloadTest = builtins.readFile ../../crates/crucible-qemu/tests/workload_entropy_boundary.rs;
-  launchEntropy = builtins.readFile ../../crates/crucible-qemu/src/launch/entropy.rs;
-  launchValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
-  qemuBoundary = builtins.readFile ../../crates/crucible-qemu/src/determinism_boundary.rs;
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  workloadTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/workload_entropy_boundary.rs;
+  };
+  launchEntropy = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch/entropy.rs;
+  };
+  launchValidation = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch/validation.rs;
+  };
+  qemuBoundary = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/determinism_boundary.rs;
+  };
+  qemuLaunch = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch.rs;
+  };
   phase1GuestEntropyGate = builtins.readFile ./phase1-guest-entropy-launch.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -25,13 +40,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-2 checked off";
-        needle = "- [x] **T-WL-2**";
-      }
       {
         label = "T-WL-2 completion note";
         needle = "Completed by `checks.crucible.phase4.workloadEntropyBoundary`";
@@ -160,7 +170,7 @@
       }
       {
         label = "unseeded guest rng rejected";
-        needle = "reason: \"unseeded guest entropy\"";
+        needle = "\"unseeded guest entropy\"";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-guest-entropy-launch.nix" phase1GuestEntropyGate [

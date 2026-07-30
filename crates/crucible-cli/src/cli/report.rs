@@ -326,14 +326,6 @@ pub(super) struct DebugInvocationPlan {
 }
 
 impl DebugInvocationPlan {
-    pub(super) fn mode_label(&self) -> &'static str {
-        if self.allow_mutate {
-            "allow-mutate"
-        } else {
-            "read-only"
-        }
-    }
-
     fn proves_read_only_default(&self) -> bool {
         !self.allow_mutate
             && self.read_only
@@ -403,16 +395,6 @@ pub(super) enum DebugPlanTarget {
     Session(String),
 }
 
-impl DebugPlanTarget {
-    pub(super) fn label(&self) -> &'static str {
-        match self {
-            Self::Artifact(_) => "artifact",
-            Self::Savepoint(_) => "savepoint",
-            Self::Session(_) => "session",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DebugPlanCoordinate {
     Current,
@@ -420,18 +402,6 @@ pub(super) enum DebugPlanCoordinate {
     AtEvent(u64),
     AtFailure,
     AtCheckpoint(crucible::ContentHash),
-}
-
-impl DebugPlanCoordinate {
-    pub(super) fn label(&self) -> &'static str {
-        match self {
-            Self::Current => "current",
-            Self::At(_) => "at",
-            Self::AtEvent(_) => "at-event",
-            Self::AtFailure => "at-failure",
-            Self::AtCheckpoint(_) => "at-checkpoint",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,17 +414,6 @@ pub(super) enum DebugInteractiveVerbPlan {
     ReverseContinue {
         condition: String,
     },
-}
-
-impl DebugInteractiveVerbPlan {
-    pub(super) fn label(&self) -> &'static str {
-        match self {
-            Self::AttachGdb => "attach-gdb",
-            Self::Goto(_) => "goto",
-            Self::ReverseStep { .. } => "reverse-step",
-            Self::ReverseContinue { .. } => "reverse-continue",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -496,6 +455,7 @@ impl SelftestGateStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelftestGateRunner {
+    #[cfg(any(test, feature = "test-double"))]
     DoubleBackedCorpus,
     RealQemu,
 }
@@ -503,6 +463,7 @@ pub(super) enum SelftestGateRunner {
 impl SelftestGateRunner {
     pub(super) fn label(self) -> &'static str {
         match self {
+            #[cfg(any(test, feature = "test-double"))]
             Self::DoubleBackedCorpus => "double",
             Self::RealQemu => "qemu",
         }

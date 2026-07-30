@@ -91,15 +91,19 @@ pub fn authorize_advance_ceiling(
 
 /// Verifies that a newly enqueued frame has not already missed its delivery.
 ///
+/// A frame at the consumer's exact current boundary remains admissible. The
+/// consumer is quiescent while the scheduler publishes the frame, and the next
+/// drain makes that frame visible without advancing the consumer.
+///
 /// # Errors
 ///
 /// Returns [`LookaheadGateError::DeliveryAlreadyPassed`] when the consumer has
-/// already reached or passed the frame's delivery icount.
+/// advanced past the frame's delivery icount.
 pub fn validate_frame_delivery_is_future(
     frame: &FrameEntry,
     consumer_current_icount: u64,
 ) -> Result<(), LookaheadGateError> {
-    if frame.delivery_icount <= consumer_current_icount {
+    if frame.delivery_icount < consumer_current_icount {
         Err(LookaheadGateError::DeliveryAlreadyPassed {
             consumer_current_icount,
             frame: frame.delivery_key(),
@@ -430,10 +434,8 @@ pub enum LookaheadGateError {
         /// The earliest icount at which an input could become visible.
         earliest_possible_delivery_icount: u64,
     },
-    /// A frame was enqueued after the consumer reached its delivery icount.
-    #[error(
-        "frame {frame:?} delivery icount is not in the future of consumer icount {consumer_current_icount}"
-    )]
+    /// A frame was enqueued after the consumer passed its delivery icount.
+    #[error("frame {frame:?} delivery icount is behind consumer icount {consumer_current_icount}")]
     DeliveryAlreadyPassed {
         /// The consumer icount observed when the frame was enqueued.
         consumer_current_icount: u64,

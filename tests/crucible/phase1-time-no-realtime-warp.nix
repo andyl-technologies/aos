@@ -27,7 +27,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
       {
@@ -126,10 +125,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-5 completed by the live plugin quantum gate";
-        needle = "- [x] **T-TIME-5**";
-      }
       {
         label = "T-TIME-5 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";

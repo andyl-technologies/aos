@@ -2,10 +2,10 @@
 
 use super::*;
 
-#[path = "app_random_branching.rs"]
-mod app_random_branching;
 #[path = "adaptive_campaign.rs"]
 mod adaptive_campaign;
+#[path = "app_random_branching.rs"]
+mod app_random_branching;
 #[path = "guidance_search.rs"]
 mod guidance_search;
 
@@ -155,6 +155,17 @@ impl SearchBudget {
     pub const fn new(max_expansions: u64) -> Self {
         Self { max_expansions }
     }
+}
+
+/// One runtime RESOLVE frontier captured before its explorer-owned choice.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchRuntimeFrontier {
+    /// Configuration after deterministic boundary decisions and before the choice.
+    pub configuration: Configuration,
+    /// Virtual-time coordinate of the RESOLVE boundary.
+    pub at: VirtualTime,
+    /// Alternative causal decision sequences accepted at this frontier.
+    pub choices: SearchFrontierChoices,
 }
 
 /// Deterministic configuration for the shared-worklist fleet search model.

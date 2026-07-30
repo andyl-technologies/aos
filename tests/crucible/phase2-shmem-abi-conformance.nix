@@ -15,7 +15,7 @@
   # `shmem/` submodules re-exported by lib.rs; concatenate them so the assertion
   # conformance needles resolve against the whole ABI surface.
   shmemLib =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs
@@ -40,8 +40,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -721,10 +719,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-14 checklist complete";
-        needle = "- [x] **T-SHM-14**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
