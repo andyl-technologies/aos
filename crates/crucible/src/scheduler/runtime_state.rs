@@ -324,6 +324,24 @@ impl WorldNetworkLinkRuntime {
             policy,
         )
     }
+
+    pub(super) fn emit_injected_from_position(
+        &mut self,
+        rng_position: u64,
+        frame: &crucible_device::Frame,
+        draws: crucible_device::FrameDraws,
+        policy: crucible_device::PastDeliveryPolicy,
+    ) -> Result<crate::LinkEmitDecisionRecord, crucible_device::DeviceError> {
+        crate::device::emit_link_frame_with_injected_draws_at_position(
+            &self.rng_stream,
+            &self.fault_id,
+            rng_position,
+            &mut self.link,
+            frame,
+            draws,
+            policy,
+        )
+    }
 }
 
 /// The single authoritative scheduler used by the liveness gate.
@@ -390,6 +408,13 @@ pub struct SingleScheduler {
     pub(super) broken_device_delivery_stamp: bool,
     pub(super) control_inbox: Vec<ControlOperation>,
     pub(super) decision_rng_cursor: DecisionRngState,
+    /// Explorer-selected probabilistic fault choices awaiting their exact
+    /// scheduler RESOLVE points.
+    pub(super) branch_fault_choices: Vec<(RngDecision, FaultDecision)>,
+    /// Explorer-selected live World-network outcomes awaiting exact emissions.
+    pub(super) branch_network_choices: Vec<OverrideDecision>,
+    /// Probabilistic RESOLVE frontiers captured in execution order.
+    pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,
     pub(super) trigger_static_topology: Option<WorldStaticTopology>,

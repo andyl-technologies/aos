@@ -12,11 +12,10 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   # The pure temporal-graph edge now lives in `try_step` (step delegates to it and
   # panics on the draw-cap validation error). This pins the pure-edge body — a clone

@@ -1,5 +1,9 @@
 # 11 — The QEMU patch series
 
+The carried series contains **46 patches**. This count is checked against
+`pkgs/emulation/qemu-patches/_series.nix` by
+`checks.crucible.referenceIntegrity`.
+
 This file specifies the **patch series** that AOS's from-source QEMU package
 ([`26-packaging-aos-integration.md`](26-packaging-aos-integration.md)) carries to
 make Crucible's determinism contract ([`04-determinism-contract.md`](04-determinism-contract.md))
@@ -224,7 +228,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-gate-rr-kick ..... sim-gate stock RR kick timer D    DET-30
   crucible-blk-device-completion-advance  resume blocked I/O at delivery icount  D    DET-16, PATCH-27, PLUG-21, IO-31
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
-  crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-14, GHC-12, GHC-16
+  crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-34, PLUG-51, GHC-32, GHC-37
   crucible-translation-prefetch-helper dedicated demand TCG helper F PERF-32
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
@@ -1036,7 +1040,7 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 
 ### crucible-whitebox-guest-write — return synchronous doorbell replies
 
-- **Enforces:** [PLUG-14], [GHC-12], [GHC-16].
+- **Enforces:** [PLUG-34], [PLUG-51], [GHC-32], [GHC-37].
 - **Mechanism:** exports an additive plugin API that writes an exact byte range
   through the current vCPU's debug-memory translation. The white-box callback
   invokes it synchronously before the trapped guest instruction retires, so an
@@ -1444,7 +1448,7 @@ time-control primitives the whole design rests on.
     pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
-- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+- [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
   spec §11.1.2, §11.9.

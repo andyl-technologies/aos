@@ -127,7 +127,65 @@
     "crucible-api"
     "crucible-daemon"
     "crucible-cli"
+    "crucible-qemu"
+    "crucible-qemu-plugin"
   ];
+
+  readRustTree = path: let
+    entries = builtins.readDir path;
+    names = builtins.sort builtins.lessThan (builtins.attrNames entries);
+    readEntry = name: let
+      kind = entries.${name};
+      child = path + "/${name}";
+    in
+      if kind == "directory"
+      then readRustTree child
+      else if kind == "regular" && lib.hasSuffix ".rs" name
+      then builtins.readFile child
+      else "";
+  in
+    builtins.concatStringsSep "\n" (map readEntry names);
+
+  productionTestDoubleFailures =
+    lib.concatMap (
+      package: let
+        manifest = realManifests.${package};
+        dependency = (manifest.dependencies or {}).crucible or null;
+        features =
+          if builtins.isAttrs dependency
+          then dependency.features or []
+          else [];
+      in
+        lib.optionals (builtins.elem "test-double" features) [
+          "${package} enables crucible/test-double in production dependencies"
+        ]
+    )
+    corePackages;
+
+  unconsumedFeatureFailures =
+    lib.concatMap (
+      package: let
+        features = builtins.attrNames (manifestFeatures package);
+        sourcePath = cratesDir + "/${package}/src";
+        source =
+          if builtins.pathExists sourcePath
+          then readRustTree sourcePath
+          else "";
+      in
+        lib.concatMap (
+          feature:
+            lib.optionals (
+              feature
+              != "default"
+              && !(lib.hasInfix "feature = \"${feature}\"" source)
+              && featureMembers (manifestFeatures package) feature == []
+            ) [
+              "${package} declares feature `${feature}` without a consuming cfg"
+            ]
+        )
+        features
+    )
+    corePackages;
 
   realManifests = builtins.listToAttrs (
     map (package: {
@@ -179,17 +237,19 @@
       default = [];
       test-support = [];
       test-double = ["dep:crucible-shmem"];
-      qemu-backend = [];
+    }
+    ++ assertFeatureSet "crucible-qemu" {
+      default = [];
+      test-support = ["crucible/test-double"];
     }
     ++ assertFeatureSet "crucible-device" {
-      default = ["disk" "ninep" "net"];
-      disk = [];
-      ninep = [];
-      net = [];
+      default = [];
     };
 
   failures =
     featureFailures
+    ++ productionTestDoubleFailures
+    ++ unconsumedFeatureFailures
     ++ defaultGuestDependencyFailures
     ++ guestPolicyRegressionFailures
     ++ directGuestPolicyRegressionFailures;
@@ -214,7 +274,7 @@ in
             PASS
             check=checks.crucible.phase1.crateFeaturePowerset
             gate=gate:harness-lint
-            tasks=T-CRATE-6
+            tasks=T-CRATE-6,T-CRATE-16
             rust_test=crucible-harness::feature_powerset
             RESULT
           '';

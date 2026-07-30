@@ -59,6 +59,7 @@ pub struct QemuLiveHostIoRuntime {
     wake: File,
     vm_slot: u32,
     poll_interval: Duration,
+    last_completed_publish_gen: Option<u32>,
     block: Option<BlockIoServicing>,
 }
 
@@ -128,6 +129,7 @@ impl QemuLiveHostIoRuntime {
             wake,
             vm_slot,
             poll_interval,
+            last_completed_publish_gen: None,
             block: None,
         })
     }
@@ -182,12 +184,21 @@ impl QemuLiveHostIoRuntime {
             // lets the advance make progress.
             self.service_block_io(&snapshot)?;
             let idle = idle_state_from_snapshot(snapshot);
+            let report_is_new = self
+                .last_completed_publish_gen
+                .is_none_or(|generation| generation != snapshot.publish_gen);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
-                QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
+                QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. }
+                    if report_is_new =>
+                {
+                    self.last_completed_publish_gen = Some(snapshot.publish_gen);
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
-                QuantumBoundary::Pending => {
-                    if snapshot.status == STATUS_DONE {
+                QuantumBoundary::Reached { .. }
+                | QuantumBoundary::Paused { .. }
+                | QuantumBoundary::Pending => {
+                    if snapshot.status == STATUS_DONE && report_is_new {
+                        self.last_completed_publish_gen = Some(snapshot.publish_gen);
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
                 }

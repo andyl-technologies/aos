@@ -130,7 +130,8 @@
   isDocumentedCapabilityToken = token:
     builtins.elem token ["coverage" "PERF" "PLUG"];
   tokenIsStated = token:
-    isRequirementToken token && (hasInfix "[${token}]" allSpecText || hasInfix token allSpecText)
+    isRequirementToken token
+    && (hasInfix "[${token}]" allSpecText || hasInfix token allSpecText)
     || isDocumentedCapabilityToken token && hasInfix token allSpecText;
   rowHasClass = row: class:
     hasInfix " ${class} " row;
@@ -222,7 +223,6 @@
       ])
     catalogOnlyCapabilities;
 
-
   failures =
     map (patch: "pkgs/emulation/qemu-patches/_series.nix: manifest references absent patch ${patch}")
     missingManifestPatches
@@ -261,10 +261,6 @@
     ++ catalogOnlyRowFailures
     ++ catalogOnlyMappingFailures
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingSpec [
-      {
-        label = "T-PKG-16 checklist complete";
-        needle = "- [x] **T-PKG-16**";
-      }
       {
         label = "T-PKG-16 completion note";
         needle = "Completed by `checks.crucible.phase7.cruciblePackagingConformance`";

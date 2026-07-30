@@ -26,14 +26,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-22 checklist complete";
-        needle = "- [x] **T-DET-22**";
-      }
       {
         label = "any-guest completion gate";
         needle = "checks.crucible.phase2.gates.anyGuest";
@@ -49,10 +43,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-16 checklist complete";
-        needle = "- [x] **T-HARN-16**";
-      }
-      {
         label = "any-guest real-QEMU evidence";
         needle = "diskless cadence fingerprint streams match exactly";
       }
@@ -64,30 +54,30 @@
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
       {
         label = "gate:any-guest implemented catalog status";
-        needle = ''name: "gate:any-guest",
-        phase: GatePhase::Phase2,
-        owner: "crucible-qemu",
-        status: GateStatus::Implemented,'';
+        needle = ''          name: "gate:any-guest",
+                  phase: GatePhase::Phase2,
+                  owner: "crucible-qemu",
+                  status: GateStatus::Implemented,'';
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "gate:any-guest non-placeholder target";
-        needle = ''gate: "gate:any-guest",
-        package: "crucible-qemu",
-        test_target: "gate_any_guest",
-        required_features: &[],
-        placeholder: false,'';
+        needle = ''          gate: "gate:any-guest",
+                  package: "crucible-qemu",
+                  test_target: "gate_any_guest",
+                  required_features: &[],
+                  placeholder: false,'';
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "gate:any-guest mapping non-placeholder";
-        needle = ''gate = "gate:any-guest";
-      package = "crucible-qemu";
-      testTarget = "gate_any_guest";
-      requiredFeatures = [];
-      placeholder = false;'';
+        needle = ''          gate = "gate:any-guest";
+                package = "crucible-qemu";
+                testTarget = "gate_any_guest";
+                requiredFeatures = [];
+                placeholder = false;'';
       }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/gate_any_guest.rs" anyGuestTest [
@@ -373,18 +363,20 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.diffutils
-        pkgs.gawk
-        pkgs.grep
-        pkgs.jq
-        pkgs.qemu-crucible
-        pkgs.crucible-qemu-trace-plugin
-        pkgs.rust
-        pkgs.sed
-        pkgs.socat
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.diffutils
+          pkgs.gawk
+          pkgs.grep
+          pkgs.jq
+          pkgs.qemu-crucible
+          pkgs.crucible-qemu-trace-plugin
+          pkgs.rust
+          pkgs.sed
+          pkgs.socat
+        ]
+        ++ dependencies;
 
       INITRAMFS = "${initramfs}/initrd.img";
       KERNEL = builtins.toString pkgs.linux;

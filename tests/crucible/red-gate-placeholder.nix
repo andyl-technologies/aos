@@ -1,6 +1,4 @@
-{
-  pkgs,
-}: {
+{pkgs}: {
   attrPath,
   gateName,
   owner,

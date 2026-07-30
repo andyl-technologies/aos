@@ -34,7 +34,7 @@ enum SpscProperty {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LoomStep {
+enum OrderingStep {
     ProducerWriteFrame,
     ProducerReleaseWriteIndex,
     ConsumerAcquireWriteIndex,
@@ -86,14 +86,14 @@ struct ObservedInjection {
 #[test]
 fn gate_layer1_injection_checks_spsc_ring_concurrency_properties() {
     assert_ring_header_source_uses_rfc_13_6_orderings();
-    assert_spsc_ring_loom_model(&[
+    assert_spsc_ring_exhaustive_ordering_model(&[
         SpscProperty::NoLostFrame,
         SpscProperty::NoDuplicatedFrame,
         SpscProperty::FifoOrder,
         SpscProperty::NoTornFrame,
         SpscProperty::NoEarlyRead,
     ]);
-    assert_spsc_ring_proptest_properties(&[
+    assert_spsc_ring_exhaustive_trace_properties(&[
         SpscProperty::NoLostFrame,
         SpscProperty::NoDuplicatedFrame,
         SpscProperty::FifoOrder,
@@ -111,7 +111,7 @@ fn gate_layer1_injection_checks_spsc_ring_concurrency_properties() {
     assert_ne!(producer_skewed, consumer_skewed);
 }
 
-fn assert_spsc_ring_loom_model(required: &[SpscProperty]) {
+fn assert_spsc_ring_exhaustive_ordering_model(required: &[SpscProperty]) {
     let required = required.iter().copied().collect::<BTreeSet<_>>();
     assert!(required.contains(&SpscProperty::NoLostFrame));
     assert!(required.contains(&SpscProperty::NoDuplicatedFrame));
@@ -156,7 +156,7 @@ fn assert_spsc_ring_loom_model(required: &[SpscProperty]) {
     assert!(missing_producer_acquire_negative_control_failed);
 }
 
-fn assert_spsc_ring_proptest_properties(required: &[SpscProperty]) {
+fn assert_spsc_ring_exhaustive_trace_properties(required: &[SpscProperty]) {
     let required = required.iter().copied().collect::<BTreeSet<_>>();
     assert!(required.contains(&SpscProperty::NoLostFrame));
     assert!(required.contains(&SpscProperty::NoDuplicatedFrame));
@@ -386,38 +386,6 @@ fn assert_ring_header_source_uses_rfc_13_6_orderings() {
     );
 }
 
-fn assert_coverage_ring_fifo_and_fails_loud_at_fixed_capacity() {
-    let ring = RingHeader::new();
-    let mut entries = vec![CoverageEntry::default(); COVERAGE_QUEUE_CAPACITY as usize];
-    for map_index in 0..u64::from(COVERAGE_QUEUE_CAPACITY) {
-        let entry = CoverageEntry::new(map_index, 0, 0x4000 + map_index, 4, map_index)
-            .unwrap_or_else(|error| panic!("fixed-capacity coverage entry should build: {error}"));
-        ring.enqueue_coverage(&mut entries, entry)
-            .unwrap_or_else(|error| panic!("distinct coverage novelty should enqueue: {error}"));
-    }
-    let overflow = CoverageEntry::new(99, 0, 0x9000, 4, 0)
-        .unwrap_or_else(|error| panic!("overflow probe should build: {error}"));
-    assert_eq!(
-        ring.enqueue_coverage(&mut entries, overflow),
-        Err(SpscRingError::QueueFull {
-            capacity: u64::from(COVERAGE_QUEUE_CAPACITY),
-        })
-    );
-    for expected_index in 0..u64::from(COVERAGE_QUEUE_CAPACITY) {
-        let observed = ring
-            .dequeue_coverage(&entries)
-            .unwrap_or_else(|error| panic!("coverage dequeue should succeed: {error}"))
-            .unwrap_or_else(|| panic!("coverage entry {expected_index} should remain queued"));
-        assert_eq!(observed.map_index(), expected_index);
-        assert_eq!(observed.current_icount(), expected_index);
-    }
-    assert_eq!(
-        ring.dequeue_coverage(&entries)
-            .unwrap_or_else(|error| panic!("empty coverage dequeue should succeed: {error}")),
-        None
-    );
-}
-
 fn assert_function_source_order(signature: &str, needles: &[&str], context: &str) {
     let source = function_source(signature);
     assert_source_order(source, needles, context);
@@ -462,15 +430,15 @@ fn function_source(signature: &str) -> &str {
 
 fn model_check_publish_before_read(orderings: RingOrderings) -> BTreeSet<ModelFailure> {
     let producer = [
-        LoomStep::ProducerWriteFrame,
-        LoomStep::ProducerReleaseWriteIndex,
+        OrderingStep::ProducerWriteFrame,
+        OrderingStep::ProducerReleaseWriteIndex,
     ];
     let consumer = [
-        LoomStep::ConsumerAcquireWriteIndex,
-        LoomStep::ConsumerReadFrame,
+        OrderingStep::ConsumerAcquireWriteIndex,
+        OrderingStep::ConsumerReadFrame,
     ];
     let mut failures = BTreeSet::new();
-    for schedule in loom_schedules(&producer, &consumer) {
+    for schedule in exhaustive_ordering_schedules(&producer, &consumer) {
         let state = run_publish_before_read_interleaving(&schedule, orderings);
         let torn_frame_after_published_write_index = state
             .failures
@@ -493,22 +461,25 @@ fn model_check_publish_before_read(orderings: RingOrderings) -> BTreeSet<ModelFa
 
 fn model_check_free_before_overwrite(orderings: RingOrderings) -> BTreeSet<ModelFailure> {
     let consumer = [
-        LoomStep::ConsumerReadFrameForFree,
-        LoomStep::ConsumerReleaseReadIndex,
+        OrderingStep::ConsumerReadFrameForFree,
+        OrderingStep::ConsumerReleaseReadIndex,
     ];
     let producer = [
-        LoomStep::ProducerAcquireReadIndex,
-        LoomStep::ProducerOverwriteFrame,
+        OrderingStep::ProducerAcquireReadIndex,
+        OrderingStep::ProducerOverwriteFrame,
     ];
     let mut failures = BTreeSet::new();
-    for schedule in loom_schedules(&consumer, &producer) {
+    for schedule in exhaustive_ordering_schedules(&consumer, &producer) {
         let state = run_free_before_overwrite_interleaving(&schedule, orderings);
         failures.extend(state.failures);
     }
     failures
 }
 
-fn loom_schedules(left: &[LoomStep], right: &[LoomStep]) -> Vec<Vec<LoomStep>> {
+fn exhaustive_ordering_schedules(
+    left: &[OrderingStep],
+    right: &[OrderingStep],
+) -> Vec<Vec<OrderingStep>> {
     let mut schedules = Vec::new();
     let mut prefix = Vec::new();
     enumerate_actor_interleavings(left, right, &mut prefix, &mut schedules);
@@ -516,10 +487,10 @@ fn loom_schedules(left: &[LoomStep], right: &[LoomStep]) -> Vec<Vec<LoomStep>> {
 }
 
 fn enumerate_actor_interleavings(
-    producer: &[LoomStep],
-    consumer: &[LoomStep],
-    prefix: &mut Vec<LoomStep>,
-    schedules: &mut Vec<Vec<LoomStep>>,
+    producer: &[OrderingStep],
+    consumer: &[OrderingStep],
+    prefix: &mut Vec<OrderingStep>,
+    schedules: &mut Vec<Vec<OrderingStep>>,
 ) {
     if producer.is_empty() && consumer.is_empty() {
         schedules.push(prefix.clone());
@@ -539,7 +510,7 @@ fn enumerate_actor_interleavings(
 }
 
 fn run_publish_before_read_interleaving(
-    schedule: &[LoomStep],
+    schedule: &[OrderingStep],
     orderings: RingOrderings,
 ) -> LoomState {
     let published = frame(17, 3, 9, b"published");
@@ -553,18 +524,18 @@ fn run_publish_before_read_interleaving(
 
     for step in schedule {
         match step {
-            LoomStep::ProducerWriteFrame => slot_written = true,
-            LoomStep::ProducerReleaseWriteIndex => {
+            OrderingStep::ProducerWriteFrame => slot_written = true,
+            OrderingStep::ProducerReleaseWriteIndex => {
                 assert!(slot_written, "producer cannot publish before writing slot");
                 write_idx = 1;
             }
-            LoomStep::ConsumerAcquireWriteIndex => {
+            OrderingStep::ConsumerAcquireWriteIndex => {
                 consumer_observed_write_idx = Some(write_idx);
                 consumer_synced_with_publish = write_idx == 1
                     && orderings.producer_write_idx_store == ModelOrdering::Release
                     && orderings.consumer_write_idx_load == ModelOrdering::Acquire;
             }
-            LoomStep::ConsumerReadFrame => {
+            OrderingStep::ConsumerReadFrame => {
                 if consumer_observed_write_idx == Some(1) {
                     if consumer_synced_with_publish {
                         delivered.push(published.clone());
@@ -574,10 +545,10 @@ fn run_publish_before_read_interleaving(
                     }
                 }
             }
-            LoomStep::ConsumerReadFrameForFree
-            | LoomStep::ConsumerReleaseReadIndex
-            | LoomStep::ProducerAcquireReadIndex
-            | LoomStep::ProducerOverwriteFrame => {
+            OrderingStep::ConsumerReadFrameForFree
+            | OrderingStep::ConsumerReleaseReadIndex
+            | OrderingStep::ProducerAcquireReadIndex
+            | OrderingStep::ProducerOverwriteFrame => {
                 panic!("unexpected free-before-overwrite step in publish/read model: {step:?}");
             }
         }
@@ -590,7 +561,7 @@ fn run_publish_before_read_interleaving(
 }
 
 fn run_free_before_overwrite_interleaving(
-    schedule: &[LoomStep],
+    schedule: &[OrderingStep],
     orderings: RingOrderings,
 ) -> LoomState {
     let mut consumer_read_old_frame = false;
@@ -601,29 +572,29 @@ fn run_free_before_overwrite_interleaving(
 
     for step in schedule {
         match step {
-            LoomStep::ConsumerReadFrameForFree => consumer_read_old_frame = true,
-            LoomStep::ConsumerReleaseReadIndex => {
+            OrderingStep::ConsumerReadFrameForFree => consumer_read_old_frame = true,
+            OrderingStep::ConsumerReleaseReadIndex => {
                 assert!(
                     consumer_read_old_frame,
                     "consumer cannot free a slot before copying its frame"
                 );
                 read_idx = 1;
             }
-            LoomStep::ProducerAcquireReadIndex => {
+            OrderingStep::ProducerAcquireReadIndex => {
                 producer_observed_read_idx = Some(read_idx);
                 producer_synced_with_free = read_idx == 1
                     && orderings.consumer_read_idx_store == ModelOrdering::Release
                     && orderings.producer_read_idx_load == ModelOrdering::Acquire;
             }
-            LoomStep::ProducerOverwriteFrame => {
+            OrderingStep::ProducerOverwriteFrame => {
                 if producer_observed_read_idx == Some(1) && !producer_synced_with_free {
                     failures.insert(ModelFailure::ProducerOverwriteBeforeConsumerReadIsOrdered);
                 }
             }
-            LoomStep::ProducerWriteFrame
-            | LoomStep::ProducerReleaseWriteIndex
-            | LoomStep::ConsumerAcquireWriteIndex
-            | LoomStep::ConsumerReadFrame => {
+            OrderingStep::ProducerWriteFrame
+            | OrderingStep::ProducerReleaseWriteIndex
+            | OrderingStep::ConsumerAcquireWriteIndex
+            | OrderingStep::ConsumerReadFrame => {
                 panic!("unexpected publish/read step in free/overwrite model: {step:?}");
             }
         }
@@ -722,3 +693,7 @@ fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> Frame
         Err(error) => panic!("frame should fit in test payload capacity: {error}"),
     }
 }
+#[path = "gate_layer1_injection/coverage_ring.rs"]
+mod coverage_ring;
+
+use coverage_ring::*;

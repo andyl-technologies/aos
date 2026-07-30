@@ -25,6 +25,7 @@ in
         script = ''
           set -eu
           export LC_ALL=C
+          export SIM_DEBUG_OBSERVABLES=1
           mkdir -p "$out"
           ${workload.probeLib}
           f1=$(sim_fingerprint "$FULL_QEMU" "$FIRMWARE")

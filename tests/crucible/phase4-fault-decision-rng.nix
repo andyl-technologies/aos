@@ -12,17 +12,27 @@
   };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  decision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  device = builtins.readFile ../../crates/crucible/src/device.rs;
-  deviceSubnode = builtins.readFile ../../crates/crucible/src/device_subnode.rs;
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  resolveRngTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve_rng.rs;
+  decision = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/decision.rs;
+  };
+  device = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/device.rs;
+  };
+  deviceSubnode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/device_subnode.rs;
+  };
+  libSource = import ./_crucible-tests-source.nix {inherit lib;};
+  resolveRngTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_resolve_rng.rs;
+  };
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   taskList = builtins.concatStringsSep "," taskIds;
   faultDecisionSources = builtins.concatStringsSep "\n" [
@@ -34,10 +44,6 @@
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-3 checked off";
-        needle = "- [x] **T-FAULT-3**";
-      }
       {
         label = "T-FAULT-3 completion note";
         needle = "Completed by `checks.crucible.phase4.faultDecisionRng`";

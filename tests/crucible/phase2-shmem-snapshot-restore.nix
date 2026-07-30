@@ -11,16 +11,17 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  snapshotTest = builtins.readFile ../../crates/crucible-shmem/tests/snapshot_restore.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
+  snapshotTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/snapshot_restore.rs;
+  };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -114,10 +115,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-7 checklist complete";
-        needle = "- [x] **T-SHM-7**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

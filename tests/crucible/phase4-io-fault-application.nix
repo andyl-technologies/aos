@@ -22,14 +22,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-9 checked off";
-        needle = "- [x] **T-FAULT-9**";
-      }
       {
         label = "T-FAULT-9 completion note";
         needle = "Completed by `checks.crucible.phase4.ioFaultApplication`";

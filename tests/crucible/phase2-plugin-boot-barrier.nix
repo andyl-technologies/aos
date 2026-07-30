@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginBootBarrier",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-18"],
+  taskIds ? ["T-PLUG-18"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -17,7 +17,7 @@
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   shmem =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -28,8 +28,6 @@
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   forbiddenBootBarrierApis = [
     "Instant::now"
@@ -53,10 +51,6 @@
       })
       forbiddenBootBarrierApis)
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-18 completed by the live plugin install gate";
-        needle = "- [x] **T-PLUG-18**";
-      }
       {
         label = "T-PLUG-18 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";

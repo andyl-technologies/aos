@@ -98,8 +98,8 @@ const DECISION_RNG_MARKERS: &[&str] = &[
 ];
 
 const SPSC_RING_MARKERS: &[&str] = &[
-    "assert_spsc_ring_loom_model(",
-    "assert_spsc_ring_proptest_properties(",
+    "assert_spsc_ring_exhaustive_ordering_model(",
+    "assert_spsc_ring_exhaustive_trace_properties(",
 ];
 
 const PROTOCOL_CODEC_MARKERS: &[&str] = &[

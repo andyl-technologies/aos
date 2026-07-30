@@ -36,7 +36,7 @@ State purity & content addressing
 ABI, unsafe, errors
 
 - [ ] If a boundary ABI changed: version bumped AND golden vectors regenerated in THIS PR; round-trip property still holds [STD-23], gate:abi-conformance.
-- [ ] If unsafe was added/touched: the crate is an enumerated unsafe-permitted crate [STD-16]; every block has a // SAFETY: comment [STD-17]; the safe wrapper upholds the invariant; SPSC changes are covered by loom [STD-22].
+- [ ] If unsafe was added/touched: the crate is an enumerated unsafe-permitted crate [STD-16]; every block has a // SAFETY: comment [STD-17]; the safe wrapper upholds the invariant; SPSC changes are covered by the exhaustive ordering model and its negative controls [STD-22].
 - [ ] No .unwrap()/.expect() in production; library errors are typed (thiserror), anyhow only at the binary boundary; a loud-failure panic names the invariant it defends [STD-7, STD-8, INV-10].
 
 Tests & gates

@@ -287,7 +287,7 @@
       fleetFiles
     );
 
-  crucibleChecks = import ./tests/crucible {inherit pkgs lib;};
+  crucibleChecksBase = import ./tests/crucible {inherit pkgs lib;};
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
   # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
@@ -391,10 +391,11 @@
     # against the AOS-built kernel/root fixture before its session workload.
     crucible-perf = let
       perfGate = crucibleChecks.phase7.gates.perfBench.rawGate;
+      savevmLoadvmGate = crucibleChecks.phase0.s3SavevmLoadvm;
     in
       crucibleFleetRunner.mkCrucibleFleetCheck {
         name = "crucible-perf";
-        gateResults = [perfGate];
+        gateResults = [perfGate savevmLoadvmGate];
         runPhaseScript = ''
           # The modeled perf-bench gate must be green before the fleet numbers
           # are captured: the ratchet compares fleet numbers against baselines
@@ -433,6 +434,8 @@
           [ "$seq_ms" -gt 0 ] || seq_ms=1
           # scenarios per hour = batch * 3600_000 / seq_ms (integer).
           throughput_per_hour=$(( batch * 3600000 / seq_ms ))
+          available_cores="$(nproc)"
+          [ "$available_cores" -gt 0 ] || available_cores=1
 
           # --- Parallelism proxy ([PERF-3]): real host speedup of N concurrent
           # CLI processes versus the sequential batch. More cores must not make
@@ -455,6 +458,11 @@
           done
           # Realized speedup x100 (integer): sequential_ms * 100 / parallel_ms.
           speedup_x100=$(( seq_ms * 100 / par_ms ))
+          parallel_workers="$batch"
+          if [ "$parallel_workers" -gt "$available_cores" ]; then
+            parallel_workers="$available_cores"
+          fi
+          throughput_per_core_hour=$(( batch * 3600000 / (par_ms * parallel_workers) ))
           # Structural assertion: concurrency must not slow the identical work
           # down by more than a generous margin (parallel is never > 3x the
           # sequential wall-clock). This catches a real concurrency pathology
@@ -463,11 +471,12 @@
 
           # --- Logical fleet sweep ([PERF-27]): run 1, 2, 4, and 8 independent
           # explorer-host processes against the shared content-addressed store.
-          # The modeled gate owns the saturation-shape assertion; this live
-          # reference-runner sweep records aggregate throughput and per-host
-          # store growth without imposing a noisy absolute wall-clock floor.
+          # The live ratio assertion requires at least 50% of ideal scaling
+          # until available host cores saturate; the sweep also records
+          # aggregate/per-core throughput and per-host store growth.
           fleet_sweep="$FLEET_WORKDIR/fleet-sweep.txt"
           : > "$fleet_sweep"
+          one_host_per_hour=0
           for hosts in 1 2 4 8; do
             store_line_before="$(du -sk "$FLEET_STORE")"
             store_kib_before="''${store_line_before%%	*}"
@@ -490,55 +499,92 @@
             fleet_ms=$(( (fleet_end - fleet_start) / 1000000 ))
             [ "$fleet_ms" -gt 0 ] || fleet_ms=1
             fleet_per_hour=$(( hosts * 3600000 / fleet_ms ))
+            active_host_cores="$hosts"
+            if [ "$active_host_cores" -gt "$available_cores" ]; then
+              active_host_cores="$available_cores"
+            fi
+            fleet_per_core_hour=$((fleet_per_hour / active_host_cores))
+            if [ "$hosts" -eq 1 ]; then
+              one_host_per_hour="$fleet_per_hour"
+            elif [ "$hosts" -le "$available_cores" ]; then
+              # Before host-core saturation, aggregate throughput must retain
+              # at least half of ideal linear scaling from the live one-host
+              # baseline. This is deliberately a ratio, not an absolute
+              # wall-clock threshold.
+              minimum_linear=$((one_host_per_hour * hosts / 2))
+              test "$fleet_per_hour" -ge "$minimum_linear"
+            fi
             store_delta_kib=$((store_kib_after - store_kib_before))
             store_per_host_kib=$((store_delta_kib / hosts))
             {
               echo "fleet_hosts_''${hosts}_wall_ms=$fleet_ms"
               echo "fleet_hosts_''${hosts}_scenarios_per_hour=$fleet_per_hour"
+              echo "fleet_hosts_''${hosts}_scenarios_per_core_hour=$fleet_per_core_hour"
               echo "fleet_hosts_''${hosts}_store_kib_per_host=$store_per_host_kib"
             } >> "$fleet_sweep"
           done
 
-          # --- Restore-latency proxy ([PERF-12]): wall-clock of a save then
-          # resume round-trip, both real CLI process executions. Falls back to a
-          # verify round-trip if save/resume are not wired for the double. ---
-          restore_ms=0
-          save_out="$FLEET_WORKDIR/save.out"
-          if "$crucible_bin" \
-              --backend qemu --seed 31 \
-              --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-              save "$scenario" --save-handle "$FLEET_WORKDIR/handle.savepoint" \
-              > "$save_out" 2>&1; then
-            r_start=$(now_ns)
-            "$crucible_bin" \
-              --backend qemu --seed 31 \
-              --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-              resume --savepoint "$FLEET_WORKDIR/handle.savepoint" \
-              > "$FLEET_WORKDIR/resume.out" 2>&1 || true
-            r_end=$(now_ns)
-            restore_ms=$(( (r_end - r_start) / 1000000 ))
-            restore_source=save-resume-round-trip
-          else
-            # If the scenario has no resumable point, time a live-QEMU verify
-            # as the realize-to-runnable proxy.
-            r_start=$(now_ns)
-            run_once "$FLEET_WORKDIR/restore-proxy.out"
-            r_end=$(now_ns)
-            restore_ms=$(( (r_end - r_start) / 1000000 ))
-            restore_source=verify-realize-proxy
-          fi
+          # --- Restore latency ([PERF-12]): the Phase-0 live QEMU corpus
+          # measures snapshot-load through the runnable `cont` acknowledgement.
+          # The production thin-checkpoint fallback is measured here by
+          # replaying an artifact whose prefix was produced by a live QEMU run.
+          loadvm_boot_ms=
+          loadvm_cpu_timer_ms=
+          loadvm_mid_io_ms=
+          while IFS='=' read -r key value; do
+            case "$key" in
+              boot_window_restore_to_runnable_ms) loadvm_boot_ms="$value" ;;
+              cpu_timer_restore_to_runnable_ms) loadvm_cpu_timer_ms="$value" ;;
+              mid_io_restore_to_runnable_ms) loadvm_mid_io_ms="$value" ;;
+            esac
+          done < "${savevmLoadvmGate}/result"
+          test -n "$loadvm_boot_ms"
+          test -n "$loadvm_cpu_timer_ms"
+          test -n "$loadvm_mid_io_ms"
+
+          set +e
+          "$crucible_bin" \
+            --backend qemu --seed 31 \
+            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
+            run "$scenario" --max-quanta 1 \
+            > "$FLEET_WORKDIR/replay-source.out" 2>&1
+          replay_source_status=$?
+          set -e
+          test "$replay_source_status" -eq 2
+          grep -q '"kind":"final_outcome".*status=timeout' \
+            "$FLEET_WORKDIR/replay-source.out"
+          set -- "$FLEET_ARTIFACTS"/repro-timeout-*.crucible
+          test "$#" -eq 1
+          test -s "$1"
+          replay_source="$1"
+          r_start=$(now_ns)
+          "$crucible_bin" \
+            --backend qemu --seed 31 \
+            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
+            replay "$replay_source" \
+            > "$FLEET_WORKDIR/replay.out" 2>&1
+          r_end=$(now_ns)
+          grep -q '"kind":"final_outcome".*status=passed' "$FLEET_WORKDIR/replay.out"
+          restore_ms=$(( (r_end - r_start) / 1000000 ))
+          restore_source=thin-replay-from-live-qemu-artifact
 
           # --- Idle compression ([PERF-2], real): the same scenario at the
           # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
 
           {
-            echo "throughput_per_core_hour=$throughput_per_hour"
+            echo "throughput_per_hour=$throughput_per_hour"
+            echo "throughput_per_core_hour=$throughput_per_core_hour"
+            echo "available_cores=$available_cores"
+            echo "parallel_workers=$parallel_workers"
             echo "sequential_batch_ms=$seq_ms"
             echo "parallel_batch_ms=$par_ms"
             echo "realized_speedup_x100=$speedup_x100"
             echo "restore_latency_ms=$restore_ms"
             echo "restore_source=$restore_source"
+            echo "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
+            echo "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
+            echo "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
             echo "idle_batch_ms=$idle_ms"
             echo "batch_size=$batch"
           } > "$FLEET_WORKDIR/perf-numbers.txt"
@@ -554,18 +600,24 @@
           "real_guest_boot=closure-owned-qemu-plugin-kernel-root"
           "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
           "terminal_icount=16000000"
-          "throughput_per_core_hour=$throughput_per_hour"
+          "throughput_per_hour=$throughput_per_hour"
+          "throughput_per_core_hour=$throughput_per_core_hour"
+          "available_cores=$available_cores"
+          "parallel_workers=$parallel_workers"
           "sequential_batch_ms=$seq_ms"
           "parallel_batch_ms=$par_ms"
           "realized_speedup_x100=$speedup_x100"
           "restore_latency_ms=$restore_ms"
           "restore_source=$restore_source"
+          "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
+          "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
+          "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
           "idle_batch_ms=$idle_ms"
           "batch_size=$batch"
           "$(cat \"$fleet_sweep\")"
           "metric_throughput=real-process-wall-clock-batch [PERF-13]"
           "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
-          "metric_restore_latency=real-process-save-resume-round-trip [PERF-12]"
+          "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]"
           "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
           "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
@@ -897,6 +949,17 @@
         ];
       };
   };
+
+  crucibleReferenceIntegrity = import ./tests/crucible/reference-integrity.nix {
+    inherit pkgs lib;
+    crucibleChecks = crucibleChecksBase;
+    fleetChecks = crucibleFleetChecks;
+  };
+  crucibleChecks =
+    crucibleChecksBase
+    // {
+      referenceIntegrity = crucibleReferenceIntegrity;
+    };
 in {
   inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
 

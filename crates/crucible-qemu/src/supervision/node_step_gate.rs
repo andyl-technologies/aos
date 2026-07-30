@@ -55,19 +55,21 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    AdvanceOutcome, ExecutionFingerprint, Icount, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    AdvanceOutcome, BasicBlockCoverageConfig, ExecutionFingerprint, Icount, NodeId, SchedulerError,
+    SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
 use crucible_shmem::{RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region};
 
 use crate::supervision::QemuLiveHostIoRuntime;
 use crate::{
-    LaunchProfileCandidate, LaunchProfileError, QemuAsyncDriverPolicy, QemuCrashDetector,
-    QemuHostPluginSetupError, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError,
-    QemuLaunchPluginConfig, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
+    CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
+    QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError,
     QemuNode, QemuNodeChannelError, QemuNodeError, QemuNodeFactoryError, QemuNodeFactoryRuntime,
-    QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuShutdownPolicy,
-    QemuVmLaunchConfig, QmpError, build_qemu_node_from_completed_setup,
+    QemuNodeRestorePlan, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
+    QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QmpError,
+    build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
     complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -179,15 +181,36 @@ pub struct QemuLiveNodeStepGateConfig {
     plugin: PathBuf,
     kernel: PathBuf,
     firmware: PathBuf,
+    root_image: Option<PathBuf>,
+    root_image_format: QemuRootImageFormat,
     run_directory: PathBuf,
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
+    gdbstub: Option<QemuGdbstubChannelConfig>,
+    memory_mib: u32,
+    smp_vcpus: u16,
+    icount_shift: u8,
+    scenario_seed: u64,
+    coverage: QemuLaunchPluginSwitch,
+    shmem_network_mac: Option<String>,
+    queue_capacity: u32,
     schedule: QemuLiveNodeStepSchedule,
     completion_timeout: Duration,
     second_run_host_load: bool,
 }
 
 impl QemuLiveNodeStepGateConfig {
+    /// Returns this launch configuration rooted in a fresh run directory.
+    ///
+    /// Intended crash/restart relaunches use a new directory so stale QMP
+    /// sockets, shared-memory files, and writable overlays from the stopped
+    /// process cannot leak into the restarted runtime.
+    #[must_use]
+    pub fn with_run_directory(mut self, run_directory: impl Into<PathBuf>) -> Self {
+        self.run_directory = run_directory.into();
+        self
+    }
+
     /// Builds a node-step configuration with bounded defaults.
     ///
     /// The gate always launches the diskless-firmware guest profile, so a pinned
@@ -205,13 +228,66 @@ impl QemuLiveNodeStepGateConfig {
             plugin: plugin.into(),
             kernel: kernel.into(),
             firmware: firmware.into(),
+            root_image: None,
+            root_image_format: QemuRootImageFormat::Qcow2,
             run_directory: run_directory.into(),
             initrd: None,
             kernel_cmdline: None,
+            gdbstub: None,
+            memory_mib: GATE_MEMORY_MIB,
+            smp_vcpus: 1,
+            icount_shift: 0,
+            scenario_seed: 0,
+            coverage: QemuLaunchPluginSwitch::Off,
+            shmem_network_mac: None,
+            queue_capacity: GATE_QUEUE_CAPACITY,
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
         }
+    }
+
+    /// Builds a node-step configuration backed by an immutable root image.
+    ///
+    /// QEMU writes into the deterministic overlay file in each run directory;
+    /// the supplied root image remains read-only launch material.
+    #[must_use]
+    pub fn new_with_root_image(
+        qemu_executable: impl Into<PathBuf>,
+        plugin: impl Into<PathBuf>,
+        kernel: impl Into<PathBuf>,
+        root_image: impl Into<PathBuf>,
+        run_directory: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            qemu_executable: qemu_executable.into(),
+            plugin: plugin.into(),
+            kernel: kernel.into(),
+            firmware: PathBuf::new(),
+            root_image: Some(root_image.into()),
+            root_image_format: QemuRootImageFormat::Qcow2,
+            run_directory: run_directory.into(),
+            initrd: None,
+            kernel_cmdline: None,
+            gdbstub: None,
+            memory_mib: GATE_MEMORY_MIB,
+            smp_vcpus: 1,
+            icount_shift: 0,
+            scenario_seed: 0,
+            coverage: QemuLaunchPluginSwitch::Off,
+            shmem_network_mac: None,
+            queue_capacity: GATE_QUEUE_CAPACITY,
+            schedule: QemuLiveNodeStepSchedule::new(),
+            completion_timeout: Duration::from_secs(240),
+            second_run_host_load: true,
+        }
+    }
+
+    /// Returns this configuration with the immutable root image's format.
+    #[must_use]
+    pub const fn with_root_image_format(mut self, format: QemuRootImageFormat) -> Self {
+        self.root_image_format = format;
+        self
     }
 
     /// Returns this configuration with a content-addressed initrd.
@@ -225,6 +301,58 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn with_kernel_cmdline(mut self, kernel_cmdline: impl Into<String>) -> Self {
         self.kernel_cmdline = Some(kernel_cmdline.into());
+        self
+    }
+
+    /// Returns this configuration with a mediated debugger gdbstub channel.
+    #[must_use]
+    pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
+        self.gdbstub = Some(gdbstub);
+        self
+    }
+
+    /// Returns this configuration with the World-declared VM shape.
+    #[must_use]
+    pub const fn with_vm_shape(
+        mut self,
+        memory_mib: u32,
+        smp_vcpus: u16,
+        icount_shift: u8,
+    ) -> Self {
+        self.memory_mib = memory_mib;
+        self.smp_vcpus = smp_vcpus;
+        self.icount_shift = icount_shift;
+        self
+    }
+
+    /// Returns this configuration with the deterministic scenario seed.
+    #[must_use]
+    pub const fn with_scenario_seed(mut self, scenario_seed: u64) -> Self {
+        self.scenario_seed = scenario_seed;
+        self
+    }
+
+    /// Returns this configuration with observation-only basic-block coverage.
+    #[must_use]
+    pub const fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
+        self.coverage = coverage;
+        self
+    }
+
+    /// Returns this configuration with a hostless shared-memory NIC.
+    #[must_use]
+    pub fn with_shmem_network_mac(mut self, mac: impl Into<String>) -> Self {
+        self.shmem_network_mac = Some(mac.into());
+        self
+    }
+
+    /// Returns this configuration with a per-direction shared-memory queue capacity.
+    ///
+    /// `capacity` must be a nonzero power of two; region construction validates
+    /// the bound before QEMU is launched.
+    #[must_use]
+    pub const fn with_queue_capacity(mut self, capacity: u32) -> Self {
+        self.queue_capacity = capacity;
         self
     }
 
@@ -340,6 +468,65 @@ pub fn run_qemu_live_node_step_gate(
     })
 }
 
+/// Launches one scheduler-facing live QEMU node.
+///
+/// The returned node has already crossed the plugin setup handshake, completed
+/// its bounded boot-barrier priming quantum, connected QMP, and synchronized its
+/// scheduler-facing time mirror to the primed guest icount.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when launch preparation, plugin setup,
+/// boot-barrier priming, QMP connection, node assembly, or time synchronization
+/// fails.
+pub fn launch_qemu_live_node(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: impl AsRef<Path>,
+    node: &str,
+    router: &str,
+    crash_detector: &str,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    build_live_node(
+        config,
+        run_directory.as_ref(),
+        LiveNodeIdentity {
+            node,
+            router,
+            crash_detector,
+        },
+        None,
+    )
+}
+
+/// Launches one scheduler-facing live node with authorized VMState restored.
+///
+/// The QMP `loadvm` command runs before the scheduler-facing node is assembled,
+/// preserving the realization admission boundary used by resume and fork.
+///
+/// # Errors
+///
+/// Returns [`QemuLiveNodeStepGateError`] when launch, setup, the authorized
+/// restore, node assembly, or time synchronization fails.
+pub fn launch_qemu_live_node_restored(
+    config: &QemuLiveNodeStepGateConfig,
+    run_directory: impl AsRef<Path>,
+    node: &str,
+    router: &str,
+    crash_detector: &str,
+    restore: QemuNodeRestorePlan<'_>,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    build_live_node(
+        config,
+        run_directory.as_ref(),
+        LiveNodeIdentity {
+            node,
+            router,
+            crash_detector,
+        },
+        Some(restore),
+    )
+}
+
 /// Which scenario run this is, controlling the run subdirectory and host load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunRole {
@@ -377,6 +564,7 @@ fn run_one_scenario(
             router: GATE_ROUTER,
             crash_detector: GATE_CRASH_NODE_ID,
         },
+        None,
     )?;
 
     let quanta = drive_busy_window_steps(&mut node, ceilings)?;
@@ -409,6 +597,7 @@ pub(super) fn build_live_node(
     config: &QemuLiveNodeStepGateConfig,
     run_directory: &Path,
     identity: LiveNodeIdentity<'_>,
+    restore: Option<QemuNodeRestorePlan<'_>>,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
     fs::create_dir_all(run_directory).map_err(|source| {
         QemuLiveNodeStepGateError::PrepareRunDirectory {
@@ -417,7 +606,11 @@ pub(super) fn build_live_node(
         }
     })?;
 
-    let mut candidate = LaunchProfileCandidate::default().with_memory_mib(GATE_MEMORY_MIB);
+    let mut candidate = LaunchProfileCandidate::default()
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus)
+        .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
+        .with_scenario_seed(config.scenario_seed);
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());
     }
@@ -434,18 +627,22 @@ pub(super) fn build_live_node(
 
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
-    let plugin = QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT);
-    let command = QemuLaunchCommandBuilder::new(
+    let plugin = live_node_plugin_config(config);
+    let mut command = QemuLaunchCommandBuilder::new(
         profile,
         vm_launch_config(config, identity.node),
         path_text(&config.qemu_executable),
         plugin,
     )
-    .with_qmp(qmp_config.clone())
-    .build()
-    .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
+    .with_qmp(qmp_config.clone());
+    if let Some(gdbstub) = &config.gdbstub {
+        command = command.with_gdbstub(gdbstub.clone());
+    }
+    let command = command
+        .build()
+        .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
 
-    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
+    let region_config = RegionConfig::new(1, config.queue_capacity, 0);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
     let spawned = spawn_qemu_child_with_fds_in_directory(
@@ -474,12 +671,14 @@ pub(super) fn build_live_node(
         config.completion_timeout,
         identity.node,
         identity.router,
+        config.coverage,
     )?;
     let qmp = connect_qmp_priming_main_loop(&setup, &qmp_config.socket_path(run_directory))
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })?;
 
     let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
-        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32);
+        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
+        .with_coverage(basic_block_coverage_config(config.coverage));
     let factory_runtime = QemuNodeFactoryRuntime::new(
         shmem_config,
         GateSendAuthorizer,
@@ -488,317 +687,23 @@ pub(super) fn build_live_node(
         QemuCrashDetector::new(identity.crash_detector),
         runtime,
     );
-    build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime)
-        .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })
-}
-
-/// Advances the node through each busy-window ceiling with a caller re-issue loop.
-///
-/// [`QemuNode::advance_to_ceiling`] drives a single bounded quantum, so a step
-/// interrupted by queued work (the patch-0025 reset/advance drain interaction)
-/// returns [`AdvanceOutcome::Paused`] before the ceiling. The re-issue loop
-/// republishes the same ceiling until the node reaches it, treating a step that
-/// makes no progress across the re-issue bound as a stall rather than looping
-/// forever.
-fn drive_busy_window_steps(
-    node: &mut QemuNode,
-    ceilings: &[u64],
-) -> Result<Vec<QemuLiveNodeStepQuantum>, QemuLiveNodeStepGateError> {
-    let mut quanta = Vec::with_capacity(ceilings.len());
-    for &ceiling in ceilings {
-        let quantum = advance_to_busy_ceiling(node, ceiling)?;
-        quanta.push(quantum);
-    }
-    Ok(quanta)
-}
-
-fn advance_to_busy_ceiling(
-    node: &mut QemuNode,
-    ceiling: u64,
-) -> Result<QemuLiveNodeStepQuantum, QemuLiveNodeStepGateError> {
-    let mut reissue_count = 0;
-    let mut last_icount = node
-        .current_icount()
-        .map_err(|source| QemuLiveNodeStepGateError::node_op("read pre-advance icount", source))?
-        .retired;
-    loop {
-        let outcome = node
-            .advance_to_ceiling(Icount { retired: ceiling })
-            .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
-        let current = node
-            .current_icount()
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::node_op("read post-advance icount", source)
-            })?
-            .retired;
-
-        let reached_horizon = matches!(outcome, AdvanceOutcome::ReachedHorizon);
-        if current >= ceiling {
-            return Ok(QemuLiveNodeStepQuantum {
-                target_icount: ceiling,
-                completion_icount: current,
-                logical_offset: current - ceiling,
-                reissue_count,
-                reached_horizon,
-            });
+    let mut node = match restore {
+        Some(restore) => {
+            build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
         }
-
-        // The step parked below the ceiling. In a busy window this only happens
-        // when queued work interrupts the advance, so re-issue the same ceiling.
-        // If the node made no forward progress across a re-issue, the guest is
-        // stalled -- the wake defect the first live node user is expected to
-        // surface -- so fail loudly rather than spin.
-        if current <= last_icount || reissue_count >= MAX_REISSUES_PER_CEILING {
-            return Err(QemuLiveNodeStepGateError::StepStalled {
-                ceiling_icount: ceiling,
-                last_icount: current,
-                reissue_count,
-            });
-        }
-        last_icount = current;
-        reissue_count += 1;
+        None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
     }
-}
-
-/// Requires the load run to reproduce the reference run byte for byte.
-fn assert_runs_match(
-    reference: &NodeStepOutcome,
-    second: &NodeStepOutcome,
-) -> Result<(), QemuLiveNodeStepGateError> {
-    if reference.quanta != second.quanta {
-        return Err(QemuLiveNodeStepGateError::SecondRunDiverged {
-            reason: format!(
-                "per-step accounting differed: {:?} vs {:?}",
-                reference.quanta, second.quanta
-            ),
-        });
+    .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
+    if let Some(gdbstub) = &config.gdbstub {
+        node = node.with_gdbstub(gdbstub.clone());
     }
-    if reference.fingerprint != second.fingerprint {
-        return Err(QemuLiveNodeStepGateError::SecondRunDiverged {
-            reason: format!(
-                "execution fingerprint differed: {} vs {}",
-                reference.fingerprint.hash.to_hex(),
-                second.fingerprint.hash.to_hex()
-            ),
-        });
-    }
-    Ok(())
+    node.synchronize_observed_time().map_err(|source| {
+        QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
+    })?;
+    Ok(node)
 }
 
-/// Drives one bounded priming quantum to move the guest off the boot barrier.
-///
-/// The node's own hot path does not exist yet -- it is built only after QMP
-/// connects -- so this maps a temporary hot path over the same shared-memory
-/// region. Publishing the first ceiling releases the boot barrier exactly as the
-/// M1 install gate does (`start_quantum` alone, no eventfd wake); the guest
-/// executes to the ceiling and parks between quanta, releasing the BQL so QEMU's
-/// main loop can service QMP. The temporary hot path is dropped before the node
-/// maps its own view of the region.
-///
-/// # Errors
-///
-/// Returns [`QemuLiveNodeStepGateError`] when the region cannot be mapped, the
-/// hot path cannot bind, a quantum boundary cannot be published or read, or the
-/// guest never reaches the priming ceiling within `timeout`.
-fn prime_guest_off_boot_barrier(
-    setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
-    node_name: &str,
-    router_name: &str,
-) -> Result<(), QemuLiveNodeStepGateError> {
-    let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
-        .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(node_name), GATE_SLOT)
-        .with_router(node_id(router_name), SLOT_NET_ROUTER as u32);
-    let mut hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, GateSendAuthorizer)
-        .map_err(|source| QemuLiveNodeStepGateError::PrimeHotPath { source })?;
+#[path = "node_step_gate/support.rs"]
+mod support;
 
-    let horizon = crucible::ExecutionHorizon {
-        icount: Icount {
-            retired: PRIME_CEILING_ICOUNT,
-        },
-    };
-    let pending = QemuShmemHotPathChannel::start_quantum(&mut hot_path, horizon)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
-
-    let max_polls = bounded_prime_polls(timeout);
-    let mut reached = false;
-    for _ in 0..max_polls {
-        let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
-            .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
-            .retired;
-        if current >= PRIME_CEILING_ICOUNT {
-            reached = true;
-            break;
-        }
-        thread::sleep(PRIME_POLL_INTERVAL);
-    }
-
-    if !reached {
-        return Err(QemuLiveNodeStepGateError::PrimeStalled {
-            ceiling_icount: PRIME_CEILING_ICOUNT,
-        });
-    }
-    QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
-        .map_err(|source| QemuLiveNodeStepGateError::prime("finish priming quantum", source))?;
-    Ok(())
-}
-
-/// Returns the number of priming polls that fit within `timeout`, at least one.
-fn bounded_prime_polls(timeout: Duration) -> u64 {
-    let interval = PRIME_POLL_INTERVAL.as_micros().max(1);
-    let budget = timeout.as_micros();
-    u64::try_from(budget / interval).unwrap_or(u64::MAX).max(1)
-}
-
-/// Connects the typed QMP VMState channel while pulsing the plugin wake eventfd.
-///
-/// Right after the setup handshake the QEMU main loop parks with no host timeout
-/// (the plugin holds time control and no ceiling is published), so it never
-/// services the QMP `qmp_capabilities` command and a plain connect times out. A
-/// short-lived primer thread pulses the plugin wake -- the same eventfd signal
-/// the M1 scheduler raises each quantum -- to cycle the main loop until the
-/// capabilities handshake completes. No ceiling is published, so the guest never
-/// advances past the boot barrier while priming.
-///
-/// # Errors
-///
-/// Returns [`QmpError`] when the QMP capabilities handshake still cannot complete
-/// (for example if QEMU never opens the socket or exits during priming).
-fn connect_qmp_priming_main_loop(
-    setup: &crate::QemuHostPluginSetup,
-    socket_path: &Path,
-) -> Result<crate::QemuQmpVmStateControlChannel<UnixStream>, QmpError> {
-    let stop = AtomicBool::new(false);
-    thread::scope(|scope| {
-        let primer = scope.spawn(|| {
-            while !stop.load(Ordering::Relaxed) {
-                // Transient wake failures are ignored: the QMP connect result is
-                // the authority on whether the main loop became reachable.
-                let _ = setup.signal_plugin_wake();
-                thread::sleep(QMP_PRIMER_WAKE_INTERVAL);
-            }
-        });
-        let result = crate::QemuQmpVmStateControlChannel::connect_unix_socket(socket_path);
-        stop.store(true, Ordering::Relaxed);
-        let _ = primer.join();
-        result
-    })
-}
-
-/// Builds the diskless-firmware VM launch config for the node-step run.
-fn vm_launch_config(config: &QemuLiveNodeStepGateConfig, node_name: &str) -> QemuVmLaunchConfig {
-    let kernel = launch_artifact("kernel", &config.kernel);
-    let vm = QemuVmLaunchConfig::new_diskless(
-        node_name,
-        kernel,
-        launch_artifact("firmware", &config.firmware),
-    );
-    match &config.initrd {
-        Some(initrd) => vm.with_initrd(launch_artifact("initrd", initrd)),
-        None => vm,
-    }
-}
-
-/// Returns a shutdown policy with real bounded waits for a gate teardown.
-fn gate_shutdown_policy() -> QemuShutdownPolicy {
-    QemuShutdownPolicy {
-        control_quit_wait: Duration::from_secs(2),
-        qmp_quit_wait: Duration::from_secs(5),
-        sigterm_wait: Duration::from_secs(5),
-        sigkill_wait: Duration::from_secs(5),
-        reap_wait: Duration::from_secs(5),
-    }
-}
-
-/// Returns an async-driver policy whose advance budget is the per-step timeout.
-fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriverPolicy {
-    QemuAsyncDriverPolicy::new(
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        completion_timeout,
-    )
-}
-
-fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
-    let path = path_text(path);
-    QemuLaunchArtifact::new(
-        crucible::ContentHash::from_canonical_material(GATE_DOMAIN, &format!("{kind}={path}")),
-        path,
-    )
-}
-
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn node_id(name: &str) -> NodeId {
-    NodeId {
-        name: name.to_owned(),
-    }
-}
-
-/// A background host-CPU load generator that stresses scheduling around a run.
-///
-/// The busy threads consume CPU without touching the guest, the plugin, or the
-/// shared-memory region, so a deterministic, icount-owning node must produce an
-/// identical fingerprint whether or not the load is present.
-struct HostLoad {
-    stop: Arc<AtomicBool>,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl HostLoad {
-    fn start_if(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::with_capacity(HOST_LOAD_WORKERS);
-        for _ in 0..HOST_LOAD_WORKERS {
-            let stop = Arc::clone(&stop);
-            workers.push(thread::spawn(move || {
-                let mut accumulator: u64 = 0;
-                while !stop.load(Ordering::Relaxed) {
-                    for value in 0..4096_u64 {
-                        accumulator = accumulator
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(value);
-                    }
-                    std::hint::black_box(accumulator);
-                }
-            }));
-        }
-        Some(Self { stop, workers })
-    }
-}
-
-impl Drop for HostLoad {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
-}
-
-/// Send authorizer for the single-node run.
-///
-/// The gate has one VM and one router slot and never routes a real cross-node
-/// frame, so authorization is unconditional.
-struct GateSendAuthorizer;
-
-impl SchedulerSendAuthorizer for GateSendAuthorizer {
-    fn authorize_cross_node_send(
-        &self,
-        producer: &SchedulerNodeId,
-        consumer: &SchedulerNodeId,
-    ) -> Result<SchedulerSendAuthorization, SchedulerError> {
-        Ok(SchedulerSendAuthorization {
-            producer: producer.clone(),
-            consumer: consumer.clone(),
-            topology_epoch: 0,
-        })
-    }
-}
+use support::*;

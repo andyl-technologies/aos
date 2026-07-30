@@ -28,7 +28,8 @@
       "${patchName}: non-9p preservation rationale is absent"
     ]
     ++ lib.optionals (
-      builtins.length series.patchFiles <= 39
+      builtins.length series.patchFiles
+      <= 39
       || builtins.elemAt series.patchFiles 39 != patchName
     ) [
       "${patchName}: 9p synchronous-kick patch is not patch-series entry 40"

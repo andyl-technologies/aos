@@ -448,14 +448,7 @@ pub fn execute_cross_abi_reeval(
     out: PathBuf,
     verbose: u8,
 ) -> Result<()> {
-    crate::config_eval::reeval_cross_abi(
-        inputs,
-        running_base_lib,
-        desired,
-        eval_root,
-        out,
-        verbose,
-    )
+    crate::config_eval::reeval_cross_abi(inputs, running_base_lib, desired, eval_root, out, verbose)
 }
 
 /// Human description of a root: `name version [registry]` when resolvable,

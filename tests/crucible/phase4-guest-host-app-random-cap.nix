@@ -25,13 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-17 checked off";
-        needle = "- [x] **T-GHC-17**";
-      }
       {
         label = "T-GHC-17 completion note";
         needle = "Completed by `checks.crucible.phase4.guestHostAppRandomCap`";

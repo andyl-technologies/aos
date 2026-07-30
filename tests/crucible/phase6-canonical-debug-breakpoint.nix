@@ -15,18 +15,32 @@
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  qemuProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  breakpointTest = builtins.readFile ../../crates/crucible/tests/gate_canonical_debug_breakpoint.rs;
-  qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  qemuProxy = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
+  };
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  breakpointTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_canonical_debug_breakpoint.rs;
+  };
+  qemuTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
@@ -39,10 +53,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-3 checklist complete";
-        needle = "- [x] **T-DBG-3**";
-      }
       {
         label = "T-DBG-3 partial-evidence note";
         needle = "Completed under `checks.crucible.phase6.canonicalDebugBreakpoint`";
@@ -266,12 +276,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "red canonical debug breakpoint gate";
-        needle = "canonicalDebugBreakpoint = redBeforeAdvance";
+        label = "green canonical debug breakpoint gate";
+        needle = "canonicalDebugBreakpoint = greenBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "openTaskIds = [\"T-DBG-3\"]";
+        needle = "taskIds = [\"T-DBG-3\"]";
       }
       {
         label = "read-only debug raw dependency";

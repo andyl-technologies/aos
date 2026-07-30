@@ -14,6 +14,8 @@
     "T-PERF-9"
     "T-PERF-10"
     "T-PERF-11"
+    "T-PERF-12"
+    "T-PERF-13"
     "T-PERF-14"
     "T-PERF-15"
     "T-PERF-16"
@@ -27,9 +29,10 @@
     "T-PERF-24"
     "T-PERF-25"
     "T-PERF-26"
+    "T-PERF-27"
     "T-PERF-28"
   ],
-  openTaskIds ? ["T-PERF-12" "T-PERF-13" "T-PERF-27"],
+  openTaskIds ? [],
   dependencies ? [],
   hostParallelism ? null,
   fingerprintOffload ? null,
@@ -72,8 +75,6 @@
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   perfCheckboxFailures =
     lib.concatMap (
@@ -217,6 +218,10 @@
         needle = "pub struct PerfBaseline";
       }
       {
+        label = "observed fuzz-throughput input";
+        needle = "pub observed_fuzz_throughput: u64,";
+      }
+      {
         label = "gate assertion pass";
         needle = "pub fn run_perf_bench_gate(";
       }
@@ -229,6 +234,10 @@
       {
         label = "cost-model term coverage";
         needle = "gate_perf_bench_reports_every_cost_model_term";
+      }
+      {
+        label = "throughput regression negative control";
+        needle = "input.observed_fuzz_throughput = input.baseline.fuzz_throughput / 2;";
       }
       {
         label = "idle compression";
@@ -374,7 +383,27 @@
       }
       {
         label = "live throughput result";
-        needle = "throughput_per_core_hour=$throughput_per_hour";
+        needle = "throughput_per_core_hour=$throughput_per_core_hour";
+      }
+      {
+        label = "per-core throughput normalization";
+        needle = "par_ms * parallel_workers";
+      }
+      {
+        label = "live fleet scaling assertion";
+        needle = "test \"$fleet_per_hour\" -ge \"$minimum_linear\"";
+      }
+      {
+        label = "thin replay restore source required";
+        needle = "restore_source=thin-replay-from-live-qemu-artifact";
+      }
+      {
+        label = "live loadvm restore latency required";
+        needle = "loadvm_boot_window_restore_ms=$loadvm_boot_ms";
+      }
+      {
+        label = "restore measurement covers loadvm and replay fallback";
+        needle = "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]";
       }
       {
         label = "live coverage IPS check";

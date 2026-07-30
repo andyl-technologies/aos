@@ -14,7 +14,7 @@
 //! Rust plugin is the sole `sim_shmem` dispatch authority that owns virtual-time
 //! advancement. The guest stops at exactly the host-published ceiling only
 //! because the plugin blocked on the boot barrier and then honored that ceiling,
-//! which is the live proof the coded-but-mocked plugin lifecycle was missing.
+//! which supplies the live proof the earlier scaffolded lifecycle was missing.
 //!
 //! The emitted [`LivePluginInstallReport`] records each lifecycle milestone plus
 //! `time_authority=rust-plugin` so the gate cannot silently regress to a mode in

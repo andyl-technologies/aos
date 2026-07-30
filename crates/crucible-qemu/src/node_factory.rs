@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    BasicBlockCoverageConfig, Checkpoint, ContentHash, ExecutionHorizon, Icount, SchedulerError,
+    BasicBlockCoverageConfig, Checkpoint, ExecutionHorizon, Icount, SchedulerError,
     SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
 use crucible_shmem::{
@@ -22,15 +22,18 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncDriverPolicy, QemuBakedGenesisRestoreAdmission, QemuCrashDetector, QemuHostIoRuntime,
-    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
-    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
-    QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
-    QemuShutdownPolicy, QemuSpawnError, QmpError, QmpTimeoutStream,
-    complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
+    QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
+    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuMappedQuantumShmemHotPath,
+    QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
+    QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel, QemuShutdownPolicy, QemuSpawnError, QmpError,
+    QmpTimeoutStream, complete_qemu_host_plugin_setup, spawn_qemu_child_with_fds_in_directory,
 };
+
+mod restore_plan;
+
+pub use restore_plan::{QemuNodeRestoreAdmission, QemuNodeRestorePlan};
 
 /// QMP machine-control adapter that only exposes graceful shutdown.
 #[derive(Debug)]
@@ -215,71 +218,6 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
             crash_detector,
             host_io_runtime,
         }
-    }
-}
-
-/// Authorized VMState restore inputs for warm QEMU node realization.
-pub struct QemuNodeRestorePlan<'a> {
-    checkpoint: &'a Checkpoint,
-    authorization: QemuLoadvmCommandAuthorization,
-    admission: QemuNodeRestoreAdmission,
-}
-
-/// Admission proof for the VMState snapshot restored before node assembly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuNodeRestoreAdmission {
-    /// The trusted baked ready-point snapshot produced by QEMU genesis baking.
-    BakedGenesis {
-        /// World identity whose baked genesis was validated.
-        world_id: ContentHash,
-    },
-    /// A replay-oracle-validated exact fat checkpoint runtime.
-    ReplayOracle(QemuLoadvmRealizationAdmission),
-}
-
-impl<'a> QemuNodeRestorePlan<'a> {
-    /// Creates a warm-restore plan for an exact fat checkpoint.
-    #[must_use]
-    pub const fn new(
-        checkpoint: &'a Checkpoint,
-        authorization: QemuLoadvmCommandAuthorization,
-        admission: QemuLoadvmRealizationAdmission,
-    ) -> Self {
-        Self {
-            checkpoint,
-            authorization,
-            admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
-        }
-    }
-
-    /// Creates a warm-restore plan for a baked genesis ready-point checkpoint.
-    #[must_use]
-    pub fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
-        Self {
-            checkpoint: admission.checkpoint(),
-            authorization: admission.authorization(),
-            admission: QemuNodeRestoreAdmission::BakedGenesis {
-                world_id: admission.world_id(),
-            },
-        }
-    }
-
-    /// Returns the checkpoint whose VMState will be restored.
-    #[must_use]
-    pub const fn checkpoint(&self) -> &'a Checkpoint {
-        self.checkpoint
-    }
-
-    /// Returns the low-level QMP `loadvm` authorization token.
-    #[must_use]
-    pub const fn authorization(&self) -> QemuLoadvmCommandAuthorization {
-        self.authorization
-    }
-
-    /// Returns the admission proof paired with the restore authorization.
-    #[must_use]
-    pub const fn admission(&self) -> QemuNodeRestoreAdmission {
-        self.admission
     }
 }
 
@@ -551,8 +489,9 @@ where
 /// channel is reduced to shutdown-only node control. Baked-genesis restores use
 /// an admission object produced by the realization coordinator after validating
 /// the baked snapshot against its world; exact fat-checkpoint restores use
-/// replay-oracle admission. Generic backend snapshot/restore remains disabled
-/// on the returned [`QemuNode`].
+/// replay-oracle admission. Snapshot-completeness probes carry a probe-only
+/// admission that cannot authorize a production runtime. Generic backend
+/// snapshot/restore remains disabled on the returned [`QemuNode`].
 ///
 /// # Errors
 ///
@@ -687,11 +626,15 @@ fn validate_runtime_restore_authorization(
             let _admitted_world_id = world_id;
             Ok(())
         }
+        (
+            QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
+            QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+        ) => Ok(()),
         (purpose, _) => Err(QemuNodeFactoryError::VmStateRestoreAuthorization { purpose }),
     }
 }
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests;

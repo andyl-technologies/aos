@@ -12,26 +12,17 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
-        label = "T-SPAT-4 checked off";
-        needle = "- [x] **T-SPAT-4**";
-      }
-      {
         label = "T-SPAT-4 completion names world links";
         needle = "`nodes` and `links`, `World::from_nodes_and_links`";
-      }
-      {
-        label = "T-SPAT-7 checked off";
-        needle = "- [x] **T-SPAT-7**";
       }
       {
         label = "T-SPAT-7 completion names endpoint validation";
@@ -69,7 +60,7 @@
       }
       {
         label = "world link validation";
-        needle = "fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), EngineError>";
+        needle = "fn validate_world_links_for_node_defs(";
       }
       {
         label = "link material included";

@@ -2030,6 +2030,7 @@ dependencies = [
  "crucible-session",
  "futures-util",
  "reqwest",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -2057,7 +2058,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
- "crucible",
  "crucible-api",
  "crucible-harness",
  "crucible-protocol",

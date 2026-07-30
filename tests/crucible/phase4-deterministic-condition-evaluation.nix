@@ -22,8 +22,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   evaluationSources = builtins.concatStringsSep "\n" [
     trigger
@@ -34,10 +32,6 @@
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-10 checked off";
-        needle = "- [x] **T-TRIG-10**";
-      }
       {
         label = "T-TRIG-10 completion note";
         needle = "Completed by `checks.crucible.phase4.deterministicConditionEvaluation`";

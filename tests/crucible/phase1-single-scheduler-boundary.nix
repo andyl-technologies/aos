@@ -7,6 +7,7 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
+  apiSource = sourceFor "crucible-api";
   sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -44,7 +45,6 @@
     "crucible-qemu"
     "crucible-qemu-plugin"
     "crucible-guest"
-    "crucible-api"
     "crucible-daemon"
     "crucible-cli"
   ];
@@ -93,6 +93,12 @@
     ]
     ++ lib.optionals (!sessionDependsOnEngine) [
       "crucible-session: must depend on crucible to drive the L3 boundary"
+    ]
+    ++ lib.optionals (hasInfix "pub trait QuantumLoop" apiSource) [
+      "crucible-api: must consume, not redefine, the L3 QuantumLoop boundary"
+    ]
+    ++ lib.optionals (!(hasInfix "impl QuantumLoop for ProductionVmLifecycleLoop" apiSource)) [
+      "crucible-api: production VM lifecycle must adapt to the L3 QuantumLoop boundary"
     ]
     ++ lowerPackageFailures;
 in

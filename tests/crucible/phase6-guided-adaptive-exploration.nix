@@ -35,10 +35,6 @@
         result = "guidance=integrated-fixed-point-coverage+rarity+assertion-proximity";
         docNeedles = [
           {
-            label = "T-ADV-17 is complete";
-            needle = "- [x] **T-ADV-17**";
-          }
-          {
             label = "guidance completion note";
             needle = "Completed by `checks.crucible.phase6.guidanceSignals`";
           }
@@ -102,10 +98,6 @@
         testFilter = "gate_adaptive_strategy_selection_is_deterministic_and_fair";
         result = "adaptive=deterministic-fixed-point-ucb+integrated-campaign+realized-credit+fairness";
         docNeedles = [
-          {
-            label = "T-ADV-18 is complete";
-            needle = "- [x] **T-ADV-18**";
-          }
           {
             label = "adaptive completion note";
             needle = "Completed by `checks.crucible.phase6.adaptiveStrategies`";
@@ -171,10 +163,6 @@
         result = "guidance_lint=actual-sources+comment-string-aware+mutation-negative";
         docNeedles = [
           {
-            label = "T-ADV-19 is complete";
-            needle = "- [x] **T-ADV-19**";
-          }
-          {
             label = "guidance lint completion note";
             needle = "Completed by `checks.crucible.phase6.guidanceDeterminismLint`";
           }
@@ -224,10 +212,6 @@
         testFilter = "gate_preemption_branching";
         result = "preemption=bounded-single-vcpu+partial-order-reduction+content-addressed-oracle-validated-children";
         docNeedles = [
-          {
-            label = "T-ADV-20 is complete";
-            needle = "- [x] **T-ADV-20**";
-          }
           {
             label = "preemption completion note";
             needle = "Completed by `checks.crucible.phase6.preemptionBranching`";
@@ -285,10 +269,6 @@
         result = "app_random=recorded-sites+bounded-seeded-samples+prefix-replacement+no-draw-equivalence";
         docNeedles = [
           {
-            label = "T-ADV-21 is complete";
-            needle = "- [x] **T-ADV-21**";
-          }
-          {
             label = "app-random completion note";
             needle = "Completed by `checks.crucible.phase6.appRandomBranching`";
           }
@@ -344,7 +324,6 @@
     .${taskId};
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (

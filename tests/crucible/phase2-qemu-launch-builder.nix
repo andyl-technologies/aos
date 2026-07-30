@@ -28,13 +28,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-1 checklist complete";
-        needle = "- [x] **T-QEMU-1**";
-      }
       {
         label = "T-QEMU-1 completion note names launch-command builder";
         needle = "typed `crucible-qemu` launch-command builder";

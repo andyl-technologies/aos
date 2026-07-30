@@ -12,8 +12,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
@@ -100,10 +98,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-13 checklist complete";
-        needle = "- [x] **T-DET-13**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

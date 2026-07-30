@@ -392,18 +392,34 @@ in
             }
           }
 
+          require_le() {
+            key="$1"
+            maximum="$2"
+            actual=$(get_value "$key")
+            [ -n "$actual" ] || {
+              echo "FAIL: $key missing" >&2
+              exit 1
+            }
+            [ "$actual" -le "$maximum" ] || {
+              echo "FAIL: $key expected <= $maximum, got $actual" >&2
+              exit 1
+            }
+          }
+
           require_eq marker_errors 0
           require_eq open_operation false
           require_eq block_operations "$OPERATION_COUNT"
           require_eq block_completed_operations "$OPERATION_COUNT"
-          require_eq block_idled_operations "$OPERATION_COUNT"
-          require_eq block_busy_polled_operations 0
+          minimum_idled_operations=$(( (OPERATION_COUNT * IDLE_THRESHOLD_PPM + 999999) / 1000000 ))
+          maximum_busy_polled_operations=$(( OPERATION_COUNT - minimum_idled_operations ))
+          require_ge block_idled_operations "$minimum_idled_operations"
+          require_le block_busy_polled_operations "$maximum_busy_polled_operations"
           require_eq block_operations_with_io_events "$OPERATION_COUNT"
           require_eq block_operations_without_io_events 0
           require_eq ninep_operations "$OPERATION_COUNT"
           require_eq ninep_completed_operations "$OPERATION_COUNT"
-          require_eq ninep_idled_operations "$OPERATION_COUNT"
-          require_eq ninep_busy_polled_operations 0
+          require_ge ninep_idled_operations "$minimum_idled_operations"
+          require_le ninep_busy_polled_operations "$maximum_busy_polled_operations"
           require_eq ninep_operations_with_io_events "$OPERATION_COUNT"
           require_eq ninep_operations_without_io_events 0
           require_ge io_events 1
@@ -454,8 +470,8 @@ in
             echo idle_threshold_ppm="$IDLE_THRESHOLD_PPM"
             echo block_idle_fraction_requirement=ge_900000
             echo block_busy_poll_fraction_requirement=le_100000
-            echo block_idled_operations="$OPERATION_COUNT"
-            echo block_busy_polled_operations=0
+            echo block_idled_operations="$(get_value block_idled_operations)"
+            echo block_busy_polled_operations="$(get_value block_busy_polled_operations)"
             echo block_idle_fraction_ppm="$block_idle_fraction"
             echo block_operations_with_io_events="$OPERATION_COUNT"
             echo block_operations_without_io_events=0
@@ -465,8 +481,8 @@ in
             echo block_idle_threshold_met="$block_idle_threshold_met"
             echo ninep_idle_fraction_requirement=ge_900000
             echo ninep_busy_poll_fraction_requirement=le_100000
-            echo ninep_idled_operations="$OPERATION_COUNT"
-            echo ninep_busy_polled_operations=0
+            echo ninep_idled_operations="$(get_value ninep_idled_operations)"
+            echo ninep_busy_polled_operations="$(get_value ninep_busy_polled_operations)"
             echo ninep_idle_fraction_ppm="$ninep_idle_fraction"
             echo ninep_operations_with_io_events="$OPERATION_COUNT"
             echo ninep_operations_without_io_events=0

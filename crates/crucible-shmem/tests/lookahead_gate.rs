@@ -52,20 +52,11 @@ fn lookahead_gate_rejects_ceiling_before_current_icount() {
 }
 
 #[test]
-fn lookahead_gate_rejects_already_reached_delivery_icount() {
+fn lookahead_gate_allows_exact_current_delivery_icount() {
     let frame = frame(50, 7, 3);
 
-    assert_eq!(
-        validate_frame_delivery_is_future(&frame, 50),
-        Err(LookaheadGateError::DeliveryAlreadyPassed {
-            consumer_current_icount: 50,
-            frame: FrameDeliveryKey {
-                delivery_icount: 50,
-                src_node: 7,
-                seq: 3,
-            },
-        })
-    );
+    assert_eq!(validate_frame_delivery_is_future(&frame, 50), Ok(()));
+    assert!(frame.is_deliverable_at(50));
 }
 
 #[test]

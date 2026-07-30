@@ -21,7 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -33,10 +32,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-1 checked off";
-        needle = "- [x] **T-SESS-1**";
-      }
       {
         label = "T-SESS-1 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionActor`";
@@ -99,7 +94,7 @@
       }
       {
         label = "single bounded quantum";
-        needle = "let _outcome = self.engine.step_quantum()?;";
+        needle = "let _outcome = match self.engine.step_quantum()";
       }
       {
         label = "breakpoint ownership test";

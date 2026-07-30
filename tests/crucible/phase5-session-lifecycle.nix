@@ -13,6 +13,7 @@
   };
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
+  cliControl = builtins.readFile ../../crates/crucible-cli/src/cli/control.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -21,13 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-3 checked off";
-        needle = "- [x] **T-SESS-3**";
-      }
       {
         label = "T-SESS-3 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionLifecycle`";
@@ -35,6 +31,10 @@
       {
         label = "section4 command-kind scope";
         needle = "command-kind lifecycle model";
+      }
+      {
+        label = "T-SESS-14 completion note";
+        needle = "Completed by `checks.crucible.phase5.sessionLifecycle`: `SessionEngine`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -152,6 +152,36 @@
         label = "side-effect-free rejection helper";
         needle = "assert_rejection_names_state_and_command";
       }
+      {
+        label = "engine-owned terminal cause";
+        needle = "enum TerminalCause";
+      }
+      {
+        label = "property failure terminal negative control";
+        needle = "property_failure_breakpoint_produces_failed_terminal_outcome";
+      }
+      {
+        label = "budget timeout terminal negative control";
+        needle = "budget_exhaustion_command_produces_timeout_terminal_outcome";
+      }
+      {
+        label = "backend crash terminal negative control";
+        needle = "backend_failure_produces_crashed_terminal_outcome";
+      }
+      {
+        label = "explicit budget exhaustion command";
+        needle = "ExhaustBudget";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/control.rs" cliControl [
+      {
+        label = "CLI projects the engine outcome";
+        needle = "status_from_outcome(observation.outcome)";
+      }
+      {
+        label = "CLI rejects absent engine outcome";
+        needle = "session reached a terminal observation without an engine outcome";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -217,6 +247,14 @@ in
               -p crucible-session \
               --lib \
               lifecycle \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-session-lifecycle-target" \
+              -p crucible-session \
+              --lib \
+              terminal_outcome \
               -- --test-threads=1
           '';
         }

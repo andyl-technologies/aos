@@ -32,7 +32,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenHotPathApis = [
     "Instant::now"
     "SystemTime::now"
@@ -74,10 +73,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-9 completed by live QEMU callback integration";
-        needle = "- [x] **T-PLUG-9**";
-      }
       {
         label = "T-PLUG-9 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo` and";

@@ -12,28 +12,40 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  decision = builtins.readFile ../../crates/crucible/src/decision.rs;
+  decision = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/decision.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  deviceFault = builtins.readFile ../../crates/crucible-device/src/fault.rs;
-  netlinkFault = builtins.readFile ../../crates/crucible-device/src/netlink/fault.rs;
-  netlinkLink = builtins.readFile ../../crates/crucible-device/src/netlink/link.rs;
-  integerRatesTest = builtins.readFile ../../crates/crucible/tests/fault_integer_rates.rs;
-  resolveRngTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve_rng.rs;
+  libSource = import ./_crucible-tests-source.nix {inherit lib;};
+  deviceFault = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-device/src/fault.rs;
+  };
+  netlinkFault = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-device/src/netlink/fault.rs;
+  };
+  netlinkLink = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-device/src/netlink/link.rs;
+  };
+  integerRatesTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/fault_integer_rates.rs;
+  };
+  resolveRngTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/scheduler_resolve_rng.rs;
+  };
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-4 checked off";
-        needle = "- [x] **T-FAULT-4**";
-      }
       {
         label = "T-FAULT-4 completion note";
         needle = "Completed by `checks.crucible.phase4.faultIntegerRates`";

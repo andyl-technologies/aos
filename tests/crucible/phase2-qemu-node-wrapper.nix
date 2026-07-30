@@ -12,7 +12,10 @@
   };
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  nodeLib = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  nodeLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -20,14 +23,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-3 checklist complete";
-        needle = "- [x] **T-QEMU-3**";
-      }
       {
         label = "T-QEMU-3 completion note names QemuNode";
         needle = "Completed as the `QemuNode`";

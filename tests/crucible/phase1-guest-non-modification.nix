@@ -27,7 +27,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
       {
@@ -235,10 +234,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-21 checklist complete";
-        needle = "- [x] **T-DET-21**";
-      }
       {
         label = "DET-15 host-side guest non-modification";
         needle = "content placed inside the guest";

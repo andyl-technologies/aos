@@ -104,7 +104,11 @@ fn manifest_has_package(manifest: &Value, pkg: &str) -> bool {
 fn select_closure_roots(store_paths: &[String], pkg: &str) -> Vec<String> {
     store_paths
         .iter()
-        .filter(|p| store_path_name(p).map(|name| name_matches(name, pkg)).unwrap_or(false))
+        .filter(|p| {
+            store_path_name(p)
+                .map(|name| name_matches(name, pkg))
+                .unwrap_or(false)
+        })
         .cloned()
         .collect()
 }
@@ -502,7 +506,9 @@ mod subverb_tests {
                 "/nix/store/h2-redis".to_string(),
             ]
         );
-        assert!(select_closure_roots(&paths, "nginx").contains(&"/nix/store/h4-nginx-1.27".to_string()));
+        assert!(
+            select_closure_roots(&paths, "nginx").contains(&"/nix/store/h4-nginx-1.27".to_string())
+        );
     }
 
     #[test]
@@ -524,8 +530,14 @@ mod subverb_tests {
     #[test]
     fn marker_paths_are_under_root() {
         let root = Path::new("/run/aos");
-        assert_eq!(fetch_marker(root, "redis"), Path::new("/run/aos/fetch/redis.ok"));
-        assert_eq!(render_marker(root, "redis"), Path::new("/run/aos/render/redis.ok"));
+        assert_eq!(
+            fetch_marker(root, "redis"),
+            Path::new("/run/aos/fetch/redis.ok")
+        );
+        assert_eq!(
+            render_marker(root, "redis"),
+            Path::new("/run/aos/render/redis.ok")
+        );
     }
 
     #[test]

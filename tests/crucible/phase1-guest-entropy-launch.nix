@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   sourceRequirements = [
     {
       label = "scenario seed default";

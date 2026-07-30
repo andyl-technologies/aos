@@ -128,6 +128,7 @@ in
             --target-dir "$TMPDIR/live-plugin-quantum-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
+            --features test-support \
             --example crucible-qemu-live-plugin-quantum
 
           run_dir="$TMPDIR/live-plugin-quantum-run"

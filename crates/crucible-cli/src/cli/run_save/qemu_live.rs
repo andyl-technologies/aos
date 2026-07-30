@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// Upper instruction budget for one live exploration quantum.
+///
+/// Exact local events and conservative link horizons still clamp this value;
+/// the larger cap avoids thousands of host round trips while booting a branch.
+const LIVE_EXPLORATION_QUANTUM_BUDGET: u64 = 1_000_000;
+
 #[derive(Debug)]
 pub(crate) struct SelftestGateReport {
     pub(crate) name: String,
@@ -14,6 +20,11 @@ pub(crate) struct SelftestGateReport {
     pub(crate) live_qemu_fingerprint: Option<String>,
 }
 
+#[path = "qemu_live/probe.rs"]
+mod probe;
+
+pub(crate) use probe::*;
+
 pub(crate) fn is_packaged_backend(backend_plan: &BackendSelectionPlan) -> bool {
     matches!(
         backend_plan.resolved_backend,
@@ -22,6 +33,14 @@ pub(crate) fn is_packaged_backend(backend_plan: &BackendSelectionPlan) -> bool {
 }
 
 pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+    run_selftest_with_probe(cli, args, &mut ProductionLiveQemuProbeRunner)
+}
+
+pub(crate) fn run_selftest_with_probe(
+    cli: &Cli,
+    args: &SelftestArgs,
+    probe: &mut impl LiveQemuProbeRunner,
+) -> Result<SelftestReport, CliError> {
     let selected_gates = plan_selftest_gates(args)?;
     let qemu_backend = if selected_gates
         .iter()
@@ -36,26 +55,38 @@ pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestRep
     #[cfg(not(any(test, feature = "test-double")))]
     let verified = Vec::new();
     let mut gates = Vec::with_capacity(selected_gates.len());
+    let mut live_baseline = None;
     for gate in selected_gates {
         let runner = if selftest_gate_uses_real_backend(&gate) {
             SelftestGateRunner::RealQemu
         } else {
-            SelftestGateRunner::DoubleBackedCorpus
-        };
-        let qemu_build_id = if runner == SelftestGateRunner::RealQemu {
-            qemu_backend.as_ref().and_then(|backend| match backend {
-                ResolvedLocalBackend::Qemu { qemu_build_id, .. } => Some(qemu_build_id.clone()),
-                #[cfg(any(test, feature = "test-double"))]
-                ResolvedLocalBackend::Double => None,
-            })
-        } else {
-            None
+            #[cfg(any(test, feature = "test-double"))]
+            {
+                SelftestGateRunner::DoubleBackedCorpus
+            }
+            #[cfg(not(any(test, feature = "test-double")))]
+            {
+                return Err(backend_error(format!(
+                    "selftest gate `{gate}` requires the `test-double` Cargo feature"
+                )));
+            }
         };
         let live = if runner == SelftestGateRunner::RealQemu {
             let backend = qemu_backend
                 .as_ref()
                 .ok_or_else(|| backend_error("real-QEMU selftest requires a resolved backend"))?;
-            run_live_qemu_backend_probe_for_command(backend)?
+            let evidence = probe.run_probe(backend)?;
+            validate_live_qemu_probe_evidence(backend, &evidence)?;
+            if live_baseline
+                .as_ref()
+                .is_some_and(|baseline| baseline != &evidence)
+            {
+                return Err(backend_error(
+                    "live QEMU selftest probes diverged across identical executions",
+                ));
+            }
+            live_baseline.get_or_insert_with(|| evidence.clone());
+            Some(evidence)
         } else {
             None
         };
@@ -65,14 +96,44 @@ pub(crate) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestRep
             corpus_entries: verified.len(),
             runs_per_entry: DEFAULT_SELFTEST_RUNS,
             runner,
-            qemu_build_id,
+            qemu_build_id: live.as_ref().map(|evidence| evidence.qemu_build_id.clone()),
             live_qemu_icount: live.as_ref().map(|report| report.completed_icount),
             live_qemu_fingerprint: live
                 .as_ref()
-                .map(|report| format_content_hash_ref(report.execution_fingerprint.hash)),
+                .map(|report| report.execution_fingerprint.clone()),
         });
     }
     Ok(SelftestReport { gates, verified })
+}
+
+fn validate_live_qemu_probe_evidence(
+    backend: &ResolvedLocalBackend,
+    evidence: &LiveQemuProbeEvidence,
+) -> Result<(), CliError> {
+    let observed = BackendExecutionEvidence::LocalProduction {
+        build_id: evidence.qemu_build_id.clone(),
+        plugin_abi: evidence.plugin_abi.clone(),
+    };
+    let plan = BackendSelectionPlan {
+        subcommand: CliSubcommand::Selftest,
+        target: BackendExecutionTarget::Local,
+        requested_backend: Backend::Qemu,
+        resolved_backend: Some(backend.clone()),
+        reason: BackendSelectionReason::ExplicitQemu,
+        daemon: None,
+        remote_uses_control_api: false,
+        local_uses_simulation_backend: true,
+        local_remote_equivalence_contract: true,
+    };
+    let expected = plan
+        .expected_execution_evidence()
+        .ok_or_else(|| backend_error("live QEMU probe has no selected execution identity"))?;
+    if expected != observed || !observed.proves_t_cli_3(&plan) {
+        return Err(backend_error(
+            "live QEMU probe identity does not match the discovered backend",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -90,78 +151,260 @@ pub(crate) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBa
 }
 
 pub(crate) fn run_local_qemu_fuzz_workflow(
-    _thin_plan: &CliThinWrapperPlan,
+    thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _plan: &FuzzDriverPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    plan: &FuzzDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fuzz requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "fuzz")
+    let family = load_fuzz_family(plan)?;
+    let config = production_qemu_lifecycle_config(backend)?
+        .with_coverage(production_api::ProductionPluginSwitch::On);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let warmup = family
+        .fuzz_coverage_guided(plan.config, &[])
+        .map_err(|error| backend_error(format!("QEMU fuzz warm-up policy failed: {error}")))?;
+    let feedback = execute_qemu_fuzz_iterations(&config, &runtime, &warmup, "warm-up")?;
+    let (run, report) = if let Some(corpus) = &plan.corpus {
+        fs::create_dir_all(corpus).map_err(|error| {
+            backend_error(format!(
+                "QEMU fuzz could not create corpus `{}`: {error}",
+                corpus.display()
+            ))
+        })?;
+        let store = crucible::LocalDagStore::new(corpus.clone());
+        let corpus_run = family
+            .fuzz_coverage_guided_corpus(
+                &store,
+                plan.config,
+                crucible::CoverageGuidedCorpusConfig::new(plan.config.meta_seed),
+                &feedback,
+            )
+            .map_err(|error| backend_error(format!("QEMU fuzz corpus policy failed: {error}")))?;
+        (
+            corpus_run.fuzz.clone(),
+            local_double_fuzz_report_from_corpus_run(plan, corpus, &corpus_run),
+        )
+    } else {
+        let run = family
+            .fuzz_coverage_guided(plan.config, &feedback)
+            .map_err(|error| backend_error(format!("QEMU fuzz policy failed: {error}")))?;
+        let report = local_double_fuzz_report_from_run(plan, &run);
+        (run, report)
+    };
+    let guided_feedback = execute_qemu_fuzz_iterations(&config, &runtime, &run, "guided")?;
+    let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
+    apply_local_double_fuzz_report(&mut outcome, plan, &report);
+    for (index, feedback) in guided_feedback.iter().enumerate() {
+        outcome.canonical_log.push(CanonicalLogEntry {
+            sequence: outcome.canonical_log.len() as u64,
+            virtual_time_ticks: outcome.canonical_log.len() as u64,
+            node: String::from("qemu"),
+            kind: String::from("fuzz_coverage_feedback"),
+            summary: format!(
+                "iteration={index}\tblocks={}\tfingerprint={}",
+                feedback.projection().len(),
+                feedback.fingerprint().to_hex()
+            ),
+        });
+    }
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "fuzz-live-campaign");
+    Ok(outcome)
 }
 
-pub(crate) fn run_local_qemu_search_workflow(
-    _thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _plan: &SearchDriverPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let backend = backend_plan
-        .resolved_backend
-        .as_ref()
-        .ok_or_else(|| backend_error("local QEMU search requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "search")
+fn execute_qemu_fuzz_iterations(
+    config: &production_api::ProductionVmLifecycleConfig,
+    runtime: &tokio::runtime::Runtime,
+    run: &crucible::CoverageGuidedFuzzRun,
+    phase: &str,
+) -> Result<Vec<crucible::EventLogCoverageFeedback>, CliError> {
+    let mut feedback = Vec::with_capacity(run.iterations.len());
+    for iteration in &run.iterations {
+        let form = iteration.scenario.form().clone();
+        let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form);
+        // crucible-lint: allow host-nondeterminism-state -- genesis is reconstructed from canonical scenario material, not host observations.
+        let branch_base = crucible::Configuration::genesis(iteration.scenario.scenario_def());
+        let iteration_config = config
+            .clone()
+            .with_branch_prefix_overrides(branch_base, iteration.schedule().decisions().to_vec());
+        let control_plane =
+            production_qemu_control_plane(iteration_config, run_plan.scenario.scenario_form());
+        let client = InProcessLifecycleClient::new(control_plane);
+        let report =
+            runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?;
+        if report.status == BackendCommandStatus::Crashed {
+            return Err(backend_error(format!(
+                "QEMU fuzz {phase} iteration {} crashed before producing campaign evidence",
+                iteration.sequence,
+            )));
+        }
+        if report.coverage_feedback.projection().is_empty() {
+            return Err(backend_error(format!(
+                "QEMU fuzz {phase} iteration {} produced no basic-block coverage",
+                iteration.sequence,
+            )));
+        }
+        let recorded_overrides = report
+            .streamed_event_frames
+            .iter()
+            .filter(|frame| String::from_utf8_lossy(frame).contains("kind=crucible.event.override"))
+            .count();
+        let expected_overrides = iteration
+            .schedule()
+            .decisions()
+            .iter()
+            // crucible-lint: allow host-nondeterminism-state -- counting recorded canonical choices does not alter their values or order.
+            .filter(|decision| matches!(decision, crucible::Decision::Override(_)))
+            .count();
+        if recorded_overrides != expected_overrides {
+            return Err(backend_error(format!(
+                "QEMU fuzz {phase} iteration {} recorded {recorded_overrides} override events, expected {expected_overrides}",
+                iteration.sequence,
+            )));
+        }
+        feedback.push(report.coverage_feedback);
+    }
+    Ok(feedback)
 }
 
-/// Rejects local scenario execution until the packaged QEMU backend drives it.
+fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> RunInvocationPlan {
+    let scenario = form.scenario_def();
+    RunInvocationPlan {
+        request_seed: Some(scenario.seed()),
+        scenario: RunScenarioRef::BuiltInExample {
+            name: format!("fuzz-iteration-{sequence}"),
+            form,
+            scenario,
+        },
+        terminal_condition: RunTerminalCondition::Quiescence,
+        max_virtual_time: None,
+        max_virtual_time_ticks: None,
+        max_quanta: None,
+        execution_mode: RunExecutionMode::ToCompletion,
+        save_policy: RunSavePolicy::Never,
+        watch_streams_live_status: false,
+        startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+        initial_control_commands: vec![SessionCommandKind::Query],
+        accepted_interactive_commands: Vec::new(),
+        observer_profile: VERIFY_BASELINE_PROFILE,
+        collect_execution_fingerprints: false,
+        bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        outcome_exit_codes: vec![
+            (BackendCommandStatus::Passed, 0),
+            (BackendCommandStatus::Failed, 1),
+            (BackendCommandStatus::Timeout, 2),
+            (BackendCommandStatus::Crashed, 3),
+        ],
+        invalid_scenario_exit_code: 4,
+    }
+}
+
+#[path = "qemu_live/search.rs"]
+mod search;
+
+pub(crate) use search::*;
+/// Runs one local scenario through the packaged QEMU backend.
 pub(crate) fn run_local_qemu_workflow(
     backend: &ResolvedLocalBackend,
-    _thin_plan: &CliThinWrapperPlan,
-    _backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _run_plan: &RunInvocationPlan,
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    reject_unwired_qemu_workflow(backend, "run")
+    let config = production_qemu_lifecycle_config(backend)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = production_qemu_control_plane(config, run_plan.scenario.scenario_form());
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
+        runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
+    } else {
+        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
+    };
+    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
-/// Rejects verification until every reduction runs through packaged QEMU.
+/// Verifies every reduction through an independent packaged-QEMU session.
 pub(crate) fn run_local_qemu_verify_workflow(
-    _thin_plan: &CliThinWrapperPlan,
+    thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _verify_plan: &VerifyInvocationPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    verify_plan: &VerifyInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU verify requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "verify")
+    let scenario = verify_plan.scenario().ok_or_else(|| {
+        backend_error("QEMU verify compare mode must use the artifact comparison path")
+    })?;
+    let config = production_qemu_lifecycle_config(backend)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = production_qemu_control_plane(config, scenario.scenario_form());
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_verify_workflow_async(
+        &client,
+        verify_plan,
+        Some(backend),
+        ergonomics_plan,
+    ))?;
+    finish_verify_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        verify_plan,
+        report,
+    )
 }
 
-pub(crate) fn reject_unwired_qemu_workflow(
-    backend: &ResolvedLocalBackend,
-    command: &'static str,
-) -> Result<BackendCommandOutcome, CliError> {
-    if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
-        return Err(backend_error(format!(
-            "local QEMU {command} requires the QEMU backend"
-        )));
-    }
-    Err(backend_error(format!(
-        "local QEMU {command} execution is unavailable: the live QEMU backend is not wired to \
-         this workflow; no in-process double fallback was executed (select `--backend double` \
-         explicitly for modeled execution)"
-    )))
+pub(crate) fn production_qemu_control_plane(
+    config: production_api::ProductionVmLifecycleConfig,
+    source: &crucible::ScenarioDefForm,
+) -> LifecycleControlPlane<
+    production_api::ProductionVmLifecycleLoop,
+    production_api::LifecycleLoopFactory<production_api::ProductionVmLifecycleLoop>,
+> {
+    let white_box_policies = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| (node.id.clone(), node.white_box))
+        .collect::<BTreeMap<_, _>>();
+    LifecycleControlPlane::new_with_fallible_source_factory(
+        "crucible-cli-qemu",
+        Vec::new(),
+        move |scenario, source, _seed| {
+            let source = source.ok_or_else(|| production_api::LifecycleApiError::LoopFactory {
+                message: String::from(
+                    "production QEMU lifecycle requires an inline scenario definition",
+                ),
+            })?;
+            production_api::build_production_vm_lifecycle_loop(scenario, source, &config)
+        },
+    )
+    .with_thin_replay_resume()
+    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone())
 }
 
-/// Boots one bounded live QEMU/plugin probe and returns its observed proof.
-pub(crate) fn run_live_qemu_backend_probe(
+pub(crate) fn production_qemu_lifecycle_config(
     backend: &ResolvedLocalBackend,
-) -> Result<production_api::ProductionPluginInstallReport, CliError> {
-    let ResolvedLocalBackend::Qemu { qemu, plugin, .. } = backend else {
-        return Err(backend_error("live QEMU probe requires the QEMU backend"));
+) -> Result<production_api::ProductionVmLifecycleConfig, CliError> {
+    let (qemu, plugin) = match backend {
+        ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => {
+            return Err(backend_error(
+                "production QEMU lifecycle requires the QEMU backend",
+            ));
+        }
     };
     let kernel = required_live_qemu_asset(
         "CRUCIBLE_KERNEL",
@@ -173,116 +416,47 @@ pub(crate) fn run_live_qemu_backend_probe(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
-    let run_directory = tempfile::TempDir::new()?;
-    prepare_live_qemu_root_overlay(qemu, &root_image, run_directory.path())?;
-    let mut config = production_api::ProductionPluginInstallConfig::new(
-        qemu,
-        plugin,
-        kernel,
-        root_image,
-        run_directory.path(),
-        production_api::ProductionGuestArchitecture::X86_64,
-    )
-    .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
-    .with_fingerprint(production_api::ProductionPluginSwitch::On);
-    if let Some(cmdline) = live_qemu_kernel_cmdline() {
-        config = config.with_kernel_cmdline(cmdline);
+    let mut config =
+        production_api::ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
+            .with_root_image_format(production_api::ProductionRootImageFormat::Raw);
+    if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
+        config = config.with_kernel_cmdline_prefix(kernel_cmdline);
     }
-    production_api::run_production_plugin_install_gate(&config).map_err(|error| {
-        backend_error(format!(
-            "live local QEMU/plugin execution failed after hermetic discovery: {error}"
-        ))
-    })
+    if let Some(initrd) = optional_live_qemu_asset(
+        "CRUCIBLE_INITRD",
+        option_env!("CRUCIBLE_AOS_INITRD"),
+        "initrd",
+    )? {
+        config = config.with_initrd(initrd);
+    }
+    Ok(config)
 }
 
-/// Runs a live backend probe for a production command.
-#[cfg(not(test))]
-pub(crate) fn run_live_qemu_backend_probe_for_command(
+pub(crate) fn append_qemu_control_plane_execution_proof(
+    outcome: &mut BackendCommandOutcome,
     backend: &ResolvedLocalBackend,
-) -> Result<Option<production_api::ProductionPluginInstallReport>, CliError> {
-    #[cfg(debug_assertions)]
-    if std::env::var_os("CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE").is_some() {
-        if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
-            return Err(backend_error("live QEMU probe requires the QEMU backend"));
-        }
-        return Ok(None);
-    }
-    run_live_qemu_backend_probe(backend).map(Some)
-}
-
-/// Keeps unit tests independent of bootable AOS fixture artifacts.
-#[cfg(test)]
-pub(crate) fn run_live_qemu_backend_probe_for_command(
-    backend: &ResolvedLocalBackend,
-) -> Result<Option<production_api::ProductionPluginInstallReport>, CliError> {
-    if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
-        return Err(backend_error("live QEMU probe requires the QEMU backend"));
-    }
-    Ok(None)
-}
-
-fn prepare_live_qemu_root_overlay(
-    qemu: &Path,
-    raw_root_image: &Path,
-    run_directory: &Path,
-) -> Result<(), CliError> {
-    let qemu_img = qemu.with_file_name("qemu-img");
-    validate_readable_file_artifact("QEMU image tool", &qemu_img)?;
-    let overlay = run_directory.join("crucible-root-overlay.qcow2");
-    let virtual_size = format!("{}B", std::fs::metadata(raw_root_image)?.len());
-    run_qemu_img(
-        &qemu_img,
-        "create the writable root overlay",
-        &[
-            std::ffi::OsStr::new("create"),
-            std::ffi::OsStr::new("-q"),
-            std::ffi::OsStr::new("-f"),
-            std::ffi::OsStr::new("qcow2"),
-            overlay.as_os_str(),
-            virtual_size.as_ref(),
-        ],
-    )
-}
-
-fn run_qemu_img(
-    qemu_img: &Path,
     operation: &'static str,
-    arguments: &[&std::ffi::OsStr],
-) -> Result<(), CliError> {
-    let output = std::process::Command::new(qemu_img)
-        .args(arguments)
-        .output()
-        .map_err(|source| backend_error(format!("failed to {operation}: {source}")))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(backend_error(format!(
-        "failed to {operation} with {}: {}",
-        output.status,
-        stderr.trim()
-    )))
-}
-
-fn required_live_qemu_asset(
-    environment_name: &'static str,
-    package_hint: Option<&'static str>,
-    label: &'static str,
-) -> Result<PathBuf, CliError> {
-    let path = std::env::var_os(environment_name)
-        .map(PathBuf::from)
-        .or_else(|| package_hint.map(PathBuf::from))
-        .ok_or_else(|| {
-            backend_error(format!(
-                "live local QEMU execution requires the AOS {label}; set {environment_name} or use the packaged CLI closure"
-            ))
-        })?;
-    validate_readable_file_artifact(label, &path)?;
-    Ok(path)
-}
-
-fn live_qemu_kernel_cmdline() -> Option<String> {
-    std::env::var("CRUCIBLE_KERNEL_CMDLINE")
-        .ok()
-        .or_else(|| option_env!("CRUCIBLE_AOS_KERNEL_CMDLINE").map(str::to_owned))
+) {
+    let (qemu_build_id, plugin_abi) = match backend {
+        ResolvedLocalBackend::Qemu {
+            qemu_build_id,
+            plugin_abi,
+            ..
+        } => (qemu_build_id, plugin_abi),
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => return,
+    };
+    outcome.stdout.push(format!(
+        "qemu-live\toperation={operation}\tqemu_build_id={qemu_build_id}\tplugin_abi={plugin_abi}"
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("qemu"),
+        kind: String::from("live_backend_execution"),
+        summary: format!(
+            "operation={operation} qemu_build_id={qemu_build_id} plugin_abi={plugin_abi}"
+        ),
+    });
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }

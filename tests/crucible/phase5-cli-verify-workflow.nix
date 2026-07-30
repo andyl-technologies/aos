@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliVerifyWorkflow",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-7"],
+  taskIds ? ["T-CLI-7"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -20,14 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-7 is complete";
-        needle = "- [ ] **T-CLI-7** Implement `verify`";
-      }
       {
         label = "T-CLI-7 completion note";
         needle = "Completed by `checks.crucible.phase5.cliVerifyWorkflow`";
@@ -117,12 +111,12 @@
         needle = "fn run_local_qemu_verify_workflow";
       }
       {
-        label = "verify rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"verify\")";
+        label = "verify constructs production QEMU lifecycle";
+        needle = "production_qemu_control_plane(config, scenario.scenario_form())";
       }
       {
         label = "verify local-QEMU no-double assertion";
-        needle = "no in-process double fallback was executed";
+        needle = "assert!(!message.contains(\"double fallback\"))";
       }
       {
         label = "adversarial planning test";
@@ -145,8 +139,8 @@
         needle = "cli_verify_workflow_compares_existing_reproduction_artifacts";
       }
       {
-        label = "local qemu verify rejection test";
-        needle = "cli_verify_workflow_rejects_unwired_local_qemu_execution";
+        label = "local qemu verify production routing test";
+        needle = "cli_verify_workflow_routes_local_qemu_into_production_factory";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

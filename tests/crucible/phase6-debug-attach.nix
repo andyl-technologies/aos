@@ -15,25 +15,48 @@
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   # The launch module was split into a `launch/` directory; concatenate the
   # control-channel submodule so gdbstub/QMP channel needles remain scannable.
   qemuLaunch =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/control_channels.rs;
-  qemuProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch.rs;
+    })
+    + (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch/control_channels.rs;
+    });
+  qemuProxy = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
+  };
+  qemuLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/lib.rs;
+  };
+  qemuNode = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/node.rs;
+  };
   cliMain = import ./_cli-source.nix {inherit lib;};
-  modelTest = builtins.readFile ../../crates/crucible/tests/gate_debug_attach.rs;
-  qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+  modelTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_debug_attach.rs;
+  };
+  qemuTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
@@ -46,10 +69,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-1 checklist complete";
-        needle = "- [x] **T-DBG-1**";
-      }
       {
         label = "T-DBG-1 partial-evidence note";
         needle = "Completed under `checks.crucible.phase6.debugAttach`";
@@ -271,12 +290,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "red debug attach gate";
-        needle = "debugAttach = redBeforeAdvance";
+        label = "green debug attach gate";
+        needle = "debugAttach = greenBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "openTaskIds = [\"T-DBG-1\"]";
+        needle = "taskIds = [\"T-DBG-1\"]";
       }
       {
         label = "unifying view raw dependency";

@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenCallbackApis = [
     "Instant::now"
     "SystemTime::now"
@@ -60,10 +59,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-13 is closed by live QEMU callback integration";
-        needle = "- [x] **T-PLUG-13**";
-      }
       {
         label = "T-PLUG-13 cites its live completion gate";
         needle = "Completed by `checks.crucible.phase2.qemuLive9pIo`";

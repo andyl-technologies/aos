@@ -170,7 +170,10 @@ fn render_is_order_independent() {
         canonical_baseline, canonical_shuffled,
         "render output depends on input order — determinism violated"
     );
-    assert_eq!(canonical_shuffled, GOLDEN, "shuffled render must still match the golden");
+    assert_eq!(
+        canonical_shuffled, GOLDEN,
+        "shuffled render must still match the golden"
+    );
 }
 
 #[test]

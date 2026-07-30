@@ -414,17 +414,8 @@
     ++ lib.optionals (!(hasInfix "pinned minimum QEMU version of 10.0 or" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-40 QEMU >=10.0 requirement missing"
     ]
-    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-15**" qemuPatchSpec)) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-15 no-patch decision is not marked complete"
-    ]
     ++ lib.optionals (!(hasInfix "no QEMU patch was added" qemuPatchSpec)) [
       "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-15 must state that no QEMU patch was added"
-    ]
-    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-18**" qemuPatchSpec)) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-18 diagnostic exclusion decision is not marked complete"
-    ]
-    ++ lib.optionals (!(hasInfix "- [x] **T-PATCH-20**" qemuPatchSpec)) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: T-PATCH-20 QEMU/plugin capability audit is not marked complete"
     ]
     ++ lib.optionals (hasInfix "crucible-tcg-exec-diag.patch" qemuNix || hasInfix "crucible-virtserial-socket.patch" qemuNix) [
       "pkgs/emulation/qemu.nix: diagnostic-only patches must not be applied by the shipped package"

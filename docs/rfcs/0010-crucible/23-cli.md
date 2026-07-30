@@ -956,7 +956,7 @@ branch on the verdict without parsing output:
   registration are session-owned APIs. The gate scans the production command
   modules and rejects direct checkpoint materialization in addition to checking
   the plan model.
-- [ ] **T-CLI-3** Implement backend selection and the local/remote split
+- [x] **T-CLI-3** Implement backend selection and the local/remote split
   (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
   [CLI-8]; spec §3.
@@ -1023,7 +1023,7 @@ branch on the verdict without parsing output:
   process query, and the plugin must be an ELF shared object exposing
   `qemu_plugin_install` and `qemu_plugin_version`. Adversarial tests prove text
   files carrying plausible marker strings cannot impersonate either artifact.
-- [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
+- [x] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
   `--interactive` over the session command set, `--until`/budgets). — satisfies
   [CLI-16]; spec §6.
   Completed under `checks.crucible.phase5.cliRunWorkflow`: `run` parses canonical
@@ -1036,7 +1036,7 @@ branch on the verdict without parsing output:
   status, materializes real terminal savepoint handles for `--save-on`, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
-- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+- [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
   fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
   satisfies [CLI-17]; spec §7.
   Completed by `checks.crucible.phase5.cliVerifyWorkflow`: the CLI plans and
@@ -1173,7 +1173,7 @@ branch on the verdict without parsing output:
   backend-agnostic prefix, independently materialized child session, and
   standalone child artifact prove the child does not depend on the parent
   process.
-- [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
+- [x] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
   satisfies [CLI-22]; spec §12.
@@ -1390,7 +1390,7 @@ branch on the verdict without parsing output:
     linked string table, accepts only defined globally visible symbols, and the
     backend-selection gate executes all three specified negative controls.
 
-- [ ] **T-CLI-20** Make the backend-selection evidence falsifiable: derive the
+- [x] **T-CLI-20** Make the backend-selection evidence falsifiable: derive the
   local/remote proof predicates from observed execution rather than from literals
   set on the same construction path, and remove the environment escape hatches
   that disable the live probe in the tests that certify it.
@@ -1413,3 +1413,12 @@ branch on the verdict without parsing output:
   - Gate: `checks.crucible.phase5.cliBackendSelection` and
     `.cliVerifyWorkflow` MUST fail when two probe reports differ and when the
     recorded build identity does not match the discovered binary.
+  - Completed by `checks.crucible.phase5.cliBackendSelection`: backend command
+    runners now return observed route evidence separately from the selection
+    plan, and dispatch validates that evidence only after the local or remote
+    execution path returns. Live-QEMU selftest probes use an injected runner
+    boundary whose production implementation always boots the packaged backend;
+    identical reductions must produce identical probe evidence. The debug-only
+    environment bypass and the `cfg(test)` empty-probe implementation were
+    removed. Focused negative controls inject a mismatched QEMU build identity
+    and divergent probe fingerprints, and both fail closed.

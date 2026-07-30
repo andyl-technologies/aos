@@ -13,7 +13,7 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   pluginManifest = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
@@ -25,13 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-4 is complete";
-        needle = "- [x] **T-HARN-4**";
-      }
       {
         label = "T-HARN-4 completion note";
         needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
@@ -242,11 +237,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

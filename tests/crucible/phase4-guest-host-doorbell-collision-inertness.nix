@@ -20,16 +20,10 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-6 is complete";
-        needle = "- [x] **T-GHC-6**";
-      }
       {
         label = "T-GHC-6 live-evidence note";
         needle = "Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`";

@@ -22,13 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 checklist complete";
-        needle = "- [x] **T-CLI-14** Implement `serve`";
-      }
       {
         label = "T-CLI-14 max-sessions completion note";
         needle = "`checks.crucible.phase5.cliServeMaxSessions`";

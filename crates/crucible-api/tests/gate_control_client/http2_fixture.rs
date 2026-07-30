@@ -800,7 +800,8 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
-        | LifecycleApiError::ActorFailed { .. } => typed_rpc_status_response(
+        | LifecycleApiError::ActorFailed { .. }
+        | LifecycleApiError::LoopFactory { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
             "internal",
@@ -1526,6 +1527,10 @@ pub(super) fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, Str
         "event-log-length" => {
             reject_extra_query_field(fields.next())?;
             Ok(QueryKind::EventLogLength)
+        }
+        "search-frontier" => {
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::SearchFrontier)
         }
         "execution-fingerprint" => {
             let node = parse_hex_string_field(fields.next(), "query fingerprint node")?;
@@ -2332,60 +2337,7 @@ pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
     )
 }
 
-pub(super) fn resume_session_request(seed: u64) -> ResumeSessionRequest {
-    let mut scenario = crucible::happy_path_scenario()
-        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
-        .scenario;
-    if scenario.seed() != Seed::from_u64(seed) {
-        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
-    }
-    let scenario_def = scenario.scenario_def();
-    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 1 },
-        order: Vec::new(),
-    }));
-    let configuration = Configuration {
-        def: scenario_def,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
-    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
-}
+#[path = "http2_fixture/scenario.rs"]
+mod scenario;
 
-pub(super) fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
-    ScenarioDefForm::from_components_with_app_random_draw_cap(
-        scenario.world(),
-        scenario.plan(),
-        scenario.properties(),
-        seed,
-        scenario.app_random_draw_cap(),
-    )
-    .unwrap_or_else(|error| panic!("test scenario should rebuild with seed: {error}"))
-}
-
-pub(super) fn checkpoint_for_configuration(
-    configuration: &Configuration,
-    frontier: VirtualTime,
-) -> Checkpoint {
-    let parent = if configuration.schedule.is_empty() {
-        None
-    } else {
-        let prefix = configuration
-            .schedule
-            .prefix(configuration.schedule.len().saturating_sub(1))
-            .unwrap_or_else(|error| panic!("test schedule prefix should exist: {error}"));
-        Some(Configuration {
-            def: configuration.def.clone(),
-            schedule: prefix,
-        })
-    };
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        parent.as_ref(),
-        frontier,
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .unwrap_or_else(|error| panic!("test checkpoint should record configuration: {error}"))
-}
+pub(crate) use scenario::*;

@@ -30,8 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible/src/model.rs" model [
       {
@@ -268,10 +266,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-4 checklist complete";
-        needle = "- [x] **T-TIME-4**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

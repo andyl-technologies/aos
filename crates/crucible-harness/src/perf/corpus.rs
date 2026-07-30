@@ -73,6 +73,7 @@ pub fn canonical_perf_bench_input() -> PerfBenchInput {
     let baseline = canonical_perf_baseline();
     PerfBenchInput {
         corpus: canonical_bench_corpus(),
+        observed_fuzz_throughput: baseline.fuzz_throughput,
         cumulative_coverage: baseline.cumulative_coverage,
         baseline,
         host_parallelism_admissions: canonical_host_parallelism_admissions(),

@@ -347,7 +347,10 @@ impl SystemRoots {
     /// treats an unmet token as terminal (no auto-fetch, no registry
     /// suggestions).
     pub fn capability_setters(&self, token: &str) -> &[CapabilitySetter] {
-        self.capabilities.get(token).map(Vec::as_slice).unwrap_or(&[])
+        self.capabilities
+            .get(token)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Returns the number of owned shared roots.
@@ -418,14 +421,31 @@ mod tests {
         let owner = roots.owner("firewall").expect("owner");
         assert_eq!(owner.package, "firewall");
         assert_eq!(owner.contributable, vec!["allowedTCPPorts".to_string()]);
-        assert_eq!(roots.capability_setters("system.capabilities.dns-resolver").len(), 1);
+        assert_eq!(
+            roots
+                .capability_setters("system.capabilities.dns-resolver")
+                .len(),
+            1
+        );
         assert!(roots.owner("nginx").is_none());
     }
 
     #[test]
     fn two_owners_of_one_root_conflict() {
-        let a = module(&[], vec![owned("firewall", &[])], vec![], &[], ModuleAbiCompat { min: 1, max: 2 });
-        let b = module(&[], vec![owned("firewall", &[])], vec![], &[], ModuleAbiCompat { min: 1, max: 2 });
+        let a = module(
+            &[],
+            vec![owned("firewall", &[])],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let b = module(
+            &[],
+            vec![owned("firewall", &[])],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
         let err = SystemRoots::build([resolved("fw-a", &a), resolved("fw-b", &b)])
             .expect_err("exclusivity");
         assert!(
@@ -442,8 +462,20 @@ mod tests {
     fn owned_root_shadowing_a_package_name_is_rejected() {
         // `web-extras` owns root `nginx`, but a package literally named `nginx`
         // is also installed: its private root would be shadowed.
-        let extras = module(&[], vec![owned("nginx", &[])], vec![], &[], ModuleAbiCompat { min: 1, max: 2 });
-        let nginx = module(&["nginx.enable"], vec![], vec![], &[], ModuleAbiCompat { min: 1, max: 2 });
+        let extras = module(
+            &[],
+            vec![owned("nginx", &[])],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let nginx = module(
+            &["nginx.enable"],
+            vec![],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
         let err = SystemRoots::build([resolved("web-extras", &extras), resolved("nginx", &nginx)])
             .expect_err("shadowing");
         assert!(
@@ -481,7 +513,10 @@ mod tests {
         assert!(
             matches!(
                 &err,
-                SystemRootsError::Contributable { reason: ContributableError::NoOwner, .. }
+                SystemRootsError::Contributable {
+                    reason: ContributableError::NoOwner,
+                    ..
+                }
             ),
             "{err}"
         );

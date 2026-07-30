@@ -1351,7 +1351,7 @@ application of explorer-supplied preemption decisions
   queued/request controls, deferred-drive responsiveness, and control-only quanta
   with no runnable node all apply only at quantum boundaries and within the
   bound.
-- [ ] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
+- [x] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
   node's instruction budget among its vCPUs by `rr_switch_quantum` in fixed
   ascending rotation, plugin-internal and host-timing-independent, with the node
   ceiling unchanged (one ceiling per RUN). — satisfies [SCHED-45]; spec §8.16.
@@ -1366,7 +1366,7 @@ application of explorer-supplied preemption decisions
   nodes use fixed ascending rotation by vCPU index at deterministic RR
   boundaries, and the single-vCPU case consumes the whole RUN budget in one
   slice without publishing any extra ceilings.
-- [ ] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
+- [x] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
   within the bounded `[deadline, horizon]` window, recorded in total order, never
   moving a point past the node's authorized ceiling (Contract B / conservative
   PDES). — satisfies [SCHED-46]; spec §8.16.

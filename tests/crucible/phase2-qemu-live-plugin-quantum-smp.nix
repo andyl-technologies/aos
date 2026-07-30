@@ -26,13 +26,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginDoc [
-      {
-        label = "T-PLUG-24 checklist complete";
-        needle = "- [x] **T-PLUG-24**";
-      }
       {
         label = "live SMP idle completion gate";
         needle = "checks.crucible.phase2.qemuLivePluginQuantumSmp";

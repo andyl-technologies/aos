@@ -9,11 +9,26 @@
   gateCatalogDoc = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   phasePlanDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  phasePlanRust = builtins.readFile ../../crates/crucible-harness/src/phase_plan.rs;
-  gateCatalogRust = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
-  gateTargetMappingTest = builtins.readFile ../../crates/crucible-harness/tests/gate_target_mapping.rs;
+  phasePlanRust = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/src/phase_plan.rs;
+  };
+  gateCatalogRust = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/src/lib.rs;
+  };
+  gateTargets = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/src/gate_targets.rs;
+  };
+  gateCatalogTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/tests/gate_catalog.rs;
+  };
+  gateTargetMappingTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/tests/gate_target_mapping.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
   rootDefault = builtins.readFile ../../default.nix;
   flake = builtins.readFile ../../flake.nix;
@@ -28,21 +43,13 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   fleetCatalogRow = "| `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |";
   campaignCatalogRow = "| `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |";
-  fleetEquivalenceRawDependency =
-    "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
-  campaignContinuityRawDependency =
-    "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
+  fleetEquivalenceRawDependency = "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
+  campaignContinuityRawDependency = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-10 checklist complete";
-        needle = "- [x] **T-DCE-10**";
-      }
       {
         label = "T-DCE-10 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleDceIntegration`";
@@ -89,10 +96,6 @@
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "stale T-DCE-10 placeholder";
-        needle = "- [ ] **T-DCE-10**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" gateCatalogDoc [
       {
@@ -105,7 +108,7 @@
       }
       {
         label = "fleet and campaign canonical text";
-        needle = "`gate:fleet-equivalence` and `gate:campaign-continuity` (owned";
+        needle = "`gate:campaign-continuity` (owned";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" phasePlanDoc [

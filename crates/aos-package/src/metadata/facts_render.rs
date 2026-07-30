@@ -60,7 +60,10 @@ fn nix_str_list(values: &[String]) -> String {
     if values.is_empty() {
         return "[ ]".to_string();
     }
-    let items: Vec<String> = values.iter().map(|v| format!("\"{}\"", nix_escape(v))).collect();
+    let items: Vec<String> = values
+        .iter()
+        .map(|v| format!("\"{}\"", nix_escape(v)))
+        .collect();
     format!("[ {} ]", items.join(" "))
 }
 
@@ -73,7 +76,9 @@ fn nix_str_list(values: &[String]) -> String {
 /// `facts_hash` contract directly.
 pub fn render_host_facts_nix(facts: &Facts) -> String {
     let mut out = String::new();
-    out.push_str("# /run/aos-eval/host-facts.nix — rendered from facts.json, not operator-authored.\n");
+    out.push_str(
+        "# /run/aos-eval/host-facts.nix — rendered from facts.json, not operator-authored.\n",
+    );
     out.push_str("{\n");
     out.push_str("  host.facts = {\n");
 
@@ -103,7 +108,10 @@ pub fn render_host_facts_nix(facts: &Facts) -> String {
     }
 
     if !facts.disk_ids.is_empty() {
-        out.push_str(&format!("{ind}diskIds = {};\n", nix_str_list(&facts.disk_ids)));
+        out.push_str(&format!(
+            "{ind}diskIds = {};\n",
+            nix_str_list(&facts.disk_ids)
+        ));
     }
 
     out.push_str("  };\n");

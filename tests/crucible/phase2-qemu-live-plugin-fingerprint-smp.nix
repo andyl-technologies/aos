@@ -26,8 +26,8 @@
   # which waits on the open idle-warp / device-VMState defects.
   smpVcpus ? "4",
   memoryMib ? "256",
-  taskIds ? ["T-TIME-9" "T-QEMU-16" "T-PLUG-26"],
-  openTaskIds ? ["T-PLUG-24"],
+  taskIds ? ["T-TIME-9" "T-QEMU-16" "T-PLUG-24" "T-PLUG-26"],
+  openTaskIds ? [],
   timeoutSecs ? "300",
   secondRunLoad ? "1",
   probeIcount ? "6000000",

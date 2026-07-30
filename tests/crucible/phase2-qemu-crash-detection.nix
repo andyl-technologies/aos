@@ -21,13 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-9 checklist complete";
-        needle = "- [x] **T-QEMU-9**";
-      }
       {
         label = "QEMU-32 crash detection requirement";
         needle = "**[QEMU-32]** The host MUST detect an unexpected child exit";

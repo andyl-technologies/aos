@@ -7,6 +7,15 @@
   patchName = "0031-crucible-det-rng-delivery.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
   patchSource = builtins.readFile (patchDir + "/${patchName}");
+  patchSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
+  prerequisitePatchNames =
+    builtins.filter
+    (name: builtins.lessThan name patchName)
+    patchSeries.patchFiles;
+  applyPrerequisitePatches =
+    lib.concatMapStringsSep "\n"
+    (name: "patch --batch --fuzz=0 -p1 < ${patchDir + "/${name}"}")
+    prerequisitePatchNames;
 
   rngProbe = pkgs.mkDerivation {
     pname = "crucible-phase1-det-rng-delivery-guest-probe";
@@ -183,6 +192,8 @@
       det_rng_delivery_stock_vs_patched_discriminated=true
       det_rng_delivery_plain_icount_upstream_equivalent=true
       det_rng_actual_virtio_request=passed
+      det_rng_repeated_payload_identical=true
+      det_rng_sim_bottom_half_suppressed=true
     '';
 
   # Behavioral probe: boot a minimal guest under the sim accelerator and perform
@@ -209,48 +220,58 @@
         exit 1
       }
 
-      stdout="$out/detrng.stdout"
-      stderr="$out/detrng.stderr"
-      serial="$out/detrng.serial"
       vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
       if [ -z "$vmlinuz" ]; then
         fail "no vmlinuz under ${pkgs.linux}/boot"
       fi
-      rm -f "$stdout" "$stderr" "$serial"
 
-      timeout 300 "$qemu" \
-        -nodefaults \
-        -no-user-config \
-        -display none \
-        -monitor none \
-        -machine q35 \
-        -accel sim,thread=single \
-        -icount shift=0,sleep=off,align=off \
-        -cpu qemu64,-rdrand,-rdseed \
-        -m 128 \
-        -smp 1 \
-        -rtc base=2026-01-01T00:00:00,clock=vm \
-        -seed 0x0010c031 \
-        -object rng-builtin,id=det-rng0 \
-        -device virtio-rng-pci,rng=det-rng0,id=det-vrng0 \
-        -kernel "$vmlinuz" \
-        -initrd ${rngProbeInitramfs}/initrd.img \
-        -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
-        -chardev file,id=serial0,path="$serial" \
-        -serial chardev:serial0 \
-        -no-reboot \
-        > "$stdout" 2> "$stderr" || {
-          cat "$serial" >&2 || true
-          cat "$stderr" >&2 || true
-          fail "sim virtio-rng request guest failed"
-        }
+      run_guest() {
+        run="$1"
+        stdout="$out/detrng-$run.stdout"
+        stderr="$out/detrng-$run.stderr"
+        serial="$out/detrng-$run.serial"
+        payload="$out/detrng-$run.payload"
+        rm -f "$stdout" "$stderr" "$serial" "$payload"
 
-      tr -d '\r' < "$serial" \
-        | grep -q '^VIRTIO_RNG_BYTES=[0-9a-f]\{64\}$' \
-        || fail "guest did not receive a 32-byte virtio-rng payload"
-      tr -d '\r' < "$serial" \
-        | grep -q '^VIRTIO_RNG_REQUEST:PASS$' \
-        || fail "guest did not service a virtio-rng request"
+        timeout 300 "$qemu" \
+          -nodefaults \
+          -no-user-config \
+          -display none \
+          -monitor none \
+          -machine q35 \
+          -accel sim,thread=single \
+          -icount shift=0,sleep=off,align=off \
+          -cpu qemu64,-rdrand,-rdseed \
+          -m 128 \
+          -smp 1 \
+          -rtc base=2026-01-01T00:00:00,clock=vm \
+          -seed 0x0010c031 \
+          -object rng-builtin,id=det-rng0 \
+          -device virtio-rng-pci,rng=det-rng0,id=det-vrng0 \
+          -kernel "$vmlinuz" \
+          -initrd ${rngProbeInitramfs}/initrd.img \
+          -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
+          -chardev file,id=serial0,path="$serial" \
+          -serial chardev:serial0 \
+          -no-reboot \
+          > "$stdout" 2> "$stderr" || {
+            cat "$serial" >&2 || true
+            cat "$stderr" >&2 || true
+            fail "sim virtio-rng request guest run $run failed"
+          }
+
+        tr -d '\r' < "$serial" \
+          | grep '^VIRTIO_RNG_BYTES=[0-9a-f]\{64\}$' > "$payload" \
+          || fail "guest run $run did not receive a 32-byte virtio-rng payload"
+        tr -d '\r' < "$serial" \
+          | grep -q '^VIRTIO_RNG_REQUEST:PASS$' \
+          || fail "guest run $run did not service a virtio-rng request"
+      }
+
+      run_guest 1
+      run_guest 2
+      cmp -s "$out/detrng-1.payload" "$out/detrng-2.payload" \
+        || fail "identical sim runs produced different virtio-rng payloads"
     '';
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -283,6 +304,18 @@
     {
       label = "builtin drain registration";
       needle = "rbc->drain_requests = rng_builtin_drain_requests;";
+    }
+    {
+      label = "per-request sim rng sequence";
+      needle = "qemu_guest_getrandom_sim_rng_nofail(req->data, req->size);";
+    }
+    {
+      label = "per-request sim rng initialization";
+      needle = "g_rand_new_with_seed_array(sim_rng_seed,";
+    }
+    {
+      label = "run-seed capture";
+      needle = "memcpy(sim_rng_seed, &seed, sizeof(seed));";
     }
     {
       label = "icount-gated synchronous drain";
@@ -321,15 +354,17 @@ in
       inherit patchSource;
       passAsFile = ["patchSource"];
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.diffutils
-        pkgs.gawk
-        pkgs.grep
-        pkgs.patch
-        pkgs.tar
-        pkgs.xz
-      ] ++ lib.optionals (qemuPackage != null) [qemuPackage];
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.diffutils
+          pkgs.gawk
+          pkgs.grep
+          pkgs.patch
+          pkgs.tar
+          pkgs.xz
+        ]
+        ++ lib.optionals (qemuPackage != null) [qemuPackage];
 
       phases = [
         {
@@ -491,6 +526,7 @@ in
                 RngBackend backend = { .klass = &klass };
                 VirtioRngFrontend frontend = { 0 };
                 unsigned callbacks_before_bottom_half;
+                unsigned expected_bottom_halves;
                 bool expect_inline;
 
                 if (argc != 4) {
@@ -500,13 +536,14 @@ in
                 fixture_accel_name = argv[1];
                 fixture_icount_enabled = strcmp(argv[2], "1") == 0;
                 expect_inline = strcmp(argv[3], "1") == 0;
+                expected_bottom_halves = expect_inline ? 0 : 1;
 
                 rng_backend_request_entropy(&backend, 16,
                                             virtio_rng_receive_entropy,
                                             &frontend);
                 callbacks_before_bottom_half = frontend.callbacks;
 
-                if (backend.scheduled_bottom_halves != 1 ||
+                if (backend.scheduled_bottom_halves != expected_bottom_halves ||
                     (callbacks_before_bottom_half == 1) != expect_inline) {
                     fputs("wrong pre-bottom-half delivery state\n", stderr);
                     return 1;
@@ -529,6 +566,8 @@ in
                 printf("icount=%s\n", fixture_icount_enabled ? "on" : "off");
                 printf("delivery_before_bottom_half=%s\n",
                        callbacks_before_bottom_half == 1 ? "true" : "false");
+                printf("bottom_half_scheduled=%s\n",
+                       backend.scheduled_bottom_halves == 1 ? "true" : "false");
                 puts("virtio_rng_request_serviced=true");
                 puts("virtio_rng_payload=a0..af");
                 return 0;
@@ -554,10 +593,15 @@ in
 
             (
               cd "$source_dir"
+              ${applyPrerequisitePatches}
               patch --batch --fuzz=0 -p1 < "$patchSourcePath"
               grep -F -q 'void (*drain_requests)(RngBackend *s);' include/system/rng.h
               grep -F -q 'static void rng_builtin_drain_requests(RngBackend *b)' backends/rng-builtin.c
               grep -F -q 'rbc->drain_requests = rng_builtin_drain_requests;' backends/rng-builtin.c
+              grep -F -q 'qemu_guest_getrandom_sim_rng_nofail(req->data, req->size);' backends/rng-builtin.c
+              grep -F -q 'void qemu_guest_getrandom_sim_rng_nofail(void *buf, size_t len)' util/guest-random.c
+              grep -F -q 'g_rand_new_with_seed_array(sim_rng_seed,' util/guest-random.c
+              grep -F -q 'memcpy(sim_rng_seed, &seed, sizeof(seed));' util/guest-random.c
               grep -F -q 'if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0 &&' backends/rng.c
               grep -F -q '#include "qemu/accel.h"' backends/rng.c
               grep -F -q '#include "system/cpu-timers.h"' backends/rng.c
@@ -583,6 +627,7 @@ in
             diff -u "$out/stock-sim-no-icount.txt" "$out/patched-sim-no-icount.txt"
             grep -q '^delivery_before_bottom_half=false$' "$out/stock-sim.txt"
             grep -q '^delivery_before_bottom_half=true$' "$out/patched-sim.txt"
+            grep -q '^bottom_half_scheduled=false$' "$out/patched-sim.txt"
             grep -q '^virtio_rng_request_serviced=true$' "$out/patched-sim.txt"
 
             ${qemuRuntimeScript}
@@ -601,6 +646,7 @@ in
             sim_without_icount_matches_upstream=true
             exact_rng_backend_request_function_exercised=true
             virtio_rng_request_serviced=true
+            sim_bottom_half_suppressed=true
             seal_hop=backend
             paired_dispatch_seal=0032-crucible-det-virtio-ioeventfd.patch
             e2e_witness=checks.crucible.phase0.s6KaslrAslr

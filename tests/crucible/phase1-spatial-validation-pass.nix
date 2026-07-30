@@ -27,13 +27,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-21 checked off";
-        needle = "- [x] **T-SPAT-21**";
-      }
       {
         label = "T-SPAT-21 completion names matrix test";
         needle = "`scenario_def_form_rejects_well_formedness_matrix_before_hashing`";

@@ -12,8 +12,8 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   replayOracle = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -21,13 +21,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-10 checked off";
-        needle = "- [x] **T-EXEC-10**";
-      }
       {
         label = "T-EXEC-10 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `NodeBlobRef`";

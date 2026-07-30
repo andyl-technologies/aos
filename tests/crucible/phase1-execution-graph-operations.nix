@@ -12,12 +12,11 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   failures =
     failuresFor "crates/crucible/src/model.rs" model [
@@ -107,10 +106,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-13 checked off";
-        needle = "- [x] **T-EXEC-13**";
-      }
       {
         label = "T-EXEC-13 completion note";
         needle = "Completed by `crates/crucible/src/model.rs`: `TemporalGraph::save_checkpoint`";

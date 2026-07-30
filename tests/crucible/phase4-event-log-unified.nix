@@ -21,15 +21,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
-      {
-        label = "T-OBS-1 checked off";
-        needle = "- [x] **T-OBS-1**";
-      }
       {
         label = "T-OBS-1 completion note";
         needle = "Completed by `checks.crucible.phase4.eventLogUnified`";

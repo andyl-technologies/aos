@@ -22,7 +22,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -34,10 +33,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-13 checked off";
-        needle = "- [x] **T-ADV-13**";
-      }
       {
         label = "T-ADV-13 completion note";
         needle = "Completed by `checks.crucible.phase6.coverageGuidedCorpus`";

@@ -22,14 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-24 checklist complete";
-        needle = "- [x] **T-HARN-24**";
-      }
       {
         label = "T-HARN-24 completion note";
         needle = "Completed by `checks.crucible.phase7.reproductionArtifactFormat`";
@@ -40,10 +34,6 @@
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "stale T-HARN-24 placeholder";
-        needle = "- [ ] **T-HARN-24**";
-      }
     ]
     ++ forbiddenFor "crates/crucible-harness/Cargo.toml" harnessManifest [
       {

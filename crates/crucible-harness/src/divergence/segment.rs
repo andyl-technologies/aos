@@ -121,6 +121,7 @@ where
 /// Returns [`SegmentedDivergenceBisectionError`] when segment counts are missing
 /// or zero, a segment replay fails, ordinary divergence bisection fails, or a
 /// segment count changes the located divergence coordinate.
+// crucible-lint: allow rust-allow -- replay inputs remain explicit so callers cannot accidentally swap left/right state or omit checkpoint validation material.
 #[allow(clippy::too_many_arguments)]
 pub fn bisect_diverging_runs_with_segment_replay<State, ReplayError, Replay, Dump>(
     left: &FingerprintStream,

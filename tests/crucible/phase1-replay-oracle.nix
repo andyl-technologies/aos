@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-9" "T-TEMP-11"],
-  openTaskIds ? ["T-EXEC-11" "T-TEMP-7"],
+  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -35,8 +35,6 @@
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible/src/model.rs" model [
@@ -840,28 +838,8 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-18 checklist complete";
-        needle = "- [x] **T-DET-18**";
-      }
-      {
-        label = "T-DET-21 checklist complete";
-        needle = "- [x] **T-DET-21**";
-      }
-      {
-        label = "T-DET-27 checklist complete";
-        needle = "- [x] **T-DET-27**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-12 checklist complete";
-        needle = "- [x] **T-HARN-12**";
-      }
-      {
-        label = "T-HARN-13 checklist complete";
-        needle = "- [x] **T-HARN-13**";
-      }
       {
         label = "T-HARN-13 completion names sampling config";
         needle = "`ReplayOracleSamplingConfig`";
@@ -893,10 +871,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
-        label = "T-PAT-4 checklist complete";
-        needle = "- [x] **T-PAT-4**";
-      }
-      {
         label = "T-PAT-4 completion names materialization policy";
         needle = "`crucible::MaterializationPolicy`";
       }
@@ -914,27 +888,11 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
-      {
-        label = "T-EXEC-4 checklist complete";
-        needle = "- [x] **T-EXEC-4**";
-      }
-      {
-        label = "T-EXEC-11 checklist complete";
-        needle = "- [ ] **T-EXEC-11**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" (builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md) [
       {
-        label = "T-TEMP-3 checklist complete";
-        needle = "- [x] **T-TEMP-3**";
-      }
-      {
         label = "T-TEMP-3 completion names replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
-      }
-      {
-        label = "T-TEMP-4 checklist complete";
-        needle = "- [x] **T-TEMP-4**";
       }
       {
         label = "T-TEMP-4 completion names materialization policy";
@@ -945,20 +903,12 @@
         needle = "`evict_fat_checkpoint_to_thin`";
       }
       {
-        label = "T-TEMP-5 checklist complete";
-        needle = "- [x] **T-TEMP-5**";
-      }
-      {
         label = "T-TEMP-5 completion names savevm hedge";
         needle = "`crucible::SavevmCompletenessHedge`";
       }
       {
         label = "T-TEMP-5 completion names thin replay fallback";
         needle = "`thin_replay_until_full_s3`";
-      }
-      {
-        label = "T-TEMP-7 checklist complete";
-        needle = "- [ ] **T-TEMP-7**";
       }
       {
         label = "T-TEMP-7 names cached snapshot admission";
@@ -969,16 +919,8 @@
         needle = "`TemporalGraph::validate_cached_snapshots_with_replay_oracle`";
       }
       {
-        label = "T-TEMP-9 checklist complete";
-        needle = "- [x] **T-TEMP-9**";
-      }
-      {
         label = "T-TEMP-9 completion names replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
-      }
-      {
-        label = "T-TEMP-11 checklist complete";
-        needle = "- [x] **T-TEMP-11**";
       }
       {
         label = "T-TEMP-11 completion names replay operation";

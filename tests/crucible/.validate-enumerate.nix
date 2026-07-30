@@ -14,18 +14,38 @@
     );
   in
     if !kind.success
-    then [{inherit path; error = true;}]
+    then [
+      {
+        inherit path;
+        error = true;
+      }
+    ]
     else if kind.value == "drv"
     then let
       d = builtins.tryEval v.drvPath;
     in
       if d.success
-      then [{inherit path; drv = d.value;}]
-      else [{inherit path; error = true;}]
+      then [
+        {
+          inherit path;
+          drv = d.value;
+        }
+      ]
+      else [
+        {
+          inherit path;
+          error = true;
+        }
+      ]
     else if kind.value == "set"
     then
       if depth >= 5
-      then [{inherit path; tooDeep = true;}]
+      then [
+        {
+          inherit path;
+          tooDeep = true;
+        }
+      ]
       else
         builtins.concatMap
         (name: walk (depth + 1) "${path}.${name}" v.${name})

@@ -24,7 +24,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
@@ -33,10 +32,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-1 is complete";
-        needle = "- [x] **T-PLUG-1**";
-      }
       {
         label = "plugin owns callbacks";
         needle = "The plugin MUST own the device and channel callbacks";

@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginSetupCompletion",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-17"],
+  taskIds ? ["T-PLUG-17"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -20,7 +20,7 @@
   # The setup-region mmap surface was split out of lib.rs into
   # mapped_setup_region.rs; scan both so the needles survive file moves.
   shmem =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -32,7 +32,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     lib.optionals (hasInfix "prepare_setup_completion_for_handshake" pluginSetup) [
       "crates/crucible-qemu-plugin/src/setup.rs: forbidden no-longer-used handshake setup helper: `prepare_setup_completion_for_handshake`"
@@ -41,10 +40,6 @@
       "crates/crucible-qemu-plugin/src/setup.rs: forbidden optional-handshake setup path: `prepare_setup_completion_inner`"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-17 completed by the live plugin install gate";
-        needle = "- [x] **T-PLUG-17**";
-      }
       {
         label = "T-PLUG-17 live completion evidence";
         needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";

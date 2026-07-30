@@ -15,7 +15,7 @@
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   cliMain = import ./_cli-source.nix {inherit lib;};
   shmemLib =
-    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   shmemHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderTest = builtins.readFile ../../crates/crucible-shmem/tests/generated_abi_header.rs;
@@ -79,7 +79,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     lib.optionals (qemuPackageShmemAbiVersion != shmemAbiVersion) [
       "pkgs.qemu-crucible: passthru shmem ABI version ${qemuPackageShmemAbiVersion} does not match Rust ABI version ${shmemAbiVersion}"
@@ -94,10 +93,6 @@
       "pkgs.qemu-crucible: passthru shmem header install path ${qemuPackageShmemHeaderInstallPath} is not the canonical generated header install path"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-10 checklist complete";
-        needle = "- [x] **T-PKG-10**";
-      }
       {
         label = "T-PKG-10 completion note";
         needle = "Completed by `checks.crucible.phase7.cruciblePackageAbiVersioning`";

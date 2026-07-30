@@ -67,7 +67,8 @@ rec {
   ## # Type
   ## `string -> string -> bool`
   hasInfix = needle: haystack:
-    needle == ""
+    needle
+    == ""
     || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   ## Remove a prefix from a string if present, otherwise return unchanged.

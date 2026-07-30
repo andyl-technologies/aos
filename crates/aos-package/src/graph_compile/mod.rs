@@ -193,9 +193,7 @@ pub fn plan(manifest: &Value, graph: &ConfigGraph) -> Result<CompilePlan> {
                 continue;
             }
             if !packages.contains(dep) {
-                bail!(
-                    "graph.json edge '{pkg}' -> '{dep}' names a package not in the manifest set"
-                );
+                bail!("graph.json edge '{pkg}' -> '{dep}' names a package not in the manifest set");
             }
             deps.insert(dep.clone());
         }
@@ -272,13 +270,15 @@ fn detect_cycle(edges: &BTreeMap<String, BTreeSet<String>>) -> Result<()> {
                 Some(next) => match color.get(next.as_str()) {
                     Some(Color::Gray) => {
                         // Back-edge: reconstruct the cycle from the active stack.
-                        let mut path: Vec<&str> =
-                            stack.iter().map(|(n, _)| *n).collect();
+                        let mut path: Vec<&str> = stack.iter().map(|(n, _)| *n).collect();
                         if let Some(pos) = path.iter().position(|n| *n == next.as_str()) {
                             path = path[pos..].to_vec();
                         }
                         path.push(next.as_str());
-                        bail!("graph.json contains an ordering cycle: {}", path.join(" -> "));
+                        bail!(
+                            "graph.json contains an ordering cycle: {}",
+                            path.join(" -> ")
+                        );
                     }
                     Some(Color::Black) => {}
                     None => {
@@ -463,7 +463,10 @@ impl GraphCompiler {
                 .run_root
                 .join(format!("{RENDER_TARGET}.wants"))
                 .join(format!("aos-pkg-install@{pkg}.service"));
-            symlinks.insert(install_link, PathBuf::from(format!("../{INSTALL_TEMPLATE}")));
+            symlinks.insert(
+                install_link,
+                PathBuf::from(format!("../{INSTALL_TEMPLATE}")),
+            );
         }
         PlannedArtifacts { dropins, symlinks }
     }
@@ -497,8 +500,7 @@ impl GraphCompiler {
         }
         // (3) prune stragglers (packages removed since the last compile).
         let on_disk = self.scan_existing_packages()?;
-        let removed: BTreeSet<String> =
-            on_disk.difference(&plan.packages).cloned().collect();
+        let removed: BTreeSet<String> = on_disk.difference(&plan.packages).cloned().collect();
         for pkg in &removed {
             self.remove_package_artifacts(pkg)?;
         }

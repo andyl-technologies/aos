@@ -23,11 +23,90 @@ mod verify_dispatch;
 use graph_support::*;
 use surface::*;
 
-fn assert_qemu_workflow_unwired(error: &CliError, command: &str) {
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
-    let message = error.to_string();
-    assert!(message.contains(&format!("local QEMU {command} execution is unavailable")));
-    assert!(message.contains("no in-process double fallback was executed"));
-    assert!(message.contains("select `--backend double` explicitly"));
+fn coverage_event_frame(
+    sequence: u64,
+    kind: &str,
+    attributes: impl IntoIterator<Item = (&'static str, crucible_api::OpenSetAttributeValue)>,
+) -> crucible_api::StreamingEventFrame {
+    use std::collections::BTreeMap;
+
+    crucible_api::StreamingEventFrame {
+        generation: 0,
+        cursor: crucible_api::EventLogCursor::new(sequence),
+        next_cursor: crucible_api::EventLogCursor::new(sequence + 1),
+        event: crucible_api::OpenSetEventEnvelope {
+            sequence,
+            at: crucible_api::OpenSetEventTime {
+                virtual_time_ticks: sequence,
+                icount_retired: sequence,
+                icount_node: Some(String::from("vm-0")),
+            },
+            source: crucible_api::OpenSetEventSource::Node {
+                node: String::from("vm-0"),
+            },
+            level: crucible::EventLevel::Trace,
+            observational: true,
+            payload: crucible_api::OpenSetPayload::new(
+                kind,
+                attributes
+                    .into_iter()
+                    .map(|(name, value)| (String::from(name), value))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+        },
+    }
+}
+
+#[test]
+fn streamed_basic_block_coverage_rebuilds_canonical_feedback() {
+    use crucible_api::OpenSetAttributeValue::{String as Text, Uint};
+
+    let frame = coverage_event_frame(
+        7,
+        "crucible.event.coverage",
+        [
+            ("kind", Text(String::from("basic_block"))),
+            ("node", Text(String::from("vm-0"))),
+            ("execution_icount", Uint(41)),
+            ("guest_pc", Uint(0x401000)),
+            ("block_len", Uint(32)),
+        ],
+    );
+    let event = coverage_event_from_streaming_frame(&frame)
+        .expect("valid coverage frame must parse")
+        .expect("coverage frame must produce an observation");
+    let feedback = coverage_feedback_from_streamed_events(vec![event])
+        .expect("valid observation must rebuild feedback");
+
+    assert_eq!(feedback.projection().len(), 1);
+    assert_eq!(
+        feedback.projection().entries()[0].observation,
+        crucible::EventLogCoverageObservation::BasicBlock {
+            node: crucible::NodeId {
+                name: String::from("vm-0"),
+            },
+            guest_pc: 0x401000,
+            block_len: 32,
+        }
+    );
+}
+
+#[test]
+fn malformed_streamed_coverage_fails_loudly() {
+    use crucible_api::OpenSetAttributeValue::{String as Text, Uint};
+
+    let frame = coverage_event_frame(
+        9,
+        "crucible.event.coverage",
+        [
+            ("kind", Text(String::from("basic_block"))),
+            ("node", Text(String::from("vm-0"))),
+            ("execution_icount", Uint(52)),
+            ("guest_pc", Uint(0x402000)),
+        ],
+    );
+    let error = coverage_event_from_streaming_frame(&frame)
+        .expect_err("missing block_len must reject the coverage frame");
+
+    assert!(error.to_string().contains("block_len"));
 }

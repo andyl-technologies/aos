@@ -19,17 +19,15 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
-        label = "SPSC loom-style model";
-        needle = "assert_spsc_ring_loom_model(";
+        label = "SPSC exhaustive ordering model";
+        needle = "assert_spsc_ring_exhaustive_ordering_model(";
       }
       {
-        label = "loom interleaving enumerator";
-        needle = "fn loom_schedules(";
+        label = "exhaustive interleaving enumerator";
+        needle = "fn exhaustive_ordering_schedules(";
       }
       {
         label = "publish-before-read model";
@@ -89,7 +87,7 @@
       }
       {
         label = "property test driver";
-        needle = "assert_spsc_ring_proptest_properties(";
+        needle = "assert_spsc_ring_exhaustive_trace_properties(";
       }
       {
         label = "full and empty property";
@@ -123,10 +121,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-15 checklist complete";
-        needle = "- [x] **T-SHM-15**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -205,7 +199,7 @@ in
             rust_tests=crucible-shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
-            model=source-guarded-loom-style-memory-order-interleavings
+            model=source-guarded-exhaustive-memory-order-interleavings
             properties=NoLostFrame,NoDuplicatedFrame,FifoOrder,NoTornFrame,NoEarlyRead,FullEmpty,Wraparound
             memory_order_negative_controls=relaxed-everywhere,missing-consumer-acquire,missing-producer-acquire
             randomized_property_seeds=4

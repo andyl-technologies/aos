@@ -23,7 +23,7 @@ diagnostic logging was removed.
 
 ## Historical investigation
 
-## 1. Observed (live, builder-hil1-87eb5b00)
+## 1. Observed on the live Linux reference runner
 
 The same diskless guest (a `linuxWith` 9p=y kernel + a tiny `mount -t 9p crucible`
 initrd) that mounts 9p under plain tcg (QEMU emits its `msize` degraded-perf

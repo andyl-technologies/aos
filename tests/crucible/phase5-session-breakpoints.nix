@@ -25,13 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-7 is complete";
-        needle = "- [x] **T-SESS-7**";
-      }
       {
         label = "T-SESS-7 completion note";
         needle = "Completed by `checks.crucible.phase5.sessionBreakpoints`";

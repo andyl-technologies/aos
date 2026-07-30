@@ -5,7 +5,7 @@
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
 
   shmemSource = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
   ];
   lookaheadTest = builtins.readFile ../../crates/crucible-shmem/tests/lookahead_gate.rs;
@@ -13,8 +13,6 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
@@ -51,8 +49,8 @@
         needle = "max_advance_icount >= earliest_possible_delivery_icount";
       }
       {
-        label = "late frame blocks reached delivery";
-        needle = "frame.delivery_icount <= consumer_current_icount";
+        label = "late frame blocks passed delivery";
+        needle = "frame.delivery_icount < consumer_current_icount";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
@@ -73,8 +71,8 @@
         needle = "lookahead_gate_rejects_ceiling_before_current_icount";
       }
       {
-        label = "reached delivery rejection test";
-        needle = "lookahead_gate_rejects_already_reached_delivery_icount";
+        label = "exact-current delivery admission test";
+        needle = "lookahead_gate_allows_exact_current_delivery_icount";
       }
       {
         label = "passed delivery rejection test";
@@ -102,10 +100,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-12 checklist complete";
-        needle = "- [x] **T-DET-12**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

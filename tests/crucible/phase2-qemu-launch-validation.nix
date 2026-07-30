@@ -24,13 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-2 checklist complete";
-        needle = "- [x] **T-QEMU-2**";
-      }
       {
         label = "QEMU-2 launch-configuration rejection";
         needle = "before spawning any child";

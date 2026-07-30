@@ -33,7 +33,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
   # The any-guest contract ([G-2], D-31): the launch layer MUST NOT bake guest
   # entropy-suppression flags into the shipped default cmdline or gate a launch
   # on their presence. These strings must be absent from the launch source.
@@ -589,8 +588,12 @@
 
   qemuCargoRequirements = [
     {
-      label = "engine dependency with deterministic test-double backend";
-      needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+      label = "production engine dependency";
+      needle = "crucible = { path = \"../crucible\" }";
+    }
+    {
+      label = "explicit deterministic test-support feature";
+      needle = "test-support = [\"crucible/test-double\"]";
     }
   ];
 

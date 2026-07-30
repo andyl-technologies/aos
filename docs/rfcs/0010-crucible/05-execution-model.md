@@ -935,7 +935,7 @@ information that cannot be recomputed.
     `crates/crucible/src/lib.rs` covers baked-genesis refs and uniform baked/CoW
     content comparison; `checks.crucible.phase1.executionNodeBlobRef` gates the
     task.
-- [ ] **T-EXEC-11** Implement the replay-oracle equality check
+- [x] **T-EXEC-11** Implement the replay-oracle equality check
   (`loadvm(snapshot) ≡ replay-from-ancestor`) and wire it as `gate:replay-oracle`
   in CI. — satisfies [EXEC-23]; spec §8.
   - Completed by `crates/crucible-qemu/src/realization.rs`:

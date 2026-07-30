@@ -86,7 +86,10 @@ pub fn run_perf_bench_gate(input: &PerfBenchInput) -> Result<PerfBenchReport, Pe
     let fork_cost = assert_fork_cost_delta_bounded()?;
     let snapshot_latency = assert_snapshot_capture_changed_state_bounded()?;
     let replay_cost = assert_replay_suffix_bounded()?;
-    assert_throughput_ratchet(input.baseline.fuzz_throughput)?;
+    assert_throughput_ratchet(
+        input.baseline.fuzz_throughput,
+        input.observed_fuzz_throughput,
+    )?;
     assert_fleet_near_linear()?;
     assert_coverage_ratchet(
         input.baseline.cumulative_coverage,
@@ -106,7 +109,7 @@ pub fn run_perf_bench_gate(input: &PerfBenchInput) -> Result<PerfBenchReport, Pe
             per_tb_atomics: scenario.per_tb_atomics,
             cold_boots_per_campaign: 1,
             restore_latency_units: RESTORE_LATENCY_UNITS,
-            fuzz_throughput: input.baseline.fuzz_throughput,
+            fuzz_throughput: input.observed_fuzz_throughput,
             coverage_on_off_pct: input.baseline.coverage_on_off_pct,
             fork_cost_bytes: fork_cost,
             replay_cost_by_suffix: replay_cost,
@@ -456,11 +459,9 @@ pub fn replay_cost_units(suffix: u64) -> u64 {
     suffix
 }
 
-fn assert_throughput_ratchet(baseline: u64) -> Result<(), PerfBenchError> {
+fn assert_throughput_ratchet(baseline: u64, observed: u64) -> Result<(), PerfBenchError> {
     // The gate flags any regression below a configured fraction of the baseline
     // (no more than a 10% throughput regression without a recorded rationale).
-    // Model the measured throughput as at or above the baseline for a clean run.
-    let observed = baseline;
     let floor = baseline.saturating_mul(100 - THROUGHPUT_REGRESSION_MAX_PCT) / 100;
     if observed < floor {
         return Err(PerfBenchError::ThroughputRegressed { baseline, observed });

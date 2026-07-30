@@ -235,7 +235,6 @@ pub(crate) struct SearchRetainedEvidencePlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleSearchReport {
     pub(crate) root: crucible::ContentHash,
     pub(crate) expansions: usize,
@@ -254,7 +253,6 @@ pub(crate) struct LocalDoubleSearchReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleSearchCounterexample {
     pub(crate) configuration: crucible::ContentHash,
     pub(crate) fingerprint: crucible::ContentHash,
@@ -283,7 +281,6 @@ pub(crate) enum FuzzDispatchRoute {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(any(test, feature = "test-double"))]
 pub(crate) struct LocalDoubleFuzzReport {
     pub(crate) family: String,
     pub(crate) corpus: Option<PathBuf>,
@@ -2547,24 +2544,7 @@ pub(crate) fn parse_run_terminal_condition_label(
     }
 }
 
-/// Validates a raw fixed-width content-hash field.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when the value is not exactly 64 hexadecimal digits.
-pub(crate) fn validate_content_hash_hex_line(
-    line_index: usize,
-    tag: &str,
-    value: &str,
-) -> Result<(), CliError> {
-    let bytes = parse_hex_bytes(line_index, tag, value)?;
-    if bytes.len() == 32 {
-        Ok(())
-    } else {
-        Err(artifact_line_error(
-            line_index,
-            tag,
-            &format!("content hash must be 32 bytes, got {}", bytes.len()),
-        ))
-    }
-}
+#[path = "invocations/content_hash.rs"]
+mod content_hash;
+
+pub(crate) use content_hash::*;

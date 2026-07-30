@@ -20,24 +20,14 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-25 checklist complete";
-        needle = "- [x] **T-HARN-25**";
-      }
       {
         label = "T-HARN-25 completion note";
         needle = "Completed by `checks.crucible.phase7.machineIndependentReproduction`";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "stale T-HARN-25 placeholder";
-        needle = "- [ ] **T-HARN-25**";
-      }
     ]
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {

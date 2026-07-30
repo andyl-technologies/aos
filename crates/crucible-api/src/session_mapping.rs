@@ -272,7 +272,7 @@ pub const API_METHOD_MAPPINGS: [ApiMethodMapping; 9] = [
 ];
 
 /// API command mapping table covering the complete session command vocabulary.
-pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 23] = [
+pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 24] = [
     ApiCommandMapping {
         command_name: "start",
         command_kind: SessionCommandKind::Start,
@@ -308,6 +308,10 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 23] = [
     ApiCommandMapping {
         command_name: "stop",
         command_kind: SessionCommandKind::Stop,
+    },
+    ApiCommandMapping {
+        command_name: "exhaust-budget",
+        command_kind: SessionCommandKind::ExhaustBudget,
     },
     ApiCommandMapping {
         command_name: "inject",

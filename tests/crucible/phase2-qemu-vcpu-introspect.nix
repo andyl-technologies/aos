@@ -34,13 +34,8 @@
       indexes
     );
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-23 checklist complete";
-        needle = "- [x] **T-PATCH-23**";
-      }
       {
         label = "PATCH-46 register export";
         needle = "qemu_plugin_read_vcpu_regs";

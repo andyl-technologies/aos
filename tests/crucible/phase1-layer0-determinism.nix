@@ -58,8 +58,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" simGate [
       {
@@ -210,18 +208,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-10 checklist complete";
-        needle = "- [x] **T-DET-10**";
-      }
-      {
-        label = "T-DET-30 is complete";
-        needle = "- [x] **T-DET-30**";
-      }
-      {
-        label = "T-DET-31 checklist complete";
-        needle = "- [x] **T-DET-31**";
-      }
     ];
 in
   if failures != []

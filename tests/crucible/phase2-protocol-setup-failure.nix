@@ -27,7 +27,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
       {
@@ -322,10 +321,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-      {
-        label = "T-PROTO-8 checklist complete";
-        needle = "- [x] **T-PROTO-8**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -71,12 +71,12 @@ const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = 16;
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
 
-type InProcessStopCleanup = Arc<
+type InProcessLifecycleCommandSend = Arc<
     dyn Fn(
-            SessionRef,
-        )
-            -> Pin<Box<dyn Future<Output = Result<(), ControlClientError>> + Send + 'static>>
-        + Send
+            SendRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>,
+        > + Send
         + Sync,
 >;
 
@@ -84,7 +84,7 @@ type InProcessStopCleanup = Arc<
 pub enum ClientControlStream {
     /// Same-process stream over the session actor mailbox and event-log hub.
     InProcess(crate::streaming::ControlStream),
-    /// Same-process lifecycle stream with accepted-`Stop` registry cleanup.
+    /// Same-process stream whose commands return through the lifecycle registry.
     InProcessLifecycle(InProcessLifecycleControlStream),
     /// HTTP/2 RPC stream.
     Rpc(RpcControlStream),
@@ -162,29 +162,36 @@ impl ClientControlStream {
     }
 }
 
-/// Same-process lifecycle `Control` stream with lifecycle registry cleanup.
+/// Same-process lifecycle `Control` stream routed through its owning registry.
 ///
-/// This wrapper preserves the raw streaming behavior while routing an accepted
-/// `Stop` through the owning lifecycle registry, matching the RPC control-send
-/// path.
+/// This wrapper preserves event and state receivers from the attached stream,
+/// while every command returns through the lifecycle registry. That registry
+/// owns actor joins, so a backend failure is reported as its typed actor error
+/// instead of being flattened into a closed-mailbox error.
 pub struct InProcessLifecycleControlStream {
     stream: crate::streaming::ControlStream,
-    stop_cleanup: InProcessStopCleanup,
+    command_send: InProcessLifecycleCommandSend,
 }
 
 impl InProcessLifecycleControlStream {
-    pub(crate) fn new<C, Fut>(stream: crate::streaming::ControlStream, stop_cleanup: C) -> Self
+    pub(crate) fn new<C, Fut>(stream: crate::streaming::ControlStream, command_send: C) -> Self
     where
-        C: Fn(SessionRef) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), ControlClientError>> + Send + 'static,
+        C: Fn(SendRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static,
     {
-        let stop_cleanup: InProcessStopCleanup = Arc::new(move |session| {
-            Box::pin(stop_cleanup(session))
-                as Pin<Box<dyn Future<Output = Result<(), ControlClientError>> + Send + 'static>>
+        let command_send: InProcessLifecycleCommandSend = Arc::new(move |request| {
+            Box::pin(command_send(request))
+                as Pin<
+                    Box<
+                        dyn Future<Output = Result<SendResponse, ControlClientError>>
+                            + Send
+                            + 'static,
+                    >,
+                >
         });
         Self {
             stream,
-            stop_cleanup,
+            command_send,
         }
     }
 
@@ -207,19 +214,8 @@ impl InProcessLifecycleControlStream {
         command_id: u64,
         command: SessionCommand,
     ) -> Result<SendResponse, ControlClientError> {
-        let command_kind = SessionCommandKind::from(&command);
         let session = self.stream.attached().session;
-        let response = self
-            .stream
-            .send_command(command_id, command)
-            .await
-            .map_err(ControlClientError::from)?;
-        if command_kind == SessionCommandKind::Stop
-            && response.result.status == CommandResultStatus::Accepted
-        {
-            (self.stop_cleanup)(session).await?;
-        }
-        Ok(response)
+        (self.command_send)(SendRequest::new(session, command_id, command)).await
     }
 }
 
@@ -1538,6 +1534,7 @@ fn query_kind_request_wire(kind: &QueryKind) -> String {
         QueryKind::BreakpointFirings => String::from("breakpoint-firings"),
         QueryKind::State => String::from("state"),
         QueryKind::EventLogLength => String::from("event-log-length"),
+        QueryKind::SearchFrontier => String::from("search-frontier"),
         QueryKind::ExecutionFingerprint { node } => {
             format!("execution-fingerprint|{}", hex_encode(node.name.as_bytes()))
         }
@@ -2476,96 +2473,6 @@ fn parse_state_update_line(line: Option<&str>) -> Result<Option<StateUpdate>, Co
     }))
 }
 
-fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, ControlClientError> {
-    let value = parse_prefixed_line(line, "query-result=")?;
-    if value == "none" {
-        return Ok(None);
-    }
-    let mut fields = value.split('|');
-    match fields
-        .next()
-        .ok_or_else(|| rpc_decode("missing query result kind"))?
-    {
-        "state" => {
-            let state = parse_lifecycle_state_field(fields.next(), "query result state")?;
-            reject_extra_query_result_fields(fields.next())?;
-            Ok(Some(QueryResult::State(state)))
-        }
-        "event-log-length" => {
-            let len = parse_usize_field(fields.next(), "query result event log length")?;
-            reject_extra_query_result_fields(fields.next())?;
-            Ok(Some(QueryResult::EventLogLength(len)))
-        }
-        "breakpoint-firings" => {
-            let firings = parse_breakpoint_firings_fields(&mut fields)?;
-            reject_extra_query_result_fields(fields.next())?;
-            Ok(Some(QueryResult::BreakpointFirings(firings)))
-        }
-        "execution-fingerprint" => {
-            let node = NodeId {
-                name: parse_hex_string_field(fields.next(), "query result fingerprint node")?,
-            };
-            let at = VirtualTime {
-                ticks: parse_u64_field(fields.next(), "query result fingerprint time")?,
-            };
-            let hash =
-                parse_required_content_hash_field(fields.next(), "query result fingerprint hash")?;
-            reject_extra_query_result_fields(fields.next())?;
-            Ok(Some(QueryResult::ExecutionFingerprint(FingerprintSample {
-                node,
-                at,
-                fingerprint: ExecutionFingerprint { hash },
-            })))
-        }
-        "snapshot" => {
-            let state = parse_engine_state_field(fields.next(), "query result snapshot state")?;
-            let frontier = VirtualTime {
-                ticks: parse_u64_field(fields.next(), "query result snapshot frontier")?,
-            };
-            let event_log_len =
-                parse_usize_field(fields.next(), "query result snapshot event log length")?;
-            let quanta = parse_u64_field(fields.next(), "query result snapshot quanta")?;
-            let scenario_id = parse_required_content_hash_field(
-                fields.next(),
-                "query result snapshot scenario id",
-            )?;
-            let seed = parse_seed_field(fields.next(), "query result snapshot seed")?;
-            let app_random_draw_cap =
-                parse_u64_field(fields.next(), "query result snapshot app-random draw cap")?;
-            let schedule_bytes =
-                parse_hex_bytes_field(fields.next(), "query result snapshot schedule payload")?;
-            let terminal_savepoint = fields
-                .next()
-                .ok_or_else(|| rpc_decode("missing query result snapshot terminal savepoint"))?;
-            let terminal_savepoint = parse_optional_checkpoint_field(
-                terminal_savepoint,
-                "query result snapshot terminal savepoint",
-            )?;
-            reject_extra_query_result_fields(fields.next())?;
-            let schedule = Schedule::from_compact_binary(&schedule_bytes).map_err(|error| {
-                rpc_decode(format!("invalid query result snapshot schedule: {error}"))
-            })?;
-            let configuration = Configuration {
-                def: crucible::ScenarioDef::from_trusted_identity(
-                    scenario_id,
-                    seed,
-                    app_random_draw_cap,
-                ),
-                schedule,
-            };
-            Ok(Some(QueryResult::Snapshot(Box::new(EngineSnapshot {
-                state,
-                configuration,
-                terminal_savepoint,
-                frontier,
-                event_log_len,
-                quanta,
-            }))))
-        }
-        kind => Err(rpc_decode(format!("unknown query result kind `{kind}`"))),
-    }
-}
-
 fn parse_breakpoint_firings_fields<'a, I>(
     fields: &mut I,
 ) -> Result<Vec<BreakpointFiring>, ControlClientError>
@@ -2962,3 +2869,6 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     }
     Ok(bytes)
 }
+mod query_result;
+
+use query_result::*;

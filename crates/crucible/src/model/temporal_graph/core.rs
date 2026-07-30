@@ -1407,6 +1407,37 @@ impl TemporalGraph {
         )
     }
 
+    /// Selects one pending frontier with the advanced search strategy ordering.
+    ///
+    /// This read-only boundary lets a concrete backend driver retain ownership
+    /// of runtime realization while using exactly the same breadth-first,
+    /// depth-first, priority, and coverage-guided ordering as graph search.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use crucible::{Configuration, SearchStrategy, TemporalGraph};
+    /// # fn select(graph: &TemporalGraph, pending: &[Configuration]) {
+    /// let selected =
+    ///     graph.select_strategy_frontier(pending, SearchStrategy::BreadthFirst, None);
+    /// # let _ = selected;
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn select_strategy_frontier(
+        &self,
+        pending: &[Configuration],
+        strategy: SearchStrategy,
+        max_depth: Option<u64>,
+    ) -> Option<usize> {
+        let candidates = pending
+            .iter()
+            .cloned()
+            .map(SearchFrontierCandidate::new)
+            .collect::<Vec<_>>();
+        select_search_frontier_candidate(self, &candidates, strategy, max_depth, None)
+    }
+
     /// Branches one frontier over bounded preemption decisions.
     ///
     /// Generated children are ordinary content-addressed temporal-graph nodes.
@@ -1749,42 +1780,6 @@ impl TemporalGraph {
             exhausted: worklist.is_empty(),
         })
     }
-
-    /// Searches with graph-level symmetry and partial-order reductions enabled.
-    ///
-    /// Reductions are applied by the same single-frontier expansion path as
-    /// [`Self::search`]. Covered partial-order candidates schedule their
-    /// canonical representative instead, making the reduced graph independent of
-    /// which frontier strategy reaches the non-canonical ordering first.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] when the root, a selected frontier, or an admitted
-    /// reduction representative cannot be recorded, realized, reduced, or
-    /// materialized.
-    pub fn search_with_strategy_reduced(
-        &mut self,
-        root: &Configuration,
-        strategy: SearchStrategy,
-        budget: SearchBudget,
-        reduction_policy: FrontierReductionPolicy,
-        materialization_policy: MaterializationPolicy,
-        trigger: MaterializationTrigger,
-    ) -> Result<TemporalGraphSearchRun, EngineError> {
-        let failure_oracle = SearchFailureOracle::none();
-        self.search_with_strategy_inner(
-            root,
-            strategy,
-            budget,
-            reduction_policy,
-            materialization_policy,
-            trigger,
-            None,
-            &failure_oracle,
-            None,
-            None,
-            None,
-            None,
-        )
-    }
 }
+#[path = "core/reduced_search.rs"]
+mod reduced_search;

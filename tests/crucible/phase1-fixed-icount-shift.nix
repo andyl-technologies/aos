@@ -43,7 +43,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
       {
@@ -188,10 +187,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-2 checklist complete";
-        needle = "- [x] **T-TIME-2**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
       {

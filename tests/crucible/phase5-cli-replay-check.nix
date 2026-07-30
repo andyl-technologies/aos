@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliReplayCheck",
-  taskIds ? [],
-  openTaskIds ? ["T-CLI-12"],
+  taskIds ? ["T-CLI-12"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -22,13 +22,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-12 checklist complete";
-        needle = "- [ ] **T-CLI-12** Implement `replay`";
-      }
       {
         label = "T-CLI-12 replay check partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliReplayCheck`";

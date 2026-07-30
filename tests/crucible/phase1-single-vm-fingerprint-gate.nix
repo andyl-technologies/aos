@@ -43,8 +43,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible/Cargo.toml" crucibleManifest [
       {
@@ -551,7 +549,7 @@
       }
       {
         label = "updated placeholder count";
-          needle = "placeholder_targets=0";
+        needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -596,10 +594,6 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionProperties [
       {
-        label = "T-ASRT-18 checklist complete";
-        needle = "- [x] **T-ASRT-18**";
-      }
-      {
         label = "T-ASRT-18 names single-VM fingerprint gate";
         needle = "`checks.crucible.phase1.gates.singleVmFingerprint`";
       }
@@ -629,10 +623,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-9 checklist complete";
-        needle = "- [x] **T-DET-9**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
@@ -646,16 +636,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
       {
-        label = "T-EXEC-17 checklist complete";
-        needle = "- [x] **T-EXEC-17**";
-      }
-      {
         label = "T-EXEC-17 completion note";
         needle = "Completed by `crates/crucible/tests/gate_single_vm_fingerprint.rs`";
-      }
-      {
-        label = "T-EXEC-18 checklist complete";
-        needle = "- [x] **T-EXEC-18**";
       }
       {
         label = "T-EXEC-18 completion note";
@@ -663,10 +645,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-9 checklist complete";
-        needle = "- [x] **T-PAT-9**";
-      }
       {
         label = "T-PAT-9 completion names same-configuration fingerprint gate";
         needle = "same-configuration-twice";

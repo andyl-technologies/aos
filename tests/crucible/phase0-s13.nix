@@ -1,4 +1,7 @@
-{pkgs, lib}: let
+{
+  pkgs,
+  lib,
+}: let
   source = builtins.readFile ./phase0-s13-rr-quantum.c;
   s12PreemptionDecision = import ./phase0-s12.nix {inherit pkgs;};
   s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};

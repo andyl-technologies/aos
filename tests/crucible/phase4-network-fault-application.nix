@@ -14,22 +14,19 @@
   deviceBridge = builtins.readFile ../../crates/crucible/src/device.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   linkFaults = builtins.readFile ../../crates/crucible-device/src/netlink/fault.rs;
-  linkResolve = builtins.readFile ../../crates/crucible-device/src/netlink/link.rs;
+  linkResolve = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-device/src/netlink/link.rs;
+  };
   faultTest = builtins.readFile ../../crates/crucible/tests/network_fault_application.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
-      {
-        label = "T-FAULT-6 checked off";
-        needle = "- [x] **T-FAULT-6**";
-      }
       {
         label = "T-FAULT-6 completion note";
         needle = "Completed by `checks.crucible.phase4.networkFaultApplication`";

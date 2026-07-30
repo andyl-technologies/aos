@@ -418,11 +418,13 @@ pub(super) fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
 pub(super) fn checkpoint_closure_index_bytes(
     checkpoint: ContentHash,
     reproduction_artifact: ContentHash,
+    frontier: VirtualTime,
 ) -> Vec<u8> {
     format!(
-        "crucible.local-dag-store.checkpoint-closure-index.v1\ncheckpoint={}\nreproduction_artifact={}\n",
+        "crucible.local-dag-store.checkpoint-closure-index.v2\ncheckpoint={}\nreproduction_artifact={}\nfrontier={}\n",
         ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
-        ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri()
+        ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri(),
+        frontier.ticks,
     )
     .into_bytes()
 }
@@ -455,7 +457,7 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
     })?;
     let mut lines = text.lines();
     match lines.next() {
-        Some("crucible.local-dag-store.checkpoint-closure-index.v1") => {}
+        Some("crucible.local-dag-store.checkpoint-closure-index.v2") => {}
         Some(other) => {
             return Err(corrupt_checkpoint_index(
                 expected_checkpoint,
@@ -482,6 +484,7 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
     }
     let reproduction_artifact =
         parse_checkpoint_index_field(expected_checkpoint, lines.next(), "reproduction_artifact")?;
+    let frontier = parse_checkpoint_frontier_field(expected_checkpoint, lines.next())?;
     if let Some(extra) = lines.next() {
         return Err(corrupt_checkpoint_index(
             expected_checkpoint,
@@ -491,7 +494,29 @@ pub(super) fn parse_checkpoint_closure_index_bytes(
     Ok(LocalCheckpointClosureIndex {
         checkpoint,
         reproduction_artifact,
+        frontier,
     })
+}
+
+fn parse_checkpoint_frontier_field(
+    checkpoint: ContentHash,
+    line: Option<&str>,
+) -> Result<VirtualTime, DagStoreError> {
+    let line =
+        line.ok_or_else(|| corrupt_checkpoint_index(checkpoint, "missing `frontier` line"))?;
+    let value = line.strip_prefix("frontier=").ok_or_else(|| {
+        corrupt_checkpoint_index(
+            checkpoint,
+            format!("expected `frontier` line, got `{line}`"),
+        )
+    })?;
+    let ticks = value.parse::<u64>().map_err(|error| {
+        corrupt_checkpoint_index(
+            checkpoint,
+            format!("invalid `frontier` value `{value}`: {error}"),
+        )
+    })?;
+    Ok(VirtualTime { ticks })
 }
 
 pub(super) fn parse_checkpoint_index_field(

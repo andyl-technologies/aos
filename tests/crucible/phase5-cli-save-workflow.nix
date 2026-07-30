@@ -17,9 +17,18 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
+  apiLifecycle = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/lifecycle.rs;
+  };
+  apiClient = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/client.rs;
+  };
+  apiServer = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/server.rs;
+  };
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   apiControlClientContracts = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/contract_tests.rs;
   apiControlClientConformance = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/conformance.rs;
@@ -30,13 +39,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-9 checklist complete";
-        needle = "- [x] **T-CLI-9** Implement `save`";
-      }
       {
         label = "T-CLI-9 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliSaveWorkflow`";
@@ -86,8 +90,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "save rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"save\")";
+        label = "save dispatches the live QEMU workflow";
+        needle = "fn run_local_qemu_save_workflow";
       }
       {
         label = "save arguments";
@@ -246,8 +250,8 @@
         needle = "cli_save_workflow_executes_local_double_and_exports_handle";
       }
       {
-        label = "qemu-selected save rejection";
-        needle = "local QEMU {command} execution is unavailable";
+        label = "qemu-selected save live checkpoint proof";
+        needle = "save-live-checkpoint";
       }
       {
         label = "qemu-selected save test";
@@ -472,12 +476,12 @@
         needle = "out=";
       }
       {
-        label = "process qemu save rejection regression";
-        needle = "cli_save_qemu_process_rejects_unwired_execution";
+        label = "process qemu save live-asset admission regression";
+        needle = "cli_save_qemu_process_requires_packaged_live_guest_assets";
       }
       {
         label = "process qemu save no-double assertion";
-        needle = "no in-process double fallback was executed";
+        needle = "!stderr.contains(\"double fallback\")";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -600,7 +604,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
-              cli_save_qemu_process_rejects_unwired_execution \
+              cli_save_qemu_process_requires_packaged_live_guest_assets \
               -- --test-threads=1
 
             qemu_pid=""

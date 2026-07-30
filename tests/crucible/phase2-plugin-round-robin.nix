@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginRoundRobin",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-24"],
+  taskIds ? ["T-PLUG-24"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -24,13 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-24 remains open until live QEMU callback integration";
-        needle = "- [ ] **T-PLUG-24**";
-      }
       {
         label = "single-threaded RR TCG obligation";
         needle = "single-threaded round-robin TCG";

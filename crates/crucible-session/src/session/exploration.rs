@@ -372,6 +372,7 @@ pub struct LiveSnapshot {
     outcome_kind: AtomicU8,
     terminal_savepoint_present: AtomicU8,
     terminal_savepoint_words: [AtomicU64; 4],
+    configuration_words: [AtomicU64; 4],
     virtual_time_ticks: AtomicU64,
     event_log_len: AtomicU64,
     quanta_stepped: AtomicU64,
@@ -387,6 +388,8 @@ pub struct LiveSnapshotView {
     pub outcome: Option<OutcomeKind>,
     /// Terminal savepoint checkpoint id materialized for the outcome.
     pub terminal_savepoint: Option<ContentHash>,
+    /// Canonical configuration at the latest actor-published boundary.
+    pub configuration: ContentHash,
     /// The latest scheduler virtual-time frontier.
     pub virtual_time: VirtualTime,
     /// Canonical event-log length observed by the session actor.
@@ -425,6 +428,12 @@ impl LiveSnapshot {
                 AtomicU64::new(0),
                 AtomicU64::new(0),
             ],
+            configuration_words: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
             virtual_time_ticks: AtomicU64::new(0),
             event_log_len: AtomicU64::new(0),
             quanta_stepped: AtomicU64::new(0),
@@ -457,6 +466,12 @@ impl LiveSnapshot {
                 self.terminal_savepoint_words[2].load(Ordering::Acquire),
                 self.terminal_savepoint_words[3].load(Ordering::Acquire),
             ];
+            let configuration_words = [
+                self.configuration_words[0].load(Ordering::Acquire),
+                self.configuration_words[1].load(Ordering::Acquire),
+                self.configuration_words[2].load(Ordering::Acquire),
+                self.configuration_words[3].load(Ordering::Acquire),
+            ];
             let virtual_time_ticks = self.virtual_time_ticks.load(Ordering::Acquire);
             let event_log_len = self.event_log_len.load(Ordering::Acquire);
             let quanta_stepped = self.quanta_stepped.load(Ordering::Acquire);
@@ -471,6 +486,7 @@ impl LiveSnapshot {
                         terminal_savepoint_present,
                         terminal_savepoint_words,
                     ),
+                    configuration: content_hash_from_required_words(configuration_words),
                     virtual_time: VirtualTime {
                         ticks: virtual_time_ticks,
                     },
@@ -522,6 +538,13 @@ impl LiveSnapshot {
         {
             word.store(value, Ordering::Release);
         }
+        for (word, value) in self
+            .configuration_words
+            .iter()
+            .zip(content_hash_to_words(snapshot.configuration.id()))
+        {
+            word.store(value, Ordering::Release);
+        }
         self.virtual_time_ticks
             .store(snapshot.frontier.ticks, Ordering::Release);
         self.event_log_len
@@ -532,60 +555,5 @@ impl LiveSnapshot {
             .store(control_acknowledgements, Ordering::Release);
         self.epoch
             .store(write_epoch.wrapping_add(1), Ordering::Release);
-    }
-}
-
-pub(super) fn usize_to_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-pub(super) fn u64_to_usize(value: u64) -> usize {
-    match usize::try_from(value) {
-        Ok(value) => value,
-        Err(_) => usize::MAX,
-    }
-}
-
-pub(super) fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> ContentHash {
-    ContentHash::from_canonical_material(
-        "crucible.session.fork-handle.v1",
-        &format!(
-            "parent={}\ncheckpoint={}\n",
-            parent.to_hex(),
-            checkpoint.to_hex()
-        ),
-    )
-}
-
-pub(super) fn breakpoint_action_kind(action: &Action) -> &'static str {
-    match action {
-        Action::InjectFault { .. } => "inject-fault",
-        Action::HealFault { .. } => "heal-fault",
-        Action::ArmTimer { .. } => "arm-timer",
-        Action::CancelTimer { .. } => "cancel-timer",
-        Action::StartNode { .. } => "start-node",
-        Action::StopNode { .. } => "stop-node",
-        Action::CreateSavepoint { .. } => "create-savepoint",
-        Action::Fork { .. } => "fork",
-        Action::Pass => "pass",
-        Action::Fail { .. } => "fail",
-        Action::Log { .. } => "log",
-        Action::Group(_) => "group",
-    }
-}
-
-pub(super) fn control_operation_command_kind(
-    control: &ControlOperationKind,
-) -> Option<SessionCommandKind> {
-    match control {
-        ControlOperationKind::InjectFault { .. } => Some(SessionCommandKind::InjectFault),
-        ControlOperationKind::HealFault { .. } => Some(SessionCommandKind::HealFault),
-        ControlOperationKind::Inject
-        | ControlOperationKind::Pause
-        | ControlOperationKind::Resume
-        | ControlOperationKind::Step
-        | ControlOperationKind::Snapshot
-        | ControlOperationKind::Fork
-        | ControlOperationKind::Query => None,
     }
 }

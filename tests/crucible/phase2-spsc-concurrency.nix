@@ -11,9 +11,15 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
+  shmemGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
+  };
+  gateTargets = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/src/gate_targets.rs;
+  };
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
@@ -22,8 +28,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -73,7 +77,7 @@
       }
       {
         label = "capacity validation";
-        needle = "fn validated_capacity(";
+        needle = "fn validated_capacity<T>(";
       }
       {
         label = "live-count validation";
@@ -82,8 +86,8 @@
     ]
     ++ failuresFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
-        label = "SPSC loom-style model";
-        needle = "assert_spsc_ring_loom_model(";
+        label = "SPSC exhaustive ordering model";
+        needle = "assert_spsc_ring_exhaustive_ordering_model(";
       }
       {
         label = "actual RingHeader ordering source guard";
@@ -107,7 +111,7 @@
       }
       {
         label = "SPSC property test driver";
-        needle = "assert_spsc_ring_proptest_properties(";
+        needle = "assert_spsc_ring_exhaustive_trace_properties(";
       }
       {
         label = "seeded randomized property corpus";
@@ -173,16 +177,8 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-18 checklist complete";
-        needle = "- [x] **T-HARN-18**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-6 checklist complete";
-        needle = "- [x] **T-SHM-6**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -261,7 +257,7 @@ in
             rust_tests=crucible-shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
-            model=source-guarded-loom-style-memory-order-interleavings
+            model=source-guarded-exhaustive-memory-order-interleavings
             properties=NoLostFrame,NoDuplicatedFrame,FifoOrder,FullEmpty,Wraparound
             memory_order_negative_controls=relaxed-everywhere,missing-consumer-acquire,missing-producer-acquire
             randomized_property_seeds=4

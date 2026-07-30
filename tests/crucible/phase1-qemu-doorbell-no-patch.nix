@@ -35,7 +35,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenDoorbellPatchNeedles = [
     "qemu_plugin_register_doorbell_trap"
     "qemu_plugin_guest_memory_read"
@@ -72,10 +71,6 @@
     )
     forbiddenDoorbellPatchNeedles
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-15 checklist complete";
-        needle = "- [x] **T-PATCH-15**";
-      }
       {
         label = "no new QEMU patch decision";
         needle = "no QEMU patch was added";

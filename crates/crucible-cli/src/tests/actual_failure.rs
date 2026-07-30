@@ -42,6 +42,7 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
         state_updates: vec![String::from("running"), String::from("stopped")],
         streamed_events: vec![String::from("property assertion failed")],
         streamed_event_frames: vec![b"property assertion failed".to_vec()],
+        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
         execution_fingerprints: vec![crucible::FingerprintSample {
             node: crucible::NodeId {
                 name: String::from("actual-node"),

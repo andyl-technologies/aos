@@ -77,8 +77,7 @@ where
             message = err.message().unwrap_or("none"),
         )
     } else {
-        anyhow::Error::new(err)
-            .context(format!("S3 {operation} for {location} against {target}"))
+        anyhow::Error::new(err).context(format!("S3 {operation} for {location} against {target}"))
     }
 }
 
@@ -560,7 +559,9 @@ impl S3Protocol {
                 // returns a modeled `NotFound`; an S3-compatible store that
                 // answers a HEAD with an empty body leaves the SDK only the
                 // raw `404` status to go on, so accept either signal.
-                let is_404 = e.as_service_error().is_some_and(HeadObjectError::is_not_found)
+                let is_404 = e
+                    .as_service_error()
+                    .is_some_and(HeadObjectError::is_not_found)
                     || e.raw_response().map(|r| r.status().as_u16()) == Some(404);
                 if is_404 {
                     Ok(TransferResult {
@@ -600,7 +601,9 @@ impl S3Protocol {
             .key(&key)
             .send()
             .await
-            .map_err(|e| s3_operation_error("DeleteObject", &format!("{bucket}/{key}"), &target, e))?;
+            .map_err(|e| {
+                s3_operation_error("DeleteObject", &format!("{bucket}/{key}"), &target, e)
+            })?;
 
         Ok(TransferResult {
             status: 204,

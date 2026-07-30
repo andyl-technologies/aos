@@ -30,7 +30,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "pkgs/emulation/qemu.nix" qemuNix [
       {
@@ -145,10 +144,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "T-PATCH-14 checklist complete";
-        needle = "- [x] **T-PATCH-14**";
-      }
       {
         label = "network TX patch catalog";
         needle = "crucible-net-tx-callback";

@@ -1,13 +1,12 @@
 //! Tests for Linux QEMU node factory composition.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -32,6 +31,8 @@ use crate::{
 };
 
 use super::*;
+
+mod probe_restore;
 
 #[test]
 fn qmp_shutdown_only_rejects_generic_snapshot_restore_but_quits() -> Result<(), Box<dyn Error>> {
@@ -297,56 +298,6 @@ fn warm_restore_launch_requires_qmp_channel_before_spawn() -> Result<(), Box<dyn
         error,
         QemuWarmRestoreLaunchError::MissingQmpChannel
     ));
-
-    Ok(())
-}
-
-#[test]
-fn factory_rejects_probe_authorization_before_vmstate_restore() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
-    let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
-    let plugin_peer = thread::spawn(move || {
-        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
-    });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
-    let child = Command::new("sleep").arg("60").spawn()?;
-    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
-        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-        r#"{"return":{}}"#,
-    ]);
-    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-
-    let error = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        QemuNodeRestorePlan::new(
-            &checkpoint,
-            QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
-            test_admission(),
-        ),
-        node_factory_runtime(),
-    )
-    .err()
-    .ok_or("factory should reject probe authorization before VMState restore")?;
-
-    assert!(matches!(
-        error,
-        QemuNodeFactoryError::VmStateRestoreAuthorization {
-            purpose: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe
-        }
-    ));
-    assert_qmp_wrote_only_capabilities(&qmp_written)?;
-
-    let plugin_region = match plugin_peer.join() {
-        Ok(Ok(region)) => region,
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_panic) => return Err("plugin setup peer panicked".into()),
-    };
-    assert_eq!(plugin_region.region_len, layout.region_size);
 
     Ok(())
 }
@@ -711,7 +662,7 @@ fn test_admission() -> QemuLoadvmRealizationAdmission {
     QemuLoadvmRealizationAdmission::for_test(content_hash_with_byte(0xcd))
 }
 
-type SharedQmpWritten = Rc<RefCell<Vec<u8>>>;
+type SharedQmpWritten = Arc<Mutex<Vec<u8>>>;
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
     scripted_qmp_with_written(lines).0
@@ -725,11 +676,11 @@ fn scripted_qmp_with_written<const N: usize>(
         input.extend_from_slice(line.as_bytes());
         input.extend_from_slice(b"\r\n");
     }
-    let written = Rc::new(RefCell::new(Vec::new()));
+    let written = Arc::new(Mutex::new(Vec::new()));
     (
         ScriptedQmpStream {
             read: Cursor::new(input),
-            written: Rc::clone(&written),
+            written: Arc::clone(&written),
             read_timeouts: Vec::new(),
             write_timeouts: Vec::new(),
         },
@@ -740,7 +691,7 @@ fn scripted_qmp_with_written<const N: usize>(
 fn written_json_lines_from_shared(
     written: &SharedQmpWritten,
 ) -> Result<Vec<Value>, serde_json::Error> {
-    let bytes = written.borrow();
+    let bytes = written.lock().unwrap();
     String::from_utf8_lossy(bytes.as_slice())
         .lines()
         .map(serde_json::from_str)
@@ -784,7 +735,7 @@ impl Read for ScriptedQmpStream {
 
 impl Write for ScriptedQmpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written.borrow_mut().extend_from_slice(buf);
+        self.written.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
 

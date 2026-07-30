@@ -23,14 +23,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
-      {
-        label = "T-OBS-6 checked off";
-        needle = "- [x] **T-OBS-6**";
-      }
       {
         label = "T-OBS-6 completion note";
         needle = "Completed by `checks.crucible.phase4.eventLogDeterminism`";
@@ -249,36 +244,36 @@ in
         {
           name = "run-event-log-determinism";
           script = ''
-            set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
-              -p crucible \
-              --test event_log_determinism \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
-              -p crucible \
-              --features test-double \
-              --test gate_replay_oracle \
-              gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-          --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
-          -p crucible \
-          --features test-double \
-          --test gate_e2e_determinism_concurrency \
-          gate_e2e_determinism_compares_actual \
-          -- --test-threads=1
+              set -eu
+              if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+                cd source
+              fi
+              cd crates
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
+                -p crucible \
+                --test event_log_determinism \
+                -- --test-threads=1
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
+                -p crucible \
+                --features test-double \
+                --test gate_replay_oracle \
+                gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction \
+                -- --test-threads=1
+              cargo test \
+                --frozen \
+                --offline \
+            --target-dir "$TMPDIR/crucible-event-log-determinism-target" \
+            -p crucible \
+            --features test-double \
+            --test gate_e2e_determinism_concurrency \
+            gate_e2e_determinism_compares_actual \
+            -- --test-threads=1
           '';
         }
         {

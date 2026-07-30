@@ -31,6 +31,12 @@ pub use crucible_qemu::QemuLaunchPluginSwitch as ProductionPluginSwitch;
 pub use crucible_qemu::QemuRootImageFormat as ProductionRootImageFormat;
 /// Runs the bounded production plugin-installation probe.
 pub use crucible_qemu::run_live_plugin_install_gate as run_production_plugin_install_gate;
+pub(crate) use crucible_qemu::{
+    DEFAULT_ROOT_OVERLAY_FILE_NAME as PRODUCTION_ROOT_OVERLAY_FILE_NAME,
+    QemuGdbstubChannelConfig as ProductionGdbstubChannelConfig,
+    QemuLiveNodeStepGateConfig as ProductionLiveNodeStepGateConfig, QemuNode as ProductionLiveNode,
+    QemuNodeSet as ProductionNodeSet, launch_qemu_live_node as launch_production_live_node,
+};
 
 /// Errors returned while deriving a process-local VM resume realization proof.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]

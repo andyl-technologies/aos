@@ -10,7 +10,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   lowerAscii = value:
     builtins.replaceStrings
     [
@@ -585,37 +584,45 @@
     lib.optionals (!placeholder && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
       "${target.package}:${target.testTarget} must call ${twiceReduceHelper} to drive twice and compare canonical digests"
     ]
-    ++ lib.optionals (!placeholder && protocolDataPlaneTarget && standard.shape == "observed-injection-icount-vectors" && (
-      !(hasInfix "RUNTIME_DATA_PLANE_CONTRACT" code)
-      || !(hasInfix "control_channel_carries_runtime_frames" code)
-      || !(hasInfix "control_channel_carries_delivery_icounts" code)
-      || !(hasInfix "control_channel_silent_between_setup_ack_and_quit" code)
-    )) [
+    ++ lib.optionals (!placeholder
+      && protocolDataPlaneTarget
+      && standard.shape == "observed-injection-icount-vectors"
+      && (
+        !(hasInfix "RUNTIME_DATA_PLANE_CONTRACT" code)
+        || !(hasInfix "control_channel_carries_runtime_frames" code)
+        || !(hasInfix "control_channel_carries_delivery_icounts" code)
+        || !(hasInfix "control_channel_silent_between_setup_ack_and_quit" code)
+      )) [
       "${target.package}:${target.testTarget} must prove runtime injection data stays out of the control protocol"
     ]
-    ++ lib.optionals (!placeholder && !protocolDataPlaneTarget && standard.shape == "observed-injection-icount-vectors" && (
-      !(hasInfix "run_two_vm_injection" code)
-      || !(hasInfix "struct ObservedInjection" code)
-      || !(hasInfix "producer_host_tick" code)
-      || !(hasInfix "assert_eq!(producer_skewed, consumer_skewed);" code)
-      || !(hasInfix "assert_ne!(producer_skewed, consumer_skewed);" code)
-    )) [
+    ++ lib.optionals (!placeholder
+      && !protocolDataPlaneTarget
+      && standard.shape == "observed-injection-icount-vectors"
+      && (
+        !(hasInfix "run_two_vm_injection" code)
+        || !(hasInfix "struct ObservedInjection" code)
+        || !(hasInfix "producer_host_tick" code)
+        || !(hasInfix "assert_eq!(producer_skewed, consumer_skewed);" code)
+        || !(hasInfix "assert_ne!(producer_skewed, consumer_skewed);" code)
+      )) [
       "${target.package}:${target.testTarget} must compare observed injection icount vectors across host interleavings with a host-timing negative control"
     ]
     ++ lib.optionals (!placeholder && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
       "${target.package}:${target.testTarget} must compare canonical digests, not formatted dumps"
     ]
-    ++ lib.optionals (!placeholder && standard.shape == "campaign-continuity" && (
-      !(hasInfix "seed_next_run_for_provenance" code)
-      || !(hasInfix "CampaignContinuitySeedDecision" code)
-      || !(hasInfix "SeedPriorCorpus" code)
-      || !(hasInfix "RefuseCrossProvenanceReuse" code)
-      || !(hasInfix "baseline_event_hash" code)
-      || !(hasInfix "read_fresh_lineage_baseline_event" code)
-      || !(hasInfix "seed_next_run(&prior_manifest" code)
-      || !(hasInfix "accumulated_coverage_delta" code)
-      || !(hasInfix "compare_and_swap_head" code)
-    )) [
+    ++ lib.optionals (!placeholder
+      && standard.shape == "campaign-continuity"
+      && (
+        !(hasInfix "seed_next_run_for_provenance" code)
+        || !(hasInfix "CampaignContinuitySeedDecision" code)
+        || !(hasInfix "SeedPriorCorpus" code)
+        || !(hasInfix "RefuseCrossProvenanceReuse" code)
+        || !(hasInfix "baseline_event_hash" code)
+        || !(hasInfix "read_fresh_lineage_baseline_event" code)
+        || !(hasInfix "seed_next_run(&prior_manifest" code)
+        || !(hasInfix "accumulated_coverage_delta" code)
+        || !(hasInfix "compare_and_swap_head" code)
+      )) [
       "${target.package}:${target.testTarget} must prove seed replay, coverage monotonicity, and provenance refusal for campaign continuity"
     ]
     ++ lib.optionals (!placeholder && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
@@ -697,15 +704,14 @@
 
   testSourcesForPackage = package: let
     packageDir = cratesDir + "/${package}";
-    integrationSources =
-      map (
-        source:
-          source
-          // {
-            inherit package;
-            testTarget = lib.removeSuffix ".rs" (lib.removePrefix "tests/" source.display);
-          }
-      ) (rustSources (packageDir + "/tests") "tests");
+    integrationSources = map (
+      source:
+        source
+        // {
+          inherit package;
+          testTarget = lib.removeSuffix ".rs" (lib.removePrefix "tests/" source.display);
+        }
+    ) (rustSources (packageDir + "/tests") "tests");
     srcSources = rustSources (packageDir + "/src") "src";
     hasUnitTestModule =
       builtins.any (

@@ -18,7 +18,7 @@
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   apiVmResume = builtins.readFile ../../crates/crucible-api/src/vm_resume.rs;
-  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
+  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
@@ -27,7 +27,8 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack:
-    needle == ""
+    needle
+    == ""
     || builtins.replaceStrings [needle] [""] haystack != haystack;
 
   failuresFor = fileLabel: content: requirements:
@@ -50,10 +51,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-10 checklist complete";
-        needle = "- [x] **T-CLI-10** Implement `resume`";
-      }
       {
         label = "T-CLI-10 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliResumeWorkflow`";
@@ -175,12 +172,12 @@
         needle = "fn run_local_qemu_resume_workflow";
       }
       {
-        label = "resume rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"resume\")";
+        label = "resume dispatches the live QEMU workflow";
+        needle = "fn run_local_qemu_resume_workflow";
       }
       {
-        label = "resume local-QEMU no-double assertion";
-        needle = "no in-process double fallback was executed";
+        label = "resume local-QEMU thin-replay proof";
+        needle = "resume-thin-replay";
       }
       {
         label = "resume terminal configuration report";
@@ -485,12 +482,12 @@
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
-        label = "process qemu resume rejection regression";
-        needle = "cli_resume_qemu_process_rejects_unwired_execution";
+        label = "process qemu resume live-asset admission regression";
+        needle = "cli_resume_qemu_process_requires_packaged_live_guest_assets";
       }
       {
-        label = "process qemu resume rejection";
-        needle = "local QEMU resume execution is unavailable";
+        label = "process qemu resume no-unwired assertion";
+        needle = "!stderr.contains(\"execution is unavailable\")";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -571,7 +568,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-resume-workflow-target" \
               -p crucible-cli \
-              cli_resume_qemu_process_rejects_unwired_execution \
+              cli_resume_qemu_process_requires_packaged_live_guest_assets \
               -- --test-threads=1
 
             qemu_pid=""

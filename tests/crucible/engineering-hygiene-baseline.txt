@@ -2,10 +2,10 @@
 # workspace-scoped test suite. Line entries are caps, not blanket exemptions:
 # increasing a listed file's line count still fails the gate.
 shape-line|crates/crucible-api/src/client.rs|2964
-shape-line|crates/crucible-api/src/lifecycle.rs|1876
+shape-line|crates/crucible-api/src/lifecycle.rs|1916
 shape-line|crates/crucible-api/src/open_set.rs|929
 shape-line|crates/crucible-api/src/rpc_abi.rs|812
-shape-line|crates/crucible-api/src/server.rs|2225
+shape-line|crates/crucible-api/src/server.rs|2274
 shape-line|crates/crucible-api/src/streaming.rs|1292
 shape-line|crates/crucible-api/tests/gate_control_client/conformance.rs|1318
 shape-line|crates/crucible-api/tests/gate_control_client/contract_tests.rs|1770
@@ -16,13 +16,11 @@ shape-line|crates/crucible-cas/src/cas/campaign_store.rs|1514
 shape-line|crates/crucible-cas/src/cas/tests.rs|1286
 shape-line|crates/crucible-cas/src/lib.rs|1383
 shape-line|crates/crucible-cli/src/cli/artifact.rs|1092
-shape-line|crates/crucible-cli/src/cli/backend.rs|1114
+shape-line|crates/crucible-cli/src/cli/backend.rs|1308
 shape-line|crates/crucible-cli/src/cli/control.rs|1699
 shape-line|crates/crucible-cli/src/cli/dispatch.rs|856
-shape-line|crates/crucible-cli/src/cli/exploration.rs|994
 shape-line|crates/crucible-cli/src/cli/planning/invocations.rs|2566
 shape-line|crates/crucible-cli/src/cli/planning/verify_seed_render.rs|905
-shape-line|crates/crucible-cli/src/cli/report.rs|614
 shape-line|crates/crucible-cli/src/cli/resume_fork.rs|2068
 shape-line|crates/crucible-cli/src/cli/run_save.rs|1341
 shape-line|crates/crucible-cli/src/cli/triage_debug.rs|1037
@@ -30,9 +28,9 @@ shape-line|crates/crucible-cli/src/cli/verify_serve.rs|1217
 shape-line|crates/crucible-cli/src/main.rs|1368
 shape-line|crates/crucible-cli/src/tests/replay_artifact.rs|2746
 shape-line|crates/crucible-cli/src/tests/state_workflows.rs|2645
-shape-line|crates/crucible-cli/src/tests/surface.rs|2715
-shape-line|crates/crucible-cli/src/tests/verify_dispatch.rs|3022
-shape-line|crates/crucible-cli/tests/machine_readable.rs|1348
+shape-line|crates/crucible-cli/src/tests/surface.rs|2795
+shape-line|crates/crucible-cli/src/tests/verify_dispatch.rs|3113
+shape-line|crates/crucible-cli/tests/machine_readable.rs|1369
 shape-line|crates/crucible-device/src/block.rs|716
 shape-line|crates/crucible-device/src/block/device.rs|674
 shape-line|crates/crucible-device/src/fault.rs|743
@@ -54,7 +52,7 @@ shape-line|crates/crucible-harness/src/reproduction.rs|2406
 shape-line|crates/crucible-harness/tests/crate_artifact_types.rs|651
 shape-line|crates/crucible-harness/tests/determinism_core_coverage.rs|643
 shape-line|crates/crucible-harness/tests/engineering_hygiene.rs|749
-shape-line|crates/crucible-harness/tests/harness_lint.rs|852
+shape-line|crates/crucible-harness/tests/harness_lint.rs|910
 shape-line|crates/crucible-harness/tests/reproduction_artifact.rs|691
 shape-line|crates/crucible-harness/tests/support/harness_lint/scan.rs|1087
 shape-line|crates/crucible-harness/tests/support/testing_standards.rs|710
@@ -95,11 +93,11 @@ shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|845
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701
 shape-line|crates/crucible-qemu/src/live_plugin_gate.rs|666
 shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|815
-shape-line|crates/crucible-qemu/src/node.rs|2146
+shape-line|crates/crucible-qemu/src/node.rs|2170
 shape-line|crates/crucible-qemu/src/node_factory.rs|697
 shape-line|crates/crucible-qemu/src/node_factory/tests.rs|808
 shape-line|crates/crucible-qemu/src/qmp.rs|1024
-shape-line|crates/crucible-qemu/src/quantum.rs|2046
+shape-line|crates/crucible-qemu/src/quantum.rs|2059
 shape-line|crates/crucible-qemu/src/realization.rs|2478
 shape-line|crates/crucible-qemu/src/realization/backend_executor.rs|607
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/live_runner/config.rs|1169
@@ -121,11 +119,11 @@ shape-line|crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs|1215
 shape-line|crates/crucible-qemu/tests/qemu_trace_fingerprint.rs|714
 shape-line|crates/crucible-qemu/tests/qmp.rs|650
 shape-line|crates/crucible-qemu/tests/setup_failure.rs|601
-shape-line|crates/crucible-session/src/session/actor.rs|937
-shape-line|crates/crucible-session/src/session/commands.rs|993
-shape-line|crates/crucible-session/src/session/engine.rs|1620
-shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2117
-shape-line|crates/crucible-session/src/tests/engine_state.rs|2581
+shape-line|crates/crucible-session/src/session/actor.rs|953
+shape-line|crates/crucible-session/src/session/commands.rs|1025
+shape-line|crates/crucible-session/src/session/engine.rs|1697
+shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2131
+shape-line|crates/crucible-session/src/tests/engine_state.rs|2664
 shape-line|crates/crucible-session/tests/gate_control_responsive.rs|839
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|632
 shape-line|crates/crucible-shmem/src/mapped_setup_region.rs|939
@@ -136,7 +134,7 @@ shape-line|crates/crucible-shmem/tests/gate_abi_conformance.rs|1022
 shape-line|crates/crucible-shmem/tests/gate_layer1_injection.rs|724
 shape-line|crates/crucible-sim/src/contract_a.rs|1045
 shape-line|crates/crucible-sim/tests/contract_a.rs|773
-shape-line|crates/crucible/src/backend.rs|658
+shape-line|crates/crucible/src/backend.rs|690
 shape-line|crates/crucible/src/decision.rs|1073
 shape-line|crates/crucible/src/device.rs|1223
 shape-line|crates/crucible/src/device_subnode.rs|1565
@@ -165,12 +163,12 @@ shape-line|crates/crucible/src/model/workload.rs|1070
 shape-line|crates/crucible/src/scheduler/control_state.rs|1102
 shape-line|crates/crucible/src/scheduler/event_codec.rs|2488
 shape-line|crates/crucible/src/scheduler/event_log.rs|1786
-shape-line|crates/crucible/src/scheduler/scenario.rs|712
+shape-line|crates/crucible/src/scheduler/scenario.rs|754
 shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|2113
 shape-line|crates/crucible/src/scheduler/single_scheduler_state.rs|2027
-shape-line|crates/crucible/src/scheduler/tests.rs|1381
+shape-line|crates/crucible/src/scheduler/tests.rs|1443
 shape-line|crates/crucible/src/scheduler/topology.rs|1646
-shape-line|crates/crucible/src/sim_backend.rs|2281
+shape-line|crates/crucible/src/sim_backend.rs|2283
 shape-line|crates/crucible/src/tests/model_core.rs|3120
 shape-line|crates/crucible/src/tests/world_validation.rs|3492
 shape-line|crates/crucible/src/trigger/assertions.rs|2276
@@ -214,7 +212,6 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume_fork.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume_fork.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|Qemu

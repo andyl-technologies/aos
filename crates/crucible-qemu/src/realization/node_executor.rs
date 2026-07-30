@@ -216,16 +216,18 @@ where
 
     fn load_exact_snapshot_for_replay_oracle_probe(
         &mut self,
-        _config: &Configuration,
-        _snapshot: &QemuVmSnapshot,
-        _authorization: QemuLoadvmCommandAuthorization,
+        config: &Configuration,
+        snapshot: &QemuVmSnapshot,
+        authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
-        Err(QemuVmRealizationError::Executor {
-            operation: "load exact QEMU node snapshot for replay oracle",
-            message: String::from(
-                "real-node replay-oracle probes require a probe-only restore admission path",
-            ),
-        })
+        let restore =
+            QemuNodeRestorePlan::snapshot_completeness_probe(&snapshot.checkpoint, authorization);
+        let runtime_id = self.launch_and_install(
+            config,
+            restore,
+            "load exact QEMU node snapshot for replay oracle",
+        )?;
+        runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)
     }
 
     fn load_baked_genesis(

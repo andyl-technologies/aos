@@ -28,7 +28,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenCallbackApis = [
     "Instant::now"
     "SystemTime::now"
@@ -59,10 +58,6 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
       {
-        label = "T-DET-31 checklist complete";
-        needle = "- [x] **T-DET-31**";
-      }
-      {
         label = "T-DET-31 completion note names app-random doorbell check";
         needle = "`checks.crucible.phase2.qemuPluginAppRandomDoorbell`";
       }
@@ -72,10 +67,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-27 checklist complete";
-        needle = "- [x] **T-PLUG-27**";
-      }
       {
         label = "app-random task wording";
         needle = "optional app-controlled randomness doorbell";

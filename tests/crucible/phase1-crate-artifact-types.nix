@@ -125,10 +125,9 @@
 
   checkArtifact = spec: manifest: layout: let
     package = manifestPackageName manifest;
-    packageNameFailures =
-      lib.optionals (package != spec.package) [
-        "${spec.package}: manifest package.name must be `${spec.package}`"
-      ];
+    packageNameFailures = lib.optionals (package != spec.package) [
+      "${spec.package}: manifest package.name must be `${spec.package}`"
+    ];
   in
     packageNameFailures
     ++ (
@@ -255,58 +254,62 @@
     specs;
 
   regressionFailures = let
-    pluginFindings = checkArtifact {
-      package = "crucible-qemu-plugin";
-      expected = "cdylib-plugin";
-    } {
-      package.name = "crucible-qemu-plugin";
-      lib."crate-type" = ["rlib"];
-    } {
-      hasLibRs = true;
-      hasMainRs = false;
-      hasSrcBinDir = false;
-    };
-    libraryFindings = checkArtifact {
-      package = "crucible-session";
-      expected = "library";
-    } {
-      package.name = "crucible-session";
-      lib."crate-type" = ["rlib" "cdylib"];
-    } {
-      hasLibRs = true;
-      hasMainRs = false;
-      hasSrcBinDir = false;
-    };
-    cliFindings = checkArtifact {
-      package = "crucible-cli";
-      expected = "cli-binary";
-    } {
-      package.name = "crucible-cli";
-      bin = [
-        {
-          name = "crucible";
-          path = "src/main.rs";
-        }
-        {
-          name = "crucible-debug";
-          path = "src/bin/debug.rs";
-        }
-      ];
-    } {
-      hasLibRs = false;
-      hasMainRs = true;
-      hasSrcBinDir = false;
-    };
-    implicitBinFindings = checkArtifact {
-      package = "crucible-api";
-      expected = "library";
-    } {
-      package.name = "crucible-api";
-    } {
-      hasLibRs = true;
-      hasMainRs = true;
-      hasSrcBinDir = false;
-    };
+    pluginFindings =
+      checkArtifact {
+        package = "crucible-qemu-plugin";
+        expected = "cdylib-plugin";
+      } {
+        package.name = "crucible-qemu-plugin";
+        lib."crate-type" = ["rlib"];
+      } {
+        hasLibRs = true;
+        hasMainRs = false;
+        hasSrcBinDir = false;
+      };
+    libraryFindings =
+      checkArtifact {
+        package = "crucible-session";
+        expected = "library";
+      } {
+        package.name = "crucible-session";
+        lib."crate-type" = ["rlib" "cdylib"];
+      } {
+        hasLibRs = true;
+        hasMainRs = false;
+        hasSrcBinDir = false;
+      };
+    cliFindings =
+      checkArtifact {
+        package = "crucible-cli";
+        expected = "cli-binary";
+      } {
+        package.name = "crucible-cli";
+        bin = [
+          {
+            name = "crucible";
+            path = "src/main.rs";
+          }
+          {
+            name = "crucible-debug";
+            path = "src/bin/debug.rs";
+          }
+        ];
+      } {
+        hasLibRs = false;
+        hasMainRs = true;
+        hasSrcBinDir = false;
+      };
+    implicitBinFindings =
+      checkArtifact {
+        package = "crucible-api";
+        expected = "library";
+      } {
+        package.name = "crucible-api";
+      } {
+        hasLibRs = true;
+        hasMainRs = true;
+        hasSrcBinDir = false;
+      };
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in

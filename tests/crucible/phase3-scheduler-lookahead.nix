@@ -19,14 +19,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-2 checked off";
-        needle = "- [x] **T-SCHED-2**";
-      }
       {
         label = "T-SCHED-2 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerLookahead`";

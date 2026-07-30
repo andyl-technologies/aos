@@ -1173,9 +1173,12 @@ pub(super) fn scheduler_state_for_configuration(configuration: &Configuration) -
 }
 
 pub(super) fn configuration_virtual_time(configuration: &Configuration) -> VirtualTime {
-    VirtualTime {
-        ticks: u64::try_from(configuration.schedule.len()).unwrap_or(u64::MAX),
-    }
+    configuration
+        .schedule
+        .recorded_virtual_time()
+        .unwrap_or(VirtualTime {
+            ticks: u64::try_from(configuration.schedule.len()).unwrap_or(u64::MAX),
+        })
 }
 
 pub(super) fn instantiate_thin_replay(
@@ -2320,65 +2323,6 @@ pub(super) fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &m
     lines.push(format!("event_log.events={}", event_log.events));
 }
 
-pub(super) fn checkpoint_edge(
-    configuration: &Configuration,
-    parent: Option<&Configuration>,
-) -> Result<(Option<ContentHash>, Schedule), EngineError> {
-    match (configuration.is_genesis(), parent) {
-        (true, None) => Ok((None, Schedule::empty())),
-        (true, Some(_)) => Err(EngineError::CheckpointTopologyMismatch {
-            checkpoint: configuration.id(),
-            reason: "genesis-has-parent",
-        }),
-        (false, None) => Err(EngineError::CheckpointTopologyMismatch {
-            checkpoint: configuration.id(),
-            reason: "descendant-missing-parent",
-        }),
-        (false, Some(parent)) => {
-            if parent.def.id != configuration.def.id {
-                return Err(EngineError::CheckpointTopologyMismatch {
-                    checkpoint: configuration.id(),
-                    reason: "parent-scenario-mismatch",
-                });
-            }
-            let prefix = configuration
-                .schedule
-                .prefix(parent.schedule.len())
-                .map_err(EngineError::SchedulePrefix)?;
-            if prefix != parent.schedule {
-                return Err(EngineError::CheckpointTopologyMismatch {
-                    checkpoint: configuration.id(),
-                    reason: "parent-not-schedule-prefix",
-                });
-            }
-            let delta = configuration
-                .schedule
-                .suffix_from(parent.schedule.len())
-                .map_err(EngineError::SchedulePrefix)?;
-            if delta.is_empty() {
-                return Err(EngineError::CheckpointTopologyMismatch {
-                    checkpoint: configuration.id(),
-                    reason: "empty-descendant-delta",
-                });
-            }
-            Ok((Some(parent.id()), delta))
-        }
-    }
-}
+mod reduction_helpers;
 
-pub(super) fn immediate_parent_configuration(
-    configuration: &Configuration,
-) -> Result<Option<Configuration>, EngineError> {
-    if configuration.is_genesis() {
-        Ok(None)
-    } else {
-        let schedule = configuration
-            .schedule
-            .prefix(configuration.schedule.len().saturating_sub(1))
-            .map_err(EngineError::SchedulePrefix)?;
-        Ok(Some(Configuration {
-            def: configuration.def.clone(),
-            schedule,
-        }))
-    }
-}
+pub(in crate::model) use reduction_helpers::*;

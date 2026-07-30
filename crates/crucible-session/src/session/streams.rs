@@ -361,8 +361,8 @@ impl SessionEventLogStream {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionEventLogStreamError::Lagged`] when this subscriber falls
-    /// behind the bounded live broadcast tail.
+    /// A subscriber that falls behind the bounded live broadcast tail resumes
+    /// from the retained event log at its current cursor.
     pub async fn recv(
         &mut self,
     ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
@@ -377,8 +377,8 @@ impl SessionEventLogStream {
                     }
                 }
                 Err(broadcast::error::RecvError::Closed) => return Ok(None),
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    return Err(SessionEventLogStreamError::Lagged { skipped });
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    self.resume_from_retained_log();
                 }
             }
         }
@@ -393,8 +393,8 @@ impl SessionEventLogStream {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionEventLogStreamError::Lagged`] when this subscriber has
-    /// fallen behind the bounded live broadcast tail.
+    /// A subscriber that falls behind the bounded live broadcast tail resumes
+    /// from the retained event log at its current cursor.
     pub fn try_recv(&mut self) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
         loop {
             if let Some(frame) = self.take_ready_backlog_frame() {
@@ -408,8 +408,8 @@ impl SessionEventLogStream {
                 }
                 Err(broadcast::error::TryRecvError::Empty)
                 | Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
-                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    return Err(SessionEventLogStreamError::Lagged { skipped });
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    self.resume_from_retained_log();
                 }
             }
         }
@@ -429,6 +429,13 @@ impl SessionEventLogStream {
         }
         self.next_cursor = frame.next_cursor;
         Some(frame)
+    }
+
+    /// Switches a lagged live receiver back to cursor-based retained replay.
+    fn resume_from_retained_log(&mut self) {
+        self.replay_tail = self.hub.current_cursor();
+        self.replay_exhausted = false;
+        self.backlog.clear();
     }
 
     /// Refills the drained replay backlog and pops the next non-stale frame,

@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crucible_session::engine as crucible;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -102,7 +103,7 @@ fn cli_save_machine_readable_jsonl_reports_handle_path() -> Result<(), Box<dyn E
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_save_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
+fn cli_save_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("qemu-save-artifacts");
     let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
@@ -120,8 +121,9 @@ fn cli_save_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error
         .output()?;
     assert_eq!(output.status.code(), Some(4));
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("local QEMU save execution is unavailable"));
-    assert!(stderr.contains("no in-process double fallback was executed"));
+    assert!(stderr.contains("requires the AOS kernel"));
+    assert!(!stderr.contains("execution is unavailable"));
+    assert!(!stderr.contains("double fallback"));
     assert!(
         !artifact_dir.exists() || fs::read_dir(&artifact_dir)?.next().is_none(),
         "rejected QEMU save must not emit an artifact"
@@ -132,7 +134,7 @@ fn cli_save_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_resume_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
+fn cli_resume_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("resume-source-artifacts");
     let save_store = temp.path().join("resume-source-store");
@@ -180,8 +182,9 @@ fn cli_resume_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Err
         .output()?;
     assert_eq!(resume_output.status.code(), Some(4));
     let stderr = String::from_utf8(resume_output.stderr)?;
-    assert!(stderr.contains("local QEMU resume execution is unavailable"));
-    assert!(stderr.contains("no in-process double fallback was executed"));
+    assert!(stderr.contains("requires the AOS kernel"));
+    assert!(!stderr.contains("execution is unavailable"));
+    assert!(!stderr.contains("double fallback"));
     assert!(
         !resume_artifact_dir.exists() || fs::read_dir(&resume_artifact_dir)?.next().is_none(),
         "rejected QEMU resume must not emit an artifact"
@@ -192,7 +195,7 @@ fn cli_resume_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Err
 
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "debug fixture; fleet gates run QEMU")]
-fn cli_fork_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error>> {
+fn cli_fork_qemu_process_requires_packaged_live_guest_assets() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("fork-source-artifacts");
     let fork_artifact_dir = temp.path().join("qemu-fork-artifacts");
@@ -241,8 +244,9 @@ fn cli_fork_qemu_process_rejects_unwired_execution() -> Result<(), Box<dyn Error
         .output()?;
     assert_eq!(fork_output.status.code(), Some(4));
     let stderr = String::from_utf8(fork_output.stderr)?;
-    assert!(stderr.contains("local QEMU fork execution is unavailable"));
-    assert!(stderr.contains("no in-process double fallback was executed"));
+    assert!(stderr.contains("requires the AOS kernel"));
+    assert!(!stderr.contains("execution is unavailable"));
+    assert!(!stderr.contains("double fallback"));
     assert!(
         !fork_artifact_dir.exists() || fs::read_dir(&fork_artifact_dir)?.next().is_none(),
         "rejected QEMU fork must not emit an artifact"

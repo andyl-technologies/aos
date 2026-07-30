@@ -25,14 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
-      {
-        label = "T-QEMU-5 checklist complete";
-        needle = "- [x] **T-QEMU-5**";
-      }
       {
         label = "QEMU-21 fallback requirement";
         needle = "thin-checkpoint (replay) fallback";

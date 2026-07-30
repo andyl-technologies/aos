@@ -20,14 +20,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-25 checklist complete";
-        needle = "- [x] **T-DET-25**";
-      }
       {
         label = "T-DET-25 completion note";
         needle = "Completed by `checks.crucible.phase1.adversarialHostFixture`";

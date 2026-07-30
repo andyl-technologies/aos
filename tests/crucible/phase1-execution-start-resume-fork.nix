@@ -19,14 +19,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
-      {
-        label = "T-EXEC-7 checked off";
-        needle = "- [x] **T-EXEC-7**";
-      }
       {
         label = "T-EXEC-7 completion note";
         needle = "Completed by `crates/crucible-qemu/src/realization.rs`";
@@ -141,10 +135,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-9 checklist complete";
-        needle = "- [x] **T-PAT-9**";
-      }
       {
         label = "T-PAT-9 completion names shared QEMU instantiate";
         needle = "`crucible_qemu::instantiate_qemu_vm`";

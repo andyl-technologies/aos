@@ -326,6 +326,8 @@ pub struct PerfBenchInput {
     pub corpus: Vec<BenchScenario>,
     /// The stored baseline for the regression comparison.
     pub baseline: PerfBaseline,
+    /// This run's measured fuzzing throughput (scenarios / core / hour).
+    pub observed_fuzz_throughput: u64,
     /// This run's cumulative campaign coverage ([PERF-28]).
     pub cumulative_coverage: u64,
     /// Admission records for every enabled or experimentally gated host-parallel mechanism.

@@ -111,6 +111,8 @@ pub fn record_device_fault(
 pub struct LinkEmitDecisionRecord {
     /// The deliveries produced by the link after applying its effective fault table.
     pub outcome: ResolveOutcome,
+    /// The exact fixed-order draw vector consumed by this frame.
+    pub draws: FrameDraws,
     /// The raw RNG draws and derived fault outcomes recorded for the schedule.
     pub decisions: Vec<Decision>,
 }
@@ -207,48 +209,6 @@ pub fn emit_link_frame_with_recorded_stream(
         frame,
         policy,
     )
-}
-
-/// Emits one network-link frame from an explicit canonical RNG stream cursor.
-///
-/// A logical World link uses one stream across both directed runtime edges.
-/// The scheduler therefore owns the shared cursor and supplies it here rather
-/// than allowing either concrete [`NetLink`] to restart from its local cursor.
-///
-/// # Errors
-///
-/// Returns [`DeviceError`] when the link cannot emit the frame, including clock
-/// overflow or fail-loud past-delivery guards.
-pub fn emit_link_frame_with_recorded_stream_at_position(
-    seed: Seed,
-    stream: &RngStreamId,
-    fault_id: &DeviceId,
-    rng_position: u64,
-    link: &mut NetLink,
-    frame: &Frame,
-    policy: PastDeliveryPolicy,
-) -> Result<LinkEmitDecisionRecord, DeviceError> {
-    let fault_table = link.faults().clone();
-    let mut rng = DeviceRng::restore(
-        seed.decision_rng().root_seed(),
-        &stream.domain,
-        &stream.name,
-        rng_position,
-    );
-    let (outcome, draws) = link.emit_with_rng_draws(frame, &mut rng, policy)?;
-    let at = VirtualTime {
-        ticks: frame.emit_icount,
-    };
-    let mut decisions = link_rng_draw_decisions(stream, &draws);
-    let partitioned = fault_table.partitioned;
-    let loss_fired = !partitioned && fault_table.loss_fires(draws.loss, &draws.additional_loss);
-    let duplicate_fired =
-        !partitioned && !loss_fired && fault_table.duplicate.fires(draws.duplicate);
-    let corrupt_fired = !partitioned && !loss_fired && fault_table.corrupt.fires(draws.corrupt);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
-    Ok(LinkEmitDecisionRecord { outcome, decisions })
 }
 
 /// Converts link fault draws into schedule decisions in consumption order.
@@ -1221,3 +1181,6 @@ mod tests {
             .unwrap_or_else(|| panic!("fat checkpoint should carry materialized state"))
     }
 }
+mod link_emission;
+
+pub use link_emission::*;

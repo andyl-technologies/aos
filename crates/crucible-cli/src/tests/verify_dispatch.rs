@@ -1,6 +1,25 @@
 //! Verification, dispatch, selftest, and failure-path tests.
 
 use super::*;
+
+struct FakeLiveQemuProbeRunner {
+    reports: Vec<LiveQemuProbeEvidence>,
+    next: usize,
+}
+
+impl LiveQemuProbeRunner for FakeLiveQemuProbeRunner {
+    fn run_probe(
+        &mut self,
+        _backend: &ResolvedLocalBackend,
+    ) -> Result<LiveQemuProbeEvidence, CliError> {
+        let report = self.reports.get(self.next).cloned().ok_or_else(|| {
+            backend_error("fake live-QEMU probe did not receive enough evidence reports")
+        })?;
+        self.next += 1;
+        Ok(report)
+    }
+}
+
 #[test]
 pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
 -> Result<(), Box<dyn Error>> {
@@ -408,7 +427,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
 }
 
 #[test]
-pub(super) fn cli_verify_workflow_rejects_unwired_local_qemu_execution()
+pub(super) fn cli_verify_workflow_routes_local_qemu_into_production_factory()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -442,8 +461,18 @@ pub(super) fn cli_verify_workflow_rejects_unwired_local_qemu_execution()
         None,
         &mut NullBackendCommandRunner,
     )
-    .expect_err("local QEMU verify must not execute double-backed reductions");
-    assert_qemu_workflow_unwired(&error, "verify");
+    .expect_err("fixture QEMU artifacts must fail production backend construction");
+    assert!(matches!(error, CliError::Backend(_)));
+    let message = error.to_string();
+    assert!(
+        message.contains("execution backend construction failed")
+            || message.contains("production QEMU")
+            || message.contains("live local QEMU execution requires")
+            || message.contains("root overlay")
+            || message.contains("qemu-img"),
+        "unexpected production QEMU factory error: {message}"
+    );
+    assert!(!message.contains("double fallback"));
 
     Ok(())
 }
@@ -466,7 +495,7 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
     assert_eq!(backend_plan.resolved_backend, None);
     assert!(backend_plan.remote_uses_control_api);
     assert!(!backend_plan.local_uses_simulation_backend);
-    assert!(backend_plan.proves_t_cli_3());
+    assert!(backend_plan.has_consistent_route());
 
     let thin_plan = plan_cli_invocation(&cli);
     assert!(
@@ -544,8 +573,8 @@ pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_o
         &mut remote_runner,
     )?;
 
-    assert!(local_backend.proves_t_cli_3());
-    assert!(remote_backend.proves_t_cli_3());
+    assert!(local_backend.has_consistent_route());
+    assert!(remote_backend.has_consistent_route());
     assert_eq!(local_runner.local_runs, vec![ResolvedLocalBackend::Double]);
     assert!(local_runner.remote_runs.is_empty());
     assert_eq!(
@@ -563,6 +592,52 @@ pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_o
     assert_eq!(local_outcome.stdout, remote_outcome.stdout);
     assert_eq!(local_outcome.stderr, remote_outcome.stderr);
 
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_backend_selection_rejects_execution_identity_divergence()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "--backend",
+        "qemu",
+        "--qemu",
+        qemu.as_str(),
+        "--plugin",
+        plugin.as_str(),
+        "run",
+        TEST_SCENARIO,
+    ]);
+    let thin_plan = plan_cli_invocation(&cli);
+    let backend_plan = plan_backend_selection(&cli)?.expect("run should require backend selection");
+    let mut runner = RecordingBackendCommandRunner {
+        evidence_override: Some(BackendExecutionEvidence::LocalProduction {
+            build_id: content_address_bytes(b"different-qemu-build"),
+            plugin_abi: required_qemu_plugin_abi(),
+        }),
+        ..RecordingBackendCommandRunner::default()
+    };
+
+    let error = execute_backend_routed_command(
+        &thin_plan,
+        &backend_plan,
+        None,
+        None,
+        None,
+        None,
+        &mut runner,
+    )
+    .expect_err("an executed build identity mismatch must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("executed backend identity does not match")
+    );
+    assert_eq!(runner.local_runs.len(), 1);
     Ok(())
 }
 
@@ -1454,177 +1529,6 @@ pub(super) fn cli_selftest_canonical_gate_names_match_harness_catalog() {
         .collect::<Vec<_>>();
 
     assert_eq!(CANONICAL_GATE_NAMES, harness_gate_names.as_slice());
-}
-
-#[test]
-pub(super) fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
-    let Commands::Selftest(args) = &cli.command else {
-        panic!("expected selftest command");
-    };
-    let report = run_selftest(&cli, args)?;
-
-    let scenario_names = report
-        .verified
-        .iter()
-        .map(|verified| verified.scenario_name.as_str())
-        .collect::<Vec<_>>();
-    let gate_names = report
-        .gates
-        .iter()
-        .map(|gate| gate.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(report.verified.len(), 3);
-    assert!(scenario_names.contains(&"happy-path.scn"));
-    assert!(scenario_names.contains(&"partition-recovery.scn"));
-    assert!(scenario_names.contains(&"crash-restart.scn"));
-    assert!(report.verified.iter().all(|verified| verified.runs == 5));
-    assert_eq!(gate_names, BUILT_IN_CORPUS_SELFTEST_GATES);
-    assert!(report.gates.iter().all(|gate| {
-        gate.status == SelftestGateStatus::Passed
-            && gate.corpus_entries == 3
-            && gate.runs_per_entry == DEFAULT_SELFTEST_RUNS
-            && gate.runner == SelftestGateRunner::DoubleBackedCorpus
-            && gate.qemu_build_id.is_none()
-    }));
-    dispatch(&cli)?;
-
-    let selected = Cli::parse_from([
-        "crucible",
-        "--quiet",
-        "selftest",
-        "--gates",
-        "gate:replay-oracle",
-    ]);
-    let Commands::Selftest(args) = &selected.command else {
-        panic!("expected selftest command");
-    };
-    let selected_report = run_selftest(&selected, args)?;
-    assert_eq!(
-        selected_report
-            .gates
-            .iter()
-            .map(|gate| gate.name.as_str())
-            .collect::<Vec<_>>(),
-        ["gate:replay-oracle"]
-    );
-    dispatch(&selected)?;
-
-    let temp = TempDir::new()?;
-    let manifest = temp.path().join("selftest-corpus.txt");
-    fs::write(
-        &manifest,
-        "builtin:happy-path.scn\n# comments are ignored\ncrash-restart.scn\n",
-    )?;
-    let manifest_cli = Cli::parse_from([
-        "crucible",
-        "--quiet",
-        "selftest",
-        "--corpus",
-        manifest.to_str().unwrap_or("."),
-    ]);
-    let Commands::Selftest(args) = &manifest_cli.command else {
-        panic!("expected selftest command");
-    };
-    let manifest_report = run_selftest(&manifest_cli, args)?;
-    assert_eq!(
-        manifest_report
-            .verified
-            .iter()
-            .map(|verified| verified.scenario_name.as_str())
-            .collect::<Vec<_>>(),
-        ["happy-path.scn", "crash-restart.scn"]
-    );
-    assert!(
-        manifest_report
-            .gates
-            .iter()
-            .all(|gate| gate.corpus_entries == 2)
-    );
-    dispatch(&manifest_cli)?;
-
-    let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
-    let qemu_cli = Cli::parse_from([
-        "crucible",
-        "--quiet",
-        "--qemu",
-        qemu.as_str(),
-        "--plugin",
-        plugin.as_str(),
-        "selftest",
-        "--with-qemu",
-    ]);
-    let Commands::Selftest(args) = &qemu_cli.command else {
-        panic!("expected selftest command");
-    };
-    let qemu_report = run_selftest(&qemu_cli, args)?;
-    let qemu_gate_names = qemu_report
-        .gates
-        .iter()
-        .filter(|gate| gate.runner == SelftestGateRunner::RealQemu)
-        .map(|gate| gate.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(qemu_gate_names, REAL_QEMU_SELFTEST_GATES);
-    let expected_qemu_build_id = content_address_bytes(b"test-qemu-build-v1");
-    assert!(qemu_report.gates.iter().all(|gate| {
-        if gate.runner == SelftestGateRunner::RealQemu {
-            gate.qemu_build_id.as_deref() == Some(expected_qemu_build_id.as_str())
-        } else {
-            gate.qemu_build_id.is_none()
-        }
-    }));
-    dispatch(&qemu_cli)?;
-
-    let unknown = Cli::parse_from(["crucible", "selftest", "--gates", "gate:not-real"]);
-    let Commands::Selftest(args) = &unknown.command else {
-        panic!("expected selftest command");
-    };
-    let error = match run_selftest(&unknown, args) {
-        Ok(_) => panic!("unknown selftest gate must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-
-    let empty = Cli::parse_from(["crucible", "selftest", "--gates", "gate:replay-oracle,"]);
-    let Commands::Selftest(args) = &empty.command else {
-        panic!("expected selftest command");
-    };
-    let error = match run_selftest(&empty, args) {
-        Ok(_) => panic!("empty selftest gate component must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-
-    let duplicate = Cli::parse_from([
-        "crucible",
-        "selftest",
-        "--gates",
-        "gate:replay-oracle,gate:replay-oracle",
-    ]);
-    let Commands::Selftest(args) = &duplicate.command else {
-        panic!("expected selftest command");
-    };
-    let error = match run_selftest(&duplicate, args) {
-        Ok(_) => panic!("duplicate selftest gate must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-
-    let unsupported = Cli::parse_from(["crucible", "selftest", "--gates", "gate:qemu-inert"]);
-    let Commands::Selftest(args) = &unsupported.command else {
-        panic!("expected selftest command");
-    };
-    let error = match run_selftest(&unsupported, args) {
-        Ok(_) => panic!("real-QEMU selftest gate must require --with-qemu"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, CliError::Usage(_)));
-    assert_eq!(error.exit_code(), 64);
-
-    Ok(())
 }
 
 #[test]
@@ -3002,3 +2906,5 @@ pub(super) fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box
 
     Ok(())
 }
+#[path = "verify_dispatch/selftest.rs"]
+mod selftest;

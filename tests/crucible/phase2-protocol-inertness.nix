@@ -21,7 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
       {
@@ -150,10 +149,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-      {
-        label = "T-PROTO-11 checklist complete";
-        needle = "- [x] **T-PROTO-11**";
-      }
       {
         label = "gate qemu inert reference";
         needle = "`gate:qemu-inert`";

@@ -129,6 +129,7 @@ fn run_dispatch(
                     router: "host-worker-router",
                     crash_detector: name,
                 },
+                None,
             )
             .map_err(|error| BackendError::Rejected {
                 message: format!("build live host-worker node {name}: {error}"),

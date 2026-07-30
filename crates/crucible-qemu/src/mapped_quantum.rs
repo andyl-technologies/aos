@@ -500,13 +500,24 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
+        let delivery_icount = self.with_hot_path("delivery icount", |hot_path| {
+            Ok(Icount {
+                retired: hot_path.node_snapshot().current_icount.saturating_add(1),
+            })
+        })?;
+        self.deliver_frame_at(input, delivery_icount)
+    }
+
+    fn deliver_frame_at(
+        &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the scheduler-selected timestamp is validated before this untrusted transport write.
+        input: BackendInput,
+        delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
         let sequence = self.next_router_inbound_sequence()?;
         let router_slot = self.config.router_slot;
         let payload = input.payload;
         self.with_hot_path("deliver_frame", move |hot_path| {
-            let delivery_icount = Icount {
-                retired: hot_path.node_snapshot().current_icount.saturating_add(1),
-            };
             hot_path
                 .enqueue_inbound_frame(QemuInboundFrame {
                     delivery_icount,
@@ -544,53 +555,6 @@ struct QemuMappedPendingQuantum {
     start_operations: Vec<QemuQuantumOperation>,
 }
 
-fn validate_config(
-    config: &QemuQuantumShmemConfig,
-) -> Result<(), QemuMappedQuantumShmemHotPathError> {
-    if config.shift_bits >= 64 {
-        return Err(QemuMappedQuantumShmemHotPathError::Quantum {
-            source: QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            },
-        });
-    }
-    Ok(())
-}
+mod support;
 
-fn mapped_view<'a>(
-    region: &'a mut MappedSetupRegion,
-    config: &QemuQuantumShmemConfig,
-) -> Result<QemuQuantumShmemView<'a>, QemuMappedQuantumShmemHotPathError> {
-    let pair = region
-        .node_directed_ring_pair_mut(
-            config.vm_slot,
-            config.router_slot,
-            config.vm_slot,
-            config.vm_slot,
-            config.router_slot,
-        )
-        .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
-    let MappedNodeRingPairMut {
-        node_slot,
-        first,
-        second,
-    } = pair;
-    let MappedDirectedRingMut {
-        header: inbound_ring,
-        entries: inbound_entries,
-        ..
-    } = first;
-    let MappedDirectedRingMut {
-        header: outbound_ring,
-        entries: outbound_entries,
-        ..
-    } = second;
-    QemuQuantumShmemView::new(
-        node_slot,
-        inbound_ring,
-        inbound_entries,
-        outbound_ring,
-        outbound_entries,
-    )
-    .map_err(|source| QemuMappedQuantumShmemHotPathError::Quantum { source })
-}
+use support::*;

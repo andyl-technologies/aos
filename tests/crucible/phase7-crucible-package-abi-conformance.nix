@@ -3,20 +3,36 @@
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackageAbiConformance",
   taskIds ? ["T-PKG-11"],
-  rawAbiGate ? import ./phase2-abi-conformance.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase2.abiConformance";
-  },
+  rawAbiGate ?
+    import ./phase2-abi-conformance.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase2.abiConformance";
+    },
   gatedAbiGate ? null,
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
   abiConformanceCheck = builtins.readFile ./phase2-abi-conformance.nix;
-  shmemGateTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
-  protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
-  protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
-  apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
-  apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  shmemGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
+  };
+  protocolGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  };
+  protocolGoldenTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  };
+  apiGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_abi_conformance.rs;
+  };
+  apiRpcAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+  };
 
   taskList = builtins.concatStringsSep "," taskIds;
   gatedAbiRawGate =
@@ -26,13 +42,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-11 checklist complete";
-        needle = "- [x] **T-PKG-11**";
-      }
       {
         label = "T-PKG-11 completion note";
         needle = "Completed by `checks.crucible.phase7.cruciblePackageAbiConformance`";

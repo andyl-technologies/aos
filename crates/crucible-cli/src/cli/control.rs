@@ -240,6 +240,7 @@ where
             state_updates,
             streamed_events: Vec::new(),
             streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
             acknowledged_commands,
             watch_statuses: Vec::new(),
@@ -494,7 +495,7 @@ where
             return Ok(summary.clone());
         }
         if summary.state == LiveStateKind::Stopped {
-            return Err(CliError::Outcome(status_from_outcome(summary.outcome)));
+            return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
         }
         tokio::task::yield_now().await;
     }
@@ -930,6 +931,8 @@ where
     let mut state_updates = Vec::new();
     let mut streamed_events = Vec::new();
     let mut streamed_event_frames = Vec::new();
+    let mut coverage_events = Vec::new();
+    let mut streamed_event_cursor = 0;
     let observation = observe_run_final_state(
         client,
         &mut control,
@@ -940,12 +943,14 @@ where
         &mut state_updates,
         &mut streamed_events,
         &mut streamed_event_frames,
+        &mut coverage_events,
+        &mut streamed_event_cursor,
     )
     .await?;
     if state_updates.last() != Some(&observation.final_state) {
         state_updates.push(observation.final_state.clone());
     }
-    let status = run_status_from_observation(run_plan, &observation);
+    let status = run_status_from_observation(run_plan, &observation)?;
 
     Ok(RunWorkflowReport {
         status,
@@ -959,6 +964,7 @@ where
         state_updates,
         streamed_events,
         streamed_event_frames,
+        coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
         execution_fingerprints,
         acknowledged_commands,
         watch_statuses: observation.watch_statuses,
@@ -1060,6 +1066,7 @@ pub(super) fn cli_stream_command(command: SessionCommandKind) -> Result<SessionC
 }
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+// crucible-lint: allow rust-allow -- the drain boundary carries the control stream, terminal extent, timeout, decoded events, exact frames, coverage events, and cursor as distinct ownership domains.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn observe_run_final_state<C>(
     client: &C,
@@ -1071,6 +1078,8 @@ pub(super) async fn observe_run_final_state<C>(
     state_updates: &mut Vec<String>,
     streamed_events: &mut Vec<String>,
     streamed_event_frames: &mut Vec<Vec<u8>>,
+    coverage_events: &mut Vec<crucible::ObservableEvent>,
+    streamed_event_cursor: &mut u64,
 ) -> Result<RunObservation, CliError>
 where
     C: ControlClient + Sync,
@@ -1093,6 +1102,8 @@ where
                     run_plan.observer_profile.event_timeout_ms,
                     streamed_events,
                     streamed_event_frames,
+                    coverage_events,
+                    streamed_event_cursor,
                 )
                 .await?
                 {
@@ -1123,6 +1134,8 @@ where
                     run_plan.observer_profile.event_timeout_ms,
                     streamed_events,
                     streamed_event_frames,
+                    coverage_events,
+                    streamed_event_cursor,
                 )
                 .await?
                 {
@@ -1136,15 +1149,9 @@ where
             .iter()
             .find(|summary| summary.session == session_ref)
         else {
-            return Ok(RunObservation {
-                final_state: terminal_final_state(run_plan, None),
-                outcome: None,
-                terminal_savepoint: None,
-                frontier_ticks: last_frontier_ticks,
-                quanta: last_quanta,
-                budget_timed_out: false,
-                watch_statuses,
-            });
+            return Err(backend_error(
+                "run session disappeared before the engine reported an outcome",
+            ));
         };
         let state = format!("{:?}", session.state).to_ascii_lowercase();
         last_session = Some(session.clone());
@@ -1186,6 +1193,16 @@ where
             .await;
         }
         if state == "stopped" {
+            drain_terminal_event_log(
+                control,
+                session.event_log_len,
+                run_plan.observer_profile.event_timeout_ms,
+                streamed_events,
+                streamed_event_frames,
+                coverage_events,
+                streamed_event_cursor,
+            )
+            .await?;
             return Ok(RunObservation {
                 final_state: terminal_final_state(run_plan, session.outcome),
                 outcome: session.outcome,
@@ -1213,15 +1230,9 @@ where
         )
         .await;
     }
-    Ok(RunObservation {
-        final_state: String::from("timeout"),
-        outcome: Some(OutcomeKind::Timeout),
-        terminal_savepoint: None,
-        frontier_ticks: last_frontier_ticks,
-        quanta: last_quanta,
-        budget_timed_out: true,
-        watch_statuses,
-    })
+    Err(backend_error(format!(
+        "run observation ended before the engine reported an outcome at frontier {last_frontier_ticks} after {last_quanta} quanta"
+    )))
 }
 
 pub(super) async fn query_execution_fingerprint(
@@ -1281,24 +1292,6 @@ pub(super) async fn query_execution_fingerprint(
     }
 }
 
-pub(super) async fn observe_next_event(
-    control: &mut crucible_api::ClientControlStream,
-    timeout_ms: u64,
-    streamed_events: &mut Vec<String>,
-    streamed_event_frames: &mut Vec<Vec<u8>>,
-) -> Result<bool, CliError> {
-    match tokio::time::timeout(Duration::from_millis(timeout_ms), control.recv_event()).await {
-        Ok(Ok(Some(frame))) => {
-            streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
-            streamed_events.push(frame.event.payload.kind);
-            Ok(false)
-        }
-        Ok(Ok(None)) => Ok(true),
-        Ok(Err(error)) => Err(control_client_error(error)),
-        Err(_) => Ok(false),
-    }
-}
-
 pub(super) async fn observe_next_state_update(
     control: &mut crucible_api::ClientControlStream,
     timeout_ms: u64,
@@ -1324,6 +1317,7 @@ pub(super) async fn observe_next_state_update(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn stop_budget_timed_out_session<C>(
     client: &C,
+    // crucible-lint: allow host-nondeterminism-state -- the typed client stream is observation transport; the session engine remains authoritative.
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -1341,7 +1335,7 @@ where
         acknowledge_stream_command(
             control,
             command_id,
-            SessionCommandKind::Stop,
+            SessionCommandKind::ExhaustBudget,
             acknowledged_commands,
         )
         .await?;
@@ -1369,15 +1363,16 @@ where
 
     Ok(RunObservation {
         final_state,
-        outcome: Some(OutcomeKind::Timeout),
+        outcome: stopped.outcome,
         terminal_savepoint: stopped.terminal_savepoint,
         frontier_ticks: stopped.frontier.ticks,
         quanta: stopped.quanta_stepped,
-        budget_timed_out: true,
+        budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
         watch_statuses,
     })
 }
 
+// crucible-lint: allow host-nondeterminism-state -- formatting a validated API summary cannot admit host-derived engine state.
 pub(super) fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
     format!(
         "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
@@ -1431,24 +1426,29 @@ pub(super) fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static s
 pub(super) fn run_status_from_observation(
     run_plan: &RunInvocationPlan,
     observation: &RunObservation,
-) -> BackendCommandStatus {
+) -> Result<BackendCommandStatus, CliError> {
     if observation.budget_timed_out {
-        return BackendCommandStatus::Timeout;
+        return Ok(BackendCommandStatus::Timeout);
     }
     if run_plan.terminal_condition == RunTerminalCondition::Property
         && matches!(observation.outcome, Some(OutcomeKind::Passed) | None)
     {
-        return BackendCommandStatus::Failed;
+        return Ok(BackendCommandStatus::Failed);
     }
     status_from_outcome(observation.outcome)
 }
 
-pub(super) fn status_from_outcome(outcome: Option<OutcomeKind>) -> BackendCommandStatus {
+pub(super) fn status_from_outcome(
+    outcome: Option<OutcomeKind>,
+) -> Result<BackendCommandStatus, CliError> {
     match outcome {
-        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => BackendCommandStatus::Passed,
-        Some(OutcomeKind::Failed) => BackendCommandStatus::Failed,
-        Some(OutcomeKind::Timeout) | None => BackendCommandStatus::Timeout,
-        Some(OutcomeKind::Crashed) => BackendCommandStatus::Crashed,
+        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => Ok(BackendCommandStatus::Passed),
+        Some(OutcomeKind::Failed) => Ok(BackendCommandStatus::Failed),
+        Some(OutcomeKind::Timeout) => Ok(BackendCommandStatus::Timeout),
+        Some(OutcomeKind::Crashed) => Ok(BackendCommandStatus::Crashed),
+        None => Err(backend_error(
+            "session reached a terminal observation without an engine outcome",
+        )),
     }
 }
 
@@ -1584,6 +1584,7 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::Fork => "fork",
         SessionCommandKind::Query => "query",
         SessionCommandKind::Stop => "stop",
+        SessionCommandKind::ExhaustBudget => "exhaust-budget",
         SessionCommandKind::Snapshot => "snapshot",
         SessionCommandKind::AttachGdb => "attach-gdb",
         SessionCommandKind::DebugGoto => "debug-goto",
@@ -1593,6 +1594,7 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
     }
 }
 
+// crucible-lint: allow host-nondeterminism-state -- this boundary converts a typed transport failure without constructing session state.
 pub(super) fn control_client_error(error: crucible_api::ControlClientError) -> CliError {
     backend_error(format!("control API error: {error}"))
 }
@@ -1684,3 +1686,7 @@ pub(super) fn backend_canonical_log_entries(
     }
     entries
 }
+#[path = "control/streaming_events.rs"]
+mod streaming_events;
+
+pub(crate) use streaming_events::*;

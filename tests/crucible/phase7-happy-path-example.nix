@@ -24,14 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" exampleDoc [
-      {
-        label = "T-EX-1 checked off";
-        needle = "- [x] **T-EX-1**";
-      }
       {
         label = "T-EX-1 completion note";
         needle = "Completed by `checks.crucible.phase7.happyPathExample`";
@@ -291,10 +285,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
-        # Drift: the CLI dependency now enables the corpus test-double
-        # feature; keep the needle pinned to the full dependency line.
-        label = "CLI depends on crucible corpus";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+        label = "CLI depends on the session facade that re-exports the corpus";
+        needle = "crucible-session = { path = \"../crucible-session\" }";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [

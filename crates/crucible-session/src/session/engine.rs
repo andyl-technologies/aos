@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "engine/terminal.rs"]
+mod terminal;
+
+use terminal::*;
+
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
@@ -809,6 +814,7 @@ impl<L> Engine<L> {
         L: QuantumLoop,
     {
         let planned_controls = Self::plan_breakpoint_action(action)?;
+        let (passed, violations) = breakpoint_terminal_verdict(action);
         let event_log_sequence_before = usize_to_u64(self.event_log_len());
         self.apply_control_operations_at_boundary(planned_controls.clone())?;
         let scheduler_batch = if planned_controls.is_empty() {
@@ -827,6 +833,17 @@ impl<L> Engine<L> {
             }
         }
         scheduler_controls.extend(planned_controls);
+        if !violations.is_empty() {
+            self.shutdown_quantum_loop()?;
+            self.pending_control.clear();
+            self.active_step = None;
+            self.enter_stopped(TerminalCause::Failed(violations))?;
+        } else if passed {
+            self.shutdown_quantum_loop()?;
+            self.pending_control.clear();
+            self.active_step = None;
+            self.enter_stopped(TerminalCause::Passed)?;
+        }
         Ok(())
     }
 
@@ -867,26 +884,18 @@ impl<L> Engine<L> {
             | Action::StopNode { .. }
             | Action::CreateSavepoint { .. }
             | Action::Fork { .. }
-            | Action::Pass
-            | Action::Fail { .. }
             | Action::Log { .. } => {
                 return Err(SessionError::UnsupportedBreakpointAction {
                     action: breakpoint_action_kind(action),
                 });
             }
+            Action::Pass | Action::Fail { .. } => {}
         }
         Ok(())
     }
 
     pub(super) fn pending_control_len(&self) -> usize {
         self.pending_control.len()
-    }
-
-    fn enter_stopped(&mut self, outcome: Outcome) -> Result<(), SessionError> {
-        let checkpoint = self.graph.save_checkpoint(&self.configuration)?;
-        self.terminal_savepoint = Some(checkpoint);
-        self.state = EngineState::Stopped { outcome };
-        Ok(())
     }
 
     pub(super) fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
@@ -898,7 +907,7 @@ impl<L> Engine<L> {
         from: CheckpointRef,
     ) -> Result<Checkpoint, SessionError> {
         match from {
-            CheckpointRef::Current => Ok(self.graph.save_checkpoint(&self.configuration)?),
+            CheckpointRef::Current => self.save_current_checkpoint(),
             CheckpointRef::Checkpoint(checkpoint) => self
                 .graph
                 .checkpoint_node(checkpoint)
@@ -1132,7 +1141,10 @@ impl<L: QuantumLoop> Engine<L> {
                 self.shutdown_quantum_loop()?;
                 self.pending_control.clear();
                 self.active_step = None;
-                self.enter_stopped(Outcome::Stopped)?;
+                self.enter_stopped(TerminalCause::OperatorStop)?;
+            }
+            SessionCommandKind::ExhaustBudget => {
+                self.stop_after_budget_exhaustion()?;
             }
             SessionCommandKind::Start
             | SessionCommandKind::Continue
@@ -1351,7 +1363,7 @@ impl<L: QuantumLoop> Engine<L> {
             },
             SessionCommand::CreateSavepoint { label, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    let checkpoint = self.graph.save_checkpoint(&self.configuration)?;
+                    let checkpoint = self.save_current_checkpoint()?;
                     if matches!(self.state, EngineState::Running) {
                         self.record_boundary_control(&command, None);
                     }
@@ -1377,7 +1389,19 @@ impl<L: QuantumLoop> Engine<L> {
                     self.pending_control.clear();
                     self.active_step = None;
                     self.debug_branch_required = false;
-                    self.enter_stopped(Outcome::Stopped)?;
+                    self.enter_stopped(TerminalCause::OperatorStop)?;
+                    Ok(self.snapshot())
+                }
+            }
+            SessionCommand::ExhaustBudget => {
+                if matches!(self.state, EngineState::Stopped { .. }) {
+                    Err(self.invalid_transition(command.clone()))
+                } else {
+                    if matches!(self.state, EngineState::Running) {
+                        self.record_boundary_control(&command, None);
+                    }
+                    self.debug_branch_required = false;
+                    self.stop_after_budget_exhaustion()?;
                     Ok(self.snapshot())
                 }
             }
@@ -1397,6 +1421,10 @@ impl<L: QuantumLoop> Engine<L> {
                     QueryKind::EventLogLength => {
                         QueryResult::EventLogLength(snapshot.event_log_len)
                     }
+                    QueryKind::SearchFrontier => QueryResult::SearchFrontier {
+                        frontiers: self.quantum_loop.search_frontiers()?,
+                        pending_branch_choices: self.quantum_loop.pending_search_branch_choices(),
+                    },
                     QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
                         self.quantum_loop.sample_fingerprint(node.clone())?,
                     ),
@@ -1580,6 +1608,17 @@ impl<L: QuantumLoop> Engine<L> {
             };
             self.active_step = None;
         }
+        if let Some(verdict) = self.quantum_loop.take_terminal_verdict() {
+            self.shutdown_quantum_loop()?;
+            self.pending_control.clear();
+            self.active_step = None;
+            match verdict {
+                QuantumTerminalVerdict::Passed => self.enter_stopped(TerminalCause::Passed)?,
+                QuantumTerminalVerdict::Failed(violations) => {
+                    self.enter_stopped(TerminalCause::Failed(violations))?
+                }
+            }
+        }
 
         Ok(outcome)
     }
@@ -1595,7 +1634,7 @@ impl<L: QuantumLoop> Engine<L> {
         {
             self.shutdown_quantum_loop()?;
             self.pending_control.clear();
-            self.enter_stopped(Outcome::Passed)?;
+            self.enter_stopped(TerminalCause::Passed)?;
         }
         Ok(())
     }

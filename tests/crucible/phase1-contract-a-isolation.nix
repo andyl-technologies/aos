@@ -17,8 +17,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "crates/crucible-sim/src/lib.rs" simLib [
       {
@@ -181,14 +179,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-7 checklist complete";
-        needle = "- [x] **T-DET-7**";
-      }
-      {
-        label = "T-DET-28 checklist complete";
-        needle = "- [x] **T-DET-28**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -148,7 +148,11 @@ pub fn materialize_manifest(
 /// # Errors
 ///
 /// Returns an error if the schema tag is wrong or any filesystem write fails.
-pub fn apply(manifest: &ConfigManifest, etc_root: &Path, job_scripts_runtime_dir: &str) -> Result<()> {
+pub fn apply(
+    manifest: &ConfigManifest,
+    etc_root: &Path,
+    job_scripts_runtime_dir: &str,
+) -> Result<()> {
     if manifest.schema != ConfigManifest::SCHEMA {
         bail!(
             "unsupported config-manifest schema {:?} (expected {:?})",
@@ -280,7 +284,11 @@ mod tests {
         let m = manifest_from(r#"{ "schema": "wrong/v9", "etc": {}, "jobScripts": {} }"#);
         let dir = tempdir();
         let err = apply(&m, &dir, DEFAULT_JOB_SCRIPTS_RUNTIME_DIR).unwrap_err();
-        assert!(err.to_string().contains("unsupported config-manifest schema"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("unsupported config-manifest schema"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -341,8 +349,14 @@ mod tests {
 
         // The job script is written under aos-job-scripts/<key> mode 0755.
         let js = root.join("aos-job-scripts/svc.service:ExecStart.0");
-        assert_eq!(std::fs::read_to_string(&js).unwrap(), "#!/bin/sh\necho hi\n");
-        assert_eq!(std::fs::metadata(&js).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            std::fs::read_to_string(&js).unwrap(),
+            "#!/bin/sh\necho hi\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&js).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
 
         // The unit body's placeholder is rewritten to the materialized path.
         let unit = std::fs::read_to_string(root.join("systemd/system/svc.service")).unwrap();
@@ -350,7 +364,10 @@ mod tests {
             unit.contains("ExecStart=/etc/aos-job-scripts/svc.service:ExecStart.0 --flag"),
             "unit body not rewritten: {unit}"
         );
-        assert!(!unit.contains("#aos-jobscript:"), "placeholder left behind: {unit}");
+        assert!(
+            !unit.contains("#aos-jobscript:"),
+            "placeholder left behind: {unit}"
+        );
     }
 
     #[test]
@@ -363,7 +380,10 @@ mod tests {
         let root = tempdir();
         apply(&m, &root, DEFAULT_JOB_SCRIPTS_RUNTIME_DIR).unwrap();
         apply(&m, &root, DEFAULT_JOB_SCRIPTS_RUNTIME_DIR).unwrap();
-        assert_eq!(std::fs::read_to_string(root.join("hostname")).unwrap(), "host-a\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("hostname")).unwrap(),
+            "host-a\n"
+        );
     }
 
     #[test]
@@ -379,7 +399,10 @@ mod tests {
                  "jobScripts": {} }"#,
         );
         apply(&m, &root, DEFAULT_JOB_SCRIPTS_RUNTIME_DIR).unwrap();
-        assert_eq!(std::fs::read_to_string(root.join("hostname")).unwrap(), "host-b\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("hostname")).unwrap(),
+            "host-b\n"
+        );
     }
 
     /// Creates a unique temp dir under the process temp root. Avoids a

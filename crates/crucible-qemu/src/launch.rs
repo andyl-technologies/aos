@@ -109,7 +109,8 @@ pub const QEMU_PLUGIN_CONTROL_FD: i32 = FIXED_PLUGIN_SIM_FD;
 pub const QEMU_PLUGIN_SHMEM_FD: i32 = FIXED_PLUGIN_SHMEM_FD;
 /// Fixed child descriptor number for the inherited wake event descriptor.
 pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
-const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
+/// Default per-run copy-on-write overlay file consumed by QEMU launch commands.
+pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
@@ -1305,11 +1306,7 @@ impl DeterministicLaunchProfile {
         &self,
         node: SchedulerNodeId,
     ) -> Result<SchedulerRunSubdivisionPolicy, SchedulerError> {
-        SchedulerRunSubdivisionPolicy::new(
-            node,
-            u32::from(self.smp_vcpus),
-            self.rr_switch_quantum,
-        )
+        SchedulerRunSubdivisionPolicy::new(node, u32::from(self.smp_vcpus), self.rr_switch_quantum)
     }
 
     /// Validates that every node launch declaration uses this profile's shift.

@@ -422,6 +422,22 @@ impl SearchFrontierChoice {
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
             [Decision::RngDraw(_), decision @ Decision::FaultFires(_)] => decision.clone(),
+            [
+                decision @ Decision::Override(override_decision),
+                causal @ ..,
+            ] if override_decision
+                .point
+                .key
+                .starts_with("live-world-network/")
+                && causal.iter().all(|decision| {
+                    matches!(decision, Decision::RngDraw(_) | Decision::FaultFires(_))
+                })
+                && causal
+                    .iter()
+                    .any(|decision| matches!(decision, Decision::FaultFires(_))) =>
+            {
+                decision.clone()
+            }
             _ => return None,
         };
         Some(Self {

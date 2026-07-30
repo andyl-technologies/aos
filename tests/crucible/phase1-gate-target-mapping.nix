@@ -52,14 +52,14 @@
       package = "crucible-qemu-plugin";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-guest";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
@@ -301,7 +301,8 @@
       then builtins.readFile testPath
       else "";
     requiresTestDouble =
-      target.package == "crucible"
+      target.package
+      == "crucible"
       && builtins.elem target.gate crucibleTestDoubleGates;
     manifestTargetHasRequiredFeature =
       builtins.any (

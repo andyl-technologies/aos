@@ -29,9 +29,9 @@ where
         let run_plan =
             verify_run_invocation_plan(seeded_scenario.clone(), request_seed, reduction.clone());
         let report = run_control_client_workflow_async(client, &run_plan, &[]).await?;
-        if report.status.is_non_passing() {
-            return Err(CliError::Outcome(report.status));
-        }
+        // Determinism applies to failing and budget-terminated executions too.
+        // A completed reduction remains comparable; transport/backend errors
+        // have already returned above without producing a report.
         witnesses.push(verify_witness_from_run_report(
             reduction.clone(),
             &run_plan,
@@ -1202,6 +1202,7 @@ where
             state_updates,
             streamed_events: Vec::new(),
             streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
             acknowledged_commands,
             watch_statuses: Vec::new(),

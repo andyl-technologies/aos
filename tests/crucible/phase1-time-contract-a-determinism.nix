@@ -17,7 +17,7 @@
   simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
@@ -27,8 +27,6 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   hostTimeReadBan = [
     {
@@ -208,10 +206,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-8 checklist complete";
-        needle = "- [x] **T-TIME-8**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

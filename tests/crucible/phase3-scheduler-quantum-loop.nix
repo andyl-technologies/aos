@@ -29,22 +29,18 @@
       else if maxStart < 0
       then []
       else builtins.genList (index: index) (maxStart + 1);
-    matches =
-      builtins.filter (index:
-        builtins.substring index needleLen haystack == needle)
-      indexes;
+    matches = builtins.filter (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
   in
     if matches == []
     then -1
     else builtins.head matches;
 
-
-
   orderedNeedlesFor = fileLabel: content: requirements: let
-    positions =
-      builtins.map (requirement:
-        requirement // {position = indexOf requirement.needle content;})
-      requirements;
+    positions = builtins.map (requirement:
+      requirement // {position = indexOf requirement.needle content;})
+    requirements;
     missing =
       lib.concatMap (
         requirement:
@@ -68,10 +64,6 @@
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-12 checked off";
-        needle = "- [x] **T-SCHED-12**";
-      }
       {
         label = "T-SCHED-12 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerQuantumLoop`";

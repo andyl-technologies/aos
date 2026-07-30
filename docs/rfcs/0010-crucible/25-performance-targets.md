@@ -1169,11 +1169,22 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-11** Implement the boot-amortization check: cold boots over an
   M-scenario campaign sharing one World is independent of M (≈1 per VM per World).
   — satisfies [PERF-11]; spec §25.4.
-- [ ] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
+- [x] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
   the replay fallback), tracked against the sub-second target. — satisfies
   [PERF-12]; spec §25.4.
-- [ ] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
+  Completed by `checks.crucible.phase0.s3SavevmLoadvm` and
+  `checks.fleet.crucible-perf`: the live QEMU snapshot corpus records wall-clock
+  time from `snapshot-load` admission through the runnable `cont`
+  acknowledgement at boot, CPU/timer, and pending-I/O points, while the fleet
+  check separately times the production thin replay fallback from an artifact
+  produced by a live QEMU reduction. Absolute latency is reported, not used as a
+  shared-builder pass threshold.
+- [x] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
   and the no-regression ratchet. — satisfies [PERF-13]; spec §25.5.1.
+  Completed by `checks.crucible.phase7.gates.perfBench` and
+  `checks.fleet.crucible-perf`: the modeled gate enforces the content-addressed
+  baseline ratchet, and the fleet check records sequential and concurrent
+  live-QEMU reduction batches as aggregate and per-core scenarios/hour.
 - [x] **T-PERF-14** Implement coverage-on-vs-off guest-IPS measurement and assert
   off-cost ≈ no-hook and on-cost within budget (≥ ~70% of off-IPS). — satisfies
   [PERF-14]; spec §25.5.2.
@@ -1219,12 +1230,19 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-26** Add `gate:perf-bench` to the canonical gate catalog (24 §1.1)
   verbatim and wire it into the phase plan after the same-phase determinism gates;
   satisfy the referenced-gate doc-lint. — satisfies [PERF-26]; spec §25.11.
-- [ ] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
+- [x] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
   report aggregate scenarios/core/hour and per-host store-I/O overhead, assert
   near-linear scaling to shared-store-bandwidth saturation (total parallelism ≈
   hosts × per-host P), binding `gate:perf-bench` + `gate:campaign-continuity`. —
   satisfies [PERF-27]; spec §25.5.3; cross-ref
   [`35-distributed-exploration.md`](35-distributed-exploration.md).
+  Completed by `checks.fleet.crucible-perf`, which runs 1, 2, 4, and 8
+  independent live-QEMU explorer processes against one shared
+  content-addressed store, records aggregate/per-core throughput and per-host
+  store growth, and requires at least half-ideal scaling until available host
+  cores saturate. The source gate binds this evidence to `gate:perf-bench`; the
+  distributed campaign surface binds the same performance gate to
+  `gate:campaign-continuity`.
 - [x] **T-PERF-28** Implement the cumulative-coverage ratchet: track campaign
   coverage vs run count, flag a decrease as a regression (flat is legitimate),
   require an explicit recorded baseline event for a fresh campaign lineage,

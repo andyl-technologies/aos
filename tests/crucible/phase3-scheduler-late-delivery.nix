@@ -18,15 +18,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-18 checked off";
-        needle = "- [x] **T-SCHED-18**";
-      }
       {
         label = "T-SCHED-18 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerLateDelivery`";

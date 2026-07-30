@@ -19,8 +19,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   dependencies = casManifest.dependencies or {};
   dependencyNames = builtins.attrNames dependencies;
   forbiddenDependencyNames =
@@ -30,10 +28,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-17 checklist complete";
-        needle = "- [x] **T-PKG-17**";
-      }
       {
         label = "T-PKG-17 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleCas`";

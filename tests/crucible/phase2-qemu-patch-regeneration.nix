@@ -64,11 +64,10 @@
   unmanifestedPatches =
     builtins.filter (patch: !(builtins.elem patch manifestPatchFiles)) patchFiles;
 
-  patchBranchManifest =
-    lib.concatMapStringsSep "\n" (patch: let
-      subject = lib.removeSuffix ".patch" patch.file;
-    in "${patch.file} ${subject} ${patch.branchCommit} ${patch.branchTree}")
-    series.patches;
+  patchBranchManifest = lib.concatMapStringsSep "\n" (patch: let
+    subject = lib.removeSuffix ".patch" patch.file;
+  in "${patch.file} ${subject} ${patch.branchCommit} ${patch.branchTree}")
+  series.patches;
 
   staticFailures =
     map (patch: "pkgs/emulation/qemu-patches/_series.nix: manifest references absent patch ${patch}")

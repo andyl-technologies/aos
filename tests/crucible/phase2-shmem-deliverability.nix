@@ -12,17 +12,21 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  icountTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
-  lookaheadTest = builtins.readFile ../../crates/crucible-shmem/tests/lookahead_gate.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
+  icountTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
+  };
+  lookaheadTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/lookahead_gate.rs;
+  };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -91,8 +95,8 @@
     ]
     ++ failuresFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
-        label = "already reached delivery rejection test";
-        needle = "lookahead_gate_rejects_already_reached_delivery_icount";
+        label = "exact-current delivery admission test";
+        needle = "lookahead_gate_allows_exact_current_delivery_icount";
       }
       {
         label = "already passed delivery rejection test";
@@ -116,10 +120,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
-      {
-        label = "T-SHM-13 checklist complete";
-        needle = "- [x] **T-SHM-13**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

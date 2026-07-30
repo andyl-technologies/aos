@@ -259,14 +259,16 @@ fn gate_perf_bench_rendezvous_frequency_is_result_neutral() {
 #[test]
 fn gate_perf_bench_flags_throughput_regression() {
     let mut input = canonical_perf_bench_input();
-    // Model a run whose measured throughput fell far below its recorded baseline
-    // by inflating the baseline the gate compares against.
-    input.baseline.fuzz_throughput = 0;
-    // A zero baseline yields a zero floor, so the clean model passes; instead
-    // assert the assertion helper rejects an under-floor observation directly.
-    // (The canonical clean input passes.)
-    let clean = canonical_perf_bench_input();
-    assert!(run_perf_bench_gate(&clean).is_ok(), "clean run must pass");
+    input.observed_fuzz_throughput = input.baseline.fuzz_throughput / 2;
+
+    let error = run_perf_bench_gate(&input).expect_err("throughput regression must fail");
+
+    assert!(matches!(
+        error,
+        PerfBenchError::ThroughputRegressed { baseline, observed }
+            if baseline == input.baseline.fuzz_throughput
+                && observed == input.observed_fuzz_throughput
+    ));
 }
 
 /// [PERF-14] — coverage-on guest IPS must be within the configured ratio budget;

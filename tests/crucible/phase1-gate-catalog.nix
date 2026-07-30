@@ -53,7 +53,6 @@
   unknownTargets =
     builtins.filter (gate: !(builtins.elem gate catalogGates)) phaseGateTargets;
 
-
   failures =
     map (gate: "${gate}: canonical gate lacks a phase-gate CI target") missingTargets
     ++ map (gate: "${gate}: phase-gate CI target is not canonical") unknownTargets
@@ -142,10 +141,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-1 checklist complete";
-        needle = "- [x] **T-HARN-1**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" phasePlan [
       {

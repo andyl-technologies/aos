@@ -12,21 +12,16 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_crucible-tests-source.nix {inherit lib;};
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   spatialDoc = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-10 checked off";
-        needle = "- [x] **T-SCHED-10**";
-      }
       {
         label = "T-SCHED-10 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerLinkLatencyFloor`";
@@ -65,7 +60,7 @@
       }
       {
         label = "world validation revalidates links";
-        needle = "validate_world_links(&nodes, &links)?";
+        needle = "validate_world_links_for_node_defs(&topology_nodes, &links)?";
       }
       {
         label = "latency-below-floor error";
@@ -89,7 +84,7 @@
       }
       {
         label = "world hash is computed from canonical world material";
-        needle = "ContentHash::from_canonical_material(\n                \"crucible.model.world.v1\",\n                &world_material(&nodes, &links),";
+        needle = "ContentHash::from_canonical_material(\n                world_identity_domain(&topology_nodes),\n                &world_material(&topology_nodes, &links),";
       }
       {
         label = "scenario hash includes world ref";

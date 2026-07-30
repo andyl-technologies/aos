@@ -21,8 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   requiredKinds = [
     "state_transition"
@@ -59,10 +57,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
-      {
-        label = "T-OBS-13 checked off";
-        needle = "- [x] **T-OBS-13**";
-      }
       {
         label = "T-OBS-13 completion note";
         needle = "Completed by `checks.crucible.phase4.eventKindCatalogFreeze`";

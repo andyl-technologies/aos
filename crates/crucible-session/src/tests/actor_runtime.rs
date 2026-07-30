@@ -1055,6 +1055,7 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         state_kind: LiveStateKind::Loaded,
         outcome: None,
         terminal_savepoint: None,
+        configuration: crucible::ContentHash::from_bytes(b"state-transition-test"),
         virtual_time: VirtualTime { ticks: 0 },
         event_log_len: 0,
         quanta_stepped: 0,
@@ -1075,6 +1076,35 @@ pub(super) async fn session_state_transition_stream_reports_lag_without_backpres
         Err(SessionStateTransitionStreamError::Lagged { skipped }) => assert!(skipped > 0),
         Ok(frame) => panic!("lagged state stream should not deliver frame {frame:?}"),
     }
+}
+
+#[test]
+pub(super) fn event_log_stream_recovers_broadcast_lag_from_the_retained_log() {
+    let event_log = SessionEventLog::new();
+    let mut stream = event_log.subscribe(EventLogCursor::new(0));
+    let entry_count = usize_to_u64(SESSION_EVENT_LOG_BROADCAST_CAPACITY).saturating_add(257);
+    let entries = (0..entry_count)
+        .map(|sequence| {
+            SchedulerEventLogEntry::assertion_state_observation(
+                sequence,
+                VirtualTime { ticks: sequence },
+                AssertionId::from_name("retained-log-lag-recovery"),
+                AssertionPhase::Satisfied,
+            )
+        })
+        .collect::<Vec<_>>();
+    event_log.append_entries(&entries);
+
+    let mut observed = Vec::new();
+    while let Some(frame) = stream
+        .try_recv()
+        .unwrap_or_else(|error| panic!("retained replay should recover broadcast lag: {error}"))
+    {
+        observed.push(frame.entry.sequence());
+    }
+
+    assert_eq!(observed, (0..entry_count).collect::<Vec<_>>());
+    assert_eq!(stream.cursor(), EventLogCursor::new(entry_count));
 }
 
 #[test]
@@ -1133,103 +1163,6 @@ pub(super) fn engine_rejects_event_log_offset_regression() {
     ));
 }
 
-#[tokio::test]
-pub(super) async fn actor_publishes_backend_coverage_from_the_canonical_event_log() {
-    let scenario = generated_scenario(223);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let event = crucible::ObservableEvent::coverage_block(
-        crucible::Icount { retired: 17 },
-        node_id("vm-a"),
-        0x4010,
-        4,
-    );
-    let quantum_loop = crucible::BackendQuantumLoop::new(
-        CoverageAppendingLoop::default(),
-        CoverageBackend::new(event),
-    );
-    let mut engine = Engine::new(config, graph, quantum_loop);
-    engine
-        .apply_command(SessionCommand::Start)
-        .expect("coverage actor should instantiate");
-    engine
-        .apply_command(SessionCommand::Continue)
-        .expect("coverage actor should enter running state");
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-    let mut stream = actor.event_log_stream(EventLogCursor::new(0));
-
-    actor
-        .run_once()
-        .await
-        .expect("coverage quantum should reach the actor boundary");
-
-    let frame = stream
-        .try_recv()
-        .expect("coverage stream should remain readable")
-        .expect("coverage stream should receive one canonical entry");
-    assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
-    let projection = crucible::event_log_coverage_projection(&[frame.entry]);
-    assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 17);
-    assert_eq!(actor.event_log().len(), 1);
-    assert_eq!(actor.engine().event_log_len(), 1);
-}
-
-#[tokio::test]
-pub(super) async fn actor_publishes_final_backend_coverage_before_shutdown_completes() {
-    let scenario = generated_scenario(224);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let event = crucible::ObservableEvent::coverage_block(
-        crucible::Icount { retired: 0 },
-        node_id("vm-a"),
-        0x4020,
-        8,
-    );
-    let quantum_loop = crucible::BackendQuantumLoop::new(
-        CoverageAppendingLoop::default(),
-        CoverageBackend::new(event),
-    );
-    let mut engine = Engine::new(config, graph, quantum_loop);
-    engine
-        .apply_command(SessionCommand::Start)
-        .expect("coverage actor should instantiate");
-    engine
-        .apply_command(SessionCommand::Continue)
-        .expect("coverage actor should enter running state");
-    let (sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-    let mut stream = actor.event_log_stream(EventLogCursor::new(0));
-
-    sender
-        .send(SessionCommand::Stop)
-        .await
-        .expect("stop command should enqueue");
-    actor
-        .run_once()
-        .await
-        .expect("shutdown should publish its final coverage drain");
-
-    let frame = stream
-        .try_recv()
-        .expect("coverage stream should remain readable")
-        .expect("coverage stream should receive the final canonical entry");
-    assert_eq!(frame.entry.sequence(), 0);
-    assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
-    let projection = crucible::event_log_coverage_projection(&[frame.entry]);
-    assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 0);
-    assert_eq!(actor.event_log().len(), 1);
-    assert_eq!(actor.engine().event_log_len(), 1);
-    assert!(matches!(
-        actor.engine().state(),
-        EngineState::Stopped {
-            outcome: Outcome::Stopped
-        }
-    ));
-}
-
 #[test]
 pub(super) fn engine_rejects_non_dense_final_shutdown_entries() {
     let scenario = generated_scenario(225);
@@ -1268,6 +1201,20 @@ impl QuantumLoop for NonDenseShutdownLoop {
     }
 }
 
+pub(super) struct BackendCrashLoop;
+
+impl QuantumLoop for BackendCrashLoop {
+    fn drive_quantum(
+        &mut self,
+        _request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        Err(BackendError::Rejected {
+            message: String::from("backend process exited unexpectedly"),
+        }
+        .into())
+    }
+}
+
 #[derive(Default)]
 pub(super) struct CoverageAppendingLoop {
     event_log: crucible::EventLog,
@@ -1298,6 +1245,18 @@ impl QuantumLoop for CoverageAppendingLoop {
         events: Vec<crucible::ObservableEvent>,
     ) -> Result<crucible::SchedulerEventLogAppend, SchedulerError> {
         self.event_log.append_observable_events(events)
+    }
+
+    fn append_backend_observations_at_boundary(
+        &mut self,
+        events: Vec<crucible::ObservableEvent>,
+        at: VirtualTime,
+    ) -> Result<crucible::SchedulerEventLogAppend, SchedulerError> {
+        self.event_log.append_observations_at_boundary(
+            events,
+            at,
+            crucible::SchedulerEvaluationBoundaryKind::Quantum,
+        )
     }
 }
 
@@ -1380,6 +1339,28 @@ impl QuantumLoop for StubLoop {
             event_log_offset: Default::default(),
             scheduler_quiescence: None,
         })
+    }
+}
+
+pub(super) struct TerminalVerdictLoop {
+    verdict: Option<QuantumTerminalVerdict>,
+}
+
+impl TerminalVerdictLoop {
+    pub(super) fn new(verdict: QuantumTerminalVerdict) -> Self {
+        Self {
+            verdict: Some(verdict),
+        }
+    }
+}
+
+impl QuantumLoop for TerminalVerdictLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        StubLoop.drive_quantum(request)
+    }
+
+    fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
+        self.verdict.take()
     }
 }
 
@@ -2115,3 +2096,5 @@ pub(super) fn scheduler_node(name: &str) -> SchedulerNodeId {
         kind: SchedulingNodeKind::ControlPlane,
     }
 }
+#[path = "actor_runtime/coverage.rs"]
+mod coverage;

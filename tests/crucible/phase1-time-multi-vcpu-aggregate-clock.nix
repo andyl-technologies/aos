@@ -16,7 +16,7 @@
   contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
   deadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   harnessObservation = builtins.readFile ../../crates/crucible-harness/src/fingerprint/observation.rs;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
@@ -24,8 +24,6 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
-
-
 
   failures =
     failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
@@ -193,10 +191,6 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-9 closed; this gate provides its aggregate-deadline model";
-        needle = "- [x] **T-TIME-9**";
-      }
       {
         label = "TIME-24 multi-vCPU deadline minimum";
         needle = "minimum over all vCPUs' armed virtual-clock";

@@ -171,9 +171,7 @@ pub fn parse_openstack_network_data(bytes: &[u8]) -> Result<StaticNetwork> {
             network
                 .routes
                 .iter()
-                .find(|r| {
-                    matches!(r.network.as_deref(), Some("0.0.0.0") | Some("::"))
-                })
+                .find(|r| matches!(r.network.as_deref(), Some("0.0.0.0") | Some("::")))
                 .and_then(|r| r.gateway.clone())
         });
     }
@@ -274,7 +272,10 @@ pub fn parse_netplan_network_config(bytes: &[u8]) -> Result<StaticNetwork> {
         net.addresses = eth.addresses;
         net.gateway = eth.gateway4;
         net.dns = eth.nameservers.map(|n| n.addresses).unwrap_or_default();
-        net.mac = eth.match_on.and_then(|m| m.macaddress).map(|m| m.to_lowercase());
+        net.mac = eth
+            .match_on
+            .and_then(|m| m.macaddress)
+            .map(|m| m.to_lowercase());
     }
     Ok(net)
 }

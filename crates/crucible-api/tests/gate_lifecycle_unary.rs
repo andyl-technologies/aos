@@ -10,12 +10,14 @@ use crucible::{
     VirtualTime,
 };
 use crucible_api::{
-    ControlClient, CreateSessionRequest, CreateSessionSource, DestroySessionRequest, HelloRequest,
-    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError,
-    LifecycleControlPlane, LifecycleLoopFactory, ListScenariosResponse, RPC_OPEN_SET_PAYLOAD_KINDS,
-    RPC_PROTOCOL_VERSION, ResumeSessionRequest, ScenarioCatalogEntry,
+    ControlClient, ControlClientError, CreateSessionRequest, CreateSessionSource,
+    DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
+    LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
+    LifecycleLoopFactory, ListScenariosResponse, QuiescentLifecycleLoop,
+    RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeSessionRequest, ScenarioCatalogEntry,
+    SendRequest,
 };
-use crucible_session::LiveStateKind;
+use crucible_session::{LiveStateKind, SessionCommand};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -248,6 +250,81 @@ async fn create_session_accepts_inline_scenario_without_registry_entry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn create_session_propagates_backend_factory_failure_without_side_effects() {
+    let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
+        "crucible-lifecycle-test-server",
+        Vec::new(),
+        |_scenario, _source, _seed| -> Result<NoopLoop, LifecycleApiError> {
+            Err(LifecycleApiError::LoopFactory {
+                message: String::from("synthetic launch rejection"),
+            })
+        },
+    );
+    let scenario = generated_scenario(122);
+
+    let error = control_plane
+        .create_session(CreateSessionRequest::inline(
+            scenario.clone(),
+            scenario.seed(),
+        ))
+        .await
+        .expect_err("backend construction failure should reject create");
+
+    assert_eq!(
+        error,
+        LifecycleApiError::LoopFactory {
+            message: String::from("synthetic launch rejection"),
+        },
+    );
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn streaming_command_reports_actor_backend_failure_instead_of_closed_mailbox() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-lifecycle-test-server",
+        vec![catalog_entry()],
+        |_scenario, _seed| FailingLoop,
+    );
+    let created = control_plane
+        .create_session(CreateSessionRequest::scenario_ref(
+            "api-lifecycle-scenario",
+            Seed::from_u64(123),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("create session should start actor: {error}"));
+
+    control_plane
+        .send_streaming_command(SendRequest::new(
+            created.session,
+            1,
+            SessionCommand::Continue,
+        ))
+        .await
+        .unwrap_or_else(|error| {
+            panic!("Continue should be accepted before the loop fails: {error}")
+        });
+
+    tokio::task::yield_now().await;
+    let error = control_plane
+        .send_streaming_command(SendRequest::new(created.session, 2, SessionCommand::Pause))
+        .await
+        .expect_err("the next command should join and expose the failed actor");
+
+    assert_eq!(
+        error,
+        ControlClientError::Lifecycle {
+            source: LifecycleApiError::ActorFailed {
+                message: String::from(
+                    "scheduler failed under session control: synthetic backend quantum failure"
+                ),
+            },
+        },
+    );
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn create_session_rejects_unknown_scenario_without_side_effects() {
     let mut control_plane = lifecycle_control_plane();
 
@@ -387,6 +464,60 @@ async fn resume_session_accepts_checkpoint_closure_and_paused_live_mirror() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn thin_replay_resume_reaches_exact_recorded_boundary_before_publication() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-lifecycle-thin-replay-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_thin_replay_resume();
+    let request = resume_request(122);
+    let expected_checkpoint = request.checkpoint.id;
+    let expected_configuration = Configuration {
+        def: request.scenario.scenario_def(),
+        schedule: request.schedule.clone(),
+    };
+
+    let resumed = control_plane
+        .resume_session(request)
+        .await
+        .unwrap_or_else(|error| panic!("thin replay should reach the checkpoint: {error}"));
+
+    assert_eq!(resumed.state, LiveStateKind::Paused);
+    assert_eq!(resumed.checkpoint, expected_checkpoint);
+    assert_eq!(resumed.configuration, expected_configuration.id());
+    let sessions = control_plane.list_sessions();
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].frontier, VirtualTime { ticks: 1 });
+    assert_eq!(sessions.sessions[0].quanta_stepped, 1);
+
+    control_plane
+        .destroy_session(DestroySessionRequest::new(resumed.session))
+        .await
+        .unwrap_or_else(|error| panic!("cleanup destroy should stop replayed actor: {error}"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn thin_replay_resume_fails_closed_on_schedule_divergence() {
+    let mut control_plane = LifecycleControlPlane::new(
+        "crucible-lifecycle-thin-replay-divergence-test",
+        Vec::new(),
+        |_scenario: &ScenarioDef, _seed| DivergentReplayLoop,
+    )
+    .with_thin_replay_resume();
+    let request = resume_request(123);
+
+    let error = control_plane
+        .resume_session(request)
+        .await
+        .expect_err("thin replay must reject a backend that records a different decision");
+
+    assert!(matches!(error, LifecycleApiError::ResumeCheckpoint { .. }));
+    assert!(error.to_string().contains("thin replay diverged"));
+    assert_eq!(control_plane.session_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn resume_session_rejects_mismatched_checkpoint_closure_without_side_effects() {
     let mut control_plane = lifecycle_control_plane();
     let mut request = resume_request(113);
@@ -431,98 +562,7 @@ async fn resume_session_rejects_non_baked_genesis_checkpoint_material() {
     assert_eq!(control_plane.session_count(), 0);
 }
 
-fn lifecycle_control_plane() -> LifecycleControlPlane<NoopLoop, LifecycleLoopFactory<NoopLoop>> {
-    LifecycleControlPlane::new(
-        "crucible-lifecycle-test-server",
-        vec![catalog_entry()],
-        |_scenario, _seed| NoopLoop,
-    )
-    .with_mailbox_capacity(LIFECYCLE_SESSION_MAILBOX_CAPACITY)
-}
+#[path = "gate_lifecycle_unary/support.rs"]
+mod support;
 
-fn catalog_entry() -> ScenarioCatalogEntry {
-    ScenarioCatalogEntry::from_canonical_material(
-        "api-lifecycle-scenario",
-        "Lifecycle unary API scenario",
-        "test://api-lifecycle-scenario",
-        "crucible.api.gate-lifecycle-unary.scenario",
-        "scenario=api-lifecycle",
-    )
-}
-
-struct NoopLoop;
-
-impl QuantumLoop for NoopLoop {
-    fn drive_quantum(
-        &mut self,
-        _request: QuantumRequest,
-    ) -> Result<QuantumOutcome, SchedulerError> {
-        panic!("lifecycle unary gate keeps sessions paused before any quantum")
-    }
-}
-
-fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material_with_seed(
-        "crucible.api.gate-lifecycle-unary.scenario",
-        &format!("seed={seed}"),
-        Seed::from_u64(seed),
-    )
-}
-
-fn resume_request(seed: u64) -> ResumeSessionRequest {
-    let mut scenario = crucible::happy_path_scenario()
-        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
-        .scenario;
-    if scenario.seed() != Seed::from_u64(seed) {
-        scenario = scenario_with_seed(&scenario, Seed::from_u64(seed));
-    }
-    let scenario_def = scenario.scenario_def();
-    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 1 },
-        order: Vec::new(),
-    }));
-    let configuration = Configuration {
-        def: scenario_def,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = checkpoint_for_configuration(&configuration, VirtualTime { ticks: 1 });
-    ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
-}
-
-fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
-    ScenarioDefForm::from_components_with_app_random_draw_cap(
-        scenario.world(),
-        scenario.plan(),
-        scenario.properties(),
-        seed,
-        scenario.app_random_draw_cap(),
-    )
-    .unwrap_or_else(|error| panic!("test scenario should rebuild with seed: {error}"))
-}
-
-fn checkpoint_for_configuration(
-    configuration: &Configuration,
-    frontier: VirtualTime,
-) -> Checkpoint {
-    let parent = if configuration.schedule.is_empty() {
-        None
-    } else {
-        let prefix = configuration
-            .schedule
-            .prefix(configuration.schedule.len().saturating_sub(1))
-            .unwrap_or_else(|error| panic!("test schedule prefix should exist: {error}"));
-        Some(Configuration {
-            def: configuration.def.clone(),
-            schedule: prefix,
-        })
-    };
-    Checkpoint::from_recorded_configuration(
-        configuration,
-        parent.as_ref(),
-        frontier,
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .unwrap_or_else(|error| panic!("test checkpoint should record configuration: {error}"))
-}
+use support::*;

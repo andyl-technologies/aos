@@ -12,7 +12,7 @@ use crucible::{
 use super::*;
 use crate::{
     QemuBakedGenesisSnapshot, QemuLoadvmCommandPurpose, QemuNodeRestoreAdmission,
-    QemuReplayOracleValidation,
+    QemuReplayOracleValidation, QemuSavevmCompletenessPolicy,
 };
 
 type SharedLog = Rc<RefCell<Vec<NodeExecutorCall>>>;
@@ -212,7 +212,7 @@ fn qemu_node_realization_executor_replays_without_generic_snapshot_or_restore()
 }
 
 #[test]
-fn qemu_node_realization_executor_rejects_probe_load_without_admission()
+fn qemu_node_realization_executor_loads_probe_without_runtime_admission()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
@@ -221,23 +221,30 @@ fn qemu_node_realization_executor_rejects_probe_load_without_admission()
         checkpoint: checkpoint_for_config("probe", &config, &node, 0, CheckpointKind::Fat)?,
         replay_oracle_validation: QemuReplayOracleValidation::NotRun,
     };
-    let launcher = scripted_launcher(Rc::clone(&log), hash("runtime", "probe"), 0);
+    let runtime_id = hash("runtime", "probe");
+    let launcher = scripted_launcher(Rc::clone(&log), runtime_id, 0);
     let mut executor = QemuNodeRealizationExecutor::new(node, launcher);
 
-    let error = executor
-        .load_exact_snapshot_for_replay_oracle_probe(
-            &config,
-            &snapshot,
-            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-        )
-        .err()
-        .ok_or_else(|| QemuVmRealizationError::Executor {
-            operation: "test assertion",
-            message: String::from("probe load unexpectedly succeeded"),
-        })?;
+    let runtime = executor.load_exact_snapshot_for_replay_oracle_probe(
+        &config,
+        &snapshot,
+        QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
+    )?;
 
-    assert!(error.to_string().contains("replay-oracle probes require"));
-    assert!(logged(&log).is_empty());
+    assert_eq!(runtime.id, runtime_id);
+    assert_eq!(runtime.configuration, config.id());
+    assert_eq!(
+        logged(&log),
+        vec![
+            NodeExecutorCall::Launch {
+                config: config.id(),
+                checkpoint: snapshot.checkpoint.id,
+                authorization: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
+                admission: QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+            },
+            NodeExecutorCall::Fingerprint,
+        ]
+    );
     Ok(())
 }
 

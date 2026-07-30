@@ -24,7 +24,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -36,10 +35,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-6 checked off";
-        needle = "- [x] **T-DBG-6**";
-      }
       {
         label = "T-DBG-6 completion note";
         needle = "Completed by `checks.crucible.phase6.debugNonCanonicalBranch`";

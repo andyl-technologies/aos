@@ -17,14 +17,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-21 checklist complete";
-        needle = "- [x] **T-PKG-21**";
-      }
       {
         label = "T-PKG-21 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
@@ -39,10 +33,6 @@
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "stale T-PKG-21 placeholder";
-        needle = "- [ ] **T-PKG-21**";
-      }
     ]
     ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
       {

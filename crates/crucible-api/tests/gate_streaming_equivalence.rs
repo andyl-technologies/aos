@@ -338,7 +338,10 @@ async fn drive_command_with_send(command: SessionCommandKind) -> crucible_api::S
 }
 
 async fn stop_or_join(fixture: StreamingFixture, command: SessionCommandKind) {
-    if command != SessionCommandKind::Stop {
+    if !matches!(
+        command,
+        SessionCommandKind::Stop | SessionCommandKind::ExhaustBudget
+    ) {
         let _stopped = fixture
             .api
             .send(SendRequest::new(fixture.session, 99, SessionCommand::Stop))
@@ -379,6 +382,7 @@ const fn command_index(command: SessionCommandKind) -> u64 {
         SessionCommandKind::DebugReverseStep => 21,
         SessionCommandKind::DebugReverseContinue => 22,
         SessionCommandKind::DebugForkNonCanonical => 23,
+        SessionCommandKind::ExhaustBudget => 24,
     }
 }
 

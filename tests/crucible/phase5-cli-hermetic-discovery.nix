@@ -24,14 +24,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-5 checked off";
-        needle = "- [x] **T-CLI-5**";
-      }
       {
         label = "T-CLI-5 completion note";
         needle = "Completed by `checks.crucible.phase5.cliHermeticDiscovery`";

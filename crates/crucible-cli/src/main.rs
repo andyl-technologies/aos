@@ -1291,16 +1291,6 @@ trait CliOperationRecorder {
 #[derive(Default)]
 struct NullOperationRecorder;
 
-impl CliOperationRecorder for NullOperationRecorder {
-    fn record_session_command(&mut self, _command: SessionCommandKind) {}
-
-    fn record_api_call(&mut self, _call: CliApiCall) {}
-
-    fn record_driver(&mut self, _driver: CliDelegatedDriver) {}
-
-    fn record_state_reference(&mut self, _reference: CliStateReferenceKind) {}
-}
-
 fn execute_cli_dispatch_plan(
     plan: &CliThinWrapperPlan,
     recorder: &mut impl CliOperationRecorder,
@@ -1365,6 +1355,7 @@ use cli_run_save::*;
 use cli_triage_debug::*;
 use cli_verify_serve::*;
 
+mod null_operation_recorder;
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #[allow(clippy::expect_used, clippy::unwrap_used)]

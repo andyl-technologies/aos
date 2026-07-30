@@ -47,11 +47,10 @@
           )
         ];
     };
-    result =
-      builtins.foldl' scrubLine {
-        inBlockComment = false;
-        lines = [];
-      } (lib.splitString "\n" content);
+    result = builtins.foldl' scrubLine {
+      inBlockComment = false;
+      lines = [];
+    } (lib.splitString "\n" content);
   in
     builtins.concatStringsSep "\n" result.lines;
 
@@ -215,8 +214,8 @@
           require_covered_function stable_hasher_covers_chunk_remainder_and_bool_inputs
           require_covered_function replay_oracle_accepts_matching_corpus
           require_covered_function replay_oracle_reports_first_mismatch
-          require_covered_function assert_spsc_ring_loom_model
-          require_covered_function assert_spsc_ring_proptest_properties
+          require_covered_function assert_spsc_ring_exhaustive_ordering_model
+          require_covered_function assert_spsc_ring_exhaustive_trace_properties
 
           line_for() {
             file="$1"
@@ -650,8 +649,8 @@
       activationMarkers = [];
       activationSourceRoots = [];
       requiredMarkers = [
-        "assert_spsc_ring_loom_model("
-        "assert_spsc_ring_proptest_properties("
+        "assert_spsc_ring_exhaustive_ordering_model("
+        "assert_spsc_ring_exhaustive_trace_properties("
       ];
     }
     {
@@ -745,7 +744,8 @@
       map (relative: builtins.readFile (root + "/${relative}")) rustFiles
     );
   plannedSurfaceIsImplemented = surface:
-    surface.status == "active"
+    surface.status
+    == "active"
     || (
       builtins.pathExists (root + "/${surface.sourcePath}")
       && builtins.any (
@@ -922,15 +922,13 @@
       /* stable_hasher_is_order_sensitive */
       "stable_hasher_is_order_sensitive"
     '';
-    badInstrumentationFindings =
-      lib.optionals ("shared-test-build" != "separate-deterministic-build") [
-        "scheduler-quantum-loop must be measured in the ${coverageInstrumentationProfile} separate deterministic instrumentation build"
-      ];
+    badInstrumentationFindings = lib.optionals ("shared-test-build" != "separate-deterministic-build") [
+      "scheduler-quantum-loop must be measured in the ${coverageInstrumentationProfile} separate deterministic instrumentation build"
+    ];
     missingSurfaceFindings = requiredSurfaceFailuresFor ["scheduler-quantum-loop"];
-    plannedActivationFindings =
-      lib.optionals plannedIsImplemented [
-        "protocol-codec: planned determinism-core surface is implemented but is not measured by ${coverageInstrumentationProfile}; promote it to activeSurfaces and add coverageMeasurement wiring"
-      ];
+    plannedActivationFindings = lib.optionals plannedIsImplemented [
+      "protocol-codec: planned determinism-core surface is implemented but is not measured by ${coverageInstrumentationProfile}; promote it to activeSurfaces and add coverageMeasurement wiring"
+    ];
     findings =
       missingMarkerFindings
       ++ badInstrumentationFindings

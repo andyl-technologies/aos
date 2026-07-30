@@ -72,14 +72,16 @@ pub(super) fn run_integrated_adaptive_campaign_gate() -> Result<(), Box<dyn Erro
     assert_eq!(run.selections[0].arm, AdaptiveStrategyArm::BreadthFirst);
     assert_eq!(run.selections[2].arm, AdaptiveStrategyArm::BreadthFirst);
     assert_eq!(run.expansions[0].search.frontier_report.explored.len(), 3);
-    assert!(run
-        .credits
-        .windows(2)
-        .all(|pair| pair[0].configuration <= pair[1].configuration));
-    assert!(run
-        .credits
-        .iter()
-        .any(|credit| credit.reward.confirmed_failure));
+    assert!(
+        run.credits
+            .windows(2)
+            .all(|pair| pair[0].configuration <= pair[1].configuration)
+    );
+    assert!(
+        run.credits
+            .iter()
+            .any(|credit| credit.reward.confirmed_failure)
+    );
     assert!(run.discovered_failures.iter().all(|failure| {
         failure.reproduction_artifact().artifact.scenario_form() == &scenario_form
             && failure.reproduction_artifact().artifact.schedule() == &children[2].schedule

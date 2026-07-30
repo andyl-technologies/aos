@@ -169,9 +169,9 @@ pub fn classify_failure(err: &FixpointError) -> EvalDiagnostic {
                 Some(reader) => format!(
                     "unresolved: '{path}' read by {reader} but no installed/registry package provides it"
                 ),
-                None => format!(
-                    "unresolved: '{path}' but no installed/registry package provides it"
-                ),
+                None => {
+                    format!("unresolved: '{path}' but no installed/registry package provides it")
+                }
             },
         ),
         FixpointError::AbiMismatch { path, want } => (
@@ -187,9 +187,7 @@ pub fn classify_failure(err: &FixpointError) -> EvalDiagnostic {
         FixpointError::EvalKilled { reason } => (
             EvalFailureClass::Killed,
             match reason {
-                KillReason::Oom => {
-                    "config eval killed: exceeded MemoryMax=2G (OOM)".to_string()
-                }
+                KillReason::Oom => "config eval killed: exceeded MemoryMax=2G (OOM)".to_string(),
                 KillReason::Timeout => {
                     "config eval killed: exceeded RuntimeMaxSec=120s (timeout)".to_string()
                 }
@@ -289,7 +287,10 @@ mod tests {
         };
         let d = classify_failure(&err);
         assert_eq!(d.class, EvalFailureClass::UndefinedOption);
-        assert!(d.summary.contains("option 'firewall.forwardPolicy' read but no provider"));
+        assert!(
+            d.summary
+                .contains("option 'firewall.forwardPolicy' read but no provider")
+        );
         assert!(d.summary.contains("read by web/config.nix"));
     }
 
@@ -309,7 +310,10 @@ mod tests {
         };
         let d = classify_failure(&err);
         assert_eq!(d.class, EvalFailureClass::Conflict);
-        assert!(d.summary.contains("'accept' (web/config.nix) vs 'drop' (host.nix)"));
+        assert!(
+            d.summary
+                .contains("'accept' (web/config.nix) vs 'drop' (host.nix)")
+        );
     }
 
     #[test]
@@ -320,7 +324,10 @@ mod tests {
         };
         let d = classify_failure(&err);
         assert_eq!(d.class, EvalFailureClass::NoProvider);
-        assert!(d.summary.starts_with("unresolved: 'firewall.forwardPolicy' read by web"));
+        assert!(
+            d.summary
+                .starts_with("unresolved: 'firewall.forwardPolicy' read by web")
+        );
         // Distinct from every other class's exit code.
         assert_eq!(d.exit_code(), EvalFailureClass::NoProvider.exit_code());
         assert_ne!(d.exit_code(), EvalFailureClass::Conflict.exit_code());

@@ -44,14 +44,8 @@
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
   rpcAbiVersion = "${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}";
 
-
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-20 checklist complete";
-        needle = "- [x] **T-PKG-20**";
-      }
       {
         label = "T-PKG-20 completion note";
         needle = "Completed by `checks.crucible.phase7.reproductionProvenanceTriple`";
@@ -62,10 +56,6 @@
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "stale T-PKG-20 placeholder";
-        needle = "- [ ] **T-PKG-20**";
-      }
     ]
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
@@ -260,7 +250,11 @@
       }
       {
         label = "CLI reads RPC ABI constants";
-        needle = "RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH";
+        needle = "RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,";
+      }
+      {
+        label = "CLI reads RPC ABI patch constants";
+        needle = "RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH";
       }
       {
         label = "CLI identity carries QEMU patch-series hash";

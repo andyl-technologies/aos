@@ -25,13 +25,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-13 checklist complete";
-        needle = "- [x] **T-CLI-13** Implement `search`/`fuzz`";
-      }
       {
         label = "T-CLI-13 partial-evidence note";
         needle = "Completed under `checks.crucible.phase5.cliSearchFuzzWorkflow`";
@@ -489,12 +484,12 @@
         needle = "fn run_local_qemu_fuzz_workflow";
       }
       {
-        label = "search rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"search\")";
+        label = "search executes live QEMU branches";
+        needle = "fn run_local_qemu_search_workflow";
       }
       {
-        label = "fuzz rejects unwired QEMU execution";
-        needle = "reject_unwired_qemu_workflow(backend, \"fuzz\")";
+        label = "fuzz executes live QEMU iterations";
+        needle = "fn run_local_qemu_fuzz_workflow";
       }
       {
         label = "stored fuzz family loader";

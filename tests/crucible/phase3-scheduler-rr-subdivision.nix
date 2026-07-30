@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerRrSubdivision",
-  taskIds ? [],
-  openTaskIds ? ["T-SCHED-28"],
+  taskIds ? ["T-SCHED-28"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -20,15 +20,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-28 checked off";
-        needle = "- [ ] **T-SCHED-28**";
-      }
       {
         label = "T-SCHED-28 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerRrSubdivision`";

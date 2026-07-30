@@ -11,13 +11,12 @@
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
 
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   decision = builtins.readFile ../../crates/crucible/src/decision.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
 
   failures =
     failuresFor "crates/crucible/src/lib.rs" crateRoot [
@@ -63,7 +62,7 @@
       }
       {
         label = "pure fingerprint helper";
-        needle = "fn configuration_execution_fingerprint(configuration: &Configuration) -> ExecutionFingerprint";
+        needle = "pub(super) fn configuration_execution_fingerprint(";
       }
     ]
     ++ failuresFor "crates/crucible/src/decision.rs" decision [

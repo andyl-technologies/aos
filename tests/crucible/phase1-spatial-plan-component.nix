@@ -12,19 +12,14 @@
   };
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
-      {
-        label = "T-SPAT-12 checked off";
-        needle = "- [x] **T-SPAT-12**";
-      }
       {
         label = "T-SPAT-12 completion names independent plan hash";
         needle = "`Plan` now carries an";
@@ -41,11 +36,7 @@
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
         label = "private plan identity field";
-        needle = ''
-          pub struct Plan {
-              /// The independently content-addressed plan identity.
-              id: ContentHash,
-        '';
+        needle = "pub(super) id: ContentHash,";
       }
       {
         label = "plan content hash accessor";
@@ -105,11 +96,11 @@
       }
     ]
     ++ lib.optionals (hasInfix ''
-      pub struct Plan {
-          /// The independently content-addressed plan identity.
-          pub id: ContentHash,
-    ''
-    model) [
+        pub struct Plan {
+            /// The independently content-addressed plan identity.
+        pub id: ContentHash,
+      ''
+      model) [
       "crates/crucible/src/model.rs: plan identity field must not be public"
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [

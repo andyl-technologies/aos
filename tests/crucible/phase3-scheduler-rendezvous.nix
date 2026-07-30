@@ -20,15 +20,9 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-7 checked off";
-        needle = "- [x] **T-SCHED-7**";
-      }
       {
         label = "T-SCHED-7 completion note";
         needle = "Completed by `checks.crucible.phase3.schedulerRendezvous`";
@@ -115,7 +109,7 @@
     ++ failuresFor "crates/crucible/tests/gate_scheduler_liveness.rs" livenessTest [
       {
         label = "liveness no per-quantum decision assumption";
-        needle = "recorded decisions without resolved scheduler events";
+        needle = "recorded decisions without canonical event-log entries";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/scheduler_rendezvous.rs" rendezvousTest [

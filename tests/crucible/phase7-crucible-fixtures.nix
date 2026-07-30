@@ -45,13 +45,13 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-
-
   hasLocalMac = node:
-    node ? macAddress
+    node
+    ? macAddress
     && node.macAddress == "build-output-derived";
   hasNodeIdentityMac = node:
-    node ? contentAddressedNodeId
+    node
+    ? contentAddressedNodeId
     && node ? macDerivation
     && node.contentAddressedNodeId == "build-output-root-image-sha256"
     && node.macDerivation == "sha256(root-image-sha256)";
@@ -82,10 +82,6 @@
     ]
     ++ nodeFailures
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-13 checklist complete";
-        needle = "- [x] **T-PKG-13**";
-      }
       {
         label = "T-PKG-13 completion note";
         needle = "Completed by `checks.crucible.phase7.crucibleFixtures`";

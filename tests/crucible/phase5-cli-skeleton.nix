@@ -18,13 +18,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-1 checked off";
-        needle = "- [x] **T-CLI-1**";
-      }
       {
         label = "T-CLI-1 completion note";
         needle = "Completed by `checks.crucible.phase5.cliSkeleton`";

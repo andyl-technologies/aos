@@ -14,7 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   pluginArgumentSources = "${liveRunnerConfigSource}\n${liveFingerprintGateSource}";
   forbiddenPluginArgumentKeys = [
     "actual_argv_digest="

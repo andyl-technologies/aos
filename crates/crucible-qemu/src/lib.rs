@@ -54,13 +54,14 @@ mod launch;
 mod live_coverage_gate;
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "test-support"))]
 mod live_plugin_quantum_gate;
 #[cfg(unix)]
 mod mapped_quantum;
 mod node;
 #[cfg(target_os = "linux")]
 mod node_factory;
+mod node_set;
 mod plugin_control;
 mod qmp;
 mod quantum;
@@ -128,15 +129,16 @@ pub use launch::{
     DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
     DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_DRIVE_ID,
     DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID,
-    DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC, DeterministicLaunchProfile, DiskImageMode,
-    GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed, GuestEntropySeedFile,
-    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError,
-    LivePluginGuestArchitecture, MachineResetMode, NodeClockSkewDeclaration, NodeIcountShift,
-    QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuGdbstubChannelConfig,
-    QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
-    QemuRootImageFormat, QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
+    DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC, DEFAULT_ROOT_OVERLAY_FILE_NAME, DeterministicLaunchProfile,
+    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, GuestEntropySeed,
+    GuestEntropySeedFile, IcountShiftSetting, InputPolicy, LaunchProfileCandidate,
+    LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode, NodeClockSkewDeclaration,
+    NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
+    QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuPreSpawnLaunchValidation,
+    QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuRootImageFormat,
+    QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
     probe_x86_whitebox_setup, validate_aarch64_whitebox_setup, validate_pre_spawn_qemu_launch_args,
     validate_x86_whitebox_hmp_mtree,
 };
@@ -150,7 +152,7 @@ pub use live_plugin_gate::{
     LivePluginInstallGateConfig, LivePluginInstallGateError, LivePluginInstallReport,
     run_live_plugin_install_gate,
 };
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use live_plugin_quantum_gate::{
     LivePluginAdvancementRates, LivePluginIdleObservation, LivePluginPreemptionReport,
     LivePluginQuantumGateConfig, LivePluginQuantumGateError, LivePluginQuantumReport,
@@ -171,6 +173,7 @@ pub use node_factory::{
     build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
     spawn_setup_and_restore_qemu_node,
 };
+pub use node_set::QemuNodeSet;
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
     QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,
@@ -283,7 +286,7 @@ pub use supervision::{
     QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
     QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError, QemuLiveNodeStepGateConfig,
     QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
-    QemuLiveNodeStepSchedule, run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate,
-    run_qemu_live_block_node_gate, run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate,
-    run_qemu_live_node_step_gate,
+    QemuLiveNodeStepSchedule, launch_qemu_live_node, launch_qemu_live_node_restored,
+    run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate, run_qemu_live_block_node_gate,
+    run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate, run_qemu_live_node_step_gate,
 };

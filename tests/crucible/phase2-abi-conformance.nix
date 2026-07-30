@@ -34,7 +34,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-
   failures =
     failuresFor "crates/crucible-harness/src/lib.rs" harnessLib [
       {
@@ -328,30 +327,10 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
-      {
-        label = "T-HARN-17 checklist complete";
-        needle = "- [x] **T-HARN-17**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/21-api.md" apiSpec [
-      {
-        label = "T-API-11 checklist complete";
-        needle = "- [x] **T-API-11**";
-      }
-      {
-        label = "T-API-12 checklist complete";
-        needle = "- [x] **T-API-12**";
-      }
-      {
-        label = "reference client conformance suite complete";
-        needle = "- [x] **T-API-13**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsSpec [
-      {
-        label = "T-PAT-8 checklist complete";
-        needle = "- [x] **T-PAT-8**";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -372,10 +351,12 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

@@ -87,6 +87,25 @@ pub trait SimulationBackend {
     /// cannot advance to the requested ceiling.
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError>;
 
+    /// Advances one scheduler-selected node toward `ceiling`.
+    ///
+    /// Single-node backends inherit the default implementation. Multi-node
+    /// backends override this method so the scheduler's selected node, rather
+    /// than an implicit backend-global node, owns the bounded advance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when `node` is unknown or cannot advance to
+    /// the requested ceiling.
+    fn step_node_to(
+        &mut self,
+        node: &NodeId,
+        ceiling: VirtualTime,
+    ) -> Result<StepObservation, BackendError> {
+        let _ = node;
+        self.step_to(ceiling)
+    }
+
     /// Drains observations produced by the last completed backend step.
     ///
     /// Live adapters use a bounded transport whose consumer is read only after
@@ -116,6 +135,21 @@ pub trait SimulationBackend {
         Ok(Vec::new())
     }
 
+    /// Drains guest-originated network frames produced by completed steps.
+    ///
+    /// The scheduler remains the routing and timing authority. Backends report
+    /// only the source-local emission coordinate, destination identity, stable
+    /// sequence, and payload; they do not select a link or delivery time.
+    /// Backends without a guest network transport return an empty batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when the output transport is corrupt or
+    /// cannot be drained completely at the completed boundary.
+    fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
+        Ok(Vec::new())
+    }
+
     /// Applies a backend-level effect at a scheduler boundary.
     ///
     /// `at` is scheduler-supplied virtual time. Implementations may mirror it
@@ -126,6 +160,25 @@ pub trait SimulationBackend {
     ///
     /// Returns a [`BackendError`] when the effect cannot be applied.
     fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError>;
+
+    /// Applies a backend effect to one scheduler-selected node.
+    ///
+    /// Single-node backends inherit the backend-global implementation.
+    /// Multi-node backends override this method to route the effect to `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when `node` is unknown or the effect cannot
+    /// be applied at the supplied scheduler boundary.
+    fn apply_to_node(
+        &mut self,
+        node: &NodeId,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        let _ = node;
+        self.apply(effect, at)
+    }
 
     /// Captures the backend-owned node state.
     ///
@@ -147,6 +200,18 @@ pub trait SimulationBackend {
     /// This value is an observation of the last scheduler-authorized advance,
     /// not an independent time source.
     fn now(&self) -> VirtualTime;
+
+    /// Returns one node's scheduler-mirrored virtual time.
+    ///
+    /// Single-node backends inherit [`SimulationBackend::now`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when `node` is unknown.
+    fn node_now(&self, node: &NodeId) -> Result<VirtualTime, BackendError> {
+        let _ = node;
+        Ok(self.now())
+    }
 
     /// Samples a deterministic execution fingerprint for `node`.
     ///
@@ -217,7 +282,12 @@ pub struct ExecutionFingerprint {
 pub struct StepObservation {
     /// Scheduler-supplied ceiling requested by the control plane.
     pub requested_ceiling: VirtualTime,
-    /// Virtual time the backend reached before returning control.
+    /// Scheduler-safe frontier established before returning control.
+    ///
+    /// This normally equals the backend's physical instruction count. A
+    /// backend that parks earlier with a proven exact wake strictly beyond the
+    /// requested ceiling may report the requested ceiling here while retaining
+    /// the physical park point in [`AdvanceOutcome::Paused`].
     pub reached: VirtualTime,
     /// Low-level backend advancement result.
     pub outcome: AdvanceOutcome,
@@ -323,62 +393,11 @@ pub struct GdbAttachInfo {
     pub carries_frame_data: bool,
 }
 
-impl GdbAttachInfo {
-    /// Builds a report for a mediated out-of-band gdbstub attach.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError::Rejected`] when `qemu_endpoint` is not stable
-    /// endpoint text.
-    pub fn new(
-        node: NodeId,
-        qemu_endpoint: impl Into<String>,
-        operator_listen: GdbListen,
-    ) -> Result<Self, BackendError> {
-        let qemu_endpoint = qemu_endpoint.into();
-        validate_gdb_endpoint("qemu_gdbstub", &qemu_endpoint)?;
-        Ok(Self {
-            node,
-            qemu_endpoint,
-            operator_listen,
-            mediated_by_crucible: true,
-            out_of_band: true,
-            carries_per_quantum_timing: false,
-            carries_frame_data: false,
-        })
-    }
+mod gdb;
+mod io;
 
-    /// Returns whether the channel is a read-only out-of-band debug proxy.
-    #[must_use]
-    pub const fn is_out_of_band_debug_proxy(&self) -> bool {
-        self.mediated_by_crucible
-            && self.out_of_band
-            && !self.carries_per_quantum_timing
-            && !self.carries_frame_data
-    }
-}
-
-/// Deterministic input delivered to a backend.
-///
-/// This payload represents backend delivery for model-controlled inputs, not a
-/// host-side workload generator. Application workload traffic must originate
-/// from guest execution and cross modeled devices as ordinary guest/device I/O.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BackendInput {
-    /// The target node.
-    pub node: NodeId,
-    /// The payload bytes.
-    pub payload: Vec<u8>,
-}
-
-fn validate_gdb_endpoint(field: &'static str, value: &str) -> Result<(), BackendError> {
-    if value.is_empty() || value.chars().any(|ch| matches!(ch, '\n' | '\0')) {
-        return Err(BackendError::Rejected {
-            message: format!("{field} endpoint is invalid"),
-        });
-    }
-    Ok(())
-}
+use gdb::validate_gdb_endpoint;
+pub use io::*;
 
 /// In-memory backend used for state-machine tests of [`SimulationBackend`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -45,23 +45,99 @@
             then charAt (index + 1)
             else "";
         in
-        if state.mode == "code"
-        then
-          if ch == "/" && next == "/"
+          if state.mode == "code"
+          then
+            if ch == "/" && next == "/"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode = "line";
+                skip = true;
+              }
+            else if ch == "/" && next == "*"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode = "block";
+                depth = 1;
+                skip = true;
+              }
+            else if ch == "\""
+            then
+              state
+              // {
+                out = state.out + " ";
+                mode = "string";
+              }
+            else
+              state
+              // {
+                out = state.out + ch;
+              }
+          else if state.mode == "line"
+          then
+            if ch == "\n"
+            then
+              state
+              // {
+                out = state.out + "\n";
+                mode = "code";
+              }
+            else
+              state
+              // {
+                out = state.out + " ";
+              }
+          else if state.mode == "block"
+          then
+            if ch == "/" && next == "*"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                depth = state.depth + 1;
+                skip = true;
+              }
+            else if ch == "*" && next == "/"
+            then
+              state
+              // {
+                out = state.out + "  ";
+                mode =
+                  if state.depth == 1
+                  then "code"
+                  else "block";
+                depth =
+                  if state.depth == 1
+                  then 0
+                  else state.depth - 1;
+                skip = true;
+              }
+            else
+              state
+              // {
+                out =
+                  state.out
+                  + (
+                    if ch == "\n"
+                    then "\n"
+                    else " "
+                  );
+              }
+          else if ch == "\\" && next != ""
           then
             state
             // {
-              out = state.out + "  ";
-              mode = "line";
-              skip = true;
-            }
-          else if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode = "block";
-              depth = 1;
+              out =
+                state.out
+                + " "
+                + (
+                  if next == "\n"
+                  then "\n"
+                  else " "
+                );
               skip = true;
             }
           else if ch == "\""
@@ -69,88 +145,19 @@
             state
             // {
               out = state.out + " ";
-              mode = "string";
-            }
-          else
-            state
-            // {
-              out = state.out + ch;
-            }
-        else if state.mode == "line"
-        then
-          if ch == "\n"
-          then
-            state
-            // {
-              out = state.out + "\n";
               mode = "code";
             }
           else
             state
             // {
-              out = state.out + " ";
-            }
-        else if state.mode == "block"
-        then
-          if ch == "/" && next == "*"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              depth = state.depth + 1;
-              skip = true;
-            }
-          else if ch == "*" && next == "/"
-          then
-            state
-            // {
-              out = state.out + "  ";
-              mode =
-                if state.depth == 1
-                then "code"
-                else "block";
-              depth =
-                if state.depth == 1
-                then 0
-                else state.depth - 1;
-              skip = true;
-            }
-          else
-            state
-            // {
-              out = state.out + (
-                if ch == "\n"
-                then "\n"
-                else " "
-              );
-            }
-        else if ch == "\\" && next != ""
-        then
-          state
-          // {
-            out = state.out + " " + (
-              if next == "\n"
-              then "\n"
-              else " "
-            );
-            skip = true;
-          }
-        else if ch == "\""
-        then
-          state
-          // {
-            out = state.out + " ";
-            mode = "code";
-          }
-        else
-          state
-          // {
-            out = state.out + (
-              if ch == "\n"
-              then "\n"
-              else " "
-            );
-          };
+              out =
+                state.out
+                + (
+                  if ch == "\n"
+                  then "\n"
+                  else " "
+                );
+            };
     in
       # Force the accumulated output flat before the next chunk so thunk
       # depth stays bounded by the longest line, not the whole file.
@@ -177,15 +184,9 @@
   in
     result.out;
 
-
-
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-5 checked off";
-        needle = "- [x] **T-ASRT-5**";
-      }
       {
         label = "T-ASRT-5 completion note";
         needle = "Completed by `checks.crucible.phase4.hostSideAssertions`";

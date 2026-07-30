@@ -1,6 +1,9 @@
 //! Resume, fork, and verification workflow realization.
 
 use super::*;
+
+const REQUESTED_PROPERTY_VIOLATION_REASON: &str = "requested property was violated";
+
 #[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fork_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -20,16 +23,64 @@ pub(super) fn run_local_double_fork_workflow(
 }
 
 pub(super) fn run_local_qemu_fork_workflow(
-    _thin_plan: &CliThinWrapperPlan,
+    thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
-    _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    _fork_plan: &ForkInvocationPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    fork_plan: &ForkInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
     let backend = backend_plan
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
-    reject_unwired_qemu_workflow(backend, "fork")
+    if fork_plan.fork_seed.is_some() {
+        return Err(backend_error(
+            "local QEMU fork reseeding requires branch-RNG admission in the live scheduler; no \
+             modeled fallback was executed",
+        ));
+    }
+    let evidence = fork_handle_evidence(fork_plan)?;
+    let mut config = production_qemu_lifecycle_config(backend)?;
+    let override_decisions = fork_override_decisions(fork_plan);
+    if !override_decisions.is_empty() {
+        config =
+            config.with_branch_prefix_overrides(evidence.configuration.clone(), override_decisions);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = production_qemu_control_plane(config, &evidence.scenario_form);
+    let client = InProcessLifecycleClient::new(control_plane);
+    let resume_plan = ResumeInvocationPlan {
+        savepoint: fork_plan.source.clone(),
+        store_root: fork_plan.store_root.clone(),
+        terminal_condition: fork_plan.terminal_condition,
+        max_virtual_time: fork_plan.max_virtual_time.clone(),
+        max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
+        execution_mode: fork_plan.execution_mode,
+        watch_streams_live_status: fork_plan.watch_streams_live_status,
+        startup_commands: fork_plan.startup_commands.clone(),
+        initial_control_commands: fork_plan.initial_control_commands.clone(),
+        accepted_interactive_commands: fork_plan.accepted_interactive_commands.clone(),
+    };
+    let resumed = runtime.block_on(run_remote_control_client_resume_workflow_async(
+        &client,
+        &resume_plan,
+    ))?;
+    let report = ForkWorkflowReport {
+        run: resumed.run,
+        source_checkpoint: resumed.source_checkpoint,
+        branch_checkpoint: evidence.checkpoint.id,
+        branch_configuration: resumed.resumed_configuration,
+        terminal_configuration: resumed.terminal_configuration,
+        scenario_form: evidence.scenario_form,
+        scenario_label: fork_plan.source.label(),
+        label: fork_plan.label.clone(),
+        terminal_oracle: resumed.terminal_oracle,
+    };
+    let mut outcome =
+        finish_fork_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, fork_plan, report)?;
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "fork-thin-replay");
+    Ok(outcome)
 }
 
 pub(super) fn default_fork_interactive_driver(
@@ -221,13 +272,7 @@ pub(super) fn savepoint_store_evidence(
             format_content_hash_ref(checkpoint)
         )));
     }
-    let frontier_ticks = u64::try_from(schedule.len()).map_err(|_| {
-        artifact_error(format!(
-            "{command_name} checkpoint closure schedule length {} cannot be represented as virtual time",
-            schedule.len()
-        ))
-    })?;
-    let frontier = validate_resume_handle_frontier(&schedule, frontier_ticks)?;
+    let frontier = validate_resume_handle_frontier(&schedule, index.frontier.ticks)?;
     let checkpoint =
         checkpoint_for_resume_configuration(&configuration, frontier).map_err(|error| {
             artifact_error(format!(
@@ -247,15 +292,12 @@ pub(super) fn validate_resume_handle_frontier(
     schedule: &Schedule,
     frontier_ticks: u64,
 ) -> Result<VirtualTime, CliError> {
-    let schedule_ticks = u64::try_from(schedule.len()).map_err(|_| {
-        CliError::Identity(format!(
-            "savepoint schedule length {} cannot be represented as virtual time",
-            schedule.len()
-        ))
-    })?;
-    if frontier_ticks != schedule_ticks {
+    if schedule
+        .recorded_virtual_time()
+        .is_some_and(|latest| frontier_ticks > latest.ticks)
+    {
         return Err(CliError::Identity(format!(
-            "savepoint handle frontier {frontier_ticks} did not match schedule-derived frontier {schedule_ticks}"
+            "savepoint frontier {frontier_ticks} exceeded the latest recorded decision boundary"
         )));
     }
     Ok(VirtualTime {
@@ -320,21 +362,8 @@ pub(super) fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible
         .collect()
 }
 
-pub(super) fn fork_branch_frontier(
-    evidence: &ResumeHandleEvidence,
-    appended_decisions: usize,
-) -> Result<VirtualTime, CliError> {
-    let branch_len = evidence
-        .schedule
-        .len()
-        .checked_add(appended_decisions)
-        .ok_or_else(|| CliError::Identity("fork branch schedule length overflowed".to_string()))?;
-    let ticks = u64::try_from(branch_len).map_err(|_| {
-        CliError::Identity(format!(
-            "fork branch schedule length {branch_len} cannot be represented as virtual time"
-        ))
-    })?;
-    Ok(VirtualTime { ticks })
+pub(super) fn fork_branch_frontier(evidence: &ResumeHandleEvidence) -> VirtualTime {
+    evidence.checkpoint.virtual_time
 }
 
 pub(super) fn resume_property_fixture_assertion(
@@ -488,7 +517,10 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
                 let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
                 let breakpoint_id = set_resumed_actor_breakpoint(
                     &sender,
-                    BreakpointSpec::suspend_once(predicate.clone()),
+                    BreakpointSpec::fail_once(
+                        predicate.clone(),
+                        REQUESTED_PROPERTY_VIOLATION_REASON,
+                    ),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -569,6 +601,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
             state_updates,
             streamed_events: Vec::new(),
             streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
             acknowledged_commands,
             watch_statuses,
@@ -587,7 +620,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<ForkWorkflowReport, CliError> {
     let fork_decisions = fork_override_decisions(plan);
-    let branch_frontier = fork_branch_frontier(&evidence, fork_decisions.len())?;
+    let branch_frontier = fork_branch_frontier(&evidence);
     let child_loop = fork_recording_loop_for_plan(plan, &evidence, branch_frontier)?;
     let mut graph = save_validation_graph(&evidence.scenario)?;
     if !evidence.configuration.is_genesis() {
@@ -705,7 +738,10 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
                 let predicate = resume_property_violation_predicate(&evidence.scenario_form)?;
                 let breakpoint_id = set_resumed_actor_breakpoint(
                     &sender,
-                    BreakpointSpec::suspend_once(predicate.clone()),
+                    BreakpointSpec::fail_once(
+                        predicate.clone(),
+                        REQUESTED_PROPERTY_VIOLATION_REASON,
+                    ),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -786,6 +822,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
             state_updates,
             streamed_events: Vec::new(),
             streamed_event_frames: Vec::new(),
+            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
             execution_fingerprints: Vec::new(),
             acknowledged_commands,
             watch_statuses,
@@ -1042,11 +1079,14 @@ pub(super) fn validate_resume_property_firing(
             firing.predicate, expected
         )));
     }
-    if firing.disposition != BreakpointDisposition::Suspend {
-        return Err(CliError::Identity(format!(
-            "resume property breakpoint used {:?} disposition instead of suspend",
-            firing.disposition
-        )));
+    match &firing.disposition {
+        BreakpointDisposition::Action(crucible::Action::Fail { reason })
+            if reason == REQUESTED_PROPERTY_VIOLATION_REASON => {}
+        disposition => {
+            return Err(CliError::Identity(format!(
+                "resume property breakpoint used unexpected disposition {disposition:?}"
+            )));
+        }
     }
     if firing.frontier != boundary.virtual_time {
         return Err(CliError::Identity(format!(
@@ -1083,11 +1123,14 @@ pub(super) fn validate_resume_property_firing_summary(
             firing.predicate, expected
         )));
     }
-    if firing.disposition != BreakpointDisposition::Suspend {
-        return Err(CliError::Identity(format!(
-            "remote resume property breakpoint used {:?} disposition instead of suspend",
-            firing.disposition
-        )));
+    match &firing.disposition {
+        BreakpointDisposition::Action(crucible::Action::Fail { reason })
+            if reason == REQUESTED_PROPERTY_VIOLATION_REASON => {}
+        disposition => {
+            return Err(CliError::Identity(format!(
+                "remote resume property breakpoint used unexpected disposition {disposition:?}"
+            )));
+        }
     }
     if firing.frontier != boundary.frontier {
         return Err(CliError::Identity(format!(
@@ -1203,7 +1246,7 @@ where
             return Ok(summary.clone());
         }
         if summary.state == LiveStateKind::Stopped {
-            return Err(CliError::Outcome(status_from_outcome(summary.outcome)));
+            return Err(CliError::Outcome(status_from_outcome(summary.outcome)?));
         }
         tokio::task::yield_now().await;
     }
@@ -1227,9 +1270,12 @@ pub(super) async fn wait_resumed_actor_boundary(
         }
         tokio::task::yield_now().await;
     }
-    Err(backend_error(
-        "resume actor did not reach the requested deterministic boundary",
-    ))
+    let final_view = live.read();
+    Err(backend_error(format!(
+        "resume actor did not reach the requested deterministic boundary: state={:?} \
+         frontier={} quanta={}",
+        final_view.state_kind, final_view.virtual_time.ticks, final_view.quanta_stepped
+    )))
 }
 
 pub(super) fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
